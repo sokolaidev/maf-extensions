@@ -338,7 +338,7 @@ class MafSandbox(BaseSandbox):
             "" if backend is None else f"{backend.name}@{id(backend):x}",
             key.scope,
             key.thread_id,
-            key.agent_dir,
+            key.agent_id,
             spec.kind,
             str(spec.egress),
             sorted(str(entry) for entry in spec.egress_allow),

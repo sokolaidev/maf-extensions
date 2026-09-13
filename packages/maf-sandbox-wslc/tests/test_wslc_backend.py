@@ -62,7 +62,7 @@ from maf_sandbox_wslc._backend import (
     _WslcSandbox,
 )
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
@@ -534,10 +534,10 @@ class TestAcquireCreatesClosed:
 
     def test_the_name_is_derived_from_the_key_and_the_kind(self):
         assert _container_name(_KEY, "bicep") == _container_name(
-            SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer"), "bicep"
+            SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer"), "bicep"
         )
         assert _container_name(_KEY, "bicep") != _container_name(
-            SandboxKey(scope="scope-b", thread_id="thread-1", agent_dir="devops-engineer"), "bicep"
+            SandboxKey(scope="scope-b", thread_id="thread-1", agent_id="devops-engineer"), "bicep"
         )
 
     def test_two_kinds_on_one_key_get_two_containers(self):
@@ -585,7 +585,7 @@ class TestAcquireCreatesClosed:
 
     def test_label_values_are_sanitized_at_create(self):
         backend, fake = _backend_with(_machine())
-        key = SandboxKey(scope="user-" + "z" * 90, thread_id="thread-1", agent_dir="devops")
+        key = SandboxKey(scope="user-" + "z" * 90, thread_id="thread-1", agent_id="devops")
         asyncio.run(backend.acquire(key, _SPEC))
 
         args = fake.only("container", "run").args
@@ -1556,7 +1556,7 @@ class TestNarrowedDisposal:
             _machine(overrides={("container", "list"): _WslcResult(1, b"", b"listing unavailable")})
         )
         key = _KEY
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         entered, progressed = threading.Event(), threading.Event()
         failure = DisposalFailure("refused", "delete refused")
@@ -1643,7 +1643,7 @@ class TestNarrowedDisposal:
         backend, fake = _backend_with(
             _machine(overrides={("container", "list"): _WslcResult(1, b"", b"listing unavailable")})
         )
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         original = backend._purge
         entered, release = asyncio.Event(), asyncio.Event()
@@ -1719,7 +1719,7 @@ class TestNarrowedDisposal:
             ("container", "remove", "-f"): _WslcResult(1, b"", b"remove refused"),
         }
         backend, fake = _backend_with(_machine(overrides=overrides))
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
@@ -1863,7 +1863,7 @@ class TestDispose:
         `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
         listing = asyncio.Event()
         release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
 
         async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
             if args[:2] == ("container", "list"):
@@ -1895,7 +1895,7 @@ class TestDispose:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert asyncio.run(backend.dispose(_KEY)) is not None
 
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         assert backend._undeleted[prefix] == {_NAME}, "the name is owed a retry"  # noqa: SLF001
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert fake.matching("container", "run") == [], "the same container is handed back"
@@ -1907,7 +1907,7 @@ class TestDisposeScope:
     @pytest.mark.parametrize("unlisted", [False, True])
     def test_scope_purge_retires_confirmed_records(self, retained, partial, unlisted, monkeypatch):
         backend, _ = _backend_with(_machine())
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         failure = DisposalFailure("unknown", "engine unavailable")
@@ -1941,7 +1941,7 @@ class TestDisposeScope:
         self, first_scope, second_scope, failure_first, monkeypatch
     ):
         backend, _ = _backend_with(_machine())
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         first_started, second_started = asyncio.Event(), asyncio.Event()
@@ -1999,7 +1999,7 @@ class TestDisposeScope:
         backend, fake = _backend_with(
             _machine(overrides={("container", "list"): failed, ("container", "remove"): failed})
         )
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         original = backend._wslc
@@ -2034,7 +2034,7 @@ class TestDisposeScope:
         record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
         listing = asyncio.Event()
         release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
 
         async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
             if args[:2] == ("container", "list"):
@@ -2166,7 +2166,7 @@ class TestLabelValues:
         and "there were none" are the same result."""
         long_scope = "user-" + "z" * 90
         backend, fake = _backend_with(_machine())
-        key = SandboxKey(scope=long_scope, thread_id="thread-1", agent_dir="devops")
+        key = SandboxKey(scope=long_scope, thread_id="thread-1", agent_id="devops")
         asyncio.run(backend.acquire(key, _SPEC))
         written = [
             fake.only("container", "run").args[i + 1]

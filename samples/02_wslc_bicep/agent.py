@@ -26,7 +26,7 @@ the environment variables, before running this.
 #     "agent-framework-openai",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-wslc",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 # ]
 # ///
 
@@ -46,14 +46,14 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
-# A sandbox is keyed by the caller's scope, thread and agent directory.  A host reads the first two
+# A sandbox is keyed by the caller's scope, thread and agent identity.  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
 # serves exactly one request, so they are constants here, but they are still named
 # rather than inlined: the whole point of `make_caller_context` below is that
 # they belong to the request, not to the agent.
 SCOPE = "samples"
 THREAD_ID = "02-wslc-bicep"
-AGENT_DIR = "devops-engineer"
+AGENT_ID = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
 
@@ -106,7 +106,7 @@ async def run() -> int:
     tools = make_bicep_tools(
         router,
         store,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         image=env["BICEP_SANDBOX_IMAGE"],
         egress=Egress.CLOSED,
@@ -122,7 +122,7 @@ async def run() -> int:
                 api_key=env["OPENAI_API_KEY"],
                 base_url=os.environ.get("OPENAI_BASE_URL"),
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You validate Azure Bicep. Always call the bicep_validate tool "
                 "and report exactly the diagnostics it returns — rule id, "

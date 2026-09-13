@@ -33,7 +33,7 @@ Read it, along with the prerequisites and the environment variables, first.
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 # ]
 # ///
 
@@ -66,12 +66,12 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 logger = logging.getLogger(__name__)
 
-# A sandbox is keyed by the caller's scope, thread and agent directory. A host reads the first two from its own
+# A sandbox is keyed by the caller's scope, thread and agent identity. A host reads the first two from its own
 # request context; this program serves one request, so they are constants — named, not inlined,
 # because they belong to the request rather than to the agent.
 SCOPE = "samples"
 THREAD_ID = "07-docker-diagram"
-AGENT_DIR = "diagram-designer"
+AGENT_ID = "diagram-designer"
 
 TASK = (
     "Draw a directed graph of a three-stage data pipeline — an 'ingest' node that "
@@ -160,7 +160,7 @@ async def run() -> int:
 
     tools = make_diagram_tools(
         router,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         sink,
         image=env["DIAGRAM_SANDBOX_IMAGE"],
@@ -177,7 +177,7 @@ async def run() -> int:
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
                 credential=credential,
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You draw diagrams by writing Graphviz DOT and calling the "
                 "render_diagram tool — never by describing the picture in prose. "

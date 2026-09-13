@@ -99,7 +99,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
 
 def make_diagram_tools(
     router: SandboxRouter | None,
-    agent_dir: str,
+    agent_id: str,
     context: CallerContext,
     sink: OutputSink,
     *,
@@ -110,7 +110,7 @@ def make_diagram_tools(
 
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
-        agent_dir: The agent's directory name. Baked into the sandbox key at factory time
+        agent_id: The agent's stable identifier. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
         context: How to read the caller's scope and thread.
         sink: Where the rendered image lands. Passed to ``sandboxed_tool`` so the tool's
@@ -125,7 +125,7 @@ def make_diagram_tools(
         lambda session: _render_diagram_tool(session, sink, exec_timeout_seconds),
         router=router,
         context=context,
-        agent_dir=agent_dir,
+        agent_id=agent_id,
         spec=spec,
         name=RENDER_DIAGRAM_TOOL_NAME,
         approval_mode="never_require",

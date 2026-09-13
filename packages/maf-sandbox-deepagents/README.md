@@ -25,8 +25,8 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 router = SandboxRouter([DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER)
 spec = deepagents_spec("python:3.12-alpine")
 
-# One sandbox per agent in a conversation: scope, thread and agent directory come from the host's request context.
-sandbox = MafSandbox(router, SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="coder"), spec)
+# One sandbox per agent in a conversation: scope, thread and agent identity come from the host's request context.
+sandbox = MafSandbox(router, SandboxKey(scope="tenant-a", thread_id="thread-1", agent_id="coder"), spec)
 
 agent = create_deep_agent(model=..., backend=sandbox, system_prompt="...")
 ```

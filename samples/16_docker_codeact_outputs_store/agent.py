@@ -32,7 +32,7 @@ the read-back tools are not a second `FileAccessProvider`.  Read it first.
 #     "azure-identity",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 # ]
 # ///
 
@@ -60,7 +60,7 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 SCOPE = "samples"
 THREAD_ID = "16-docker-codeact-outputs-store"
-AGENT_DIR = "data-analyst"
+AGENT_ID = "data-analyst"
 
 #: A standard MCR devcontainer image at Python 3.13 — sample 06's, so nothing is built here.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
@@ -186,7 +186,7 @@ async def run() -> int:
     tools = list(
         make_codeact_tools(
             router,
-            AGENT_DIR,
+            AGENT_ID,
             context,
             file_store=working,
             output_sink=make_recording_sink(outputs, landed_provenance, landed),
@@ -213,7 +213,7 @@ async def run() -> int:
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
                 credential=credential,
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You answer questions about data by writing and running Python with the "
                 "execute_code tool, never by working the arithmetic out yourself. Pass "

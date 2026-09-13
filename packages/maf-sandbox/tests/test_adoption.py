@@ -26,7 +26,7 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
-KEY = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+KEY = SandboxKey(scope="s", thread_id="t", agent_id="a")
 SPEC = SandboxSpec(kind="test", confined_to_guest_call_path=True)
 
 
@@ -130,7 +130,7 @@ def test_disposal_retires_only_covered_instances_on_success(operation, fails):
     entries = [
         (KEY, SPEC.kind, subject),
         (KEY, "sibling", subject),
-        (dataclasses.replace(KEY, agent_dir="other"), SPEC.kind, subject),
+        (dataclasses.replace(KEY, agent_id="other"), SPEC.kind, subject),
         (dataclasses.replace(KEY, thread_id="other"), SPEC.kind, subject),
         (KEY, SPEC.kind, other_backend),
     ]

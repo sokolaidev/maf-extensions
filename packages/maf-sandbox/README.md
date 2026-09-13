@@ -26,7 +26,7 @@ from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec, Calle
 # nothing gets the production posture (the default floor is Isolation.MICROVM); a developer
 # machine opts down explicitly:
 router = SandboxRouter([my_backend], min_isolation=Isolation.CONTAINER)
-sandbox = await router.acquire(SandboxKey(scope="tenant-1", thread_id="t-1", agent_dir="devops"), SandboxSpec(kind="bicep", image="bicep-sandbox:0.46.1", egress_allow=("mcr.microsoft.com",), work_dir="/workspace"))
+sandbox = await router.acquire(SandboxKey(scope="tenant-1", thread_id="t-1", agent_id="devops"), SandboxSpec(kind="bicep", image="bicep-sandbox:0.46.1", egress_allow=("mcr.microsoft.com",), work_dir="/workspace"))
 ```
 
 This snippet never calls `ensure_can_serve` (below) and is checked anyway: `acquire` runs the same floor, capability and egress refusals itself before it ever reaches the backend, so the only thing calling `ensure_can_serve` first buys you is the closed-egress-vs-allowlist-spec warning, which `acquire` deliberately stays silent about.
@@ -70,7 +70,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 | | |
 |---|---|
-| `SandboxKey` | `(scope, thread_id, agent_dir, call_id)` — the one sandbox a caller may reach; `call_id` is empty unless the workload runs one sandbox per call |
+| `SandboxKey` | `(scope, thread_id, agent_id, call_id)` — the one sandbox a caller may reach; `call_id` is empty unless the workload runs one sandbox per call |
 | `SandboxSpec` | what a sandbox of a given *kind* needs: image, egress allowlist, work dir, `requires` capabilities, and an optional `min_isolation` that may raise the host's floor, and an `isolation_scope` that may raise how little of the conversation one sandbox serves |
 | `Sandbox` | `write_file`, `exec` and `run_code`, the pull surface `stat_file` / `read_file` / `list_dir`, `remove`, and `reclaim` — what a workload gets, gated by what the backend declares. `reclaim` remains a required method and may refuse when safety cannot be established; `Capability.RECLAIM` admits router-managed reclamation and gates its conformance suite |
 | `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation` it declares and the `BackendDeclarations` it hands the router |

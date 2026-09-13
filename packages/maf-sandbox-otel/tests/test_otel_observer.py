@@ -66,7 +66,7 @@ from maf_sandbox_otel import (
     hashed_scoped_thread,
 )
 
-KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent", call_id="call-9")
+KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_id="agent", call_id="call-9")
 #: ``call`` as a keyword where the core under test has it, and nothing where it does not.
 #:
 #: This suite runs against the workspace core *and* against every published core the wheel's
@@ -722,6 +722,8 @@ class TestContentStaysOffTheWireUntilAHostAsks:
         recorded.observer.sandbox_acquired(an_acquire())
         attributes = recorded.attributes()
         assert attributes[f"{NAMESPACE}.sandbox.scope"] == "tenant-a"
+        assert attributes[f"{NAMESPACE}.sandbox.agent_id"] == "agent"
+        assert f"{NAMESPACE}.sandbox.agent_dir" not in attributes
         assert attributes[f"{NAMESPACE}.sandbox.key"] == hashed_key(KEY)
 
 
@@ -749,7 +751,7 @@ class TestTheCasesARecorderGetsWrong:
     def test_a_call_that_asked_for_two_sandboxes_records_both_keys(self):
         """One key renders like every other event's so the ordinary call stays queryable the
         same way; two render as a list, since naming one would hide the other."""
-        other = SandboxKey(scope=KEY.scope, thread_id=KEY.thread_id, agent_dir="agent-2")
+        other = SandboxKey(scope=KEY.scope, thread_id=KEY.thread_id, agent_id="agent-2")
         recorded = build()
         recorded.observer.tool_call_ended(
             ToolCallEnded(
@@ -799,8 +801,8 @@ class TestTheHashIsAJoinColumn:
         """
         lone = json.loads('"\\ud800"')
         assert lone == "\ud800"
-        first = SandboxKey(scope="tenant-a", thread_id=lone, agent_dir="agent")
-        second = SandboxKey(scope="tenant-a", thread_id="\udfff", agent_dir="agent")
+        first = SandboxKey(scope="tenant-a", thread_id=lone, agent_id="agent")
+        second = SandboxKey(scope="tenant-a", thread_id="\udfff", agent_id="agent")
         assert len(hashed_key(first)) == 64
         assert hashed_key(first) != hashed_key(second)
         assert hashed_conversation(first) != hashed_conversation(second)
@@ -808,22 +810,22 @@ class TestTheHashIsAJoinColumn:
     @pytest.mark.parametrize("boundary", ["\x1f", "|", ":"], ids=["unit-sep", "pipe", "colon"])
     def test_two_keys_that_could_render_alike_still_differ(self, boundary):
         """Including the encoding's own characters: nothing stops a scope holding one."""
-        first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_dir="d", call_id="")
-        second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_dir="d", call_id="")
+        first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_id="d", call_id="")
+        second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_id="d", call_id="")
         assert hashed_key(first) != hashed_key(second)
 
     def test_a_conversation_groups_across_calls_where_the_key_does_not(self):
         """A per-call workload puts a fresh `call_id` in every key, so the key's own hash
         differs per call — and grouping a conversation's records is the query this exists for,
         with the scope and thread redacted by default."""
-        first = SandboxKey(scope="t", thread_id="th", agent_dir="a", call_id="call-1")
-        second = SandboxKey(scope="t", thread_id="th", agent_dir="a", call_id="call-2")
+        first = SandboxKey(scope="t", thread_id="th", agent_id="a", call_id="call-1")
+        second = SandboxKey(scope="t", thread_id="th", agent_id="a", call_id="call-2")
         assert hashed_key(first) != hashed_key(second)
         assert hashed_conversation(first) == hashed_conversation(second)
 
     def test_a_multi_key_call_keeps_every_part_the_single_key_case_keeps(self):
         """The list branch is where a redaction guarantee is easiest to drop silently."""
-        other = SandboxKey(scope="t2", thread_id="th2", agent_dir="a2", call_id="call-2")
+        other = SandboxKey(scope="t2", thread_id="th2", agent_id="a2", call_id="call-2")
         recorded = build(sensitive=True)
         recorded.observer.tool_call_ended(
             ToolCallEnded(

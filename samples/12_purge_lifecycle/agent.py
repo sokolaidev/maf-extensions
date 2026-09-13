@@ -3,7 +3,7 @@ cannot.
 
 Three disposal moments, and choosing between them is a cost decision rather than a style one.
 Every other sample creates a sandbox and drops it on the way out; this one is about what a
-long-lived host has to wire, because a sandbox is keyed by the caller's scope, thread and agent directory and
+long-lived host has to wire, because a sandbox is keyed by the caller's scope, thread and agent identity and
 outlives the turn that made it.
 
 Acts 5 to 8 are the fourth thing a host has to decide, and the only one it cannot decide by
@@ -23,7 +23,7 @@ from a return value — see this directory's README.
 # dependencies = [
 #     "maf-sandbox-docker",
 #     "maf-sandbox-otel",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 #     "opentelemetry-sdk",
 # ]
 # ///
@@ -73,7 +73,7 @@ if TYPE_CHECKING:
 
 IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 SCOPE = "samples"
-AGENT_DIR = "assistant"
+AGENT_ID = "assistant"
 
 #: Acts 1 to 4, which never let a cleanup fail.
 _THREADS = ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-unscoped")
@@ -139,7 +139,7 @@ async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
     """What warm reuse actually buys, and the only place it is unambiguously worth having."""
     print("== 1. Within a turn: get-or-create is the point ==\n")
 
-    key = SandboxKey(scope=SCOPE, thread_id="t-reuse", agent_dir=AGENT_DIR)
+    key = SandboxKey(scope=SCOPE, thread_id="t-reuse", agent_id=AGENT_ID)
 
     # Tested as state surviving rather than with `is`: the protocol promises the same sandbox,
     # not the same object, and the docker backend hands back a fresh handle over one container.
@@ -169,7 +169,7 @@ async def act_two_between_turns(router: SandboxRouter) -> None:
     """A host that keeps the sandbox between turns, and what that costs where it is billable."""
     print("== 2. Between turns: it survives, and that is a decision ==\n")
 
-    key = SandboxKey(scope=SCOPE, thread_id="t-kept", agent_dir=AGENT_DIR)
+    key = SandboxKey(scope=SCOPE, thread_id="t-kept", agent_id=AGENT_ID)
     await one_turn(router, key)
 
     print(f"  turn ended without disposing -> containers still there: {containers('t-kept')}")
@@ -200,7 +200,7 @@ async def act_three_purge_at_end_of_turn(router: SandboxRouter) -> None:
 
     thread = "t-perturn"
     async with router.scope(SCOPE, thread) as disposal:
-        await one_turn(router, SandboxKey(scope=SCOPE, thread_id=thread, agent_dir=AGENT_DIR))
+        await one_turn(router, SandboxKey(scope=SCOPE, thread_id=thread, agent_id=AGENT_ID))
         print(f"  inside the turn -> containers: {containers(thread)}")
 
     print(f"  block ended -> router reports {disposal.disposed} disposed")
@@ -223,7 +223,7 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     # A conversation whose turns were purged per turn, as act 3 does.
     tidy = "t-tidy"
     async with router.scope(SCOPE, tidy):
-        await one_turn(router, SandboxKey(scope=SCOPE, thread_id=tidy, agent_dir=AGENT_DIR))
+        await one_turn(router, SandboxKey(scope=SCOPE, thread_id=tidy, agent_id=AGENT_ID))
     tidy_found = (await purger.purge_scoped_thread(SCOPE, tidy)).disposed
     print(f"  a thread already purged per turn -> purger found {tidy_found}")
     print("  Zero is the right answer, not a broken hook. A host that purges at end of turn")
@@ -232,7 +232,7 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     # No `router.scope` here on purpose: an entered one disposes however it exits, so never
     # entering it is the only way to reach a delete with work still outstanding.
     unscoped = "t-unscoped"
-    await one_turn(router, SandboxKey(scope=SCOPE, thread_id=unscoped, agent_dir=AGENT_DIR))
+    await one_turn(router, SandboxKey(scope=SCOPE, thread_id=unscoped, agent_id=AGENT_ID))
     print(f"  a thread never scoped per turn -> containers: {containers(unscoped)}")
     unscoped_found = (await purger.purge_scoped_thread(SCOPE, unscoped)).disposed
     print(f"  user deletes the conversation  -> purger found {unscoped_found}")
@@ -302,7 +302,7 @@ async def _one_locked_call(
     """
     context = make_caller_context(_no_files, lambda: SCOPE, lambda: thread)
     (probe,) = make_cleanup_probe_tools(
-        router, AGENT_DIR, context, image=IMAGE, reclaim_timeout=reclaim_timeout
+        router, AGENT_ID, context, image=IMAGE, reclaim_timeout=reclaim_timeout
     )
     answer = await probe.invoke(arguments={}, skip_parsing=True)
     return str(answer)
@@ -423,7 +423,7 @@ async def act_seven_a_disposal_nobody_could_prove(telemetry: Telemetry) -> str:
     _report_what_was_recorded(telemetry)
     print()
 
-    key = SandboxKey(scope=SCOPE, thread_id=_UNPROVEN_THREAD, agent_dir=AGENT_DIR)
+    key = SandboxKey(scope=SCOPE, thread_id=_UNPROVEN_THREAD, agent_id=AGENT_ID)
     try:
         await router.acquire(key, cleanup_probe_spec(IMAGE))
         refusal = "served"

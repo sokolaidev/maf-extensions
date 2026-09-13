@@ -57,7 +57,7 @@ from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBacke
 if TYPE_CHECKING:
     from agent_framework import AgentSession
 
-KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
 
 #: Small enough that a wired host-tool surface folds into the transfer match without the
 #: workload's own caps having to grow to meet it.
@@ -304,7 +304,7 @@ class TestOnlyAServedAcquireIsRecorded:
         Pinned because the honest reading of the length is the whole contract here: a reader
         counting entries is counting distinct postures, never sandboxes.
         """
-        assert len(self._postures(KEY, dataclasses.replace(KEY, agent_dir="agent-2"))) == 1
+        assert len(self._postures(KEY, dataclasses.replace(KEY, agent_id="agent-2"))) == 1
 
     def test_two_postures_in_one_call_are_both_recorded(self):
         """And the fold is by posture rather than a cap of one: a differing spec still lands."""
@@ -557,7 +557,7 @@ class TestTheSnapshotJoinsToTheCallThatProducedIt:
             build,
             router=router,
             context=context,
-            agent_dir="agent",
+            agent_id="agent",
             spec=_spec(),
             name="widget_run",
             logger=logging.getLogger("test_effective_state"),

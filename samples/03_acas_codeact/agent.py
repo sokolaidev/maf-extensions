@@ -25,7 +25,7 @@ see this directory's README for the prerequisites and the environment variables.
 #     "agent-framework-openai",
 #     "maf-sandbox-acas>=0.10.0",
 #     "maf-sandbox-codeact",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 # ]
 # ///
 
@@ -52,11 +52,11 @@ from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import make_codeact_tools
 
-# Keyed by the caller's scope, thread and agent directory; constants here since this
+# Keyed by the caller's scope, thread and agent identity; constants here since this
 # program serves one request.
 SCOPE = "samples"
 THREAD_ID = conversation_id("03-acas-codeact")
-AGENT_DIR = "data-analyst"
+AGENT_ID = "data-analyst"
 
 #: A prebuilt image the service keeps Ready for every sandbox group — a bare name with no
 #: tag, so it resolves against the group's catalogue rather than an imported disk image.
@@ -119,7 +119,7 @@ async def run() -> int:
 
     tools = make_codeact_tools(
         router,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         image=CODEACT_IMAGE,
     )
@@ -136,7 +136,7 @@ async def run() -> int:
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
                 credential=credential,
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You answer computational questions by writing and running Python "
                 "with the execute_code tool, never by computing them yourself. "

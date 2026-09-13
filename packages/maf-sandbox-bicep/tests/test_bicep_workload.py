@@ -564,7 +564,7 @@ class TestEndToEnd:
         _run(_tool(store, backend), ["main.bicep"])
 
         key = backend.keys[0]
-        assert (key.scope, key.thread_id, key.agent_dir) == (
+        assert (key.scope, key.thread_id, key.agent_id) == (
             "scope-a",
             "thread-1",
             "devops-engineer",

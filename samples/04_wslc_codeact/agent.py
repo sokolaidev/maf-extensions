@@ -29,7 +29,7 @@ before running this.
 #     "agent-framework-openai",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-wslc",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 # ]
 # ///
 
@@ -48,10 +48,10 @@ from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
-# Keyed by the caller's scope, thread and agent directory — see sample 03's agent.py.
+# Keyed by the caller's scope, thread and agent identity — see sample 03's agent.py.
 SCOPE = "samples"
 THREAD_ID = "04-wslc-codeact"
-AGENT_DIR = "data-analyst"
+AGENT_ID = "data-analyst"
 
 #: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
@@ -100,7 +100,7 @@ async def run() -> int:
 
     tools = make_codeact_tools(
         router,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         image=CODEACT_IMAGE,
     )
@@ -115,7 +115,7 @@ async def run() -> int:
                 api_key=env["OPENAI_API_KEY"],
                 base_url=os.environ.get("OPENAI_BASE_URL"),
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You answer computational questions by writing and running Python "
                 "with the execute_code tool, never by computing them yourself. "

@@ -32,7 +32,7 @@ def _attach(build, *, source="trusted", guidance=()):
             current_thread_id=lambda: "thread",
             list_files=InMemoryStore.list,
         ),
-        agent_dir="agent",
+        agent_id="agent",
         spec=_SPEC,
         name="probe",
         source_integrity=source,

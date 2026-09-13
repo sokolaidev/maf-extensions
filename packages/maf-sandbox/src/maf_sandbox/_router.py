@@ -1506,7 +1506,7 @@ class SandboxRouter:
         _, reported = self._unclean_state(key)
         outcome = "disposed" if failure is None else "could not be disposed either"
         raise SandboxUnclean(
-            f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was refused "
+            f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_id} was refused "
             f"while this acquire was creating it; the {kind!r} instance {outcome}",
             code=reported.code if reported is not None else None,
         )
@@ -1626,7 +1626,7 @@ class SandboxRouter:
             # message reaches hosts that do not sanitize. The detail is in the log beside it.
             because = f" ({reported.code})" if reported is not None else ""
             raise SandboxUnclean(
-                f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was left unclean — "
+                f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_id} was left unclean — "
                 "a tool call's data could not be removed, or a program it started may still be "
                 f"running — and disposing it did not land{because}. It is refused until a "
                 "disposal lands — dispose(key) or dispose_scope(scope, thread_id) — rather than "
@@ -2118,7 +2118,7 @@ class SandboxRouter:
                 "sandbox router: disposing %s/%s/%s (%s) did not finish within %ss",
                 key.scope,
                 key.thread_id,
-                key.agent_dir,
+                key.agent_id,
                 kind,
                 timeout,
             )
@@ -2172,7 +2172,7 @@ class SandboxRouter:
                         backend.name,
                         key.scope,
                         key.thread_id,
-                        key.agent_dir,
+                        key.agent_id,
                         undisposed,
                     )
             self._record_disposal(key, backend, answered, started)
@@ -2227,7 +2227,7 @@ class SandboxRouter:
         if not key.call_id:
             raise ValueError(
                 f"dispose_call was given a key naming no call ({key.scope}/{key.thread_id}/"
-                f"{key.agent_dir}), which is a conversation's. Deleting it here would take every "
+                f"{key.agent_id}), which is a conversation's. Deleting it here would take every "
                 "kind's sandbox for that conversation and skip the ledger that refuses the key "
                 "when the delete does not land — the protection this method drops precisely "
                 "because a call-scoped key has no next acquire. Use dispose(key), or "
@@ -2264,7 +2264,7 @@ class SandboxRouter:
                 "sandbox router: disposing the call sandbox %s/%s/%s/%s did not finish within %ss",
                 key.scope,
                 key.thread_id,
-                key.agent_dir,
+                key.agent_id,
                 key.call_id,
                 timeout,
             )
@@ -2358,7 +2358,7 @@ class SandboxRouter:
                 "sandbox router: disposing %s/%s/%s did not finish within %ss",
                 key.scope,
                 key.thread_id,
-                key.agent_dir,
+                key.agent_id,
                 timeout,
             )
             if not refuse:

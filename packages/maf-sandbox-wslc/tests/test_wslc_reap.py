@@ -19,7 +19,7 @@ _OLD = (_NOW - timedelta(days=2)).isoformat()
 _FRESH = (_NOW - timedelta(hours=1)).isoformat()
 _PERIOD = timedelta(days=1)
 _NAME = "maf-sandbox-wslc-012345abcdef"
-_KEY = SandboxKey(scope="app", thread_id="thread", agent_dir="agent")
+_KEY = SandboxKey(scope="app", thread_id="thread", agent_id="agent")
 _SPEC = SandboxSpec(kind="test", image="alpine:3")
 
 

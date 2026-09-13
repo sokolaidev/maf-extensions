@@ -47,7 +47,7 @@ _CHECK = "import json; json.load(open('input.json', encoding='utf-8'))"
 def make_json_tools(
     router: SandboxRouter | None,
     file_store: AgentFileStore,
-    agent_dir: str,
+    agent_id: str,
     context: CallerContext,
     *,
     image: str | None = None,
@@ -57,7 +57,7 @@ def make_json_tools(
         lambda session: _build_json_tool(session, file_store),
         router=router,
         context=context,
-        agent_dir=agent_dir,
+        agent_id=agent_id,
         spec=SandboxSpec(
             kind="json-check",
             image=image,
@@ -127,7 +127,7 @@ def _build_json_tool(
 
 `SandboxSpec` supplies `EXEC` and `FILES_IN` by default. The factory returns `[]` when no router or backend is configured. A configured backend that cannot satisfy the spec raises at attach; the host must correct the configuration. Do not catch that refusal and advertise the tool anyway.
 
-The builder is defined at module level because the returned function's docstring becomes the model-facing tool description. The model supplies only `file`; scope, thread, image, and agent directory remain host configuration. Keep those out of the tool signature.
+The builder is defined at module level because the returned function's docstring becomes the model-facing tool description. The model supplies only `file`; scope, thread, image, and agent identity remain host configuration. Keep those out of the tool signature.
 
 ## Keep file reads and guest work inside the call
 
@@ -175,7 +175,7 @@ context = CallerContext(
     list_files=partial(list_all_files, provenance=provenance),
 )
 tools = make_json_tools(
-    router, file_store, agent_dir, context,
+    router, file_store, agent_id, context,
     image=json_image,
     file_store_provenance=provenance,
 )

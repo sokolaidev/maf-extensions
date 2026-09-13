@@ -789,7 +789,7 @@ def test_prelaunch_collection_failure_reaches_the_hosts_reuse_policy(failure, ke
             ),
         )
         spec = SandboxSpec(kind="process", work_dir="/work")
-        key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+        key = SandboxKey(scope="s", thread_id="t", agent_id="a")
         router._seen[(key, spec.kind, id(backend))] = {guest.instance_id}
         assert router.effective_cleanup(spec) is Cleanup.RECLAIM
 
@@ -815,7 +815,7 @@ def test_prelaunch_collection_failure_reaches_the_hosts_reuse_policy(failure, ke
             build,
             router=router,
             context=CallerContext(lambda: "s", lambda: "t", InMemoryStore.list),
-            agent_dir="a",
+            agent_id="a",
             spec=spec,
             name="probe",
             on_reclaim_failure=report,

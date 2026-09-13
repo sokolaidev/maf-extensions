@@ -36,7 +36,7 @@ this directory's README for the prerequisites and the environment variables.
 #     "azure-identity",
 #     "maf-sandbox-acas",
 #     "maf-sandbox-codeact",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 # ]
 # ///
 
@@ -62,11 +62,11 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
 
-# Keyed by the caller's scope, thread and agent directory; constants here since this
+# Keyed by the caller's scope, thread and agent identity; constants here since this
 # program serves one request.
 SCOPE = "samples"
 THREAD_ID = conversation_id("14-acas-codeact-files")
-AGENT_DIR = "data-analyst"
+AGENT_ID = "data-analyst"
 
 #: A standard MCR devcontainer image at Python 3.13, imported into the sandbox group as a disk
 #: image. Fully qualified, so no registry variable accompanies it.
@@ -166,7 +166,7 @@ async def run() -> int:
 
     tools = make_codeact_tools(
         router,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         # Files in: the tool grows a `files` parameter, bounded by `list_all_files` above.
         file_store=store,
@@ -196,7 +196,7 @@ async def run() -> int:
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
                 credential=credential,
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You answer questions about data by writing and running Python with the "
                 "execute_code tool, never by reading numbers out of a file yourself. Pass "

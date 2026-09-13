@@ -50,7 +50,7 @@ from maf_sandbox_otel import (
     hashed_key,
 )
 
-KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent")
+KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_id="agent")
 #: ``call`` as a keyword where the core under test has it, and nothing where it does not.
 #:
 #: This suite runs against the workspace core *and* against every published core the wheel's
@@ -210,8 +210,8 @@ class TestTheJoinColumn:
         """`SandboxKey` constrains none of its parts, so there is no character a part cannot
         hold — including whichever one an encoding reserves. Delimiter-like content in either
         field must therefore never merge two distinct keys into one name."""
-        first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_dir="d")
-        second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_dir="d")
+        first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_id="d")
+        second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_id="d")
         assert hashed_key(first) != hashed_key(second)
 
     def test_the_whole_digest_is_the_name(self):

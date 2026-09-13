@@ -165,7 +165,7 @@ def test_call_cleanup_preserves_serving_refusals(at_host, reason, refusal):
 @pytest.mark.parametrize("before,after", [(a, b) for a in Cleanup for b in Cleanup if a != b])
 def test_admission_rechecks_cleanup_evidence_after_waiting(before, after, monkeypatch):
     backend = InProcessSandboxBackend()
-    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    key = SandboxKey(scope="s", thread_id="t", agent_id="a")
     spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
     router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
 
@@ -200,7 +200,7 @@ def test_admission_rechecks_cleanup_evidence_after_waiting(before, after, monkey
 
 def test_upgraded_cleanup_still_admits_an_ordinary_shared_body(monkeypatch):
     backend = InProcessSandboxBackend()
-    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    key = SandboxKey(scope="s", thread_id="t", agent_id="a")
     spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
     router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
 

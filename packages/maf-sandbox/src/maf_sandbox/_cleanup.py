@@ -149,7 +149,7 @@ class ExclusiveSlots:
                 self._forget_waiter(at, queued)
                 raise TimeoutError(
                     f"another call is using the sandbox for {key.scope}/{key.thread_id}/"
-                    f"{key.agent_dir} and did not finish within {timeout:g}s. Admission waits "
+                    f"{key.agent_id} and did not finish within {timeout:g}s. Admission waits "
                     "while the sandbox drains, cleans, or is held exclusively."
                 ) from None
             except BaseException:

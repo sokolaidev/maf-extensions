@@ -232,7 +232,7 @@ def bicep_sandbox_spec(
 def make_bicep_tools(
     router: SandboxRouter | None,
     file_store: AgentFileStore,
-    agent_dir: str,
+    agent_id: str,
     context: CallerContext,
     *,
     image: str | None = None,
@@ -257,7 +257,7 @@ def make_bicep_tools(
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         file_store: The agent's file store; file content is read from here and
             written into the sandbox before the compiler runs.
-        agent_dir: The agent's directory name. Baked into the sandbox key at factory time
+        agent_id: The agent's stable identifier. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store.
@@ -272,7 +272,7 @@ def make_bicep_tools(
         lambda session: _bicep_validate_tool(session, file_store, exec_timeout_seconds),
         router=router,
         context=context,
-        agent_dir=agent_dir,
+        agent_id=agent_id,
         spec=bicep_sandbox_spec(image, image_id, egress=egress),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",

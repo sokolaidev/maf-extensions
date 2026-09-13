@@ -80,7 +80,7 @@ _ADDRESSED_ON_THE_SECOND_FAMILY = (
     'bridge|true|[{"Subnet":"172.20.0.0/16"},{"Subnet":"fd00::/64","Gateway":"fd00::1"}]'
 )
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
 _FREEZE_NAME = json.dumps(("unix:///fake.sock", _NAME))
@@ -1006,8 +1006,8 @@ class TestAcquireCreatesClosed:
     def test_a_delimiter_in_a_field_does_not_collide_with_a_shifted_split(self):
         """Length-prefixed hashing: `(scope='a|b', thread='c')` and `(scope='a', thread='b|c')`
         must not resolve to one container even though a `|`-join would make them identical."""
-        left = _container_name(SandboxKey(scope="a|b", thread_id="c", agent_dir="d"), "k")
-        right = _container_name(SandboxKey(scope="a", thread_id="b|c", agent_dir="d"), "k")
+        left = _container_name(SandboxKey(scope="a|b", thread_id="c", agent_id="d"), "k")
+        right = _container_name(SandboxKey(scope="a", thread_id="b|c", agent_id="d"), "k")
         assert left != right
 
     def test_the_keepalive_command_is_the_image_then_sleep_infinity(self):
@@ -3902,7 +3902,7 @@ class TestNarrowedDisposal:
             _machine(overrides={("ps",): _DockerResult(1, b"", "listing unavailable")})
         )
         key = _KEY
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         entered, progressed = threading.Event(), threading.Event()
         failure = DisposalFailure("refused", "delete refused")
@@ -3987,7 +3987,7 @@ class TestNarrowedDisposal:
         backend, fake = _backend_with(
             _machine(overrides={("ps",): _DockerResult(1, b"", "listing unavailable")})
         )
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         original = backend._purge
         entered, release = asyncio.Event(), asyncio.Event()
@@ -4067,7 +4067,7 @@ class TestNarrowedDisposal:
             ("rm", "-f"): _DockerResult(1, b"", "remove refused"),
         }
         backend, fake = _backend_with(_machine(overrides=overrides))
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
@@ -4198,13 +4198,13 @@ class TestDispose:
 
         assert backend._registry == {}, "the registry entry is gone"  # noqa: SLF001
         assert backend._undeleted == {  # noqa: SLF001
-            (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id): {_NAME}
+            (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id): {_NAME}
         }
 
     def test_a_removal_that_lands_clears_the_retry_record(self):
         backend, _ = _backend_with(_machine(running=[_NAME]))
         asyncio.run(backend.acquire(_KEY, _SPEC))
-        backend._undeleted[(_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)] = {_NAME}  # noqa: SLF001
+        backend._undeleted[(_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)] = {_NAME}  # noqa: SLF001
 
         assert asyncio.run(backend.dispose(_KEY)) is None
         assert backend._undeleted == {}  # noqa: SLF001
@@ -4220,7 +4220,7 @@ class TestDispose:
         `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
         listing = asyncio.Event()
         release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
 
         async def slow_listing(*args: str, **kwargs: object) -> _DockerResult:
             if args[:1] == ("ps",):
@@ -4252,7 +4252,7 @@ class TestDispose:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert asyncio.run(backend.dispose(_KEY)) is not None
 
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         assert backend._undeleted[prefix] == {_NAME}, "the name is owed a retry"  # noqa: SLF001
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert fake.matching("run") == [], "and the same container is handed back, not replaced"
@@ -4264,7 +4264,7 @@ class TestDisposeScope:
     @pytest.mark.parametrize("unlisted", [False, True])
     def test_scope_purge_retires_confirmed_records(self, retained, partial, unlisted, monkeypatch):
         backend, _ = _backend_with(_machine())
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         failure = DisposalFailure("unknown", "engine unavailable")
@@ -4298,7 +4298,7 @@ class TestDisposeScope:
         self, first_scope, second_scope, failure_first, monkeypatch
     ):
         backend, _ = _backend_with(_machine())
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         first_started, second_started = asyncio.Event(), asyncio.Event()
@@ -4354,7 +4354,7 @@ class TestDisposeScope:
     def test_failed_scope_purge_retains_kinds_for_a_narrowed_retry(self, cancel, monkeypatch):
         failed = _DockerResult(1, b"", "engine unavailable")
         backend, fake = _backend_with(_machine(overrides={("ps",): failed, ("rm", "-f"): failed}))
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         original = backend._docker
@@ -4415,7 +4415,7 @@ class TestDisposeScope:
         record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
         listing = asyncio.Event()
         release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_id, _KEY.call_id)
 
         async def slow_listing(*args: str, **kwargs: object) -> _DockerResult:
             if args[:1] == ("ps",):
@@ -4503,7 +4503,7 @@ class TestLabelValues:
         """The value a create writes is the value a purge filters on — same function, both sides."""
         from maf_sandbox_docker._backend import _label_value, _sandbox_labels
 
-        key = SandboxKey(scope="s" * 100, thread_id="t", agent_dir="a")
+        key = SandboxKey(scope="s" * 100, thread_id="t", agent_id="a")
         labels = _sandbox_labels(key, SandboxSpec(kind="bicep"))
         assert labels["maf-sandbox.scope"] == _label_value("s" * 100)
 
