@@ -60,7 +60,7 @@ An ACA application can instead be designed to call a separate Hyperlight worker 
 | Item | State | Tracking |
 | --- | --- | --- |
 | Initial runtime and reset backend | implemented with Windows WHP validation; umbrella remains open for the independent channels | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged) |
-| Linux x86-64 KVM and WSL2 | implemented with local WSL2 KVM validation; native Linux environment validation remains open | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (open) |
+| Linux x86-64 KVM and WSL2 | implemented with local WSL2 KVM validation; native Linux environment validation remains open | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (open); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
 | ACA and AKS hosting | investigation | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (open); [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
 | Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
