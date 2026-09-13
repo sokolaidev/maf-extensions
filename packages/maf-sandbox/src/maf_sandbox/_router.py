@@ -732,6 +732,8 @@ class SandboxRouter:
             where *nothing* registered clears it. A single backend below the floor is not an
             error there — it is one no spec is ever routed to, named by a warning at
             construction, and still reached by disposal, which is why it stays registered.
+        SandboxAttachedIdentityNotPermitted: at construction, when fixed selection chooses
+            a backend whose attached-authority sharing exceeds the host's ``max_identity_scope``.
         ValueError: at construction, when ``min_isolation`` is not a rung — or
             ``min_isolation_scope`` not a scope — this package recognises, raised by
             :class:`Isolation` and :class:`IsolationScope` themselves rather than surfacing as a
