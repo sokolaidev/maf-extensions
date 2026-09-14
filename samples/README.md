@@ -24,7 +24,7 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 ## How these are meant to be read
 
-The [experimental Hyperlight/ACAS CodeAct sample](experimental/hyperlight_acas_codeact/) selects Hyperlight for `APP_ENV=DEV`, `APP_ENV=CI`, or `CI=true`, and ACAS for other configured environments. It includes a model-free smoke mode for a WHP-capable Windows CI runner. Because Hyperlight is unreleased, this source-only example runs from the locked workspace; the numbered samples retain their PyPI installation contract. The rest of this page describes that numbered set.
+The [experimental Hyperlight/ACAS CodeAct sample](experimental/hyperlight_acas_codeact/) selects Hyperlight for `APP_ENV=DEV`, `APP_ENV=CI`, or `CI=true`, and ACAS for other configured environments. DEV uses the native Windows WHP or Linux KVM implementation; its model-free CI smoke runs on Linux KVM. Because Hyperlight is unreleased, this source-only example runs from the locked workspace; the numbered samples retain their PyPI installation contract. The rest of this page describes that numbered set.
 
 **Numbered directories.** Reading order is a property of the set, so it is written down rather than implied. Later samples assume you have read the earlier ones and skip what they already showed.
 

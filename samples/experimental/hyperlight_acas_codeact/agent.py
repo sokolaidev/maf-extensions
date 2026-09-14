@@ -1,7 +1,7 @@
 """Run the same CodeAct task on Hyperlight in DEV/CI and ACAS elsewhere.
 
 This source-only sample uses the workspace while Hyperlight is unreleased.
-See README.md for the environment contract and the WHP runner requirement.
+See README.md for the environment contract and native Windows/Linux prerequisites.
 """
 
 from __future__ import annotations
@@ -69,9 +69,12 @@ def build_backend(
 ) -> HyperlightSandboxBackend | AcasSandboxBackend:
     """Import and construct only the backend selected by the host."""
     if name == "hyperlight":
-        from maf_sandbox_hyperlight import HyperlightSandboxBackend
+        from maf_sandbox_hyperlight import HyperlightSandboxBackend, HyperlightSandboxConfig
 
-        return HyperlightSandboxBackend()
+        cgroup_root = env.get("MAF_HYPERLIGHT_CGROUP_ROOT") if sys.platform == "linux" else None
+        return HyperlightSandboxBackend(
+            HyperlightSandboxConfig(linux_cgroup_root=cgroup_root or None)
+        )
 
     from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
@@ -117,9 +120,11 @@ async def run(*, smoke: bool = False) -> int:
         return 2
 
     print(f"{MEASURED}Backend: {name}")
+    if name == "hyperlight":
+        print(f"{MEASURED}Hyperlight host: {sys.platform}")
     thread_id = conversation_id("hyperlight-acas-codeact")
     async with AsyncExitStack() as cleanup:
-        backend = build_backend(name, env)
+        backend = build_backend(name, os.environ)
         cleanup.push_async_callback(backend.aclose)
         # RESET enables warm Hyperlight reuse; ACAS satisfies this floor with DISPOSE.
         router = SandboxRouter([backend], min_cleanup=Cleanup.RESET)

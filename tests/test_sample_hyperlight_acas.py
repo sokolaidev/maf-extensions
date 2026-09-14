@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import yaml
 from maf_sandbox import CallerContext, Cleanup, SandboxRouter
 
 _SAMPLE = (
@@ -84,6 +85,25 @@ def test_real_backend_accepts_its_codeact_contract_without_acquisition(sample, n
         assert tools[0].name == "execute_code"
     finally:
         asyncio.run(backend.aclose())
+
+
+@pytest.mark.parametrize(
+    ("platform", "configured", "expected"),
+    [
+        ("linux", "/sys/fs/cgroup/sample-test", "/sys/fs/cgroup/sample-test"),
+        ("linux", "", None),
+        ("win32", "/sys/fs/cgroup/sample-test", None),
+    ],
+)
+def test_cgroup_configuration_follows_the_native_host(
+    sample, monkeypatch, platform, configured, expected
+):
+    import maf_sandbox_hyperlight
+
+    monkeypatch.setattr(sample.sys, "platform", platform)
+    monkeypatch.setattr(maf_sandbox_hyperlight, "HyperlightSandboxBackend", lambda config: config)
+    config = sample.build_backend("hyperlight", {"MAF_HYPERLIGHT_CGROUP_ROOT": configured})
+    assert config.linux_cgroup_root == expected
 
 
 @pytest.fixture
@@ -175,3 +195,25 @@ def test_acas_requires_configuration_before_constructing_a_backend(sample, monke
 def test_scaffold_matches_numbered_samples():
     canonical = _SAMPLE.parents[1] / "03_acas_codeact" / "_scaffold.py"
     assert (_SAMPLE / "_scaffold.py").read_bytes() == canonical.read_bytes()
+
+
+def test_live_sample_is_wired_only_into_linux_ci():
+    workflow = _SAMPLE.parents[2] / ".github" / "workflows" / "tests.yml"
+    jobs = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+    matching_jobs = [
+        job
+        for job in jobs.values()
+        if any(
+            "tests/test_sample_hyperlight_acas_live.py" in step.get("run", "")
+            for step in job["steps"]
+        )
+    ]
+    assert len(matching_jobs) == 1
+    job = matching_jobs[0]
+    assert job["runs-on"].startswith("ubuntu-")
+    command = next(
+        step["run"]
+        for step in job["steps"]
+        if "tests/test_sample_hyperlight_acas_live.py" in step.get("run", "")
+    )
+    assert "scripts/check_hyperlight_linux.py --live" in command
