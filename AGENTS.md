@@ -83,7 +83,7 @@ app  ->  maf_sandbox (protocol + router)  ->  a backend  ->  the sandbox
 
 A new backend implements `SandboxBackend`. A new workload — a "kind" — is written against the protocol only. `maf-sandbox`'s protocol modules import nothing but the standard library, and every module imports only what its own `pyproject.toml` declares. `TestZeroDependencies`, `TestNoDirectAzureImport` and `TestOnlyDeclaredDependencies` will fail if you cross those lines. If a change genuinely needs to, say so in the PR rather than working around the test.
 
-Each package is self-contained: its own metadata, `ruff`/`pyright`/`pytest` configuration, `LICENSE` and `CHANGELOG.md`. The workspace root does not reach into packages, and an sdist has no root to inherit from.
+Each package is self-contained: its own metadata, `ruff`/`pyright`/`pytest` configuration, `LICENSE` and `CHANGELOG.md`. An unreleased `0.0.0` package may omit `CHANGELOG.md` until release-please creates it in its first Release PR; see [Adding a package](RELEASING.md#adding-a-package). The workspace root does not reach into packages, and an sdist has no root to inherit from.
 
 A dependant's unit tests must not reference another dependant. Keep cross-package coverage in the repository-level `tests/` suite, where both packages are available. Opt-in live integration tests are separate from this unit-test boundary.
 
