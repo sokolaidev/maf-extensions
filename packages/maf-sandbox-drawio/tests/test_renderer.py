@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from math import cos, radians, sin
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,149 @@ def test_unknown_metadata_and_labels_never_enter_dot(dot: list[str]):
     assert not any(value in dot[0] for value in ("private", "Résumé", "document", "#dae8fc"))
 
 
+@pytest.mark.parametrize("wrapper_tag", ["object", "UserObject"])
+@pytest.mark.parametrize("preserve", [True, False])
+@pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
+def test_wrapped_cell_has_one_xml_id(wrapper_tag: str, preserve: bool):
+    source = model(positioned=True)
+    vertex = cell(source, "a")
+    source[0].remove(vertex)
+    wrapper = ET.SubElement(source[0], wrapper_tag, id="a", label="A", custom="keep")
+    wrapper.append(vertex)
+    result = ET.fromstring(convert(xml(source), preserve_layout=preserve))
+    saved = result.find(f".//{wrapper_tag}")
+    assert saved is not None and saved.attrib == wrapper.attrib
+    assert saved[0].get("id") is None
+    assert len(result.findall(".//mxCell[@vertex='1']")) == 2
+    assert cell(result, "e").get("source") == "a"
+    saved_model = result.find(".//mxGraphModel")
+    assert saved_model is not None
+    identifiers = [element.get("id") for element in saved_model.iter()]
+    identifiers = [identifier for identifier in identifiers if identifier is not None]
+    assert len(identifiers) == len(set(identifiers)) == 5
+
+
+@pytest.mark.parametrize("location", ["model", "root", "geometry", "point"])
+@pytest.mark.parametrize("preserve", [True, False])
+def test_duplicate_xml_ids_outside_cells_are_rejected(location: str, preserve: bool, dot):
+    source = model(positioned=True)
+    if location == "model":
+        element = source
+    elif location == "root":
+        element = source[0]
+    elif location == "geometry":
+        element = geometry(source, "a")
+    else:
+        element = ET.SubElement(geometry(source, "a"), "mxPoint", {"as": "offset"})
+    element.set("id", "b")
+    with pytest.raises(DiagramError, match="Duplicate XML ID"):
+        convert(xml(source), preserve_layout=preserve)
+    assert not dot
+
+
+@pytest.mark.parametrize(
+    "tag,role,attribute,value",
+    [
+        ("Array", "points", "length", "1000000000"),
+        ("Array", "points", "x", "1"),
+        ("mxGeometry", "geometry", "points", "metadata"),
+        ("mxGeometry", "geometry", "sourcePoint", "metadata"),
+        ("mxGeometry", "geometry", "id", "geometry-id"),
+        ("mxPoint", "offset", "id", "point-id"),
+        ("mxPoint", "offset", "width", "160"),
+        ("mxRectangle", "alternateBounds", "id", "bounds-id"),
+        ("mxRectangle", "alternateBounds", "relative", "1"),
+    ],
+)
+@pytest.mark.parametrize("preserve", [True, False])
+def test_structural_geometry_attributes_are_restricted(tag, role, attribute, value, preserve, dot):
+    source = model(positioned=True)
+    element = geometry(source, "a")
+    if tag != "mxGeometry":
+        element = ET.SubElement(element, tag, {"as": role})
+    element.set(attribute, value)
+    with pytest.raises(DiagramError, match="unsupported .* attributes"):
+        convert(xml(source), preserve_layout=preserve)
+    assert not dot
+
+
+@pytest.mark.parametrize("role", ["sourcePoint", "1000000000", "length"])
+def test_waypoints_cannot_address_array_properties(role: str, dot):
+    source = model(positioned=True)
+    edge_geometry = ET.SubElement(cell(source, "e"), "mxGeometry", {"as": "geometry"})
+    points = ET.SubElement(edge_geometry, "Array", {"as": "points"})
+    ET.SubElement(points, "mxPoint", {"as": role, "x": "150", "y": "150"})
+    with pytest.raises(DiagramError, match="invalid or duplicate geometry child"):
+        convert(xml(source))
+    assert not dot
+
+
+def test_supported_geometry_children_are_preserved(dot):
+    source = model(positioned=True)
+    node_geometry = geometry(source, "a")
+    ET.SubElement(node_geometry, "mxPoint", {"as": "offset", "x": "10", "y": "20"})
+    ET.SubElement(
+        node_geometry,
+        "mxRectangle",
+        {"as": "alternateBounds", "x": "0", "y": "0", "width": "100", "height": "40"},
+    )
+    edge_geometry = ET.SubElement(
+        cell(source, "e"), "mxGeometry", {"as": "geometry", "relative": "1"}
+    )
+    for role in ("sourcePoint", "targetPoint", "offset"):
+        ET.SubElement(edge_geometry, "mxPoint", {"as": role, "x": "150", "y": "150"})
+    points = ET.SubElement(edge_geometry, "Array", {"as": "points"})
+    ET.SubElement(points, "mxPoint", x="200", y="200")
+    result = ET.fromstring(convert(xml(source)))
+    assert not dot
+    for identifier in ("a", "b", "e"):
+        assert xml(geometry(result, identifier)) == xml(geometry(source, identifier))
+
+
+@pytest.mark.parametrize("value", ["1_60", "١٦٠", "１６０", "160\u00a0"])
+@pytest.mark.parametrize("location", ["vertex", "point", "bounds"])
+@pytest.mark.parametrize("preserve", [True, False])
+def test_non_xml_numeric_syntax_is_rejected(value: str, location: str, preserve: bool, dot):
+    source = model(positioned=True)
+    element = geometry(source, "a")
+    field = "width"
+    if location == "point":
+        element = ET.SubElement(element, "mxPoint", {"as": "offset"})
+        field = "x"
+    elif location == "bounds":
+        element = ET.SubElement(element, "mxRectangle", {"as": "alternateBounds"})
+    element.set(field, value)
+    with pytest.raises(DiagramError, match="ASCII decimal"):
+        convert(xml(source), preserve_layout=preserve)
+    assert not dot
+
+
+@pytest.mark.parametrize("value", ["160", "+160", "160.", ".160e3", " 1.6E+2\t"])
+def test_xml_numeric_syntax_keeps_supplied_format(value: str, dot):
+    source = model(positioned=True)
+    geometry(source, "a").set("width", value)
+    result = ET.fromstring(convert(xml(source)))
+    assert not dot
+    assert geometry(result, "a").get("width") == value
+
+
+@pytest.mark.parametrize("preserve,positioned", [(True, True), (True, False), (False, True)])
+def test_port_styles_follow_layout_policy(preserve: bool, positioned: bool, dot):
+    source = model(positioned=positioned)
+    original = "sourcePort=b;targetPort=a;sourcePort=b;strokeColor=#123456;endArrow=block;"
+    cell(source, "e").set("style", original)
+    result = ET.fromstring(convert(xml(source), preserve_layout=preserve))
+    edge = cell(result, "e")
+    assert edge.get("source") == "a" and edge.get("target") == "b"
+    if preserve and positioned:
+        assert edge.get("style") == original
+    else:
+        assert "sourcePort" not in edge.attrib["style"]
+        assert "targetPort" not in edge.attrib["style"]
+        assert "strokeColor=#123456" in edge.attrib["style"]
+        assert "endArrow=block" in edge.attrib["style"]
+
+
 def test_nested_geometry_is_preserved_but_auto_refuses_it(dot: list[str]):
     source = model(positioned=True)
     cell(source, "b").set("parent", "a")
@@ -269,6 +413,71 @@ def test_real_graphviz_cycles_layers_self_loops_parallel_and_disconnected_nodes(
         assert len(geometry(result, identifier).findall("Array/mxPoint")) >= 2
         for endpoint in ("source", "target"):
             assert cell(result, identifier).get(endpoint) == cell(source, identifier).get(endpoint)
+
+
+@pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
+@pytest.mark.parametrize("direction", ["TB", "LR"])
+@pytest.mark.parametrize("angle", [45, 90, -90, 135])
+def test_real_graphviz_separates_rotated_vertices(direction: str, angle: float):
+    source = model(positioned=True)
+    width, height = (500, 80) if direction == "TB" else (80, 500)
+    for identifier in ("a", "b"):
+        geometry(source, identifier).set("width", str(width))
+        geometry(source, identifier).set("height", str(height))
+        cell(source, identifier).set("style", f"rotation={angle};fillColor=#dae8fc;")
+    result = ET.fromstring(convert(xml(source), preserve_layout=False, direction=direction))
+    bounds: list[tuple[float, float, float, float]] = []
+    for identifier in ("a", "b"):
+        saved = geometry(result, identifier)
+        assert saved.get("width") == str(width) and saved.get("height") == str(height)
+        assert cell(result, identifier).get("style") == cell(source, identifier).get("style")
+        cx = float(saved.attrib["x"]) + width / 2
+        cy = float(saved.attrib["y"]) + height / 2
+        corners = [
+            (
+                cx + x * cos(radians(angle)) - y * sin(radians(angle)),
+                cy + x * sin(radians(angle)) + y * cos(radians(angle)),
+            )
+            for x in (-width / 2, width / 2)
+            for y in (-height / 2, height / 2)
+        ]
+        bounds.append(
+            (
+                min(x for x, _ in corners),
+                min(y for _, y in corners),
+                max(x for x, _ in corners),
+                max(y for _, y in corners),
+            )
+        )
+    first, second = bounds
+    assert (
+        first[2] <= second[0]
+        or second[2] <= first[0]
+        or first[3] <= second[1]
+        or second[3] <= first[1]
+    )
+
+
+@pytest.mark.parametrize(
+    "style", ["rotation=90;rotation=none;", "rotation=90;rotation=0;", "rotation=;"]
+)
+@pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
+def test_rotation_uses_last_style_value(style: str):
+    source = model()
+    cell(source, "a").set("style", style)
+    result = ET.fromstring(convert(xml(source)))
+    unrotated = ET.fromstring(convert(xml(model())))
+    for identifier in ("a", "b"):
+        assert geometry(result, identifier).attrib == geometry(unrotated, identifier).attrib
+
+
+@pytest.mark.parametrize("value", ["NaN", "inf", "9_0", "９０"])
+def test_automatic_rotation_needs_an_ascii_finite_number(value: str, dot):
+    source = model()
+    cell(source, "a").set("style", f"rotation={value};")
+    with pytest.raises(DiagramError, match="Vertex rotation"):
+        convert(xml(source))
+    assert not dot
 
 
 def test_layout_timeout_and_output_flood_are_bounded(monkeypatch: pytest.MonkeyPatch):

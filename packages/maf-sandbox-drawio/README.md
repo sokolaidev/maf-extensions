@@ -56,7 +56,7 @@ Supply an uncompressed `mxfile` or a bare `mxGraphModel`. For example, this inpu
 </mxGraphModel>
 ```
 
-Labels, styles, IDs, object metadata, layer membership, and endpoint references survive conversion. The converter writes an uncompressed UTF-8 file with native vertices and connectors. It does not render a preview or fetch images, links, fonts, or other resources mentioned in the XML. Such references remain in the artifact for its eventual consumer; XML validation is not content sanitization.
+Labels, styles, IDs, object metadata, layer membership, and endpoint references survive conversion. A matching ID repeated on an object wrapper's inner cell is retained on the wrapper only; other duplicate XML IDs within a page are rejected. The converter writes an uncompressed UTF-8 file with native vertices and connectors. It does not render a preview or fetch images, links, fonts, or other resources mentioned in the XML. Such references remain in the artifact for its eventual consumer; XML validation is not content sanitization.
 
 ## Layout policy
 
@@ -68,13 +68,13 @@ Labels, styles, IDs, object metadata, layer membership, and endpoint references 
 
 The decision is per page. A vertex needs an `mxGeometry` with positive width and height; omitted x/y coordinates default to zero. Coordinates at the origin and overlapping shapes are valid supplied layout. Missing connector waypoints do not trigger layout. An attached edge without geometry receives the standard relative edge geometry without moving its vertices. Missing dimensions trigger layout; invalid supplied dimensions or non-finite coordinates are errors in both modes.
 
-Automatic layout supports **flat flowcharts and component graphs**, including multiple layers, disconnected nodes, cycles, self-loops, and parallel edges. All layer vertices participate in one layout, retaining their layer membership. Graphviz determines placement and polyline connector routes. Supplied dimensions are retained and missing dimensions default to 160 by 80 units. `direction="TB"` flows top to bottom; `"LR"` flows left to right. Routing styles and old waypoints are replaced, and embedded `childLayout` hints are removed on automatically laid-out pages. Colors, arrowheads and other appearance attributes remain.
+Automatic layout supports **flat flowcharts and component graphs**, including multiple layers, disconnected nodes, cycles, self-loops, and parallel edges. All layer vertices participate in one layout, retaining their layer membership. Graphviz determines placement and polyline connector routes, reserving each vertex's rotated bounds when its style sets `rotation`. Supplied dimensions and rotation are retained and missing dimensions default to 160 by 80 units. `direction="TB"` flows top to bottom; `"LR"` flows left to right. Routing styles, including `sourcePort` and `targetPort`, and old waypoints are replaced; embedded `childLayout` hints are removed on automatically laid-out pages. Colors, arrowheads and other appearance attributes remain.
 
 Nested groups, relative ports, edge-label vertices, collapsed cells and detached edges require complete supplied geometry and `preserve_layout=True`. Automatic mode rejects those structures with a diagnostic. It does not infer sequence, BPMN, or ER-specific layout rules, fit arbitrary labels, or promise collision-free text. Large labels may need explicit dimensions. Preservation retains geometry values, not the exact XML byte formatting.
 
 ## Validation and limits
 
-Validation checks XML structure, unique page/cell IDs, parent references and cycles, edge endpoints, and finite geometry before and after layout. DTDs, entity declarations, compressed pages, and unsupported cell/geometry elements are refused. A malformed later page prevents the whole output from being written.
+Validation checks XML structure, unique page/XML IDs, parent references and cycles, edge endpoints, and finite geometry before and after layout. Numbers use ASCII decimal or scientific notation; underscores and Unicode digits are refused. Geometry elements accept only their supported attributes: position/dimensions, the appropriate `as` role, and `relative` on `mxGeometry`. Waypoint arrays contain unnamed points and cannot declare their own length. Put custom metadata on object wrappers. DTDs, entity declarations, compressed pages, and unsupported cell/geometry elements are refused. A malformed later page prevents the whole output from being written.
 
 Input is capped at 1 MiB, 8 pages and 1000 cells per page, with XML depth and element limits. Automatic layout accepts up to 200 vertices and 600 edges per page. Output is capped at 2 MiB and one file. The host sets `exec_timeout_seconds` (default 60, maximum 300); layout shares one deadline across pages and bounds retained subprocess output. Failure diagnostics are limited to 2048 characters and remain untrusted. Transport details stay in host logs.
 

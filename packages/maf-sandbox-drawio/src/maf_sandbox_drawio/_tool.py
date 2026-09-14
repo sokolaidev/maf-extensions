@@ -106,13 +106,15 @@ def _create_tool(
         Supply an mxfile containing diagram/mxGraphModel/root, or a bare mxGraphModel.
         Each page needs structural mxCell IDs 0 and 1 (parent=0), unique vertex IDs with
         parent=1 and vertex=1, and edge cells with edge=1 and source/target vertex IDs.
-        Labels use value or object wrappers. XML-escape attribute values. DTDs and entity
-        declarations are refused. The input limit is 1 MiB, 8 pages, and 1000 cells per page.
+        Labels use value or object wrappers, with IDs on the wrapper. XML-escape values.
+        DTDs and entity declarations are refused. The input limit is 1 MiB, 8 pages, and
+        1000 cells per page.
 
         Missing geometry always gets automatic layout, using 160x80 default vertex sizes.
         Automatic layout supports flat graphs up to 200 vertices and 600 edges per page.
         Groups, relative ports and edge labels need complete supplied geometry and layout
-        preservation. Supplied mxGeometry dimensions must be positive and numbers finite.
+        preservation. Supplied mxGeometry dimensions must be positive; use finite ASCII
+        decimal or scientific numbers. Put custom metadata on object wrappers, not geometry.
         Correct malformed XML or invalid references using the returned diagnostic and retry.
 
         The result is a saved-file reference, not a preview of the diagram.

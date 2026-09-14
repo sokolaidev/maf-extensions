@@ -143,6 +143,19 @@ def test_malformed_xml_delivers_a_diagnostic_and_no_file(tmp_path: Path):
     assert backend.disposed
 
 
+@pytest.mark.parametrize("preserve", [True, False])
+def test_structural_array_expansion_is_refused_before_delivery(tmp_path: Path, preserve: bool):
+    source = ET.fromstring(_XML)
+    geometry = source.find(".//mxGeometry")
+    assert geometry is not None
+    ET.SubElement(geometry, "Array", {"as": "points", "length": "1000000000"})
+    tool, backend = attach(ConverterSandbox(), tmp_path, preserve_layout=preserve)
+    result = invoke(tool, ET.tostring(source, encoding="unicode"))
+    assert "unsupported Array attributes" in result
+    assert not (tmp_path / "diagram.drawio").exists()
+    assert backend.disposed
+
+
 def test_oversized_input_does_not_acquire(tmp_path: Path):
     sandbox = ConverterSandbox()
     tool, backend = attach(sandbox, tmp_path)

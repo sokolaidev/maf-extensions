@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,13 @@ _MAX_CELLS = 1000
 _MAX_PAGES = 8
 _PIXELS_PER_INCH = 96
 _MARGIN = 40
+_DECIMAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_GEOMETRY_ATTRIBUTES = {
+    "mxGeometry": {"as", "x", "y", "width", "height", "relative"},
+    "mxRectangle": {"as", "x", "y", "width", "height"},
+    "mxPoint": {"as", "x", "y"},
+    "Array": {"as"},
+}
 
 
 class DiagramError(ValueError):
@@ -29,10 +37,9 @@ class DiagramError(ValueError):
 
 
 def _number(value: str, field: str) -> float:
-    try:
-        result = float(value)
-    except ValueError as exc:
-        raise DiagramError(f"{field} must be a finite number") from exc
+    if _DECIMAL.fullmatch(value.strip(" \t\r\n")) is None:
+        raise DiagramError(f"{field} must be a finite ASCII decimal number")
+    result = float(value)
     if not math.isfinite(result) or abs(result) > 1_000_000:
         raise DiagramError(f"{field} must be finite and within +/-1000000")
     return result
@@ -98,6 +105,8 @@ def _cells(model: ET.Element) -> dict[str, ET.Element]:
             cell, identifier = item[0], item.get("id")
             if cell.tag != "mxCell" or cell.get("id") not in {None, identifier}:
                 raise DiagramError("An object must wrap one mxCell with the same ID or no ID")
+            # draw.io caches every XML ID, including IDs inside object wrappers.
+            cell.attrib.pop("id", None)
         else:
             raise DiagramError("root accepts mxCell and object/UserObject wrappers only")
         if not identifier or len(identifier) > 128:
@@ -107,6 +116,13 @@ def _cells(model: ET.Element) -> dict[str, ET.Element]:
         cells[identifier] = cell
     if len(cells) > _MAX_CELLS:
         raise DiagramError("A page may contain at most 1000 cells")
+    xml_ids: set[str] = set()
+    for element in model.iter():
+        identifier = element.get("id")
+        if identifier is not None:
+            if identifier in xml_ids:
+                raise DiagramError(f"Duplicate XML ID {identifier!r}")
+            xml_ids.add(identifier)
     if "0" not in cells or "1" not in cells or cells["1"].get("parent") != "0":
         raise DiagramError("Structural cells 0 and 1 are required; cell 1 must have parent 0")
     if cells["0"].get("parent") is not None:
@@ -158,14 +174,23 @@ def _validate_geometry(identifier: str, cell: ET.Element, cells: dict[str, ET.El
             and not len(child)
             or child.tag == "Array"
             and role == "points"
-            and all(point.tag == "mxPoint" and not len(point) for point in child)
+            and all(
+                point.tag == "mxPoint" and not len(point) and point.get("as") in {None, ""}
+                for point in child
+            )
         )
         if not valid or role in child_roles:
             raise DiagramError(f"Cell {identifier!r} has an invalid or duplicate geometry child")
         child_roles.add(role)
     for element in geometry.iter():
-        if element.tag not in {"mxGeometry", "mxPoint", "mxRectangle", "Array"}:
+        allowed = _GEOMETRY_ATTRIBUTES.get(element.tag)
+        if allowed is None:
             raise DiagramError(f"Unsupported geometry element in cell {identifier!r}")
+        unexpected = element.attrib.keys() - allowed
+        if unexpected:
+            raise DiagramError(
+                f"Cell {identifier!r}: unsupported {element.tag} attributes {sorted(unexpected)!r}"
+            )
         for field in ("x", "y", "width", "height"):
             if field in element.attrib:
                 number = _number(element.attrib[field], f"Cell {identifier!r}.{field}")
@@ -257,6 +282,15 @@ def _style_without(style: str, keys: set[str]) -> str:
     return ";".join(part for part in style.split(";") if part.split("=", 1)[0] not in keys)
 
 
+def _rotation(cell: ET.Element) -> float:
+    value = "0"
+    for part in cell.get("style", "").split(";"):
+        key, separator, setting = part.partition("=")
+        if key == "rotation" and separator:
+            value = setting if setting and setting != "none" else "0"
+    return math.radians(_number(value, "Vertex rotation") % 360)
+
+
 def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> None:
     vertices = {key: cell for key, cell in cells.items() if cell.get("vertex") == "1"}
     edges = [cell for cell in cells.values() if cell.get("edge") == "1"]
@@ -292,9 +326,13 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
         width = float(geometry.get("width", "160")) if geometry is not None else 160.0
         height = float(geometry.get("height", "80")) if geometry is not None else 80.0
         dimensions[names[key]] = (width, height)
+        angle = _rotation(cell)
+        cosine, sine = abs(math.cos(angle)), abs(math.sin(angle))
+        bounds_width = width * cosine + height * sine
+        bounds_height = width * sine + height * cosine
         lines.append(
-            f"{names[key]} [width={width / _PIXELS_PER_INCH:.6f}, "
-            f"height={height / _PIXELS_PER_INCH:.6f}];"
+            f"{names[key]} [width={bounds_width / _PIXELS_PER_INCH:.6f}, "
+            f"height={bounds_height / _PIXELS_PER_INCH:.6f}];"
         )
     by_pair: dict[tuple[str, str], deque[ET.Element]] = defaultdict(deque)
     for cell in edges:
@@ -371,6 +409,8 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
                 "exitDy",
                 "entryPerimeter",
                 "exitPerimeter",
+                "sourcePort",
+                "targetPort",
             }
             cell.set(
                 "style",
