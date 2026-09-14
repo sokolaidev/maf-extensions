@@ -14,6 +14,7 @@ from textual.events import Resize
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Label, Static
 
+from ._client import PartialInventoryError
 from ._control import SandboxControl
 from ._models import DisposalStatus, SandboxRecord, SandboxState
 
@@ -256,15 +257,19 @@ class SandboxConsole(App[None]):
 
     def on_resize(self, event: Resize) -> None:
         """Stack details below the inventory when a side-by-side console would clip them."""
-        self.query_one("#body").set_class(event.size.width < 100, "compact")
+        self.query_one("#body").set_class(event.size.width < 103, "compact")
 
     def action_refresh(self) -> None:
         self.run_worker(self._refresh(), group="inventory", exclusive=True)
 
     async def _refresh(self) -> None:
         status = self.query_one("#status", Static)
+        partial: PartialInventoryError | None = None
         try:
             snapshot = await self.control.list_sandboxes()
+        except PartialInventoryError as error:
+            snapshot = error.records
+            partial = error
         except Exception as error:
             status.update(Text(f"Control endpoint unavailable · {error}", style="#ff6b6b"))
             return
@@ -285,7 +290,16 @@ class SandboxConsole(App[None]):
             self.selected_id = snapshot[0].instance_id if snapshot else None
         self._show_selected()
         noun = "instance" if len(snapshot) == 1 else "instances"
-        status.update(f"{len(snapshot)} live {noun} · refreshed just now")
+        message = f"{len(snapshot)} live {noun} · refreshed just now"
+        if partial is None:
+            status.update(message)
+        else:
+            status.update(
+                Text(
+                    f"{message} · {len(partial.errors)} host(s) unavailable",
+                    style="#f2c14e",
+                )
+            )
 
     @on(DataTable.RowHighlighted)
     def row_highlighted(self, event: DataTable.RowHighlighted) -> None:

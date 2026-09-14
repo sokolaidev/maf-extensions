@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
+import hashlib
 import ipaddress
 import json
 import math
@@ -25,19 +27,25 @@ PROTOCOL_VERSION = 1
 _CONTROL_FAILURE_STATUS = HTTPStatus(500)
 
 
+def _windows_runtime_directory() -> Path:
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / "sokolai" / "maf-sandbox-tui"
+    identity = hashlib.sha256(getpass.getuser().encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"maf-sandbox-tui-{identity}"
+
+
 def runtime_directory() -> Path:
     """Return the per-user directory used for local endpoint discovery."""
     configured = os.environ.get("MAF_SANDBOX_TUI_RUNTIME_DIR")
     if configured:
         return Path(configured)
     if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            return Path(local) / "sokolai" / "maf-sandbox-tui"
+        return _windows_runtime_directory()
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime:
         return Path(runtime) / "maf-sandbox-tui"
-    user_id = getattr(os, "getuid", os.getpid)()
+    user_id = os.getuid()
     return Path(tempfile.gettempdir()) / f"maf-sandbox-tui-{user_id}"
 
 
@@ -92,7 +100,7 @@ class EndpointManifest:
             raise ValueError("endpoint manifest identity fields must be nonempty strings")
         if isinstance(process_id, bool) or not isinstance(process_id, int):
             raise ValueError("endpoint manifest process_id must be an integer")
-        if version != PROTOCOL_VERSION:
+        if isinstance(version, bool) or not isinstance(version, int) or version != PROTOCOL_VERSION:
             raise ValueError(f"unsupported control protocol version {version!r}")
         return cls(
             cast("str", source_id),

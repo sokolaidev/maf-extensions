@@ -13,7 +13,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from ._control import SandboxControl
 from ._models import DisposalResult, DisposalStatus, PurgeResult, PurgeStatus, SandboxRecord
-from ._server import EndpointManifest, runtime_directory
+from ._server import PROTOCOL_VERSION, EndpointManifest, runtime_directory
 
 
 class ControlEndpointError(RuntimeError):
@@ -22,6 +22,15 @@ class ControlEndpointError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class PartialInventoryError(ControlEndpointError):
+    """Some control endpoints failed while others returned inventory."""
+
+    def __init__(self, records: Sequence[SandboxRecord], errors: Sequence[str]) -> None:
+        super().__init__(f"inventory is incomplete on {len(errors)} host(s)")
+        self.records = tuple(records)
+        self.errors = tuple(errors)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -71,8 +80,12 @@ class HttpControl:
         if not isinstance(value, dict):
             raise ControlEndpointError("control endpoint returned an incompatible health record")
         data = cast("dict[object, object]", value)
-        if data.get("protocol_version") != 1 or (
-            self.manifest.process_id != 0 and data.get("source_id") != self.manifest.source_id
+        version = data.get("protocol_version")
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version != PROTOCOL_VERSION
+            or (self.manifest.process_id != 0 and data.get("source_id") != self.manifest.source_id)
         ):
             raise ControlEndpointError("control endpoint returned an incompatible health record")
 
@@ -159,12 +172,18 @@ class CompositeControl:
             *(control.list_sandboxes() for control in self._controls), return_exceptions=True
         )
         records: list[SandboxRecord] = []
+        errors: list[str] = []
         for snapshot in snapshots:
-            if not isinstance(snapshot, BaseException):
+            if isinstance(snapshot, BaseException):
+                errors.append(str(snapshot))
+            else:
                 records.extend(snapshot)
-        return tuple(
+        ordered = tuple(
             sorted(records, key=lambda item: (item.source_id, item.logical_name, item.kind))
         )
+        if errors:
+            raise PartialInventoryError(ordered, errors)
+        return ordered
 
     async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
         """Find one exact instance across responsive endpoints."""

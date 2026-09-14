@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Static
 
-from maf_sandbox_tui import MemoryControl, SandboxConsole
+from maf_sandbox_tui import MemoryControl, SandboxConsole, SandboxRecord
+from maf_sandbox_tui._client import PartialInventoryError
 
 
 def test_console_lists_details_and_disposes_after_confirmation():
@@ -17,6 +18,7 @@ def test_console_lists_details_and_disposes_after_confirmation():
         async with app.run_test(size=(128, 38)) as pilot:
             await pilot.pause()
             table = app.query_one("#sandboxes", DataTable)
+            assert not app.query_one("#body").has_class("compact")
             assert table.row_count == 3
             assert app.selected_id is not None
             selected = app.selected_id
@@ -36,7 +38,7 @@ def test_console_stacks_details_in_a_standard_width_terminal():
     async def check() -> None:
         app = SandboxConsole(MemoryControl.demo(now=1_000), refresh_interval=3_600)
 
-        async with app.run_test(size=(80, 30)) as pilot:
+        async with app.run_test(size=(102, 30)) as pilot:
             await pilot.pause()
             body = app.query_one("#body")
             inventory = app.query_one("#inventory-panel")
@@ -47,5 +49,23 @@ def test_console_stacks_details_in_a_standard_width_terminal():
             assert detail.region.y > inventory.region.y
             assert detail.region.width > 0
             assert detail.region.height > 0
+
+    asyncio.run(check())
+
+
+def test_console_surfaces_partial_inventory():
+    class PartialControl(MemoryControl):
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            records = await super().list_sandboxes()
+            raise PartialInventoryError(records, ("host stopped",))
+
+    async def check() -> None:
+        control = PartialControl(await MemoryControl.demo(now=1_000).list_sandboxes())
+        app = SandboxConsole(control, refresh_interval=3_600)
+
+        async with app.run_test(size=(128, 38)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#sandboxes", DataTable).row_count == 3
+            assert "1 host(s) unavailable" in str(app.query_one("#status", Static).render())
 
     asyncio.run(check())

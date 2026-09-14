@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import json
+import tempfile
 from dataclasses import dataclass, replace
 from typing import cast
 
 import pytest
 from maf_sandbox import SandboxKey, SandboxRouter, ScopePurge
 
+import maf_sandbox_tui._server as server_module
 from maf_sandbox_tui import (
     CompositeControl,
+    ControlEndpointError,
     DisposalStatus,
     EndpointManifest,
     HttpControl,
@@ -23,7 +27,7 @@ from maf_sandbox_tui import (
     SandboxRecord,
     SandboxState,
 )
-from maf_sandbox_tui._client import read_manifests
+from maf_sandbox_tui._client import PartialInventoryError, read_manifests
 
 
 @dataclass(frozen=True)
@@ -50,7 +54,7 @@ class _Inventory:
 
 
 class _Router:
-    def __init__(self, inventory: _Inventory, replacement: _Info) -> None:
+    def __init__(self, inventory: _Inventory, replacement: _Info | None) -> None:
         self.inventory = inventory
         self.replacement = replacement
         self.calls: list[tuple[SandboxKey, str, str | None, float]] = []
@@ -65,7 +69,7 @@ class _Router:
         timeout: float,
     ) -> bool:
         self.calls.append((key, kind, instance_id, timeout))
-        self.inventory.records = [self.replacement]
+        self.inventory.records = [] if self.replacement is None else [self.replacement]
         return True
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
@@ -127,13 +131,30 @@ def test_composite_control_cannot_confirm_a_purge_without_hosts():
     asyncio.run(check())
 
 
-def test_hyperlight_control_routes_exact_generation_and_preserves_replacement():
+def test_composite_control_preserves_partial_inventory_errors():
+    class FailingControl(MemoryControl):
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            raise ControlEndpointError("host stopped")
+
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        control = CompositeControl((MemoryControl([record]), FailingControl()))
+
+        with pytest.raises(PartialInventoryError, match="incomplete") as raised:
+            await control.list_sandboxes()
+
+        assert raised.value.records == (record,)
+        assert raised.value.errors == ("host stopped",)
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_routes_exact_generation():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         target = _Info(key, "codeact", "generation-a")
-        replacement = replace(target, instance_id="generation-b")
         inventory = _Inventory([target])
-        router = _Router(inventory, replacement)
+        router = _Router(inventory, None)
         control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
 
         listed = await control.list_sandboxes()
@@ -143,6 +164,26 @@ def test_hyperlight_control_routes_exact_generation_and_preserves_replacement():
 
         assert result.status is DisposalStatus.DISPOSED
         assert router.calls == [(key, "codeact", "generation-a", 3.0)]
+        assert await inventory.list_sandboxes() == ()
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_reports_a_concurrent_replacement_as_stale():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        replacement = replace(target, instance_id="generation-b")
+        inventory = _Inventory([target])
+        router = _Router(inventory, replacement)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
+
+        assert result.status is DisposalStatus.NOT_FOUND
+        assert (
+            result.message == "The sandbox generation changed before disposal could be confirmed."
+        )
         assert [item.instance_id for item in await inventory.list_sandboxes()] == ["generation-b"]
 
     asyncio.run(check())
@@ -295,6 +336,17 @@ def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
     asyncio.run(check())
 
 
+def test_health_refuses_a_boolean_protocol_version():
+    class BooleanVersionControl(HttpControl):
+        def _request(self, method: str, path: str, *, timeout: float | None = None) -> object:
+            del method, path, timeout
+            return {"protocol_version": True, "source_id": "host"}
+
+    manifest = EndpointManifest("host", "http://127.0.0.1:1", 1)
+    with pytest.raises(ControlEndpointError, match="incompatible health"):
+        asyncio.run(BooleanVersionControl(manifest).health())
+
+
 def test_host_timeout_caps_a_shorter_client_purge_timeout(tmp_path):
     class RecordingControl(MemoryControl):
         def __init__(self) -> None:
@@ -353,4 +405,19 @@ def test_discovery_ignores_incompatible_and_malformed_files(tmp_path):
     incompatible = EndpointManifest("old", "http://127.0.0.1:1", 42).to_json()
     incompatible["protocol_version"] = 2
     (tmp_path / "old.json").write_text(json.dumps(incompatible), encoding="utf-8")
+    incompatible["protocol_version"] = True
+    (tmp_path / "boolean.json").write_text(json.dumps(incompatible), encoding="utf-8")
     assert read_manifests(tmp_path) == ()
+
+
+def test_windows_runtime_fallback_is_stable_per_user(monkeypatch, tmp_path):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(getpass, "getuser", lambda: "domain\\operator")
+
+    first = server_module._windows_runtime_directory()
+    assert server_module._windows_runtime_directory() == first
+    assert first.parent == tmp_path
+
+    monkeypatch.setattr(getpass, "getuser", lambda: "domain\\other")
+    assert server_module._windows_runtime_directory() != first
