@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-hyperlight"
-version = "0.0.0"
+version = "0.1.0"
 description = "Hyperlight Python micro-VMs on Windows WHP and Linux KVM with bounded execution and snapshot reset."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
