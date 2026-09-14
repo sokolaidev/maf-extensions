@@ -33,7 +33,7 @@ Dedicated D4 exposed the CPU `svm` flag while Consumption exposed neither `svm` 
 | Identities tested | UID/GID 0 and 65534, each with empty supplementary groups; separate disposable processes |
 | Worker environment | Only executable search path, private home/cache/temp directories and the surrogate setting; no application environment or credentials inherited |
 | Image pull | Temporary user-assigned identity with only an `AcrPull` assignment on the test registry; no guest host-tool registration or file channels |
-| Probe source SHA-256 | `b7e791cad81aa382f8f22749b594094e93df4ffc87cf4314b3a6a3ce6e6a637c` |
+| Measured probe source SHA-256 | `b7e791cad81aa382f8f22749b594094e93df4ffc87cf4314b3a6a3ce6e6a637c` |
 | Consumption observation window, UTC | `2026-09-13T23:37:44.9623243+00:00` through `2026-09-13T23:37:45.4394877+00:00` |
 | Dedicated observation window, UTC | `2026-09-13T23:39:00.8695743+00:00` through `2026-09-13T23:39:01.3549786+00:00` |
 
@@ -65,7 +65,9 @@ The Dedicated console endpoint omitted the fixed opening `{"stage": ` from each 
 
 ## Reproduce
 
-The [probe](hyperlight-aca-probe.py) and [Dockerfile](hyperlight-aca-probe.Dockerfile) are committed together. From the repository root, build and check the image:
+The [probe](hyperlight-aca-probe.py) and [Dockerfile](hyperlight-aca-probe.Dockerfile) are committed together. The source used for the ACA measurements above is pinned at [d23b24f](https://github.com/sokolaidev/maf-extensions/blob/d23b24f1c81df9143090e843f486afe7d08086c2/docs/sandbox/research/hyperlight-aca-probe.py), matching the recorded source hash. The current probe additionally requires a matching completion marker from every child and exits nonzero on incomplete collection. That collector revision is covered by regression tests and a local Docker control; the ACA observations and image digests above belong to the pinned measured version.
+
+From the repository root, build and check the image:
 
 ```powershell
 docker build --platform linux/amd64 -f docs/sandbox/research/hyperlight-aca-probe.Dockerfile -t hyperlight-aca-probe:1229 docs/sandbox/research
@@ -107,7 +109,7 @@ foreach ($case in @(@{name='hl-probe-consumption';profile='Consumption'}, @{name
 }
 ```
 
-Wait for each actual replica's `probe` container to be running, not merely the app resource's `Succeeded` state. Record the deployed image, profile, resource limits and revision, then collect each revision's console with `az containerapp logs show --container probe --revision <revision> --tail 300 --format json`. If the console transport changes the JSON prefix, preserve that output and cross-check directly with `az containerapp exec --container probe --revision <revision> --command 'python -I -u /probe/hyperlight-aca-probe.py'`. Require all four child results and `probe_complete` before calling collection complete.
+Wait for each actual replica's `probe` container to be running, not merely the app resource's `Succeeded` state. Record the deployed image, profile, resource limits and revision, then collect each revision's console with `az containerapp logs show --container probe --revision <revision> --tail 300 --format json`. If the console transport changes the JSON prefix, preserve that output and cross-check directly with `az containerapp exec --container probe --revision <revision> --command 'python -I -u /probe/hyperlight-aca-probe.py'`. Require all four child results with `collection_complete=true` and `probe_complete` before calling collection complete. A missing or malformed child completion marker, timeout, nonzero child exit, or launch/cleanup failure produces `probe_incomplete`, exit status 1 and no log-collection hold. A captured Hyperlight failure remains a valid observation when its diagnostic child completes normally.
 
 Each child has a 45-second deadline, bounded retained stdout/stderr and process-group termination/reaping. The private writable cache is removed after its child exits. The 2 GiB container allocation bounds the whole probe, not each native worker independently; this is not the Linux adapter's committed-memory/owner-death conformance. The optional 1,800-second hold only keeps console logs accessible: **it does not clean up Azure resources**, and an ACA app can restart after the process exits. Delete the disposable apps/environment/resource group, the exact temporary role assignment and the probe image repository after collection. Do not delete a reused environment or registry.
 

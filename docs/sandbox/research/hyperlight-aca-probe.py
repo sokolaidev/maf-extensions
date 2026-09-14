@@ -2,7 +2,7 @@
 
 This is a hosting probe, not backend conformance. Native children have a 45-second deadline;
 the container's memory limit bounds native allocations. No host files or tools reach the guest.
-Exit zero means observations were collected, not that a guest executed successfully.
+Exit zero requires complete child observations, not successful Hyperlight guest execution.
 """
 
 from __future__ import annotations
@@ -139,11 +139,11 @@ def guest() -> None:
         if restored.exit_code != 0 or restored.stdout.strip() != "42":
             raise RuntimeError("snapshot did not restore Python state")
         emit(stage, status="ok", stdout=restored.stdout)
-    except BaseException as error:
+    except Exception as error:
         failure(stage, error)
 
 
-def run_child(stage: str, uid: int) -> None:
+def run_child(stage: str, uid: int) -> bool:
     """Drain diagnostics concurrently and kill the child's process group at the deadline."""
     with tempfile.TemporaryDirectory(prefix="hyperlight-aca-") as directory:
         os.chmod(directory, 0o700)
@@ -192,6 +192,7 @@ def run_child(stage: str, uid: int) -> None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The child may have already exited with its entire process group.
                 pass
             process.wait(timeout=5)
             for reader in readers:
@@ -201,15 +202,28 @@ def run_child(stage: str, uid: int) -> None:
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 stream.close()
+        stdout = captured.get("stdout", b"").decode("utf-8", errors="replace")
+        try:
+            completion = json.loads(stdout.splitlines()[-1])
+        except (IndexError, ValueError):
+            completion = None
+        complete = (
+            not timed_out
+            and process.returncode == 0
+            and captured.keys() == {"stdout", "stderr"}
+            and completion == {"stage": "child_complete", "uid": uid, "child_stage": stage}
+        )
         emit(
             "child_result",
             child_stage=stage,
             child_uid=uid,
             returncode=process.returncode,
             timed_out=timed_out,
-            stdout=captured.get("stdout", b"").decode("utf-8", errors="replace"),
+            collection_complete=complete,
+            stdout=stdout,
             stderr=captured.get("stderr", b"").decode("utf-8", errors="replace"),
         )
+        return complete
 
 
 def main() -> None:
@@ -231,6 +245,7 @@ def main() -> None:
             security={key: value.strip() for key, value in status.items()},
         )
         {"devices": devices, "guest": guest}[args.child]()
+        emit("child_complete", child_stage=args.child)
         return
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise SystemExit("this probe requires Linux x86-64")
@@ -253,12 +268,18 @@ def main() -> None:
         except OSError as error:
             failure("cgroup", error, path=path)
     identities = (0, 65534) if os.geteuid() == 0 else (os.geteuid(),)
+    complete = True
     for uid in identities:
         for stage in ("devices", "guest"):
             try:
-                run_child(stage, uid)
+                if not run_child(stage, uid):
+                    complete = False
             except Exception as error:
                 failure("child_launch_or_cleanup", error, child_stage=stage, child_uid=uid)
+                complete = False
+    if not complete:
+        emit("probe_incomplete")
+        raise SystemExit(1)
     emit("probe_complete")
     time.sleep(max(0, min(args.hold_seconds, 1800)))
 
