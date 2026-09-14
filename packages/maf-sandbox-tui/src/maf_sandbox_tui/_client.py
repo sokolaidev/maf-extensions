@@ -80,6 +80,24 @@ class HttpControl:
         except (OSError, URLError, ValueError) as error:
             raise ControlEndpointError(f"control endpoint is unavailable: {error}") from error
 
+    async def _joined_request(
+        self, method: str, path: str, *, timeout: float | None = None
+    ) -> object:
+        """Run one blocking request without abandoning a mutating transport on cancellation."""
+        task = asyncio.create_task(asyncio.to_thread(self._request, method, path, timeout=timeout))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A cancelled to_thread await does not stop urllib; join it before reporting completion.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            if not task.cancelled():
+                task.exception()
+            raise
+
     async def health(self) -> None:
         """Require a compatible local endpoint."""
         value = await asyncio.to_thread(self._request, "GET", "/v1/health")
@@ -135,8 +153,7 @@ class HttpControl:
     async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
         """Ask the owning MAF process to dispose one exact instance."""
         try:
-            value = await asyncio.to_thread(
-                self._request,
+            value = await self._joined_request(
                 "DELETE",
                 f"/v1/sandboxes/{quote(instance_id, safe='')}?timeout={timeout}",
                 timeout=timeout + _TRANSPORT_GRACE,
@@ -156,8 +173,7 @@ class HttpControl:
         self, scope: str, thread_id: str, *, timeout: float = 10.0
     ) -> PurgeResult:
         """Ask this endpoint to purge every sandbox for one conversation."""
-        value = await asyncio.to_thread(
-            self._request,
+        value = await self._joined_request(
             "DELETE",
             (
                 f"/v1/scopes/{quote(scope, safe='')}/threads/"

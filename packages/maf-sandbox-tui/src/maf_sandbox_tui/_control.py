@@ -115,6 +115,7 @@ class _TrackedSandbox:
     instance_id: str
     created_at: float
     last_activity_at: float
+    published: bool = True
 
 
 def _worker_pid(sandbox: Sandbox) -> int | None:
@@ -225,6 +226,7 @@ class MonitoredSandboxBackend:
                         item.spec.kind,
                     ),
                 )
+                if tracked.published
             )
 
     @contextmanager
@@ -265,14 +267,16 @@ class MonitoredSandboxBackend:
         return failure
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
-        """Purge through the wrapped backend and retire stopped tracked generations."""
+        """Purge through the wrapped backend without publishing ambiguous generations."""
         result = await self._backend.dispose_scope(scope, thread_id)
         with self._state_lock:
             self._refresh_locked(time.time())
-            if result.undisposed is None:
-                for index, tracked in tuple(self._tracked.items()):
-                    if tracked.key.scope == scope and tracked.key.thread_id == thread_id:
+            for index, tracked in tuple(self._tracked.items()):
+                if tracked.key.scope == scope and tracked.key.thread_id == thread_id:
+                    if result.undisposed is None:
                         del self._tracked[index]
+                    elif result.disposed:
+                        tracked.published = False
         return result
 
 

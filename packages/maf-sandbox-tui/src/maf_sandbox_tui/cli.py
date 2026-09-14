@@ -711,7 +711,14 @@ async def _run(arguments: argparse.Namespace) -> int:
                 manifest_directory=Path(temporary),
             ) as server:
                 return await _dispatch(arguments, lambda: (server.manifest,))
-    return await _dispatch(arguments, read_manifests)
+
+    def load_local_manifests() -> tuple[EndpointManifest, ...]:
+        try:
+            return read_manifests()
+        except (PermissionError, RuntimeError) as error:
+            raise ControlEndpointError(str(error)) from error
+
+    return await _dispatch(arguments, load_local_manifests)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

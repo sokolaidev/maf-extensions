@@ -295,6 +295,20 @@ def test_default_discovery_loader_is_used_without_demo_or_endpoint(monkeypatch):
     assert asyncio.run(cli_module._run(arguments)) == 0
 
 
+def test_local_discovery_failure_uses_the_stable_cli_error_path(monkeypatch, tmp_path, capsys):
+    occupied = tmp_path / "occupied"
+    occupied.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("MAF_SANDBOX_TUI_RUNTIME_DIR", str(occupied))
+
+    with pytest.raises(SystemExit) as raised:
+        cli_module.main(["hosts"])
+
+    assert raised.value.code == 1
+    error = capsys.readouterr().err
+    assert error.startswith("mst: sandbox discovery path is not a directory:")
+    assert "Traceback" not in error
+
+
 def test_keyboard_interrupt_uses_shell_exit_code_130(monkeypatch):
     async def interrupted(_arguments):
         raise KeyboardInterrupt

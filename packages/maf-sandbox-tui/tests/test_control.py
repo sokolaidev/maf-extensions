@@ -666,6 +666,38 @@ def test_monitored_backend_purges_only_the_named_conversation():
     asyncio.run(check())
 
 
+def test_monitored_backend_hides_generations_made_ambiguous_by_a_partial_purge():
+    class PartialBackend(_ObservedBackend):
+        async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+            for index in tuple(self.sandboxes):
+                if index[0].scope == scope and index[0].thread_id == thread_id:
+                    del self.sandboxes[index]
+                    return ScopePurge(1, DisposalFailure("unknown", "one worker was retained"))
+            return ScopePurge()
+
+    async def check() -> None:
+        inner = PartialBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = SandboxRouter([monitored])
+        control = HyperlightControl(monitored, router, source_id="agent-app")
+        first = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        second = SandboxKey("tenant-labs", "thread-1", "agent-2")
+        other = SandboxKey("tenant-labs", "thread-2", "agent-1")
+        spec = SandboxSpec(kind="codeact", work_dir=None)
+        await router.acquire(first, spec)
+        await router.acquire(second, spec)
+        await router.acquire(other, spec)
+
+        purged = await monitored.dispose_scope(first.scope, first.thread_id)
+
+        assert purged.disposed == 1
+        assert purged.undisposed is not None
+        assert [record.key for record in await monitored.list_sandboxes()] == [other]
+        assert [record.thread_id for record in await control.list_sandboxes()] == [other.thread_id]
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_routes_exact_generation():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -1048,6 +1080,58 @@ def test_client_delete_deadline_cancels_the_server_operation(tmp_path, operation
             await asyncio.wait_for(control.cancelled.wait(), timeout=0.5)
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("operation", ["dispose", "purge"])
+def test_http_mutation_transport_is_joined_before_a_timeout_is_reported(
+    operation: str,
+    monkeypatch,
+):
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def check() -> None:
+        record = (await MemoryControl.demo().list_sandboxes())[0]
+        client = HttpControl(EndpointManifest("host", "http://127.0.0.1:1", 1))
+
+        def request(method: str, path: str, *, timeout: float | None = None) -> object:
+            del timeout
+            if method == "GET":
+                return {"sandboxes": [record.to_json()]}
+            entered.set()
+            assert release.wait(1)
+            if path.startswith("/v1/sandboxes/"):
+                return DisposalResult(
+                    DisposalStatus.DISPOSED, record.instance_id, "disposed"
+                ).to_json()
+            return PurgeResult(
+                PurgeStatus.PURGED, record.scope, record.thread_id, 1, "purged"
+            ).to_json()
+
+        monkeypatch.setattr(client, "_request", request)
+        control = CompositeControl((client,))
+        if operation == "dispose":
+            task = asyncio.create_task(control.dispose_sandbox(record.instance_id, timeout=0.01))
+        else:
+            task = asyncio.create_task(
+                control.purge_thread(record.scope, record.thread_id, timeout=0.01)
+            )
+        assert await asyncio.to_thread(entered.wait, 1)
+        await asyncio.sleep(0.03)
+        assert not task.done()
+
+        release.set()
+        result = await task
+
+        if operation == "dispose":
+            assert result.status is DisposalStatus.FAILED
+        else:
+            assert result.status is PurgeStatus.PARTIAL
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
 
 
 @pytest.mark.parametrize("operation", ["dispose", "purge"])
