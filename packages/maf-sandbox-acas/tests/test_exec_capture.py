@@ -175,7 +175,7 @@ def test_a_retry_after_sleep_that_reaches_the_exec_deadline_keeps_the_sandbox(mo
         assert isinstance(observed, AsyncRetryPolicy)
         assert observed is not original
         assert observed.status_retries == 7 and observed.backoff_factor == 2.0
-        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()), write_road=True)
+        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()))
         sandbox = _AcasSandbox(client, 0.05, held=held)
 
         with pytest.raises(OSError, match="did not finish in time"):
@@ -216,7 +216,7 @@ def test_a_non_throttle_retry_after_timeout_disposes_the_ambiguous_sandbox():
         transport = _RetryAfterTransport(status_code=503)
         client = _RetryAfterClient(AsyncPipeline(transport, policies=[AsyncRetryPolicy()]))
         install_retry_observer(client)
-        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()), write_road=True)
+        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()))
         sandbox = _AcasSandbox(client, 0.05, held=held)
 
         with pytest.raises(TimeoutError):

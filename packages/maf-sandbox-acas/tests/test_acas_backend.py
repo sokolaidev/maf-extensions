@@ -1148,7 +1148,9 @@ class TestAnImageWhoseGuestIsNotRoot:
             backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE))
         )
         guest_file = "/work/protected/file"
-        asyncio.run(sandbox.write_file(guest_file, "keep", working_directory="/"))
+        client.files[sandbox.sandbox_id]["/work"] = None
+        client.files[sandbox.sandbox_id]["/work/protected"] = None
+        client.files[sandbox.sandbox_id][guest_file] = b"keep"
 
         with pytest.raises(OSError):
             asyncio.run(sandbox.remove("protected", working_directory="/work", recursive=True))
@@ -2369,91 +2371,17 @@ class TestDisposeScope:
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 0
 
 
-class TestFileWrites:
-    """A workload may hand the backend a nested path, so parents must be created.
-
-    `infra/main.bicep` is the example in the bicep tool's own description, and the file API
-    docs say nothing about whether a write creates missing parents — only the SDK signature
-    does (`create_dirs: bool = True`). Since that is a `0.1.0bN` default doing load-bearing
-    work, the backend passes it explicitly and this pins that it does.
-    """
-
-    def test_requests_parent_directory_creation(self):
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        class _RecordingClient:
-            def __init__(self) -> None:
-                self.calls: list[tuple] = []
-                self._sbx_path = ""
-                self._api_version = ""
-
-            async def write_file(self, path, content, **kwargs):
-                self.calls.append((path, content, kwargs))
-
-            async def _dp_get(self, path, *, params):
-                return {"isSymlink": False, "isDir": True}
-
-        client = _RecordingClient()
-        asyncio.run(
-            _AcasSandbox(client, 30.0).write_file(
-                "/maf-sandbox/work/infra/main.bicep",
-                "param x string",
-                working_directory="/maf-sandbox/work",
-            )
-        )
-
-        assert client.calls == [
-            ("/maf-sandbox/work/infra/main.bicep", "param x string", {"create_dirs": True})
-        ]
-
-    def test_a_refused_path_never_reaches_the_sdk(self):
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        class _RecordingClient:
-            def __init__(self) -> None:
-                self.calls: list[tuple] = []
-
-            async def write_file(self, path, content, **kwargs):
-                self.calls.append((path, content, kwargs))
-
-        client = _RecordingClient()
-        with pytest.raises(ValueError):
-            asyncio.run(
-                _AcasSandbox(client, 30.0).write_file(
-                    "../escape", "x", working_directory="/maf-sandbox/work"
-                )
-            )
-        assert client.calls == []
-
-
 class _WriteRoadClient:
-    """The data plane the write-road probe reaches, answering whatever the guest was told to.
+    """Record forbidden host writes while serving the real path checks."""
 
-    ``said`` is what the one guest command prints — the probe reads its words and nothing else,
-    so a test states the guest's answer rather than simulating a shell to produce it.
-    """
-
-    def __init__(self, said: str = "", *, exec_failure: Exception | None = None) -> None:
+    def __init__(self) -> None:
         self.sandbox_id = "sbx-1"
         self._sbx_path = ""
         self._api_version = ""
         self.written: list[tuple[str, object, dict]] = []
-        self.deleted: list[tuple[str, bool]] = []
-        self.commands: list[str] = []
-        self._said = said
-        self._exec_failure = exec_failure
 
     async def write_file(self, path, content, **kwargs) -> None:
         self.written.append((path, content, kwargs))
-
-    async def delete_file(self, path, *, recursive: bool = False) -> None:
-        self.deleted.append((path, recursive))
-
-    async def exec(self, command: str, *, working_directory: str):
-        self.commands.append(command)
-        if self._exec_failure is not None:
-            raise self._exec_failure
-        return SimpleNamespace(exit_code=0, stdout=self._said, stderr="")
 
     async def _dp_get(self, path, *, params=None):
         return {"isSymlink": False, "isDir": True}
@@ -2480,7 +2408,7 @@ class _GuestRoadSandbox:
     def __init__(self, client, answers=None, read_timeout: float = 30.0, each: float = 0.0) -> None:
         from maf_sandbox import ExecResult
 
-        self.held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()), write_road=True)
+        self.held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
         self.sandbox = _road_sandbox(client, self.held, read_timeout=read_timeout)
         self.commands: list[str] = []
         self.working_directories: list[str] = []
@@ -2498,141 +2426,134 @@ class _GuestRoadSandbox:
 
 
 class TestTheWriteRoad:
-    """Which principal a write runs as, and the acquire-time probe that decides it (#1131).
+    """Every write uses guest authority, independently of acquisition or probe output."""
 
-    The data plane lands ``0:0`` whatever the image's ``USER`` is, so on an image whose guest
-    is not root it acts above the guest and a component swapped after the confinement check
-    sends host-authority bytes wherever the link points. Writing as the guest bounds that by
-    construction; the probe below is what says whether it is needed and whether it would land.
-    """
+    @pytest.mark.parametrize("warm", [False, True])
+    @pytest.mark.parametrize("guest_stdout", ["", "0\n", "utilities write\n"])
+    def test_cold_and_first_warm_files_in_use_only_guest_commands(
+        self, monkeypatch, warm, guest_stdout
+    ):
+        from maf_sandbox import ExecResult
 
-    def test_the_script_asks_its_two_questions_in_one_command(self):
-        from maf_sandbox_acas._backend import _write_road_script
+        from maf_sandbox_acas._backend import _AcasSandbox
 
-        script = _write_road_script("/base/.maf-write-probe-1")
+        commands = []
 
-        lines = script.splitlines()
-        assert len(lines) == 3, script
-        assert "mkdir mv rm base64" in lines[0] and "exit 0" in lines[0]
-        assert lines[1] == "echo utilities"
-        assert "> /base/.maf-write-probe-1 " in lines[2] and "echo write" in lines[2]
+        async def run(sandbox, command, *, working_directory, timeout, max_output_bytes):
+            commands.append(command)
+            return ExecResult(stdout=guest_stdout, stderr="", exit_code=0)
 
-    def test_an_image_that_cannot_remove_the_probe_file_never_creates_one(self):
-        """The gate runs before the redirection, and `rm` is in it.
+        monkeypatch.setattr(_AcasSandbox, "exec_bounded", run)
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey("write-authority", "thread", "agent")
 
-        Creating the probe file first would leave it in the workload's base on an image whose
-        `rm` is missing — a dotfile the road then declines to use, in a directory this backend
-        also serves `FILES_LIST` from.
-        """
-        from maf_sandbox_acas._backend import _SHELL_WRITE_UTILITIES, _write_road_script
+        async def scenario():
+            if warm:
+                previous = await backend.acquire(key, _spec_requiring(Capability.EXEC))
+                await previous.exec_bounded(
+                    "guest workload", working_directory="/", timeout=10, max_output_bytes=100
+                )
+                commands.clear()
+            sandbox = await backend.acquire(key, _spec_requiring(Capability.FILES_IN))
+            await sandbox.write_file("payload", b"input", working_directory=".")
+            assert "payload" not in client.files[sandbox.sandbox_id]
+            assert f"{sandbox._work_dir}/payload" not in client.files[sandbox.sandbox_id]
 
-        lines = _write_road_script("/base/probe").splitlines()
+        asyncio.run(scenario())
+        assert client.create_calls == 1
+        assert len(commands) == 3
+        assert "base64 -d" in commands[1]
+        assert not any(".maf-write-probe-" in c for c, _ in client.probes)
 
-        assert "rm" in _SHELL_WRITE_UTILITIES
-        gate = next(index for index, line in enumerate(lines) if line.startswith("for utility"))
-        creates = next(index for index, line in enumerate(lines) if "> /base/probe" in line)
-        assert gate < creates, lines
-        assert "exit 0" in lines[gate], lines[gate]
+    @pytest.mark.parametrize(
+        ("step", "stderr", "expected"),
+        [
+            (0, "cannot create file: Permission denied", PermissionError),
+            (0, "mkdir: not found", OSError),
+            (2, "mv: not found", OSError),
+            (1, "base64: not found", OSError),
+        ],
+    )
+    def test_guest_permission_and_missing_utilities_never_fall_back(self, step, stderr, expected):
+        from maf_sandbox import ExecResult
 
-    def test_no_word_the_guest_prints_keeps_the_data_plane(self):
-        """Only "as the guest" is reachable from anything the guest prints.
+        client = _WriteRoadClient()
+        answers = [ExecResult(stdout="", stderr="", exit_code=0)] * step
+        answers.append(ExecResult(stdout="", stderr=stderr, exit_code=1))
+        guest = _GuestRoadSandbox(client, answers=answers)
+        with pytest.raises(expected):
+            asyncio.run(guest.sandbox.write_file("payload", b"input", working_directory="."))
+        assert guest.commands
+        assert client.written == []
+        assert not guest.held.unusable
 
-        The guarantee is that no stdout retains the data plane, so a probe answer cannot raise
-        the authority a write runs at. The invented word is in the list because a future
-        question would arrive as one.
-        """
-        answers = ["", "write", "utilities", "write utilities", "reach write utilities"]
+    def test_missing_cleanup_utility_never_uses_host_cleanup_or_write(self):
+        from maf_sandbox import ExecResult
 
-        roads = {
-            said: asyncio.run(_road_sandbox(_WriteRoadClient(said)).probe_write_road())
-            for said in answers
-        }
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(
+            client,
+            answers=[
+                ExecResult(stdout="", stderr="", exit_code=0),
+                ExecResult(stdout="", stderr="base64: not found", exit_code=127),
+                ExecResult(stdout="", stderr="rm: not found", exit_code=127),
+            ],
+        )
+        with pytest.raises(OSError, match="staged sibling"):
+            asyncio.run(guest.sandbox.write_file("payload", b"input", working_directory="."))
+        assert "; rm -f -- " in guest.commands[-1]
+        assert client.written == []
 
-        assert [said for said, road in roads.items() if road] == [
-            "write utilities",
-            "reach write utilities",
-        ], roads
+    def test_a_protected_base_does_not_disable_an_alternate_writable_directory(self):
+        from maf_sandbox import ExecResult
 
-    def test_the_probe_leaves_nothing_for_the_plane_to_take_back(self):
-        """The plane places nothing: the probe's file is the guest's own, and it removes it."""
-        client = _WriteRoadClient("write\nutilities\n")
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(
+            client,
+            answers=[
+                ExecResult(stdout="", stderr="Permission denied", exit_code=1),
+            ],
+        )
 
-        asyncio.run(_road_sandbox(client).probe_write_road())
+        async def scenario():
+            with pytest.raises(PermissionError):
+                await guest.sandbox.write_file("payload", b"input", working_directory=".")
+            await guest.sandbox.write_file("payload", b"input", working_directory="/tmp")
 
-        assert client.written == [] and client.deleted == []
-        planted = client.commands[0].split("> ", 1)[1].split()[0]
-        assert planted.startswith("/maf-sandbox/work/.maf-write-probe-")
-        assert f"rm -f -- {planted}" in client.commands[0]
+        asyncio.run(scenario())
+        assert guest.commands[-1].endswith("/tmp/payload")
+        assert client.written == []
 
-    def test_a_refused_redirection_answers_rather_than_ending_the_script(self):
-        """A redirection failing on `:` would exit the shell, not the line, and end the script.
+    @pytest.mark.parametrize("working_directory", [".", "/tmp", "/protected"])
+    def test_a_parent_swapped_after_the_check_cannot_select_host_authority(self, working_directory):
+        from maf_sandbox import ExecResult
 
-        `true` is a regular builtin and merely fails, and its `2>/dev/null` comes before the
-        open so the guest's diagnostic never reaches the answer.
-        """
-        from maf_sandbox_acas._backend import _write_road_script
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(client)
+        original = guest.sandbox._unconfined_stat
+        swapped = False
 
-        line = _write_road_script("/base/probe").splitlines()[-1]
+        async def checked(directory):
+            nonlocal swapped
+            result = await original(directory)
+            if directory.endswith("/parent"):
+                swapped = True
+            return result
 
-        assert line.startswith("true 2>/dev/null > "), line
-        assert not line.startswith(":"), line
+        async def protected(command, *, working_directory, timeout, max_output_bytes):
+            assert swapped, "the controlled swap must follow the actual path check"
+            return ExecResult(stdout="", stderr="Permission denied", exit_code=1)
 
-    def test_a_base_holding_a_path_the_shell_would_read_is_quoted(self):
-        from maf_sandbox_acas._backend import _write_road_script
-
-        script = _write_road_script("/base; rm -rf /")
-
-        assert "'/base; rm -rf /'" in script
-        assert shlex.split(script.splitlines()[-1])[:3] == ["true", "2>/dev/null", ">"]
-        assert shlex.split(script.splitlines()[-1])[3] == "/base; rm -rf /"
-
-    def test_a_guest_that_can_write_its_base_takes_the_shell_road(self):
-        client = _WriteRoadClient("write\nutilities\n")
-
-        assert asyncio.run(_road_sandbox(client).probe_write_road()) is True
-
-    def test_a_base_the_guest_cannot_write_keeps_the_plane(self):
-        """The default base on a non-root image: the shell road would refuse every write."""
-        client = _WriteRoadClient("")
-
-        assert asyncio.run(_road_sandbox(client).probe_write_road()) is False
-
-    def test_an_image_missing_a_utility_the_road_runs_keeps_the_plane(self):
-        client = _WriteRoadClient("write\n")
-
-        assert asyncio.run(_road_sandbox(client).probe_write_road()) is False
-
-    def test_an_unreachable_probe_leaves_the_road_unchosen(self):
-        """The plane serves meanwhile, so a probe that cannot complete withholds no in-door."""
-        held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
-        client = _WriteRoadClient(exec_failure=RuntimeError("the service refused"))
-        spec = SandboxSpec(kind="k", requires=frozenset({Capability.FILES_IN}))
-
-        asyncio.run(_road_sandbox(client, held).choose_write_road(spec))
-
-        assert held.write_road is None
-
-    def test_the_road_is_settled_once_per_sandbox(self):
-        held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
-        client = _WriteRoadClient("write\nutilities\n")
-        spec = SandboxSpec(kind="k", requires=frozenset({Capability.FILES_IN}))
-        sandbox = _road_sandbox(client, held)
-
-        asyncio.run(sandbox.choose_write_road(spec))
-        asyncio.run(sandbox.choose_write_road(spec))
-
-        assert held.write_road is True
-        assert len(client.commands) == 1
-
-    def test_a_workload_that_writes_nothing_never_probes(self):
-        held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
-        client = _WriteRoadClient("write\nutilities\n")
-        spec = SandboxSpec(kind="k", requires=frozenset({Capability.EXEC}))
-
-        asyncio.run(_road_sandbox(client, held).choose_write_road(spec))
-
-        assert held.write_road is None
-        assert client.written == [] and client.commands == []
+        guest.sandbox._unconfined_stat = checked
+        guest.sandbox.exec_bounded = protected
+        with pytest.raises(PermissionError):
+            asyncio.run(
+                guest.sandbox.write_file(
+                    "parent/payload", b"input", working_directory=working_directory
+                )
+            )
+        assert client.written == []
 
     def test_the_shell_road_puts_the_bytes_there_rather_than_the_plane(self):
         client = _WriteRoadClient()
@@ -2650,7 +2571,7 @@ class TestTheWriteRoad:
         moved = guest.commands[-1]
         assert moved.endswith("/maf-sandbox/work/infra/main.bicep")
 
-    def test_both_roads_encode_a_string_as_utf8(self):
+    def test_strings_are_encoded_as_utf8(self):
         import base64
 
         client = _WriteRoadClient()
@@ -4248,9 +4169,6 @@ class TestConcurrentAcquire:
                 "sbx-1",
                 egress=(Egress.CLOSED, frozenset()),
                 commands={"sh", "exec-capture"},
-                # This fake's guest answers nothing, which is no road. Spelled out because
-                # `None` and `False` differ here: unprobed, against probed and refused.
-                write_road=False,
             )
         }
 
@@ -6079,8 +5997,21 @@ class TestReclaim:
         assert router.effective_cleanup(spec) is Cleanup.DISPOSE
 
 
+@pytest.fixture
+def guest_storage_transfer(monkeypatch):
+    """Back storage-contract tests with the fake guest's filesystem."""
+    from maf_sandbox_acas import _backend
+
+    async def transfer(sandbox, guest, content, *, working_directory, timeout):
+        files = sandbox._sc.files
+        files[posixpath.dirname(guest)] = None
+        files[guest] = content
+
+    monkeypatch.setattr(_backend, "write_file_over_exec", transfer)
+
+
 @pytest.mark.parametrize("override", [None, "/image/base"])
-def test_relative_storage_contract_through_the_data_plane(override):
+def test_relative_storage_contract_through_the_data_plane(override, guest_storage_transfer):
     from dataclasses import replace
 
     from maf_sandbox.conformance import assert_storage_base_conformance
@@ -6097,7 +6028,7 @@ def test_relative_storage_contract_through_the_data_plane(override):
 
 
 @pytest.mark.parametrize("override", [None, "/image/base"])
-def test_warm_storage_binding_refuses_retargeting(override):
+def test_warm_storage_binding_refuses_retargeting(override, guest_storage_transfer):
     from dataclasses import replace
 
     async def scenario():
