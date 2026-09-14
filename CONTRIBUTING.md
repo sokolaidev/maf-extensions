@@ -91,6 +91,8 @@ app  ->  maf_sandbox (protocol + router)  ->  a backend  ->  the sandbox
 
 A new backend implements `SandboxBackend`. A new workload (a "kind") is written against the protocol only. Neither should ever import the other — that separation is what makes a workload portable, and it is enforced by the tests above.
 
+A dependant's unit tests must not reference another dependant: those tests also run in isolated environments where only that package and its declared dependencies are installed. Cross-package coverage belongs in the repository-level `tests/` suite. Opt-in live integration tests are separate from this unit-test boundary.
+
 ## Releases
 
 Maintainers only: [`RELEASING.md`](RELEASING.md). A merged PR does not publish anything; releases go out from tags.

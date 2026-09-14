@@ -231,18 +231,15 @@ def changelog_of(package_path: str) -> str:
 
 
 def records_a_release(changelog: str) -> bool:
-    """Whether a changelog records a release — an offline proxy for "on the index".
-
-    The proxy `tests/test_sample_metadata.py` already reads, and imprecise in the same safe
-    direction: release-please writes the heading when the Release PR merges, and the upload
-    waits at an approval afterwards, so a row carries its badge for the minutes in between.
-    """
+    """Whether a changelog has a version heading, including a prepared, unpublished release."""
     return RELEASE_HEADING.search(changelog) is not None
 
 
-def released_cell(changelog: str, distribution: str) -> str:
-    """The *Released* cell a package's own changelog entitles it to."""
-    return pypi_badge(distribution) if records_a_release(changelog) else NOT_RELEASED
+def valid_released_cell(cell: str, changelog: str, distribution: str) -> bool:
+    """Validate the cell without treating a prepared changelog as proof of publication."""
+    return cell == NOT_RELEASED or (
+        records_a_release(changelog) and cell == pypi_badge(distribution)
+    )
 
 
 def readme_package_table() -> list[tuple[str, str]]:
@@ -294,22 +291,19 @@ class TestTheReadmeTableRecordsWhatIsReleased:
         assert sorted(path for path, _ in README_TABLE) == PACKAGE_PATHS
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
-    def test_the_released_cell_matches_the_changelog(self, package_path: str):
+    def test_the_released_cell_is_valid(self, package_path: str):
         cells = [cell for path, cell in README_TABLE if path == package_path]
         assert len(cells) == 1, f"{package_path} has {len(cells)} rows in README.md's table"
-        expected = released_cell(changelog_of(package_path), declared_name(package_path))
-        assert cells[0] == expected, (
-            f"README.md's Released cell for {package_path} reads {cells[0]!r}; its own "
-            f"CHANGELOG.md makes it {expected!r}"
+        assert valid_released_cell(
+            cells[0], changelog_of(package_path), declared_name(package_path)
+        ), (
+            f"README.md's Released cell for {package_path} must be {NOT_RELEASED!r} "
+            "or its own PyPI badge backed by a versioned changelog"
         )
 
 
-class TestTheReleasedCellFollowsTheChangelog:
-    """The unreleased side of that rule, which no package in the tree is on.
-
-    Every package has published, so the case above compares released rows against released
-    rows: it holds with `records_a_release` stuck at `True`, and never reads `NOT_RELEASED`.
-    """
+class TestTheReleasedCellAllowsPendingPublication:
+    """Preparing release notes does not publish a package to PyPI."""
 
     def test_a_package_with_no_changelog_has_not_released(self):
         assert not records_a_release(changelog_of("packages/not-a-package"))
@@ -328,14 +322,33 @@ class TestTheReleasedCellFollowsTheChangelog:
     def test_a_hand_written_keep_a_changelog_heading_counts(self):
         assert records_a_release("# Changelog\n\n## [0.1.0] - 2026-08-07\n")
 
-    def test_an_unreleased_package_gets_the_words_the_table_uses(self):
-        assert released_cell("# Changelog\n", "maf-sandbox-new") == "not yet released"
+    @pytest.mark.parametrize(
+        "changelog",
+        [
+            "",
+            "# Changelog\n",
+            "## 0.1.0 (2026-09-11)\n",
+            "## [0.2.0](https://example.invalid/compare) (2026-09-12)\n",
+        ],
+    )
+    def test_an_unpublished_package_can_keep_its_status(self, changelog: str):
+        assert valid_released_cell("not yet released", changelog, "maf-sandbox-new")
 
-    def test_a_released_package_gets_its_own_badge(self):
-        assert released_cell("## 0.1.0 (2026-09-11)\n", "maf-sandbox-new") == (
+    def test_a_released_package_can_carry_its_own_badge(self):
+        assert valid_released_cell(
             "[![PyPI](https://img.shields.io/pypi/v/maf-sandbox-new)]"
-            "(https://pypi.org/project/maf-sandbox-new/)"
+            "(https://pypi.org/project/maf-sandbox-new/)",
+            "## 0.1.0 (2026-09-11)\n",
+            "maf-sandbox-new",
         )
+
+    @pytest.mark.parametrize("changelog", ["", "# Changelog\n"])
+    def test_a_badge_still_requires_a_versioned_changelog(self, changelog: str):
+        assert not valid_released_cell(pypi_badge("maf-sandbox-new"), changelog, "maf-sandbox-new")
+
+    @pytest.mark.parametrize("cell", ["", "released", pypi_badge("maf-sandbox-other")])
+    def test_a_versioned_changelog_does_not_allow_an_invalid_cell(self, cell: str):
+        assert not valid_released_cell(cell, "## 0.1.0 (2026-09-11)\n", "maf-sandbox-new")
 
 
 class TestManifestMatchesDeclaredVersions:
