@@ -2,6 +2,8 @@
 
 > An investigation for [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230), recorded on 2026-09-14. It evaluates the upstream Kubernetes integration, measures Linux Python packaging locally, and proposes an AKS proof. It does not establish AKS, KVM or MSHV adapter support. [#382](https://github.com/sokolaidev/maf-extensions/issues/382) remains the umbrella; the shipped family is described in [Hyperlight](../backends/hyperlight.md).
 
+The later [AKS Automatic verification](hyperlight-aks-automatic-verification.md) records live non-root packaging, resource restrictions and a policy refusal of the plugin's host paths after a cluster became available. The observations below retain the earlier source/local baseline.
+
 ## Decision
 
 Proceed with a dedicated Ubuntu/KVM AKS experiment using the existing sandbox protocol. Reuse the device-plugin/CDI approach, with reviewed manifests and immutable images. Do not adopt the upstream setup script or its resource defaults unchanged. Keep Azure Linux/MSHV conditional until the current AKS node image, device ABI and exact Python wheel have independent execution evidence. Neither path is admitted by the current adapter.

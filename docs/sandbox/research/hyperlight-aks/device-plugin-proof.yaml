@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hyperlight-device-plugin-proof
+  namespace: maf-hyperlight-infra-1230
+  labels:
+    app.kubernetes.io/part-of: maf-hyperlight-verification
+    maf.dev/issue: "1230"
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 900
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  nodeSelector:
+    kubernetes.io/arch: amd64
+    kubernetes.io/hostname: ${PROOF_NODE}
+  securityContext:
+    runAsUser: 0
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: device-plugin
+      image: ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98
+      env:
+        - name: DEVICE_COUNT
+          value: "1"
+        - name: DEVICE_UID
+          value: "65534"
+        - name: DEVICE_GID
+          value: "65534"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+      volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+        - name: cdi
+          mountPath: /var/run/cdi
+        - name: dev
+          mountPath: /dev
+          readOnly: true
+      livenessProbe:
+        exec:
+          command: [test, -S, /var/lib/kubelet/device-plugins/hyperlight.sock]
+        initialDelaySeconds: 10
+        periodSeconds: 30
+        timeoutSeconds: 5
+      readinessProbe:
+        exec:
+          command: [test, -S, /var/lib/kubelet/device-plugins/hyperlight.sock]
+        periodSeconds: 5
+        timeoutSeconds: 5
+  volumes:
+    - name: device-plugin
+      hostPath:
+        path: /var/lib/kubelet/device-plugins
+        type: Directory
+    - name: cdi
+      hostPath:
+        path: /var/run/cdi
+        type: DirectoryOrCreate
+    - name: dev
+      hostPath:
+        path: /dev
+        type: Directory
+  terminationGracePeriodSeconds: 10
