@@ -1,4 +1,4 @@
-"""Repository-level release wiring: every package registered, everywhere, consistently.
+"""Repository-level release wiring: package configuration and released versions agree.
 
 These are not any one package's tests — they are about the files that have to agree for a
 release to happen at all (`release-please-config.json`, `.release-please-manifest.json`,
@@ -235,6 +235,15 @@ def records_a_release(changelog: str) -> bool:
     return RELEASE_HEADING.search(changelog) is not None
 
 
+def manifest_version_matches(
+    package_path: str, version: str, changelog: str, manifest: dict[str, object]
+) -> bool:
+    """Match a registered version or an unreleased `0.0.0` bootstrap."""
+    if package_path in manifest:
+        return manifest[package_path] == version
+    return version == "0.0.0" and not records_a_release(changelog)
+
+
 def valid_released_cell(cell: str, changelog: str, distribution: str) -> bool:
     """Validate the cell without treating a prepared changelog as proof of publication."""
     return cell == NOT_RELEASED or (
@@ -275,13 +284,13 @@ README_TABLE = readme_package_table()
 
 
 class TestEveryPackageIsRegistered:
-    """A package missing from either file is one that never gets released, quietly."""
+    """Configuration discovers packages; the manifest records their release versions."""
 
     def test_packages_dir_and_release_please_config_agree(self):
         assert sorted(CONFIG["packages"]) == PACKAGE_PATHS
 
-    def test_packages_dir_and_manifest_agree(self):
-        assert sorted(MANIFEST) == PACKAGE_PATHS
+    def test_manifest_names_only_existing_packages(self):
+        assert set(MANIFEST) <= set(PACKAGE_PATHS)
 
 
 class TestTheReadmeTableRecordsWhatIsReleased:
@@ -352,15 +361,45 @@ class TestTheReleasedCellAllowsPendingPublication:
 
 
 class TestManifestMatchesDeclaredVersions:
-    """release-please bumps from the manifest; the workflow validates against pyproject.
-
-    They are two records of one fact, so a drift between them is only discovered at release
-    time — as either a wrong proposed bump or a tag that the publish gate rejects.
-    """
+    """Only an unreleased `0.0.0` package may await its first generated manifest entry."""
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_manifest_version_matches_pyproject(self, package_path: str):
-        assert MANIFEST[package_path] == declared_version(package_path)
+        assert manifest_version_matches(
+            package_path, declared_version(package_path), changelog_of(package_path), MANIFEST
+        ), f"{package_path}: manifest version is missing or differs from pyproject.toml"
+
+    @pytest.mark.parametrize(
+        ("version", "manifest", "changelog", "expected"),
+        [
+            ("0.0.0", {}, "", True),
+            ("0.0.0", {}, "# Changelog\n\n## Unreleased\n", True),
+            ("0.0.0", {}, "## 0.1.0 (2026-09-14)\n", False),
+            ("0.0.0", {"packages/new": "0.0.0"}, "", True),
+            ("0.0.0", {"packages/new": "0.1.0"}, "", False),
+            ("0.0.0", {"packages/new": None}, "", False),
+            ("0.1.0", {}, "", False),
+            ("0.1.0", {}, "## 0.1.0 (2026-09-14)\n", False),
+            ("0.1.0", {"packages/new": "0.1.0"}, "## 0.1.0 (2026-09-14)\n", True),
+            ("0.1.0", {"packages/new": "0.0.0"}, "## 0.1.0 (2026-09-14)\n", False),
+        ],
+        ids=[
+            "new-package",
+            "unreleased-heading",
+            "release-recorded-at-bootstrap-version",
+            "existing-bootstrap-entry",
+            "mismatched-bootstrap-entry",
+            "invalid-bootstrap-entry",
+            "nonzero-version-without-entry",
+            "release-without-entry",
+            "first-generated-release",
+            "release-version-drift",
+        ],
+    )
+    def test_manifest_bootstrap_boundary(
+        self, version: str, manifest: dict[str, object], changelog: str, expected: bool
+    ):
+        assert manifest_version_matches("packages/new", version, changelog, manifest) is expected
 
 
 class TestTheLockRecordsTheVersionEachPackageDeclares:

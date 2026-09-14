@@ -30,6 +30,6 @@ Only successful conversion reaches `collect_outputs`, using the literal call-rel
 
 | Decision | State | Tracking |
 | --- | --- | --- |
-| Model XML produces one editable draw.io artifact through the sandbox output pipeline | implemented; not yet released | [#1251](https://github.com/sokolaidev/maf-extensions/issues/1251) (open) |
-| Preserve supplied layout by default, automatically lay out missing geometry on each page, and expose a host override | implemented for the flat-graph automatic subset described above | [#1251](https://github.com/sokolaidev/maf-extensions/issues/1251) (open) |
+| Model XML produces one editable draw.io artifact through the sandbox output pipeline | implemented; not yet released | [#1251](https://github.com/sokolaidev/maf-extensions/issues/1251) (closed) by [#1253](https://github.com/sokolaidev/maf-extensions/pull/1253) (merged) |
+| Preserve supplied layout by default, automatically lay out missing geometry on each page, and expose a host override | implemented for the flat-graph automatic subset described above | [#1251](https://github.com/sokolaidev/maf-extensions/issues/1251) (closed) by [#1253](https://github.com/sokolaidev/maf-extensions/pull/1253) (merged) |
 | Specialized automatic layouts and previews | outside this implementation | untracked |
