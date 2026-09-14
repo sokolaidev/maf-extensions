@@ -154,6 +154,7 @@ class _HyperlightSandbox:
         self._state = threading.Lock()
         self._identity = uuid.uuid4().hex
         self._retired = False
+        self._failed = False
         self._phase = "starting"
         self._created_at = time.time()
         self._last_activity_at = self._created_at
@@ -169,11 +170,12 @@ class _HyperlightSandbox:
         with self._state:
             return not self._retired and self.worker.alive
 
-    def retire(self, expected_id: str | None = None) -> bool:
+    def retire(self, expected_id: str | None = None, *, failed: bool = False) -> bool:
         with self._state:
             if expected_id is not None and expected_id != self._identity:
                 return False
             self._retired = True
+            self._failed = failed
             self._phase = "disposing"
             self._last_activity_at = time.time()
             return True
@@ -197,7 +199,7 @@ class _HyperlightSandbox:
             worker_pid = getattr(process, "pid", None)
             if not isinstance(worker_pid, int):
                 worker_pid = None
-            state = self._phase
+            state = "failed" if self._failed else self._phase
             if not self._retired and not self.worker.alive:
                 state = "failed"
             return HyperlightSandboxInfo(
@@ -212,9 +214,15 @@ class _HyperlightSandbox:
                 egress_targets=self.targets,
             )
 
-    async def stop(self) -> None:
-        self.retire()
-        await _finish(asyncio.create_task(_offload(self.worker.close)))
+    async def stop(self, *, failed: bool = False) -> None:
+        self.retire(failed=failed)
+        try:
+            await _finish(asyncio.create_task(_offload(self.worker.close)))
+        except BaseException:
+            with self._state:
+                self._failed = True
+                self._last_activity_at = time.time()
+            raise
 
     async def _exchange(self, message: dict[str, object], deadline: float) -> dict[str, object]:
         if not self.alive:
@@ -246,7 +254,7 @@ class _HyperlightSandbox:
                 dispatched = started
             try:
                 if dispatched:
-                    await self.stop()
+                    await self.stop(failed=True)
             finally:
                 if not dispatched or not self.worker.alive:
                     with suppress(Exception):
@@ -287,13 +295,13 @@ class _HyperlightSandbox:
                     or not isinstance(stderr, str)
                     or type(status) is not int
                 ):
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise HyperlightWorkerError("invalid execution result")
                 if len(stdout.encode()) + len(stderr.encode()) > self.config.max_output_bytes:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise HyperlightWorkerError("worker violated the output limit")
                 if status < 0:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise HyperlightWorkerError("native execution failed")
                 return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
             finally:
@@ -306,7 +314,7 @@ class _HyperlightSandbox:
             try:
                 response = await self._exchange({"op": "reset"}, deadline)
                 if response != {"ok": True}:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise HyperlightWorkerError("worker did not confirm restore")
                 with self._state:
                     if self._retired:
@@ -413,7 +421,7 @@ class HyperlightSandboxBackend:
             try:
                 await sandbox.prepare(deadline)
             except BaseException:
-                await sandbox.stop()
+                await sandbox.stop(failed=True)
                 del self._sandboxes[index]
                 raise
             return sandbox

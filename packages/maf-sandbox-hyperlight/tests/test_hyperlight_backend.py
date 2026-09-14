@@ -300,6 +300,8 @@ def test_started_deadline_terminates_worker_and_reacquire_is_fresh(backend, oper
                 await sandbox.reset(timeout=0.04)
         assert not isinstance(caught.value, SandboxQueuedTimeout)
         assert not worker.alive
+        failed = await backend.list_sandboxes()
+        assert failed[0].state == "failed"
         with pytest.raises(HyperlightWorkerError, match="retired"):
             await sandbox.run_code("cannot run", timeout=1)
         replacement = await acquire(backend)
@@ -445,6 +447,8 @@ def test_failed_disposal_retains_target_for_retry_and_scope_purge_preserves_sibl
         assert purge.disposed == 0 and purge.undisposed is not None
         assert (KEY, SPEC.kind) in backend._sandboxes
         assert worker.alive and not target.alive
+        retained = await backend.list_sandboxes()
+        assert next(item for item in retained if item.key == KEY).state == "failed"
         purge = await backend.dispose_scope(KEY.scope, KEY.thread_id)
         assert purge.disposed == 1 and purge.undisposed is None
         assert sibling.alive
@@ -471,6 +475,7 @@ def test_bad_native_results_retire_the_worker(backend, reply):
             assert str(raised.value) == "native execution failed"
         assert not worker.alive
         assert not sandbox.alive
+        assert (await backend.list_sandboxes())[0].state == "failed"
         replacement = await acquire(backend)
         assert replacement.alive and replacement.instance_id != sandbox.instance_id
 

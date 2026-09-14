@@ -40,6 +40,7 @@ class _NoRedirectHandler(HTTPRedirectHandler):
 
 
 _LOCAL_OPENER = build_opener(ProxyHandler({}), _NoRedirectHandler())
+_TRANSPORT_GRACE = 5.0
 
 
 class HttpControl:
@@ -91,7 +92,12 @@ class HttpControl:
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
         """Read the endpoint's current authoritative snapshot."""
-        value = await asyncio.to_thread(self._request, "GET", "/v1/sandboxes")
+        value = await asyncio.to_thread(
+            self._request,
+            "GET",
+            f"/v1/sandboxes?timeout={self.timeout}",
+            timeout=self.timeout + _TRANSPORT_GRACE,
+        )
         if not isinstance(value, dict):
             raise ControlEndpointError("control endpoint returned an invalid inventory")
         data = cast("dict[object, object]", value)
@@ -106,7 +112,8 @@ class HttpControl:
             value = await asyncio.to_thread(
                 self._request,
                 "GET",
-                f"/v1/sandboxes/{quote(instance_id, safe='')}",
+                f"/v1/sandboxes/{quote(instance_id, safe='')}?timeout={self.timeout}",
+                timeout=self.timeout + _TRANSPORT_GRACE,
             )
         except ControlEndpointError as error:
             if error.status_code == 404:
@@ -124,7 +131,7 @@ class HttpControl:
                 self._request,
                 "DELETE",
                 f"/v1/sandboxes/{quote(instance_id, safe='')}?timeout={timeout}",
-                timeout=timeout + 5.0,
+                timeout=timeout + _TRANSPORT_GRACE,
             )
         except ControlEndpointError as error:
             return DisposalResult(DisposalStatus.FAILED, instance_id, str(error))
@@ -148,7 +155,7 @@ class HttpControl:
                 f"/v1/scopes/{quote(scope, safe='')}/threads/"
                 f"{quote(thread_id, safe='')}?timeout={timeout}"
             ),
-            timeout=timeout + 5.0,
+            timeout=timeout + _TRANSPORT_GRACE,
         )
         result = PurgeResult.from_json(value)
         if (result.scope, result.thread_id) != (scope, thread_id):
@@ -338,8 +345,11 @@ async def discover_controls(directory: Path | None = None) -> CompositeControl:
     """Return clients for responsive local endpoints explicitly enabled by their hosts."""
     clients = [HttpControl(manifest) for manifest in read_manifests(directory)]
     healthy: list[HttpControl] = []
+    errors: list[str] = []
     results = await asyncio.gather(*(client.health() for client in clients), return_exceptions=True)
     for client, result in zip(clients, results, strict=True):
-        if not isinstance(result, BaseException):
+        if isinstance(result, BaseException):
+            errors.append(f"{client.manifest.source_id}: {result}")
+        else:
             healthy.append(client)
-    return CompositeControl(cast("Sequence[SandboxControl]", healthy))
+    return CompositeControl(cast("Sequence[SandboxControl]", healthy), errors)

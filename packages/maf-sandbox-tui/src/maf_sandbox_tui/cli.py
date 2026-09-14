@@ -17,7 +17,14 @@ from pathlib import Path
 from ._app import SandboxConsole
 from ._client import CompositeControl, ControlEndpointError, HttpControl, read_manifests
 from ._control import MemoryControl
-from ._models import DisposalStatus, PurgeResult, PurgeStatus, SandboxRecord, SandboxState
+from ._models import (
+    DisposalResult,
+    DisposalStatus,
+    PurgeResult,
+    PurgeStatus,
+    SandboxRecord,
+    SandboxState,
+)
 from ._server import EndpointManifest, SandboxControlServer
 from ._update import (
     DISTRIBUTION_NAME,
@@ -155,7 +162,7 @@ def _parser() -> argparse.ArgumentParser:
         type=_positive_seconds,
         default=10.0,
         metavar="SECONDS",
-        help="PyPI version-check timeout",
+        help="version-check and package-manager timeout",
     )
     _add_json_option(update, inherited=True)
 
@@ -236,6 +243,28 @@ def _control(probes: Sequence[_HostProbe]) -> CompositeControl:
             if probe.error is not None
         ),
     )
+
+
+class _ReloadingControl:
+    def __init__(self, load_manifests: Callable[[], tuple[EndpointManifest, ...]]) -> None:
+        self._load_manifests = load_manifests
+
+    async def _current(self) -> CompositeControl:
+        return _control(await _probe(self._load_manifests()))
+
+    async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+        return await (await self._current()).list_sandboxes()
+
+    async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
+        return await (await self._current()).get_sandbox(instance_id)
+
+    async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
+        return await (await self._current()).dispose_sandbox(instance_id, timeout=timeout)
+
+    async def purge_thread(
+        self, scope: str, thread_id: str, *, timeout: float = 10.0
+    ) -> PurgeResult:
+        return await (await self._current()).purge_thread(scope, thread_id, timeout=timeout)
 
 
 async def _snapshot(
@@ -641,21 +670,21 @@ async def _dispatch(
     if command == "watch":
         arguments.jsonl = arguments.jsonl or arguments.json
         return await _watch(load_manifests, arguments)
+    if command is None and not arguments.json:
+        await SandboxConsole(_ReloadingControl(load_manifests)).run_async()
+        return 0
     probes = await _probe(load_manifests())
     if command == "hosts":
         return await _hosts(probes, as_json=arguments.json)
     if command is None:
-        if arguments.json:
-            arguments.host = None
-            arguments.backend = None
-            arguments.scope = None
-            arguments.thread = None
-            arguments.kind = None
-            arguments.state = None
-            arguments.older_than = None
-            return await _list(probes, arguments)
-        await SandboxConsole(_control(probes)).run_async()
-        return 0
+        arguments.host = None
+        arguments.backend = None
+        arguments.scope = None
+        arguments.thread = None
+        arguments.kind = None
+        arguments.state = None
+        arguments.older_than = None
+        return await _list(probes, arguments)
     if command == "list":
         return await _list(probes, arguments)
     if command == "show":
@@ -675,7 +704,7 @@ async def _run(arguments: argparse.Namespace) -> int:
         return await _dispatch(arguments, lambda: (manifest,))
     if arguments.demo:
         with tempfile.TemporaryDirectory(prefix="mst-demo-") as temporary:
-            control = MemoryControl.demo()
+            control = MemoryControl.demo(source_id="mst-demo")
             async with SandboxControlServer(
                 control,
                 source_id="mst-demo",

@@ -337,7 +337,12 @@ def perform_update(
             capture_output=capture_output,
             check=False,
             text=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as error:
+        raise UpdateError(
+            f"{owner.kind.value} timed out after {timeout:g} seconds while updating MST"
+        ) from error
     except OSError as error:
         raise UpdateError(f"could not start {owner.kind.value}: {error}") from error
     if completed.returncode != 0:

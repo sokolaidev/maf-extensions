@@ -16,6 +16,7 @@ from maf_sandbox_tui import (
     DisposalStatus,
     EndpointManifest,
     HttpControl,
+    MemoryControl,
     PurgeResult,
     PurgeStatus,
     SandboxRecord,
@@ -243,6 +244,36 @@ def test_no_command_opens_the_tui(monkeypatch):
 
     assert asyncio.run(cli_module._dispatch(arguments, lambda: ())) == 0
     assert ran == [True]
+
+
+def test_tui_control_reloads_discovery_for_each_operation(monkeypatch):
+    manifest = EndpointManifest("host", "http://127.0.0.1:1", 1)
+    memory = MemoryControl.demo(now=1_000)
+    loads = 0
+
+    def load():
+        nonlocal loads
+        loads += 1
+        return (manifest,)
+
+    async def probe(manifests):
+        assert manifests == (manifest,)
+        return (cli_module._HostProbe(manifest, cast(HttpControl, memory)),)
+
+    monkeypatch.setattr(cli_module, "_probe", probe)
+
+    async def check() -> None:
+        control = cli_module._ReloadingControl(load)
+        records = await control.list_sandboxes()
+        assert await control.get_sandbox(records[0].instance_id) == records[0]
+        assert (
+            await control.dispose_sandbox(records[0].instance_id)
+        ).status is DisposalStatus.DISPOSED
+        purged = await control.purge_thread(records[1].scope, records[1].thread_id)
+        assert purged.status is PurgeStatus.PURGED
+
+    asyncio.run(check())
+    assert loads == 4
 
 
 def test_internal_unknown_command_is_an_assertion():

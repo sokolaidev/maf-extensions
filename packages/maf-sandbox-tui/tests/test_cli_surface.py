@@ -129,7 +129,7 @@ def test_list_accepts_every_filter_and_duration_unit(capsys):
             "--demo",
             "--json",
             "--host",
-            "research-agent",
+            "mst-demo",
             "--backend",
             "hyperlight",
             "--scope",
@@ -169,7 +169,7 @@ def test_watch_accepts_every_filter_timing_option_and_json_alias(capsys):
             "--count",
             "2",
             "--host",
-            "research-agent",
+            "mst-demo",
             "--backend",
             "hyperlight",
             "--scope",
@@ -370,3 +370,10 @@ def test_every_command_runs_through_the_real_module_entry_point():
         completed = _entry_point(*arguments)
         assert completed.returncode == 0, f"{name}: {completed.stdout}\n{completed.stderr}"
         assert json.loads(completed.stdout)
+
+
+def test_module_entry_point_already_propagates_nonzero_main_status():
+    completed = _entry_point("show", "missing", "--demo", "--json")
+
+    assert completed.returncode == 3
+    assert json.loads(completed.stdout)["status"] == "not_found"

@@ -27,6 +27,7 @@ from maf_sandbox_tui import (
     SandboxControlServer,
     SandboxRecord,
     SandboxState,
+    discover_controls,
 )
 from maf_sandbox_tui._client import PartialInventoryError, read_manifests
 
@@ -481,7 +482,7 @@ def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
     asyncio.run(check())
 
 
-def test_server_cancels_an_operation_after_its_request_timeout(tmp_path):
+def test_client_inventory_deadline_cancels_the_server_operation(tmp_path):
     class HangingControl(MemoryControl):
         def __init__(self) -> None:
             super().__init__()
@@ -502,12 +503,34 @@ def test_server_cancels_an_operation_after_its_request_timeout(tmp_path):
             source_id="test-host",
             manifest_directory=tmp_path,
         )
-        server.request_timeout = 0.01
         async with server:
             with pytest.raises(ControlEndpointError) as raised:
-                await HttpControl(server.manifest).list_sandboxes()
+                await HttpControl(server.manifest, timeout=0.01).list_sandboxes()
             assert raised.value.status_code == 504
             await asyncio.wait_for(control.cancelled.wait(), timeout=1)
+
+    asyncio.run(check())
+
+
+def test_discovery_preserves_failed_health_probes_for_every_operation(tmp_path):
+    stale = EndpointManifest("stopped-host", "http://127.0.0.1:1", 1)
+    (tmp_path / "stopped.json").write_text(json.dumps(stale.to_json()), encoding="utf-8")
+
+    async def check() -> None:
+        async with SandboxControlServer(
+            MemoryControl.demo(now=1_000),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ):
+            control = await discover_controls(tmp_path)
+            with pytest.raises(PartialInventoryError) as raised:
+                await control.list_sandboxes()
+            assert len(raised.value.records) == 3
+            assert raised.value.errors[0].startswith("stopped-host:")
+
+            purged = await control.purge_thread("tenant-labs", "forecast-042")
+            assert purged.status is PurgeStatus.PARTIAL
+            assert purged.disposed == 1
 
     asyncio.run(check())
 

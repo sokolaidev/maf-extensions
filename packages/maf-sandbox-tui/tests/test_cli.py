@@ -30,6 +30,14 @@ def test_hosts_reports_the_opted_in_demo_process(capsys):
     assert payload[0]["status"] == "healthy"
 
 
+def test_demo_host_identifier_filters_its_reported_inventory(capsys):
+    main(["list", "--demo", "--host", "mst-demo", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert len(payload) == 3
+    assert {item["source_id"] for item in payload} == {"mst-demo"}
+
+
 def test_show_prints_one_exact_record(capsys):
     main(["show", _READY_INSTANCE, "--demo", "--json"])
     payload = json.loads(capsys.readouterr().out)

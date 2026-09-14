@@ -132,10 +132,16 @@ class _ControlHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _run(self, operation: Coroutine[Any, Any, Any]) -> Any:
+    def _run(self, operation: Coroutine[Any, Any, Any], *, timeout: float | None = None) -> Any:
         future = asyncio.run_coroutine_threadsafe(operation, self._control_server.owner.loop)
         try:
-            return future.result(timeout=self._control_server.owner.request_timeout)
+            return future.result(
+                timeout=(
+                    self._control_server.owner.request_timeout
+                    if timeout is None
+                    else min(timeout, self._control_server.owner.request_timeout)
+                )
+            )
         except FutureTimeoutError:
             future.cancel()
             raise
@@ -164,7 +170,10 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/v1/sandboxes":
-                records = self._run(self._control_server.owner.control.list_sandboxes())
+                records = self._run(
+                    self._control_server.owner.control.list_sandboxes(),
+                    timeout=self._operation_timeout(),
+                )
                 self._send(
                     HTTPStatus.OK,
                     {
@@ -175,7 +184,10 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/v1/sandboxes/"):
                 instance_id = unquote(path.removeprefix("/v1/sandboxes/"))
-                records = self._run(self._control_server.owner.control.list_sandboxes())
+                records = self._run(
+                    self._control_server.owner.control.list_sandboxes(),
+                    timeout=self._operation_timeout(),
+                )
                 record = next((item for item in records if item.instance_id == instance_id), None)
                 if record is None:
                     self._send(HTTPStatus.NOT_FOUND, {"error": "sandbox not found"})

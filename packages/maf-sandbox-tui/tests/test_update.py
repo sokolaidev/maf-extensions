@@ -100,6 +100,7 @@ def test_update_refuses_to_mutate_a_project_environment(monkeypatch, tmp_path):
 def test_uv_update_delegates_an_exact_release_and_verifies_it(monkeypatch, tmp_path):
     installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
     commands: list[list[str]] = []
+    timeouts: list[float] = []
     monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
     monkeypatch.setattr(
         update_module,
@@ -110,6 +111,7 @@ def test_uv_update_delegates_an_exact_release_and_verifies_it(monkeypatch, tmp_p
 
     def run(command, **_kwargs):
         commands.append(command)
+        timeouts.append(_kwargs["timeout"])
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -117,6 +119,7 @@ def test_uv_update_delegates_an_exact_release_and_verifies_it(monkeypatch, tmp_p
     result = update_module.perform_update(installation=installation, capture_output=True)
 
     assert commands == [["uv", "tool", "install", "maf-sandbox-tui@0.2.0"]]
+    assert timeouts == [10.0]
     assert result.status == "updated"
     assert result.installed == Version("0.2.0")
 
@@ -142,6 +145,24 @@ def test_pipx_can_roll_back_to_an_explicit_version(monkeypatch, tmp_path):
 
     assert commands == [["pipx", "install", "--global", "--upgrade", "maf-sandbox-tui==0.1.0"]]
     assert result.status == "downgraded"
+
+
+def test_update_reports_a_bounded_package_manager_timeout(monkeypatch, tmp_path):
+    installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+
+    def run(command, **kwargs):
+        assert kwargs["timeout"] == 0.25
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(UpdateError, match="uv-tool timed out after 0.25 seconds"):
+        update_module.perform_update(
+            target="0.2.0",
+            timeout=0.25,
+            installation=installation,
+        )
 
 
 def test_version_command_reports_why_workspace_installation_cannot_self_update(

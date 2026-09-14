@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Sequence
-from dataclasses import replace
 from typing import Protocol
 
 from maf_sandbox import SandboxKey, SandboxRouter
@@ -254,7 +253,7 @@ class MemoryControl:
         )
 
     @classmethod
-    def demo(cls, *, now: float | None = None) -> MemoryControl:
+    def demo(cls, *, now: float | None = None, source_id: str = "research-agent") -> MemoryControl:
         """Build a representative local Hyperlight inventory."""
         stamp = time.time() if now is None else now
 
@@ -271,7 +270,7 @@ class MemoryControl:
             egress_targets: tuple[str, ...] = (),
         ) -> SandboxRecord:
             return SandboxRecord(
-                source_id="research-agent",
+                source_id=source_id,
                 backend="hyperlight",
                 scope="tenant-labs",
                 thread_id=thread_id,
@@ -309,18 +308,15 @@ class MemoryControl:
                 last_activity_at=stamp - 91,
                 process_id=30112,
             ),
-            replace(
-                record(
-                    thread_id="review-711",
-                    agent_id="reviewer",
-                    kind="python",
-                    instance_id="7720e57b3ad7441ca21f5a7392ce1003",
-                    state=SandboxState.FAILED,
-                    created_at=stamp - 71,
-                    last_activity_at=stamp - 11,
-                    process_id=None,
-                ),
-                source_id="policy-agent",
+            record(
+                thread_id="review-711",
+                agent_id="reviewer",
+                kind="python",
+                instance_id="7720e57b3ad7441ca21f5a7392ce1003",
+                state=SandboxState.FAILED,
+                created_at=stamp - 71,
+                last_activity_at=stamp - 11,
+                process_id=None,
             ),
         ]
         return cls(records)
