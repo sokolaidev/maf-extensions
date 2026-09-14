@@ -599,7 +599,7 @@ def _smoke_maf_sandbox_terraform() -> str:
 
 
 def _smoke_maf_sandbox_drawio() -> str:
-    import dataclasses
+    import tempfile
     from importlib.resources import files
 
     from maf_sandbox import (
@@ -620,23 +620,65 @@ def _smoke_maf_sandbox_drawio() -> str:
     program = files("maf_sandbox_drawio").joinpath("_renderer.py").read_text(encoding="utf-8")
     if "def convert(" not in program:
         raise SystemExit("FAIL: draw.io guest converter is missing")
+    source = (
+        '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>'
+        '<mxCell id="a" parent="1" vertex="1" value="Smoke &amp; check">'
+        '<mxGeometry as="geometry" x="10" y="20" width="160" height="80"/>'
+        "</mxCell></root></mxGraphModel>"
+    )
+    output = f'<mxfile><diagram name="Page-1">{source}</diagram></mxfile>'
+
+    class _Producing(InProcessSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            await self.write_file("diagram.drawio", output, working_directory=working_directory)
+            return result
+
+    sandbox = _Producing()
+    written = _recording(sandbox)
     backend = InProcessSandboxBackend(
-        InProcessSandbox(),
+        sandbox,
         declarations=dataclasses.replace(
             FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
         ),
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
-    [tool] = make_drawio_tools(
-        router,
-        "smoke",
-        make_caller_context(list_no_files, lambda: "s", lambda: "t"),
-        make_file_system_sink(pathlib.Path.cwd() / "drawio-smoke"),
+    with tempfile.TemporaryDirectory(prefix="drawio-smoke-") as directory:
+        destination = pathlib.Path(directory) / "diagram.drawio"
+        [tool] = make_drawio_tools(
+            router,
+            "smoke",
+            make_caller_context(list_no_files, lambda: "s", lambda: "t"),
+            make_file_system_sink(pathlib.Path(directory)),
+        )
+        if tool.name != "create_drawio":
+            raise SystemExit(f"FAIL: expected create_drawio, got {tool.name!r}")
+        refused = asyncio.run(tool.func(xml="x" * (1024 * 1024 + 1)))
+        if "1 MiB" not in str(refused) or backend.keys or destination.exists():
+            raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
+        result = asyncio.run(tool.func(xml=source))
+        if not str(result).startswith("diagram.drawio (") or not destination.is_file():
+            raise SystemExit(f"FAIL: draw.io did not deliver an artifact: {result!r}")
+        if destination.read_text(encoding="utf-8") != output:
+            raise SystemExit("FAIL: draw.io did not preserve the converter's output")
+    if len(sandbox.commands) != 1:
+        raise SystemExit(f"FAIL: expected one draw.io converter execution: {sandbox.commands!r}")
+    command, guest_directory, _ = sandbox.commands[0]
+    expected = "python3 -I renderer.py --preserve-layout true --direction TB --timeout 54.0"
+    if command != expected:
+        raise SystemExit(f"FAIL: unexpected draw.io converter command: {command!r}")
+    if written.get(f"{guest_directory}/input.xml") != source:
+        raise SystemExit("FAIL: draw.io did not upload the model's XML")
+    if written.get(f"{guest_directory}/renderer.py") != program:
+        raise SystemExit("FAIL: draw.io did not upload its packaged converter")
+    if len(set(backend.keys)) != 1 or not backend.disposed:
+        raise SystemExit("FAIL: draw.io did not acquire and dispose one sandbox key")
+    return (
+        "create_drawio uploads XML and its packaged converter, executes fixed argv, "
+        "delivers diagram.drawio and disposes; oversized input is refused before acquiring"
     )
-    result = asyncio.run(tool.func(xml="x" * (1024 * 1024 + 1)))
-    if "1 MiB" not in str(result) or backend.keys:
-        raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
-    return "attaches create_drawio, ships the guest converter and refuses oversized input"
 
 
 _SMOKES = {
