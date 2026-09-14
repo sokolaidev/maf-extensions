@@ -6,7 +6,7 @@ app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 
 :class:`AcasSandboxBackend` implements :class:`maf_sandbox.SandboxBackend` on
 `Azure Container Apps Sandboxes <https://learn.microsoft.com/azure/container-apps/sandboxes-overview>`_:
-microVM isolation, Deny-default egress with a per-spec allowlist, no ambient identity inside,
+microVM isolation, Deny-default egress with a per-spec allowlist, optional group identity,
 and lifecycle policies that reclaim a billable sandbox after it goes idle.  It declares
 :data:`~maf_sandbox.Isolation.MICROVM`, the router's default floor, so a host that
 configures nothing already permits this backend, and

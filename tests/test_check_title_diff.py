@@ -169,7 +169,7 @@ class TestAssess:
             return source
 
         monkeypatch.setattr(check, "_git", fake_git)
-        result = check._changed_python("base", f"R100\t{old_path}\t{new_path}")
+        result = check._changed_sources("base", f"R100\t{old_path}\t{new_path}")
         assert result[str(new_path)] == (source, source)
         assert check.assess(
             "chore: rename the module",
@@ -202,7 +202,7 @@ class TestAssess:
             raise AssertionError(f"nothing should be read for a non-Python source: {args}")
 
         monkeypatch.setattr(check, "_git", fake_git)
-        result = check._changed_python("base", "R100\tREADME.md\tscripts/example.py")
+        result = check._changed_sources("base", "R100\tREADME.md\tscripts/example.py")
         assert result["scripts/example.py"] == (None, None)
         assert check.assess(
             "docs: add module",
@@ -608,3 +608,116 @@ class TestBothReadsStartAtTheMergeBase:
         diffs = [call for call in calls if call[0] == "diff"]
         assert diffs == [("diff", "--find-renames", "--name-status", "STALEBASE", "HEAD")]
         assert "no merge base" in capsys.readouterr().err
+
+
+class TestScriptCommentEdits:
+    @pytest.mark.parametrize("directory", ["tests", "docs"])
+    @pytest.mark.parametrize("suffix", ["sh", "ps1"])
+    def test_main_preserves_non_behavior_paths(self, directory, suffix, monkeypatch, tmp_path):
+        path = f"packages/example/{directory}/example.{suffix}"
+        target = tmp_path / path
+        target.parent.mkdir(parents=True)
+        target.write_text("run_new\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        def fake_git(*args):
+            if args[0] == "merge-base":
+                return "BASE"
+            if args[0] == "diff":
+                return f"M\t{path}"
+            assert args == ("show", f"BASE:{path}")
+            return "run_old\n"
+
+        monkeypatch.setattr(check, "_git", fake_git)
+        assert check.main(["check", "BASE", "docs: update examples"]) == 0
+        assert check.main(["check", "BASE", "fix: change behavior"]) == 1
+
+    @pytest.mark.parametrize("suffix", ["sh", "ps1"])
+    def test_main_accepts_operator_comment_edit(self, suffix, monkeypatch, tmp_path):
+        path = f"packages/example/scripts/grant.{suffix}"
+        before = "# host credential\nrun_command\n"
+        after = "# optional group identity is separate\nrun_command\n"
+        target = tmp_path / path
+        target.parent.mkdir(parents=True)
+        target.write_text(after, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        def fake_git(*args):
+            if args[0] == "merge-base":
+                return "BASE"
+            if args[0] == "diff":
+                return f"M\t{path}"
+            assert args == ("show", f"BASE:{path}")
+            return before
+
+        monkeypatch.setattr(check, "_git", fake_git)
+        assert check.main(["check", "BASE", "docs: clarify identity"]) == 0
+
+    @pytest.mark.parametrize(
+        ("suffix", "before", "after"),
+        [
+            ("sh", "set -eu\n# old\nrun\n", "set -eu\n# new\nrun\n"),
+            ("ps1", "<#\nhelp\n#>\nparam()\n# old\nrun\n", "<#\nhelp\n#>\nparam()\n# new\nrun\n"),
+        ],
+    )
+    def test_simple_setup_preserves_comment_classification(self, suffix, before, after):
+        path = f"packages/example/scripts/grant.{suffix}"
+        assert (
+            check.assess("docs: clarify", [path], {}, changed_scripts={path: (before, after)}) == []
+        )
+        assert check.assess("fix: execute", [path], {}, changed_scripts={path: (before, after)})
+
+    @pytest.mark.parametrize(
+        ("suffix", "before", "after"),
+        [
+            ("sh", "# note\nrun_old\n", "# note\nrun_new\n"),
+            ("sh", "#!/bin/sh\nrun\n", "#!/bin/bash\nrun\n"),
+            ("ps1", "#requires -Version 5\nrun\n", "#requires -Version 7\nrun\n"),
+            ("ps1", "#Requires -RunAsAdministrator\nrun\n", "# ordinary comment\nrun\n"),
+            ("sh", "cat <<EOF\n# old\nEOF\n", "cat <<EOF\n# new\nEOF\n"),
+            ("ps1", "$text = @'\n# old\n'@\n", "$text = @'\n# new\n'@\n"),
+            ("sh", "value='\n# old\n'\n", "value='\n# new\n'\n"),
+            ("ps1", '$value="\n# old\n"\n', '$value="\n# new\n"\n'),
+            ("sh", "value=\\\n# old\n", "value=\\\n# new\n"),
+            ("ps1", "$value=`\n# old\n", "$value=`\n# new\n"),
+            ("ps1", "<#\n<#\n# old\n#>\n#>\n", "<#\n<#\n# new\n#>\n#>\n"),
+            ("sh", None, "# added\nrun\n"),
+            ("ps1", "# deleted\nrun\n", None),
+        ],
+    )
+    def test_executable_or_uncertain_edits_still_require_behavior_title(
+        self, suffix, before, after
+    ):
+        path = f"packages/example/scripts/grant.{suffix}"
+        assert check.assess("docs: clarify", [path], {}, changed_scripts={path: (before, after)})
+        assert (
+            check.assess("fix: change", [path], {}, changed_scripts={path: (before, after)}) == []
+        )
+
+    def test_missing_script_snapshot_is_conservative(self):
+        assert check.assess("docs: clarify", ["packages/example/run.sh"], {})
+
+    def test_renaming_a_script_is_executable(self):
+        old, new = "packages/example/old.sh", "packages/example/new.sh"
+        assert check.assess(
+            "docs: move", [new], {}, [(old, new)], changed_scripts={new: ("run\n", "run\n")}
+        )
+
+    def test_source_read_preserves_whitespace(self, monkeypatch):
+        source = "\n# comment\nrun\n\n"
+        monkeypatch.setattr(check.subprocess, "check_output", lambda *args, **kwargs: source)
+        assert check._git("show", "BASE:script.sh") == source
+
+    @pytest.mark.parametrize("suffix", ["sh", "ps1"])
+    def test_packaged_operator_comment_edit(self, suffix):
+        relative = f"packages/maf-sandbox-acas/scripts/grant-sandbox-access.{suffix}"
+        current = (_SCRIPT.parent.parent / relative).read_text(encoding="utf-8")
+        marker = "ROLE_NAME=" if suffix == "sh" else "$RoleName ="
+        changed = current.replace(marker, "# explanatory comment\n" + marker, 1)
+        assert changed != current
+        assert (
+            check.assess(
+                "docs: clarify", [relative], {}, changed_scripts={relative: (current, changed)}
+            )
+            == []
+        )

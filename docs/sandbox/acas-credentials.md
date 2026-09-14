@@ -2,6 +2,8 @@
 
 ACAS control-plane credentials authenticate the host's SDK operations. They remain outside the guest and are independent of host-tool user credentials, guest-provisioned tokens and platform-attached managed identity. `AcasSandboxConfig.credential_resolver` selects this authority; omitting it retains `DefaultAzureCredential`.
 
+ACAS supports managed identity configured on the sandbox group. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. Guest token acquisition was measured for M1's tested API, image and group configuration, as [sandbox group identity](backends/acas.md#sandbox-group-identity) records. The host credential selected below is independent of that configured guest authority.
+
 ## Request and cleanup authority
 
 The async resolver receives an `AcasCredentialRequest` with `scope`, `thread_id`, `operation`, and an optional `key`. The backend supplies these values from the host's `SandboxKey` or disposal target; guest arguments never select an authority. The resolver returns `AcasCredentialBinding(authority, generation, create_credential)`. `authority` and `generation` are nonempty, non-secret host references. The factory returns a fresh Azure `AsyncTokenCredential`, directly or through an awaitable, on the loop that will use it.

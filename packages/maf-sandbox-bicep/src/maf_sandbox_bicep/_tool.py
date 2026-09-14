@@ -111,8 +111,8 @@ BICEP_KIND = "bicep"
 #: about the source while the check it stands for — outdated `br/public:avm/...` pins —
 #: never runs.
 #:
-#: All four are Microsoft-operated; the containment posture (no ARM, no ambient identity,
-#: nothing reachable that could carry the host's credentials) is unchanged.
+#: These restore destinations neither grant ARM access nor provision credentials; the host
+#: owns identity configured on the sandbox backend.
 _MCR_HOST = "mcr.microsoft.com"
 _MCR_DATA_HOST = "*.data.mcr.microsoft.com"
 _MODULE_INDEX_REDIRECT_HOST = "aka.ms"
