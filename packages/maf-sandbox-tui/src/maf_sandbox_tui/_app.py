@@ -389,4 +389,4 @@ class SandboxConsole(App[None]):
             return
         style = "#7bd88f" if result.status is DisposalStatus.DISPOSED else "#ff6b6b"
         status.update(Content.assemble((result.message, style)))
-        await self._refresh()
+        self.action_refresh()

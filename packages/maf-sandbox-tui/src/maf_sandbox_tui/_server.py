@@ -10,9 +10,11 @@ import json
 import math
 import os
 import secrets
+import stat
 import tempfile
 import threading
 from collections.abc import Coroutine
+from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -56,6 +58,35 @@ def runtime_directory() -> Path:
         return Path(runtime) / "maf-sandbox-tui"
     user_id = os.getuid()
     return Path(tempfile.gettempdir()) / f"maf-sandbox-tui-{user_id}"
+
+
+def _process_user_id() -> int | None:
+    if os.name == "nt":
+        return None
+    return os.getuid()
+
+
+def ensure_private_runtime_directory(path: Path, *, create: bool) -> bool:
+    """Create or validate a discovery directory before trusting its contents."""
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise RuntimeError(f"sandbox discovery path is not a directory: {path}")
+    user_id = _process_user_id()
+    if user_id is not None:
+        if metadata.st_uid != user_id:
+            raise PermissionError(f"sandbox discovery directory is not owned by this user: {path}")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise PermissionError(f"sandbox discovery directory is not private: {path}")
+    return True
 
 
 @dataclass(frozen=True)
@@ -122,7 +153,7 @@ class EndpointManifest:
 
 
 class _ControlHttpServer(ThreadingHTTPServer):
-    daemon_threads = True
+    daemon_threads = False
 
     def __init__(self, owner: SandboxControlServer) -> None:
         self.owner = owner
@@ -145,7 +176,8 @@ class _ControlHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _run(self, operation: Coroutine[Any, Any, Any], *, timeout: float | None = None) -> Any:
-        future = asyncio.run_coroutine_threadsafe(operation, self._control_server.owner.loop)
+        owner = self._control_server.owner
+        future = owner.schedule_operation(operation)
         try:
             return future.result(
                 timeout=(
@@ -155,7 +187,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 )
             )
         except FutureTimeoutError:
-            future.cancel()
+            owner.cancel_operation(future)
             raise
 
     def _operation_timeout(self) -> float:
@@ -297,6 +329,11 @@ class SandboxControlServer:
         self._httpd: _ControlHttpServer | None = None
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._operation_lock = threading.Lock()
+        self._operations: dict[
+            Future[Any], tuple[Coroutine[Any, Any, Any], asyncio.Task[Any] | None]
+        ] = {}
+        self._closing = False
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
@@ -318,11 +355,106 @@ class SandboxControlServer:
         """Discovery record for the started endpoint."""
         return EndpointManifest(self.source_id, self.endpoint, os.getpid())
 
+    def schedule_operation(self, operation: Coroutine[Any, Any, Any]) -> Future[Any]:
+        """Schedule one handler operation on the owning event loop."""
+        bridge: Future[Any] = Future()
+        with self._operation_lock:
+            loop = self._loop
+            if self._closing or loop is None:
+                operation.close()
+                raise RuntimeError("control server is closing")
+            self._operations[bridge] = (operation, None)
+            try:
+                loop.call_soon_threadsafe(self._begin_operation, bridge)
+            except RuntimeError:
+                self._operations.pop(bridge, None)
+                operation.close()
+                raise
+        return bridge
+
+    def _begin_operation(self, bridge: Future[Any]) -> None:
+        with self._operation_lock:
+            entry = self._operations.get(bridge)
+            if entry is None:
+                return
+            operation, _ = entry
+            if self._closing:
+                self._operations.pop(bridge, None)
+                task = None
+            else:
+                task = self.loop.create_task(operation)
+                self._operations[bridge] = (operation, task)
+        if task is None:
+            operation.close()
+            bridge.cancel()
+            return
+        task.add_done_callback(lambda completed: self._finish_operation(bridge, completed))
+        if bridge.cancelled():
+            task.cancel()
+
+    def _finish_operation(self, bridge: Future[Any], task: asyncio.Task[Any]) -> None:
+        with self._operation_lock:
+            entry = self._operations.pop(bridge, None)
+        if entry is None or bridge.done():
+            return
+        try:
+            result = task.result()
+        except asyncio.CancelledError:
+            bridge.cancel()
+        except BaseException as error:
+            bridge.set_exception(error)
+        else:
+            bridge.set_result(result)
+
+    def cancel_operation(self, bridge: Future[Any]) -> None:
+        """Cancel an operation whose handler-side deadline expired."""
+        bridge.cancel()
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(self._cancel_operation, bridge)
+            except RuntimeError:
+                pass
+
+    def _cancel_operation(self, bridge: Future[Any]) -> None:
+        with self._operation_lock:
+            entry = self._operations.get(bridge)
+            if entry is None:
+                return
+            operation, task = entry
+            if task is None:
+                self._operations.pop(bridge, None)
+        if task is None:
+            operation.close()
+        else:
+            task.cancel()
+
+    async def _cancel_active_operations(self) -> None:
+        with self._operation_lock:
+            entries = tuple(self._operations.items())
+            pending = tuple((bridge, entry) for bridge, entry in entries if entry[1] is None)
+            for bridge, _ in pending:
+                self._operations.pop(bridge, None)
+        for bridge, (operation, _) in pending:
+            operation.close()
+            bridge.cancel()
+        active = tuple((bridge, task) for bridge, (_, task) in entries if task is not None)
+        for bridge, task in active:
+            bridge.cancel()
+            task.cancel()
+        if active:
+            await asyncio.gather(*(task for _, task in active), return_exceptions=True)
+        with self._operation_lock:
+            for bridge, _ in active:
+                self._operations.pop(bridge, None)
+
     async def start(self) -> SandboxControlServer:
         """Start serving and publish an atomic per-user discovery record."""
         if self._httpd is not None:
             return self
         self._loop = asyncio.get_running_loop()
+        with self._operation_lock:
+            self._closing = False
         httpd = _ControlHttpServer(self)
         self._httpd = httpd
         self._thread = threading.Thread(
@@ -332,7 +464,7 @@ class SandboxControlServer:
         )
         self._thread.start()
         try:
-            self._manifest_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            ensure_private_runtime_directory(self._manifest_directory, create=True)
             identity = secrets.token_hex(6)
             manifest_path = self._manifest_directory / f"{os.getpid()}-{identity}.json"
             temporary = manifest_path.with_suffix(".tmp")
@@ -345,7 +477,9 @@ class SandboxControlServer:
         return self
 
     async def close(self) -> None:
-        """Withdraw discovery and stop accepting control requests."""
+        """Withdraw discovery, stop accepting requests and drain handler operations."""
+        with self._operation_lock:
+            self._closing = True
         path, httpd, thread = self._manifest_path, self._httpd, self._thread
         self._manifest_path = None
         self._httpd = None
@@ -354,9 +488,12 @@ class SandboxControlServer:
             path.unlink(missing_ok=True)
         if httpd is not None:
             await asyncio.to_thread(httpd.shutdown)
-            httpd.server_close()
+        await self._cancel_active_operations()
+        if httpd is not None:
+            await asyncio.to_thread(httpd.server_close)
         if thread is not None:
             await asyncio.to_thread(thread.join, 2.0)
+        self._loop = None
 
     async def __aenter__(self) -> SandboxControlServer:
         return await self.start()

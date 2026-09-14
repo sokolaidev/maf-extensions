@@ -13,7 +13,12 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from ._control import SandboxControl
 from ._models import DisposalResult, DisposalStatus, PurgeResult, PurgeStatus, SandboxRecord
-from ._server import PROTOCOL_VERSION, EndpointManifest, runtime_directory
+from ._server import (
+    PROTOCOL_VERSION,
+    EndpointManifest,
+    ensure_private_runtime_directory,
+    runtime_directory,
+)
 
 
 class ControlEndpointError(RuntimeError):
@@ -333,7 +338,7 @@ class CompositeControl:
 def read_manifests(directory: Path | None = None) -> tuple[EndpointManifest, ...]:
     """Read valid discovery records without trusting filenames or stale content."""
     root = directory or runtime_directory()
-    if not root.is_dir():
+    if not ensure_private_runtime_directory(root, create=False):
         return ()
     manifests: list[EndpointManifest] = []
     for path in sorted(root.glob("*.json")):

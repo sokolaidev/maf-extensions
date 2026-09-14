@@ -77,7 +77,7 @@ else:
     await run_application(router)
 ```
 
-When enabled, the server binds an ephemeral port on the literal loopback address `127.0.0.1` and publishes the address in a per-user discovery file. `mst` discovers responsive local endpoints automatically. There are deliberately no keys in this local prototype. Loopback is machine-local, not user-private: any local process that can reach the listener can use it while the host has it enabled. Do not proxy, forward or expose the listener outside the host; remote control requires a separately designed authenticated transport.
+When enabled, the server binds an ephemeral port on the literal loopback address `127.0.0.1` and publishes the address in a per-user discovery file. `mst` discovers responsive local endpoints automatically. On POSIX hosts, MST atomically creates the discovery directory and refuses one that is not owned by the current user or is accessible to another user. There are deliberately no keys in this local prototype. Loopback is machine-local, not user-private: any local process that can reach the listener can use it while the host has it enabled. Windows discovery still needs an explicit user ACL or a named-pipe transport before production use. Do not proxy, forward or expose the listener outside the host; remote control requires a separately designed authenticated transport.
 
 `application_lifecycle.quiesce` represents the host's conversation scheduler; it is not supplied by MST. Every path that starts work for that conversation, on every application replica, must participate in the same boundary. Omit `quiesced_purge` if the host cannot provide that guarantee; MST will report the purge as partial without calling the router.
 

@@ -159,6 +159,45 @@ def test_console_coalesces_refreshes_while_one_is_in_flight():
     asyncio.run(check())
 
 
+def test_post_disposal_refresh_joins_an_in_flight_inventory_request():
+    class SequencedControl(MemoryControl):
+        def __init__(self, records: tuple[SandboxRecord, ...]) -> None:
+            super().__init__(records)
+            self.calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            self.calls += 1
+            snapshot = await super().list_sandboxes()
+            if self.calls == 2:
+                self.entered.set()
+                await self.release.wait()
+            return snapshot
+
+    async def check() -> None:
+        records = await MemoryControl.demo(now=1_000).list_sandboxes()
+        control = SequencedControl(records)
+        app = SandboxConsole(control, refresh_interval=3_600)
+
+        async with app.run_test(size=(128, 38)) as pilot:
+            await pilot.pause()
+            instance_id = records[0].instance_id
+            app.action_refresh()
+            await asyncio.wait_for(control.entered.wait(), timeout=1)
+
+            await app._dispose(instance_id)
+            assert control.calls == 2
+
+            control.release.set()
+            await pilot.pause()
+            assert control.calls == 3
+            assert all(record.instance_id != instance_id for record in app.records.values())
+            assert app.query_one("#sandboxes", DataTable).row_count == 2
+
+    asyncio.run(check())
+
+
 def test_console_does_not_cancel_an_in_flight_disposal():
     class BlockingControl(MemoryControl):
         def __init__(self, records: tuple[SandboxRecord, ...]) -> None:

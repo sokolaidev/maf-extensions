@@ -1050,6 +1050,64 @@ def test_client_delete_deadline_cancels_the_server_operation(tmp_path, operation
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("operation", ["dispose", "purge"])
+def test_server_close_cancels_and_drains_active_mutations(tmp_path, operation: str):
+    class HangingControl(MemoryControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def _hang(self) -> None:
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+        async def dispose_sandbox(
+            self, instance_id: str, *, timeout: float = 10.0
+        ) -> DisposalResult:
+            del instance_id, timeout
+            await self._hang()
+            raise AssertionError("unreachable")
+
+        async def purge_thread(
+            self, scope: str, thread_id: str, *, timeout: float = 10.0
+        ) -> PurgeResult:
+            del scope, thread_id, timeout
+            await self._hang()
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        control = HangingControl()
+        server = SandboxControlServer(
+            control,
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        await server.start()
+        client = HttpControl(server.manifest)
+        if operation == "dispose":
+            request = asyncio.create_task(client.dispose_sandbox("generation-a"))
+        else:
+            request = asyncio.create_task(client.purge_thread("scope", "thread"))
+        await asyncio.wait_for(control.entered.wait(), timeout=1)
+
+        await asyncio.wait_for(server.close(), timeout=2)
+
+        assert control.cancelled.is_set()
+        assert not server._operations
+        if operation == "dispose":
+            assert (await request).status is DisposalStatus.FAILED
+        else:
+            with pytest.raises(ControlEndpointError):
+                await request
+
+    asyncio.run(check())
+
+
 def test_discovery_preserves_failed_health_probes_for_every_operation(tmp_path):
     stale = EndpointManifest("stopped-host", "http://127.0.0.1:1", 1)
     (tmp_path / "stopped.json").write_text(json.dumps(stale.to_json()), encoding="utf-8")
@@ -1188,3 +1246,42 @@ def test_windows_runtime_fallback_is_stable_per_user(monkeypatch, tmp_path):
 
     monkeypatch.setattr(getpass, "getuser", lambda: "domain\\other")
     assert server_module._windows_runtime_directory() != first
+
+
+def test_runtime_directory_is_created_privately(tmp_path):
+    directory = tmp_path / "parent" / "runtime"
+
+    assert server_module.ensure_private_runtime_directory(directory, create=True)
+    assert directory.is_dir()
+    if server_module._process_user_id() is not None:
+        assert directory.stat().st_mode & 0o077 == 0
+
+
+def test_runtime_directory_refuses_files_and_missing_read_locations(tmp_path):
+    missing = tmp_path / "missing"
+    occupied = tmp_path / "occupied"
+    occupied.write_text("not a directory", encoding="utf-8")
+
+    assert not server_module.ensure_private_runtime_directory(missing, create=False)
+    with pytest.raises(RuntimeError, match="not a directory"):
+        server_module.ensure_private_runtime_directory(occupied, create=False)
+
+
+def test_discovery_refuses_wrongly_owned_or_shared_posix_directory(monkeypatch, tmp_path):
+    directory = tmp_path / "runtime"
+    directory.mkdir(mode=0o755)
+    metadata = directory.lstat()
+
+    monkeypatch.setattr(server_module, "_process_user_id", lambda: metadata.st_uid + 1)
+    with pytest.raises(PermissionError, match="not owned"):
+        read_manifests(directory)
+
+    monkeypatch.setattr(server_module, "_process_user_id", lambda: metadata.st_uid)
+    with pytest.raises(PermissionError, match="not private"):
+        asyncio.run(
+            SandboxControlServer(
+                MemoryControl(),
+                source_id="test-host",
+                manifest_directory=directory,
+            ).start()
+        )
