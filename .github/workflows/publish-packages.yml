@@ -159,13 +159,8 @@ jobs:
           echo "index_strategy=${index_strategy}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target} against ${index_url}"
 
-      # A version an index already carries is not something to rehearse. On PyPI that number is
-      # a release, so the run would build this ref's source under it; on TestPyPI the upload
-      # itself is refused, and `Publish` passes no `skip-existing`, so that refusal would arrive
-      # after the whole gate has run. Asked of the same indexes this run resolves from.
-      #
-      # The rehearsal path only: a tag takes its own version, and the `pypi` dispatch is how a
-      # failed upload is re-run, where the index may legitimately already show the version.
+      # Only the upload destination reserves this version. PyPI remains a dependency fallback
+      # in the later checks, but an existing PyPI release can still be uploaded to TestPyPI.
       - name: Check the rehearsed version is not published yet
         if: >-
           github.event_name == 'workflow_dispatch'
@@ -174,7 +169,7 @@ jobs:
           PACKAGE: ${{ steps.resolve.outputs.package }}
           VERSION: ${{ steps.resolve.outputs.version }}
           UV_INDEX: ${{ steps.resolve.outputs.index_url }}
-          UV_DEFAULT_INDEX: ${{ steps.resolve.outputs.default_index_url }}
+          UV_DEFAULT_INDEX: ${{ steps.resolve.outputs.index_url }}
           UV_INDEX_STRATEGY: ${{ steps.resolve.outputs.index_strategy }}
         run: python3 scripts/check_rehearsal_version.py "$PACKAGE" "$VERSION"
 

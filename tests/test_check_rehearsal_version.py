@@ -1,8 +1,4 @@
-"""The version a TestPyPI rehearsal names, and the two ways it can be one worth nothing.
-
-`scripts/check_rehearsal_version.py` answers the dispatch's optional version input. The failure
-it exists for is the quiet one: a run that builds unreleased source under a released number, so
-the dependent gates measure a pairing nobody will ever install.
+"""The version a TestPyPI rehearsal names must be unused on its upload destination.
 
 Equality is where it can be wrong silently. An index carrying `0.38.0` refuses an upload named
 `0.38`, because PEP 440 reads the absent component as zero — a comparison on the strings passes
@@ -78,7 +74,7 @@ class TestWhenTwoSpellingsAreOneVersion:
 
 
 class TestCheckingTheCandidateAgainstTheIndexes:
-    """A rehearsal names a version nothing has published yet, or it rehearses nothing."""
+    """The upload destination must have room for the candidate version."""
 
     def test_a_published_version_is_refused(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, package: str
@@ -86,8 +82,29 @@ class TestCheckingTheCandidateAgainstTheIndexes:
         _published(monkeypatch, ["0.38.0", "0.37.0"])
         assert rehearsal.check(package, "0.38.0") == 1
         assert (
-            "::error::maf-sandbox-example 0.38.0 is already on an index" in capsys.readouterr().out
+            "::error::maf-sandbox-example 0.38.0 is already on the upload index"
+            in capsys.readouterr().out
         )
+
+    @pytest.mark.parametrize("target_versions", [None, ["0.5.0"], ["0.6.0"]])
+    def test_only_the_upload_destination_can_reserve_a_version(
+        self, monkeypatch: pytest.MonkeyPatch, package: str, target_versions: list[str] | None
+    ):
+        target = "https://test.pypi.org/simple/"
+        monkeypatch.setenv("UV_INDEX", target)
+        monkeypatch.setenv("UV_DEFAULT_INDEX", target)
+        monkeypatch.setenv("UV_INDEX_STRATEGY", "unsafe-best-match")
+        requested: list[str] = []
+
+        def read_json(url: str, **kwargs):
+            requested.append(url)
+            if url.startswith(target):
+                return None if target_versions is None else {"versions": target_versions}
+            return {"versions": ["0.6.0"]}
+
+        monkeypatch.setattr(pypi_index, "read_json", read_json)
+        assert rehearsal.check(package, "0.6.0") == int(target_versions == ["0.6.0"])
+        assert requested == [f"{target}maf-sandbox-example/"]
 
     def test_a_version_spelled_differently_is_refused_under_its_published_name(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, package: str

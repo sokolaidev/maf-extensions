@@ -1,19 +1,14 @@
-"""Refuse a TestPyPI rehearsal of a version an index already carries.
+"""Refuse a TestPyPI rehearsal of a version the upload destination already carries.
 
     python scripts/check_rehearsal_version.py <package> <version>
 
-`publish-packages.yml`'s dispatch reads the version out of `packages/<package>/pyproject.toml`
-unless it is given one. While a release pull request is pending that number is the last released
-one, so the run builds the accumulated unreleased source and labels it with a version that no
-longer describes it — and `check_core_against_dependents.py` then selects every published
-dependent whose ceiling admits it, which at a released number is all of them. The dispatch takes
-a version so a rehearsal can say what it is rehearsing, including a `Release-As:` version, which
-nothing in the tree carries until release-please has opened the pull request (#1120).
+The dispatch reads the version from the package manifest unless an explicit version is given.
+Unreleased source should name its intended release version so the compatibility gates measure
+the intended core range. Released source can use the same number on a different upload index.
 
-This refuses a candidate an index this run resolves from already carries — uv's own `UV_INDEX`
-and `UV_DEFAULT_INDEX`, which for a rehearsal are TestPyPI and PyPI. One refusal covers both:
-a version PyPI carries is a release, and a version TestPyPI carries cannot be uploaded again,
-which `Publish` would otherwise discover after the whole gate has run.
+The workflow points both `UV_INDEX` and `UV_DEFAULT_INDEX` at the upload destination for this
+check. A version on PyPI can still be rehearsed on TestPyPI; one already on TestPyPI cannot be
+uploaded again. Dependency checks keep their PyPI fallback separately.
 
 It also refuses a version that is not spelled canonically. The workflow stamps the manifest with
 `uv version`, which normalises what it is given — `v1.2.3` is written as `1.2.3` — so anything
@@ -64,7 +59,7 @@ def uncanonical(candidate: str) -> str | None:
 
 
 def check(package: str, candidate: str) -> int:
-    """Refuse a rehearsal version that an index this run resolves from already carries."""
+    """Refuse a rehearsal version already present on the configured upload index."""
     reason = uncanonical(candidate)
     if reason:
         print(f"::error::{reason}")
@@ -75,19 +70,18 @@ def check(package: str, candidate: str) -> int:
     taken = [release for release in published if identity(release) == wanted]
     if taken:
         print(
-            f"::error::{distribution} {taken[0]} is already on an index this run resolves from. "
-            "Rehearsing a number that is taken builds this ref's source under it, and the upload "
-            "would be refused. Name the version this release will carry, or a .postN or .devN "
-            "past the taken one to rehearse the same number again."
+            f"::error::{distribution} {taken[0]} is already on the upload index. "
+            "That index refuses another upload under the same version. Name an unused "
+            "version, such as a .postN or .devN, to rehearse again."
         )
         return 1
     newest = f"newest published is {published[0]}" if published else "nothing published yet"
-    print(f"{distribution} {candidate} is unpublished ({newest})")
+    print(f"{distribution} {candidate} is available for upload ({newest})")
     return 0
 
 
 def main(argv: list[str]) -> int:
-    """CLI entry: refuse a rehearsal version an index already carries."""
+    """CLI entry: refuse a rehearsal version the upload index already carries."""
     if len(argv) != 3:
         print(f"usage: {argv[0]} <package> <version>", file=sys.stderr)
         return 2
