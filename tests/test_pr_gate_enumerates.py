@@ -70,6 +70,7 @@ class TestTheGateEnumerates:
             "maf-sandbox-docker",
             "maf-sandbox-hyperlight",
             "maf-sandbox-otel",
+            "maf-sandbox-terraform",
             "maf-sandbox-wslc",
         ], found
 

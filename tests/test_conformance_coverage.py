@@ -392,7 +392,13 @@ CANDIDATE_BACKEND_PACKAGES = [
 #: and absent from this set fails ``test_every_package_is_classified`` rather than quietly
 #: receiving no checks — which is the detector gating itself (#450).
 NOT_BACKENDS = frozenset(
-    {"maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-otel"}
+    {
+        "maf-sandbox-bicep",
+        "maf-sandbox-codeact",
+        "maf-sandbox-deepagents",
+        "maf-sandbox-otel",
+        "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.
+    }
 )
 
 

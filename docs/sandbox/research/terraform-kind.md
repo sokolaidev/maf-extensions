@@ -4,6 +4,8 @@
 
 ## Recommendation
 
+The subsequent implementation is tracked by [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246); see [the kind guide](../kinds/terraform.md) for its contract and [implementation evidence](terraform-implementation.md) for framework and packaging verification. The measurements below remain the original standalone CLI investigation.
+
 Add **`maf-sandbox-terraform`**, importing as `maf_sandbox_terraform`, alongside `maf-sandbox-bicep`. Give its host factory an `engine` option accepting exactly **`"terraform"` and `"opentofu"`**, defaulting to `"terraform"`. Both use the same staging, execution and reporting implementation, with explicit engine metadata. The initial workload validates configuration and checks formatting. Planning, applying, destroying, importing, state commands and `test` are separate work: Bicep's sibling is a validation tool, and those operations introduce different authority and lifecycle requirements.
 
 The first release should run with closed egress, host-controlled provider packages, and a new sandbox for each call. This is feasible on the current protocol without a new backend API. The live probe establishes that both pinned CLIs can do useful validation under these constraints; it does not establish framework integration or universal provider compatibility.

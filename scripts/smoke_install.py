@@ -34,6 +34,7 @@ _PACKAGES = {
     "maf-sandbox-docker": "maf_sandbox_docker",
     "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
     "maf-sandbox-otel": "maf_sandbox_otel",
+    "maf-sandbox-terraform": "maf_sandbox_terraform",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -575,6 +576,27 @@ def _smoke_maf_sandbox_hyperlight() -> str:
     return "constructs without WHP, declares runtime/reset and refuses shell/file workloads before starting a worker"
 
 
+def _smoke_maf_sandbox_terraform() -> str:
+    """Exercise both public engine options without requiring guest binaries on the host."""
+    from maf_sandbox import CallerContext, Cleanup, Egress, IsolationScope
+    from maf_sandbox.testing import InMemoryStore
+    from maf_sandbox_terraform import make_terraform_tools, terraform_sandbox_spec
+
+    for engine in ("terraform", "opentofu"):
+        spec = terraform_sandbox_spec(engine=engine)
+        assert spec.kind == engine
+        assert spec.isolation_scope is IsolationScope.CALL
+        assert spec.min_cleanup is Cleanup.DISPOSE and spec.egress is Egress.CLOSED
+    context = CallerContext(
+        current_scope=lambda: "smoke",
+        current_thread_id=lambda: "test",
+        list_files=InMemoryStore.list,
+    )
+    # This deliberately loose store exercises the same protocol as the other wheel smokes.
+    assert make_terraform_tools(None, InMemoryStore({}), "smoke", context) == []  # pyright: ignore[reportArgumentType]
+    return "both engines require closed call isolation and disposal; no guest binaries imported"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -584,6 +606,7 @@ _SMOKES = {
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
+    "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 
