@@ -20,12 +20,14 @@ The immutable launcher constructs an environment without inherited CLI arguments
 
 Build and runnable examples are in [the image guide](../../../images/terraform-sandbox/README.md). The built-in/local-module and `random` provider profiles pin their engine, provider archive, and guest platform. Other providers and backends require their own qualification. No numbered sample advertises an unpublished package version.
 
+Additional profiles use [host-controlled dependency preparation](../../../images/terraform-sandbox/README.md#approved-dependency-preparation). A host-owned manifest pins full provider identities, versions, platforms, archive digests and provenance references, with a separate complete graph for already-local module bundles. Preparation permits fixed HTTPS requests for those artifacts, verifies their complete content, and emits an image mirror plus module text and a sanitized receipt. It runs no provider executable on the host. The validator continues using CLOSED egress; neither the agent nor the guest gains a download interface. Unsupported remote/dynamic module graphs are refused. The [design record](../research/terraform-dependency-preparation.md) explains the choice over runtime network mirrors and TLS inspection.
+
 ## Status
 
 | Work | State | Tracker |
 |---|---|---|
 | Offline Terraform/OpenTofu validation, fixed launcher, images, examples, tests, and package registration | implemented; package not yet released | [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) by [#1250](https://github.com/sokolaidev/maf-extensions/pull/1250) (merged) |
-| Online dependency access restricted to approved artifacts and request paths | planned follow-up; validation retains closed egress | [#1249](https://github.com/sokolaidev/maf-extensions/issues/1249) (open) |
+| Dependency preparation restricted to approved artifacts and request paths | repository build tool with pinned provider mirrors and already-local module graphs; validation retains closed egress | [#1249](https://github.com/sokolaidev/maf-extensions/issues/1249) (open) |
 | Plan/apply/state commands, variable-dependent initialization, optional policy tools, and warm reuse | outside the first-version scope | scope recorded in [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) |
 
 The live suite measures actual Docker adapter calls for both engines, including local modules, JSON input, schema errors, unavailable dependencies, formatting, wrong-engine images, cancellation, timeouts, and daemon-observed disposal. The launcher suite independently exercises environment construction, shared output/time bounds, inherited pipes, read-only supplied locks, and source/state nonmutation. Local execution results belong to the implementation's issue record; adding the workflow does not establish that remote CI has run. ACAS and WSLC have not been measured for this workload.
