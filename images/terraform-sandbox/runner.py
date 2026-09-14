@@ -84,6 +84,7 @@ class Supervisor:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # An already-exited process group needs no further signal.
                 pass
             process.stdout.close()
             process.stderr.close()

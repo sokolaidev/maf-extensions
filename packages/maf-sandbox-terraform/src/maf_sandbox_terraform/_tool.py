@@ -140,6 +140,7 @@ def _build_tool(
                     try:
                         await asyncio.shield(execution)
                     except (asyncio.CancelledError, Exception):
+                        # Finish draining before disposal; preserve the caller's cancellation.
                         pass
                 if not execution.cancelled():
                     execution.exception()

@@ -27,6 +27,7 @@ def _warn_experimental() -> None:
             stacklevel=2,
         )
     except MafSandboxTerraformExperimentalWarning:
+        # An informational warning must not block imports under -Werror.
         pass
 
 
