@@ -42,6 +42,7 @@ import maf_sandbox_tui.cli as cli_module
 from maf_sandbox_tui import (
     CompositeControl,
     ControlEndpointError,
+    DisposalResult,
     DisposalStatus,
     EndpointManifest,
     HttpControl,
@@ -935,6 +936,55 @@ def test_client_inventory_deadline_cancels_the_server_operation(tmp_path):
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("operation", ["dispose", "purge"])
+def test_client_delete_deadline_cancels_the_server_operation(tmp_path, operation: str):
+    class HangingControl(MemoryControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = asyncio.Event()
+
+        async def _hang(self) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+        async def dispose_sandbox(
+            self, instance_id: str, *, timeout: float = 10.0
+        ) -> DisposalResult:
+            del instance_id, timeout
+            await self._hang()
+            raise AssertionError("unreachable")
+
+        async def purge_thread(
+            self, scope: str, thread_id: str, *, timeout: float = 10.0
+        ) -> PurgeResult:
+            del scope, thread_id, timeout
+            await self._hang()
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        control = HangingControl()
+        async with SandboxControlServer(
+            control,
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ) as server:
+            client = HttpControl(server.manifest)
+            started = asyncio.get_running_loop().time()
+            if operation == "dispose":
+                result = await client.dispose_sandbox("generation-a", timeout=0.01)
+                assert result.status is DisposalStatus.FAILED
+            else:
+                with pytest.raises(ControlEndpointError):
+                    await client.purge_thread("scope", "thread", timeout=0.01)
+            assert asyncio.get_running_loop().time() - started < 0.5
+            await asyncio.wait_for(control.cancelled.wait(), timeout=0.5)
+
+    asyncio.run(check())
+
+
 def test_discovery_preserves_failed_health_probes_for_every_operation(tmp_path):
     stale = EndpointManifest("stopped-host", "http://127.0.0.1:1", 1)
     (tmp_path / "stopped.json").write_text(json.dumps(stale.to_json()), encoding="utf-8")
@@ -1026,6 +1076,17 @@ def test_endpoint_manifest_accepts_an_unknown_direct_endpoint_process():
     manifest = EndpointManifest("manual", "http://127.0.0.1:9000", None)
 
     assert EndpointManifest.from_json(manifest.to_json()) == manifest
+
+
+@pytest.mark.parametrize("protocol_version", [2, True, 1.0, "1"])
+def test_endpoint_manifest_constructor_refuses_an_unsupported_protocol(protocol_version):
+    with pytest.raises(ValueError, match="unsupported control protocol version"):
+        EndpointManifest(
+            "invalid",
+            "http://127.0.0.1:9000",
+            None,
+            protocol_version=protocol_version,
+        )
 
 
 @pytest.mark.parametrize("process_id", [True, "42"])

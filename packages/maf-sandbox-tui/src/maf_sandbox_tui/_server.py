@@ -31,6 +31,10 @@ def _valid_process_id(value: object) -> bool:
     return value is None or (isinstance(value, int) and not isinstance(value, bool))
 
 
+def _valid_protocol_version(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == PROTOCOL_VERSION
+
+
 def _windows_runtime_directory() -> Path:
     local = os.environ.get("LOCALAPPDATA")
     if local:
@@ -65,6 +69,8 @@ class EndpointManifest:
     def __post_init__(self) -> None:
         if not self.source_id:
             raise ValueError("endpoint manifest source_id must be a nonempty string")
+        if not _valid_protocol_version(self.protocol_version):
+            raise ValueError(f"unsupported control protocol version {self.protocol_version!r}")
         if not _valid_process_id(self.process_id):
             raise ValueError("endpoint manifest process_id must be an integer or null")
         parts = urlsplit(self.endpoint)
@@ -106,7 +112,7 @@ class EndpointManifest:
             raise ValueError("endpoint manifest identity fields must be nonempty strings")
         if not _valid_process_id(process_id):
             raise ValueError("endpoint manifest process_id must be an integer or null")
-        if isinstance(version, bool) or not isinstance(version, int) or version != PROTOCOL_VERSION:
+        if not _valid_protocol_version(version):
             raise ValueError(f"unsupported control protocol version {version!r}")
         return cls(
             cast("str", source_id),
@@ -230,7 +236,8 @@ class _ControlHandler(BaseHTTPRequestHandler):
                         scope,
                         thread_id,
                         timeout=timeout,
-                    )
+                    ),
+                    timeout=timeout,
                 )
                 self._send(HTTPStatus.OK, result.to_json())
             except FutureTimeoutError:
@@ -250,7 +257,8 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 self._control_server.owner.control.dispose_sandbox(
                     instance_id,
                     timeout=timeout,
-                )
+                ),
+                timeout=timeout,
             )
             status = HTTPStatus.OK if result.status.value != "failed" else HTTPStatus.CONFLICT
             self._send(status, result.to_json())
