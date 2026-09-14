@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -39,32 +38,15 @@ class Worker:
             if (key.upper() if sys.platform == "win32" else key) in allowed_environment
         }
         environment["HYPERLIGHT_MAX_SURROGATES"] = "0"
-        cleanup_deadline: float | None = None
         try:
-            self.process = subprocess.Popen(
+            self.process = self._job.spawn(
                 self.command(),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 cwd=tempfile.gettempdir(),
-                env=environment,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                environment=environment,
+                cleanup_timeout=config.cleanup_timeout,
             )
-            try:
-                # The worker waits for init before loading Hyperlight or creating a VM.
-                self._job.assign(self.process.pid)
-            except BaseException:
-                cleanup_deadline = time.monotonic() + config.cleanup_timeout
-                try:
-                    self.process.kill()
-                    self.process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
-                finally:
-                    for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-                        if stream is not None:
-                            stream.close()
-                raise
         except BaseException:
-            self._job.close(deadline=cleanup_deadline)
+            self._job.close()
             raise
         assert self.process.stdin is not None
         assert self.process.stdout is not None

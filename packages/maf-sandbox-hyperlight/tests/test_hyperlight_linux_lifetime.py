@@ -178,7 +178,7 @@ raise SystemExit(os.waitstatus_to_exitcode(status))
     assert result.returncode == 0, result.stderr
 
 
-def test_cleanup_admission_and_cgroup_polling_share_one_deadline(monkeypatch: pytest.MonkeyPatch):
+def test_cleanup_admission_and_supervisor_wait_share_one_deadline(monkeypatch: pytest.MonkeyPatch):
     now = [0.0]
 
     def sleep(seconds: float):
@@ -192,11 +192,20 @@ def test_cleanup_admission_and_cgroup_polling_share_one_deadline(monkeypatch: py
         def release(self):
             pass
 
+    class WaitingWatcher:
+        def poll(self):
+            return None
+
+        def wait(self, *, timeout):
+            sleep(timeout)
+            raise subprocess.TimeoutExpired("watcher", timeout)
+
     job = _linux.Job.__new__(_linux.Job)
     job._pid = os.getpid()
     job._closed = False
     job._timeout = 0.2
-    job._directory, job._root, job._name = -1, -1, "worker"
+    job._control = -1
+    monkeypatch.setattr(job, "_watcher", WaitingWatcher(), raising=False)
     worker = _process.Worker.__new__(_process.Worker)
     worker._owner_pid = os.getpid()
     worker._config = HyperlightSandboxConfig(cleanup_timeout=0.2)
@@ -206,8 +215,7 @@ def test_cleanup_admission_and_cgroup_polling_share_one_deadline(monkeypatch: py
     with monkeypatch.context() as patch:
         patch.setattr(time, "monotonic", lambda: now[0])
         patch.setattr(time, "sleep", sleep)
-        patch.setattr(_linux, "_write", lambda *args: None)
-        patch.setattr(_linux, "_read", lambda *args: "populated 1\n")
+        patch.setattr(os, "write", lambda *args: 1)
         with pytest.raises(HyperlightWorkerError, match="cleanup expired"):
             worker.close()
     assert now[0] == pytest.approx(0.2)
@@ -221,6 +229,8 @@ def test_readiness_deadline_does_not_depend_on_watcher_termination(remaining: fl
     job = _linux.Job.__new__(_linux.Job)
     job._watcher = watcher
     job._ready = False
+    assert watcher.stdout is not None
+    job._readiness = watcher.stdout.fileno()
     try:
         with pytest.raises(TimeoutError, match="startup deadline"):
             job.ready(deadline=time.monotonic() + remaining)
@@ -245,7 +255,7 @@ def test_missing_cgroup_control_requires_the_group_to_be_gone(
     def unavailable(*args):
         raise OSError(error_number, "cgroup control unavailable")
 
-    monkeypatch.setattr(_linux, "_write", unavailable)
+    monkeypatch.setattr(_linux, "write_control", unavailable)
     parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         if exists:

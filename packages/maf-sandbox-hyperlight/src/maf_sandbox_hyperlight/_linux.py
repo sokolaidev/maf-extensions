@@ -127,7 +127,7 @@ def check_kvm() -> None:
         ) from error
 
 
-def _write(directory: int, name: str, value: str) -> None:
+def write_control(directory: int, name: str, value: str) -> None:
     fd = os.open(name, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory)
     try:
         os.write(fd, value.encode("ascii"))
@@ -135,7 +135,7 @@ def _write(directory: int, name: str, value: str) -> None:
         os.close(fd)
 
 
-def _read(directory: int, name: str) -> str:
+def read_control(directory: int, name: str) -> str:
     fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory)
     try:
         return os.read(fd, 4096).decode("ascii")
@@ -146,8 +146,8 @@ def _read(directory: int, name: str) -> str:
 def kill_group(directory: int, parent: int, name: str, deadline: float) -> None:
     """Kill the entire cgroup and remove it only after the kernel reports it empty."""
     try:
-        _write(directory, "cgroup.kill", "1")
-        while "populated 1" in _read(directory, "cgroup.events"):
+        write_control(directory, "cgroup.kill", "1")
+        while "populated 1" in read_control(directory, "cgroup.events"):
             if time.monotonic() >= deadline:
                 raise HyperlightWorkerError(
                     "Linux worker cgroup did not empty before cleanup expired"
@@ -166,19 +166,17 @@ def kill_group(directory: int, parent: int, name: str, deadline: float) -> None:
 
 
 class Job:
-    """Bound a worker tree; a separate pidfd watcher cleans it after owner or worker death."""
+    """A detached supervisor owns creation, containment and cleanup of the worker tree."""
 
     def __init__(self, memory_limit: int, root: str, timeout: float) -> None:
         self._pid = os.getpid()
         self._timeout = timeout
-        self._root = -1
-        self._directory = -1
-        self._owner = -1
+        self._root = self._owner = self._control = self._readiness = -1
         self._watcher: subprocess.Popen[bytes] | None = None
         self._name = "worker-" + uuid.uuid4().hex
+        self._worker_pid: int | None = None
         self._closed = False
         self._ready = False
-        created = False
         try:
             self._root = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
             filesystem = ctypes.create_string_buffer(256)
@@ -187,32 +185,12 @@ class Job:
                 raise OSError(ctypes.get_errno(), "cannot inspect the cgroup filesystem")
             if ctypes.c_long.from_buffer(filesystem).value != 0x63677270:
                 raise HyperlightWorkerError("linux_cgroup_root must be on a cgroup v2 filesystem")
-            os.mkdir(self._name, mode=0o700, dir_fd=self._root)
-            created = True
-            self._directory = os.open(
-                self._name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                dir_fd=self._root,
-            )
             page_size = os.sysconf("SC_PAGE_SIZE")
-            memory_limit -= memory_limit % page_size
-            if memory_limit <= 0:
+            self._memory_limit = memory_limit - memory_limit % page_size
+            if self._memory_limit <= 0:
                 raise HyperlightWorkerError("Linux worker memory must allow at least one page")
-            for name, value in (
-                ("memory.max", str(memory_limit)),
-                ("memory.swap.max", "0"),
-                ("memory.oom.group", "1"),
-            ):
-                _write(self._directory, name, value)
-                if _read(self._directory, name).strip() != value:
-                    raise HyperlightWorkerError("Linux worker memory enforcement was not confirmed")
-            kill = os.open("cgroup.kill", os.O_WRONLY | os.O_CLOEXEC, dir_fd=self._directory)
-            os.close(kill)
             self._owner = os.pidfd_open(self._pid)
         except BaseException as error:
-            if created:
-                with suppress(OSError):
-                    os.rmdir(self._name, dir_fd=self._root)
             self._close_fds()
             if isinstance(error, OSError):
                 raise HyperlightWorkerError(
@@ -222,60 +200,69 @@ class Job:
             raise
 
     def _close_fds(self) -> None:
-        for name in ("_directory", "_root", "_owner"):
+        for name in ("_root", "_owner", "_control", "_readiness"):
             fd = getattr(self, name)
             if fd >= 0:
                 os.close(fd)
                 setattr(self, name, -1)
 
-    def assign(self, pid: int) -> None:
-        """Contain the worker and start its independent lifetime watcher."""
-        _write(self._directory, "cgroup.procs", str(pid))
-        worker = os.pidfd_open(pid)
+    def spawn(
+        self, command: list[str], *, environment: dict[str, str], cwd: str, cleanup_timeout: float
+    ) -> subprocess.Popen[bytes]:
+        """Pass ownership to supervision before creating any cgroup or native worker."""
+        control, self._control = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         try:
-            self._watcher = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-I",
-                    "-u",
-                    "-m",
-                    "maf_sandbox_hyperlight._linux_watch",
-                    str(self._owner),
-                    str(worker),
-                    str(self._directory),
-                    str(self._root),
-                    self._name,
-                    str(self._timeout),
-                ],
-                # Ownership cannot pass to a new host before the old worker tree is gone.
-                pass_fds=(self._owner, worker, self._directory, self._root)
-                + ((_owner_fd,) if _owner_fd is not None else ()),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env={},
-            )
+            self._readiness, readiness = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+            try:
+                self._watcher = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-u",
+                        "-m",
+                        "maf_sandbox_hyperlight._linux_watch",
+                        str(self._owner),
+                        str(self._root),
+                        self._name,
+                        str(self._memory_limit),
+                        str(self._timeout),
+                        str(control),
+                        str(readiness),
+                        *command,
+                    ],
+                    # Only the supervisor inherits ownership; worker descendants must not retain it.
+                    pass_fds=(self._owner, self._root, control, readiness)
+                    + ((_owner_fd,) if _owner_fd is not None else ()),
+                    start_new_session=True,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=cwd,
+                    env=environment,
+                )
+            finally:
+                os.close(readiness)
         finally:
-            os.close(worker)
+            os.close(control)
+        return self._watcher
 
     def ready(self, *, deadline: float) -> None:
         """Wait inside the supervised exchange so readiness consumes its startup deadline."""
-        if self._watcher is None or self._watcher.poll() is not None:
-            raise HyperlightWorkerError("Linux worker lifetime watcher is unavailable")
         if self._ready:
             return
-        assert self._watcher.stdout is not None
+        poller = select.poll()
+        poller.register(self._readiness, select.POLLIN)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not poller.poll(math.ceil(remaining * 1000)):
+            raise TimeoutError("Linux worker lifetime watcher exceeded its startup deadline")
         try:
-            poller = select.poll()
-            poller.register(self._watcher.stdout, select.POLLIN)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not poller.poll(math.ceil(remaining * 1000)):
-                raise TimeoutError("Linux worker lifetime watcher exceeded its startup deadline")
-            if self._watcher.stdout.read(1) != b"1":
-                raise HyperlightWorkerError("Linux worker lifetime watcher did not start")
-            self._ready = True
-        finally:
-            self._watcher.stdout.close()
+            worker = int(os.read(self._readiness, 64))
+        except ValueError as error:
+            raise HyperlightWorkerError("Linux worker lifetime watcher did not start") from error
+        if worker <= 0:
+            raise HyperlightWorkerError("Linux worker lifetime watcher did not start")
+        self._worker_pid = worker
+        self._ready = True
 
     def close(self, *, deadline: float | None = None) -> None:
         if os.getpid() != self._pid:
@@ -284,12 +271,17 @@ class Job:
             return
         if deadline is None:
             deadline = time.monotonic() + self._timeout
-        kill_group(self._directory, self._root, self._name, deadline)
         if self._watcher is not None:
             if self._watcher.poll() is None:
-                self._watcher.kill()
-            self._watcher.wait(timeout=max(0, deadline - time.monotonic()))
-            if self._watcher.stdout is not None:
-                self._watcher.stdout.close()
+                with suppress(BrokenPipeError):
+                    os.write(self._control, b"0")
+            try:
+                result = self._watcher.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                raise HyperlightWorkerError(
+                    "Linux worker cleanup expired before confirmation"
+                ) from error
+            if result != 0:
+                raise HyperlightWorkerError("Linux supervisor exited without cleanup confirmation")
         self._close_fds()
         self._closed = True

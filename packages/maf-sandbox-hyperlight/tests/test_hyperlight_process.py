@@ -21,6 +21,7 @@ from maf_sandbox_hyperlight import (
     HyperlightWorkerError,
     _backend,
     _process,
+    _windows,
 )
 from maf_sandbox_hyperlight._wire import decode, encode
 
@@ -55,7 +56,7 @@ _worker.main()
     assert decode(result.stdout) == {"error": "native", "detail": "native failure"}
 
 
-class NoJob:
+class NoJob(_windows.Job):
     def __init__(self, memory_limit: int) -> None:
         pass
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from typing import Protocol
 
@@ -11,7 +12,9 @@ from ._config import HyperlightSandboxConfig
 class Lifetime(Protocol):
     """A worker must be contained before initialization and terminated as a tree."""
 
-    def assign(self, pid: int) -> None: ...
+    def spawn(
+        self, command: list[str], *, environment: dict[str, str], cwd: str, cleanup_timeout: float
+    ) -> subprocess.Popen[bytes]: ...
 
     def ready(self, *, deadline: float) -> None: ...
 
