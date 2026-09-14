@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.17.0...maf-sandbox-codeact-v0.18.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181))
+
+### Features
+
+* **core+codeact:** run CodeAct on Python runtimes with compatible sandbox reuse ([#1199](https://github.com/sokolaidev/maf-extensions/issues/1199)) ([6eca3c9](https://github.com/sokolaidev/maf-extensions/commit/6eca3c9647b9a524984fbac18329ead04fb2a54c))
+
+
+### Fixes
+
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181)) ([a9feab2](https://github.com/sokolaidev/maf-extensions/commit/a9feab2d0cab0790c25ace3e2c856fca5ce8c93c))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+
+
+### Documentation
+
+* remove issue references from package descriptions ([#1257](https://github.com/sokolaidev/maf-extensions/issues/1257)) ([1f2d5a5](https://github.com/sokolaidev/maf-extensions/commit/1f2d5a59b2d3c41e2f07c492905b88ec9f493d33))
+
 ## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.16.0...maf-sandbox-codeact-v0.17.0) (2026-09-12)
 
 
