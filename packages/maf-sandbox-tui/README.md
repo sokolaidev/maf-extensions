@@ -50,11 +50,12 @@ The MAF application remains the sandbox authority. Merely importing or construct
 ```python
 from maf_sandbox import Cleanup, SandboxRouter
 from maf_sandbox_hyperlight import HyperlightSandboxBackend
-from maf_sandbox_tui import HyperlightControl, SandboxControlServer
+from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, SandboxControlServer
 
 backend = HyperlightSandboxBackend()
-router = SandboxRouter([backend], min_cleanup=Cleanup.RESET)
-control = HyperlightControl(backend, router, source_id="research-agent")
+monitored = MonitoredSandboxBackend(backend)
+router = SandboxRouter([monitored], min_cleanup=Cleanup.RESET)
+control = HyperlightControl(monitored, router, source_id="research-agent")
 
 if settings.enable_local_sandbox_control:
     # Entering the context is the action that opens the loopback listener.
@@ -70,4 +71,4 @@ When enabled, the server binds an ephemeral port on the literal loopback address
 
 Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` and verifies that the physical instance disappeared. Conversation purge calls `SandboxRouter.dispose_scope` under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
 
-Live inventory comes from the backend registry rather than OpenTelemetry. `maf-sandbox-otel` remains the complementary history and audit surface.
+Live inventory comes from acquisitions and disposals that pass through `MonitoredSandboxBackend`; applications must register that wrapper with the router instead of registering the wrapped backend directly. The wrapper depends only on the `maf-sandbox` protocol and leaves backend packages unchanged. `maf-sandbox-otel` remains the complementary history and audit surface.

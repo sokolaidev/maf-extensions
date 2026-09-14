@@ -1,14 +1,29 @@
-"""Control abstractions and the maf-sandbox Hyperlight adapter."""
+"""Control abstractions and monitored backend integration."""
 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
-from collections.abc import Sequence
-from contextlib import AbstractContextManager
-from typing import Protocol
+from collections.abc import Generator, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, cast
 
-from maf_sandbox import SandboxKey, SandboxRouter
+from maf_sandbox import (
+    DEFAULT_BACKEND_DECLARATIONS,
+    BackendDeclarations,
+    DisposalFailure,
+    EgressRule,
+    Isolation,
+    Sandbox,
+    SandboxBackend,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+    ScopePurge,
+)
 
 from ._models import (
     DisposalResult,
@@ -37,6 +52,47 @@ class SandboxControl(Protocol):
 
 
 class _BackendInfo(Protocol):
+    @property
+    def key(self) -> SandboxKey: ...
+
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def instance_id(self) -> str: ...
+
+    @property
+    def state(self) -> str: ...
+
+    @property
+    def created_at(self) -> float: ...
+
+    @property
+    def last_activity_at(self) -> float: ...
+
+    @property
+    def worker_pid(self) -> int | None: ...
+
+    @property
+    def execution_contract(self) -> str | None: ...
+
+    @property
+    def egress_targets(self) -> tuple[str, ...]: ...
+
+
+class _InventoryBackend(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    async def list_sandboxes(self) -> Sequence[_BackendInfo]: ...
+
+    def observe_instance_disposal(
+        self, key: SandboxKey, kind: str, instance_id: str
+    ) -> AbstractContextManager[list[int]]: ...
+
+
+@dataclass(frozen=True)
+class _MonitoredInfo:
     key: SandboxKey
     kind: str
     instance_id: str
@@ -48,18 +104,196 @@ class _BackendInfo(Protocol):
     egress_targets: tuple[str, ...]
 
 
-class _InventoryBackend(Protocol):
-    name: str
+@dataclass
+class _TrackedSandbox:
+    key: SandboxKey
+    spec: SandboxSpec
+    sandbox: Sandbox
+    instance_id: str
+    created_at: float
+    last_activity_at: float
+    state: SandboxState
 
-    async def list_sandboxes(self) -> Sequence[_BackendInfo]: ...
 
+def _alive(sandbox: Sandbox) -> bool | None:
+    value = getattr(sandbox, "alive", None)
+    return value if type(value) is bool else None
+
+
+def _state(sandbox: Sandbox) -> SandboxState:
+    if _alive(sandbox) is False:
+        return SandboxState.FAILED
+    gate = getattr(sandbox, "_gate", None)
+    locked = getattr(gate, "locked", None)
+    if callable(locked) and locked():
+        return SandboxState.RUNNING
+    return SandboxState.READY
+
+
+def _worker_pid(sandbox: Sandbox) -> int | None:
+    worker = getattr(sandbox, "worker", None)
+    process = getattr(worker, "process", None)
+    value = getattr(process, "pid", None)
+    return value if type(value) is int else None
+
+
+def _egress_targets(spec: SandboxSpec) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            entry.host if isinstance(entry, EgressRule) else entry for entry in spec.egress_allow
+        )
+    )
+
+
+class MonitoredSandboxBackend:
+    """Track sandboxes acquired through a backend without changing that backend's package."""
+
+    def __init__(self, backend: SandboxBackend) -> None:
+        self._backend = backend
+        self._tracked: dict[tuple[SandboxKey, str], _TrackedSandbox] = {}
+        self._state_lock = threading.Lock()
+        self._disposal_watch: ContextVar[tuple[SandboxKey, str, str, list[int]] | None] = (
+            ContextVar(f"mst_disposal_watch_{id(self)}", default=None)
+        )
+
+    @property
+    def name(self) -> str:
+        """Preserve the wrapped backend's routing name."""
+        return self._backend.name
+
+    @property
+    def isolation(self) -> Isolation:
+        """Preserve the wrapped backend's isolation declaration."""
+        return self._backend.isolation
+
+    @property
+    def declarations(self) -> BackendDeclarations:
+        """Preserve the wrapped backend's capability declarations."""
+        return cast(
+            BackendDeclarations,
+            getattr(self._backend, "declarations", DEFAULT_BACKEND_DECLARATIONS),
+        )
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
+        """Acquire through the wrapped backend and remember the returned generation."""
+        sandbox = await self._backend.acquire(key, spec)
+        now = time.time()
+        instance_id = sandbox.instance_id
+        index = (key, spec.kind)
+        with self._state_lock:
+            previous = self._tracked.get(index)
+            created_at = (
+                previous.created_at
+                if previous is not None and previous.instance_id == instance_id
+                else now
+            )
+            self._tracked[index] = _TrackedSandbox(
+                key,
+                spec,
+                sandbox,
+                instance_id,
+                created_at,
+                now,
+                _state(sandbox),
+            )
+        return sandbox
+
+    def _refresh_locked(self, now: float) -> None:
+        for tracked in self._tracked.values():
+            instance_id = tracked.sandbox.instance_id
+            state = _state(tracked.sandbox)
+            if instance_id != tracked.instance_id:
+                tracked.instance_id = instance_id
+                tracked.created_at = now
+                tracked.last_activity_at = now
+            elif state is not tracked.state:
+                tracked.last_activity_at = now
+            tracked.state = state
+
+    async def list_sandboxes(self) -> tuple[_MonitoredInfo, ...]:
+        """Return the generations observed through this wrapper."""
+        now = time.time()
+        with self._state_lock:
+            self._refresh_locked(now)
+            return tuple(
+                _MonitoredInfo(
+                    key=tracked.key,
+                    kind=tracked.spec.kind,
+                    instance_id=tracked.instance_id,
+                    state=tracked.state.value,
+                    created_at=tracked.created_at,
+                    last_activity_at=tracked.last_activity_at,
+                    worker_pid=_worker_pid(tracked.sandbox),
+                    execution_contract=tracked.spec.execution_contract,
+                    egress_targets=_egress_targets(tracked.spec),
+                )
+                for tracked in sorted(
+                    self._tracked.values(),
+                    key=lambda item: (
+                        item.key.scope,
+                        item.key.thread_id,
+                        item.key.agent_id,
+                        item.key.call_id,
+                        item.spec.kind,
+                    ),
+                )
+            )
+
+    @contextmanager
     def observe_instance_disposal(
         self, key: SandboxKey, kind: str, instance_id: str
-    ) -> AbstractContextManager[list[int]]: ...
+    ) -> Generator[list[int], None, None]:
+        """Capture positive disposal confirmation for one control operation."""
+        observed: list[int] = []
+        token = self._disposal_watch.set((key, kind, instance_id, observed))
+        try:
+            yield observed
+        finally:
+            self._disposal_watch.reset(token)
+
+    async def dispose(
+        self,
+        key: SandboxKey,
+        *,
+        kind: str | None = None,
+        instance_id: str | None = None,
+    ) -> DisposalFailure | None:
+        """Dispose through the wrapped backend and retire confirmed tracked generations."""
+        failure = await self._backend.dispose(key, kind=kind, instance_id=instance_id)
+        disposed = 0
+        with self._state_lock:
+            self._refresh_locked(time.time())
+            for index, tracked in tuple(self._tracked.items()):
+                if tracked.key != key or (kind is not None and tracked.spec.kind != kind):
+                    continue
+                if instance_id is not None and tracked.instance_id != instance_id:
+                    continue
+                if failure is None and _alive(tracked.sandbox) is False:
+                    del self._tracked[index]
+                    disposed += 1
+        watch = self._disposal_watch.get()
+        if watch is not None and (key, kind, instance_id) == watch[:3]:
+            watch[3].append(disposed)
+        return failure
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Purge through the wrapped backend and retire stopped tracked generations."""
+        result = await self._backend.dispose_scope(scope, thread_id)
+        with self._state_lock:
+            self._refresh_locked(time.time())
+            if result.undisposed is None:
+                for index, tracked in tuple(self._tracked.items()):
+                    if (
+                        tracked.key.scope == scope
+                        and tracked.key.thread_id == thread_id
+                        and _alive(tracked.sandbox) is False
+                    ):
+                        del self._tracked[index]
+        return result
 
 
 class HyperlightControl:
-    """Expose an owning Hyperlight backend through safe router disposal."""
+    """Expose a monitored Hyperlight backend through safe router disposal."""
 
     def __init__(
         self,
@@ -331,3 +565,10 @@ class MemoryControl:
             ),
         ]
         return cls(records)
+
+
+if TYPE_CHECKING:
+    _binding: tuple[SandboxBackend, type[Sandbox]] = (
+        MonitoredSandboxBackend(cast(SandboxBackend, object())),
+        type(cast(Sandbox, object())),
+    )

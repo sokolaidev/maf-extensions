@@ -9,11 +9,9 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import Future
-from contextlib import asynccontextmanager, contextmanager, suppress
-from contextvars import ContextVar
-from dataclasses import dataclass
+from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from maf_sandbox import (
@@ -50,21 +48,6 @@ RUNTIME_INSTRUCTIONS = (
     "http_get(url) and http_post(url, body=..., content_type=...) provide HTTP where the host "
     "allowlist permits it; raw sockets are unavailable."
 )
-
-
-@dataclass(frozen=True)
-class HyperlightSandboxInfo:
-    """Read-only operator view of one physical Hyperlight sandbox."""
-
-    key: SandboxKey
-    kind: str
-    instance_id: str
-    state: str
-    created_at: float
-    last_activity_at: float
-    worker_pid: int | None
-    execution_contract: str | None
-    egress_targets: tuple[str, ...]
 
 
 def check_host() -> None:
@@ -155,10 +138,6 @@ class _HyperlightSandbox:
         self._state = threading.Lock()
         self._identity = uuid.uuid4().hex
         self._retired = False
-        self._failed = False
-        self._phase = "starting"
-        self._created_at = time.time()
-        self._last_activity_at = self._created_at
         self.worker = Worker(config)
 
     @property
@@ -171,59 +150,16 @@ class _HyperlightSandbox:
         with self._state:
             return not self._retired and self.worker.alive
 
-    def retire(self, expected_id: str | None = None, *, failed: bool = False) -> bool:
+    def retire(self, expected_id: str | None = None) -> bool:
         with self._state:
             if expected_id is not None and expected_id != self._identity:
                 return False
             self._retired = True
-            self._failed = failed
-            self._phase = "disposing"
-            self._last_activity_at = time.time()
             return True
 
-    def _working(self, phase: str) -> None:
-        with self._state:
-            if not self._retired:
-                self._phase = phase
-                self._last_activity_at = time.time()
-
-    def _ready(self) -> None:
-        with self._state:
-            if not self._retired and self.worker.alive:
-                self._phase = "ready"
-                self._last_activity_at = time.time()
-
-    def info(self, key: SandboxKey, kind: str) -> HyperlightSandboxInfo:
-        """Snapshot state without exposing the worker or mutable registry entry."""
-        with self._state:
-            process = getattr(self.worker, "process", None)
-            worker_pid = getattr(process, "pid", None)
-            if not isinstance(worker_pid, int):
-                worker_pid = None
-            state = "failed" if self._failed else self._phase
-            if not self._retired and not self.worker.alive:
-                state = "failed"
-            return HyperlightSandboxInfo(
-                key=key,
-                kind=kind,
-                instance_id=self._identity,
-                state=state,
-                created_at=self._created_at,
-                last_activity_at=self._last_activity_at,
-                worker_pid=worker_pid,
-                execution_contract=self.contract,
-                egress_targets=self.targets,
-            )
-
-    async def stop(self, *, failed: bool = False) -> None:
-        self.retire(failed=failed)
-        try:
-            await _finish(asyncio.create_task(_offload(self.worker.close)))
-        except BaseException:
-            with self._state:
-                self._failed = True
-                self._last_activity_at = time.time()
-            raise
+    async def stop(self) -> None:
+        self.retire()
+        await _finish(asyncio.create_task(_offload(self.worker.close)))
 
     async def _exchange(self, message: dict[str, object], deadline: float) -> dict[str, object]:
         if not self.alive:
@@ -255,7 +191,7 @@ class _HyperlightSandbox:
                 dispatched = started
             try:
                 if dispatched:
-                    await self.stop(failed=True)
+                    await self.stop()
             finally:
                 if not dispatched or not self.worker.alive:
                     with suppress(Exception):
@@ -267,14 +203,12 @@ class _HyperlightSandbox:
             raise
 
     async def prepare(self, deadline: float) -> None:
-        self._working("starting")
         response = await self._exchange(
             {"op": "init", "targets": self.targets, "output_limit": self.config.max_output_bytes},
             deadline,
         )
         if response != {"ok": True}:
             raise HyperlightWorkerError("worker did not confirm preparation")
-        self._ready()
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
         deadline = _deadline(timeout)
@@ -283,46 +217,38 @@ class _HyperlightSandbox:
         if len(code.encode("utf-8")) > self.config.max_code_bytes:
             raise ValueError("code exceeds max_code_bytes")
         async with _claim(self._gate, deadline):
-            self._working("running")
-            try:
-                response = await self._exchange({"op": "run", "code": code}, deadline)
-                stdout, stderr, status = (
-                    response.get("stdout"),
-                    response.get("stderr"),
-                    response.get("exit_code"),
-                )
-                if (
-                    not isinstance(stdout, str)
-                    or not isinstance(stderr, str)
-                    or type(status) is not int
-                ):
-                    await self.stop(failed=True)
-                    raise HyperlightWorkerError("invalid execution result")
-                if len(stdout.encode()) + len(stderr.encode()) > self.config.max_output_bytes:
-                    await self.stop(failed=True)
-                    raise HyperlightWorkerError("worker violated the output limit")
-                if status < 0:
-                    await self.stop(failed=True)
-                    raise HyperlightWorkerError("native execution failed")
-                return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
-            finally:
-                self._ready()
+            response = await self._exchange({"op": "run", "code": code}, deadline)
+            stdout, stderr, status = (
+                response.get("stdout"),
+                response.get("stderr"),
+                response.get("exit_code"),
+            )
+            if (
+                not isinstance(stdout, str)
+                or not isinstance(stderr, str)
+                or type(status) is not int
+            ):
+                await self.stop()
+                raise HyperlightWorkerError("invalid execution result")
+            if len(stdout.encode()) + len(stderr.encode()) > self.config.max_output_bytes:
+                await self.stop()
+                raise HyperlightWorkerError("worker violated the output limit")
+            if status < 0:
+                await self.stop()
+                raise HyperlightWorkerError("native execution failed")
+            return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
 
     async def reset(self, *, timeout: float) -> None:
         deadline = _deadline(timeout)
         async with _claim(self._gate, deadline):
-            self._working("resetting")
-            try:
-                response = await self._exchange({"op": "reset"}, deadline)
-                if response != {"ok": True}:
-                    await self.stop(failed=True)
-                    raise HyperlightWorkerError("worker did not confirm restore")
-                with self._state:
-                    if self._retired:
-                        raise HyperlightWorkerError("sandbox was disposed during restore")
-                    self._identity = uuid.uuid4().hex
-            finally:
-                self._ready()
+            response = await self._exchange({"op": "reset"}, deadline)
+            if response != {"ok": True}:
+                await self.stop()
+                raise HyperlightWorkerError("worker did not confirm restore")
+            with self._state:
+                if self._retired:
+                    raise HyperlightWorkerError("sandbox was disposed during restore")
+                self._identity = uuid.uuid4().hex
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -367,21 +293,6 @@ class HyperlightSandboxBackend:
     def __init__(self, config: HyperlightSandboxConfig | None = None) -> None:
         self.config = config if config is not None else HyperlightSandboxConfig()
         self._owner = uuid.uuid4().hex
-        self._disposal_watch: ContextVar[tuple[SandboxKey, str, str, list[int]] | None] = (
-            ContextVar(f"hyperlight_disposal_watch_{id(self)}", default=None)
-        )
-
-    @contextmanager
-    def observe_instance_disposal(
-        self, key: SandboxKey, kind: str, instance_id: str
-    ) -> Generator[list[int], None, None]:
-        """Capture how many matching generations this task's disposal removes."""
-        observed: list[int] = []
-        token = self._disposal_watch.set((key, kind, instance_id, observed))
-        try:
-            yield observed
-        finally:
-            self._disposal_watch.reset(token)
 
     def _targets(self, spec: SandboxSpec) -> tuple[str, ...]:
         missing = spec.required_capabilities - self.declarations.capabilities
@@ -437,7 +348,7 @@ class HyperlightSandboxBackend:
             try:
                 await sandbox.prepare(deadline)
             except BaseException:
-                await sandbox.stop(failed=True)
+                await sandbox.stop()
                 del self._sandboxes[index]
                 raise
             return sandbox
@@ -459,9 +370,6 @@ class HyperlightSandboxBackend:
             else:
                 del self._sandboxes[index]
                 disposed += 1
-        watch = self._disposal_watch.get()
-        if watch is not None and (key, kind, instance_id) == watch[:3]:
-            watch[3].append(disposed)
         return disposed, fold_disposal_failures(failures)
 
     async def dispose(
@@ -494,24 +402,6 @@ class HyperlightSandboxBackend:
         except Exception as error:
             failures.append(DisposalFailure("unknown", str(error)))
         return ScopePurge(count, fold_disposal_failures(failures))
-
-    async def list_sandboxes(self) -> tuple[HyperlightSandboxInfo, ...]:
-        """Return the current process registry for cooperative operator tooling."""
-        check_host()
-        async with _claim(self._gate, _deadline(self.config.startup_timeout)):
-            return tuple(
-                sandbox.info(key, kind)
-                for (key, kind), sandbox in sorted(
-                    self._sandboxes.items(),
-                    key=lambda item: (
-                        item[0][0].scope,
-                        item[0][0].thread_id,
-                        item[0][0].agent_id,
-                        item[0][0].call_id,
-                        item[0][1],
-                    ),
-                )
-            )
 
     async def aclose(self) -> None:
         """Dispose the sandboxes this backend created, retaining any failed targets for retry."""

@@ -127,43 +127,6 @@ def test_declarations_and_worker_free_construction(monkeypatch: pytest.MonkeyPat
     assert backend.declarations.os_families == frozenset()
 
 
-def test_inventory_reports_the_current_generation_and_lifecycle(backend):
-    async def check():
-        sandbox = await acquire(backend)
-        ready = await backend.list_sandboxes()
-        assert len(ready) == 1
-        assert ready[0].key == KEY
-        assert ready[0].kind == SPEC.kind
-        assert ready[0].instance_id == sandbox.instance_id
-        assert ready[0].state == "ready"
-        assert ready[0].worker_pid is None
-        assert ready[0].created_at <= ready[0].last_activity_at
-
-        previous = sandbox.instance_id
-        await sandbox.reset(timeout=1)
-        restored = await backend.list_sandboxes()
-        assert restored[0].instance_id != previous
-        assert restored[0].state == "ready"
-
-    asyncio.run(check())
-
-
-def test_instance_disposal_observer_distinguishes_a_match_from_a_stale_id(backend):
-    async def check():
-        sandbox = await acquire(backend)
-        with backend.observe_instance_disposal(KEY, SPEC.kind, "stale") as stale:
-            assert await backend.dispose(KEY, kind=SPEC.kind, instance_id="stale") is None
-        assert stale == [0]
-
-        with backend.observe_instance_disposal(KEY, SPEC.kind, sandbox.instance_id) as matched:
-            assert (
-                await backend.dispose(KEY, kind=SPEC.kind, instance_id=sandbox.instance_id) is None
-            )
-        assert matched == [1]
-
-    asyncio.run(check())
-
-
 @pytest.mark.parametrize(
     "capability",
     [
@@ -316,8 +279,6 @@ def test_started_deadline_terminates_worker_and_reacquire_is_fresh(backend, oper
                 await sandbox.reset(timeout=0.04)
         assert not isinstance(caught.value, SandboxQueuedTimeout)
         assert not worker.alive
-        failed = await backend.list_sandboxes()
-        assert failed[0].state == "failed"
         with pytest.raises(HyperlightWorkerError, match="retired"):
             await sandbox.run_code("cannot run", timeout=1)
         replacement = await acquire(backend)
@@ -463,8 +424,6 @@ def test_failed_disposal_retains_target_for_retry_and_scope_purge_preserves_sibl
         assert purge.disposed == 0 and purge.undisposed is not None
         assert (KEY, SPEC.kind) in backend._sandboxes
         assert worker.alive and not target.alive
-        retained = await backend.list_sandboxes()
-        assert next(item for item in retained if item.key == KEY).state == "failed"
         purge = await backend.dispose_scope(KEY.scope, KEY.thread_id)
         assert purge.disposed == 1 and purge.undisposed is None
         assert sibling.alive
@@ -491,7 +450,6 @@ def test_bad_native_results_retire_the_worker(backend, reply):
             assert str(raised.value) == "native execution failed"
         assert not worker.alive
         assert not sandbox.alive
-        assert (await backend.list_sandboxes())[0].state == "failed"
         replacement = await acquire(backend)
         assert replacement.alive and replacement.instance_id != sandbox.instance_id
 

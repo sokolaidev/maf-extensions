@@ -2,12 +2,7 @@
 
 import warnings as _warnings
 
-from ._backend import (
-    BACKEND_NAME,
-    RUNTIME_INSTRUCTIONS,
-    HyperlightSandboxBackend,
-    HyperlightSandboxInfo,
-)
+from ._backend import BACKEND_NAME, RUNTIME_INSTRUCTIONS, HyperlightSandboxBackend
 from ._config import HyperlightSandboxConfig
 from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError
 
@@ -16,7 +11,6 @@ __all__ = [
     "RUNTIME_INSTRUCTIONS",
     "HyperlightSandboxBackend",
     "HyperlightSandboxConfig",
-    "HyperlightSandboxInfo",
     "HyperlightOutputLimitExceeded",
     "HyperlightWorkerError",
     "MafSandboxHyperlightExperimentalWarning",

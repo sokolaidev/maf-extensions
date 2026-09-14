@@ -12,8 +12,7 @@ from pathlib import Path
 import pytest
 from maf_sandbox import Capability, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox_hyperlight import HyperlightSandboxBackend
-
-from maf_sandbox_tui import HyperlightControl, SandboxControlServer
+from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, SandboxControlServer
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAF_HYPERLIGHT_LIVE") != "1" or sys.platform != "win32",
@@ -40,7 +39,8 @@ async def _mst(*arguments: str) -> object:
 def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
     async def check() -> None:
         backend = HyperlightSandboxBackend()
-        router = SandboxRouter([backend])
+        monitored = MonitoredSandboxBackend(backend)
+        router = SandboxRouter([monitored])
         first_key = SandboxKey("mst-live", "delete", "worker")
         second_key = SandboxKey("mst-live", "purge", "worker")
         try:
@@ -51,7 +51,7 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
             assert first_result.stdout == "42\n"
             assert second_result.stdout == "56\n"
 
-            control = HyperlightControl(backend, router, source_id="hyperlight-live")
+            control = HyperlightControl(monitored, router, source_id="hyperlight-live")
             async with SandboxControlServer(
                 control,
                 source_id="hyperlight-live",
@@ -120,7 +120,7 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
                 assert isinstance(purged, dict)
                 assert purged["status"] == "purged"
                 assert purged["disposed"] == 1
-                assert await backend.list_sandboxes() == ()
+                assert await monitored.list_sandboxes() == ()
         finally:
             await backend.aclose()
 

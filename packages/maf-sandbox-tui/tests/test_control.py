@@ -6,13 +6,34 @@ import asyncio
 import getpass
 import json
 import tempfile
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from maf_sandbox import SandboxKey, SandboxRouter, ScopePurge
+from maf_sandbox import (
+    BackendDeclarations,
+    Capability,
+    DisposalFailure,
+    Egress,
+    EgressRule,
+    Isolation,
+    Sandbox,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+    ScopePurge,
+)
+from maf_sandbox.conformance import (
+    ConformanceSubject,
+    assert_exec_conformance,
+    assert_files_delete_conformance,
+    assert_files_in_conformance,
+    assert_reclaim_conformance,
+)
 
 import maf_sandbox_tui._server as server_module
 import maf_sandbox_tui.cli as cli_module
@@ -24,6 +45,7 @@ from maf_sandbox_tui import (
     HttpControl,
     HyperlightControl,
     MemoryControl,
+    MonitoredSandboxBackend,
     PurgeResult,
     PurgeStatus,
     SandboxControlServer,
@@ -111,6 +133,75 @@ class _Router:
             if (item.key.scope, item.key.thread_id) != (scope, thread_id)
         ]
         return ScopePurge(before - len(self.inventory.records))
+
+
+class _ObservedSandbox:
+    def __init__(self, instance_id: str, *, pid: object = 42) -> None:
+        self.instance_id = instance_id
+        self.alive: object = True
+        self._gate = threading.Lock()
+        self.worker = SimpleNamespace(process=SimpleNamespace(pid=pid))
+
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        del directory, working_directory, timeout
+        raise NotImplementedError
+
+    async def reset(self, *, timeout: float) -> None:
+        del timeout
+        self.instance_id = f"{self.instance_id}-reset"
+
+
+class _ObservedBackend:
+    name = "hyperlight"
+    isolation = Isolation.MICROVM
+    declarations = BackendDeclarations(
+        capabilities=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.SNAPSHOT}),
+        egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
+    )
+
+    def __init__(self, *, pid: object = 42) -> None:
+        self.pid = pid
+        self.sandboxes: dict[tuple[SandboxKey, str], _ObservedSandbox] = {}
+        self.disposals: list[tuple[SandboxKey, str | None, str | None]] = []
+        self.failure: DisposalFailure | None = None
+        self.noop = False
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
+        sandbox = self.sandboxes.setdefault(
+            (key, spec.kind),
+            _ObservedSandbox(f"generation-{len(self.sandboxes) + 1}", pid=self.pid),
+        )
+        return cast(Sandbox, sandbox)
+
+    async def dispose(
+        self,
+        key: SandboxKey,
+        *,
+        kind: str | None = None,
+        instance_id: str | None = None,
+    ) -> DisposalFailure | None:
+        self.disposals.append((key, kind, instance_id))
+        if self.failure is not None or self.noop:
+            return self.failure
+        for index, sandbox in tuple(self.sandboxes.items()):
+            if index[0] != key or (kind is not None and index[1] != kind):
+                continue
+            if instance_id is not None and sandbox.instance_id != instance_id:
+                continue
+            sandbox.alive = False
+            del self.sandboxes[index]
+        return None
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        if self.failure is not None:
+            return ScopePurge(0, self.failure)
+        disposed = 0
+        for index, sandbox in tuple(self.sandboxes.items()):
+            if index[0].scope == scope and index[0].thread_id == thread_id:
+                sandbox.alive = False
+                del self.sandboxes[index]
+                disposed += 1
+        return ScopePurge(disposed)
 
 
 def test_record_json_round_trip_preserves_the_physical_identity():
@@ -296,6 +387,184 @@ def test_composite_purge_cancels_hosts_at_the_shared_deadline():
         assert result.disposed == 1
         assert result.message == "Conversation purge timed out before 1 host(s) responded."
         assert cancelled
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1", "call-1")
+        spec = SandboxSpec(
+            kind="codeact",
+            work_dir=None,
+            egress=Egress.ALLOWLIST,
+            egress_allow=("z.example", EgressRule("a.example")),
+            execution_contract="python-wasm",
+        )
+
+        sandbox = await monitored.acquire(key, spec)
+        records = await monitored.list_sandboxes()
+
+        assert monitored.name == inner.name
+        assert monitored.isolation is inner.isolation
+        assert monitored.declarations is inner.declarations
+        assert len(records) == 1
+        assert records[0].key == key
+        assert records[0].instance_id == sandbox.instance_id
+        assert records[0].state == "ready"
+        assert records[0].worker_pid == 42
+        assert records[0].execution_contract == "python-wasm"
+        assert records[0].egress_targets == ("a.example", "z.example")
+
+        created_at = records[0].created_at
+        assert await monitored.acquire(key, spec) is sandbox
+        assert (await monitored.list_sandboxes())[0].created_at == created_at
+
+        concrete = inner.sandboxes[(key, spec.kind)]
+        concrete._gate.acquire()
+        try:
+            assert (await monitored.list_sandboxes())[0].state == "running"
+        finally:
+            concrete._gate.release()
+        concrete.instance_id = "replacement"
+        replaced = (await monitored.list_sandboxes())[0]
+        assert replaced.instance_id == "replacement"
+        assert replaced.created_at >= created_at
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_tolerates_unknown_runtime_metadata():
+    async def check() -> None:
+        inner = _ObservedBackend(pid=True)
+        monitored = MonitoredSandboxBackend(inner)
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        spec = SandboxSpec(kind="codeact", work_dir=None)
+        await monitored.acquire(key, spec)
+        inner.sandboxes[(key, spec.kind)].alive = "unknown"
+        record = (await monitored.list_sandboxes())[0]
+        assert record.state == "ready"
+        assert record.worker_pid is None
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_answers_withheld_core_conformance():
+    inner = _ObservedBackend()
+    inner.declarations = BackendDeclarations(capabilities=frozenset())
+    monitored = MonitoredSandboxBackend(inner)
+    subject = cast(
+        ConformanceSubject,
+        SimpleNamespace(capabilities=monitored.declarations.capabilities),
+    )
+
+    async def check() -> None:
+        with pytest.raises(ValueError, match="FILES_IN"):
+            await assert_files_in_conformance(subject)
+        with pytest.raises(ValueError, match="EXEC"):
+            await assert_exec_conformance(subject)
+        with pytest.raises(ValueError, match="FILES_DELETE"):
+            await assert_files_delete_conformance(subject)
+        with pytest.raises(ValueError, match="RECLAIM"):
+            await assert_reclaim_conformance(subject)
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_filters_direct_exact_disposal():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        target = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        survivor = SandboxKey("tenant-labs", "thread-2", "agent-1")
+        spec = SandboxSpec(kind="codeact", work_dir=None)
+        sandbox = await monitored.acquire(target, spec)
+        await monitored.acquire(survivor, spec)
+
+        assert (
+            await monitored.dispose(target, kind=spec.kind, instance_id="not-the-owned-generation")
+            is None
+        )
+        assert len(await monitored.list_sandboxes()) == 2
+
+        assert (
+            await monitored.dispose(target, kind=spec.kind, instance_id=sandbox.instance_id) is None
+        )
+        assert [item.key for item in await monitored.list_sandboxes()] == [survivor]
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_supplies_authoritative_exact_disposal_receipts():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = SandboxRouter([monitored])
+        control = HyperlightControl(monitored, router, source_id="agent-app")
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        spec = SandboxSpec(kind="codeact", work_dir=None)
+        sandbox = await router.acquire(key, spec)
+
+        found = await control.get_sandbox(sandbox.instance_id)
+        assert found is not None and found.instance_id == sandbox.instance_id
+        assert await control.get_sandbox("missing") is None
+        missing = await control.dispose_sandbox("missing")
+        assert missing.status is DisposalStatus.NOT_FOUND
+
+        result = await control.dispose_sandbox(sandbox.instance_id, timeout=3.0)
+
+        assert result.status is DisposalStatus.DISPOSED
+        assert inner.disposals == [(key, spec.kind, sandbox.instance_id)]
+        assert await monitored.list_sandboxes() == ()
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_retains_an_unconfirmed_or_failed_disposal():
+    async def check(*, failure: DisposalFailure | None) -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = SandboxRouter([monitored])
+        control = HyperlightControl(monitored, router, source_id="agent-app")
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        sandbox = await router.acquire(key, SandboxSpec(kind="codeact", work_dir=None))
+        inner.noop = failure is None
+        inner.failure = failure
+
+        result = await control.dispose_sandbox(sandbox.instance_id)
+
+        assert result.status is DisposalStatus.FAILED
+        assert (await monitored.list_sandboxes())[0].instance_id == sandbox.instance_id
+
+    asyncio.run(check(failure=None))
+    asyncio.run(check(failure=DisposalFailure("unknown", "worker close failed")))
+
+
+def test_monitored_backend_purges_only_the_named_conversation():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = SandboxRouter([monitored])
+        control = HyperlightControl(monitored, router, source_id="agent-app")
+        target = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        survivor = SandboxKey("tenant-labs", "thread-2", "agent-1")
+        spec = SandboxSpec(kind="codeact", work_dir=None)
+        await router.acquire(target, spec)
+        await router.acquire(survivor, spec)
+
+        result = await control.purge_thread(target.scope, target.thread_id)
+
+        assert result.status is PurgeStatus.PURGED
+        assert result.disposed == 1
+        records = await monitored.list_sandboxes()
+        assert len(records) == 1 and records[0].key == survivor
+
+        inner.failure = DisposalFailure("unknown", "provider unavailable")
+        partial = await control.purge_thread(survivor.scope, survivor.thread_id)
+        assert partial.status is PurgeStatus.PARTIAL
+        assert len(await monitored.list_sandboxes()) == 1
 
     asyncio.run(check())
 
