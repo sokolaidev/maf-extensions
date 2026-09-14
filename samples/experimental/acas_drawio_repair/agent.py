@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -23,7 +24,15 @@ from _scaffold import MEASURED, installed_versions, quoted, require_env_vars, re
 from agent_framework import Agent, AgentFileStore, FileAccessProvider, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from maf_sandbox import Artifact, Egress, LandedArtifact, SandboxLandingExists, SandboxRouter
+from maf_sandbox import (
+    Artifact,
+    Egress,
+    LandedArtifact,
+    SandboxLandingExists,
+    SandboxObserver,
+    SandboxRouter,
+    ToolCallEnded,
+)
 from maf_sandbox.maf import list_no_files, make_caller_context, make_file_store_sink
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_drawio import drawio_sandbox_spec, make_drawio_tools
@@ -112,6 +121,25 @@ def inject_error(xml: str) -> str:
 def measure(stage: str, **values: object) -> None:
     """Write host evidence as one JSON line, including escaped untrusted values."""
     print(f"{MEASURED}{json.dumps({'stage': stage, **values}, ensure_ascii=True)}")
+
+
+class CallTimings(SandboxObserver):
+    """Report core's complete call duration, including sandbox cleanup."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+
+    def tool_call_ended(self, event: ToolCallEnded) -> None:
+        with self._lock:
+            measure(
+                "tool_call_ended",
+                tool=event.tool,
+                kind=event.kind,
+                call=event.call,
+                seconds=event.seconds,
+                failure=event.failure,
+                unclean=event.unclean,
+            )
 
 
 class StoredDiagrams:
@@ -266,7 +294,7 @@ async def run() -> int:
     async with AsyncExitStack() as cleanup:
         backend = build_backend({**os.environ, **env})
         cleanup.push_async_callback(backend.aclose)
-        router = SandboxRouter([backend])
+        router = SandboxRouter([backend], observer=CallTimings())
         cleanup.push_async_callback(purge_scope, router, thread_id)
         storage = StoredDiagrams(InMemoryAgentFileStore())
         cleanup.push_async_callback(storage.cleanup)

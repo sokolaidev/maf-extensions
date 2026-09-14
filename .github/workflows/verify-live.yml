@@ -3,9 +3,11 @@ name: Verify (live)
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
 #
-# **Two jobs do not install published wheels**: the image preflight reads the group, and `acas-e2e` runs
-# `maf-sandbox-acas`'s live suite from this checkout. Everything else here asks "does the
-# published set still work"; that one asks "does the real service still do what the backend
+# The image preflight reads the group, and `acas-e2e` runs
+# `maf-sandbox-acas`'s live suite from this checkout. The experimental `acas-drawio` job also uses
+# the checkout and runs only with `source: branch`, until draw.io has a published sample floor.
+# The numbered samples ask "does the published set still work"; `acas-e2e` asks
+# "does the real service still do what the backend
 # believes" — refusals, confinement, teardown read back from the service — which a sample with a
 # model in the loop cannot ask (#306). It is listed here rather than in its own workflow because
 # this is where the `live-verify` environment, the OIDC login and the billable-run gating already
@@ -2001,3 +2003,52 @@ jobs:
         run: |
           set -euo pipefail
           uv run pytest packages/maf-sandbox-acas/tests/test_acas_e2e.py -q -ra
+
+  acas-drawio:
+    name: Architecture XML repair and call timings on ACAS
+    if: >-
+      inputs.source == 'branch'
+      && (inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-drawio"]'), inputs.package))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+      ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+      ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+      ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+      ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+      DRAWIO_SANDBOX_IMAGE: ${{ vars.DRAWIO_SANDBOX_IMAGE }}
+      MAF_ACAS_DRAWIO_LIVE: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sync workspace
+        run: uv sync --locked
+      - name: Validate repair and print each draw.io call duration
+        run: |
+          set -euo pipefail
+          uv run --locked pytest -q tests/test_sample_acas_drawio_live.py 2>&1 | tee "$RUNNER_TEMP/drawio-live.log"
+      - name: Retain call timings and verification result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drawio-live-log
+          path: ${{ runner.temp }}/drawio-live.log
+          if-no-files-found: ignore
+          retention-days: 7

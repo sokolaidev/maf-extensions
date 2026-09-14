@@ -51,6 +51,8 @@ Host `[measured]` JSON records identify configuration, the authored XML hash, th
 
 ## Verification
 
+Core's `SandboxObserver.tool_call_ended` emits a `tool_call_ended` JSON record for every `create_drawio` call, including validation rejection. Its `seconds` value covers the tool body and cleanup: acquisition, file transfer, conversion, output collection and sandbox disposal. It excludes the model's authoring, repair and read-back turns. `call` joins a successful call to its stored artifact. `failure` describes a raised Python exception; a returned XML validation diagnostic is recorded with `failure: null`.
+
 Offline tests exercise deterministic corruption, the real packaged converter through core's in-process backend, both successful and failing repair sequences, file-access result attribution, ACAS policy construction, and cleanup. They do not contact ACAS or a model:
 
 ```bash
@@ -64,3 +66,5 @@ MAF_ACAS_DRAWIO_LIVE=1 uv run --locked pytest -q tests/test_sample_acas_drawio_l
 ```
 
 In PowerShell, set `$env:MAF_ACAS_DRAWIO_LIVE = "1"` before running the same pytest command. A killed process cannot run `finally`; ACAS's configured auto-suspend and auto-delete timers remain the backstop. Cleanup errors are failures, not proof that resources were removed.
+
+The live test prints every call's timing even when pytest captures passing tests. The `acas-drawio` job in [Verify (live)](../../../.github/workflows/verify-live.yml) runs this test from the locked checkout with `source: branch`, when `package` is empty or selects `maf-sandbox`, `maf-sandbox-acas` or `maf-sandbox-drawio`. Configure `DRAWIO_SANDBOX_IMAGE` on the `live-verify` environment with the already-imported image reference. Each call's `seconds` appears in the job log, retained for seven days as the `drawio-live-log` artifact. The job skips published verification while this sample has no published dependency floor. The workflow creates no registry or disk images and does not change guest egress.

@@ -111,7 +111,7 @@ async def exercise(sample, xml, repairs, *, read_ok=True, store=None):
             capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
         ),
     )
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=sample.CallTimings())
     ask = AsyncMock(side_effect=[xml, *repairs])
     seen = []
 
@@ -175,7 +175,20 @@ def test_real_converter_rejects_then_saves_model_repair_and_cleans_up(sample, xm
     assert len(storage.delivered) == 1 and reads == [storage.delivered[0][0].handle]
     document = ET.fromstring(storage.delivered[0][1].content)
     assert document.find(".//mxCell[@id='web']").get("style") == "rounded=1;"
-    assert '"stage": "saved_and_read"' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert '"stage": "saved_and_read"' in output
+    records = [
+        json.loads(line.strip().removeprefix("[measured] "))
+        for line in output.splitlines()
+        if line.strip().startswith("[measured] {")
+    ]
+    calls = [record for record in records if record["stage"] == "tool_call_ended"]
+    assert len(calls) == 2
+    assert len({call["call"] for call in calls}) == 2
+    assert all(call["tool"] == "create_drawio" and call["seconds"] > 0 for call in calls)
+    assert all(call["failure"] is None and call["unclean"] == 0 for call in calls)
+    assert calls[0]["call"] not in reads[0]
+    assert calls[1]["call"] in reads[0]
 
 
 def test_malformed_model_repair_returns_converter_diagnostic_before_retry(sample, xml):
@@ -361,7 +374,12 @@ def test_run_unwinds_storage_backend_and_credentials(sample, monkeypatch, failur
             raise failure
 
     monkeypatch.setattr(sample, "build_backend", lambda _: backend)
-    monkeypatch.setattr(sample, "SandboxRouter", lambda _: router)
+
+    def make_router(backends, *, observer):
+        assert backends == [backend] and isinstance(observer, sample.CallTimings)
+        return router
+
+    monkeypatch.setattr(sample, "SandboxRouter", make_router)
     monkeypatch.setattr(sample, "DefaultAzureCredential", Credential)
     monkeypatch.setattr(sample, "InMemoryAgentFileStore", lambda: store)
     monkeypatch.setattr(sample, "make_drawio_tools", lambda *args, **kwargs: [object()])
