@@ -111,7 +111,15 @@ async def exercise(sample, xml, repairs, *, read_ok=True, store=None):
             capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
         ),
     )
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=sample.CallTimings())
+
+    class Timings(sample.CallTimings):
+        def tool_call_ended(self, event):
+            assert backend.disposed_instances[-1] is not None
+            assert not backend.purged
+            super().tool_call_ended(event)
+
+    timings = Timings()
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=timings)
     ask = AsyncMock(side_effect=[xml, *repairs])
     seen = []
 
@@ -141,7 +149,7 @@ async def exercise(sample, xml, repairs, *, read_ok=True, store=None):
             )
 
             async def validate(source):
-                return sample.result_text(await tool.invoke(arguments={"xml": source}))
+                return await sample.validate_diagram(tool, source, timings, storage)
 
             await sample.repair_diagram(
                 ask, validate, read_back, storage, (_SAMPLE / "architecture.md").read_text("utf-8")
@@ -163,6 +171,41 @@ def test_only_the_selected_edge_target_is_changed(sample, xml):
         if a.get(key) != b.get(key)
     ]
     assert differences == [("api_to_database", "target", "database", "missing_database")]
+
+
+@pytest.mark.parametrize(
+    "attribute,value",
+    [
+        ("link", "https://example.invalid/diagram"),
+        ("style", "shape=image;image=https://example.invalid/image.png;"),
+        ("style", "fontFamily=https://example.invalid/font;"),
+        ("onclick", "alert(1)"),
+        ("value", "<img src='https://example.invalid/image.png'>"),
+    ],
+)
+def test_external_resources_are_refused_before_storage(sample, xml, attribute, value):
+    document = ET.fromstring(xml)
+    document.find(".//mxCell[@id='web_to_api']").set(attribute, value)
+    unsafe = ET.tostring(document, encoding="unicode")
+    with pytest.raises(ValueError, match="self-contained"):
+        sample.architecture(unsafe)
+
+    async def check():
+        store = InMemoryAgentFileStore()
+        storage = sample.StoredDiagrams(store)
+        artifact = sample.Artifact(
+            name="diagram.drawio",
+            content=unsafe.encode(),
+            media_type="application/xml",
+            call_id="test",
+            kind="drawio",
+        )
+        with pytest.raises(ValueError, match="self-contained"):
+            await storage.sink.deliver(artifact)
+        assert not storage.attempted and not storage.delivered
+        assert not await store.file_exists("test/diagram.drawio")
+
+    asyncio.run(check())
 
 
 def test_real_converter_rejects_then_saves_model_repair_and_cleans_up(sample, xml, capsys):
@@ -191,10 +234,29 @@ def test_real_converter_rejects_then_saves_model_repair_and_cleans_up(sample, xm
     assert calls[1]["call"] in reads[0]
 
 
-def test_malformed_model_repair_returns_converter_diagnostic_before_retry(sample, xml):
+def test_malformed_model_repair_returns_converter_diagnostic_before_retry(sample, xml, capsys):
     ask, _, _ = asyncio.run(exercise(sample, xml, ["<mxGraphModel>", xml]))
     assert ask.await_count == 3
     assert "Invalid XML" in ask.await_args_list[2].args[0]
+    output = capsys.readouterr().out
+    evidence_spec = importlib.util.spec_from_file_location(
+        "drawio_evidence", _ROOT / "scripts/check_live_drawio_sample.py"
+    )
+    assert evidence_spec and evidence_spec.loader
+    evidence = importlib.util.module_from_spec(evidence_spec)
+    evidence_spec.loader.exec_module(evidence)
+    configuration = '  [measured] {"stage":"configuration","backend":"acas","guest_egress":"closed","allowed_hosts":[]}\n'
+    assert evidence.assess(configuration + output + '  [measured] {"stage":"complete"}\n') == []
+    validations = [record for record in evidence.records(output) if record["stage"] == "validation"]
+    assert ask.await_args_list[2].args[0].endswith(validations[1]["diagnostic"])
+
+
+def test_model_repairs_a_refused_external_resource_without_storing_it(sample, xml):
+    unsafe = xml.replace('id="web"', 'id="web" link="https://example.invalid/image"')
+    ask, storage, _ = asyncio.run(exercise(sample, xml, [unsafe, xml]))
+    assert ask.await_count == 3
+    assert "delivery of diagram.drawio failed" in ask.await_args_list[2].args[0]
+    assert len(storage.attempted) == len(storage.delivered) == 1
 
 
 def test_model_repair_exhaustion_fails_without_delivery(sample, xml):
@@ -250,7 +312,7 @@ def test_cleanup_checks_absence_and_attempts_remaining_deletions(sample):
 
 
 @pytest.mark.parametrize("collision_during_write", [False, True])
-def test_existing_artifact_is_never_owned_or_deleted(sample, collision_during_write):
+def test_existing_artifact_is_never_owned_or_deleted(sample, xml, collision_during_write):
     class OccupiedStore(InMemoryAgentFileStore):
         async def file_exists(self, path):
             if collision_during_write:
@@ -264,7 +326,7 @@ def test_existing_artifact_is_never_owned_or_deleted(sample, collision_during_wr
         storage = sample.StoredDiagrams(store)
         artifact = sample.Artifact(
             name="diagram.drawio",
-            content=b"new",
+            content=xml.encode(),
             media_type="application/xml",
             call_id="call",
             kind="drawio",

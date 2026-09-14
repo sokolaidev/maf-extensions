@@ -56,7 +56,7 @@ def assess(output: str) -> list[str]:
             "rejected",
         ]
         for number in range(1, attempt + 1):
-            expected_stages.extend(["repair", "tool_call_ended"])
+            expected_stages.extend(["repair", "tool_call_ended", "validation"])
             if number < attempt:
                 expected_stages.append("repair_rejected")
         expected_stages.extend(["saved_and_read", "storage_cleanup", "sandbox_cleanup", "complete"])
@@ -69,19 +69,22 @@ def assess(output: str) -> list[str]:
             and stages["corrupted"]["target"] == "missing_database",
             "Wrong deliberate corruption",
         )
+        validations = [record for record in evidence if record["stage"] == "validation"]
         _require(
-            stages["validation"]["diagnostic"] == rejected["diagnostic"]
+            validations[0]["diagnostic"] == rejected["diagnostic"]
             and rejected["diagnostic"].startswith("Error:")
-            and stages["validation"]["delivered"] == 0,
+            and validations[0]["delivered"] == 0,
             "Rejection does not match the converter result",
         )
         repairs = [record for record in evidence if record["stage"] == "repair"]
         for number, repair in enumerate(repairs, 1):
             _require(
-                type(repair["attempt"]) is int and repair["attempt"] == number,
-                "Repair attempts are not consecutive",
+                type(repair["attempt"]) is int
+                and repair["attempt"] == number
+                and repair["diagnostic"] == validations[number - 1]["diagnostic"],
+                "Repair attempt or prompt diagnostic does not match the previous result",
             )
-        for record in [stages["authored"], *repairs]:
+        for record in [stages["authored"], stages["corrupted"], *repairs]:
             _require(
                 re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is not None, "Missing XML hash"
             )
@@ -90,13 +93,29 @@ def assess(output: str) -> list[str]:
             _require(
                 type(retry["attempt"]) is int
                 and retry["attempt"] == number
-                and retry["diagnostic"].startswith("Error:"),
+                and retry["diagnostic"].startswith("Error:")
+                and retry["diagnostic"] == validations[number]["diagnostic"],
                 "Missing failed repair diagnostic",
             )
         _require(type(saved["bytes"]) is int and saved["bytes"] > 0, "No stored XML was read back")
         calls = [record for record in evidence if record["stage"] == "tool_call_ended"]
         _require(len(calls) == attempt + 1, "A draw.io call has no timing record")
         _require(len({call["call"] for call in calls}) == len(calls), "Duplicate call IDs")
+        inputs = [stages["corrupted"], *repairs]
+        for index, validation in enumerate(validations):
+            _require(
+                validation["call"] == calls[index]["call"]
+                and validation["sha256"] == inputs[index]["sha256"],
+                "Validation result belongs to a different call or XML input",
+            )
+            success = index == attempt
+            _require(
+                type(validation["delivered"]) is int
+                and validation["delivered"] == int(success)
+                and bool(validation["diagnostic"])
+                and validation["diagnostic"].startswith("Error:") is not success,
+                "Validation outcome does not match artifact delivery",
+            )
         for call in calls:
             _require(
                 call["tool"] == "create_drawio"

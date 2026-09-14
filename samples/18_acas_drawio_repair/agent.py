@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable, Mapping
@@ -63,6 +64,40 @@ MISSING_VERTEX = "missing_database"
 BROKEN_EDGE = "api_to_database"
 VERTICES = {"web": "Web client", "api": "Orders API", "database": "Orders database"}
 EDGES = {"web_to_api": ("web", "api"), BROKEN_EDGE: ("api", "database")}
+XML_ATTRIBUTES = {
+    "mxfile": "host agent version modified type etag compressed",
+    "diagram": "id name",
+    "mxGraphModel": "dx dy grid gridSize guides tooltips connect arrows fold page pageScale pageWidth pageHeight math shadow background",
+    "root": "",
+    "mxCell": "id value vertex edge parent source target style",
+    "mxGeometry": "as x y width height relative",
+    "Array": "as",
+    "mxPoint": "as x y",
+    "mxRectangle": "as x y width height",
+}
+STYLE_VALUES = {
+    "rounded": "[01]",
+    "html": "[01]",
+    "curved": "[01]",
+    "orthogonalLoop": "[01]",
+    "endFill": "[01]",
+    "startFill": "[01]",
+    "dashed": "[01]",
+    "shadow": "[01]",
+    "whiteSpace": "wrap",
+    "shape": "rectangle|ellipse|cylinder",
+    "edgeStyle": "none|orthogonalEdgeStyle|elbowEdgeStyle",
+    "startArrow": "none|classic|block|open|oval|diamond",
+    "endArrow": "none|classic|block|open|oval|diamond",
+    "fillColor": "#[0-9a-fA-F]{6}|none",
+    "strokeColor": "#[0-9a-fA-F]{6}|none",
+    "fontColor": "#[0-9a-fA-F]{6}",
+    "fontSize": "[0-9]+",
+    "fontStyle": "[0-7]",
+    "align": "left|center|right",
+    "verticalAlign": "top|middle|bottom",
+    "jettySize": "auto|[0-9]+",
+}
 SANDBOX_VARS = (
     "ACAS_SANDBOX_ENDPOINT",
     "ACAS_SANDBOX_SUBSCRIPTION_ID",
@@ -97,6 +132,7 @@ def xml_document(text: str) -> ET.Element:
 def architecture(xml: str) -> ET.Element:
     """Require the fixture's complete graph, so an empty diagram cannot count as a repair."""
     document = xml_document(xml)
+    self_contained(document)
     models = (
         [document] if document.tag == "mxGraphModel" else document.findall("diagram/mxGraphModel")
     )
@@ -126,6 +162,23 @@ def architecture(xml: str) -> ET.Element:
     return document
 
 
+def self_contained(document: ET.Element) -> None:
+    """Allow only the fixture's plain labels, native geometry and built-in styles."""
+    for element in document.iter():
+        allowed = XML_ATTRIBUTES.get(element.tag)
+        if allowed is None or element.attrib.keys() - set(allowed.split()):
+            raise ValueError("Sample XML must be self-contained: unsupported element or attribute")
+        if (element.text or "").strip() or (element.tail or "").strip():
+            raise ValueError("Sample XML must be self-contained: unexpected text content")
+        if any(character in element.get("value", "") for character in "<>&"):
+            raise ValueError("Sample XML must be self-contained: labels must be plain text")
+        for part in filter(None, element.get("style", "").split(";")):
+            name, _, value = part.partition("=")
+            pattern = STYLE_VALUES.get(name)
+            if pattern is None or re.fullmatch(pattern, value) is None:
+                raise ValueError(f"Sample XML must be self-contained: unsupported style {name!r}")
+
+
 def inject_error(xml: str) -> str:
     """Break one existing edge target without changing the architecture's other cells."""
     document = architecture(xml)
@@ -146,9 +199,11 @@ class CallTimings(SandboxObserver):
 
     def __init__(self) -> None:
         self._lock = Lock()
+        self.calls: list[str] = []
 
     def tool_call_ended(self, event: ToolCallEnded) -> None:
         with self._lock:
+            self.calls.append(event.call)
             measure(
                 "tool_call_ended",
                 tool=event.tool,
@@ -175,6 +230,7 @@ class StoredDiagrams:
             destination = f"{artifact.call_id}/{artifact.name}"
             if await store.file_exists(destination):
                 raise FileExistsError("Refusing to replace an existing artifact")
+            self_contained(xml_document(artifact.content.decode("utf-8")))
             self.attempted.add(destination)
             try:
                 landed = await landing.deliver(artifact)
@@ -202,6 +258,24 @@ class StoredDiagrams:
             raise ExceptionGroup("Sample storage cleanup failed", failures)
 
 
+async def validate_diagram(
+    converter: Any, xml: str, timings: CallTimings, storage: StoredDiagrams
+) -> str:
+    """Bind a converter result to the observed call and the exact submitted XML."""
+    count = len(timings.calls)
+    result = result_text(await converter.invoke(arguments={"xml": xml}))
+    if len(timings.calls) != count + 1:
+        raise RuntimeError("Expected exactly one observed draw.io call")
+    measure(
+        "validation",
+        call=timings.calls[-1],
+        sha256=hashlib.sha256(xml.encode()).hexdigest(),
+        diagnostic=result,
+        delivered=len(storage.delivered),
+    )
+    return result
+
+
 async def repair_diagram(
     ask: Callable[[str], Awaitable[str]],
     validate: Callable[[str], Awaitable[str]],
@@ -215,9 +289,13 @@ async def repair_diagram(
     )
     broken = inject_error(authored)
     measure("authored", sha256=hashlib.sha256(authored.encode()).hexdigest())
-    measure("corrupted", edge=BROKEN_EDGE, target=MISSING_VERTEX)
+    measure(
+        "corrupted",
+        edge=BROKEN_EDGE,
+        target=MISSING_VERTEX,
+        sha256=hashlib.sha256(broken.encode()).hexdigest(),
+    )
     diagnostic = await validate(broken)
-    measure("validation", diagnostic=diagnostic, delivered=len(storage.delivered))
     expected = f"Cell '{BROKEN_EDGE}'.target must reference a vertex"
     if not diagnostic.startswith("Error:") or expected not in diagnostic or storage.attempted:
         raise RuntimeError("The deliberately broken edge was not rejected without delivery")
@@ -230,7 +308,12 @@ async def repair_diagram(
             f"Architecture:\n{markdown}\n\nXML:\n{candidate}\n\nDiagnostic:\n{diagnostic}"
         )
         candidate = xml_source(repaired)
-        measure("repair", attempt=attempt, sha256=hashlib.sha256(candidate.encode()).hexdigest())
+        measure(
+            "repair",
+            attempt=attempt,
+            sha256=hashlib.sha256(candidate.encode()).hexdigest(),
+            diagnostic=diagnostic,
+        )
         count = len(storage.delivered)
         diagnostic = await validate(candidate)
         if diagnostic.startswith("Error:"):
@@ -311,7 +394,8 @@ async def run() -> int:
     async with AsyncExitStack() as cleanup:
         backend = build_backend({**os.environ, **env})
         cleanup.push_async_callback(backend.aclose)
-        router = SandboxRouter([backend], observer=CallTimings())
+        timings = CallTimings()
+        router = SandboxRouter([backend], observer=timings)
         cleanup.push_async_callback(purge_scope, router, THREAD_ID)
         storage = StoredDiagrams(InMemoryAgentFileStore())
         cleanup.push_async_callback(storage.cleanup)
@@ -346,7 +430,7 @@ async def run() -> int:
             return response.text
 
         async def validate(xml: str) -> str:
-            return result_text(await converter.invoke(arguments={"xml": xml}))
+            return await validate_diagram(converter, xml, timings, storage)
 
         async def read_back(path: str, expected: str) -> bool:
             reply = await agent.run(

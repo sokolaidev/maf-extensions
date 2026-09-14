@@ -39,10 +39,17 @@ def evidence():
             "allowed_hosts": [],
         },
         {"stage": "authored", "sha256": "1" * 64},
-        {"stage": "corrupted", "edge": "api_to_database", "target": "missing_database"},
+        {
+            "stage": "corrupted",
+            "edge": "api_to_database",
+            "target": "missing_database",
+            "sha256": "3" * 64,
+        },
         calls[0],
         {
             "stage": "validation",
+            "call": "a" * 32,
+            "sha256": "3" * 64,
             "delivered": 0,
             "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
         },
@@ -51,8 +58,20 @@ def evidence():
             "delivered": 0,
             "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
         },
-        {"stage": "repair", "attempt": 1, "sha256": "2" * 64},
+        {
+            "stage": "repair",
+            "attempt": 1,
+            "sha256": "2" * 64,
+            "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
+        },
         calls[1],
+        {
+            "stage": "validation",
+            "call": "b" * 32,
+            "sha256": "2" * 64,
+            "diagnostic": "b" * 32 + "/diagram.drawio",
+            "delivered": 1,
+        },
         {
             "stage": "saved_and_read",
             "path": "b" * 32 + "/diagram.drawio",
@@ -115,6 +134,8 @@ def test_invalid_duration_fails(evidence, seconds):
         ("sandbox_cleanup", "complete", False),
         ("corrupted", "target", "database"),
         ("validation", "diagnostic", "Error: a different error"),
+        ("validation", "call", "b" * 32),
+        ("validation", "sha256", "f" * 64),
         ("authored", "sha256", ""),
         ("repair", "attempt", 2),
     ],
@@ -142,7 +163,8 @@ def test_cleanup_before_readback_cannot_pass(evidence):
 
 
 @pytest.mark.parametrize("attempts", [2, 3])
-def test_retries_require_each_failed_repair_diagnostic(evidence, attempts):
+@pytest.mark.parametrize("tamper", ["attempt", "retry_result", "call", "xml", "prompt"])
+def test_retries_require_each_failed_repair_diagnostic(evidence, attempts, tamper):
     repair = next(record for record in evidence if record["stage"] == "repair")
     call = evidence[evidence.index(repair) + 1]
     saved = next(record for record in evidence if record["stage"] == "saved_and_read")
@@ -151,11 +173,35 @@ def test_retries_require_each_failed_repair_diagnostic(evidence, attempts):
         evidence[index:index] = [
             {**repair, "attempt": number},
             {**call, "call": str(number) * 32},
-            {"stage": "repair_rejected", "attempt": number, "diagnostic": "Error: Invalid XML"},
+            {
+                "stage": "validation",
+                "call": str(number) * 32,
+                "sha256": repair["sha256"],
+                "diagnostic": f"Error: Invalid XML {number}",
+                "delivered": 0,
+            },
+            {
+                "stage": "repair_rejected",
+                "attempt": number,
+                "diagnostic": f"Error: Invalid XML {number}",
+            },
         ]
-        index += 3
+        index += 4
     repair["attempt"] = saved["attempt"] = attempts
+    validations = [record for record in evidence if record["stage"] == "validation"]
+    repairs = [record for record in evidence if record["stage"] == "repair"]
+    for index, record in enumerate(repairs):
+        record["diagnostic"] = validations[index]["diagnostic"]
     assert check.assess(transcript(evidence)) == []
     rejected = next(record for record in evidence if record["stage"] == "repair_rejected")
-    rejected["attempt"] = attempts
+    if tamper == "attempt":
+        rejected["attempt"] = attempts
+    elif tamper == "retry_result":
+        rejected["diagnostic"] = "Error: a stale result"
+    elif tamper == "call":
+        validations[1]["call"] = "a" * 32
+    elif tamper == "xml":
+        validations[1]["sha256"] = "0" * 64
+    else:
+        repairs[1]["diagnostic"] = validations[0]["diagnostic"]
     assert check.assess(transcript(evidence))

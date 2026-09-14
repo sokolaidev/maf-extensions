@@ -10,4 +10,4 @@ Use the following exact `id` and `value` attributes for the three vertex cells. 
 | `api` | `Orders API` |
 | `database` | `Orders database` |
 
-Add directed edges `web_to_api` from `web` to `api` and `api_to_database` from `api` to `database`. Keep the diagram flat, with structural cells `0` and `1`, and all vertices and edges parented to `1`. Return one native, uncompressed draw.io page. Omit vertex geometry so the converter automatically lays out the repaired diagram. Do not include external images, links, fonts, scripts, groups or additional components.
+Add directed edges `web_to_api` from `web` to `api` and `api_to_database` from `api` to `database`. Keep the diagram flat, with structural cells `0` and `1`, and all vertices and edges parented to `1`. Return one native, uncompressed draw.io page. Omit vertex geometry so the converter automatically lays out the repaired diagram. Use plain-text labels and omit optional styles and custom metadata. Do not include external images, links, fonts, scripts, groups or additional components.
