@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from importlib.metadata import PackageNotFoundError
+from io import BytesIO
+from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 from packaging.version import Version
@@ -192,3 +196,340 @@ def test_update_command_does_not_probe_sandbox_hosts(monkeypatch, capsys, tmp_pa
     cli_module.main(["update", "--to", "0.2.0", "--json"])
 
     assert json.loads(capsys.readouterr().out)["status"] == "current"
+
+
+@pytest.mark.parametrize(
+    ("current", "latest", "expected"),
+    [
+        ("0.1.0", "0.2.0", "is available"),
+        ("0.2.0", "0.2.0", "is current"),
+        ("0.3.0", "0.2.0", "is newer than"),
+    ],
+)
+def test_update_check_plain_output_covers_every_status(
+    current, latest, expected, monkeypatch, capsys, tmp_path
+):
+    checked = UpdateCheck(
+        Version(current),
+        Version(latest),
+        Installation(InstallationKind.UV_TOOL, tmp_path, "uv"),
+        prereleases=False,
+    )
+    received: list[dict[str, object]] = []
+
+    def check(**kwargs):
+        received.append(kwargs)
+        return checked
+
+    monkeypatch.setattr(cli_module, "check_for_update", check)
+
+    cli_module.main(["update", "--check", "--timeout", "0.25"])
+
+    assert expected in capsys.readouterr().out
+    assert received == [{"prereleases": False, "timeout": 0.25}]
+
+
+@pytest.mark.parametrize(
+    ("result_status", "expected"),
+    [
+        ("current", "already current"),
+        ("updated", "updated from"),
+        ("downgraded", "downgraded from"),
+    ],
+)
+def test_update_plain_output_and_default_options(
+    result_status, expected, monkeypatch, capsys, tmp_path
+):
+    installed = Version("0.2.0" if result_status != "downgraded" else "0.1.0")
+    result = UpdateResult(
+        result_status,
+        Version("0.1.0" if result_status != "downgraded" else "0.2.0"),
+        installed,
+        Installation(InstallationKind.UV_TOOL, tmp_path, "uv"),
+    )
+    received: list[dict[str, object]] = []
+
+    def perform(**kwargs):
+        received.append(kwargs)
+        return result
+
+    monkeypatch.setattr(cli_module, "perform_update", perform)
+
+    cli_module.main(["update", "--prerelease", "--timeout", "0.5"])
+
+    assert expected in capsys.readouterr().out
+    assert received == [
+        {
+            "target": None,
+            "prereleases": True,
+            "timeout": 0.5,
+            "capture_output": False,
+        }
+    ]
+
+
+def test_invalid_target_version_is_reported_by_the_cli(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+    monkeypatch.setattr(
+        update_module,
+        "inspect_installation",
+        lambda: Installation(InstallationKind.UV_TOOL, tmp_path, "uv"),
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        cli_module.main(["update", "--to", "not a version"])
+
+    assert raised.value.code == 1
+    assert "invalid target version" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        (PackageNotFoundError("missing"), "no installed distribution metadata"),
+        ("not a version", "installed MST version is invalid"),
+    ],
+)
+def test_current_version_reports_missing_or_invalid_metadata(reported, expected, monkeypatch):
+    def distribution_version(_name):
+        if isinstance(reported, BaseException):
+            raise reported
+        return reported
+
+    monkeypatch.setattr("maf_sandbox_tui._update.version", distribution_version)
+
+    with pytest.raises(UpdateError, match=expected):
+        update_module.current_version()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        subprocess.CompletedProcess(["manager"], 1, "ignored", "failed"),
+        subprocess.CompletedProcess(["manager"], 0, "", ""),
+        OSError("cannot start"),
+        subprocess.TimeoutExpired(["manager"], 5),
+    ],
+)
+def test_command_output_returns_none_for_every_unusable_result(outcome, monkeypatch):
+    def run(*_args, **_kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert update_module._command_output(["manager"]) is None
+
+
+@pytest.mark.parametrize(
+    ("global_install", "variable", "prefix"),
+    [(False, "PIPX_HOME", []), (True, "PIPX_GLOBAL_HOME", ["--global"])],
+)
+def test_pipx_root_reads_each_manager_environment(global_install, variable, prefix, monkeypatch):
+    commands: list[list[str]] = []
+
+    def output(command):
+        commands.append(command)
+        return "C:/pipx"
+
+    monkeypatch.setattr(update_module, "_command_output", output)
+
+    assert update_module._pipx_root("pipx", global_install=global_install) == Path("C:/pipx/venvs")
+    assert commands == [["pipx", "environment", *prefix, "--value", variable]]
+
+
+def test_inspection_falls_back_to_system_python_without_a_manager(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    installation = update_module.inspect_installation(prefix=tmp_path, base_prefix=tmp_path)
+    assert installation.kind is InstallationKind.SYSTEM
+    assert installation.self_updatable is False
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"releases": []}])
+def test_release_selection_rejects_invalid_project_documents(payload):
+    with pytest.raises(UpdateError, match="invalid project document"):
+        update_module._release_versions(payload, prereleases=False)
+
+
+def test_release_selection_reports_an_empty_channel():
+    payload = {"releases": {"1.0.0rc1": [{"yanked": False}], 2: [{"yanked": False}]}}
+    with pytest.raises(UpdateError, match="stable channel"):
+        update_module._release_versions(payload, prereleases=False)
+
+
+class _PyPIResponse(BytesIO):
+    def __init__(self, payload: object, url: str = "https://pypi.org/pypi/maf-sandbox-tui/json"):
+        super().__init__(json.dumps(payload).encode())
+        self._url = url
+
+    def geturl(self) -> str:
+        return self._url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def test_latest_version_reads_only_the_fixed_pypi_origin(monkeypatch):
+    seen: list[tuple[str, float, str | None]] = []
+    payload = {"releases": {"0.1.0": [{"yanked": False}], "0.2.0": [{"yanked": False}]}}
+
+    def open_request(request, *, timeout):
+        seen.append((request.full_url, timeout, request.get_header("User-agent")))
+        return _PyPIResponse(payload)
+
+    monkeypatch.setattr("maf_sandbox_tui._update.urlopen", open_request)
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+
+    assert update_module.latest_version(timeout=0.25) == Version("0.2.0")
+    assert seen == [("https://pypi.org/pypi/maf-sandbox-tui/json", 0.25, "mst/0.1.0")]
+
+
+def test_latest_version_refuses_a_redirect_away_from_pypi(monkeypatch):
+    monkeypatch.setattr(
+        "maf_sandbox_tui._update.urlopen",
+        lambda *_args, **_kwargs: _PyPIResponse(
+            {"releases": {}},
+            "https://example.com/project.json",
+        ),
+    )
+
+    with pytest.raises(UpdateError, match="redirected"):
+        update_module.latest_version()
+
+
+def test_latest_version_wraps_transport_and_json_failures(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise URLError("offline")
+
+    monkeypatch.setattr("maf_sandbox_tui._update.urlopen", fail)
+
+    with pytest.raises(UpdateError, match="could not check PyPI"):
+        update_module.latest_version()
+
+
+def test_check_for_update_discovers_the_installation(monkeypatch, tmp_path):
+    installation = Installation(InstallationKind.SYSTEM, tmp_path)
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+    monkeypatch.setattr(update_module, "latest_version", lambda **_kwargs: Version("0.2.0"))
+    monkeypatch.setattr(update_module, "inspect_installation", lambda: installation)
+
+    checked = update_module.check_for_update(prereleases=True, timeout=0.1)
+
+    assert checked.status == "update_available"
+    assert checked.installation is installation
+    assert checked.to_json()["channel"] == "prerelease"
+
+
+def test_upgrade_command_requires_a_supported_available_manager(tmp_path):
+    with pytest.raises(UpdateError, match="executable is unavailable"):
+        update_module._upgrade_command(
+            Installation(InstallationKind.UV_TOOL, tmp_path),
+            Version("1.0.0"),
+        )
+    with pytest.raises(UpdateError, match="cannot update itself"):
+        update_module._upgrade_command(
+            Installation(InstallationKind.SYSTEM, tmp_path, "python"),
+            Version("1.0.0"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (OSError("cannot start"), "could not verify"),
+        (subprocess.CompletedProcess(["python"], 1, "", "broken"), "broken"),
+        (subprocess.CompletedProcess(["python"], 1, "", ""), "Python failed"),
+        (subprocess.CompletedProcess(["python"], 0, "bad version", ""), "invalid version"),
+    ],
+)
+def test_fresh_version_reports_every_verification_failure(outcome, expected, monkeypatch):
+    def run(*_args, **_kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(UpdateError, match=expected):
+        update_module._fresh_installed_version()
+
+
+def test_fresh_version_reads_the_updated_environment(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["python"], 0, "1.2.3\n", ""),
+    )
+    assert update_module._fresh_installed_version() == Version("1.2.3")
+
+
+def test_system_python_update_refusal_names_pip(monkeypatch, tmp_path):
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+    installation = Installation(InstallationKind.SYSTEM, tmp_path)
+    with pytest.raises(UpdateError, match="-m pip install --upgrade"):
+        update_module.perform_update(target="0.2.0", installation=installation)
+
+
+def test_update_without_target_is_current_when_the_index_is_not_newer(monkeypatch, tmp_path):
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.2.0"))
+    monkeypatch.setattr(update_module, "latest_version", lambda **_kwargs: Version("0.1.0"))
+    installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
+
+    result = update_module.perform_update(installation=installation)
+
+    assert result.status == "current"
+    assert result.installed == Version("0.2.0")
+
+
+def test_explicit_current_target_does_not_run_the_manager(monkeypatch, tmp_path):
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.2.0"))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("manager must not run"),
+    )
+    installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
+
+    assert (
+        update_module.perform_update(target="0.2.0", installation=installation).status == "current"
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (OSError("cannot start"), "could not start"),
+        (subprocess.CompletedProcess(["uv"], 1, "", "resolver failed"), "resolver failed"),
+        (subprocess.CompletedProcess(["uv"], 1, "", ""), "could not update MST"),
+    ],
+)
+def test_update_reports_manager_start_and_exit_failures(outcome, expected, monkeypatch, tmp_path):
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+
+    def run(*_args, **_kwargs):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(subprocess, "run", run)
+    installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
+
+    with pytest.raises(UpdateError, match=expected):
+        update_module.perform_update(target="0.2.0", installation=installation)
+
+
+def test_update_rejects_a_manager_version_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
+    )
+    monkeypatch.setattr(update_module, "_fresh_installed_version", lambda: Version("0.3.0"))
+    installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
+
+    with pytest.raises(UpdateError, match="0.3.0 is installed instead of 0.2.0"):
+        update_module.perform_update(target="0.2.0", installation=installation)
