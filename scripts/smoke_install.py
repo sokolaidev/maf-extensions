@@ -608,6 +608,7 @@ def _smoke_maf_sandbox_drawio() -> str:
         Capability,
         Isolation,
         LandedArtifact,
+        OsFamily,
         OutputSink,
         SandboxRouter,
         make_file_system_sink,
@@ -644,7 +645,9 @@ def _smoke_maf_sandbox_drawio() -> str:
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
-            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            os_families=frozenset({OsFamily.POSIX}),
         ),
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)

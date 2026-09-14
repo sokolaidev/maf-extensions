@@ -38,7 +38,7 @@ Verify all four layout-policy combinations through a real Docker backend without
 uv run python scripts/check_drawio_docker.py --image drawio-sandbox:local --output out/drawio
 ```
 
-The image provides `python3` and Graphviz `dot`. The kind uploads its fixed converter with each call; no package installation or network access occurs in the guest. It requires `EXEC`, `FILES_IN`, and `FILES_OUT`, and declares closed egress. Use a backend that provides all three capabilities. Confinement is undeclared, so default cleanup disposes the sandbox.
+The image provides `python3` and Graphviz `dot`. The kind uploads its fixed converter with each call; no package installation or network access occurs in the guest. It requires a POSIX guest with `EXEC`, `FILES_IN`, and `FILES_OUT`, and declares closed egress. Use a backend that declares POSIX and provides all three capabilities. For Docker, construct the backend with `await DockerSandboxBackend.create(config)` so it declares the daemon's guest family. Confinement is undeclared, so default cleanup disposes the sandbox.
 
 ## Model input
 

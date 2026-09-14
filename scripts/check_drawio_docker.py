@@ -69,10 +69,8 @@ def _input(positioned: bool) -> str:
 async def check(image: str, output: Path) -> None:
     """Assert actual landed geometry for all four layout-policy combinations."""
     scope = f"drawio-check-{uuid4().hex}"
-    router = SandboxRouter(
-        [DockerSandboxBackend(DockerSandboxConfig(memory="256m", cpus=1))],
-        min_isolation=Isolation.CONTAINER,
-    )
+    backend = await DockerSandboxBackend.create(DockerSandboxConfig(memory="256m", cpus=1))
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     context = make_caller_context(list_no_files, lambda: scope, lambda: "diagram")
     reports: list[dict[str, object]] = []
     try:

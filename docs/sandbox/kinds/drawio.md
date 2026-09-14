@@ -20,7 +20,7 @@ Nested groups, relative ports, edge-label vertices, collapsed cells and detached
 
 ## Execution and delivery
 
-The kind requires `EXEC`, `FILES_IN` and `FILES_OUT`, with closed egress and one output. The converter and input are written under `SandboxToolSession.guest_call_path()` and executed with fixed argv. No model value becomes a command argument. Confinement is undeclared; the default cleanup policy disposes the sandbox. No backend or core protocol changes are required.
+The kind requires a POSIX guest with `EXEC`, `FILES_IN` and `FILES_OUT`, closed egress and one output. The router refuses attachment when the backend does not declare POSIX. Docker hosts construct their backend with `await DockerSandboxBackend.create(config)` to discover the daemon's guest family. The converter and input are written under `SandboxToolSession.guest_call_path()` and executed with fixed argv. No model value becomes a command argument. Confinement is undeclared; the default cleanup policy disposes the sandbox. No backend or core protocol changes are required.
 
 Limits are 1 MiB of input, eight pages, 1000 cells per page, and 2 MiB of output. Automatic layout accepts at most 200 vertices and 600 edges per page. Parsing bounds nesting and element count. Graphviz has bounded retained stdout/stderr and one layout deadline shared across pages, inside the sandbox exec timeout. Diagnostics are limited to 2048 characters. The host may set the timeout from greater than zero up to 300 seconds; its default is 60 seconds.
 

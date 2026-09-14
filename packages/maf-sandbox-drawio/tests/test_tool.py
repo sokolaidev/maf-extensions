@@ -20,10 +20,12 @@ from maf_sandbox import (
     ExecResult,
     Isolation,
     LandedArtifact,
+    OsFamily,
     OutputsCollected,
     OutputSink,
     SandboxKey,
     SandboxObserver,
+    SandboxOsFamilyNotSupported,
     SandboxRouter,
     make_file_system_sink,
 )
@@ -86,7 +88,9 @@ def attach(
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
-            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            os_families=frozenset({OsFamily.POSIX}),
         ),
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=observer)
@@ -279,6 +283,30 @@ def test_unconfigured_router_has_no_tools(tmp_path: Path):
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "families", [frozenset(), frozenset({OsFamily.WINDOWS})], ids=["undeclared", "windows"]
+)
+def test_non_posix_backend_is_refused_at_attachment(tmp_path: Path, families: frozenset[OsFamily]):
+    sandbox = InProcessSandbox()
+    backend = InProcessSandboxBackend(
+        sandbox,
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            os_families=families,
+        ),
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    with pytest.raises(SandboxOsFamilyNotSupported, match="'posix'"):
+        make_drawio_tools(
+            router,
+            "agent",
+            make_caller_context(list_no_files, lambda: "s", lambda: "t"),
+            make_file_system_sink(tmp_path),
+        )
+    assert not backend.keys and not sandbox.commands and not sandbox.contents
 
 
 def test_spec_requires_file_delivery_and_closed_egress():

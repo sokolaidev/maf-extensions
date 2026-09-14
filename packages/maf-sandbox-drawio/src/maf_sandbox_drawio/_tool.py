@@ -12,6 +12,7 @@ from maf_sandbox import (
     CallerContext,
     Capability,
     DeclaredOutput,
+    OsFamily,
     OutputSink,
     SandboxRouter,
     SandboxSpec,
@@ -30,7 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def drawio_sandbox_spec(image: str | None = None) -> SandboxSpec:
-    """Declare a Python/Graphviz workload with closed egress and one file output.
+    """Declare a POSIX Python/Graphviz workload with closed egress and one file output.
 
     Confinement is undeclared, so the default cleanup policy disposes the sandbox.
     """
@@ -40,6 +41,7 @@ def drawio_sandbox_spec(image: str | None = None) -> SandboxSpec:
         work_dir="/maf-sandbox/work",
         egress_allow=(),
         requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
+        requires_os_family=OsFamily.POSIX,
         outputs_named_at_call_time=True,
         files_out=TransferLimits(
             max_bytes_per_file=MAX_OUTPUT_BYTES, max_total_bytes=MAX_OUTPUT_BYTES, max_files=1
@@ -60,7 +62,7 @@ def make_drawio_tools(
 ) -> list[Any]:
     """Attach create_drawio(xml), preserving supplied layout unless configured otherwise.
 
-    Missing vertex geometry always triggers automatic layout on that page. The image must
+    Missing vertex geometry always triggers automatic layout on that page. The POSIX image must
     provide python3 and Graphviz dot. Choose a sink policy suitable for repeated diagram.drawio
     names; neither the output destination nor layout settings are model arguments.
     """
