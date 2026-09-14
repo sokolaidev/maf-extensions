@@ -237,6 +237,9 @@ class SandboxConsole(App[None]):
         self.records: dict[str, SandboxRecord] = {}
         self.ambiguous_ids: frozenset[str] = frozenset()
         self.selected_id: str | None = None
+        self._refresh_running = False
+        self._refresh_pending = False
+        self._disposal_running = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -262,7 +265,21 @@ class SandboxConsole(App[None]):
         self.query_one("#body").set_class(event.size.width < 103, "compact")
 
     def action_refresh(self) -> None:
-        self.run_worker(self._refresh(), group="inventory", exclusive=True)
+        if self._refresh_running:
+            self._refresh_pending = True
+            return
+        self._refresh_running = True
+        self.run_worker(self._run_refresh(), group="inventory")
+
+    async def _run_refresh(self) -> None:
+        try:
+            while True:
+                self._refresh_pending = False
+                await self._refresh()
+                if not self._refresh_pending:
+                    break
+        finally:
+            self._refresh_running = False
 
     async def _refresh(self) -> None:
         status = self.query_one("#status", Static)
@@ -350,7 +367,17 @@ class SandboxConsole(App[None]):
 
     def _delete_answered(self, instance_id: str | None) -> None:
         if instance_id is not None:
-            self.run_worker(self._dispose(instance_id), group="disposal", exclusive=True)
+            if self._disposal_running:
+                self.query_one("#status", Static).update("A disposal is already in progress.")
+                return
+            self._disposal_running = True
+            self.run_worker(self._run_dispose(instance_id), group="disposal")
+
+    async def _run_dispose(self, instance_id: str) -> None:
+        try:
+            await self._dispose(instance_id)
+        finally:
+            self._disposal_running = False
 
     async def _dispose(self, instance_id: str) -> None:
         status = self.query_one("#status", Static)

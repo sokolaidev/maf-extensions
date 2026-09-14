@@ -122,3 +122,76 @@ def test_console_surfaces_partial_inventory():
             assert "1 host(s) unavailable" in str(app.query_one("#status", Static).render())
 
     asyncio.run(check())
+
+
+def test_console_coalesces_refreshes_while_one_is_in_flight():
+    class BlockingControl(MemoryControl):
+        def __init__(self, records: tuple[SandboxRecord, ...]) -> None:
+            super().__init__()
+            self.records = records
+            self.calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            self.calls += 1
+            self.entered.set()
+            await self.release.wait()
+            return self.records
+
+    async def check() -> None:
+        control = BlockingControl(await MemoryControl.demo(now=1_000).list_sandboxes())
+        app = SandboxConsole(control, refresh_interval=3_600)
+
+        async with app.run_test(size=(128, 38)) as pilot:
+            await asyncio.wait_for(control.entered.wait(), timeout=1)
+            app.action_refresh()
+            app.action_refresh()
+            await pilot.pause()
+
+            assert control.calls == 1
+            control.release.set()
+            await pilot.pause()
+            assert control.calls == 2
+            assert not app._refresh_running
+            assert app.query_one("#sandboxes", DataTable).row_count == 3
+
+    asyncio.run(check())
+
+
+def test_console_does_not_cancel_an_in_flight_disposal():
+    class BlockingControl(MemoryControl):
+        def __init__(self, records: tuple[SandboxRecord, ...]) -> None:
+            super().__init__()
+            self.records = records
+            self.calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def dispose_sandbox(
+            self, instance_id: str, *, timeout: float = 10.0
+        ) -> DisposalResult:
+            self.calls += 1
+            self.entered.set()
+            await self.release.wait()
+            return await super().dispose_sandbox(instance_id, timeout=timeout)
+
+    async def check() -> None:
+        control = BlockingControl(await MemoryControl.demo(now=1_000).list_sandboxes())
+        app = SandboxConsole(control, refresh_interval=3_600)
+
+        async with app.run_test(size=(128, 38)) as pilot:
+            await pilot.pause()
+            instance_id = control.records[0].instance_id
+            app._delete_answered(instance_id)
+            await asyncio.wait_for(control.entered.wait(), timeout=1)
+            app._delete_answered(instance_id)
+            await pilot.pause()
+
+            assert control.calls == 1
+            assert "already in progress" in str(app.query_one("#status", Static).render())
+            control.release.set()
+            await pilot.pause()
+            assert not app._disposal_running
+
+    asyncio.run(check())
