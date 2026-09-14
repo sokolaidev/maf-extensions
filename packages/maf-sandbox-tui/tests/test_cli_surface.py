@@ -15,7 +15,6 @@ import pytest
 import maf_sandbox_tui.cli as cli_module
 from maf_sandbox_tui import MemoryControl, SandboxControlServer
 from maf_sandbox_tui._update import Installation, InstallationKind
-from maf_sandbox_tui.cli import main
 
 _READY_INSTANCE = "f2ecba87b2ce44659a66fd28fd0a1002"
 
@@ -117,14 +116,14 @@ def test_every_help_option_exits_successfully(command, help_option, capsys):
     arguments = [help_option] if command is None else [command, help_option]
 
     with pytest.raises(SystemExit) as raised:
-        main(arguments)
+        cli_module.main(arguments)
 
     assert raised.value.code == 0
     assert "usage: mst" in capsys.readouterr().out
 
 
 def test_list_accepts_every_filter_and_duration_unit(capsys):
-    main(
+    cli_module.main(
         [
             "list",
             "--demo",
@@ -155,12 +154,12 @@ def test_list_accepts_every_filter_and_duration_unit(capsys):
     [("30s", 1), ("0.01h", 1), ("0.0001d", 2), ("60", 1)],
 )
 def test_older_than_accepts_every_documented_unit(age, expected, capsys):
-    main(["list", "--demo", "--older-than", age, "--json"])
+    cli_module.main(["list", "--demo", "--older-than", age, "--json"])
     assert len(json.loads(capsys.readouterr().out)) == expected
 
 
 def test_watch_accepts_every_filter_timing_option_and_json_alias(capsys):
-    main(
+    cli_module.main(
         [
             "watch",
             "--demo",
@@ -195,19 +194,19 @@ def test_plain_output_is_available_for_every_read_command(capsys, monkeypatch, t
     installation = Installation(InstallationKind.VIRTUAL_ENVIRONMENT, tmp_path / ".venv")
     monkeypatch.setattr(cli_module, "inspect_installation", lambda: installation)
 
-    main(["version"])
+    cli_module.main(["version"])
     assert "mst " in capsys.readouterr().out
 
-    main(["hosts", "--demo"])
+    cli_module.main(["hosts", "--demo"])
     assert "SOURCE" in capsys.readouterr().out
 
-    main(["list", "--demo"])
+    cli_module.main(["list", "--demo"])
     assert "INSTANCE" in capsys.readouterr().out
 
-    main(["show", _READY_INSTANCE, "--demo"])
+    cli_module.main(["show", _READY_INSTANCE, "--demo"])
     assert _READY_INSTANCE in capsys.readouterr().out
 
-    main(["watch", "--demo", "--count", "1"])
+    cli_module.main(["watch", "--demo", "--count", "1"])
     assert "Snapshot 1" in capsys.readouterr().out
 
 
@@ -219,7 +218,7 @@ def test_direct_endpoint_and_source_options_reach_the_named_host(capsys, tmp_pat
             manifest_directory=tmp_path,
         ) as server:
             await asyncio.to_thread(
-                main,
+                cli_module.main,
                 [
                     "hosts",
                     "--endpoint",
@@ -239,7 +238,7 @@ def test_direct_endpoint_and_source_options_reach_the_named_host(capsys, tmp_pat
 
 
 def test_delete_accepts_timeout_and_plain_output(capsys):
-    main(["delete", _READY_INSTANCE, "--demo", "--yes", "--timeout", "0.5"])
+    cli_module.main(["delete", _READY_INSTANCE, "--demo", "--yes", "--timeout", "0.5"])
     assert f"disposed: Sandbox disposed. ({_READY_INSTANCE})" in capsys.readouterr().out
 
 
@@ -267,7 +266,7 @@ def test_interactive_destructive_commands_can_be_declined(
     monkeypatch.setattr("builtins.input", lambda _prompt: "no")
 
     with pytest.raises(SystemExit) as raised:
-        main(command)
+        cli_module.main(command)
 
     assert raised.value.code == 4
     assert kept in capsys.readouterr().out
@@ -291,14 +290,14 @@ def test_interactive_destructive_commands_accept_yes(command, monkeypatch, capsy
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
 
-    main(command)
+    cli_module.main(command)
 
     output = capsys.readouterr().out.lower()
     assert "disposed" in output or "purged" in output
 
 
 def test_purge_accepts_timeout_and_plain_output(capsys):
-    main(
+    cli_module.main(
         [
             "purge-thread",
             "--demo",
@@ -331,7 +330,7 @@ def test_purge_accepts_timeout_and_plain_output(capsys):
 )
 def test_invalid_option_values_are_rejected(arguments):
     with pytest.raises(SystemExit) as raised:
-        main(arguments)
+        cli_module.main(arguments)
     assert raised.value.code == 2
 
 

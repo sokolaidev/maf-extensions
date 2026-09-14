@@ -15,13 +15,12 @@ from packaging.version import Version
 
 import maf_sandbox_tui._update as update_module
 import maf_sandbox_tui.cli as cli_module
-from maf_sandbox_tui._update import (
-    Installation,
-    InstallationKind,
-    UpdateCheck,
-    UpdateError,
-    UpdateResult,
-)
+
+Installation = update_module.Installation
+InstallationKind = update_module.InstallationKind
+UpdateCheck = update_module.UpdateCheck
+UpdateError = update_module.UpdateError
+UpdateResult = update_module.UpdateResult
 
 
 def test_release_selection_excludes_prereleases_and_fully_yanked_versions():

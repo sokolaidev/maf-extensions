@@ -124,7 +124,7 @@ def test_hyperlight_control_routes_exact_generation_and_preserves_replacement():
         replacement = replace(target, instance_id="generation-b")
         inventory = _Inventory([target])
         router = _Router(inventory, replacement)
-        control = HyperlightControl(inventory, cast("SandboxRouter", router), source_id="agent-app")
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
 
         listed = await control.list_sandboxes()
         assert listed[0].source_id == "agent-app"
@@ -149,7 +149,7 @@ def test_hyperlight_control_purges_the_conversation_through_the_router():
         )
         inventory = _Inventory([target, survivor])
         router = _Router(inventory, survivor)
-        control = HyperlightControl(inventory, cast("SandboxRouter", router), source_id="agent-app")
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
 
         result = await control.purge_thread("tenant-labs", "thread-1")
 

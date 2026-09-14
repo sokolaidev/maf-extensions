@@ -61,7 +61,7 @@ def test_snapshot_and_find_retain_runtime_host_errors():
             raise RuntimeError("lookup failed")
 
     manifest = EndpointManifest("host", "http://127.0.0.1:1", 1)
-    probe = cli_module._HostProbe(manifest, cast("HttpControl", FailingClient()))
+    probe = cli_module._HostProbe(manifest, cast(HttpControl, FailingClient()))
 
     records, list_errors = asyncio.run(cli_module._snapshot((probe,)))
     matches, find_errors = asyncio.run(cli_module._find((probe,), "instance"))
@@ -152,7 +152,7 @@ def test_unavailable_host_makes_an_otherwise_successful_purge_partial(monkeypatc
     manifest = EndpointManifest("missing", "http://127.0.0.1:1", 1)
     probe = cli_module._HostProbe(
         manifest,
-        cast("HttpControl", object()),
+        cast(HttpControl, object()),
         "connection refused",
     )
     monkeypatch.setattr(cli_module, "_control", lambda _probes: Control())
