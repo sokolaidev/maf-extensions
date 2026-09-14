@@ -5,11 +5,11 @@ from __future__ import annotations
 import time
 from typing import cast
 
-from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.events import Resize
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Label, Static
@@ -39,20 +39,19 @@ def _age(stamp: float, *, now: float | None = None) -> str:
     return f"{seconds // 86400}d"
 
 
-def _state_cell(state: SandboxState) -> Text:
-    return Text.assemble(("● ", _STATE_STYLE[state]), (state.value.upper(), "bold"))
+def _state_cell(state: SandboxState) -> Content:
+    return Content.assemble(("● ", _STATE_STYLE[state]), (state.value.upper(), "bold"))
 
 
-def _detail(record: SandboxRecord) -> Text:
+def _detail(record: SandboxRecord) -> Content:
     state_style = _STATE_STYLE[record.state]
-    rail = Text.assemble(
+    rail = Content.assemble(
         ("○", "#586773"),
         ("━━", "#586773"),
         ("●", state_style),
         (f"  {record.state.value.upper()}\n", f"bold {state_style}"),
     )
-    detail = Text()
-    detail.append_text(rail)
+    detail = Content().append(rail)
     rows = (
         ("SOURCE", record.source_id),
         ("BACKEND", record.backend),
@@ -66,8 +65,8 @@ def _detail(record: SandboxRecord) -> Text:
         ("EGRESS", "closed" if not record.egress_targets else "\n".join(record.egress_targets)),
     )
     for label, value in rows:
-        detail.append(f"\n{label:<12}", style="bold #7990a0")
-        detail.append(value, style="#d8e1e8")
+        detail = detail.append_text(f"\n{label:<12}", style="bold #7990a0")
+        detail = detail.append_text(value, style="#d8e1e8")
     return detail
 
 
@@ -84,7 +83,7 @@ class ConfirmDelete(ModalScreen[str | None]):
         with Vertical(id="confirm-card"):
             yield Label("DISPOSE PHYSICAL INSTANCE", id="confirm-title")
             yield Static(
-                Text.assemble(
+                Content.assemble(
                     ("Dispose ", "#aab8c2"),
                     (self.record.logical_name, "bold #f6f8fa"),
                     ("?\n\n", "#aab8c2"),
@@ -271,7 +270,7 @@ class SandboxConsole(App[None]):
             snapshot = error.records
             partial = error
         except Exception as error:
-            status.update(Text(f"Control endpoint unavailable · {error}", style="#ff6b6b"))
+            status.update(Content.assemble((f"Control endpoint unavailable · {error}", "#ff6b6b")))
             return
         self.records = {record.instance_id: record for record in snapshot}
         table = cast("DataTable[object]", self.query_one("#sandboxes", DataTable))
@@ -295,9 +294,8 @@ class SandboxConsole(App[None]):
             status.update(message)
         else:
             status.update(
-                Text(
-                    f"{message} · {len(partial.errors)} host(s) unavailable",
-                    style="#f2c14e",
+                Content.assemble(
+                    (f"{message} · {len(partial.errors)} host(s) unavailable", "#f2c14e")
                 )
             )
 
@@ -312,9 +310,11 @@ class SandboxConsole(App[None]):
         record = self.records.get(self.selected_id or "")
         if record is None:
             panel.update(
-                Text(
-                    "No live sandboxes.\n\nStart an opted-in MAF host or run mst --demo.",
-                    style="#7990a0",
+                Content.assemble(
+                    (
+                        "No live sandboxes.\n\nStart an opted-in MAF host or run mst --demo.",
+                        "#7990a0",
+                    )
                 )
             )
         else:
@@ -333,12 +333,12 @@ class SandboxConsole(App[None]):
 
     async def _dispose(self, instance_id: str) -> None:
         status = self.query_one("#status", Static)
-        status.update(Text(f"Disposing {instance_id[:8]}…", style="#f2c14e"))
+        status.update(Content.assemble((f"Disposing {instance_id[:8]}…", "#f2c14e")))
         try:
             result = await self.control.dispose_sandbox(instance_id)
         except Exception as error:
-            status.update(Text(f"Disposal failed · {error}", style="#ff6b6b"))
+            status.update(Content.assemble((f"Disposal failed · {error}", "#ff6b6b")))
             return
         style = "#7bd88f" if result.status is DisposalStatus.DISPOSED else "#ff6b6b"
-        status.update(Text(result.message, style=style))
+        status.update(Content.assemble((result.message, style)))
         await self._refresh()

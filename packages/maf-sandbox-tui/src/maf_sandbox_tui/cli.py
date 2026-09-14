@@ -381,6 +381,8 @@ async def _find(
     errors = [
         f"{probe.manifest.source_id}: {probe.error}" for probe in probes if probe.error is not None
     ]
+    if not probes:
+        errors.append("no opted-in MAF hosts were discovered")
     for probe, result in zip(responsive, results, strict=True):
         if isinstance(result, BaseException):
             errors.append(f"{probe.manifest.source_id}: {result}")
@@ -445,7 +447,7 @@ async def _show(probes: Sequence[_HostProbe], arguments: argparse.Namespace) -> 
     else:
         _show_record(record)
     _print_errors(errors)
-    return 0
+    return _EXIT_ERROR if errors else 0
 
 
 def _confirmed(prompt: str, arguments: argparse.Namespace) -> bool | None:
@@ -466,6 +468,9 @@ async def _delete(probes: Sequence[_HostProbe], arguments: argparse.Namespace) -
         raise ControlEndpointError(
             f"instance id {arguments.instance_id!r} is reported by several hosts"
         )
+    if errors:
+        _print_errors(errors)
+        return _EXIT_ERROR
     client, record = next(iter(matches))
     confirmed = _confirmed(
         f"Dispose {record.logical_name} ({record.instance_id})?",

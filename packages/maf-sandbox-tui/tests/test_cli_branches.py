@@ -71,6 +71,21 @@ def test_snapshot_and_find_retain_runtime_host_errors():
     assert find_errors == ("host: lookup failed",)
 
 
+@pytest.mark.parametrize("operation", ["show", "delete"])
+def test_exact_lookup_without_discovered_hosts_is_unavailable(operation, capsys):
+    arguments = _arguments()
+    result = (
+        asyncio.run(cli_module._show((), arguments))
+        if operation == "show"
+        else asyncio.run(cli_module._delete((), arguments))
+    )
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert '"status": "unavailable"' in captured.out
+    assert "no opted-in MAF hosts were discovered" in captured.err
+
+
 def test_empty_table_warning_and_long_age_rendering(monkeypatch, capsys):
     cli_module._table(("A",), (), empty="Nothing here.")
     cli_module._print_errors(("host failed",))
@@ -116,6 +131,38 @@ def test_delete_reports_an_instance_that_is_already_gone(monkeypatch, capsys):
 
     assert asyncio.run(cli_module._delete((), _arguments())) == 3
     assert '"status": "not_found"' in capsys.readouterr().out
+
+
+def test_show_returns_an_error_when_another_host_is_unavailable(monkeypatch, capsys):
+    async def find(*_args):
+        return ((object(), _record()),), ("other-host: connection refused",)
+
+    monkeypatch.setattr(cli_module, "_find", find)
+
+    assert asyncio.run(cli_module._show((), _arguments())) == 1
+    captured = capsys.readouterr()
+    assert '"instance_id": "instance"' in captured.out
+    assert "other-host: connection refused" in captured.err
+
+
+def test_delete_refuses_when_single_ownership_is_uncertain(monkeypatch, capsys):
+    disposed = False
+
+    class Client:
+        async def dispose_sandbox(self, instance_id, *, timeout):
+            del instance_id, timeout
+            nonlocal disposed
+            disposed = True
+            raise AssertionError("unreachable")
+
+    async def find(*_args):
+        return ((Client(), _record()),), ("other-host: connection refused",)
+
+    monkeypatch.setattr(cli_module, "_find", find)
+
+    assert asyncio.run(cli_module._delete((), _arguments())) == 1
+    assert not disposed
+    assert "other-host: connection refused" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

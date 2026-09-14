@@ -239,6 +239,13 @@ class CompositeControl:
                         instance_id,
                         "The sandbox is already gone or its generation changed.",
                     )
+                if errors:
+                    return DisposalResult(
+                        DisposalStatus.FAILED,
+                        instance_id,
+                        "Sandbox ownership could not be confirmed on "
+                        f"{len(errors)} unavailable host(s).",
+                    )
                 remaining = max(deadline - loop.time(), 0.001)
                 return await owners[0].dispose_sandbox(instance_id, timeout=remaining)
         except TimeoutError:
@@ -260,13 +267,26 @@ class CompositeControl:
                 0,
                 "No responsive MAF host could confirm the purge.",
             )
-        results = await asyncio.gather(
-            *(
-                control.purge_thread(scope, thread_id, timeout=timeout)
-                for control in self._controls
-            ),
-            return_exceptions=True,
+        tasks = tuple(
+            asyncio.create_task(control.purge_thread(scope, thread_id, timeout=timeout))
+            for control in self._controls
         )
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=timeout)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        results: list[PurgeResult | BaseException] = []
+        for task in done:
+            try:
+                results.append(task.result())
+            except BaseException as error:
+                results.append(error)
         disposed = sum(item.disposed for item in results if isinstance(item, PurgeResult))
         failures = list(self._initial_errors)
         for item in results:
@@ -274,6 +294,15 @@ class CompositeControl:
                 failures.append(str(item))
             elif item.status is PurgeStatus.PARTIAL:
                 failures.append(item.message)
+        if pending:
+            suffix = f"; {len(failures)} other host failure(s) were reported" if failures else ""
+            return PurgeResult(
+                PurgeStatus.PARTIAL,
+                scope,
+                thread_id,
+                disposed,
+                f"Conversation purge timed out before {len(pending)} host(s) responded{suffix}.",
+            )
         if failures:
             return PurgeResult(
                 PurgeStatus.PARTIAL,

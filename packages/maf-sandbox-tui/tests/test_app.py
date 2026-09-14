@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import asyncio
 
+from textual.content import Content
 from textual.widgets import DataTable, Static
 
 from maf_sandbox_tui import MemoryControl, SandboxConsole, SandboxRecord
+from maf_sandbox_tui._app import _detail, _state_cell
 from maf_sandbox_tui._client import PartialInventoryError
+
+
+def test_console_renderables_use_textual_content():
+    record = asyncio.run(MemoryControl.demo(now=1_000).list_sandboxes())[0]
+
+    assert isinstance(_state_cell(record.state), Content)
+    detail = _detail(record)
+    assert isinstance(detail, Content)
+    assert record.instance_id in str(detail)
 
 
 def test_console_lists_details_and_disposes_after_confirmation():

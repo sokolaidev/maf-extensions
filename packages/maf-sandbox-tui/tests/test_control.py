@@ -227,6 +227,57 @@ def test_composite_disposal_is_bounded_while_locating_hosts():
     asyncio.run(check())
 
 
+def test_composite_disposal_refuses_an_unconfirmed_single_owner():
+    class FailingControl(MemoryControl):
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            raise ControlEndpointError("host stopped")
+
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        owner = MemoryControl((record,))
+
+        result = await CompositeControl((owner, FailingControl())).dispose_sandbox(
+            record.instance_id
+        )
+
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == (
+            "Sandbox ownership could not be confirmed on 1 unavailable host(s)."
+        )
+        assert await owner.list_sandboxes() == (record,)
+
+    asyncio.run(check())
+
+
+def test_composite_purge_cancels_hosts_at_the_shared_deadline():
+    cancelled = False
+
+    class HangingControl(MemoryControl):
+        async def purge_thread(
+            self, scope: str, thread_id: str, *, timeout: float = 10.0
+        ) -> PurgeResult:
+            del scope, thread_id, timeout
+            nonlocal cancelled
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled = True
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        result = await CompositeControl((MemoryControl((record,)), HangingControl())).purge_thread(
+            record.scope, record.thread_id, timeout=0.01
+        )
+
+        assert result.status is PurgeStatus.PARTIAL
+        assert result.disposed == 1
+        assert result.message == "Conversation purge timed out before 1 host(s) responded."
+        assert cancelled
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_routes_exact_generation():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
