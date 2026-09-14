@@ -324,8 +324,8 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 #
 # Three capabilities are a ceiling: acquire checks removal from a file-plane directory before
 # serving FILES_DELETE and conservatively refuses writing workloads on a completed failure.
-# FILES_IN is never withheld — it is this backend's only in-door — and acquire instead chooses
-# which principal its writes run as, per sandbox (#1131). See `_AcasSandbox.write_file`.
+# FILES_IN is never withheld — it is this backend's only in-door. Writes always run as the
+# guest and require a writable destination and transfer utilities. See `_AcasSandbox.write_file`.
 # FILES_OUT and FILES_LIST retain native host-authority reads with a check-then-act residual:
 # read can follow a replaced final file or parent, stat a parent, and list either. The removal
 # probe is not a read-authority bound. Atomic confinement needs microsoft/azure-container-apps#1831.
@@ -1754,11 +1754,10 @@ class AcasSandboxBackend:
             return
         self._warned_about_the_guest.add(already_warned)
         logger.warning(
-            "acas: %s could not remove the file plane's probe file, so a program the %s "
-            "workload execs can read "
-            "what write_file placed but cannot create any file of its own beside it — every "
-            "directory the file plane makes belongs to root. An exec whose whole result is its "
-            "stdout is unaffected; anything the guest has to write is not.",
+            "acas: %s could not remove the file plane's probe file for workload %s. "
+            "write_file runs as the guest and requires a writable destination and transfer "
+            "utilities; a protected destination is refused. The removal probe does not "
+            "determine write permission at other paths.",
             image,
             spec.kind,
         )

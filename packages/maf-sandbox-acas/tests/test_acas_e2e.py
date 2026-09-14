@@ -1458,7 +1458,7 @@ class TestTheWriteRoadOnAGuestThatCanWrite:
             loop.run_until_complete(backend.aclose())
 
     def test_the_image_runs_as_nonroot(self, writing: _Live):
-        """The control: with the road unchosen, everything below would measure the plane."""
+        """Require a non-root guest so protected-target refusals test an authority difference."""
         answered = writing.run(
             writing.sandbox.exec("id -u", working_directory="/tmp", timeout=_EXEC_TIMEOUT)
         )
