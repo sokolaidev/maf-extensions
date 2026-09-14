@@ -69,4 +69,4 @@ An ACA application can instead be designed to call a separate Hyperlight worker 
 | Optional file cleanup | open | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
 | Native host tools | open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Direct ACA hosting | investigated: measured device absence and SDK failure on Consumption/D4; no supported device-access mechanism found | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (closed) by [#1242](https://github.com/sokolaidev/maf-extensions/pull/1242) (merged) |
-| Separate remote worker for an ACA application | open: authenticated single-owner prototype | [#1236](https://github.com/sokolaidev/maf-extensions/issues/1236) (open) |
+| Separate remote worker for an ACA application | not planned: authenticated single-owner prototype proposal closed without implementation | [#1236](https://github.com/sokolaidev/maf-extensions/issues/1236) (closed) |
