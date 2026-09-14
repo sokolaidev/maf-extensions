@@ -148,6 +148,22 @@ def test_inventory_reports_the_current_generation_and_lifecycle(backend):
     asyncio.run(check())
 
 
+def test_instance_disposal_observer_distinguishes_a_match_from_a_stale_id(backend):
+    async def check():
+        sandbox = await acquire(backend)
+        with backend.observe_instance_disposal(KEY, SPEC.kind, "stale") as stale:
+            assert await backend.dispose(KEY, kind=SPEC.kind, instance_id="stale") is None
+        assert stale == [0]
+
+        with backend.observe_instance_disposal(KEY, SPEC.kind, sandbox.instance_id) as matched:
+            assert (
+                await backend.dispose(KEY, kind=SPEC.kind, instance_id=sandbox.instance_id) is None
+            )
+        assert matched == [1]
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize(
     "capability",
     [

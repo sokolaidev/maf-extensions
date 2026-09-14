@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 from textual.content import Content
 from textual.widgets import DataTable, Static
 
-from maf_sandbox_tui import MemoryControl, SandboxConsole, SandboxRecord
+from maf_sandbox_tui import DisposalResult, MemoryControl, SandboxConsole, SandboxRecord
 from maf_sandbox_tui._app import _detail, _state_cell
 from maf_sandbox_tui._client import PartialInventoryError
 
@@ -32,7 +33,7 @@ def test_console_lists_details_and_disposes_after_confirmation():
             assert not app.query_one("#body").has_class("compact")
             assert table.row_count == 3
             assert app.selected_id is not None
-            selected = app.selected_id
+            selected = app.records[app.selected_id].instance_id
 
             await pilot.press("d")
             await pilot.pause()
@@ -41,6 +42,47 @@ def test_console_lists_details_and_disposes_after_confirmation():
 
             assert table.row_count == 2
             assert all(record.instance_id != selected for record in await control.list_sandboxes())
+
+    asyncio.run(check())
+
+
+def test_console_retains_duplicate_ids_and_disables_ambiguous_disposal():
+    class RecordingControl(MemoryControl):
+        def __init__(self, records: tuple[SandboxRecord, ...]) -> None:
+            super().__init__()
+            self.records = records
+            self.disposals: list[str] = []
+
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            return self.records
+
+        async def dispose_sandbox(
+            self, instance_id: str, *, timeout: float = 10.0
+        ) -> DisposalResult:
+            self.disposals.append(instance_id)
+            return await super().dispose_sandbox(instance_id, timeout=timeout)
+
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        control = RecordingControl((record, replace(record, source_id="second-host")))
+        app = SandboxConsole(control, refresh_interval=3_600)
+
+        async with app.run_test(size=(128, 38)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#sandboxes", DataTable).row_count == 2
+            assert len(app.records) == 2
+            assert app.ambiguous_ids == frozenset({record.instance_id})
+            assert "disabled — duplicate physical ID" in str(
+                app.query_one("#detail", Static).render()
+            )
+
+            await pilot.press("d")
+            await pilot.pause()
+
+            assert control.disposals == []
+            assert "duplicate physical instance ID" in str(
+                app.query_one("#status", Static).render()
+            )
 
     asyncio.run(check())
 

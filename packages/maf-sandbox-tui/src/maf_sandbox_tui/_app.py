@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from typing import cast
 
 from textual import on
@@ -43,7 +44,7 @@ def _state_cell(state: SandboxState) -> Content:
     return Content.assemble(("● ", _STATE_STYLE[state]), (state.value.upper(), "bold"))
 
 
-def _detail(record: SandboxRecord) -> Content:
+def _detail(record: SandboxRecord, *, ambiguous: bool = False) -> Content:
     state_style = _STATE_STYLE[record.state]
     rail = Content.assemble(
         ("○", "#586773"),
@@ -63,6 +64,7 @@ def _detail(record: SandboxRecord) -> Content:
         ("LAST SIGNAL", f"{_age(record.last_activity_at)} ago"),
         ("CONTRACT", record.execution_contract or "—"),
         ("EGRESS", "closed" if not record.egress_targets else "\n".join(record.egress_targets)),
+        ("DISPOSAL", "disabled — duplicate physical ID" if ambiguous else "available"),
     )
     for label, value in rows:
         detail = detail.append_text(f"\n{label:<12}", style="bold #7990a0")
@@ -233,6 +235,7 @@ class SandboxConsole(App[None]):
         self.control = control
         self.refresh_interval = refresh_interval
         self.records: dict[str, SandboxRecord] = {}
+        self.ambiguous_ids: frozenset[str] = frozenset()
         self.selected_id: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -272,10 +275,21 @@ class SandboxConsole(App[None]):
         except Exception as error:
             status.update(Content.assemble((f"Control endpoint unavailable · {error}", "#ff6b6b")))
             return
-        self.records = {record.instance_id: record for record in snapshot}
+        counts = Counter(record.instance_id for record in snapshot)
+        self.ambiguous_ids = frozenset(
+            instance_id for instance_id, count in counts.items() if count > 1
+        )
+        occurrences: Counter[tuple[str, str]] = Counter()
+        records: dict[str, SandboxRecord] = {}
+        for record in snapshot:
+            identity = (record.source_id, record.instance_id)
+            occurrence = occurrences[identity]
+            occurrences[identity] += 1
+            records[f"{record.source_id}\x1f{record.instance_id}\x1f{occurrence}"] = record
+        self.records = records
         table = cast("DataTable[object]", self.query_one("#sandboxes", DataTable))
         table.clear(columns=False)
-        for record in snapshot:
+        for row_key, record in self.records.items():
             table.add_row(
                 _state_cell(record.state),
                 record.source_id,
@@ -283,10 +297,10 @@ class SandboxConsole(App[None]):
                 record.kind,
                 _age(record.created_at),
                 record.instance_id[:8],
-                key=record.instance_id,
+                key=row_key,
             )
         if self.selected_id not in self.records:
-            self.selected_id = snapshot[0].instance_id if snapshot else None
+            self.selected_id = next(iter(self.records), None)
         self._show_selected()
         noun = "instance" if len(snapshot) == 1 else "instances"
         message = f"{len(snapshot)} live {noun} · refreshed just now"
@@ -318,12 +332,19 @@ class SandboxConsole(App[None]):
                 )
             )
         else:
-            panel.update(_detail(record))
+            panel.update(_detail(record, ambiguous=record.instance_id in self.ambiguous_ids))
 
     def action_delete(self) -> None:
         record = self.records.get(self.selected_id or "")
         if record is None:
             self.query_one("#status", Static).update("Select a live sandbox first.")
+            return
+        if record.instance_id in self.ambiguous_ids:
+            self.query_one("#status", Static).update(
+                Content.assemble(
+                    ("Disposal disabled · duplicate physical instance ID reported.", "#ff6b6b")
+                )
+            )
             return
         self.push_screen(ConfirmDelete(record), self._delete_answered)
 

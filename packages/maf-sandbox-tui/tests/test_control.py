@@ -6,6 +6,8 @@ import asyncio
 import getpass
 import json
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -50,9 +52,21 @@ class _Inventory:
 
     def __init__(self, records: list[_Info]) -> None:
         self.records = records
+        self._disposal_watch: tuple[SandboxKey, str, str, list[int]] | None = None
 
     async def list_sandboxes(self) -> tuple[_Info, ...]:
         return tuple(self.records)
+
+    @contextmanager
+    def observe_instance_disposal(
+        self, key: SandboxKey, kind: str, instance_id: str
+    ) -> Generator[list[int], None, None]:
+        observed: list[int] = []
+        self._disposal_watch = (key, kind, instance_id, observed)
+        try:
+            yield observed
+        finally:
+            self._disposal_watch = None
 
 
 class _Router:
@@ -62,10 +76,14 @@ class _Router:
         replacement: _Info | None,
         *,
         succeeds: bool = True,
+        disposed: int | None = None,
     ) -> None:
         self.inventory = inventory
         self.replacement = replacement
         self.succeeds = succeeds
+        self.disposed = (
+            (1 if succeeds and replacement is None else 0) if disposed is None else disposed
+        )
         self.calls: list[tuple[SandboxKey, str, str | None, float]] = []
         self.scope_calls: list[tuple[str, str]] = []
 
@@ -78,6 +96,9 @@ class _Router:
         timeout: float,
     ) -> bool:
         self.calls.append((key, kind, instance_id, timeout))
+        watch = self.inventory._disposal_watch
+        if watch is not None and (key, kind, instance_id) == watch[:3]:
+            watch[3].append(self.disposed)
         self.inventory.records = [] if self.replacement is None else [self.replacement]
         return self.succeeds
 
@@ -335,6 +356,22 @@ def test_hyperlight_control_reports_a_concurrent_disposal_as_not_found():
     asyncio.run(check())
 
 
+def test_hyperlight_control_requires_a_positive_backend_disposal_receipt():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None, disposed=0)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
+
+        assert result.status is DisposalStatus.NOT_FOUND
+        assert result.message == "The sandbox is already gone or its generation changed."
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_purges_the_conversation_through_the_router():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -478,6 +515,28 @@ def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
             assert purged.status is PurgeStatus.PURGED
             assert purged.disposed == 1
             assert await client.get_sandbox(instance_id) is None
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/sandboxes?timeout=invalid",
+        "/v1/sandboxes?timeout=1&timeout=2",
+        "/v1/sandboxes/generation-a?timeout=invalid",
+    ],
+)
+def test_loopback_get_refuses_malformed_timeouts(tmp_path, path: str):
+    async def check() -> None:
+        async with SandboxControlServer(
+            MemoryControl.demo(now=1_000),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ) as server:
+            with pytest.raises(ControlEndpointError) as raised:
+                await asyncio.to_thread(HttpControl(server.manifest)._request, "GET", path)
+            assert raised.value.status_code == 400
 
     asyncio.run(check())
 

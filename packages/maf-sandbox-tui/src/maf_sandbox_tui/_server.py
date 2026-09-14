@@ -160,6 +160,11 @@ class _ControlHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
         try:
+            timeout = self._operation_timeout()
+        except ValueError as error:
+            self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+        try:
             if path == "/v1/health":
                 self._send(
                     HTTPStatus.OK,
@@ -172,7 +177,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
             if path == "/v1/sandboxes":
                 records = self._run(
                     self._control_server.owner.control.list_sandboxes(),
-                    timeout=self._operation_timeout(),
+                    timeout=timeout,
                 )
                 self._send(
                     HTTPStatus.OK,
@@ -186,7 +191,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
                 instance_id = unquote(path.removeprefix("/v1/sandboxes/"))
                 records = self._run(
                     self._control_server.owner.control.list_sandboxes(),
-                    timeout=self._operation_timeout(),
+                    timeout=timeout,
                 )
                 record = next((item for item in records if item.instance_id == instance_id), None)
                 if record is None:

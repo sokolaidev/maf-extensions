@@ -9,9 +9,10 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from concurrent.futures import Future
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -366,6 +367,21 @@ class HyperlightSandboxBackend:
     def __init__(self, config: HyperlightSandboxConfig | None = None) -> None:
         self.config = config if config is not None else HyperlightSandboxConfig()
         self._owner = uuid.uuid4().hex
+        self._disposal_watch: ContextVar[tuple[SandboxKey, str, str, list[int]] | None] = (
+            ContextVar(f"hyperlight_disposal_watch_{id(self)}", default=None)
+        )
+
+    @contextmanager
+    def observe_instance_disposal(
+        self, key: SandboxKey, kind: str, instance_id: str
+    ) -> Generator[list[int], None, None]:
+        """Capture how many matching generations this task's disposal removes."""
+        observed: list[int] = []
+        token = self._disposal_watch.set((key, kind, instance_id, observed))
+        try:
+            yield observed
+        finally:
+            self._disposal_watch.reset(token)
 
     def _targets(self, spec: SandboxSpec) -> tuple[str, ...]:
         missing = spec.required_capabilities - self.declarations.capabilities
@@ -443,6 +459,9 @@ class HyperlightSandboxBackend:
             else:
                 del self._sandboxes[index]
                 disposed += 1
+        watch = self._disposal_watch.get()
+        if watch is not None and (key, kind, instance_id) == watch[:3]:
+            watch[3].append(disposed)
         return disposed, fold_disposal_failures(failures)
 
     async def dispose(

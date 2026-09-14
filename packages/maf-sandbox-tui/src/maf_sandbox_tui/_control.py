@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Protocol
 
 from maf_sandbox import SandboxKey, SandboxRouter
@@ -51,6 +52,10 @@ class _InventoryBackend(Protocol):
     name: str
 
     async def list_sandboxes(self) -> Sequence[_BackendInfo]: ...
+
+    def observe_instance_disposal(
+        self, key: SandboxKey, kind: str, instance_id: str
+    ) -> AbstractContextManager[list[int]]: ...
 
 
 class HyperlightControl:
@@ -110,12 +115,15 @@ class HyperlightControl:
                         instance_id,
                         "The sandbox is already gone or its generation changed.",
                     )
-                ok = await self._router.dispose_kind(
-                    item.key,
-                    item.kind,
-                    instance_id=instance_id,
-                    timeout=timeout,
-                )
+                with self._backend.observe_instance_disposal(
+                    item.key, item.kind, instance_id
+                ) as observed:
+                    ok = await self._router.dispose_kind(
+                        item.key,
+                        item.kind,
+                        instance_id=instance_id,
+                        timeout=timeout,
+                    )
                 after = await self._backend.list_sandboxes()
         except TimeoutError:
             return DisposalResult(
@@ -130,6 +138,13 @@ class HyperlightControl:
             and current.instance_id != instance_id
             for current in after
         )
+        disposed = sum(observed)
+        if instance_id not in remaining and ok and disposed > 0:
+            return DisposalResult(
+                DisposalStatus.DISPOSED,
+                instance_id,
+                "Sandbox disposed.",
+            )
         if instance_id not in remaining and replacement:
             return DisposalResult(
                 DisposalStatus.NOT_FOUND,
@@ -137,17 +152,13 @@ class HyperlightControl:
                 "The sandbox generation changed before disposal could be confirmed.",
             )
         if instance_id not in remaining:
-            if ok:
-                return DisposalResult(
-                    DisposalStatus.DISPOSED,
-                    instance_id,
-                    "Sandbox disposed.",
-                )
-            return DisposalResult(
-                DisposalStatus.NOT_FOUND,
-                instance_id,
-                "The sandbox is already gone or its generation changed.",
+            status = DisposalStatus.NOT_FOUND if observed else DisposalStatus.FAILED
+            message = (
+                "The sandbox is already gone or its generation changed."
+                if observed
+                else "Disposal completed without a matching backend receipt."
             )
+            return DisposalResult(status, instance_id, message)
         return DisposalResult(
             DisposalStatus.FAILED,
             instance_id,
