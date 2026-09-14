@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.5.1...maf-sandbox-otel-v0.6.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+
+### Fixes
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+
 ## [0.5.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.5.0...maf-sandbox-otel-v0.5.1) (2026-09-12)
 
 
