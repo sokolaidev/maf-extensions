@@ -44,8 +44,8 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
         first_key = SandboxKey("mst-live", "delete", "worker")
         second_key = SandboxKey("mst-live", "purge", "worker")
         try:
-            first = await backend.acquire(first_key, _SPEC)
-            second = await backend.acquire(second_key, _SPEC)
+            first = await router.acquire(first_key, _SPEC)
+            second = await router.acquire(second_key, _SPEC)
             first_result = await first.run_code("print(6 * 7)", timeout=5)
             second_result = await second.run_code("print(7 * 8)", timeout=5)
             assert first_result.stdout == "42\n"

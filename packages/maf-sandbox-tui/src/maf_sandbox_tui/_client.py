@@ -161,18 +161,21 @@ class HttpControl:
 class CompositeControl:
     """Combine several independently owned MAF processes for one console."""
 
-    def __init__(self, controls: Sequence[SandboxControl]) -> None:
+    def __init__(
+        self,
+        controls: Sequence[SandboxControl],
+        initial_errors: Sequence[str] = (),
+    ) -> None:
         self._controls = tuple(controls)
+        self._initial_errors = tuple(initial_errors)
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
         """Return every responsive endpoint's current inventory."""
-        if not self._controls:
-            return ()
         snapshots = await asyncio.gather(
             *(control.list_sandboxes() for control in self._controls), return_exceptions=True
         )
         records: list[SandboxRecord] = []
-        errors: list[str] = []
+        errors = list(self._initial_errors)
         for snapshot in snapshots:
             if isinstance(snapshot, BaseException):
                 errors.append(str(snapshot))
@@ -192,23 +195,58 @@ class CompositeControl:
             return_exceptions=True,
         )
         records = [item for item in matches if isinstance(item, SandboxRecord)]
+        errors = list(self._initial_errors)
+        errors.extend(str(item) for item in matches if isinstance(item, BaseException))
         if len(records) > 1:
             raise ControlEndpointError(f"instance id {instance_id!r} is reported by several hosts")
+        if not records and errors:
+            raise ControlEndpointError(
+                f"sandbox presence could not be confirmed on {len(errors)} unavailable host(s)"
+            )
         return records[0] if records else None
 
     async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
         """Route exact-instance disposal to the endpoint currently reporting it."""
-        for control in self._controls:
-            try:
-                if any(item.instance_id == instance_id for item in await control.list_sandboxes()):
-                    return await control.dispose_sandbox(instance_id, timeout=timeout)
-            except ControlEndpointError:
-                continue
-        return DisposalResult(
-            DisposalStatus.NOT_FOUND,
-            instance_id,
-            "The sandbox is already gone or its owner is unavailable.",
-        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            async with asyncio.timeout(timeout):
+                snapshots = await asyncio.gather(
+                    *(control.list_sandboxes() for control in self._controls),
+                    return_exceptions=True,
+                )
+                owners: list[SandboxControl] = []
+                errors = list(self._initial_errors)
+                for control, snapshot in zip(self._controls, snapshots, strict=True):
+                    if isinstance(snapshot, BaseException):
+                        errors.append(str(snapshot))
+                    elif any(item.instance_id == instance_id for item in snapshot):
+                        owners.append(control)
+                if len(owners) > 1:
+                    raise ControlEndpointError(
+                        f"instance id {instance_id!r} is reported by several hosts"
+                    )
+                if not owners:
+                    if errors:
+                        return DisposalResult(
+                            DisposalStatus.FAILED,
+                            instance_id,
+                            "Sandbox owner could not be confirmed on "
+                            f"{len(errors)} unavailable host(s).",
+                        )
+                    return DisposalResult(
+                        DisposalStatus.NOT_FOUND,
+                        instance_id,
+                        "The sandbox is already gone or its generation changed.",
+                    )
+                remaining = max(deadline - loop.time(), 0.001)
+                return await owners[0].dispose_sandbox(instance_id, timeout=remaining)
+        except TimeoutError:
+            return DisposalResult(
+                DisposalStatus.FAILED,
+                instance_id,
+                "Disposal timed out while locating the owning host.",
+            )
 
     async def purge_thread(
         self, scope: str, thread_id: str, *, timeout: float = 10.0
@@ -230,7 +268,7 @@ class CompositeControl:
             return_exceptions=True,
         )
         disposed = sum(item.disposed for item in results if isinstance(item, PurgeResult))
-        failures: list[str] = []
+        failures = list(self._initial_errors)
         for item in results:
             if isinstance(item, BaseException):
                 failures.append(str(item))

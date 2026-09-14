@@ -134,7 +134,11 @@ class _ControlHandler(BaseHTTPRequestHandler):
 
     def _run(self, operation: Coroutine[Any, Any, Any]) -> Any:
         future = asyncio.run_coroutine_threadsafe(operation, self._control_server.owner.loop)
-        return future.result(timeout=self._control_server.owner.request_timeout)
+        try:
+            return future.result(timeout=self._control_server.owner.request_timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            raise
 
     def _operation_timeout(self) -> float:
         values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("timeout", [])

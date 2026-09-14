@@ -131,17 +131,23 @@ class HyperlightControl:
             and current.instance_id != instance_id
             for current in after
         )
-        if ok and instance_id not in remaining and not replacement:
-            return DisposalResult(
-                DisposalStatus.DISPOSED,
-                instance_id,
-                "Sandbox disposed.",
-            )
         if instance_id not in remaining and replacement:
             return DisposalResult(
                 DisposalStatus.NOT_FOUND,
                 instance_id,
                 "The sandbox generation changed before disposal could be confirmed.",
+            )
+        if instance_id not in remaining:
+            if ok:
+                return DisposalResult(
+                    DisposalStatus.DISPOSED,
+                    instance_id,
+                    "Sandbox disposed.",
+                )
+            return DisposalResult(
+                DisposalStatus.NOT_FOUND,
+                instance_id,
+                "The sandbox is already gone or its generation changed.",
             )
         return DisposalResult(
             DisposalStatus.FAILED,

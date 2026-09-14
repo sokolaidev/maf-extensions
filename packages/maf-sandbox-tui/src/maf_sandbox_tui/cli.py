@@ -228,7 +228,14 @@ async def _probe(manifests: Sequence[EndpointManifest]) -> tuple[_HostProbe, ...
 
 
 def _control(probes: Sequence[_HostProbe]) -> CompositeControl:
-    return CompositeControl(tuple(probe.client for probe in probes if probe.error is None))
+    return CompositeControl(
+        tuple(probe.client for probe in probes if probe.error is None),
+        tuple(
+            f"{probe.manifest.source_id}: {probe.error}"
+            for probe in probes
+            if probe.error is not None
+        ),
+    )
 
 
 async def _snapshot(

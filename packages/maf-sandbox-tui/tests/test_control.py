@@ -13,6 +13,7 @@ import pytest
 from maf_sandbox import SandboxKey, SandboxRouter, ScopePurge
 
 import maf_sandbox_tui._server as server_module
+import maf_sandbox_tui.cli as cli_module
 from maf_sandbox_tui import (
     CompositeControl,
     ControlEndpointError,
@@ -54,9 +55,16 @@ class _Inventory:
 
 
 class _Router:
-    def __init__(self, inventory: _Inventory, replacement: _Info | None) -> None:
+    def __init__(
+        self,
+        inventory: _Inventory,
+        replacement: _Info | None,
+        *,
+        succeeds: bool = True,
+    ) -> None:
         self.inventory = inventory
         self.replacement = replacement
+        self.succeeds = succeeds
         self.calls: list[tuple[SandboxKey, str, str | None, float]] = []
         self.scope_calls: list[tuple[str, str]] = []
 
@@ -70,7 +78,7 @@ class _Router:
     ) -> bool:
         self.calls.append((key, kind, instance_id, timeout))
         self.inventory.records = [] if self.replacement is None else [self.replacement]
-        return True
+        return self.succeeds
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         self.scope_calls.append((scope, thread_id))
@@ -149,6 +157,76 @@ def test_composite_control_preserves_partial_inventory_errors():
     asyncio.run(check())
 
 
+def test_initial_probe_failure_reaches_the_console_control():
+    manifest = EndpointManifest("stopped-host", "http://127.0.0.1:1", 1)
+    probe = cli_module._HostProbe(manifest, HttpControl(manifest), "connection refused")
+    control = cli_module._control((probe,))
+
+    async def check() -> None:
+        with pytest.raises(PartialInventoryError, match="incomplete") as raised:
+            await control.list_sandboxes()
+        assert raised.value.records == ()
+        assert raised.value.errors == ("stopped-host: connection refused",)
+
+    asyncio.run(check())
+
+
+def test_composite_lookup_does_not_turn_an_outage_into_not_found():
+    class FailingControl(MemoryControl):
+        async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
+            del instance_id
+            raise ControlEndpointError("host stopped")
+
+    async def check() -> None:
+        with pytest.raises(ControlEndpointError, match="could not be confirmed"):
+            await CompositeControl((FailingControl(),)).get_sandbox("generation-a")
+
+    asyncio.run(check())
+
+
+def test_composite_disposal_locates_hosts_concurrently():
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        both_started = asyncio.Event()
+        started = 0
+
+        class CoordinatedControl(MemoryControl):
+            async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+                nonlocal started
+                started += 1
+                if started == 2:
+                    both_started.set()
+                await both_started.wait()
+                return await super().list_sandboxes()
+
+        owner = MemoryControl((record,))
+        control = CompositeControl((CoordinatedControl(), CoordinatedControl(), owner))
+
+        result = await control.dispose_sandbox(record.instance_id, timeout=0.2)
+
+        assert result.status is DisposalStatus.DISPOSED
+        assert started == 2
+        assert await owner.list_sandboxes() == ()
+
+    asyncio.run(check())
+
+
+def test_composite_disposal_is_bounded_while_locating_hosts():
+    class HangingControl(MemoryControl):
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        result = await CompositeControl((HangingControl(),)).dispose_sandbox(
+            "generation-a", timeout=0.01
+        )
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "Disposal timed out while locating the owning host."
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_routes_exact_generation():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -185,6 +263,22 @@ def test_hyperlight_control_reports_a_concurrent_replacement_as_stale():
             result.message == "The sandbox generation changed before disposal could be confirmed."
         )
         assert [item.instance_id for item in await inventory.list_sandboxes()] == ["generation-b"]
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_reports_a_concurrent_disposal_as_not_found():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None, succeeds=False)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
+
+        assert result.status is DisposalStatus.NOT_FOUND
+        assert result.message == "The sandbox is already gone or its generation changed."
 
     asyncio.run(check())
 
@@ -332,6 +426,37 @@ def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
             assert purged.status is PurgeStatus.PURGED
             assert purged.disposed == 1
             assert await client.get_sandbox(instance_id) is None
+
+    asyncio.run(check())
+
+
+def test_server_cancels_an_operation_after_its_request_timeout(tmp_path):
+    class HangingControl(MemoryControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = asyncio.Event()
+
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        control = HangingControl()
+        server = SandboxControlServer(
+            control,
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        server.request_timeout = 0.01
+        async with server:
+            with pytest.raises(ControlEndpointError) as raised:
+                await HttpControl(server.manifest).list_sandboxes()
+            assert raised.value.status_code == 504
+            await asyncio.wait_for(control.cancelled.wait(), timeout=1)
 
     asyncio.run(check())
 
