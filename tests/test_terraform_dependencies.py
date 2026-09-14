@@ -138,6 +138,7 @@ def receiver(tmp_path, monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
     server_context.load_cert_chain(cert_path, key_path)
     server.socket = server_context.wrap_socket(server.socket, server_side=True)
     client_context = ssl.create_default_context(cafile=str(cert_path))
@@ -326,6 +327,78 @@ def test_private_and_alternate_routes_refused(address, monkeypatch):
         prep.public_addresses("approved.example")
 
 
+@pytest.mark.parametrize("failure", ["socket", "connect", "tls", "timeout", "all"])
+def test_connection_tries_validated_addresses_with_shared_deadline(monkeypatch, failure):
+    connection = prep.PinnedHTTPS("approved.example", time.monotonic() + 20)
+    clock = [100.0]
+    connection.deadline = 120.0
+    monkeypatch.setattr(prep.time, "monotonic", lambda: clock[0])
+    addresses = [
+        (socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("2606:4700:4700::1111", 443, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("1.1.1.1", 443)),
+    ]
+    resolutions, created, attempts, handshakes = [], [], [], []
+
+    def resolve(host, port, **kwargs):
+        resolutions.append((host, port))
+        return addresses
+
+    class Socket:
+        def __init__(self, family):
+            self.family = family
+            self.timeout = None
+            self.closed = False
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            attempts.append(address)
+            if failure == "all" or self.family == socket.AF_INET6:
+                if failure == "timeout":
+                    clock[0] += self.timeout
+                    raise TimeoutError("unreachable address")
+                if failure in {"connect", "all"}:
+                    raise OSError("unreachable address")
+
+        def close(self):
+            self.closed = True
+
+    def create(family, kind):
+        if family == socket.AF_INET6 and failure == "socket":
+            raise OSError("IPv6 unavailable")
+        raw = Socket(family)
+        created.append(raw)
+        return raw
+
+    def wrap(raw, *, server_hostname):
+        handshakes.append(server_hostname)
+        if raw.family == socket.AF_INET6 and failure == "tls":
+            raise ssl.SSLError("handshake failed")
+        return raw
+
+    monkeypatch.setattr(prep.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(prep.socket, "socket", create)
+    monkeypatch.setattr(connection.tls_context, "wrap_socket", wrap)
+    if failure == "all":
+        with pytest.raises(OSError):
+            connection.connect()
+        assert all(raw.closed for raw in created)
+    else:
+        connection.connect()
+        assert connection.sock is created[-1]
+        assert created[-1].family == socket.AF_INET
+        assert all(raw.closed for raw in created[:-1])
+        assert not created[-1].closed
+        assert handshakes and set(handshakes) == {"approved.example"}
+        assert clock[0] < connection.deadline
+        if failure == "timeout":
+            assert created[0].timeout == 10
+        connection.close()
+    assert resolutions == [("approved.example", 443)]
+    assert attempts[-1] == addresses[-1][-1]
+
+
 def test_download_integrity_size_deadline_and_diagnostic_redaction(receiver, monkeypatch):
     _, routes, _ = receiver
     with pytest.raises(prep.Refused, match="artifact-mismatch"):
@@ -410,9 +483,9 @@ def test_module_graph_refuses_unapproved_edges(source, decision):
     "configuration",
     [
         '{"module":{"remote":{"source":"https://example.com/unapproved.zip"}},'
-        '"module":{"child":{"source":"./child"}}}',
+        + '"module":{"child":{"source":"./child"}}}',
         '{"module":{"child":{"source":"https://example.com/unapproved.zip"},'
-        '"child":{"source":"./child"}}}',
+        + '"child":{"source":"./child"}}}',
         '{"module":{"child":{"source":"https://example.com/unapproved.zip","source":"./child"}}}',
     ],
 )

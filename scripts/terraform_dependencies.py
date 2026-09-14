@@ -226,16 +226,25 @@ class PinnedHTTPS(http.client.HTTPSConnection):
     def connect(self) -> None:
         """Avoid proxies, CONNECT tunnels and a second DNS resolution."""
         addresses = public_addresses(self.host)
-        family, address = addresses[0]
-        raw = socket.socket(family, socket.SOCK_STREAM)
-        try:
-            raw.settimeout(remaining(self.deadline))
-            raw.connect(address)
-            raw.settimeout(remaining(self.deadline))
-            self.sock = self.tls_context.wrap_socket(raw, server_hostname=self.host)
-        except BaseException:
-            raw.close()
-            raise
+        for index, (family, address) in enumerate(addresses):
+            # Reserve time for the other validated addresses if this route stalls.
+            attempt_deadline = time.monotonic() + remaining(self.deadline) / (
+                len(addresses) - index
+            )
+            raw = None
+            try:
+                raw = socket.socket(family, socket.SOCK_STREAM)
+                raw.settimeout(remaining(attempt_deadline))
+                raw.connect(address)
+                raw.settimeout(remaining(attempt_deadline))
+                self.sock = self.tls_context.wrap_socket(raw, server_hostname=self.host)
+                return
+            except OSError:
+                if index == len(addresses) - 1:
+                    raise
+            finally:
+                if raw is not None and self.sock is None:
+                    raw.close()
 
 
 def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARCHIVE) -> bytes:

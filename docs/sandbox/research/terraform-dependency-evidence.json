@@ -38,6 +38,7 @@
   },
   "checks": {
     "repository_gate": {
+      "scope": "Initial dependency-preparation run recorded in commit fe0207b, before image configuration and adversarial-review changes; subsequent gate runs are reported in the PR",
       "command": "uv run poe gate",
       "result": "passed",
       "tests_passed": 9302,

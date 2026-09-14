@@ -82,6 +82,11 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
             timeout=240,
         )
         assert built.returncode == 0, built.stdout + built.stderr
+        inspection_script = (
+            "import json,pathlib; p=pathlib.Path('/opt/maf-terraform'); "
+            "assert json.loads((p/'engine.json').read_text())['profile']=='custom'; "
+            "assert len(list((p/'mirror').rglob('*.zip')))==1"
+        )
         inspected = subprocess.run(
             [
                 "docker",
@@ -93,9 +98,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
                 "python3",
                 "-I",
                 "-c",
-                "import json,pathlib; p=pathlib.Path('/opt/maf-terraform'); "
-                "assert json.loads((p/'engine.json').read_text())['profile']=='custom'; "
-                "assert len(list((p/'mirror').rglob('*.zip')))==1",
+                inspection_script,
             ],
             capture_output=True,
             text=True,

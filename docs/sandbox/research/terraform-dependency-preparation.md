@@ -10,6 +10,8 @@ A network mirror would still need a guest-facing request-content boundary. Direc
 
 ## Bounded authority
 
+This authority belongs to the preparation CLI. The image installer's existing provider profiles share artifact pins but use checksum-verified `urllib` downloads without the preparer's request restrictions. Use the prepared-mirror recipe for request-bounded provider acquisition; base-image and engine-binary acquisition are separate trusted build inputs.
+
 The manifest pins an engine, full provider source addresses, exact versions/platforms, complete ZIP SHA-256 digests and an operator-supplied provenance reference. Digests must come from independently trusted release metadata; downloading a checksum next to an artifact does not establish trust. The preparer verifies bytes, not signatures or the truth of the operator's provenance assertion. Provider source addresses are preserved in the packed filesystem mirror. Supplied lockfiles remain unchanged and the existing launcher makes them read-only.
 
 Each artifact has one exact HTTPS URL and, optionally, an exact redirect chain. GitHub release downloads can instead authorize one server-issued redirect to a repository-ID-bounded release-assets path. Only that transfer may carry the server's signed query. The guest never receives the redirect or supplies its query. Discovery, Git transports, credentials, arbitrary HTTP requests and unrestricted CDN rules are refused.
