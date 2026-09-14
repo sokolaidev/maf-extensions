@@ -1,0 +1,131 @@
+apiVersion: v1
+metadata:
+  labels:
+    maf.dev/issue: '1230'
+    app.kubernetes.io/part-of: maf-hyperlight-verification
+  name: sdk-kvm-positive
+  namespace: maf-hyperlight-proof-1230
+kind: Pod
+spec:
+  automountServiceAccountToken: false
+  volumes:
+  - emptyDir:
+      sizeLimit: 768Mi
+    name: work
+  - name: proof
+    configMap:
+      name: proof-source
+      defaultMode: 292
+  activeDeadlineSeconds: 1200
+  nodeSelector:
+    kubernetes.io/hostname: ${PROOF_NODE}
+    kubernetes.io/arch: amd64
+  enableServiceLinks: false
+  restartPolicy: Never
+  containers:
+  - volumeMounts:
+    - mountPath: /work
+      name: work
+    - name: proof
+      mountPath: /proof
+      readOnly: true
+    resources:
+      limits:
+        cpu: '1'
+        memory: 2Gi
+        ephemeral-storage: 1Gi
+        hyperlight.dev/hypervisor: '1'
+      requests:
+        cpu: '1'
+        memory: 2Gi
+        ephemeral-storage: 1Gi
+        hyperlight.dev/hypervisor: '1'
+    livenessProbe:
+      periodSeconds: 30
+      timeoutSeconds: 2
+      exec:
+        command:
+        - test
+        - -f
+        - /proof/probe.py
+    env:
+    - value: /work
+      name: HOME
+    - value: /work/cache
+      name: XDG_CACHE_HOME
+    - value: /work/tmp
+      name: TMPDIR
+    - value: '1'
+      name: PYTHONDONTWRITEBYTECODE
+    - value: '1'
+      name: PYTHONUNBUFFERED
+    readinessProbe:
+      periodSeconds: 30
+      timeoutSeconds: 2
+      exec:
+        command:
+        - test
+        - -f
+        - /proof/probe.py
+    image: python:3.13.12-slim-bookworm@sha256:3121f8b0804aa3698ab750d9a39ea4a42657a385c9b133722b915e55c51551a6
+    command:
+    - sleep
+    - '1100'
+    name: proof
+    securityContext:
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+      allowPrivilegeEscalation: false
+  initContainers:
+  - resources:
+      limits:
+        cpu: '1'
+        memory: 2Gi
+        ephemeral-storage: 1Gi
+      requests:
+        cpu: '1'
+        memory: 2Gi
+        ephemeral-storage: 1Gi
+    name: install
+    env:
+    - value: /work
+      name: HOME
+    - value: /work/cache
+      name: XDG_CACHE_HOME
+    - value: /work/tmp
+      name: TMPDIR
+    - value: '1'
+      name: PYTHONDONTWRITEBYTECODE
+    - value: '1'
+      name: PYTHONUNBUFFERED
+    volumeMounts:
+    - mountPath: /work
+      name: work
+    - name: proof
+      mountPath: /proof
+      readOnly: true
+    command:
+    - timeout
+    - --signal=TERM
+    - --kill-after=5s
+    - 300s
+    - sh
+    - -ec
+    - 'mkdir -p /work/tmp; python -m venv /work/venv; /work/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: --require-hashes -r /proof/requirements.txt'
+    image: python:3.13.12-slim-bookworm@sha256:3121f8b0804aa3698ab750d9a39ea4a42657a385c9b133722b915e55c51551a6
+    securityContext:
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+      allowPrivilegeEscalation: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    fsGroup: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  terminationGracePeriodSeconds: 10

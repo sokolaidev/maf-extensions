@@ -2,6 +2,8 @@
 
 > A live investigation for [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230), recorded on 2026-09-14 after a cluster became available. It measures application packaging, resource restrictions and plugin admission on AKS Automatic. It does not establish hypervisor-device usability, guest execution or adapter support. The [earlier source audit](hyperlight-aks-integration.md) preserves the initial assumptions and local results; [Hyperlight](../backends/hyperlight.md) tracks the backend's support boundary.
 
+The later [approved KVM verification](hyperlight-aks-kvm-verification.md) records successful device/VM/SDK execution and controlled plugin replacement after a temporary namespace exception. This record preserves the earlier unchanged-policy result.
+
 ## Result
 
 The pinned Python packages load in a restricted, non-root AKS pod. The infrastructure plugin cannot be admitted under this cluster's existing policy: `aks-managed-baseline-hostpath-volumes` rejects its kubelet, CDI and device host paths. The SDK negative control stops at missing `/dev/kvm`, with exit code 1. That is a successful missing-device control, not a failed attempt to create a VM on the host: the host device was never inspected or injected.

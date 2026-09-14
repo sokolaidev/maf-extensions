@@ -21,6 +21,17 @@ spec:
   containers:
     - name: device-plugin
       image: ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          for path in /var/run/cdi/hyperlight.json /var/lib/kubelet/device-plugins/hyperlight.sock; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+              echo "Refusing to replace existing Hyperlight state: $path" >&2
+              exit 1
+            fi
+          done
+          exec /usr/local/bin/hyperlight-device-plugin
       env:
         - name: DEVICE_COUNT
           value: "1"
