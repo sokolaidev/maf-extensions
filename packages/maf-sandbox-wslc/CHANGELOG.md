@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.21.1...maf-sandbox-wslc-v0.22.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+
+### Fixes
+
+* remove issue references from package summaries ([#1258](https://github.com/sokolaidev/maf-extensions/issues/1258)) ([c99ec84](https://github.com/sokolaidev/maf-extensions/commit/c99ec84cfb456cb4656611643bc8ad02e22ed807))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+* **wslc:** prevent bounded reads from stalling or losing exit status ([#1200](https://github.com/sokolaidev/maf-extensions/issues/1200)) ([79fd618](https://github.com/sokolaidev/maf-extensions/commit/79fd618707d35d66547780709cdeb6d4d69e5059))
+* **wslc:** stop retaining loops after contended acquires ([#1221](https://github.com/sokolaidev/maf-extensions/issues/1221)) ([876e870](https://github.com/sokolaidev/maf-extensions/commit/876e8708a6c65698f9883cb2b90f00167cf94c1d))
+
+
+### Documentation
+
+* remove issue references from package descriptions ([#1257](https://github.com/sokolaidev/maf-extensions/issues/1257)) ([1f2d5a5](https://github.com/sokolaidev/maf-extensions/commit/1f2d5a59b2d3c41e2f07c492905b88ec9f493d33))
+* **wslc:** state measured write-redirection residual ([#1208](https://github.com/sokolaidev/maf-extensions/issues/1208)) ([f4df908](https://github.com/sokolaidev/maf-extensions/commit/f4df9084033ea4c23f47a8dc991d295d263833fc))
+
 ## [0.21.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.21.0...maf-sandbox-wslc-v0.21.1) (2026-09-12)
 
 > **Added after the release.** No wheel for 0.21.0 reached PyPI, so this is the version that first carries everything in the 0.21.0 section below — including its breaking change. Those entries are left where release-please wrote them rather than copied up; this version's release notes on GitHub list them in full.
