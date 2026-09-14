@@ -2,6 +2,8 @@
 
 Small, self-contained programs, each showing one wiring end to end. The package READMEs explain what a piece is; these show what you actually write.
 
+For contributors, [adding a sample](../CONTRIBUTING.md#adding-a-sample) covers dependency metadata, live-workflow triggers, evidence checks and tests.
+
 | Sample | What it wires | Needs |
 |---|---|---|
 | [`01_acas_bicep`](01_acas_bicep/) | A one-turn agent that validates a Bicep file: `maf-sandbox-acas` behind a `SandboxRouter`, `maf-sandbox-bicep`'s `bicep_validate` attached to a MAF agent | Azure (Container Apps Sandboxes preview + Azure OpenAI) |
