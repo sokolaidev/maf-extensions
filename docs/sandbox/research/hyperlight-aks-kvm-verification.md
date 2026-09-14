@@ -6,6 +6,8 @@
 
 The device-plugin/CDI approach worked for the pinned Python SDK on one AKS Automatic workload node. A non-root application created a KVM VM, executed Python, preserved globals, recovered from an ordinary guest exception and restored a snapshot. Its control pod, on the same node without the extended-resource request, could not see the KVM device. A held guest survived one controlled plugin replacement, and a fresh application pod then obtained the device and repeated the full SDK proof successfully.
 
+The subsequent [startup and memory measurements](hyperlight-aks-startup-memory.md) quantify this SDK profile: 916 ms median creation through first Python execution, 3.63 ms median subsequent baseline restore plus execution, and a 1.74 GiB application-container peak with the configured 400 MiB heap and 200 MiB stack. These measurements do not change the adapter-conformance boundary below.
+
 The approved exception covered only the dedicated infrastructure namespace. Application admission remained restricted. The exception was removed afterward, and the same plugin manifest was refused again. This establishes an experimental KVM path on the measured configuration; the suite's current Windows-only adapter still requires independent Linux implementation and container containment verification. Infrastructure recovery remains under [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237), container containment under [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238), and general Linux enablement under [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228).
 
 ## Configuration and artifacts
