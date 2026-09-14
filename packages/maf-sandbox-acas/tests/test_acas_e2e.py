@@ -416,7 +416,17 @@ def probe_results(live):
 @pytest.fixture(scope="module")
 def files_in_results(live):
     """One FILES_IN run, shared with the write-fidelity assertions below."""
-    return live.run(assert_files_in_conformance(_subject(live)))
+
+    async def scenario():
+        # The outside-write control execs there even when FILES_OUT did not plant its layout.
+        outside = ConformancePaths.under(_WORK).outside
+        prepared = await live.sandbox.exec(
+            ["mkdir", "-p", outside], working_directory="/", timeout=_EXEC_TIMEOUT
+        )
+        assert prepared.exit_code == 0, prepared.stderr
+        return await assert_files_in_conformance(_subject(live))
+
+    return live.run(scenario())
 
 
 @pytest.fixture(scope="module")
