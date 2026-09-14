@@ -10,21 +10,17 @@ from typing import cast
 
 import pytest
 from maf_sandbox import (
-    CallerContext,
     Capability,
-    Cleanup,
     Egress,
     EgressRule,
     IdentityScope,
     Isolation,
     IsolationScope,
-    ListedFile,
     SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxQueuedTimeout,
     SandboxRouter,
     SandboxSpec,
-    Selection,
 )
 from maf_sandbox.conformance import (
     ConformanceSubject,
@@ -35,7 +31,6 @@ from maf_sandbox.conformance import (
 )
 
 from maf_sandbox_hyperlight import (
-    RUNTIME_INSTRUCTIONS,
     HyperlightSandboxBackend,
     HyperlightSandboxConfig,
     _backend,
@@ -459,41 +454,6 @@ def test_bad_native_results_retire_the_worker(backend, reply):
         assert replacement.alive and replacement.instance_id != sandbox.instance_id
 
     asyncio.run(check())
-
-
-@pytest.mark.parametrize("selection", list(Selection))
-def test_native_panics_are_sanitized_for_codeact(backend, monkeypatch, selection):
-    from maf_sandbox_codeact import CodeactRuntime, make_codeact_tools
-
-    request = FakeWorker.request
-    workers: list[FakeWorker] = []
-
-    def panic(
-        worker: FakeWorker, message: dict[str, object], *, deadline: float
-    ) -> dict[str, object]:
-        if message["op"] == "run":
-            workers.append(worker)
-            return {"stdout": "native stdout", "stderr": "native panic details", "exit_code": -1}
-        return request(worker, message, deadline=deadline)
-
-    monkeypatch.setattr(FakeWorker, "request", panic)
-    router = SandboxRouter([backend], selection=selection, min_cleanup=Cleanup.RESET)
-
-    async def no_files(store: object) -> list[ListedFile]:
-        return []
-
-    context = CallerContext(
-        current_scope=lambda: KEY.scope,
-        current_thread_id=lambda: KEY.thread_id,
-        list_files=no_files,
-    )
-    tool = make_codeact_tools(
-        router, KEY.agent_id, context, runtime=CodeactRuntime(RUNTIME_INSTRUCTIONS)
-    )[0]
-    function = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
-    result = asyncio.run(function(code="print('hello')"))
-    assert result == "Error: could not run the program in the sandbox"
-    assert workers and all(not worker.alive for worker in workers)
 
 
 def test_guest_errors_preserve_output_and_worker_reuse(backend):

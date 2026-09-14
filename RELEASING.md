@@ -31,6 +31,8 @@ Three things a Release PR does need from you first, all of them because it is a 
 
 **Optionally, before merging: rehearse on TestPyPI** — Actions → Publish → *Run workflow* → pick the package, target `testpypi`, and **name the version you are rehearsing**. Worth doing after a packaging change (a new dependency, a build-backend setting, a moved file); unnecessary for an ordinary code release, because the same install-and-use check runs on every PR and again before every publish. The version input is optional, and left empty the run builds the ref's source under whatever version the tree declares — which from `main` with a Release PR pending is the last released one, so the artifacts carry a number that no longer describes them and the dependent gates test the wrong pairing. The run refuses a version any index already carries and says so before it builds anything ([#1120](https://github.com/sokolaidev/maf-extensions/issues/1120)). A `Release-As:` version is reachable only this way: nothing in the tree carries it until release-please has opened the pull request.
 
+**After a package's first successful PyPI upload**, replace `not yet released` in the root README's *Released* cell with that package's PyPI badge in an ordinary documentation PR. A versioned changelog is prepared in the Release PR before it merges or uploads, so it cannot establish that the package is installable. The offline table check permits the unreleased wording while publication is pending, including a TestPyPI rehearsal; it validates badge targets and requires a versioned changelog for any badge, but does not verify index availability.
+
 **Releasing by hand** still works, for a release the automation cannot cut — push the tag and the same pipeline runs:
 
 | Tag | Publishes |
