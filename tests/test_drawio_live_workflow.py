@@ -29,9 +29,9 @@ def _required_variables():
     return variables
 
 
-def _preflight():
+def _preflight(job_name="sample-18"):
     workflow = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text("utf-8"))
-    job = workflow["jobs"]["sample-18"]
+    job = workflow["jobs"][job_name]
     step = next(
         step
         for step in job["steps"]
@@ -70,6 +70,69 @@ def test_preflight_reports_each_missing_name_without_values(missing):
     assert result.returncode == (0 if missing is None else 1)
     assert "private-test-value" not in result.stdout + result.stderr
     if missing is not None:
+        assert missing in result.stdout and "::error::" in result.stdout
+
+
+def test_shared_image_configuration_precedes_login():
+    job, step = _preflight("acas-images")
+    login = next(step for step in job["steps"] if "azure/login@" in step.get("uses", ""))
+    assert job["steps"].index(step) < job["steps"].index(login)
+    assert step["env"]["PACKAGE"] == "${{ inputs.package }}"
+    assert "if" not in step and "continue-on-error" not in step
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="production Bash integration runs only on Linux"
+)
+@pytest.mark.parametrize(
+    "package",
+    [
+        "",
+        "maf-sandbox",
+        "maf-sandbox-acas",
+        "maf-sandbox-bicep",
+        "maf-sandbox-codeact",
+        "maf-sandbox-drawio",
+    ],
+)
+@pytest.mark.parametrize("has_drawio", [False, True])
+@pytest.mark.parametrize(
+    "missing", [None, "DRAWIO_SANDBOX_IMAGE", "BICEP_SANDBOX_IMAGE", "ACAS_SANDBOX_REGISTRY"]
+)
+def test_shared_image_preflight_requires_only_selected_source_configuration(
+    tmp_path, package, has_drawio, missing
+):
+    job, step = _preflight("acas-images")
+    if has_drawio:
+        sample = tmp_path / "samples/18_acas_drawio_repair/agent.py"
+        sample.parent.mkdir(parents=True)
+        sample.touch()
+    env = {"PATH": os.environ["PATH"]} | dict.fromkeys(
+        job["env"] | step["env"], "private-test-value"
+    )
+    env["PACKAGE"] = package
+    if missing is not None:
+        env[missing] = ""
+    all_jobs = package in ("", "maf-sandbox", "maf-sandbox-acas")
+    needs_drawio = has_drawio and (all_jobs or package == "maf-sandbox-drawio")
+    needs_bicep = all_jobs or package == "maf-sandbox-bicep"
+    should_fail = (
+        missing == "DRAWIO_SANDBOX_IMAGE"
+        and needs_drawio
+        or missing in ("BICEP_SANDBOX_IMAGE", "ACAS_SANDBOX_REGISTRY")
+        and needs_bicep
+    )
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == int(should_fail), result.stdout + result.stderr
+    assert "private-test-value" not in result.stdout + result.stderr
+    if should_fail:
         assert missing in result.stdout and "::error::" in result.stdout
 
 

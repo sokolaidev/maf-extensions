@@ -47,6 +47,7 @@ Three things a Release PR does need from you first, all of them because it is a 
 | `maf-sandbox-codeact-v*` | `packages/maf-sandbox-codeact` |
 | `maf-sandbox-deepagents-v*` | `packages/maf-sandbox-deepagents` |
 | `maf-sandbox-docker-v*` | `packages/maf-sandbox-docker` |
+| `maf-sandbox-drawio-v*` | `packages/maf-sandbox-drawio` |
 | `maf-sandbox-otel-v*` | `packages/maf-sandbox-otel` |
 | `maf-sandbox-wslc-v*` | `packages/maf-sandbox-wslc` |
 

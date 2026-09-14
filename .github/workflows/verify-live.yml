@@ -166,6 +166,7 @@ jobs:
 
       - name: Check the live configuration is present
         env:
+          PACKAGE: ${{ inputs.package }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -177,6 +178,20 @@ jobs:
             ACAS_SANDBOX_RESOURCE_GROUP ACAS_SANDBOX_GROUP; do
             [ -n "${!name}" ] || missing+=("$name")
           done
+          case "$PACKAGE" in
+            ''|maf-sandbox|maf-sandbox-acas|maf-sandbox-bicep)
+              for name in ACAS_SANDBOX_REGISTRY BICEP_SANDBOX_IMAGE; do
+                [ -n "${!name}" ] || missing+=("$name")
+              done
+              ;;
+          esac
+          case "$PACKAGE" in
+            ''|maf-sandbox|maf-sandbox-acas|maf-sandbox-drawio)
+              if [ -f samples/18_acas_drawio_repair/agent.py ] && [ -z "$DRAWIO_SANDBOX_IMAGE" ]; then
+                missing+=("DRAWIO_SANDBOX_IMAGE")
+              fi
+              ;;
+          esac
           if [ "${#missing[@]}" -ne 0 ]; then
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
