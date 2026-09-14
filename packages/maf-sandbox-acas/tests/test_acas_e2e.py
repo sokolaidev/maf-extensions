@@ -122,9 +122,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 _WORK = "/maf-sandbox/work"
-#: Short enough that the fifo probe finishes in seconds rather than the two minutes the shipped
-#: default allows, and long enough that a slow control plane is not mistaken for a hang.
-_READ_TIMEOUT = 20.0
+#: Keep the one deliberately blocked FIFO read brief without shortening ordinary transfers.
+_FIFO_READ_TIMEOUT = 20.0
 _EXEC_TIMEOUT = 60.0
 
 #: The egress probe's hosts (#402). Allowed is the AVM registry the bicep kind reaches;
@@ -140,7 +139,6 @@ def _config(**overrides: Any) -> AcasSandboxConfig:
         resource_group=os.environ.get("ACAS_SANDBOX_RESOURCE_GROUP", ""),
         sandbox_group=os.environ.get("ACAS_SANDBOX_GROUP", ""),
         registry=os.environ.get("ACAS_SANDBOX_REGISTRY", ""),
-        read_timeout_seconds=_READ_TIMEOUT,
         **overrides,
     )
 
@@ -683,7 +681,7 @@ class TestFilesDeleteAgainstTheRealService:
 class TestWhatOnlyTheServiceCanSay:
     """Contracts written against the payload, where a mock agreeing with us proves nothing."""
 
-    def test_a_fifo_is_refused_by_the_read_timeout_rather_than_hanging(self, live):
+    def test_a_fifo_is_refused_by_the_read_timeout_rather_than_hanging(self, live, monkeypatch):
         """The case `read_file`'s own comment names, and the only place it can be checked.
 
         The service reports a FIFO exactly as an empty regular file — same mode, both type
@@ -720,6 +718,7 @@ class TestWhatOnlyTheServiceCanSay:
             # would have to be read, and this assertion is what fails first.
             assert entry.kind is EntryKind.FILE
 
+            monkeypatch.setattr(live.sandbox, "_read_timeout", _FIFO_READ_TIMEOUT)
             with pytest.raises(TimeoutError):
                 await live.sandbox.read_file("out/pipe", working_directory=_WORK, max_bytes=1 << 20)
 
