@@ -64,7 +64,7 @@ def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) 
         raise ValueError("unsupported launcher or engine identity")
     if envelope.get("error") is not None:
         # Never render arbitrary launcher error text as a host-authored instruction.
-        return "Validation INCOMPLETE: the guest launcher could not complete its bounded run."
+        return "Validation INCOMPLETE: the guest launcher could not complete its bounded execution."
     phases = _mapping(envelope.get("phases"))
     init = _phase(phases.get("init"))
     if init["exit_code"] != 0:

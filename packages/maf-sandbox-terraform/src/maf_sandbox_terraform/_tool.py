@@ -115,10 +115,12 @@ def _build_tool(
         sandbox = await session.acquire(key)
         if isinstance(sandbox, str):
             return sandbox
-        call_path = session.guest_call_path()
+        guest_call_path = session.guest_call_path()
         try:
             for path, content in staged:
-                await sandbox.write_file("project/" + path, content, working_directory=call_path)
+                await sandbox.write_file(
+                    "project/" + path, content, working_directory=guest_call_path
+                )
             execution = asyncio.create_task(
                 sandbox.exec(
                     [
@@ -129,7 +131,7 @@ def _build_tool(
                         root,
                         str(timeout),
                     ],
-                    working_directory=call_path,
+                    working_directory=guest_call_path,
                     timeout=timeout + 5,
                 )
             )

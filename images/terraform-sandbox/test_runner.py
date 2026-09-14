@@ -23,7 +23,7 @@ class LauncherTests(unittest.TestCase):
         os.environ.update(TF_CLI_ARGS="-help", AWS_ACCESS_KEY_ID="sentinel", TF_VAR_x="sentinel")
         with tempfile.TemporaryDirectory() as directory:
             supervisor = runner.Supervisor(2, runner.clean_environment(Path(directory)))
-            phase = supervisor.run(
+            phase = supervisor.execute_phase(
                 [sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"],
                 Path(directory),
             )
@@ -38,7 +38,7 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             supervisor = runner.Supervisor(2, runner.clean_environment(Path(directory)))
             with self.assertRaisesRegex(RuntimeError, "output limit"):
-                supervisor.run(
+                supervisor.execute_phase(
                     [
                         sys.executable,
                         "-c",
@@ -53,7 +53,7 @@ class LauncherTests(unittest.TestCase):
             supervisor = runner.Supervisor(0.25, runner.clean_environment(Path(directory)))
             start = time.monotonic()
             with self.assertRaises(TimeoutError):
-                supervisor.run(
+                supervisor.execute_phase(
                     [sys.executable, "-c", "import os,time\nif os.fork()==0: time.sleep(10)"],
                     Path(directory),
                 )
@@ -64,9 +64,9 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             supervisor = runner.Supervisor(0.35, runner.clean_environment(Path(directory)))
             command = [sys.executable, "-c", "import time; time.sleep(0.2)"]
-            supervisor.run(command, Path(directory))
+            supervisor.execute_phase(command, Path(directory))
             with self.assertRaises(TimeoutError):
-                supervisor.run(command, Path(directory))
+                supervisor.execute_phase(command, Path(directory))
 
     def test_supplied_lock_readonly_and_sources_unchanged(self):
         """A generated lock works on the next call; a wrong-registry lock cannot be repaired."""

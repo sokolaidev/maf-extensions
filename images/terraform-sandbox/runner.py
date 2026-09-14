@@ -41,7 +41,7 @@ class Supervisor:
         self.remaining = OUTPUT_LIMIT
         self.environment = environment
 
-    def run(self, command: list[str], cwd: Path) -> dict[str, Any]:
+    def execute_phase(self, command: list[str], cwd: Path) -> dict[str, Any]:
         """Bound both streams, kill the process group on every exit, and reap the child."""
         if time.monotonic() >= self.deadline:
             raise TimeoutError("deadline")
@@ -128,7 +128,7 @@ def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
         for name in ("home", "tmp", "data"):
             (private / name).mkdir(parents=True, exist_ok=False)
         supervisor = Supervisor(timeout, clean_environment(private))
-        version = supervisor.run([str(binary), "version", "-json"], private)
+        version = supervisor.execute_phase([str(binary), "version", "-json"], private)
         if (
             version["exit_code"] != 0
             or json.loads(version["stdout"])["terraform_version"] != metadata["version"]
@@ -140,17 +140,17 @@ def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
         if original_lock is not None:
             init.append("-lockfile=readonly")
         phases = result["phases"]
-        phases["init"] = supervisor.run(init, root)
+        phases["init"] = supervisor.execute_phase(init, root)
         if original_lock is not None and lock.read_bytes() != original_lock:
             raise ValueError("supplied lock changed")
         if phases["init"]["exit_code"] == 0:
-            phases["validate"] = supervisor.run([str(binary), "validate", "-json"], root)
-            phases["fmt"] = supervisor.run(
+            phases["validate"] = supervisor.execute_phase([str(binary), "validate", "-json"], root)
+            phases["fmt"] = supervisor.execute_phase(
                 [str(binary), "fmt", "-check", "-recursive", "-no-color"], project
             )
     except Exception:
         # The host renders this as incomplete regardless of any completed phase's verdict.
-        result["error"] = "launcher could not complete the bounded run"
+        result["error"] = "launcher could not complete the bounded execution"
     return result
 
 
