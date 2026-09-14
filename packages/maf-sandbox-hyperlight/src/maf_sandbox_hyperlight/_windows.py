@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import subprocess
+import sys
 import threading
+import time
 from ctypes import wintypes
 
 from ._wire import HyperlightWorkerError
@@ -113,6 +116,33 @@ class Job:
             self.close()
             raise error
 
+    def spawn(
+        self, command: list[str], *, environment: dict[str, str], cwd: str, cleanup_timeout: float
+    ) -> subprocess.Popen[bytes]:
+        """Assign the waiting worker before its first initialization request."""
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=environment,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        try:
+            self.assign(process.pid)
+        except BaseException:
+            deadline = time.monotonic() + cleanup_timeout
+            try:
+                process.kill()
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+            finally:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+            raise
+        return process
+
     def assign(self, pid: int) -> None:
         process = self._api.OpenProcess(0x0100 | 0x0001, False, pid)
         if not process:
@@ -123,7 +153,10 @@ class Job:
         finally:
             self._api.CloseHandle(process)
 
-    def close(self) -> None:
+    def ready(self, *, deadline: float) -> None:
+        """Job assignment establishes Windows containment synchronously."""
+
+    def close(self, *, deadline: float | None = None) -> None:
         if self._handle:
             if not self._api.CloseHandle(self._handle):
                 raise ctypes.WinError(ctypes.get_last_error())

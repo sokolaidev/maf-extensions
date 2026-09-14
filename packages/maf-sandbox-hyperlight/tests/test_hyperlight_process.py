@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import cast
@@ -19,6 +21,7 @@ from maf_sandbox_hyperlight import (
     HyperlightWorkerError,
     _backend,
     _process,
+    _windows,
 )
 from maf_sandbox_hyperlight._wire import decode, encode
 
@@ -27,8 +30,12 @@ SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.
 
 
 def test_native_base_exception_is_reported_before_worker_exit():
-    script = """from types import SimpleNamespace
+    script = """import sys
+from types import SimpleNamespace
 from maf_sandbox_hyperlight import _worker
+if sys.platform == 'linux':
+    from maf_sandbox_hyperlight import _linux
+    _linux.check_kvm = lambda: None
 class NativePanic(BaseException):
     pass
 def fail(**kwargs):
@@ -49,21 +56,74 @@ _worker.main()
     assert decode(result.stdout) == {"error": "native", "detail": "native failure"}
 
 
-class NoJob:
+class NoJob(_windows.Job):
     def __init__(self, memory_limit: int) -> None:
         pass
 
     def assign(self, pid: int) -> None:
         pass
 
-    def close(self) -> None:
+    def ready(self, *, deadline: float) -> None:
         pass
+
+    def close(self, *, deadline: float | None = None) -> None:
+        pass
+
+
+@pytest.mark.parametrize("system", ["linux", "win32"])
+def test_worker_environment_uses_platform_name_semantics(
+    system: str, monkeypatch: pytest.MonkeyPatch
+):
+    source = {
+        "PATH": "runtime-path",
+        "HOME": "runtime-home",
+        "XDG_CACHE_HOME": "runtime-cache",
+        "TMPDIR": "runtime-temp",
+        "LANG": "runtime-language",
+        "LC_ALL": "runtime-locale",
+        "home": "application-secret",
+        "path": "application-secret",
+        "lang": "application-secret",
+        "Home": "application-secret",
+        "xdg_cache_home": "application-secret",
+        "tmpdir": "application-secret",
+        "lc_all": "application-secret",
+        "SystemRoot": "windows-root",
+        "LocalAppData": "windows-cache",
+        "Temp": "windows-temp",
+        "APPLICATION_TOKEN": "application-secret",
+        "HYPERLIGHT_MAX_SURROGATES": "20",
+    }
+    expected_names = (
+        {"PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL"}
+        if system == "linux"
+        else {"PATH", "path", "SystemRoot", "LocalAppData", "Temp"}
+    )
+    environments = []
+
+    def intercept(*args, env, **kwargs):
+        environments.append(env)
+        raise OSError("intercepted worker spawn")
+
+    monkeypatch.setattr(sys, "platform", system)
+    monkeypatch.setattr(os, "environ", source)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: ".")
+    monkeypatch.setattr(_process, "create_job", lambda config: NoJob(0))
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", intercept)
+    with pytest.raises(OSError, match="intercepted worker spawn"):
+        _process.Worker(HyperlightSandboxConfig())
+    assert environments == [
+        {**{name: source[name] for name in expected_names}, "HYPERLIGHT_MAX_SURROGATES": "0"}
+    ]
 
 
 @pytest.fixture
 def process_backend(monkeypatch: pytest.MonkeyPatch):
     if sys.platform != "win32":
-        monkeypatch.setattr(_process, "Job", NoJob)
+        monkeypatch.setattr(
+            _process, "create_job", lambda config: NoJob(config.max_worker_memory_bytes)
+        )
     monkeypatch.setattr(_backend, "check_host", lambda: None)
     mode = ["normal"]
     processes: list[subprocess.Popen[bytes]] = []
@@ -191,11 +251,14 @@ def test_job_assignment_failure_reaps_process_and_closes_pipes(
         spawned.append(process)
         return process
 
-    def refuse(self: object, pid: int) -> None:
-        raise OSError("job assignment refused")
+    class RefusedJob(NoJob):
+        def assign(self, pid: int) -> None:
+            raise OSError("job assignment refused")
 
     monkeypatch.setattr(subprocess, "Popen", record)
-    monkeypatch.setattr("maf_sandbox_hyperlight._process.Job.assign", refuse)
+    monkeypatch.setattr(
+        _process, "create_job", lambda config: RefusedJob(config.max_worker_memory_bytes)
+    )
     with pytest.raises(OSError, match="job assignment"):
         asyncio.run(backend.acquire(KEY, SPEC))
     assert not backend._sandboxes

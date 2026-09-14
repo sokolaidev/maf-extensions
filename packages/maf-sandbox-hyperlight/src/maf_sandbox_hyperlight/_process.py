@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import threading
@@ -11,7 +10,7 @@ import time
 from typing import BinaryIO, cast
 
 from ._config import HyperlightSandboxConfig
-from ._windows import Job
+from ._lifetime import create_job
 from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError, decode, encode
 
 _STDERR_LIMIT = 64 * 1024
@@ -21,41 +20,31 @@ class Worker:
     """One process and its lifetime job; callers serialize requests and may interrupt with close."""
 
     def __init__(self, config: HyperlightSandboxConfig) -> None:
+        self._owner_pid = os.getpid()
         self._config = config
         self._closing = threading.Lock()
         self._stderr = bytearray()
         self._stderr_guard = threading.Lock()
         self._closed = False
-        self._job = Job(config.max_worker_memory_bytes)
+        self._job = create_job(config)
+        allowed_environment = (
+            {"PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL"}
+            if sys.platform == "linux"
+            else {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "LOCALAPPDATA"}
+        )
         environment = {
             key: value
             for key, value in os.environ.items()
-            if key.upper()
-            in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "LOCALAPPDATA"}
+            if (key.upper() if sys.platform == "win32" else key) in allowed_environment
         }
         environment["HYPERLIGHT_MAX_SURROGATES"] = "0"
         try:
-            self.process = subprocess.Popen(
+            self.process = self._job.spawn(
                 self.command(),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 cwd=tempfile.gettempdir(),
-                env=environment,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                environment=environment,
+                cleanup_timeout=config.cleanup_timeout,
             )
-            try:
-                # The worker waits for init before loading Hyperlight or creating a VM.
-                self._job.assign(self.process.pid)
-            except BaseException:
-                try:
-                    self.process.kill()
-                    self.process.wait(timeout=config.cleanup_timeout)
-                finally:
-                    for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
-                        if stream is not None:
-                            stream.close()
-                raise
         except BaseException:
             self._job.close()
             raise
@@ -74,15 +63,18 @@ class Worker:
 
     @property
     def alive(self) -> bool:
-        return not self._closed and self.process.poll() is None
+        return os.getpid() == self._owner_pid and not self._closed and self.process.poll() is None
 
     def _drain(self) -> None:
         while chunk := self._errors.read(8192):
             with self._stderr_guard:
                 self._stderr.extend(chunk[: max(0, _STDERR_LIMIT - len(self._stderr))])
 
-    def request(self, message: dict[str, object]) -> dict[str, object]:
+    def request(self, message: dict[str, object], *, deadline: float) -> dict[str, object]:
         """Make one bounded exchange; close from another thread interrupts a native hang."""
+        if os.getpid() != self._owner_pid:
+            raise HyperlightWorkerError("a forked process cannot use another owner's worker")
+        self._job.ready(deadline=deadline)
         try:
             self._input.write(encode(message))
             self._input.flush()
@@ -101,13 +93,15 @@ class Worker:
 
     def close(self) -> None:
         """Terminate, reap and close all pipes within the configured cleanup allowance."""
+        if os.getpid() != self._owner_pid:
+            raise HyperlightWorkerError("a forked process cannot dispose another owner's worker")
         deadline = time.monotonic() + self._config.cleanup_timeout
         if not self._closing.acquire(timeout=self._config.cleanup_timeout):
             raise HyperlightWorkerError("worker cleanup is already in progress")
         try:
             if self._closed:
                 return
-            self._job.close()
+            self._job.close(deadline=deadline)
             if self.process.poll() is None:
                 self.process.kill()
             self.process.wait(timeout=max(0, deadline - time.monotonic()))
