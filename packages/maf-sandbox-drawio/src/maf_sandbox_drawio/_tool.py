@@ -163,7 +163,10 @@ def _create_tool(
             _LOGGER.warning("create_drawio: sandbox execution failed: %s", error_detail(exc))
             return "Error: could not run the draw.io converter in the sandbox"
         if result.exit_code != 0:
-            diagnostic = (result.stderr or "The converter returned no diagnostic")[:MAX_DIAGNOSTIC]
+            guest_diagnostic = result.stdout if result.producer_owns_stderr else result.stderr
+            diagnostic = (guest_diagnostic or "The converter returned no diagnostic")[
+                :MAX_DIAGNOSTIC
+            ]
             return f"Error: draw.io conversion failed (exit {result.exit_code}): {diagnostic}"
         try:
             landed = await collect_outputs(

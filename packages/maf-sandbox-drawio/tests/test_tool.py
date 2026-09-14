@@ -242,18 +242,31 @@ def test_success_without_an_output_is_not_reported_as_saved(tmp_path: Path):
     assert invoke(tool).startswith("Error:")
 
 
-def test_converter_diagnostic_is_bounded(tmp_path: Path):
+@pytest.mark.parametrize("producer_owns_stderr", [False, True])
+@pytest.mark.parametrize(
+    "diagnostic", ["Invalid XML", "", "x" * 10000], ids=["present", "missing", "oversized"]
+)
+def test_converter_diagnostic_uses_bounded_guest_stream(
+    tmp_path: Path, producer_owns_stderr: bool, diagnostic: str
+):
     class FailedConverter(InProcessSandbox):
         async def exec(
             self, command: str | Sequence[str], *, working_directory: str, timeout: float
         ) -> ExecResult:
             await super().exec(command, working_directory=working_directory, timeout=timeout)
-            return ExecResult(stdout="", stderr="x" * 10000, exit_code=2)
+            return ExecResult(
+                stdout=diagnostic if producer_owns_stderr else "unrelated stdout",
+                stderr="private-transport-account" if producer_owns_stderr else diagnostic,
+                exit_code=2,
+                producer_owns_stderr=producer_owns_stderr,
+            )
 
     tool, _ = attach(FailedConverter(), tmp_path)
     result = invoke(tool)
-    assert len(result) < 2150 and result.startswith("Error:")
-    assert result.endswith("x" * 2048) and "x" * 2049 not in result
+    expected = (diagnostic or "The converter returned no diagnostic")[:2048]
+    assert result == f"Error: draw.io conversion failed (exit 2): {expected}"
+    assert "private-transport-account" not in result
+    assert not (tmp_path / "diagram.drawio").exists()
 
 
 @pytest.mark.parametrize(
