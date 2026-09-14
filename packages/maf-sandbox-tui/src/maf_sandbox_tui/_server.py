@@ -73,6 +73,7 @@ def ensure_private_runtime_directory(path: Path, *, create: bool) -> bool:
         try:
             path.mkdir(mode=0o700)
         except FileExistsError:
+            # A concurrent creator is trusted only if the checks below accept it.
             pass
     try:
         metadata = path.lstat()
@@ -414,7 +415,7 @@ class SandboxControlServer:
             try:
                 loop.call_soon_threadsafe(self._cancel_operation, bridge)
             except RuntimeError:
-                pass
+                return
 
     def _cancel_operation(self, bridge: Future[Any]) -> None:
         with self._operation_lock:

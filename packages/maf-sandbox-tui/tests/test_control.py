@@ -1108,6 +1108,27 @@ def test_server_close_cancels_and_drains_active_mutations(tmp_path, operation: s
     asyncio.run(check())
 
 
+def test_server_bridges_base_exceptions_back_to_handler_threads(tmp_path):
+    class FatalControlSignal(BaseException):
+        pass
+
+    async def fail() -> None:
+        raise FatalControlSignal
+
+    async def check() -> None:
+        async with SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ) as server:
+            bridge = await asyncio.to_thread(server.schedule_operation, fail())
+            with pytest.raises(FatalControlSignal):
+                await asyncio.to_thread(bridge.result, 1)
+            assert not server._operations
+
+    asyncio.run(check())
+
+
 def test_discovery_preserves_failed_health_probes_for_every_operation(tmp_path):
     stale = EndpointManifest("stopped-host", "http://127.0.0.1:1", 1)
     (tmp_path / "stopped.json").write_text(json.dumps(stale.to_json()), encoding="utf-8")
