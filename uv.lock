@@ -16,6 +16,7 @@ members = [
     "maf-sandbox-docker",
     "maf-sandbox-hyperlight",
     "maf-sandbox-otel",
+    "maf-sandbox-terraform",
     "maf-sandbox-wslc",
 ]
 
@@ -1296,6 +1297,21 @@ dependencies = [
 requires-dist = [
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
     { name = "opentelemetry-api", specifier = ">=1.38,<2" },
+]
+
+[[package]]
+name = "maf-sandbox-terraform"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-terraform" }
+dependencies = [
+    { name = "agent-framework-core" },
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-framework-core", specifier = ">=1.18.0,<2" },
+    { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
 [[package]]

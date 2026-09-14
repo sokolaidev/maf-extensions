@@ -26,6 +26,7 @@ on:
       - "maf-sandbox-docker-v*"
       - "maf-sandbox-hyperlight-v*"
       - "maf-sandbox-otel-v*"
+      - "maf-sandbox-terraform-v*"
       - "maf-sandbox-wslc-v*"
   # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
   workflow_dispatch:
@@ -43,6 +44,7 @@ on:
           - maf-sandbox-docker
           - maf-sandbox-hyperlight
           - maf-sandbox-otel
+          - maf-sandbox-terraform
           - maf-sandbox-wslc
       target:
         description: "Registry"

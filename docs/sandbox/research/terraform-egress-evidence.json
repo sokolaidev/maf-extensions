@@ -1,0 +1,462 @@
+{
+  "observed_at": "2026-09-14T08:50:49.404998+00:00",
+  "scope": "public dependency metadata and HTTPS redirect hosts; no provider execution",
+  "discovery": {
+    "registry.terraform.io": {
+      "modules.v1": "/v1/modules/",
+      "providers.v1": "/v1/providers/"
+    },
+    "registry.opentofu.org": {
+      "modules.v1": "/v1/modules/",
+      "providers.v1": "/v1/providers/"
+    }
+  },
+  "providers": [
+    {
+      "registry": "registry.terraform.io",
+      "provider": "hashicorp/random",
+      "version": "3.7.2",
+      "metadata": {
+        "host": "registry.terraform.io",
+        "path": "/v1/providers/hashicorp/random/3.7.2/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.terraform.io",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-random/3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        },
+        "shasums_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-random/3.7.2/terraform-provider-random_3.7.2_SHA256SUMS",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        },
+        "shasums_signature_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-random/3.7.2/terraform-provider-random_3.7.2_SHA256SUMS.72D7468F.sig",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        }
+      }
+    },
+    {
+      "registry": "registry.terraform.io",
+      "provider": "hashicorp/azurerm",
+      "version": "4.0.0",
+      "metadata": {
+        "host": "registry.terraform.io",
+        "path": "/v1/providers/hashicorp/azurerm/4.0.0/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.terraform.io",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-azurerm/4.0.0/terraform-provider-azurerm_4.0.0_linux_amd64.zip",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        },
+        "shasums_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-azurerm/4.0.0/terraform-provider-azurerm_4.0.0_SHA256SUMS",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        },
+        "shasums_signature_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-azurerm/4.0.0/terraform-provider-azurerm_4.0.0_SHA256SUMS.72D7468F.sig",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        }
+      }
+    },
+    {
+      "registry": "registry.terraform.io",
+      "provider": "hashicorp/azuread",
+      "version": "3.0.2",
+      "metadata": {
+        "host": "registry.terraform.io",
+        "path": "/v1/providers/hashicorp/azuread/3.0.2/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.terraform.io",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-azuread/3.0.2/terraform-provider-azuread_3.0.2_linux_amd64.zip",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        },
+        "shasums_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-azuread/3.0.2/terraform-provider-azuread_3.0.2_SHA256SUMS",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        },
+        "shasums_signature_url": {
+          "host": "releases.hashicorp.com",
+          "path": "/terraform-provider-azuread/3.0.2/terraform-provider-azuread_3.0.2_SHA256SUMS.72D7468F.sig",
+          "status": 206,
+          "final_host": "releases.hashicorp.com",
+          "redirects": []
+        }
+      }
+    },
+    {
+      "registry": "registry.terraform.io",
+      "provider": "Azure/azapi",
+      "version": "2.0.1",
+      "metadata": {
+        "host": "registry.terraform.io",
+        "path": "/v1/providers/Azure/azapi/2.0.1/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.terraform.io",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "github.com",
+          "path": "/Azure/terraform-provider-azapi/releases/download/v2.0.1/terraform-provider-azapi_2.0.1_linux_amd64.zip",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_url": {
+          "host": "github.com",
+          "path": "/Azure/terraform-provider-azapi/releases/download/v2.0.1/terraform-provider-azapi_2.0.1_SHA256SUMS",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_signature_url": {
+          "host": "github.com",
+          "path": "/Azure/terraform-provider-azapi/releases/download/v2.0.1/terraform-provider-azapi_2.0.1_SHA256SUMS.sig",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "registry": "registry.opentofu.org",
+      "provider": "hashicorp/random",
+      "version": "3.7.2",
+      "metadata": {
+        "host": "registry.opentofu.org",
+        "path": "/v1/providers/hashicorp/random/3.7.2/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.opentofu.org",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-random/releases/download/v3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-random/releases/download/v3.7.2/terraform-provider-random_3.7.2_SHA256SUMS",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_signature_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-random/releases/download/v3.7.2/terraform-provider-random_3.7.2_SHA256SUMS.sig",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "registry": "registry.opentofu.org",
+      "provider": "hashicorp/azurerm",
+      "version": "4.0.0",
+      "metadata": {
+        "host": "registry.opentofu.org",
+        "path": "/v1/providers/hashicorp/azurerm/4.0.0/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.opentofu.org",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-azurerm/releases/download/v4.0.0/terraform-provider-azurerm_4.0.0_linux_amd64.zip",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-azurerm/releases/download/v4.0.0/terraform-provider-azurerm_4.0.0_SHA256SUMS",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_signature_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-azurerm/releases/download/v4.0.0/terraform-provider-azurerm_4.0.0_SHA256SUMS.sig",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "registry": "registry.opentofu.org",
+      "provider": "hashicorp/azuread",
+      "version": "3.0.2",
+      "metadata": {
+        "host": "registry.opentofu.org",
+        "path": "/v1/providers/hashicorp/azuread/3.0.2/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.opentofu.org",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-azuread/releases/download/v3.0.2/terraform-provider-azuread_3.0.2_linux_amd64.zip",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-azuread/releases/download/v3.0.2/terraform-provider-azuread_3.0.2_SHA256SUMS",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_signature_url": {
+          "host": "github.com",
+          "path": "/opentofu/terraform-provider-azuread/releases/download/v3.0.2/terraform-provider-azuread_3.0.2_SHA256SUMS.sig",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "registry": "registry.opentofu.org",
+      "provider": "Azure/azapi",
+      "version": "2.0.1",
+      "metadata": {
+        "host": "registry.opentofu.org",
+        "path": "/v1/providers/Azure/azapi/2.0.1/download/linux/amd64",
+        "status": 200,
+        "final_host": "registry.opentofu.org",
+        "redirects": []
+      },
+      "artifacts": {
+        "download_url": {
+          "host": "github.com",
+          "path": "/azure/terraform-provider-azapi/releases/download/v2.0.1/terraform-provider-azapi_2.0.1_linux_amd64.zip",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_url": {
+          "host": "github.com",
+          "path": "/azure/terraform-provider-azapi/releases/download/v2.0.1/terraform-provider-azapi_2.0.1_SHA256SUMS",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        },
+        "shasums_signature_url": {
+          "host": "github.com",
+          "path": "/azure/terraform-provider-azapi/releases/download/v2.0.1/terraform-provider-azapi_2.0.1_SHA256SUMS.sig",
+          "status": 206,
+          "final_host": "release-assets.githubusercontent.com",
+          "redirects": [
+            {
+              "status": 302,
+              "from": "github.com",
+              "to": "release-assets.githubusercontent.com"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "modules": [
+    {
+      "registry": "registry.terraform.io",
+      "module": "Azure/avm-res-resources-resourcegroup/azurerm",
+      "version": "0.2.0",
+      "metadata": {
+        "host": "registry.terraform.io",
+        "path": "/v1/modules/Azure/avm-res-resources-resourcegroup/azurerm/0.2.0/download",
+        "status": 204,
+        "final_host": "registry.terraform.io",
+        "redirects": []
+      },
+      "source": "git::https://github.com/Azure/terraform-azurerm-avm-res-resources-resourcegroup?ref=7a11372c80143bcf3566fe6daedafc25d7f7477f",
+      "github_archive": {
+        "host": "github.com",
+        "path": "/Azure/terraform-azurerm-avm-res-resources-resourcegroup/archive/7a11372c80143bcf3566fe6daedafc25d7f7477f.tar.gz",
+        "status": 200,
+        "final_host": "codeload.github.com",
+        "redirects": [
+          {
+            "status": 302,
+            "from": "github.com",
+            "to": "codeload.github.com"
+          }
+        ]
+      }
+    },
+    {
+      "registry": "registry.opentofu.org",
+      "module": "Azure/avm-res-resources-resourcegroup/azurerm",
+      "version": "0.2.0",
+      "metadata": {
+        "host": "registry.opentofu.org",
+        "path": "/v1/modules/Azure/avm-res-resources-resourcegroup/azurerm/0.2.0/download",
+        "status": 200,
+        "final_host": "registry.opentofu.org",
+        "redirects": []
+      },
+      "source": "git::https://github.com/azure/terraform-azurerm-avm-res-resources-resourcegroup?ref=7a11372c80143bcf3566fe6daedafc25d7f7477f",
+      "github_archive": {
+        "host": "github.com",
+        "path": "/azure/terraform-azurerm-avm-res-resources-resourcegroup/archive/7a11372c80143bcf3566fe6daedafc25d7f7477f.tar.gz",
+        "status": 200,
+        "final_host": "codeload.github.com",
+        "redirects": [
+          {
+            "status": 302,
+            "from": "github.com",
+            "to": "codeload.github.com"
+          }
+        ]
+      }
+    }
+  ],
+  "engine_archives": [
+    {
+      "host": "releases.hashicorp.com",
+      "path": "/terraform/1.16.2/terraform_1.16.2_linux_amd64.zip",
+      "status": 206,
+      "final_host": "releases.hashicorp.com",
+      "redirects": []
+    },
+    {
+      "host": "github.com",
+      "path": "/opentofu/opentofu/releases/download/v1.12.6/tofu_1.12.6_linux_amd64.zip",
+      "status": 206,
+      "final_host": "release-assets.githubusercontent.com",
+      "redirects": [
+        {
+          "status": 302,
+          "from": "github.com",
+          "to": "release-assets.githubusercontent.com"
+        }
+      ]
+    }
+  ]
+}

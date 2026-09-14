@@ -41,6 +41,7 @@ _RELEASES = {
     "maf-sandbox-docker": "0.8.1",
     "maf-sandbox-hyperlight": "0.1.0",
     "maf-sandbox-otel": "0.1.0",
+    "maf-sandbox-terraform": "0.1.0",
     "maf-sandbox-wslc": "0.11.2",
 }
 

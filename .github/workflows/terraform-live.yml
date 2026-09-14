@@ -1,0 +1,59 @@
+name: Terraform and OpenTofu (live)
+
+# Follow the repository's real-engine policy: after merge, on a timer, or manual dispatch.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "15 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-live
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MAF_TERRAFORM_E2E_IMAGE: maf-terraform:ci
+      MAF_OPENTOFU_E2E_IMAGE: maf-opentofu:ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Sync workspace
+        run: uv sync --locked
+      - name: Build pinned engine and provider images
+        run: |
+          docker build --platform linux/amd64 --build-arg ENGINE=terraform --build-arg PROFILE=random -t "$MAF_TERRAFORM_E2E_IMAGE" images/terraform-sandbox
+          docker build --platform linux/amd64 --build-arg ENGINE=opentofu --build-arg PROFILE=random -t "$MAF_OPENTOFU_E2E_IMAGE" images/terraform-sandbox
+      - name: Validate and observe disposal
+        run: uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py
+
+  report-failure:
+    name: Report Terraform live failure
+    needs: terraform
+    if: always() && needs.terraform.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Open or notify the Terraform live tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- terraform-live-failure-tracker -->'
+          --title 'Terraform and OpenTofu live checks failed'
+          --reproduce 'Re-run the linked attempt, or dispatch terraform-live.yml against the failing commit. Inspect the first failed step for image, registry, daemon, or test failures.'
+          --expected 'Both engine profiles validate correctly and leave no workload containers.'
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-terraform
