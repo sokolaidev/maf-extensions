@@ -23,7 +23,7 @@ from a return value — see this directory's README.
 # dependencies = [
 #     "maf-sandbox-docker",
 #     "maf-sandbox-otel",
-#     "maf-sandbox>=0.39",
+#     "maf-sandbox>=0.40",
 #     "opentelemetry-sdk",
 # ]
 # ///
