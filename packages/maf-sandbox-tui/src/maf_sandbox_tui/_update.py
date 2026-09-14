@@ -301,7 +301,8 @@ def _manual_update_message(installation: Installation, target: Version) -> str:
     if installation.kind is InstallationKind.VIRTUAL_ENVIRONMENT:
         return (
             "MST is running from a project or manually managed virtual environment. "
-            f"Update its lock with 'uv lock --upgrade-package {requirement}', then run 'uv sync'."
+            f"Use that environment's package manager to install '{requirement}' and update its "
+            "lock file."
         )
     return (
         "MST is running from a system Python installation. "

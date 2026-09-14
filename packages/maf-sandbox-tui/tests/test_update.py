@@ -99,8 +99,10 @@ def test_update_refuses_to_mutate_a_project_environment(monkeypatch, tmp_path):
         lambda **_kwargs: Version("0.2.0"),
     )
 
-    with pytest.raises(UpdateError, match="uv lock --upgrade-package"):
+    with pytest.raises(UpdateError, match="environment's package manager") as captured:
         update_module.perform_update(installation=installation)
+    assert "maf-sandbox-tui==0.2.0" in str(captured.value)
+    assert "uv " not in str(captured.value)
 
 
 def test_uv_update_delegates_an_exact_release_and_verifies_it(monkeypatch, tmp_path):

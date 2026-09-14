@@ -16,6 +16,7 @@ import threading
 from collections.abc import Coroutine
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import suppress
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -486,6 +487,7 @@ class SandboxControlServer:
             daemon=True,
         )
         self._thread.start()
+        temporary: Path | None = None
         try:
             ensure_private_runtime_directory(self._manifest_directory, create=True)
             identity = secrets.token_hex(6)
@@ -497,6 +499,10 @@ class SandboxControlServer:
         except BaseException:
             await self.close()
             raise
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink(missing_ok=True)
         return self
 
     async def _close_once(self) -> None:

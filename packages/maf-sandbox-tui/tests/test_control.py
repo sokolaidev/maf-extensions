@@ -1454,6 +1454,42 @@ def test_constructing_server_does_not_open_a_port_or_publish_discovery(tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("failure", ["write", "replace"])
+def test_server_start_removes_temporary_manifest_after_publication_failure(
+    monkeypatch, tmp_path, failure: str
+):
+    original_write_text = Path.write_text
+    original_replace = Path.replace
+
+    def fail_after_write(candidate: Path, data: str, **kwargs: object) -> int:
+        written = original_write_text(candidate, data, **kwargs)
+        if failure == "write" and candidate.suffix == ".tmp":
+            raise OSError("manifest publication failed")
+        return written
+
+    def fail_replace(candidate: Path, target: str | Path) -> Path:
+        if failure == "replace" and candidate.suffix == ".tmp":
+            raise OSError("manifest publication failed")
+        return original_replace(candidate, target)
+
+    monkeypatch.setattr(Path, "write_text", fail_after_write)
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    async def check() -> None:
+        server = SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        with pytest.raises(OSError, match="manifest publication failed"):
+            await server.start()
+        assert server._httpd is None
+        assert server._thread is None
+
+    asyncio.run(check())
+    assert list(tmp_path.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "endpoint",
     [
