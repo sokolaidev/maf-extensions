@@ -101,21 +101,31 @@ class HyperlightControl:
 
     async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
         """Dispose the exact physical instance while preserving a replacement."""
-        before = {item.instance_id: item for item in await self._backend.list_sandboxes()}
-        item = before.get(instance_id)
-        if item is None:
+        try:
+            async with asyncio.timeout(timeout):
+                before = {item.instance_id: item for item in await self._backend.list_sandboxes()}
+                item = before.get(instance_id)
+                if item is None:
+                    return DisposalResult(
+                        DisposalStatus.NOT_FOUND,
+                        instance_id,
+                        "The sandbox is already gone or its generation changed.",
+                    )
+                ok = await self._router.dispose_kind(
+                    item.key,
+                    item.kind,
+                    instance_id=instance_id,
+                    timeout=timeout,
+                )
+                remaining = {
+                    current.instance_id for current in await self._backend.list_sandboxes()
+                }
+        except TimeoutError:
             return DisposalResult(
-                DisposalStatus.NOT_FOUND,
+                DisposalStatus.FAILED,
                 instance_id,
-                "The sandbox is already gone or its generation changed.",
+                "Disposal timed out and was not confirmed.",
             )
-        ok = await self._router.dispose_kind(
-            item.key,
-            item.kind,
-            instance_id=instance_id,
-            timeout=timeout,
-        )
-        remaining = {current.instance_id for current in await self._backend.list_sandboxes()}
         if ok and instance_id not in remaining:
             return DisposalResult(
                 DisposalStatus.DISPOSED,
@@ -132,22 +142,24 @@ class HyperlightControl:
         self, scope: str, thread_id: str, *, timeout: float = 10.0
     ) -> PurgeResult:
         """Purge one conversation through every backend registered with the owning router."""
+        disposed = 0
         try:
             async with asyncio.timeout(timeout):
                 purged = await self._router.dispose_scope(scope, thread_id)
+                disposed = purged.disposed
+                remaining = tuple(
+                    item
+                    for item in await self._backend.list_sandboxes()
+                    if item.key.scope == scope and item.key.thread_id == thread_id
+                )
         except TimeoutError:
             return PurgeResult(
                 PurgeStatus.PARTIAL,
                 scope,
                 thread_id,
-                0,
+                disposed,
                 "Conversation purge timed out and was not confirmed.",
             )
-        remaining = tuple(
-            item
-            for item in await self._backend.list_sandboxes()
-            if item.key.scope == scope and item.key.thread_id == thread_id
-        )
         complete = purged.undisposed is None and not remaining
         if complete:
             return PurgeResult(

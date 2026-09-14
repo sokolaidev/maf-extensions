@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import cast
@@ -69,7 +70,10 @@ class SandboxRecord:
             item = data.get(name)
             if isinstance(item, bool) or not isinstance(item, (int, float)):
                 raise ValueError(f"sandbox record {name} must be a number")
-            return float(item)
+            result = float(item)
+            if not math.isfinite(result):
+                raise ValueError(f"sandbox record {name} must be finite")
+            return result
 
         process_id = data.get("process_id")
         if process_id is not None and (

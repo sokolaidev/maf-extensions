@@ -38,11 +38,12 @@ class HttpControl:
 
     def __init__(self, manifest: EndpointManifest, *, timeout: float = 5.0) -> None:
         self.manifest = manifest
+        self._endpoint = manifest.endpoint.removesuffix("/")
         self.timeout = timeout
 
     def _request(self, method: str, path: str, *, timeout: float | None = None) -> object:
         request = Request(
-            f"{self.manifest.endpoint}{path}",
+            f"{self._endpoint}{path}",
             method=method,
             headers={"Accept": "application/json"},
         )

@@ -94,6 +94,16 @@ def test_record_json_refuses_malformed_process_identity():
         SandboxRecord.from_json(value)
 
 
+@pytest.mark.parametrize("field", ["created_at", "last_activity_at"])
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])
+def test_record_json_refuses_non_finite_timestamps(field: str, timestamp: float):
+    record = asyncio.run(MemoryControl.demo(now=1_000).list_sandboxes())[0]
+    value = record.to_json()
+    value[field] = timestamp
+    with pytest.raises(ValueError, match=rf"{field} must be finite"):
+        SandboxRecord.from_json(value)
+
+
 def test_memory_control_disposes_only_the_named_generation():
     async def check() -> None:
         record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
@@ -161,6 +171,84 @@ def test_hyperlight_control_purges_the_conversation_through_the_router():
     asyncio.run(check())
 
 
+def test_hyperlight_control_bounds_disposal_inventory():
+    class SlowInventory(_Inventory):
+        async def list_sandboxes(self) -> tuple[_Info, ...]:
+            await asyncio.sleep(1)
+            return await super().list_sandboxes()
+
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = SlowInventory([target])
+        router = _Router(inventory, target)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=0.01)
+
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "Disposal timed out and was not confirmed."
+        assert router.calls == []
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_bounds_disposal_confirmation():
+    class SlowSecondInventory(_Inventory):
+        def __init__(self, records: list[_Info]) -> None:
+            super().__init__(records)
+            self.calls = 0
+
+        async def list_sandboxes(self) -> tuple[_Info, ...]:
+            self.calls += 1
+            if self.calls == 2:
+                await asyncio.sleep(1)
+            return await super().list_sandboxes()
+
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        replacement = replace(target, instance_id="generation-b")
+        inventory = SlowSecondInventory([target])
+        router = _Router(inventory, replacement)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=0.01)
+
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "Disposal timed out and was not confirmed."
+        assert router.calls == [(key, "codeact", "generation-a", 0.01)]
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_bounds_post_purge_inventory():
+    class SlowAfterPurgeInventory(_Inventory):
+        async def list_sandboxes(self) -> tuple[_Info, ...]:
+            await asyncio.sleep(1)
+            return await super().list_sandboxes()
+
+    class ImmediateRouter(_Router):
+        async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+            self.scope_calls.append((scope, thread_id))
+            return ScopePurge(1)
+
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = SlowAfterPurgeInventory([target])
+        router = ImmediateRouter(inventory, target)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.purge_thread("tenant-labs", "thread-1", timeout=0.01)
+
+        assert result.status is PurgeStatus.PARTIAL
+        assert result.disposed == 1
+        assert result.message == "Conversation purge timed out and was not confirmed."
+
+    asyncio.run(check())
+
+
 def test_loopback_endpoint_lists_and_disposes_end_to_end(tmp_path):
     async def check() -> None:
         control = MemoryControl.demo(now=1_000)
@@ -174,6 +262,7 @@ def test_loopback_endpoint_lists_and_disposes_end_to_end(tmp_path):
             assert "token" not in manifest_data
             client = HttpControl(server.manifest)
             await client.health()
+            await HttpControl(replace(server.manifest, endpoint=f"{server.endpoint}/")).health()
             records = await client.list_sandboxes()
             assert len(records) == 3
             result = await client.dispose_sandbox(records[0].instance_id)
