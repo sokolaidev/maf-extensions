@@ -2,6 +2,27 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.16.1...maf-sandbox-bicep-v0.17.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181))
+
+### Fixes
+
+* **bicep:** sanitize paths in diagnostic messages ([#1232](https://github.com/sokolaidev/maf-extensions/issues/1232)) ([d61b324](https://github.com/sokolaidev/maf-extensions/commit/d61b324e4f9367b50c6c8a0e46fa468096028597))
+* remove issue references from package summaries ([#1258](https://github.com/sokolaidev/maf-extensions/issues/1258)) ([c99ec84](https://github.com/sokolaidev/maf-extensions/commit/c99ec84cfb456cb4656611643bc8ad02e22ed807))
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181)) ([a9feab2](https://github.com/sokolaidev/maf-extensions/commit/a9feab2d0cab0790c25ace3e2c856fca5ce8c93c))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+
+
+### Documentation
+
+* remove issue references from package descriptions ([#1257](https://github.com/sokolaidev/maf-extensions/issues/1257)) ([1f2d5a5](https://github.com/sokolaidev/maf-extensions/commit/1f2d5a59b2d3c41e2f07c492905b88ec9f493d33))
+* **sandbox:** clarify trusted sandbox identity configuration ([#1243](https://github.com/sokolaidev/maf-extensions/issues/1243)) ([619f11e](https://github.com/sokolaidev/maf-extensions/commit/619f11e206c4e1f495bd8948776bf726aa6225b7))
+
 ## [0.16.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.16.0...maf-sandbox-bicep-v0.16.1) (2026-09-12)
 
 
