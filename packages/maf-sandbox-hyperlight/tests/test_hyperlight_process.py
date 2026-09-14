@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import cast
@@ -65,6 +67,54 @@ class NoJob:
 
     def close(self, *, deadline: float | None = None) -> None:
         pass
+
+
+@pytest.mark.parametrize("system", ["linux", "win32"])
+def test_worker_environment_uses_platform_name_semantics(
+    system: str, monkeypatch: pytest.MonkeyPatch
+):
+    source = {
+        "PATH": "runtime-path",
+        "HOME": "runtime-home",
+        "XDG_CACHE_HOME": "runtime-cache",
+        "TMPDIR": "runtime-temp",
+        "LANG": "runtime-language",
+        "LC_ALL": "runtime-locale",
+        "home": "application-secret",
+        "path": "application-secret",
+        "lang": "application-secret",
+        "Home": "application-secret",
+        "xdg_cache_home": "application-secret",
+        "tmpdir": "application-secret",
+        "lc_all": "application-secret",
+        "SystemRoot": "windows-root",
+        "LocalAppData": "windows-cache",
+        "Temp": "windows-temp",
+        "APPLICATION_TOKEN": "application-secret",
+        "HYPERLIGHT_MAX_SURROGATES": "20",
+    }
+    expected_names = (
+        {"PATH", "HOME", "XDG_CACHE_HOME", "TMPDIR", "LANG", "LC_ALL"}
+        if system == "linux"
+        else {"PATH", "path", "SystemRoot", "LocalAppData", "Temp"}
+    )
+    environments = []
+
+    def intercept(*args, env, **kwargs):
+        environments.append(env)
+        raise OSError("intercepted worker spawn")
+
+    monkeypatch.setattr(sys, "platform", system)
+    monkeypatch.setattr(os, "environ", source)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: ".")
+    monkeypatch.setattr(_process, "create_job", lambda config: NoJob(0))
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", intercept)
+    with pytest.raises(OSError, match="intercepted worker spawn"):
+        _process.Worker(HyperlightSandboxConfig())
+    assert environments == [
+        {**{name: source[name] for name in expected_names}, "HYPERLIGHT_MAX_SURROGATES": "0"}
+    ]
 
 
 @pytest.fixture

@@ -10,6 +10,7 @@ import select
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -43,6 +44,33 @@ if sys.platform == "linux":
     )
 
 
+def _publish_owner_lock() -> None:
+    """Publish the final read-only mode without replacing another creator's lock inode."""
+    fd, temporary = tempfile.mkstemp(
+        prefix=".maf-hyperlight-lock-", dir=os.path.dirname(_LOCK_PATH)
+    )
+    try:
+        os.fchmod(fd, 0o444)
+        rename = ctypes.CDLL(None, use_errno=True).renameat2
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        # RENAME_NOREPLACE keeps simultaneous creators on the same persistent inode.
+        if rename(-100, os.fsencode(temporary), -100, os.fsencode(_LOCK_PATH), 1) != 0:
+            error = ctypes.get_errno()
+            if error != errno.EEXIST:
+                raise OSError(error, "cannot publish the Hyperlight owner lock")
+    finally:
+        os.close(fd)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
+
+
 def claim_host() -> None:
     """Hold one owner in the shared lock-file namespace for the process lifetime."""
     import fcntl
@@ -54,22 +82,15 @@ def claim_host() -> None:
         if _owner_fd is not None:
             return
         flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
-        created = False
         try:
             fd = os.open(_LOCK_PATH, flags)
         except FileNotFoundError:
-            try:
-                fd = os.open(_LOCK_PATH, flags | os.O_CREAT | os.O_EXCL, 0o600)
-                created = True
-            except FileExistsError:
-                fd = os.open(_LOCK_PATH, flags)
+            _publish_owner_lock()
+            fd = os.open(_LOCK_PATH, flags)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise HyperlightWorkerError("Hyperlight requires a regular, persistent owner lock")
-            if created:
-                # This empty coordination file must be lockable read-only by every host user.
-                os.fchmod(fd, 0o444)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:

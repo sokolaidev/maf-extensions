@@ -52,6 +52,55 @@ def test_owner_lock_readability_is_independent_of_umask(tmp_path: Path, mask: st
     assert lock.read_bytes() == b""
 
 
+@pytest.mark.parametrize("failure", ["exception", "exit"])
+def test_failed_lock_preparation_leaves_successor_free_to_publish(tmp_path: Path, failure: str):
+    lock = tmp_path / "owner.lock"
+    script = """import os, sys
+from maf_sandbox_hyperlight import _linux
+_linux._LOCK_PATH=sys.argv[1]
+def fail(fd, mode):
+    if sys.argv[2] == 'exit':
+        os._exit(73)
+    raise PermissionError('mode preparation refused')
+os.fchmod=fail
+_linux.claim_host()
+"""
+    creator = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(lock), failure], capture_output=True, timeout=3
+    )
+    assert creator.returncode != 0
+    assert not lock.exists(), "an incomplete inode must never occupy the shared lock path"
+    if failure == "exception":
+        assert not list(tmp_path.iterdir())
+    successor = subprocess.run(
+        [sys.executable, "-I", "-c", CLAIM, str(lock)], capture_output=True, timeout=3
+    )
+    assert successor.returncode == 0, successor.stderr
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o444
+    assert lock.stat().st_nlink == 1
+    assert lock.read_bytes() == b""
+
+
+def test_late_lock_publisher_preserves_the_winning_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    lock = tmp_path / "owner.lock"
+    lock.write_bytes(b"operator-managed")
+    lock.chmod(0o640)
+    before = lock.stat()
+    monkeypatch.setattr(_linux, "_LOCK_PATH", str(lock))
+    _linux._publish_owner_lock()
+    after = lock.stat()
+    assert (after.st_dev, after.st_ino, after.st_mode, after.st_nlink) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_nlink,
+    )
+    assert lock.read_bytes() == b"operator-managed"
+    assert list(tmp_path.iterdir()) == [lock]
+
+
 def test_unrelated_fork_child_does_not_keep_ownership_after_owner_exit(tmp_path: Path):
     if sys.platform != "linux":
         pytest.skip("Linux fork and pidfd APIs")

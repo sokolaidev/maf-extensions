@@ -34,7 +34,9 @@ class Worker:
             else {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "LOCALAPPDATA"}
         )
         environment = {
-            key: value for key, value in os.environ.items() if key.upper() in allowed_environment
+            key: value
+            for key, value in os.environ.items()
+            if (key.upper() if sys.platform == "win32" else key) in allowed_environment
         }
         environment["HYPERLIGHT_MAX_SURROGATES"] = "0"
         cleanup_deadline: float | None = None
