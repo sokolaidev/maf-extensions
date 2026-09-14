@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "maf-sandbox>=0.40.0,<0.41",
+    "packaging>=24,<27",
     "textual>=6,<8",
 ]
 

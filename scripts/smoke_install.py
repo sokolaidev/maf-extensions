@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import json
 import pathlib
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -709,7 +710,36 @@ def _smoke_maf_sandbox_tui() -> str:
         raise SystemExit("FAIL: MST demo does not expose physical sandbox identities")
     if not SandboxConsole.TITLE:
         raise SystemExit("FAIL: MST console has no title")
-    return "constructs its console and exposes a three-instance operator demo"
+    executable = pathlib.Path(sys.executable).parent / (
+        "mst.exe" if sys.platform == "win32" else "mst"
+    )
+    if not executable.is_file():
+        raise SystemExit(f"FAIL: the wheel installed no MST entry point at {executable}")
+    version_result = subprocess.run(
+        [str(executable), "version", "--json"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    if version_result.returncode != 0:
+        raise SystemExit(f"FAIL: installed 'mst version' failed: {version_result.stderr}")
+    reported = json.loads(version_result.stdout)
+    if reported.get("name") != "maf-sandbox-tui" or not reported.get("version"):
+        raise SystemExit(f"FAIL: installed 'mst version' returned {reported!r}")
+    demo_result = subprocess.run(
+        [str(executable), "--demo", "--json"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    if demo_result.returncode != 0 or len(json.loads(demo_result.stdout)) != 3:
+        raise SystemExit(
+            f"FAIL: installed 'mst --demo --json' failed: "
+            f"{demo_result.stdout!r} / {demo_result.stderr!r}"
+        )
+    return "runs its installed entry point, reports its version and exposes a three-instance demo"
 
 
 _SMOKES = {

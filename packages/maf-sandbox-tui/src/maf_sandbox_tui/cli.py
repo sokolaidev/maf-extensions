@@ -19,6 +19,14 @@ from ._client import CompositeControl, ControlEndpointError, HttpControl, read_m
 from ._control import MemoryControl
 from ._models import DisposalStatus, PurgeResult, PurgeStatus, SandboxRecord, SandboxState
 from ._server import EndpointManifest, SandboxControlServer
+from ._update import (
+    DISTRIBUTION_NAME,
+    UpdateError,
+    check_for_update,
+    current_version,
+    inspect_installation,
+    perform_update,
+)
 
 _EXIT_ERROR = 1
 _EXIT_USAGE = 2
@@ -125,6 +133,31 @@ def _parser() -> argparse.ArgumentParser:
     _add_connection_options(parser, inherited=False)
     _add_json_option(parser)
     subparsers = parser.add_subparsers(dest="command")
+
+    version = subparsers.add_parser("version", help="show the installed MST version")
+    _add_json_option(version, inherited=True)
+
+    update = subparsers.add_parser("update", help="check for or install an MST release")
+    selection = update.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--check",
+        action="store_true",
+        help="check PyPI without changing the installation",
+    )
+    selection.add_argument("--to", metavar="VERSION", help="upgrade or roll back to VERSION")
+    update.add_argument(
+        "--prerelease",
+        action="store_true",
+        help="include prereleases when selecting the newest version",
+    )
+    update.add_argument(
+        "--timeout",
+        type=_positive_seconds,
+        default=10.0,
+        metavar="SECONDS",
+        help="PyPI version-check timeout",
+    )
+    _add_json_option(update, inherited=True)
 
     hosts = _command_parser(subparsers.add_parser("hosts", help="list opted-in MAF hosts"))
     _add_json_option(hosts, inherited=True)
@@ -523,11 +556,76 @@ async def _watch(
     return 0 if complete else _EXIT_ERROR
 
 
+def _version(arguments: argparse.Namespace) -> int:
+    installed = current_version()
+    installation = inspect_installation()
+    if arguments.json:
+        print(
+            json.dumps(
+                {
+                    "name": DISTRIBUTION_NAME,
+                    "version": str(installed),
+                    "python": sys.version.split()[0],
+                    "installation": installation.to_json(),
+                },
+                indent=2,
+            )
+        )
+    else:
+        suffix = "self-update enabled" if installation.self_updatable else "self-update disabled"
+        print(f"mst {installed}")
+        print(f"installation: {installation.kind.value} ({suffix})")
+    return 0
+
+
+async def _update(arguments: argparse.Namespace) -> int:
+    if arguments.check:
+        checked = await asyncio.to_thread(
+            check_for_update,
+            prereleases=arguments.prerelease,
+            timeout=arguments.timeout,
+        )
+        if arguments.json:
+            print(json.dumps(checked.to_json(), indent=2))
+        elif checked.status == "update_available":
+            print(f"MST {checked.latest} is available; {checked.current} is installed.")
+        elif checked.status == "current":
+            print(f"MST {checked.current} is current.")
+        else:
+            print(
+                f"MST {checked.current} is newer than the latest selected release "
+                f"({checked.latest})."
+            )
+        return 0
+
+    result = await asyncio.to_thread(
+        perform_update,
+        target=arguments.to,
+        prereleases=arguments.prerelease,
+        timeout=arguments.timeout,
+        capture_output=arguments.json,
+    )
+    if arguments.json:
+        print(json.dumps(result.to_json(), indent=2))
+    elif result.status == "current":
+        print(f"MST {result.installed} is already current.")
+    else:
+        print(
+            f"MST {result.status} from {result.previous} to {result.installed} "
+            f"through {result.installation.kind.value}."
+        )
+    return 0
+
+
 async def _dispatch(
     arguments: argparse.Namespace,
     load_manifests: Callable[[], tuple[EndpointManifest, ...]],
 ) -> int:
     command = arguments.command
+    if command == "version":
+        return _version(arguments)
+    if command == "update":
+        return await _update(arguments)
     if command == "watch":
         arguments.jsonl = arguments.jsonl or arguments.json
         return await _watch(load_manifests, arguments)
@@ -558,6 +656,8 @@ async def _dispatch(
 
 
 async def _run(arguments: argparse.Namespace) -> int:
+    if arguments.command in {"version", "update"}:
+        return await _dispatch(arguments, lambda: ())
     if arguments.endpoint:
         manifest = EndpointManifest(arguments.source, arguments.endpoint.rstrip("/"), 0)
         return await _dispatch(arguments, lambda: (manifest,))
@@ -582,7 +682,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         status = asyncio.run(_run(arguments))
     except KeyboardInterrupt:
         raise SystemExit(130) from None
-    except (ControlEndpointError, ValueError) as error:
+    except (ControlEndpointError, UpdateError, ValueError) as error:
         print(f"mst: {error}", file=sys.stderr)
         raise SystemExit(_EXIT_ERROR) from None
     if status:

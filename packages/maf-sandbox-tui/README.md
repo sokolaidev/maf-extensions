@@ -25,6 +25,10 @@ uv run mst --demo --json
 Running `mst` without a command opens the TUI. Subcommands print plain tables or records; `--json` selects stable JSON and `watch --jsonl` writes one compact snapshot per line. Connection options may appear before or after the command.
 
 ```console
+mst version [--json]
+mst update --check [--prerelease] [--json]
+mst update [--prerelease] [--json]
+mst update --to VERSION [--json]
 mst hosts [--json]
 mst list [--host SOURCE] [--backend NAME] [--scope SCOPE] [--thread ID] [--kind KIND] [--state STATE] [--older-than 5m] [--json]
 mst show INSTANCE_ID [--json]
@@ -32,6 +36,14 @@ mst watch [--interval 2] [--count 0] [--jsonl]
 mst delete INSTANCE_ID [--timeout 10] [--yes] [--json]
 mst purge-thread --scope SCOPE --thread ID [--timeout 10] [--yes] [--json]
 ```
+
+Version checks are explicit and read the fixed HTTPS PyPI project endpoint; MST never checks in
+the background. An update is delegated only when the running executable belongs to an isolated
+`uv tool` or pipx environment. `mst update --to VERSION` also permits an explicit rollback and
+verifies the installed version after the manager finishes. In a project or manually managed
+virtual environment, MST refuses to rewrite its own dependencies and prints the corresponding
+`uv lock`/`uv sync` command instead. `--prerelease` includes non-yanked prereleases when choosing
+the newest version.
 
 `delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
 

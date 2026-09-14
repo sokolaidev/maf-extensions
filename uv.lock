@@ -1346,12 +1346,14 @@ version = "0.0.0"
 source = { editable = "packages/maf-sandbox-tui" }
 dependencies = [
     { name = "maf-sandbox" },
+    { name = "packaging" },
     { name = "textual" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
+    { name = "packaging", specifier = ">=24,<27" },
     { name = "textual", specifier = ">=6,<8" },
 ]
 
