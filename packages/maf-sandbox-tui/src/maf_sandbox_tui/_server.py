@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from ._control import SandboxControl
 
 PROTOCOL_VERSION = 1
+_CONTROL_FAILURE_STATUS = HTTPStatus(500)
 
 
 def runtime_directory() -> Path:
@@ -173,7 +174,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
         except FutureTimeoutError:
             self._send(HTTPStatus.GATEWAY_TIMEOUT, {"error": "control request timed out"})
         except Exception:
-            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "control request failed"})
+            self._send(_CONTROL_FAILURE_STATUS, {"error": "control request failed"})
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
@@ -200,7 +201,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
             except FutureTimeoutError:
                 self._send(HTTPStatus.GATEWAY_TIMEOUT, {"error": "purge timed out"})
             except Exception:
-                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "purge failed"})
+                self._send(_CONTROL_FAILURE_STATUS, {"error": "purge failed"})
             return
         if not path.startswith("/v1/sandboxes/"):
             self._send(HTTPStatus.NOT_FOUND, {"error": "route not found"})
@@ -221,7 +222,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
         except FutureTimeoutError:
             self._send(HTTPStatus.GATEWAY_TIMEOUT, {"error": "disposal timed out"})
         except Exception:
-            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "disposal failed"})
+            self._send(_CONTROL_FAILURE_STATUS, {"error": "disposal failed"})
 
     def log_message(self, format: str, *args: object) -> None:
         del format, args
