@@ -1,15 +1,19 @@
 # Terraform and OpenTofu validation images
 
-Build one engine per image, from the repository root. The initial platform is **Linux amd64**. The `builtin` profile has an empty provider mirror and supports built-in resources and local modules. The `random` profile additionally mirrors that engine registry's `hashicorp/random` 3.7.2 package. Downloads happen during image construction; validation has closed egress.
+Build one engine per image, from the repository root. [build.json](build.json) owns the base-image digest, platform, engine versions, download URLs, archive checksums and profile mappings. The Python [builder](build_image.py) reads that file and passes matching version metadata to Docker; [install.py](install.py) reads the same file inside the build and verifies the downloaded binary's reported version. The initial platform is **Linux amd64**. The `builtin` profile has an empty provider mirror and supports built-in resources and local modules. The `random` profile reads its providers from the corresponding `dependencies.terraform.json` or `dependencies.opentofu.json` manifest. Downloads happen during image construction; validation has closed egress.
 
 ```sh
-docker build --platform linux/amd64 --build-arg ENGINE=terraform --build-arg PROFILE=builtin -t maf-terraform:builtin images/terraform-sandbox
-docker build --platform linux/amd64 --build-arg ENGINE=opentofu --build-arg PROFILE=builtin -t maf-opentofu:builtin images/terraform-sandbox
-docker build --platform linux/amd64 --build-arg ENGINE=terraform --build-arg PROFILE=random -t maf-terraform:random images/terraform-sandbox
-docker build --platform linux/amd64 --build-arg ENGINE=opentofu --build-arg PROFILE=random -t maf-opentofu:random images/terraform-sandbox
+uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin
+uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin
+uv run python images/terraform-sandbox/build_image.py --engine terraform --profile random
+uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile random
 ```
 
-The base is Python 3.13.15 slim pinned by digest in [Dockerfile](Dockerfile). [install.py](install.py) checks every downloaded archive before extracting it, preserves engine license notices, leaves provider licenses inside their mirror archives, and records the engine binary digest in the image. [runner.py](runner.py) verifies that identity and version before executing a request. Deploy the resulting image by immutable digest; a deployment owns its trusted image and provider selection.
+The default tags include the configured binary version and profile: `maf-terraform:1.16.2-builtin`, `maf-terraform:1.16.2-random`, `maf-opentofu:1.12.6-builtin` and `maf-opentofu:1.12.6-random`. Use `--tag` to choose a different tag; this does not change the binary version. Upgrades change the version, URL and digest in `build.json`, followed by a rebuild. There is no automatic latest-version lookup. Use the Python builder rather than supplying Docker build arguments manually.
+
+The image carries Docker/OCI labels `org.opencontainers.image.version`, `ai.sokol.maf.engine` and `ai.sokol.maf.engine.version`, including the actual verified binary version. `/opt/maf-terraform/engine.json` also records the engine, executable, version, platform, archive digest, binary digest and profile; it remains the launcher's runtime identity record. A missing/mismatched version build argument or a binary reporting another version fails the build. Derived prepared images inherit these labels from their base. Inspect them with `docker image inspect maf-terraform:1.16.2-builtin --format '{{json .Config.Labels}}'`.
+
+The base is Python 3.13.15 slim pinned by digest in `build.json`. The installer checks every downloaded archive before extracting it, preserves engine license notices, and leaves provider licenses inside their mirror archives. [runner.py](runner.py) verifies the recorded binary identity and version before executing a request. Deploy the resulting image by immutable digest; a deployment owns its trusted image and provider selection.
 
 | Component | Version | Source | Archive SHA-256 |
 |---|---|---|---|
@@ -25,10 +29,10 @@ The Python package is MIT-licensed. The Terraform image also contains HashiCorp-
 The source checkout example uses the same factory a host attaches to its agent. It calls no model, requires no cloud credentials, and performs no infrastructure deployment. Run these after `uv sync --locked`:
 
 ```sh
-uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:builtin
-uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:builtin
-uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:random --provider
-uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:random --provider
+uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:1.16.2-builtin
+uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:1.12.6-builtin
+uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:1.16.2-random --provider
+uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:1.12.6-random --provider
 ```
 
 To run the real adapter suite, set `MAF_TERRAFORM_E2E_IMAGE` and `MAF_OPENTOFU_E2E_IMAGE` to the two **random** profile images, then run `uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py`. The suite runs real CLI calls, checks the daemon after each call, and also executes [test_runner.py](test_runner.py) inside each Linux image to exercise bounded pipes, deadlines, environment isolation, and lock behavior. The deterministic package tests require neither Docker nor installed engine binaries.
@@ -42,10 +46,10 @@ The example manifests pin the existing engine-specific `random` provider archive
 ```sh
 uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.terraform.json --output dist/dependencies/terraform
 uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.opentofu.json --output dist/dependencies/opentofu
-docker build --network none --build-arg BASE_IMAGE=maf-terraform:builtin -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:prepared dist/dependencies/terraform
-docker build --network none --build-arg BASE_IMAGE=maf-opentofu:builtin -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:prepared dist/dependencies/opentofu
-uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:prepared --prepared dist/dependencies/terraform
-uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:prepared --prepared dist/dependencies/opentofu
+docker build --network none --build-arg BASE_IMAGE=maf-terraform:1.16.2-builtin -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.2-prepared dist/dependencies/terraform
+docker build --network none --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:1.12.6-prepared dist/dependencies/opentofu
+uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:1.16.2-prepared --prepared dist/dependencies/terraform
+uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:1.12.6-prepared --prepared dist/dependencies/opentofu
 ```
 
 The base must be a trusted builtin-profile image. The recipe refuses a nonempty base mirror, an engine mismatch, changed ZIP bytes, and any missing or additional provider archive. Tags in these local examples are conveniences: deployments must use the resulting immutable image ID/digest. Preparation refuses an existing output directory and publishes only after complete success. Preserve the output in trusted artifact storage; writable directory permissions alone do not make it immutable. Stage module files by the receipt's inventory and check their hashes, as the example does. Do not mix unrelated provider mirrors into the image.

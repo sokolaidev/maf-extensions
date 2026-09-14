@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "base_image": "python:3.13-slim@sha256:881d80734ee05dca6f7f42dcb080975652a53c7eda9ba1f03bb8da31aa6a6ec2",
+  "platform": "linux/amd64",
+  "engines": {
+    "terraform": {
+      "image": "maf-terraform",
+      "version": "1.16.2",
+      "executable": "terraform",
+      "url": "https://releases.hashicorp.com/terraform/1.16.2/terraform_1.16.2_linux_amd64.zip",
+      "sha256": "0d17011f0c4664539b164b044903d04e296c86c13cb9f28040076c65cfb3985a",
+      "profiles": {
+        "builtin": null,
+        "random": "dependencies.terraform.json"
+      }
+    },
+    "opentofu": {
+      "image": "maf-opentofu",
+      "version": "1.12.6",
+      "executable": "tofu",
+      "url": "https://github.com/opentofu/opentofu/releases/download/v1.12.6/tofu_1.12.6_linux_amd64.zip",
+      "sha256": "5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8",
+      "profiles": {
+        "builtin": null,
+        "random": "dependencies.opentofu.json"
+      }
+    }
+  }
+}

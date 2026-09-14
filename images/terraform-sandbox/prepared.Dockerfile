@@ -1,5 +1,5 @@
 # Supply a trusted builtin-profile base; deploy the result by immutable image ID/digest.
-ARG BASE_IMAGE=maf-terraform:builtin
+ARG BASE_IMAGE=scratch
 FROM ${BASE_IMAGE}
 RUN python3 -I -c 'from pathlib import Path; assert not any(Path("/opt/maf-terraform/mirror").rglob("*")), "base mirror must be empty"'
 COPY mirror/ /opt/maf-terraform/mirror/

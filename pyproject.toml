@@ -84,7 +84,7 @@ max-doc-length = 100
 # samples/ is here because nothing else catches a sample naming an attribute another package
 # deleted until the sample runs for real, which is `verify-live`, after a release.
 [tool.pyright]
-include = ["scripts", "tests", "samples", "packages/*/tests/**", "images/terraform-sandbox/example.py"]
+include = ["scripts", "tests", "samples", "packages/*/tests/**", "images/terraform-sandbox/example.py", "images/terraform-sandbox/build_image.py", "images/terraform-sandbox/install.py"]
 typeCheckingMode = "standard"
 # scripts/ is under no execution environment, so it stays at full standard — the phase-1
 # behavior, unchanged. Each test tree is its own execution environment (root takes a single
@@ -108,7 +108,7 @@ typeCheckingMode = "standard"
 # stale ones.
 executionEnvironments = [
   { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
-  { root = "tests", extraPaths = ["samples/09_inprocess_bicep", "samples/07_docker_diagram", "samples/12_purge_lifecycle", "scripts"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "tests", extraPaths = ["samples/09_inprocess_bicep", "samples/07_docker_diagram", "samples/12_purge_lifecycle", "scripts", "images/terraform-sandbox"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-acas/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-bicep/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
