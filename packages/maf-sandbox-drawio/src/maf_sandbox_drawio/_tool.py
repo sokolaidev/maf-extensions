@@ -175,6 +175,9 @@ def _create_tool(
                         media_type="application/xml",
                     ),
                 ),
+                call_id=call_id,
+                observer=session.observer,
+                key=key,
             )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("create_drawio: output delivery failed: %s", error_detail(exc))

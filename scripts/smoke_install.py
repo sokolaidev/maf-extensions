@@ -604,8 +604,11 @@ def _smoke_maf_sandbox_drawio() -> str:
 
     from maf_sandbox import (
         DEFAULT_CAPABILITIES,
+        Artifact,
         Capability,
         Isolation,
+        LandedArtifact,
+        OutputSink,
         SandboxRouter,
         make_file_system_sink,
     )
@@ -646,26 +649,38 @@ def _smoke_maf_sandbox_drawio() -> str:
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     with tempfile.TemporaryDirectory(prefix="drawio-smoke-") as directory:
-        destination = pathlib.Path(directory) / "diagram.drawio"
+        output_directory = pathlib.Path(directory)
+
+        async def deliver(artifact: Artifact) -> LandedArtifact:
+            if artifact.call_id is None:
+                raise SystemExit("FAIL: draw.io delivered an artifact without a call ID")
+            sink = make_file_system_sink(output_directory / artifact.call_id)
+            return await sink.deliver(artifact)
+
         [tool] = make_drawio_tools(
             router,
             "smoke",
             make_caller_context(list_no_files, lambda: "s", lambda: "t"),
-            make_file_system_sink(pathlib.Path(directory)),
+            OutputSink(deliver, per_call=True),
         )
         if tool.name != "create_drawio":
             raise SystemExit(f"FAIL: expected create_drawio, got {tool.name!r}")
         refused = asyncio.run(tool.func(xml="x" * (1024 * 1024 + 1)))
-        if "1 MiB" not in str(refused) or backend.keys or destination.exists():
+        if "1 MiB" not in str(refused) or backend.keys or any(output_directory.iterdir()):
             raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
         result = asyncio.run(tool.func(xml=source))
-        if not str(result).startswith("diagram.drawio (") or not destination.is_file():
+        destinations = list(output_directory.glob("*/diagram.drawio"))
+        if not str(result).startswith("diagram.drawio (") or len(destinations) != 1:
             raise SystemExit(f"FAIL: draw.io did not deliver an artifact: {result!r}")
+        [destination] = destinations
+        landed_call_id = destination.parent.name
         if destination.read_text(encoding="utf-8") != output:
             raise SystemExit("FAIL: draw.io did not preserve the converter's output")
     if len(sandbox.commands) != 1:
         raise SystemExit(f"FAIL: expected one draw.io converter execution: {sandbox.commands!r}")
     command, guest_directory, _ = sandbox.commands[0]
+    if landed_call_id != guest_directory.rsplit("/", 1)[-1]:
+        raise SystemExit("FAIL: draw.io landed the output under a different call ID")
     expected = "python3 -I renderer.py --preserve-layout true --direction TB --timeout 54.0"
     if command != expected:
         raise SystemExit(f"FAIL: unexpected draw.io converter command: {command!r}")
@@ -677,7 +692,8 @@ def _smoke_maf_sandbox_drawio() -> str:
         raise SystemExit("FAIL: draw.io did not acquire and dispose one sandbox key")
     return (
         "create_drawio uploads XML and its packaged converter, executes fixed argv, "
-        "delivers diagram.drawio and disposes; oversized input is refused before acquiring"
+        "delivers diagram.drawio under its call ID and disposes; oversized input is refused "
+        "before acquiring"
     )
 
 

@@ -15,9 +15,15 @@ from pathlib import Path
 import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
+    Artifact,
     Capability,
     ExecResult,
     Isolation,
+    LandedArtifact,
+    OutputsCollected,
+    OutputSink,
+    SandboxKey,
+    SandboxObserver,
     SandboxRouter,
     make_file_system_sink,
 )
@@ -69,20 +75,27 @@ class ConverterSandbox(InProcessSandbox):
         return ExecResult(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
 
 
-def attach(sandbox: InProcessSandbox, output: Path, **kwargs):
+def attach(
+    sandbox: InProcessSandbox,
+    output: Path,
+    *,
+    sink: OutputSink | None = None,
+    observer: SandboxObserver | None = None,
+    **kwargs,
+):
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
             FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
         ),
     )
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=observer)
     context = make_caller_context(list_no_files, lambda: "tests", lambda: "drawio")
     tools = make_drawio_tools(
         router,
         "diagram-designer",
         context,
-        make_file_system_sink(output, existing="replace"),
+        sink or make_file_system_sink(output, existing="replace"),
         **kwargs,
     )
     assert len(tools) == 1
@@ -105,6 +118,51 @@ def test_complete_tool_call_lands_native_xml_and_disposes(tmp_path: Path):
     assert backend.disposed
     assert len(sandbox.calls) == 1
     assert sandbox.calls[0][0][3:7] == ["--preserve-layout", "true", "--direction", "TB"]
+
+
+def test_per_call_sink_keeps_repeated_diagrams_separate(tmp_path: Path):
+    artifacts: list[Artifact] = []
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        artifacts.append(artifact)
+        return LandedArtifact(name=artifact.name, display=f"{artifact.call_id}/{artifact.name}")
+
+    sandbox = ConverterSandbox()
+    tool, _ = attach(sandbox, tmp_path, sink=OutputSink(deliver, per_call=True))
+    results = [invoke(tool), invoke(tool, _XML.replace("Résumé", "Updated"))]
+    call_ids = [directory.rsplit("/", 1)[-1] for _, directory, _ in sandbox.calls]
+    assert len(set(call_ids)) == 2
+    assert results == [f"{call_id}/diagram.drawio" for call_id in call_ids]
+    assert [artifact.call_id for artifact in artifacts] == call_ids
+    assert [artifact.name for artifact in artifacts] == ["diagram.drawio", "diagram.drawio"]
+    assert [
+        ET.fromstring(artifact.content).find(".//mxCell[@id='a']").get("value")
+        for artifact in artifacts
+    ] == ["Résumé & 中文", "Updated & 中文"]
+
+
+@pytest.mark.parametrize("produces_output", [True, False])
+def test_output_collection_records_call_identity(tmp_path: Path, produces_output: bool):
+    class Observer(SandboxObserver):
+        def __init__(self) -> None:
+            self.collections: list[OutputsCollected] = []
+
+        def outputs_collected(self, event: OutputsCollected) -> None:
+            self.collections.append(event)
+
+    observer = Observer()
+    sandbox = ConverterSandbox() if produces_output else InProcessSandbox()
+    tool, _ = attach(sandbox, tmp_path, observer=observer)
+    result = invoke(tool)
+    assert result.startswith("Error:") == (not produces_output)
+    assert len(observer.collections) == 1
+    event = observer.collections[0]
+    assert event.key == SandboxKey(scope="tests", thread_id="drawio", agent_id="diagram-designer")
+    assert event.kind == "drawio"
+    assert event.call_id == sandbox.commands[0][1].rsplit("/", 1)[-1]
+    assert event.declared == 1
+    assert len(event.landed) == int(produces_output)
+    assert event.refusal == (None if produces_output else "SandboxOutputMissing")
 
 
 @pytest.mark.skipif(shutil.which("dot") is None, reason="Graphviz is not installed")
