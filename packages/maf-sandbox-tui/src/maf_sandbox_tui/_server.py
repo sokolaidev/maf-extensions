@@ -335,6 +335,7 @@ class SandboxControlServer:
             Future[Any], tuple[Coroutine[Any, Any, Any], asyncio.Task[Any] | None]
         ] = {}
         self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop:
@@ -396,16 +397,17 @@ class SandboxControlServer:
     def _finish_operation(self, bridge: Future[Any], task: asyncio.Task[Any]) -> None:
         with self._operation_lock:
             entry = self._operations.pop(bridge, None)
-        if entry is None or bridge.done():
-            return
         try:
             result = task.result()
         except asyncio.CancelledError:
-            bridge.cancel()
+            if entry is not None and not bridge.done():
+                bridge.cancel()
         except BaseException as error:
-            bridge.set_exception(error)
+            if entry is not None and not bridge.done():
+                bridge.set_exception(error)
         else:
-            bridge.set_result(result)
+            if entry is not None and not bridge.done():
+                bridge.set_result(result)
 
     def cancel_operation(self, bridge: Future[Any]) -> None:
         """Cancel an operation whose handler-side deadline expired."""
@@ -477,14 +479,8 @@ class SandboxControlServer:
             raise
         return self
 
-    async def close(self) -> None:
-        """Withdraw discovery, stop accepting requests and drain handler operations."""
-        with self._operation_lock:
-            self._closing = True
+    async def _close_once(self) -> None:
         path, httpd, thread = self._manifest_path, self._httpd, self._thread
-        self._manifest_path = None
-        self._httpd = None
-        self._thread = None
         if path is not None:
             path.unlink(missing_ok=True)
         if httpd is not None:
@@ -494,7 +490,32 @@ class SandboxControlServer:
             await asyncio.to_thread(httpd.server_close)
         if thread is not None:
             await asyncio.to_thread(thread.join, 2.0)
+        self._manifest_path = None
+        self._httpd = None
+        self._thread = None
         self._loop = None
+
+    async def close(self) -> None:
+        """Withdraw discovery, stop accepting requests and drain handler operations."""
+        with self._operation_lock:
+            self._closing = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_once())
+        task = self._close_task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            if not task.cancelled():
+                task.exception()
+            raise
+        finally:
+            if task.done() and self._close_task is task:
+                self._close_task = None
 
     async def __aenter__(self) -> SandboxControlServer:
         return await self.start()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import getpass
 import json
 import tempfile
@@ -1188,6 +1189,93 @@ def test_server_close_cancels_and_drains_active_mutations(tmp_path, operation: s
         else:
             with pytest.raises(ControlEndpointError):
                 await request
+
+    asyncio.run(check())
+
+
+def test_server_close_defers_caller_cancellation_until_teardown_finishes(monkeypatch, tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def check() -> None:
+        server = SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        await server.start()
+        httpd = server._httpd
+        thread = server._thread
+        path = server._manifest_path
+        assert httpd is not None
+        assert thread is not None
+        assert path is not None
+        original_shutdown = httpd.shutdown
+
+        def slow_shutdown() -> None:
+            entered.set()
+            assert release.wait(1)
+            original_shutdown()
+
+        monkeypatch.setattr(httpd, "shutdown", slow_shutdown)
+        closing = asyncio.create_task(server.close())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            closing.cancel()
+            await asyncio.sleep(0.03)
+
+            assert not closing.done()
+            assert server._httpd is httpd
+            assert server._thread is thread
+            assert server._manifest_path == path
+
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+
+            assert server._httpd is None
+            assert server._thread is None
+            assert server._manifest_path is None
+            assert not path.exists()
+            assert not thread.is_alive()
+        finally:
+            release.set()
+            if server._httpd is not None:
+                await server.close()
+
+    asyncio.run(check())
+
+
+def test_server_retrieves_an_operation_failure_after_its_bridge_is_cancelled():
+    async def check() -> None:
+        loop = asyncio.get_running_loop()
+        failures: list[dict[str, object]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: failures.append(context))
+        server = SandboxControlServer(MemoryControl(), source_id="test-host")
+        server._loop = loop
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fail() -> None:
+            entered.set()
+            await release.wait()
+            raise RuntimeError("late control failure")
+
+        try:
+            bridge = server.schedule_operation(fail())
+            await entered.wait()
+            bridge.cancel()
+            release.set()
+            for _ in range(3):
+                await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+
+            assert not server._operations
+            assert failures == []
+        finally:
+            loop.set_exception_handler(previous_handler)
 
     asyncio.run(check())
 
