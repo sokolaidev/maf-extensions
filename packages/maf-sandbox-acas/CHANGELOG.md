@@ -4,6 +4,34 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.23.1...maf-sandbox-acas-v0.24.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **acas:** select host credentials and report incomplete client shutdown ([#1225](https://github.com/sokolaidev/maf-extensions/issues/1225))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+
+### Features
+
+* **acas:** select host credentials and report incomplete client shutdown ([#1225](https://github.com/sokolaidev/maf-extensions/issues/1225)) ([da40a37](https://github.com/sokolaidev/maf-extensions/commit/da40a37ba85d0a33690320836e7e0fb8aa6a6ba7))
+
+
+### Fixes
+
+* **acas:** preserve sandboxes when 429 Retry-After exceeds the exec deadline ([#1224](https://github.com/sokolaidev/maf-extensions/issues/1224)) ([301930a](https://github.com/sokolaidev/maf-extensions/commit/301930acd1bbd159542dedcf8b1d52b6e72ddf7f))
+* **acas:** prevent eager task deadlocks and release timed-out waiters ([#1235](https://github.com/sokolaidev/maf-extensions/issues/1235)) ([ef65a43](https://github.com/sokolaidev/maf-extensions/commit/ef65a4339e84de3049e1491216389d949d824281))
+* **acas:** require the tested b4 SDK preview ([#1216](https://github.com/sokolaidev/maf-extensions/issues/1216)) ([d7e59a7](https://github.com/sokolaidev/maf-extensions/commit/d7e59a7e9d889b2853d30a34c449812a445b267e))
+* remove issue references from package summaries ([#1258](https://github.com/sokolaidev/maf-extensions/issues/1258)) ([c99ec84](https://github.com/sokolaidev/maf-extensions/commit/c99ec84cfb456cb4656611643bc8ad02e22ed807))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+
+
+### Documentation
+
+* **acas:** state the measured native read confinement residual ([#1214](https://github.com/sokolaidev/maf-extensions/issues/1214)) ([e3bb05c](https://github.com/sokolaidev/maf-extensions/commit/e3bb05cbb125fe56500b23b7eae21c1778b79379))
+* remove issue references from package descriptions ([#1257](https://github.com/sokolaidev/maf-extensions/issues/1257)) ([1f2d5a5](https://github.com/sokolaidev/maf-extensions/commit/1f2d5a59b2d3c41e2f07c492905b88ec9f493d33))
+* **sandbox:** clarify trusted sandbox identity configuration ([#1243](https://github.com/sokolaidev/maf-extensions/issues/1243)) ([619f11e](https://github.com/sokolaidev/maf-extensions/commit/619f11e206c4e1f495bd8948776bf726aa6225b7))
+
 ## [0.23.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.23.0...maf-sandbox-acas-v0.23.1) (2026-09-12)
 
 > **Added after the release.** No wheel for 0.23.0 reached PyPI, so this is the version that first carries everything in the 0.23.0 section below — including its breaking change. Those entries are left where release-please wrote them rather than copied up; this version's release notes on GitHub list them in full.

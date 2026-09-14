@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-acas"
-version = "0.23.1"
+version = "0.24.0"
 description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
