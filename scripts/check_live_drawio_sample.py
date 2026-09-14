@@ -47,6 +47,52 @@ def assess(output: str) -> list[str]:
         saved = stages["saved_and_read"]
         attempt = saved["attempt"]
         _require(type(attempt) is int and 1 <= attempt <= 3, "Invalid repair attempt count")
+        expected_stages = [
+            "configuration",
+            "authored",
+            "corrupted",
+            "tool_call_ended",
+            "validation",
+            "rejected",
+        ]
+        for number in range(1, attempt + 1):
+            expected_stages.extend(["repair", "tool_call_ended"])
+            if number < attempt:
+                expected_stages.append("repair_rejected")
+        expected_stages.extend(["saved_and_read", "storage_cleanup", "sandbox_cleanup", "complete"])
+        _require(
+            [record["stage"] for record in evidence] == expected_stages,
+            "Missing, duplicate or out-of-order repair evidence",
+        )
+        _require(
+            stages["corrupted"]["edge"] == "api_to_database"
+            and stages["corrupted"]["target"] == "missing_database",
+            "Wrong deliberate corruption",
+        )
+        _require(
+            stages["validation"]["diagnostic"] == rejected["diagnostic"]
+            and rejected["diagnostic"].startswith("Error:")
+            and stages["validation"]["delivered"] == 0,
+            "Rejection does not match the converter result",
+        )
+        repairs = [record for record in evidence if record["stage"] == "repair"]
+        for number, repair in enumerate(repairs, 1):
+            _require(
+                type(repair["attempt"]) is int and repair["attempt"] == number,
+                "Repair attempts are not consecutive",
+            )
+        for record in [stages["authored"], *repairs]:
+            _require(
+                re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is not None, "Missing XML hash"
+            )
+        retries = [record for record in evidence if record["stage"] == "repair_rejected"]
+        for number, retry in enumerate(retries, 1):
+            _require(
+                type(retry["attempt"]) is int
+                and retry["attempt"] == number
+                and retry["diagnostic"].startswith("Error:"),
+                "Missing failed repair diagnostic",
+            )
         _require(type(saved["bytes"]) is int and saved["bytes"] > 0, "No stored XML was read back")
         calls = [record for record in evidence if record["stage"] == "tool_call_ended"]
         _require(len(calls) == attempt + 1, "A draw.io call has no timing record")

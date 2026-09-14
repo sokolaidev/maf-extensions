@@ -365,7 +365,7 @@ def test_run_unwinds_storage_backend_and_credentials(sample, monkeypatch, failur
     def make_agent(**kwargs):
         [provider] = kwargs["context_providers"]
         assert provider.store is store and provider.disable_write_tools
-        return SimpleNamespace(create_session=lambda: object())
+        return SimpleNamespace(create_session=object)
 
     async def flow(ask, validate, read_back, storage, markdown):
         storage.attempted.add("this-call/diagram.drawio")

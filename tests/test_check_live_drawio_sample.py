@@ -38,12 +38,20 @@ def evidence():
             "guest_egress": "closed",
             "allowed_hosts": [],
         },
+        {"stage": "authored", "sha256": "1" * 64},
+        {"stage": "corrupted", "edge": "api_to_database", "target": "missing_database"},
         calls[0],
+        {
+            "stage": "validation",
+            "delivered": 0,
+            "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
+        },
         {
             "stage": "rejected",
             "delivered": 0,
-            "diagnostic": "Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
         },
+        {"stage": "repair", "attempt": 1, "sha256": "2" * 64},
         calls[1],
         {
             "stage": "saved_and_read",
@@ -73,7 +81,12 @@ def test_complete_log_passes_and_prints_every_call_duration(evidence, tmp_path, 
 @pytest.mark.parametrize(
     "stage",
     [
+        "configuration",
+        "authored",
+        "corrupted",
+        "validation",
         "rejected",
+        "repair",
         "tool_call_ended",
         "saved_and_read",
         "storage_cleanup",
@@ -87,25 +100,62 @@ def test_missing_stage_fails(evidence, stage):
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf"), True, "1.0"])
 def test_invalid_duration_fails(evidence, seconds):
-    evidence[1]["seconds"] = seconds
+    next(record for record in evidence if record["stage"] == "tool_call_ended")["seconds"] = seconds
     assert check.assess(transcript(evidence))
 
 
 @pytest.mark.parametrize(
-    "index,field,value",
+    "stage,field,value",
     [
-        (0, "allowed_hosts", ["example.com"]),
-        (1, "failure", "TimeoutError"),
-        (3, "call", "a" * 32),
-        (4, "path", "other/diagram.drawio"),
-        (5, "failures", 1),
-        (6, "complete", False),
+        ("configuration", "allowed_hosts", ["example.com"]),
+        ("tool_call_ended", "failure", "TimeoutError"),
+        ("tool_call_ended", "call", "b" * 32),
+        ("saved_and_read", "path", "other/diagram.drawio"),
+        ("storage_cleanup", "failures", 1),
+        ("sandbox_cleanup", "complete", False),
+        ("corrupted", "target", "database"),
+        ("validation", "diagnostic", "Error: a different error"),
+        ("authored", "sha256", ""),
+        ("repair", "attempt", 2),
     ],
 )
-def test_wrong_attribution_or_failed_cleanup_cannot_pass(evidence, index, field, value):
-    evidence[index][field] = value
+def test_wrong_attribution_or_failed_cleanup_cannot_pass(evidence, stage, field, value):
+    next(record for record in evidence if record["stage"] == stage)[field] = value
     assert check.assess(transcript(evidence))
 
 
 def test_quoted_model_evidence_cannot_replace_host_records(evidence):
     assert check.assess(transcript(evidence).replace("  [measured]", "> [measured]"))
+
+
+def test_later_cleanup_success_cannot_hide_an_earlier_failure(evidence):
+    cleanup = next(record for record in evidence if record["stage"] == "storage_cleanup")
+    evidence.insert(evidence.index(cleanup), {**cleanup, "failures": 1})
+    assert check.assess(transcript(evidence))
+
+
+def test_cleanup_before_readback_cannot_pass(evidence):
+    cleanup = next(record for record in evidence if record["stage"] == "storage_cleanup")
+    evidence.remove(cleanup)
+    evidence.insert(0, cleanup)
+    assert check.assess(transcript(evidence))
+
+
+@pytest.mark.parametrize("attempts", [2, 3])
+def test_retries_require_each_failed_repair_diagnostic(evidence, attempts):
+    repair = next(record for record in evidence if record["stage"] == "repair")
+    call = evidence[evidence.index(repair) + 1]
+    saved = next(record for record in evidence if record["stage"] == "saved_and_read")
+    index = evidence.index(repair)
+    for number in range(1, attempts):
+        evidence[index:index] = [
+            {**repair, "attempt": number},
+            {**call, "call": str(number) * 32},
+            {"stage": "repair_rejected", "attempt": number, "diagnostic": "Error: Invalid XML"},
+        ]
+        index += 3
+    repair["attempt"] = saved["attempt"] = attempts
+    assert check.assess(transcript(evidence)) == []
+    rejected = next(record for record in evidence if record["stage"] == "repair_rejected")
+    rejected["attempt"] = attempts
+    assert check.assess(transcript(evidence))
