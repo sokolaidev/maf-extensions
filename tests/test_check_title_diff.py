@@ -611,6 +611,27 @@ class TestBothReadsStartAtTheMergeBase:
 
 
 class TestScriptCommentEdits:
+    @pytest.mark.parametrize("directory", ["tests", "docs"])
+    @pytest.mark.parametrize("suffix", ["sh", "ps1"])
+    def test_main_preserves_non_behavior_paths(self, directory, suffix, monkeypatch, tmp_path):
+        path = f"packages/example/{directory}/example.{suffix}"
+        target = tmp_path / path
+        target.parent.mkdir(parents=True)
+        target.write_text("run_new\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        def fake_git(*args):
+            if args[0] == "merge-base":
+                return "BASE"
+            if args[0] == "diff":
+                return f"M\t{path}"
+            assert args == ("show", f"BASE:{path}")
+            return "run_old\n"
+
+        monkeypatch.setattr(check, "_git", fake_git)
+        assert check.main(["check", "BASE", "docs: update examples"]) == 0
+        assert check.main(["check", "BASE", "fix: change behavior"]) == 1
+
     @pytest.mark.parametrize("suffix", ["sh", "ps1"])
     def test_main_accepts_operator_comment_edit(self, suffix, monkeypatch, tmp_path):
         path = f"packages/example/scripts/grant.{suffix}"

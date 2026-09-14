@@ -274,7 +274,9 @@ def assess(
                     executable_paths.add(path)
             elif path.endswith((".sh", ".ps1")):
                 snapshots = (changed_scripts or {}).get(path, (None, None))
-                if len(paths) != 1 or not script_comments_only(path, *snapshots):
+                if not is_non_behavior_path(path) and (
+                    len(paths) != 1 or not script_comments_only(path, *snapshots)
+                ):
                     executable_paths.add(path)
             elif not is_non_behavior_path(path):
                 executable_paths.add(path)
@@ -422,7 +424,7 @@ def main(argv: list[str]) -> int:
         print(f"{options.head_ref}: opened by release-please; its title is not an author's choice")
         return 0
     # The three dots below already start the *path list* at the merge base. The `git show
-    # <base>:<path>` snapshot in `_changed_python` reads a revision by name and cannot, so the
+    # <base>:<path>` snapshot in `_changed_sources` reads a revision by name and cannot, so the
     # two have to be handed the same commit: a caller's base is whatever the pull request
     # opened against, and a file the base branch has changed since would otherwise be read at
     # the base branch's version. The AST comparison then sees that change reversed and refuses
