@@ -115,6 +115,14 @@ def test_live_suite_resolves_its_fixtures_without_running_them():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_live_suite_keeps_the_fifo_timeout_out_of_ordinary_transfers():
+    suite = _live_suite()
+    shipped = AcasSandboxConfig(endpoint="https://sandbox.example.test").read_timeout_seconds
+
+    assert suite._config().read_timeout_seconds == shipped
+    assert suite._FIFO_READ_TIMEOUT < shipped
+
+
 def test_a_stopped_sandbox_is_resumed_before_the_call_that_needs_it(monkeypatch):
     """`_Live.run` returns through ``acquire`` first, so an idle gap does not fail a probe.
 
