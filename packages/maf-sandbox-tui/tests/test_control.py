@@ -11,6 +11,7 @@ import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -1045,6 +1046,7 @@ def test_client_delete_deadline_cancels_the_server_operation(tmp_path, operation
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
+                await asyncio.sleep(0.03)
                 self.cancelled.set()
                 raise
 
@@ -1078,7 +1080,48 @@ def test_client_delete_deadline_cancels_the_server_operation(tmp_path, operation
                 with pytest.raises(ControlEndpointError):
                     await client.purge_thread("scope", "thread", timeout=0.01)
             assert asyncio.get_running_loop().time() - started < 0.5
-            await asyncio.wait_for(control.cancelled.wait(), timeout=0.5)
+            assert control.cancelled.is_set()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("operation", ["dispose", "purge"])
+def test_handler_allows_the_control_timeout_to_return_its_structured_result(
+    tmp_path, operation: str
+):
+    class SettlingControl(MemoryControl):
+        async def _settle(self, timeout: float) -> None:
+            try:
+                async with asyncio.timeout(timeout):
+                    await asyncio.Event().wait()
+            except TimeoutError:
+                await asyncio.sleep(0.03)
+
+        async def dispose_sandbox(
+            self, instance_id: str, *, timeout: float = 10.0
+        ) -> DisposalResult:
+            await self._settle(timeout)
+            return DisposalResult(DisposalStatus.FAILED, instance_id, "settled disposal")
+
+        async def purge_thread(
+            self, scope: str, thread_id: str, *, timeout: float = 10.0
+        ) -> PurgeResult:
+            await self._settle(timeout)
+            return PurgeResult(PurgeStatus.PARTIAL, scope, thread_id, 0, "settled purge")
+
+    async def check() -> None:
+        async with SandboxControlServer(
+            SettlingControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ) as server:
+            client = HttpControl(server.manifest)
+            if operation == "dispose":
+                result = await client.dispose_sandbox("generation-a", timeout=0.01)
+                assert result.message == "settled disposal"
+            else:
+                result = await client.purge_thread("scope", "thread", timeout=0.01)
+                assert result.message == "settled purge"
 
     asyncio.run(check())
 
@@ -1242,6 +1285,43 @@ def test_server_close_defers_caller_cancellation_until_teardown_finishes(monkeyp
             release.set()
             if server._httpd is not None:
                 await server.close()
+
+    asyncio.run(check())
+
+
+def test_server_close_reports_manifest_failure_after_other_resources_stop(monkeypatch, tmp_path):
+    async def check() -> None:
+        server = SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        await server.start()
+        path = server._manifest_path
+        thread = server._thread
+        assert path is not None
+        assert thread is not None
+        original_unlink = Path.unlink
+
+        def fail_manifest_unlink(candidate: Path, *args: object, **kwargs: object) -> None:
+            if candidate == path:
+                raise PermissionError("manifest is busy")
+            original_unlink(candidate, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_manifest_unlink)
+        with pytest.raises(PermissionError, match="manifest is busy"):
+            await server.close()
+
+        assert not thread.is_alive()
+        assert server._httpd is None
+        assert server._thread is None
+        assert server._manifest_path == path
+        assert path.exists()
+
+        monkeypatch.setattr(Path, "unlink", original_unlink)
+        await server.close()
+        assert server._manifest_path is None
+        assert not path.exists()
 
     asyncio.run(check())
 

@@ -28,6 +28,7 @@ from ._models import validate_source_id
 
 PROTOCOL_VERSION = 1
 _CONTROL_FAILURE_STATUS = HTTPStatus(500)
+_OPERATION_SETTLEMENT_GRACE = 0.1
 
 
 def _valid_process_id(value: object) -> bool:
@@ -179,14 +180,13 @@ class _ControlHandler(BaseHTTPRequestHandler):
     def _run(self, operation: Coroutine[Any, Any, Any], *, timeout: float | None = None) -> Any:
         owner = self._control_server.owner
         future = owner.schedule_operation(operation)
+        handler_timeout = (
+            owner.request_timeout
+            if timeout is None
+            else min(timeout + _OPERATION_SETTLEMENT_GRACE, owner.request_timeout)
+        )
         try:
-            return future.result(
-                timeout=(
-                    self._control_server.owner.request_timeout
-                    if timeout is None
-                    else min(timeout, self._control_server.owner.request_timeout)
-                )
-            )
+            return future.result(timeout=handler_timeout)
         except FutureTimeoutError:
             owner.cancel_operation(future)
             raise
@@ -332,7 +332,8 @@ class SandboxControlServer:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._operation_lock = threading.Lock()
         self._operations: dict[
-            Future[Any], tuple[Coroutine[Any, Any, Any], asyncio.Task[Any] | None]
+            Future[Any],
+            tuple[Coroutine[Any, Any, Any], asyncio.Task[Any] | None, threading.Event],
         ] = {}
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
@@ -365,7 +366,7 @@ class SandboxControlServer:
             if self._closing or loop is None:
                 operation.close()
                 raise RuntimeError("control server is closing")
-            self._operations[bridge] = (operation, None)
+            self._operations[bridge] = (operation, None, threading.Event())
             try:
                 loop.call_soon_threadsafe(self._begin_operation, bridge)
             except RuntimeError:
@@ -379,16 +380,17 @@ class SandboxControlServer:
             entry = self._operations.get(bridge)
             if entry is None:
                 return
-            operation, _ = entry
+            operation, _, completed = entry
             if self._closing:
                 self._operations.pop(bridge, None)
                 task = None
             else:
                 task = self.loop.create_task(operation)
-                self._operations[bridge] = (operation, task)
+                self._operations[bridge] = (operation, task, completed)
         if task is None:
             operation.close()
             bridge.cancel()
+            completed.set()
             return
         task.add_done_callback(lambda completed: self._finish_operation(bridge, completed))
         if bridge.cancelled():
@@ -408,48 +410,66 @@ class SandboxControlServer:
         else:
             if entry is not None and not bridge.done():
                 bridge.set_result(result)
+        finally:
+            if entry is not None:
+                entry[2].set()
 
     def cancel_operation(self, bridge: Future[Any]) -> None:
         """Cancel an operation whose handler-side deadline expired."""
         bridge.cancel()
+        with self._operation_lock:
+            entry = self._operations.get(bridge)
         loop = self._loop
-        if loop is not None:
-            try:
-                loop.call_soon_threadsafe(self._cancel_operation, bridge)
-            except RuntimeError:
-                return
+        if entry is None or loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._cancel_operation, bridge)
+        except RuntimeError:
+            return
+        entry[2].wait()
 
     def _cancel_operation(self, bridge: Future[Any]) -> None:
         with self._operation_lock:
             entry = self._operations.get(bridge)
             if entry is None:
                 return
-            operation, task = entry
+            operation, task, completed = entry
             if task is None:
                 self._operations.pop(bridge, None)
         if task is None:
             operation.close()
+            completed.set()
         else:
             task.cancel()
 
     async def _cancel_active_operations(self) -> None:
         with self._operation_lock:
             entries = tuple(self._operations.items())
-            pending = tuple((bridge, entry) for bridge, entry in entries if entry[1] is None)
-            for bridge, _ in pending:
+            pending = tuple(
+                (bridge, operation, completed)
+                for bridge, (operation, task, completed) in entries
+                if task is None
+            )
+            for bridge, _, _ in pending:
                 self._operations.pop(bridge, None)
-        for bridge, (operation, _) in pending:
+        for bridge, operation, completed in pending:
             operation.close()
             bridge.cancel()
-        active = tuple((bridge, task) for bridge, (_, task) in entries if task is not None)
-        for bridge, task in active:
+            completed.set()
+        active = tuple(
+            (bridge, task, completed)
+            for bridge, (_, task, completed) in entries
+            if task is not None
+        )
+        for bridge, task, _ in active:
             bridge.cancel()
             task.cancel()
         if active:
-            await asyncio.gather(*(task for _, task in active), return_exceptions=True)
+            await asyncio.gather(*(task for _, task, _ in active), return_exceptions=True)
         with self._operation_lock:
-            for bridge, _ in active:
+            for bridge, _, completed in active:
                 self._operations.pop(bridge, None)
+                completed.set()
 
     async def start(self) -> SandboxControlServer:
         """Start serving and publish an atomic per-user discovery record."""
@@ -480,20 +500,50 @@ class SandboxControlServer:
         return self
 
     async def _close_once(self) -> None:
+        """Run every teardown step before reporting any recoverable failure."""
         path, httpd, thread = self._manifest_path, self._httpd, self._thread
+        errors: list[Exception] = []
+        path_removed = path is None
         if path is not None:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+                path_removed = True
+            except Exception as error:  # noqa: BLE001
+                errors.append(error)
         if httpd is not None:
-            await asyncio.to_thread(httpd.shutdown)
-        await self._cancel_active_operations()
+            try:
+                await asyncio.to_thread(httpd.shutdown)
+            except Exception as error:  # noqa: BLE001
+                errors.append(error)
+        try:
+            await self._cancel_active_operations()
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+        httpd_closed = httpd is None
         if httpd is not None:
-            await asyncio.to_thread(httpd.server_close)
+            try:
+                await asyncio.to_thread(httpd.server_close)
+                httpd_closed = True
+            except Exception as error:  # noqa: BLE001
+                errors.append(error)
         if thread is not None:
-            await asyncio.to_thread(thread.join, 2.0)
-        self._manifest_path = None
-        self._httpd = None
-        self._thread = None
-        self._loop = None
+            try:
+                await asyncio.to_thread(thread.join, 2.0)
+            except Exception as error:  # noqa: BLE001
+                errors.append(error)
+        thread_stopped = thread is None or not thread.is_alive()
+        if path_removed:
+            self._manifest_path = None
+        if httpd_closed and thread_stopped:
+            self._httpd = None
+        if thread_stopped:
+            self._thread = None
+        if not self._operations and self._httpd is None and self._thread is None:
+            self._loop = None
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("control server teardown failed", errors)
 
     async def close(self) -> None:
         """Withdraw discovery, stop accepting requests and drain handler operations."""
