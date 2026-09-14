@@ -9,7 +9,7 @@ This is a **source-only experimental sample** because `maf-sandbox-hyperlight` h
 | Host configuration | Backend | CodeAct contract |
 | --- | --- | --- |
 | `CI=true`, `CI=1`, `CI=yes`, or `APP_ENV=CI` | Hyperlight; the CI job runs on Linux KVM | `CodeactRuntime(RUNTIME_INSTRUCTIONS)` |
-| `APP_ENV=DEV` without a true CI signal | Hyperlight on the developer's native OS: Windows WHP or Linux KVM | `RUN_CODE`, no image or file channels |
+| `APP_ENV=DEV` without a true CI signal | Hyperlight on the developer's native OS: Windows WHP or Linux KVM | `CodeactRuntime(RUNTIME_INSTRUCTIONS)`, no image or file channels |
 | Any other nonempty `APP_ENV`, such as `STAGING` or `PROD` | ACAS | Default exec variant, service image `python-3.13` |
 
 Values are case-insensitive and whitespace is stripped. `CI=false`, `CI=0`, `CI=no`, an empty value or an unset variable leaves selection to `APP_ENV`. Other `CI` values are errors. Missing both a true CI signal and a nonempty `APP_ENV` is a configuration error, before any resources are created. Use the exact value `DEV` for development; `DEVELOPMENT` is an other-environment value and selects ACAS.
