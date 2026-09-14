@@ -416,7 +416,17 @@ def probe_results(live):
 @pytest.fixture(scope="module")
 def files_in_results(live):
     """One FILES_IN run, shared with the write-fidelity assertions below."""
-    return live.run(assert_files_in_conformance(_subject(live)))
+
+    async def scenario():
+        # The outside-write control execs there even when FILES_OUT did not plant its layout.
+        outside = ConformancePaths.under(_WORK).outside
+        prepared = await live.sandbox.exec(
+            ["mkdir", "-p", outside], working_directory="/", timeout=_EXEC_TIMEOUT
+        )
+        assert prepared.exit_code == 0, prepared.stderr
+        return await assert_files_in_conformance(_subject(live))
+
+    return live.run(scenario())
 
 
 @pytest.fixture(scope="module")
@@ -647,15 +657,6 @@ class TestFilesInAgainstTheRealService:
         assert results, "the FILES_IN conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
         assert not skipped, f"probes skipped against a backend that declares FILES_IN: {skipped}"
-
-    def test_the_probes_above_ran_over_the_road_they_are_meant_to(self, live: _Live):
-        """The control for the whole class, and it costs nothing.
-
-        This image's guest can write its base, so the probes above went through the guest.
-        Without this, a road that fell back to the data plane would leave them green and the
-        fidelity they establish would be the plane's.
-        """
-        assert live.sandbox._held.write_road is True  # noqa: SLF001 — the chosen road
 
 
 class TestFilesDeleteAgainstTheRealService:
@@ -1233,7 +1234,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             kind="e2e-nonroot",
             image=_NONROOT_IMAGE,
             work_dir=_WORK,
-            requires=frozenset({Capability.EXEC, Capability.FILES_IN}),
+            requires=frozenset({Capability.EXEC}),
         )
         try:
             # Inside the guard for the reason the shared fixture gives.
@@ -1254,25 +1255,16 @@ class TestAnImageWhoseGuestIsNotRoot:
             "leg would assert nothing"
         )
 
-    def test_the_guest_cannot_create_anything_inside_what_the_file_plane_made(self, nonroot: _Live):
-        """The wall itself, measured rather than quoted: one host write, one guest `mkdir`.
-
-        This is the launcher's own first two steps, which is why the transport cannot start
-        here — the call directory arrives root-owned and the run's work directory goes inside it.
-        """
-        guest_call = f"{_WORK}/{uuid.uuid4().hex[:12]}"
-        nonroot.run(
-            nonroot.sandbox.write_file(f"{guest_call}/given.txt", "in\n", working_directory=_WORK)
-        )
-
-        refused = nonroot.run(
+    def test_the_guest_cannot_write_into_the_service_created_base(self, nonroot: _Live):
+        planted = f"{_WORK}/refused-{uuid.uuid4().hex}.txt"
+        with pytest.raises(PermissionError):
+            nonroot.run(nonroot.sandbox.write_file(planted, "in\n", working_directory=_WORK))
+        absent = nonroot.run(
             nonroot.sandbox.exec(
-                ["mkdir", f"{guest_call}/work"], working_directory="/", timeout=_EXEC_TIMEOUT
+                ["test", "!", "-e", planted], working_directory="/", timeout=_EXEC_TIMEOUT
             )
         )
-
-        assert refused.exit_code != 0, "the guest created a directory the file plane owns"
-        assert "denied" in refused.stderr.lower(), refused.stderr
+        assert absent.exit_code == 0, "a refused write still placed bytes"
 
     def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
         """The fixture's failed removal compatibility result refuses before another create."""
@@ -1367,23 +1359,72 @@ class TestAnImageWhoseGuestIsNotRoot:
             loop.run_until_complete(cold.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(cold.aclose())
 
-    def test_a_base_the_guest_cannot_write_keeps_the_data_plane(self, nonroot: _Live):
-        """The fallback #1131 turns on, on the base every deployment gets by default.
-
-        `/maf-sandbox/work` is the file plane's own, root-owned and `0755`, so a write running
-        as this guest would be refused where the plane's lands. The in-door is never withheld,
-        so the plane keeps the write and the residual is stated — see `docs/sandbox/backends`.
-        """
-        assert nonroot.sandbox._held.write_road is False  # noqa: SLF001 — the chosen road
-
-        planted = f"{_WORK}/plane-{uuid.uuid4().hex[:12]}.txt"
-        nonroot.run(nonroot.sandbox.write_file(planted, "in\n", working_directory=_WORK))
-        owner = nonroot.run(
+    def test_an_alternate_writable_directory_accepts_the_write(self, nonroot: _Live):
+        planted = f"/tmp/given-{uuid.uuid4().hex}.txt"
+        nonroot.run(nonroot.sandbox.write_file(planted, "in\n", working_directory="/tmp"))
+        removed = nonroot.run(
             nonroot.sandbox.exec(
-                ["stat", "-c", "%u", planted], working_directory=_WORK, timeout=_EXEC_TIMEOUT
+                ["rm", "--", planted], working_directory="/", timeout=_EXEC_TIMEOUT
             )
         )
-        assert owner.stdout.strip() == "0", "the data plane stopped landing files as root"
+        assert removed.exit_code == 0, removed.stderr
+
+    def test_warm_write_refuses_a_parent_swapped_to_a_protected_target(
+        self, nonroot: _Live, monkeypatch
+    ):
+        from maf_sandbox.paths import confine_resolve_guest_write_path
+
+        from maf_sandbox_acas import _backend
+
+        token = uuid.uuid4().hex
+        directory = f"/tmp/maf-write-{token}"
+        leaf = f"maf-write-protected-{token}"
+        protected = f"/etc/{leaf}"
+        original = confine_resolve_guest_write_path
+        swapped = False
+
+        async def scenario():
+            nonlocal swapped
+            guest = nonroot.sandbox
+            prepared = await guest.exec(
+                ["mkdir", "-p", f"{directory}/parent"],
+                working_directory="/",
+                timeout=_EXEC_TIMEOUT,
+            )
+            assert prepared.exit_code == 0, prepared.stderr
+            async with guest.client_lease():
+                await guest._sc.write_file(protected, b"protected", create_dirs=True)
+            identity = await guest.exec("id -u", working_directory="/", timeout=_EXEC_TIMEOUT)
+            assert identity.stdout.strip() != "0"
+            owner = await guest.exec(
+                ["stat", "-c", "%u", protected], working_directory="/", timeout=_EXEC_TIMEOUT
+            )
+            assert owner.exit_code == 0 and owner.stdout.strip() == "0"
+            warm = await nonroot.backend.acquire(
+                nonroot.key, replace(nonroot.spec, requires=frozenset({Capability.FILES_IN}))
+            )
+            assert warm.instance_id == guest.instance_id
+
+            async def swap_after_check(stat, path, working_directory):
+                nonlocal swapped
+                checked = await original(stat, path, working_directory)
+                result = await guest.exec(
+                    ["sh", "-c", f"rmdir {directory}/parent && ln -s /etc {directory}/parent"],
+                    working_directory="/",
+                    timeout=_EXEC_TIMEOUT,
+                )
+                assert result.exit_code == 0, result.stderr
+                swapped = True
+                return checked
+
+            monkeypatch.setattr(_backend, "confine_resolve_guest_write_path", swap_after_check)
+            with pytest.raises(PermissionError):
+                await warm.write_file(f"parent/{leaf}", b"overwrite", working_directory=directory)
+            assert swapped
+            async with guest.client_lease():
+                assert await guest._sc.read_file(protected) == b"protected"
+
+        nonroot.run(scenario())
 
 
 class TestTheWriteRoadOnAGuestThatCanWrite:
@@ -1416,9 +1457,8 @@ class TestTheWriteRoadOnAGuestThatCanWrite:
             loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())
 
-    def test_the_probe_chose_the_guest(self, writing: _Live):
-        """The control: with the road unchosen, everything below would measure the plane."""
-        assert writing.sandbox._held.write_road is True  # noqa: SLF001 — the chosen road
+    def test_the_image_runs_as_nonroot(self, writing: _Live):
+        """Require a non-root guest so protected-target refusals test an authority difference."""
         answered = writing.run(
             writing.sandbox.exec("id -u", working_directory="/tmp", timeout=_EXEC_TIMEOUT)
         )
