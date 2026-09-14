@@ -2,6 +2,8 @@
 
 ACAS control-plane credentials authenticate the host's SDK operations. They remain outside the guest and are independent of host-tool user credentials, guest-provisioned tokens and platform-attached managed identity. `AcasSandboxConfig.credential_resolver` selects this authority; omitting it retains `DefaultAzureCredential`.
 
+Attached managed identity is configured on the sandbox group and is available through ACAS's platform surfaces. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. This is independent of the host credential selected below. See [sandbox group identity](backends/acas.md#sandbox-group-identity).
+
 ## Request and cleanup authority
 
 The async resolver receives an `AcasCredentialRequest` with `scope`, `thread_id`, `operation`, and an optional `key`. The backend supplies these values from the host's `SandboxKey` or disposal target; guest arguments never select an authority. The resolver returns `AcasCredentialBinding(authority, generation, create_credential)`. `authority` and `generation` are nonempty, non-secret host references. The factory returns a fresh Azure `AsyncTokenCredential`, directly or through an awaitable, on the loop that will use it.
@@ -15,10 +17,6 @@ The async resolver receives an `AcasCredentialRequest` with `scope`, `thread_id`
 An acquired wrapper captures its binding. Subsequent exec, streaming and file operations use that binding even if the host's ambient request context changes. Immediate deletion after failed execution and cleanup of a refused cold acquire use the captured acquire authority; a later explicit disposal or retained retry resolves cleanup authority anew. A failed custom resolver, credential factory or permission check never selects the default credential as a fallback. Authentication failures and HTTP 401/403 on warm resume propagate without replacement creation. Those failures during lifecycle configuration refuse acquisition and attempt deletion, retaining failed deletion for recovery.
 
 Capture the grant when resolving the binding: `create_credential` must reconstruct that captured authority after eviction or on another event loop, rather than read whichever request context is current when it eventually runs. Each returned credential belongs to its cache entry. Returning a shared credential singleton is unsupported; the backend closes each owned client and credential. An async factory owns and cleans any resources it allocates until it successfully returns its credential. Resolver and factory code must not block the event-loop thread.
-
-Acquire also uses its selected credential for a fresh ARM identity check before cold creation or warm resume. It needs `Microsoft.App/sandboxGroups/read`, which the SandboxGroup Data Owner role alone does not grant. A separate management pipeline requests the management audience from that same credential; no app-credential fallback is made. `identity_check_seconds=15` bounds authentication, SDK retries and the read. `AcasIdentityVerificationError` refuses unverified or attached groups and preserves HTTP status without provider error text. Disposal skips this admission check so a cleanup grant can remain limited to sandbox data actions.
-
-The cache owns at most two pipelines per credential entry: the data pipeline and a management pipeline constructed only when acquisition needs inspection. They share the credential's lease and close on the same owner loop; failed closures remain retryable and successful closures are not repeated. Each replica and loop reads independently, and no successful group snapshot is cached. See [ACAS identity admission](backends/acas.md#identity-admission) for the deployment boundary and the unsupported attachment disposition.
 
 ## Replica-independent recovery
 
@@ -43,9 +41,6 @@ from maf_sandbox_acas import (
 
 def build_backend(
     endpoint: str,
-    subscription_id: str,
-    resource_group: str,
-    sandbox_group: str,
     request_binding: ContextVar[AcasCredentialBinding],
     recover_cleanup: Callable[[str, str], Awaitable[AcasCredentialBinding]],
 ) -> AcasSandboxBackend:
@@ -56,9 +51,6 @@ def build_backend(
 
     return AcasSandboxBackend(AcasSandboxConfig(
         endpoint=endpoint,
-        subscription_id=subscription_id,
-        resource_group=resource_group,
-        sandbox_group=sandbox_group,
         credential_resolver=resolve,
         max_clients_per_loop=32,
         client_wait_seconds=30,

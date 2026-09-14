@@ -86,7 +86,6 @@ from ._credentials import (
     default_binding,
 )
 from ._exec_capture import capture
-from ._identity import GroupClients, verify_group_identity
 from ._images import (
     names_a_prebuilt_image,
     qualify_image_reference,
@@ -505,11 +504,6 @@ class _Held:
 
 def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
     """The supported policy's identity, independent of host spelling and order."""
-    if Capability.ATTACHED_IDENTITY in spec.required_capabilities:
-        raise SandboxCapabilityNotSupported(
-            "ACAS attached identity is unsupported: guest authority channels and a hard "
-            "platform authority lifetime bound have not been established."
-        )
     if Capability.EGRESS_METHODS in spec.required_capabilities:
         raise SandboxCapabilityNotSupported(
             "ACAS has not established method enforcement against the service; method-scoped "
@@ -1409,16 +1403,7 @@ class AcasSandboxBackend:
             sandbox_group=cfg.sandbox_group,
         )
         install_retry_observer(client)
-        return GroupClients(client, lambda: self._management_client(credential))
-
-    def _management_client(self, credential: AsyncTokenCredential) -> Any:
-        from azure.containerapps.sandbox.aio import SandboxGroupManagementClient
-
-        return SandboxGroupManagementClient(
-            credential=credential,
-            subscription_id=self._config.subscription_id,
-            resource_group=self._config.resource_group,
-        )
+        return client
 
     @asynccontextmanager
     async def _client_lease(
@@ -1476,7 +1461,6 @@ class AcasSandboxBackend:
                 self._client_lease(request) as (client, binding),
                 AsyncExitStack() as acquisition,
             ):
-                await verify_group_identity(client, self._config)
                 sandbox = await self._get_or_create(key, spec, client, binding, acquisition)
                 async with asyncio.timeout(self._config.read_timeout_seconds):
                     await sandbox.prepare_work_dir(spec)

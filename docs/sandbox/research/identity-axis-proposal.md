@@ -6,6 +6,8 @@ Subsequent decision for [#710](https://github.com/sokolaidev/maf-extensions/issu
 
 Subsequent core decision for [#1168](https://github.com/sokolaidev/maf-extensions/issues/1168): [`../hosts.md`](../hosts.md#identity--whose-authority-sandbox-work-carries) owns the adopted sharing, retention and explicit authority-channel contract. Pillar D below remains design history: the implementation uses `AuthorityChannel.EGRESS_HEADER`, retains no acquired-principal protocol member, and makes no ACAS support claim. M1 and M7 established guest-token and retention limitations; M5 established full reads without a usable conditional-read optimization. The current method contract is uppercase tokens, as [`../network.md`](../network.md#method-scoped-allow-entries) records.
 
+Subsequent configuration decision for [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170): ACAS attached identity is a supported sandbox-group configuration owned by the host. The adapter trusts configuration rather than performing ARM verification on every acquisition. M1/M7 describe service behavior and limits, and do not make configured identity unsupported. [Sandbox group identity](../backends/acas.md#sandbox-group-identity) owns this decision; the inspection and adoption gates proposed below remain design history.
+
 ## The problem is a word
 
 The open issues on this axis do not disagree with each other. They talk past each other, because "identity" names four different things in this repository, and each issue is about a different one.

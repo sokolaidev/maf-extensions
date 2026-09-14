@@ -60,15 +60,13 @@ class AcasSandboxConfig:
     max_clients_per_loop: int = 32
     client_wait_seconds: float = 30.0
     client_close_seconds: float = 30.0
-    #: Fresh management read, including authentication and SDK retries, on every acquire.
-    identity_check_seconds: float = 15.0
 
     def __post_init__(self) -> None:
         if self.credential_resolver is not None and not callable(self.credential_resolver):
             raise ValueError("credential_resolver must be callable")
         if type(self.max_clients_per_loop) is not int or self.max_clients_per_loop < 1:
             raise ValueError("max_clients_per_loop must be a positive integer")
-        for name in ("client_wait_seconds", "client_close_seconds", "identity_check_seconds"):
+        for name in ("client_wait_seconds", "client_close_seconds"):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)

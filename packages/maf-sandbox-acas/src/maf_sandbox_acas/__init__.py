@@ -6,7 +6,7 @@ app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 
 :class:`AcasSandboxBackend` implements :class:`maf_sandbox.SandboxBackend` on
 `Azure Container Apps Sandboxes <https://learn.microsoft.com/azure/container-apps/sandboxes-overview>`_:
-microVM isolation, Deny-default egress with a per-spec allowlist, no ambient identity inside,
+microVM isolation, Deny-default egress with a per-spec allowlist, host-configured group identity,
 and lifecycle policies that reclaim a billable sandbox after it goes idle.  It declares
 :data:`~maf_sandbox.Isolation.MICROVM`, the router's default floor, so a host that
 configures nothing already permits this backend, and
@@ -38,7 +38,6 @@ from ._credentials import (
     AcasCredentialRequest,
     AcasCredentialResolver,
 )
-from ._identity import AcasIdentityVerificationError
 from ._images import disk_image_base, resolve_disk_image_id
 
 __all__ = [
@@ -50,7 +49,6 @@ __all__ = [
     "AcasCredentialResolver",
     "AcasEgressPolicyConflict",
     "AcasEntryPayloadIncomplete",
-    "AcasIdentityVerificationError",
     "AcasSandboxBackend",
     "AcasSandboxConfig",
     "MafSandboxAcasExperimentalWarning",

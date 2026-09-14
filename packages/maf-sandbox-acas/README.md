@@ -12,7 +12,7 @@ This package is not affiliated with, endorsed by, or a product of Microsoft — 
 app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 ```
 
-An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a microVM-isolated sandbox with Deny-default egress and no ambient identity, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
+An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a microVM-isolated sandbox with Deny-default egress and identity configured on its Azure sandbox group, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
 
 This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol rather than against this backend.
 
@@ -46,21 +46,11 @@ Each binding's factory creates a fresh async Azure credential on its owning loop
 
 `max_clients_per_loop=32`, `client_wait_seconds=30` and `client_close_seconds=30` bound cache capacity, resolver/client waits and shutdown. Capacity multiplies across host replicas and event loops. Call `await backend.aclose()` before stopping owner loops: it drains operations, permanently refuses new leases, and raises `AcasClientCloseError` if cleanup remains incomplete. It closes SDK resources, not sandboxes. See the [credential contract and host wiring example](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/acas-credentials.md) for cleanup principals, grant recovery, rotation and failure behavior. Live service acceptance of a particular delegated token remains deployment-specific and unverified by the offline tests.
 
-## Group identity admission
-
-Every acquisition, including warm reuse, makes a fresh ARM group read with the selected acquire credential before creating, resuming or probing a sandbox. That credential needs `Microsoft.App/sandboxGroups/read` in addition to its sandbox data actions; the SandboxGroup Data Owner role alone does not supply the management permission. A missing permission now refuses acquisition. There is no cached-verification fallback or configuration switch to bypass the check.
-
-`identity_check_seconds=15` bounds the read, authentication and SDK retries. The response must name the configured group, report `Succeeded`, and carry no identity or an internally consistent `type: None`. Attached identity, unknown/malformed identity, an incorrect resource, non-ready state, read failure or timeout raises `AcasIdentityVerificationError`, a `SandboxAttachedIdentityNotPermitted` subclass. Its `status_code` preserves HTTP status when available; provider response text is omitted. Cancellation propagates. Disposal and scope purge remain available without management inspection or management read permission.
-
-`ATTACHED_IDENTITY` remains unsupported through both router admission and direct acquisition. The measured guest token endpoint and absence of an established hard authority-lifetime bound prevent the current service from satisfying the adopted contract. A fresh group read detects observed drift; it cannot freeze assignments or revoke issued tokens. Restrict management writes throughout the sandbox's lifetime. See [the supported/refused disposition](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/acas.md#identity-admission).
-
-Each cached credential entry owns its data pipeline and a lazily constructed management pipeline. Both use the same credential, drain under its lease, and close on their owning loop. The cache limit counts credential entries, each with at most two pipelines, independently on each replica and loop. Successful inspection results are never cached.
-
 ## Threat model
 
 **The micro-VM boundary.** `AcasSandboxBackend` declares `Isolation.MICROVM`: execution happens in a hardware-isolated microVM, not a shared-kernel container, and that rung is `maf-sandbox`'s router's default floor — a host that configures nothing already permits this backend (see that package's README). Everything below this line assumes that boundary holds; it is a property of the Azure Container Apps Sandboxes service, not of this package's code.
 
-**What identity is reachable.** The control-plane credential this package uses to create and manage sandboxes (default or host-selected) never travels into the guest. Every cold and warm acquire checks the group's actual managed-identity assignment through ARM and refuses attached identity. This read does not freeze the assignment; the deployment must prevent identity changes while sandboxes are serving. `dispose_scope` deletes by service-side label, not by trusting the caller, and egress is Deny-default with a per-spec allowlist supplied by the *kind*, not by runtime configuration.
+**What identity is reachable.** ACAS supports managed identity configured on the sandbox group. The host owns the group's identity assignments, permissions, sharing and lifecycle configuration; this backend trusts that configuration. It neither reads ARM to verify assignments on acquire nor requires a management-read permission. The host-selected control-plane credential used to create and manage sandboxes remains in the host; a group-attached identity is a separate credential surface available through the service. Guest access to that configured identity is supported behavior. `dispose_scope` deletes by service-side label and does not revoke the group's shared identity.
 
 ## The backend
 
