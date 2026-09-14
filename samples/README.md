@@ -24,6 +24,8 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 ## How these are meant to be read
 
+The [experimental Hyperlight/ACAS CodeAct sample](experimental/hyperlight_acas_codeact/) selects Hyperlight for `APP_ENV=DEV`, `APP_ENV=CI`, or `CI=true`, and ACAS for other configured environments. It includes a model-free smoke mode for a WHP-capable Windows CI runner. Because Hyperlight is unreleased, this source-only example runs from the locked workspace; the numbered samples retain their PyPI installation contract. The rest of this page describes that numbered set.
+
 **Numbered directories.** Reading order is a property of the set, so it is written down rather than implied. Later samples assume you have read the earlier ones and skip what they already showed.
 
 **Three of the Bicep samples run the same sandbox image**, [`images/bicep-sandbox`](../images/bicep-sandbox/) — sample 01 imports it into an Azure sandbox group, sample 02 builds it on the machine you are sitting at with `wslc build`, sample 05 builds it with `docker build`. That is what makes their output comparable at all: one compiler, one lint rule set, a different backend underneath. Its README carries the build, push and import command lines. Sample 09 is the fourth Bicep sample and runs no image either — its backend is a host work directory and a real `bicep` subprocess, so it compiles with the same CLI and the same `bicepconfig.json` as the three above and its output is comparable with them; the bicep binary the images bake in is installed on the host instead.
