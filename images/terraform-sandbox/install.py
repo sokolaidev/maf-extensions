@@ -14,7 +14,7 @@ from typing import Any
 
 def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dict[str, Any]:
     """Read engine pins and the selected provider profile before downloading anything."""
-    config_path = config_path or Path(__file__).with_name("build.json")
+    config_path = config_path or Path(__file__).with_name("image.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if config["schema"] != 1 or config["platform"] != "linux/amd64":
         raise ValueError("unsupported image build configuration")
@@ -84,7 +84,7 @@ def main(
     plan = load_plan(engine, profile, config_path)
     version, executable = plan["version"], plan["executable"]
     if expected_version != version:
-        raise ValueError("image version metadata must match build.json")
+        raise ValueError("image version metadata must match image.json")
     url, digest = plan["url"], plan["sha256"]
     destination.mkdir(parents=True, exist_ok=True)
     archive = download(url, digest)
@@ -110,7 +110,7 @@ def main(
         timeout=30,
     )
     if json.loads(reported.stdout)["terraform_version"] != version:
-        raise ValueError("downloaded binary version does not match build.json")
+        raise ValueError("downloaded binary version does not match image.json")
     (destination / "engine.json").write_text(
         json.dumps(
             {

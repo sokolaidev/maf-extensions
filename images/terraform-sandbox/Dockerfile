@@ -8,7 +8,7 @@ ARG ENGINE_VERSION
 LABEL org.opencontainers.image.version="${ENGINE_VERSION}" \
       ai.sokol.maf.engine="${ENGINE}" \
       ai.sokol.maf.engine.version="${ENGINE_VERSION}"
-COPY build.json dependencies.terraform.json dependencies.opentofu.json /opt/maf-terraform/
+COPY image.json dependencies.terraform.json dependencies.opentofu.json /opt/maf-terraform/
 COPY install.py /opt/maf-terraform/install.py
 RUN test "$TARGETARCH" = amd64 \
     && python3 -I /opt/maf-terraform/install.py "$ENGINE" "$PROFILE" "$ENGINE_VERSION" \

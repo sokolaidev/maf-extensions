@@ -1,4 +1,4 @@
-"""Build one validation image using the versions and artifact pins in build.json."""
+"""Build one validation image using the versions and artifact pins in image.json."""
 
 import argparse
 import subprocess
@@ -10,7 +10,7 @@ from install import load_plan
 def build_command(engine: str, profile: str, tag: str | None = None) -> list[str]:
     """Derive download and image metadata arguments from the same reviewed configuration."""
     context = Path(__file__).resolve().parent
-    plan = load_plan(engine, profile, context / "build.json")
+    plan = load_plan(engine, profile, context / "image.json")
     return [
         "docker",
         "build",

@@ -20,9 +20,9 @@ import install  # noqa: E402
 
 @pytest.fixture
 def config_path(tmp_path):
-    for name in ("build.json", "dependencies.terraform.json", "dependencies.opentofu.json"):
+    for name in ("image.json", "dependencies.terraform.json", "dependencies.opentofu.json"):
         (tmp_path / name).write_bytes((IMAGE_SOURCE / name).read_bytes())
-    return tmp_path / "build.json"
+    return tmp_path / "image.json"
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
