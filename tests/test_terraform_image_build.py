@@ -4,8 +4,10 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
+import uuid
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +34,76 @@ def test_profiles_reuse_approved_provider_manifests(engine):
     approved = json.loads((IMAGE_SOURCE / f"dependencies.{engine}.json").read_text())
     mirrored = install.load_plan(engine, "random")
     assert mirrored["providers"] == approved["providers"]
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_build_includes_configured_provider_manifest(config_path, monkeypatch, engine):
+    config = json.loads(config_path.read_text())
+    config["engines"][engine]["profiles"]["custom"] = "approved.custom.json"
+    config_path.write_text(json.dumps(config))
+    config_path.with_name("approved.custom.json").write_bytes(
+        (IMAGE_SOURCE / f"dependencies.{engine}.json").read_bytes()
+    )
+    monkeypatch.setattr(build_image, "__file__", str(config_path.with_name("build_image.py")))
+    command = build_image.build_command(engine, "custom")
+    assert "PROVIDER_MANIFEST=approved.custom.json" in command
+    assert "PROVIDER_MANIFEST=image.json" in build_image.build_command(engine, "builtin")
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_live_build_with_custom_provider_manifest(tmp_path, engine):
+    if os.environ.get("MAF_IMAGE_BUILD_TESTS") != "1":
+        pytest.skip("needs explicit Docker image build opt-in")
+    context = tmp_path / "context"
+    context.mkdir()
+    for name in ("Dockerfile", "build_image.py", "install.py", "runner.py", "image.json"):
+        shutil.copyfile(IMAGE_SOURCE / name, context / name)
+    manifest_name = "approved.custom.json"
+    shutil.copyfile(IMAGE_SOURCE / f"dependencies.{engine}.json", context / manifest_name)
+    config_path = context / "image.json"
+    config = json.loads(config_path.read_text())
+    config["engines"][engine]["profiles"]["custom"] = manifest_name
+    config_path.write_text(json.dumps(config))
+    tag = "maf-image-config-test:" + uuid.uuid4().hex
+    try:
+        built = subprocess.run(
+            [
+                sys.executable,
+                str(context / "build_image.py"),
+                "--engine",
+                engine,
+                "--profile",
+                "custom",
+                "--tag",
+                tag,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+        assert built.returncode == 0, built.stdout + built.stderr
+        inspected = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                tag,
+                "python3",
+                "-I",
+                "-c",
+                "import json,pathlib; p=pathlib.Path('/opt/maf-terraform'); "
+                "assert json.loads((p/'engine.json').read_text())['profile']=='custom'; "
+                "assert len(list((p/'mirror').rglob('*.zip')))==1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert inspected.returncode == 0, inspected.stdout + inspected.stderr
+    finally:
+        subprocess.run(["docker", "image", "rm", tag], capture_output=True, timeout=30)
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])

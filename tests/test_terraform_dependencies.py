@@ -403,6 +403,31 @@ def test_module_graph_refuses_unapproved_edges(source, decision):
 
 
 @pytest.mark.parametrize(
+    "engine,extension",
+    [("terraform", "tf.json"), ("opentofu", "tf.json"), ("opentofu", "tofu.json")],
+)
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        '{"module":{"remote":{"source":"https://example.com/unapproved.zip"}},'
+        '"module":{"child":{"source":"./child"}}}',
+        '{"module":{"child":{"source":"https://example.com/unapproved.zip"},'
+        '"child":{"source":"./child"}}}',
+        '{"module":{"child":{"source":"https://example.com/unapproved.zip","source":"./child"}}}',
+    ],
+)
+def test_module_json_refuses_duplicate_keys_at_every_depth(engine, extension, configuration):
+    data = bundle(
+        {
+            f"repo/module/main.{extension}": configuration,
+            "repo/module/child/main.tf": 'output "hello" { value = "world" }',
+        }
+    )
+    with pytest.raises(prep.Refused, match="module-json-duplicate"):
+        prep.module_files(manifest()["modules"][0], data, engine)
+
+
+@pytest.mark.parametrize(
     "files,decision",
     [
         ({"../escape": "bad"}, "file-segments"),

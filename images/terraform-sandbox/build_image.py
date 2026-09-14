@@ -24,6 +24,8 @@ def build_command(engine: str, profile: str, tag: str | None = None) -> list[str
         f"PROFILE={profile}",
         "--build-arg",
         f"ENGINE_VERSION={plan['version']}",
+        "--build-arg",
+        f"PROVIDER_MANIFEST={plan['profiles'][profile] or 'image.json'}",
         "--tag",
         tag or f"{plan['image']}:{plan['version']}-{profile}",
         "--file",

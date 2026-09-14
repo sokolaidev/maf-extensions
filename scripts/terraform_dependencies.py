@@ -54,6 +54,19 @@ def exact_keys(value: Any, required: set[str], optional: set[str] | None = None)
     require(required <= value.keys() <= required | (optional or set()), "manifest-fields")
 
 
+def unique_json(data: str | bytes, decision: str) -> Any:
+    """Refuse ambiguous objects before checking policy or module graph semantics."""
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            require(key not in result, decision)
+            result[key] = value
+        return result
+
+    return json.loads(data, object_pairs_hook=pairs)
+
+
 def canonical_url(url: str, *, signed: bool = False) -> tuple[str, str]:
     """Accept only one spelling of an HTTPS request destination."""
     require(isinstance(url, str) and len(url) <= 16384, "url-shape")
@@ -372,7 +385,11 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
         directory = posixpath.dirname(name) or "."
         require(families.setdefault(directory, is_tofu) == is_tofu, "module-precedence")
         edges = observed.setdefault(directory, {})
-        parsed = json.loads(texts[name]) if name.endswith(".json") else hcl2.loads(texts[name])
+        parsed = (
+            unique_json(texts[name], "module-json-duplicate")
+            if name.endswith(".json")
+            else hcl2.loads(texts[name])
+        )
         blocks = parsed.get("module", {})
         if isinstance(blocks, list):
             pairs = [item for block in blocks for item in block.items()]
@@ -465,14 +482,7 @@ def load_manifest(data: bytes) -> dict[str, Any]:
     """Refuse duplicate JSON keys and oversized policy documents."""
     require(len(data) <= MAX_MANIFEST, "manifest-size")
 
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in items:
-            require(key not in result, "manifest-duplicate")
-            result[key] = value
-        return result
-
-    return checked_manifest(json.loads(data, object_pairs_hook=pairs))
+    return checked_manifest(unique_json(data, "manifest-duplicate"))
 
 
 def main() -> None:

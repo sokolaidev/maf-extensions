@@ -5,10 +5,12 @@ ARG TARGETARCH
 ARG ENGINE=terraform
 ARG PROFILE=builtin
 ARG ENGINE_VERSION
+ARG PROVIDER_MANIFEST=image.json
 LABEL org.opencontainers.image.version="${ENGINE_VERSION}" \
       ai.sokol.maf.engine="${ENGINE}" \
       ai.sokol.maf.engine.version="${ENGINE_VERSION}"
-COPY image.json dependencies.terraform.json dependencies.opentofu.json /opt/maf-terraform/
+COPY image.json /opt/maf-terraform/
+COPY ${PROVIDER_MANIFEST} /opt/maf-terraform/
 COPY install.py /opt/maf-terraform/install.py
 RUN test "$TARGETARCH" = amd64 \
     && python3 -I /opt/maf-terraform/install.py "$ENGINE" "$PROFILE" "$ENGINE_VERSION" \
