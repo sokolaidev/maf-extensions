@@ -22,7 +22,7 @@ The first four fail timing/deadline assertions, including floating-point roundin
 
 The gate rerun completed with 8,951 passed, 334 skipped, and six deselected, followed by passing lint, formatting, all package strict type checks, root type checks, and documentation paths. The function-level selector also deselected the passing `before_cleanup` parameter; it was run separately and passed. The final 60-test workload run additionally covers the UTF-8 refusal added during review. Only the five reproduced baseline failures remain unresolved, and the default gate definition is unchanged. Markdown Python-block checks also passed.
 
-These are local results; remote CI is reported separately on the implementation PR. The wheel smoke uses the repository's prepared core API from its locally built wheel; it is not evidence that the declared future core floor or this new package has been published. No sample claims an unpublished installable release. ACAS, WSLC, other guest architectures, and other providers have not been qualified by these measurements.
+These are local results; remote CI is reported separately on [implementation PR #1250](https://github.com/sokolaidev/maf-extensions/pull/1250). The wheel smoke uses the repository's prepared core API from its locally built wheel; it is not evidence that the declared future core floor or this new package has been published. No sample claims an unpublished installable release. ACAS, WSLC, other guest architectures, and other providers have not been qualified by these measurements.
 
 ## Revalidation after rebasing
 

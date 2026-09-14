@@ -24,8 +24,8 @@ Build and runnable examples are in [the image guide](../../../images/terraform-s
 
 | Work | State | Tracker |
 |---|---|---|
-| Offline Terraform/OpenTofu validation, fixed launcher, images, examples, tests, and package registration | implemented locally; package not yet released | [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (open) |
+| Offline Terraform/OpenTofu validation, fixed launcher, images, examples, tests, and package registration | implemented; package not yet released | [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) by [#1250](https://github.com/sokolaidev/maf-extensions/pull/1250) (merged) |
 | Online dependency access restricted to approved artifacts and request paths | planned follow-up; validation retains closed egress | [#1249](https://github.com/sokolaidev/maf-extensions/issues/1249) (open) |
-| Plan/apply/state commands, variable-dependent initialization, optional policy tools, and warm reuse | outside the first-version scope | scope recorded in [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (open) |
+| Plan/apply/state commands, variable-dependent initialization, optional policy tools, and warm reuse | outside the first-version scope | scope recorded in [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) |
 
 The live suite measures actual Docker adapter calls for both engines, including local modules, JSON input, schema errors, unavailable dependencies, formatting, wrong-engine images, cancellation, timeouts, and daemon-observed disposal. The launcher suite independently exercises environment construction, shared output/time bounds, inherited pipes, read-only supplied locks, and source/state nonmutation. Local execution results belong to the implementation's issue record; adding the workflow does not establish that remote CI has run. ACAS and WSLC have not been measured for this workload.
