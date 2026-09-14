@@ -69,12 +69,15 @@ control = HyperlightControl(
     quiesced_purge=purge_conversation,
 )
 
-if settings.enable_local_sandbox_control:
-    # Entering the context is the action that opens the loopback listener.
-    async with SandboxControlServer(control, source_id="research-agent"):
+try:
+    if settings.enable_local_sandbox_control:
+        # Entering the context is the action that opens the loopback listener.
+        async with SandboxControlServer(control, source_id="research-agent"):
+            await run_application(router)
+    else:
         await run_application(router)
-else:
-    await run_application(router)
+finally:
+    await backend.aclose()
 ```
 
 When enabled, the server binds an ephemeral port on the literal loopback address `127.0.0.1` and publishes the address in a per-user discovery file. `mst` discovers responsive local endpoints automatically. On POSIX hosts, MST atomically creates the discovery directory and refuses one that is not owned by the current user or is accessible to another user. There are deliberately no keys in this local prototype. Loopback is machine-local, not user-private: any local process that can reach the listener can use it while the host has it enabled. Windows discovery still needs an explicit user ACL or a named-pipe transport before production use. Do not proxy, forward or expose the listener outside the host; remote control requires a separately designed authenticated transport.
