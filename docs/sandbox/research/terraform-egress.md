@@ -1,6 +1,6 @@
 # Terraform and OpenTofu dependency egress
 
-Investigation for [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246), observed 2026-09-14. The [implemented validation kind](../kinds/terraform.md) needs **no runtime egress**: engines and selected providers are in the image, modules are staged locally, and the sandbox uses `CLOSED`. This report identifies hosts for a future online dependency installation profile.
+> Investigation for [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246), observed 2026-09-14. The [implemented validation kind](../kinds/terraform.md) needs **no runtime egress**: engines and selected providers are in the image, modules are staged locally, and the sandbox uses `CLOSED`. This report identifies hosts for a future online dependency installation profile.
 
 [Follow-up #1249](https://github.com/sokolaidev/maf-extensions/issues/1249) tracks restricting dependency access to approved artifacts and specific request paths before enabling online resolution. It covers controlled dependency preparation, query/header/body handling, redirect binding, URL normalization, enforcement capabilities and live bypass controls. The host lists below are endpoint observations, not an approved runtime policy.
 
