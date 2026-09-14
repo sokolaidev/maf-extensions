@@ -429,10 +429,8 @@ jobs:
           set -euo pipefail
           python3 scripts/check_suite_installs_together.py --whole-set --dist-dir dist
 
-      # This half warns. The candidate is pinned to the built wheel and nobody else pins it, so
-      # a combination it cannot find is one the resolver reaches by taking an older sibling —
-      # and publishing adds a version to the index, it never removes a set that already
-      # resolved. The report goes to the job summary and the release goes ahead.
+      # Published core-range conflicts warn so adapted dependents can repair the set.
+      # Unexplained install failures still fail; the whole-set check above remains required.
       - name: The candidate beside the published suite
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         env:
