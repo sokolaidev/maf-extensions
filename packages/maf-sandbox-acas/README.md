@@ -12,7 +12,7 @@ This package is not affiliated with, endorsed by, or a product of Microsoft — 
 app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 ```
 
-An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a microVM-isolated sandbox with Deny-default egress and identity configured on its Azure sandbox group, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
+An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a microVM-isolated sandbox with Deny-default egress and optional identity configured on its Azure sandbox group, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
 
 This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol rather than against this backend.
 

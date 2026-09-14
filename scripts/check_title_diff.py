@@ -2,8 +2,9 @@
 
 The check compares changed Python files after removing module, class and function docstrings.
 Comments and formatting therefore do not count as behavior, while executable statements, literals,
-annotations and defaults do. Non-documentation paths are treated as executable because this check
-cannot infer behavior from arbitrary formats such as TOML or workflow YAML.
+annotations and defaults do. Shell and PowerShell scripts allow full-line comment edits only in a
+lexically simple prefix; all remaining text is compared unchanged. Other non-documentation paths
+are treated as executable, including arbitrary formats such as TOML or workflow YAML.
 
 That last rule is why release-please's own pull requests are exempt. A Release PR is a version
 bump and a regenerated changelog — `pyproject.toml`, `uv.lock` and the manifest — which this
@@ -104,6 +105,45 @@ def python_changed(before: str | None, after: str | None) -> bool:
     return before_normalized != after_normalized
 
 
+def _script_without_prefix_comments(source: str, *, powershell: bool) -> str:
+    """Ignore full-line comments until syntax can introduce multiline data or continuations."""
+    lines = source.splitlines(keepends=True)
+    kept: list[str] = []
+    block_depth = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if block_depth:
+            kept.append(line)
+            block_depth += line.count("<#") - line.count("#>")
+            if block_depth <= 0 and stripped != "#>":
+                return "".join(kept + lines[index + 1 :])
+            continue
+        if powershell and stripped == "<#":
+            block_depth = 1
+        elif stripped.startswith("#"):
+            if (index == 0 and stripped.startswith("#!")) or (
+                powershell and stripped.lower().startswith("#requires")
+            ):
+                kept.append(line)
+            continue
+        elif any(marker in line for marker in ('"', "`", "\\", "<", ">", "$(", "@'")) or (
+            line.count("'") % 2
+        ):
+            return "".join(kept + lines[index:])
+        kept.append(line)
+    return "".join(kept)
+
+
+def script_comments_only(path: str, before: str | None, after: str | None) -> bool:
+    """Whether an existing script differs only in recognized ordinary prefix comments."""
+    if before is None or after is None:
+        return False
+    powershell = path.endswith(".ps1")
+    return _script_without_prefix_comments(before, powershell=powershell) == (
+        _script_without_prefix_comments(after, powershell=powershell)
+    )
+
+
 def is_test_path(path: str) -> bool:
     """Whether a path belongs to a test directory and does not ship as package behavior."""
     return any(part.lower() in _TEST_DIR_NAMES for part in path.replace("\\", "/").split("/"))
@@ -201,6 +241,7 @@ def assess(
     changed_python: dict[str, tuple[str | None, str | None]],
     changed_path_pairs: list[tuple[str, ...]] | None = None,
     copied_sources: set[str] | None = None,
+    changed_scripts: dict[str, tuple[str | None, str | None]] | None = None,
 ) -> list[str]:
     """Return title/diff mismatches, or an empty list when the title matches the diff."""
     kind = title_type(title)
@@ -230,6 +271,10 @@ def assess(
         for path in executable_paths_in_pair:
             if path.endswith(".py"):
                 if len(paths) == 2 and paths[0] != paths[1] and not is_test_path(path):
+                    executable_paths.add(path)
+            elif path.endswith((".sh", ".ps1")):
+                snapshots = (changed_scripts or {}).get(path, (None, None))
+                if len(paths) != 1 or not script_comments_only(path, *snapshots):
                     executable_paths.add(path)
             elif not is_non_behavior_path(path):
                 executable_paths.add(path)
@@ -278,7 +323,8 @@ def assess(
 
 
 def _git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], text=True, encoding="utf-8").strip()
+    output = subprocess.check_output(["git", *args], text=True, encoding="utf-8")
+    return output if args[0] == "show" else output.strip()
 
 
 def _changed_path_pairs(status: str) -> list[tuple[str, ...]]:
@@ -294,8 +340,10 @@ def _changed_path_pairs(status: str) -> list[tuple[str, ...]]:
     return pairs
 
 
-def _changed_python(base: str, status: str) -> dict[str, tuple[str | None, str | None]]:
-    """Read changed Python files, preserving rename sources for the AST comparison.
+def _changed_sources(
+    base: str, status: str, suffixes: tuple[str, ...] = (".py",)
+) -> dict[str, tuple[str | None, str | None]]:
+    """Read changed sources, preserving rename sources for content comparison.
 
     ``status`` is passed in rather than taken here, so the file list and the ``base`` these
     snapshots are read at cannot be computed from two different comparisons.
@@ -310,12 +358,12 @@ def _changed_python(base: str, status: str) -> dict[str, tuple[str | None, str |
             before_path = after_path = paths[0]
         else:
             continue
-        if not after_path.endswith(".py"):
+        if not after_path.endswith(suffixes):
             continue
         try:
             before = (
                 _git("show", f"{base}:{before_path}")
-                if kind[0] != "A" and before_path.endswith(".py")
+                if kind[0] != "A" and before_path.endswith(suffixes)
                 else None
             )
         except subprocess.CalledProcessError:
@@ -398,7 +446,14 @@ def main(argv: list[str]) -> int:
         if fields[0].startswith("C") and len(fields) == 3
     }
     paths = [path for pair in path_pairs for path in pair[-1:]]
-    problems = assess(title, paths, _changed_python(base, status), path_pairs, copied_sources)
+    problems = assess(
+        title,
+        paths,
+        _changed_sources(base, status),
+        path_pairs,
+        copied_sources,
+        _changed_sources(base, status, (".sh", ".ps1")),
+    )
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0

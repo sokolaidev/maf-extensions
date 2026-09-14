@@ -1611,7 +1611,8 @@ class BackendDeclarations:
     :attr:`os_families` are the *absence of an answer* — which refuses every ask on the first,
     where a backend enforcing no mode can serve none, and only an asking spec on the second —
     and :attr:`isolation_scopes` is a claim, defaulting to the sharing every backend does.
-    :attr:`attached_identity` defaults to a claim of no ambient platform attachment.
+    :attr:`attached_identity` defaults to no attachment within the core policy contract;
+    it is not a discovery result for deployment-owned identity.
 
     The router reads this synchronously, before any sandbox exists, so it must be settled by
     the time it asks: a plain attribute or a property over configuration, never an ``async``
