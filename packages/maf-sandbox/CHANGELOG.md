@@ -2,6 +2,31 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.40.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.39.0...maf-sandbox-v0.40.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181))
+
+### Features
+
+* **core+codeact:** run CodeAct on Python runtimes with compatible sandbox reuse ([#1199](https://github.com/sokolaidev/maf-extensions/issues/1199)) ([6eca3c9](https://github.com/sokolaidev/maf-extensions/commit/6eca3c9647b9a524984fbac18329ead04fb2a54c))
+* **sandbox:** enforce attached identity scope, channels and retention ([#1192](https://github.com/sokolaidev/maf-extensions/issues/1192)) ([848103f](https://github.com/sokolaidev/maf-extensions/commit/848103faa0751e239a782a97d39965cf7e024d69))
+
+
+### Fixes
+
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181)) ([a9feab2](https://github.com/sokolaidev/maf-extensions/commit/a9feab2d0cab0790c25ace3e2c856fca5ce8c93c))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+* **sandbox:** take the middleware-ran tell from the published accessor ([#1197](https://github.com/sokolaidev/maf-extensions/issues/1197)) ([1905059](https://github.com/sokolaidev/maf-extensions/commit/190505961b0e19caf8b70b47f7a41246aa7c560b))
+
+
+### Documentation
+
+* **sandbox:** clarify trusted sandbox identity configuration ([#1243](https://github.com/sokolaidev/maf-extensions/issues/1243)) ([619f11e](https://github.com/sokolaidev/maf-extensions/commit/619f11e206c4e1f495bd8948776bf726aa6225b7))
+
 ## [0.39.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.38.0...maf-sandbox-v0.39.0) (2026-09-12)
 
 
