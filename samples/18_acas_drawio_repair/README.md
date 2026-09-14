@@ -2,20 +2,20 @@
 
 The model reads [architecture.md](architecture.md) and creates draw.io XML. The host changes the Orders API edge to reference a nonexistent database vertex, submits that XML to the real `create_drawio` tool, and sends the resulting diagnostic back to the model. At most three repair attempts follow. Success requires the converter's artifact to arrive in the store backing `file_access_read`, a real read returning those exact bytes, and preservation of all three components and both connections.
 
-This is a **source-only experimental sample** while `maf-sandbox-drawio` awaits its first release. Run it from this repository's locked workspace; it does not claim that the published packages already contain the draw.io kind. No PEP 723 dependency names an unreleased version. After publication, it can move into the numbered sample set with published dependency metadata.
+The PEP 723 block in `agent.py` declares the published packages needed by this sample. `uv` resolves those packages into an isolated environment.
 
 ## Network and image
 
 Guest egress is **closed**: `drawio_sandbox_spec` has an empty allowlist, and ACAS maps it to `default_action="Deny"` with no allow rules. The sample checks that contract before constructing the backend. There are no runtime package installs, external modules, or host-tool callbacks. The model endpoint, Azure authentication, sandbox control-plane traffic and file storage are host-side operations; closed guest egress does not make those host operations offline.
 
-Build [the draw.io image](../../../images/drawio-sandbox/Dockerfile) with Python 3 and Graphviz already installed. From the repository root:
+Build [the draw.io image](../../images/drawio-sandbox/Dockerfile) with Python 3 and Graphviz already installed. From the repository root:
 
 ```bash
 docker build -t <registry>.azurecr.io/drawio-sandbox:<revision> images/drawio-sandbox
 docker push <registry>.azurecr.io/drawio-sandbox:<revision>
 ```
 
-Import that image into an existing ACAS sandbox group before running the sample. Follow the [image import procedure](../../../images/bicep-sandbox/README.md#import-it-into-the-sandbox-group), substituting the draw.io image reference, or use the [ACAS disk-image import script](../../../packages/maf-sandbox-acas/scripts/README.md). A registry image is not itself an ACAS disk image. Use an immutable revision or digest; no image is built, pushed or imported by this sample. Build-time downloads and the service's image import happen before guest execution and do not require widening guest egress.
+Import that image into an existing ACAS sandbox group before running the sample. Follow the [image import procedure](../../images/bicep-sandbox/README.md#import-it-into-the-sandbox-group), substituting the draw.io image reference, or use the [ACAS disk-image import script](../../packages/maf-sandbox-acas/scripts/README.md). A registry image is not itself an ACAS disk image. Use an immutable revision or digest; no image is built, pushed or imported by this sample. Build-time downloads and the service's image import happen before guest execution and do not require widening guest egress.
 
 ## Configuration
 
@@ -35,8 +35,7 @@ An existing ACAS group, imported image and Azure OpenAI deployment are required.
 From the repository root, after setting these variables:
 
 ```bash
-uv sync --locked
-uv run --locked python samples/experimental/acas_drawio_repair/agent.py
+uv run --no-project samples/18_acas_drawio_repair/agent.py
 ```
 
 Missing configuration exits with code 2 before creating resources. The model and converter sequence has a ten-minute deadline. Invalid initial architecture, exhausted repairs, unverified storage read-back, or incomplete cleanup exits nonzero. Each conversion uses the kind's default execution timeout and disposal policy; the final scope purge runs even when per-call cleanup already disposed every sandbox.
@@ -67,4 +66,4 @@ MAF_ACAS_DRAWIO_LIVE=1 uv run --locked pytest -q tests/test_sample_acas_drawio_l
 
 In PowerShell, set `$env:MAF_ACAS_DRAWIO_LIVE = "1"` before running the same pytest command. A killed process cannot run `finally`; ACAS's configured auto-suspend and auto-delete timers remain the backstop. Cleanup errors are failures, not proof that resources were removed.
 
-The live test prints every call's timing even when pytest captures passing tests. The `acas-drawio` job in [Verify (live)](../../../.github/workflows/verify-live.yml) runs this test from the locked checkout with `source: branch`, when `package` is empty or selects `maf-sandbox`, `maf-sandbox-acas` or `maf-sandbox-drawio`. Configure `DRAWIO_SANDBOX_IMAGE` on the `live-verify` environment with the already-imported image reference. Each call's `seconds` appears in the job log, retained for seven days as the `drawio-live-log` artifact. The job skips published verification while this sample has no published dependency floor. The workflow creates no registry or disk images and does not change guest egress.
+The live test prints every call's timing even when pytest captures passing tests. The `sample-18` job in [Verify (live)](../../.github/workflows/verify-live.yml) runs the sample against published packages by default, or checkout packages with `source: branch`, when `package` is empty or selects `maf-sandbox`, `maf-sandbox-acas` or `maf-sandbox-drawio`. Configure `DRAWIO_SANDBOX_IMAGE` on the `live-verify` environment with the already-imported image reference. Each call's `seconds` appears in the job log, retained for seven days as the `drawio-live-log` artifact. Releases of core, ACAS and draw.io trigger the job through the publish workflow, alongside manual live verification. The workflow creates no registry or disk images and does not change guest egress.

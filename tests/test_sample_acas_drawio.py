@@ -35,7 +35,7 @@ from maf_sandbox.testing import (
 from maf_sandbox_drawio import make_drawio_tools
 
 _ROOT = Path(__file__).resolve().parent.parent
-_SAMPLE = _ROOT / "samples" / "experimental" / "acas_drawio_repair"
+_SAMPLE = _ROOT / "samples" / "18_acas_drawio_repair"
 
 
 @pytest.fixture

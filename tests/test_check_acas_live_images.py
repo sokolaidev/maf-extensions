@@ -23,8 +23,13 @@ check = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = check
 _SPEC.loader.exec_module(check)
 
-_ENV = {"ACAS_SANDBOX_REGISTRY": "example.azurecr.io", "BICEP_SANDBOX_IMAGE": "bicep:1"}
+_ENV = {
+    "ACAS_SANDBOX_REGISTRY": "example.azurecr.io",
+    "BICEP_SANDBOX_IMAGE": "bicep:1",
+    "DRAWIO_SANDBOX_IMAGE": "drawio:1",
+}
 _BICEP = "example.azurecr.io/bicep:1"
+_DRAWIO = "example.azurecr.io/drawio:1"
 _CODEACT = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 
@@ -54,7 +59,7 @@ def _disk(reference, id="disk"):
 
 def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
     required, skipped = check.required_images(_ROOT, "", _ENV)
-    assert set(required) == {_BICEP, _CODEACT, "python-3.13"}
+    assert set(required) == {_BICEP, _DRAWIO, _CODEACT, "python-3.13"}
     assert required[_CODEACT] == ["14_acas_codeact_files", "15_acas_codeact_host_tools"]
     assert required["python-3.13"] == ["03_acas_codeact", "acas-e2e prebuilt"]
     assert skipped == ["ACAS_SANDBOX_NONROOT_IMAGE is unset; the optional non-root leg skips."]
@@ -63,8 +68,9 @@ def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
 @pytest.mark.parametrize(
     ("package", "references"),
     [
-        ("maf-sandbox", {_BICEP, _CODEACT, "python-3.13"}),
-        ("maf-sandbox-acas", {_BICEP, _CODEACT, "python-3.13"}),
+        ("maf-sandbox", {_BICEP, _DRAWIO, _CODEACT, "python-3.13"}),
+        ("maf-sandbox-acas", {_BICEP, _DRAWIO, _CODEACT, "python-3.13"}),
+        ("maf-sandbox-drawio", {_DRAWIO}),
         ("maf-sandbox-bicep", {_BICEP}),
         ("maf-sandbox-codeact", {_CODEACT, "python-3.13"}),
         ("maf-sandbox-docker", set()),
@@ -132,14 +138,31 @@ def test_bicep_missing_variables_are_reported_together():
         check.required_images(_ROOT, "maf-sandbox-bicep", {})
 
 
+def test_drawio_requires_its_own_image_and_no_other_kinds_configuration():
+    with pytest.raises(ValueError, match="DRAWIO_SANDBOX_IMAGE"):
+        check.required_images(_ROOT, "maf-sandbox-drawio", {})
+    required, skipped = check.required_images(
+        _ROOT, "maf-sandbox-drawio", {"DRAWIO_SANDBOX_IMAGE": _DRAWIO}
+    )
+    assert required == {_DRAWIO: ["sample-18"]} and not skipped
+
+
+def test_tags_without_sample_18_do_not_require_its_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(check, "_image_constant", lambda *args: "python-3.13")
+    required, _ = check.required_images(
+        tmp_path, "", {key: value for key, value in _ENV.items() if key != "DRAWIO_SANDBOX_IMAGE"}
+    )
+    assert _DRAWIO not in required
+
+
 def test_inventory_reads_once_per_namespace_and_matches_spec_base():
     required, _ = check.required_images(_ROOT, "", _ENV)
     client = _Group(
-        [_disk(_BICEP), _disk(_CODEACT)],
+        [_disk(_BICEP), _disk(_DRAWIO), _disk(_CODEACT)],
         [PublicDiskImage(name="python-3.13")],
     )
     present, failures = check.check_images(client, required)
-    assert len(present) == 3
+    assert len(present) == 4
     assert failures == []
     assert client.calls == ["imports", "catalogue"]
 
@@ -147,7 +170,7 @@ def test_inventory_reads_once_per_namespace_and_matches_spec_base():
 def test_all_missing_assets_report_consumers_import_command_or_catalogue():
     required, _ = check.required_images(_ROOT, "", _ENV)
     _, failures = check.check_images(_Group(prebuilt=[PublicDiskImage(name="ubuntu")]), required)
-    assert len(failures) == 3
+    assert len(failures) == 4
     imported = next(failure for failure in failures if _CODEACT in failure)
     assert "14_acas_codeact_files, 15_acas_codeact_host_tools" in imported
     assert "packages/maf-sandbox-acas/scripts/import_disk_image.py" in imported
@@ -189,11 +212,13 @@ def test_single_namespace_does_not_list_the_other():
 
 @pytest.fixture
 def cli(monkeypatch):
-    for variable in [*check._CONFIG.values(), "ACAS_SANDBOX_REGISTRY", "BICEP_SANDBOX_IMAGE"]:
+    for variable in [*check._CONFIG.values(), *_ENV]:
         monkeypatch.setenv(variable, _ENV.get(variable, "configured"))
     monkeypatch.delenv("ACAS_SANDBOX_NONROOT_IMAGE", raising=False)
     monkeypatch.delenv("MAF_SANDBOX_ACAS_E2E_PREBUILT", raising=False)
-    client = _Group([_disk(_BICEP), _disk(_CODEACT)], [PublicDiskImage(name="python-3.13")])
+    client = _Group(
+        [_disk(_BICEP), _disk(_DRAWIO), _disk(_CODEACT)], [PublicDiskImage(name="python-3.13")]
+    )
     events = []
 
     @contextmanager
@@ -235,7 +260,7 @@ def test_cli_missing_images_fails_and_writes_actionable_summary(cli, tmp_path, c
     client.images = []
     summary = tmp_path / "summary.md"
     assert check.main(["--source-root", str(_ROOT), "--summary", str(summary)]) == 1
-    assert capsys.readouterr().out.count("::error::") == 2
+    assert capsys.readouterr().out.count("::error::") == 3
     assert "import_disk_image.py" in summary.read_text("utf-8")
 
 
@@ -275,7 +300,7 @@ def _admits(job, package):
 
 def test_preflight_blocks_exactly_the_acas_jobs_and_admits_their_package_union():
     jobs = _workflow("verify-live.yml")["jobs"]
-    consumers = {"sample-01", "sample-03", "sample-14", "sample-15", "acas-e2e"}
+    consumers = {"sample-01", "sample-03", "sample-14", "sample-15", "sample-18", "acas-e2e"}
     for name, job in jobs.items():
         assert (job.get("needs") == "acas-images") == (name in consumers)
         if name in consumers:

@@ -1,8 +1,19 @@
 """Repair a model's architecture XML on ACAS, read its stored diagram, and remove it.
 
-Source-only while maf-sandbox-drawio awaits its first release. See README.md for
-the prebuilt image and host credentials; the guest has no allowed egress hosts.
+See README.md for the prebuilt image and host credentials; the guest has no allowed egress hosts.
 """
+
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "azure-core[aio]",
+#     "azure-identity",
+#     "maf-sandbox-acas",
+#     "maf-sandbox-drawio",
+#     "maf-sandbox>=0.40",
+# ]
+# ///
 
 from __future__ import annotations
 
@@ -20,7 +31,14 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
-from _scaffold import MEASURED, installed_versions, quoted, require_env_vars, result_text
+from _scaffold import (
+    MEASURED,
+    conversation_id,
+    installed_versions,
+    quoted,
+    require_env_vars,
+    result_text,
+)
 from agent_framework import Agent, AgentFileStore, FileAccessProvider, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -39,6 +57,7 @@ from maf_sandbox_drawio import drawio_sandbox_spec, make_drawio_tools
 
 SCOPE = "samples"
 AGENT_ID = "architecture-designer"
+THREAD_ID = conversation_id("sample-18")
 MAX_REPAIRS = 3
 MAX_XML_BYTES = 64 * 1024
 MISSING_VERTEX = "missing_database"
@@ -290,7 +309,7 @@ async def run() -> int:
     if spec.egress != Egress.CLOSED or spec.egress_allow:
         raise RuntimeError("This sample requires closed guest egress")
     markdown = Path(__file__).with_name("architecture.md").read_text(encoding="utf-8")
-    thread_id = f"acas-drawio-{uuid4().hex}"
+    thread_id = f"{THREAD_ID}-{uuid4().hex}"
     async with AsyncExitStack() as cleanup:
         backend = build_backend({**os.environ, **env})
         cleanup.push_async_callback(backend.aclose)
