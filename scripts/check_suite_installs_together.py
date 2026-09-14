@@ -28,10 +28,9 @@ Two modes, because a release has two shapes:
   find is one the resolver reaches by taking an older sibling. Publishing adds a version to the
   index; it cannot remove a combination that already resolved. What it does tell you is that
   the newest of everything does not combine yet, which is worth seeing and is not worth
-  stopping a release for. **What does fail is the published family having no resolvable set at
-  all** — not a claim about the candidate, which cannot repair it and cannot have caused it,
-  but about the index, where two published dependents now exclude each other. The report names
-  that pair, because a release blocked by it is blocked until one of the two publishes again.
+  stopping a release for. **Disjoint core ranges in the published family also warn**: the
+  report names the pairs that need another release before they can be installed together.
+  An install failure without a proven published range conflict still fails this check.
 - **whole-set** (`--whole-set`) — every wheel in the directory together, no published
   fallbacks. **This one fails**: a release whose own packages cannot share an environment is a
   range that moved past a sibling, and no later publish repairs it.
@@ -386,41 +385,49 @@ def main(argv: list[str]) -> int:
         "",
         f"`{'`, `'.join(warned)}` cannot be installed beside the **newest** published siblings.",
         "",
-        "This is a warning, not a failure. Publishing adds a version to the index; it never "
-        "removes a combination that already resolved, and a consumer who does not pin gets the "
-        "newest set that does.",
+        "Candidate conflicts are warnings. The separate whole-set and per-package checks "
+        "validate the artifacts being released.",
         "",
     ]
+    conflicts: list[tuple[str, str]] = []
     if installable:
         lines += ["That set is:", "", "```"] + report(resolved, newest) + ["```"]
         print("\nthe family a consumer resolves today:")
         print("\n".join(report(resolved, newest)))
     else:
-        # The gating outcome, so it says which two packages did it rather than leaving that to
-        # be read out of a resolver walking every historical version of every sibling. Spans,
-        # not newest ranges: a newest-range conflict is routine and the resolver goes back a
-        # version for it, where a span conflict is the one nothing can be resolved around.
+        # Disjoint spans prove a published range conflict; overlapping spans cannot rule out
+        # an index or installer failure, so only the former permits recovery uploads.
         conflicts = conflicting_pairs(published_spans())
-        lines += ["No set of published versions resolves at all — that is a real break.", ""]
         if conflicts:
+            lines += ["No set of published versions resolves at all.", ""]
             lines += ["No published version of either side reaches the other's core line:", ""]
             lines += [f"- `{left}` against `{right}`" for left, right in conflicts]
             lines += [
                 "",
-                "Until one of each pair publishes a version admitting the other's core line, "
-                "nothing installs both, and every release that has to resolve the family waits "
-                "behind it. Where the narrower side is a new package whose only release floors "
-                "above the rest, yanking that release restores the set until the others catch "
-                "up.",
+                "This published range conflict is a warning so compatible releases can repair "
+                "the set. Publish the adapted dependents until every pair shares a core line; "
+                "the candidate's tests and the whole-set install must still pass.",
+                "",
+            ]
+        else:
+            lines += [
+                "The published set could not be installed, and no disjoint core ranges "
+                "explain the failure. This check fails; inspect the installer error below.",
                 "",
             ]
         lines += ["```", error, "```"]
-        print("\nno set of published versions resolves at all:", file=sys.stderr)
+        print("\nthe published set could not be installed:", file=sys.stderr)
         for left, right in conflicts:
             print(f"  no published {left} and {right} share a core version", file=sys.stderr)
         print(error, file=sys.stderr)
     summarise(lines)
     if not installable:
+        if conflicts:
+            print(
+                "::warning::Published core ranges conflict; publishing compatible dependents "
+                "can repair the set. See the job summary for the conflicting pairs."
+            )
+            return 0
         return 1
     print(
         f"\nOK  {len(warned)} candidate(s) do not combine with the newest published siblings yet; "

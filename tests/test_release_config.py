@@ -739,6 +739,19 @@ class TestARehearsalCanNameTheVersionItRehearses:
     def test_the_check_is_confined_to_the_rehearsal_index(self):
         assert "steps.resolve.outputs.target == 'testpypi'" in self._step(self.CHECK)["if"]
 
+    def test_version_availability_reads_only_the_upload_destination(self):
+        env = self._step(self.CHECK)["env"]
+        assert env["UV_INDEX"] == "${{ steps.resolve.outputs.index_url }}"
+        assert env["UV_DEFAULT_INDEX"] == env["UV_INDEX"]
+
+    def test_dependency_checks_keep_the_pypi_fallback(self):
+        for job in self.WORKFLOW["jobs"].values():
+            for step in job.get("steps", []):
+                env = step.get("env", {})
+                if "UV_INDEX" not in env or step.get("name") == self.CHECK:
+                    continue
+                assert "outputs.default_index_url" in env["UV_DEFAULT_INDEX"]
+
 
 class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
     """A pull request the release workflow opens every cycle cannot close a specific issue.

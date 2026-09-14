@@ -159,13 +159,8 @@ jobs:
           echo "index_strategy=${index_strategy}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target} against ${index_url}"
 
-      # A version an index already carries is not something to rehearse. On PyPI that number is
-      # a release, so the run would build this ref's source under it; on TestPyPI the upload
-      # itself is refused, and `Publish` passes no `skip-existing`, so that refusal would arrive
-      # after the whole gate has run. Asked of the same indexes this run resolves from.
-      #
-      # The rehearsal path only: a tag takes its own version, and the `pypi` dispatch is how a
-      # failed upload is re-run, where the index may legitimately already show the version.
+      # Only the upload destination reserves this version. PyPI remains a dependency fallback
+      # in the later checks, but an existing PyPI release can still be uploaded to TestPyPI.
       - name: Check the rehearsed version is not published yet
         if: >-
           github.event_name == 'workflow_dispatch'
@@ -174,7 +169,7 @@ jobs:
           PACKAGE: ${{ steps.resolve.outputs.package }}
           VERSION: ${{ steps.resolve.outputs.version }}
           UV_INDEX: ${{ steps.resolve.outputs.index_url }}
-          UV_DEFAULT_INDEX: ${{ steps.resolve.outputs.default_index_url }}
+          UV_DEFAULT_INDEX: ${{ steps.resolve.outputs.index_url }}
           UV_INDEX_STRATEGY: ${{ steps.resolve.outputs.index_strategy }}
         run: python3 scripts/check_rehearsal_version.py "$PACKAGE" "$VERSION"
 
@@ -429,10 +424,8 @@ jobs:
           set -euo pipefail
           python3 scripts/check_suite_installs_together.py --whole-set --dist-dir dist
 
-      # This half warns. The candidate is pinned to the built wheel and nobody else pins it, so
-      # a combination it cannot find is one the resolver reaches by taking an older sibling —
-      # and publishing adds a version to the index, it never removes a set that already
-      # resolved. The report goes to the job summary and the release goes ahead.
+      # Published core-range conflicts warn so adapted dependents can repair the set.
+      # Unexplained install failures still fail; the whole-set check above remains required.
       - name: The candidate beside the published suite
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         env:

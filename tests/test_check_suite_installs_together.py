@@ -84,6 +84,101 @@ class TestTheCli:
         assert check.main(["prog", "--dist-dir", str(tmp_path)]) == 2
         assert "build them first" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("candidate", ["acas", "terraform"])
+    @pytest.mark.parametrize("proven_conflict", [True, False])
+    def test_a_proven_published_conflict_warns_without_blocking_uploads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        candidate: str,
+        proven_conflict: bool,
+    ):
+        wheel = _wheel_declaring(
+            tmp_path, f"maf_sandbox_{candidate}-0.1.0-py3-none-any.whl", "maf-sandbox>=0.40.0,<0.41"
+        )
+        published = {
+            "maf-sandbox-acas": "maf-sandbox>=0.39.0,<0.40",
+            "maf-sandbox-hyperlight": "maf-sandbox>=0.40.0,<0.41",
+        }
+        monkeypatch.setattr(check, "latest_published", lambda: {})
+        monkeypatch.setattr(check, "published_core_ranges", lambda: published)
+        monkeypatch.setattr(
+            check,
+            "published_spans",
+            lambda: {
+                "maf-sandbox-acas": ((0, 39), (0, 40)),
+                "maf-sandbox-hyperlight": ((0, 40) if proven_conflict else (0, 39), (0, 41)),
+            },
+        )
+        attempted: list[list[str]] = []
+
+        def install(requirements: list[str]):
+            attempted.append(requirements)
+            return False, {}, "no solution" if proven_conflict else "index unavailable"
+
+        monkeypatch.setattr(check, "install", install)
+        summary = tmp_path / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+        assert check.main(["prog", "--dist-dir", str(tmp_path)]) == (0 if proven_conflict else 1)
+        assert attempted == [[str(wheel)], sorted(published)]
+        output = capsys.readouterr()
+        report = summary.read_text(encoding="utf-8")
+        assert "the family still resolves" not in output.out
+        if proven_conflict:
+            assert "::warning::Published core ranges conflict" in output.out
+            assert "`maf-sandbox-acas` against `maf-sandbox-hyperlight`" in report
+            assert "Publish the adapted dependents" in report
+        else:
+            assert "::warning::" not in output.out
+            assert "This check fails" in report
+            assert "index unavailable" in report
+
+    def test_older_published_versions_can_still_form_a_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        _wheel_declaring(
+            tmp_path, "maf_sandbox_acas-0.24.0-py3-none-any.whl", "maf-sandbox>=0.40.0,<0.41"
+        )
+        monkeypatch.setattr(check, "latest_published", lambda: {})
+        monkeypatch.setattr(
+            check,
+            "published_core_ranges",
+            lambda: {"maf-sandbox-acas": "maf-sandbox>=0.39.0,<0.40"},
+        )
+        outcomes = iter([(False, {}, "no solution"), (True, {"maf-sandbox-acas": "0.23.1"}, "")])
+        monkeypatch.setattr(check, "install", lambda requirements: next(outcomes))
+        monkeypatch.setattr(
+            check, "published_spans", lambda: pytest.fail("resolved set needs no spans")
+        )
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+        assert check.main(["prog", "--dist-dir", str(tmp_path)]) == 0
+        assert "the family still resolves" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("installable", [True, False])
+    def test_whole_set_installation_is_still_required(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installable: bool
+    ):
+        wheel = _wheel(tmp_path, "maf_sandbox_acas-0.24.0-py3-none-any.whl")
+        monkeypatch.setattr(check, "latest_published", lambda: {})
+        monkeypatch.setattr(
+            check,
+            "published_core_ranges",
+            lambda: pytest.fail("whole set must use checkout wheels"),
+        )
+
+        def install(requirements: list[str], core: Path | None):
+            assert requirements == [str(wheel)]
+            assert core is None
+            return installable, {}, "no solution"
+
+        monkeypatch.setattr(check, "install", install)
+        assert check.main(["prog", "--whole-set", "--dist-dir", str(tmp_path)]) == (
+            0 if installable else 1
+        )
+
 
 def _wheel_declaring(directory: Path, name: str, requirement: str) -> Path:
     """A wheel carrying one `Requires-Dist`, which is what `declared_range` reads."""
