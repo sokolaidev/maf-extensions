@@ -43,6 +43,14 @@ On 2026-09-13, Windows 11 AMD64 / WHP / host CPython 3.13 and the exact 0.7.0 tr
 
 The [earlier proposal](../research/hyperlight-backend-proposal.md) and [exploration](../research/hyperlight-backend-exploration.md) preserve the historical investigation. Their proposed file capabilities are not declarations of this adapter. Optional file work must establish its own conformance and cleanup before any file capability is enabled.
 
+## Azure Container Apps
+
+Direct execution inside a standard managed ACA Linux application container has no supported deployment path in the published platform contract inspected on 2026-09-14. Consumption, Dedicated and the inspected preview offerings expose no documented mechanism to inject a KVM/MSHV device. The [ACA feasibility record](../research/hyperlight-aca-feasibility.md) pins the current API-source audit, separates that conclusion from unmeasured runtime behavior, and assesses memory, cache, shutdown and owner routing. A Linux adapter alone does not supply the missing platform access.
+
+The [live ACA probe](../research/hyperlight-aca-live-probe.md) tested standard Consumption and Dedicated D4 application containers in Sweden Central on the same date. For both root and UID 65534, `/dev/kvm` and `/dev/mshv` were absent and the pinned 0.7.0 SDK's first run failed with no hypervisor found. Imports and writable guest caches succeeded. Dedicated exposed the CPU `svm` flag, so hardware capability alone did not grant the required device access. Other regions and profiles remain unmeasured; no Hyperlight guest or adapter conformance passed on ACA.
+
+An ACA application can instead be designed to call a separate Hyperlight worker service on a suitable host. This requires a remote integration with authentication, owner identity, cancellation and purge semantics; it is not support for this local backend inside ACA.
+
 ## Status
 
 | Item | State | Tracking |
@@ -52,3 +60,5 @@ The [earlier proposal](../research/hyperlight-backend-proposal.md) and [explorat
 | Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
 | Optional file cleanup | open | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
 | Native host tools | open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
+| Direct ACA hosting | investigated: measured device absence and SDK failure on Consumption/D4; no supported device-access mechanism found | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (closed) by [#1242](https://github.com/sokolaidev/maf-extensions/pull/1242) (merged) |
+| Separate remote worker for an ACA application | open: authenticated single-owner prototype | [#1236](https://github.com/sokolaidev/maf-extensions/issues/1236) (open) |
