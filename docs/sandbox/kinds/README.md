@@ -73,14 +73,16 @@ Record the source argument in your kind's design page and package README. A revi
 |---|---|---|---|---|
 | [`bicep`](bicep.md) | `bicep_validate` | `{EXEC, FILES_IN}` — the protocol default, left unaltered | `{UNRESTRICTED, ALLOWLIST, CLOSED}`, defaulting to `ALLOWLIST` with the four AVM hosts fixed in the package | [`maf-sandbox-bicep`](../../../packages/maf-sandbox-bicep/README.md) |
 | [`codeact`](codeact.md) | `execute_code` | `{EXEC, FILES_IN}`, grown by `FILES_OUT` and `HOST_TOOLS` as the host wires channels | `{CLOSED, ALLOWLIST}`, derived rather than passed: hosts named runs `ALLOWLIST`, none runs `CLOSED`, and `UNRESTRICTED` is not expressible | [`maf-sandbox-codeact`](../../../packages/maf-sandbox-codeact/README.md) |
+| [`drawio`](drawio.md) | `create_drawio` | `{EXEC, FILES_IN, FILES_OUT}` | `{CLOSED}`; validates XML with Python and computes missing or replacement layout with Graphviz | [`maf-sandbox-drawio`](../../../packages/maf-sandbox-drawio/README.md) |
 | [`terraform` / `opentofu`](terraform.md) | `terraform_validate` / `opentofu_validate` | `{EXEC, FILES_IN}` | `CLOSED`, with dependencies in an immutable image mirror | [`maf-sandbox-terraform`](../../../packages/maf-sandbox-terraform/README.md) |
 
-Bicep and CodeAct leave the isolation floor to the host. Terraform and OpenTofu require at least container isolation, POSIX guests, call scope, and disposal because provider validation executes native code.
+Draw.io delivers an editable file. Bicep, CodeAct and draw.io leave the isolation floor to the host. Terraform and OpenTofu require at least container isolation, POSIX guests, call scope, and disposal because provider validation executes native code.
 
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
+| Editable draw.io files with kind-configured layout | implemented; not yet released | [`drawio.md`](drawio.md) |
 | A kind is protocol-only, and three tests enforce it rather than prose | shipped | — |
 | Fixed templates, listing-pinned paths, sanitized surfaces, one chosen egress mode, visible degrades | shipped — the pattern holds in both kinds | — |
 | A kind guards the egress modes it accepts at construction, and the spec carries one resolved mode | shipped — bicep takes the mode as an argument, codeact derives it from its host list. The per-kind record is still open even though the change it records is delivered | the per-kind rows on [`bicep.md`](bicep.md) and [`codeact.md`](codeact.md), which carry the open record, the merged PR that delivered it and the closed umbrella; the model itself is [`../network.md`](../network.md) |

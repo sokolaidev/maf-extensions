@@ -1,8 +1,8 @@
 # Workspace root for the maf-extensions monorepo — a *virtual* root: it is not itself a
 # distribution, it only binds the packages under packages/* into one uv workspace with one
 # lockfile and one dev toolchain. Each package is fully self-contained (its own metadata,
-# ruff/pyright/pytest configuration, LICENSE and CHANGELOG) so it can be built, published
-# and even extracted again without this file.
+# ruff/pyright/pytest configuration and LICENSE; release-please adds CHANGELOG in its first
+# Release PR), so it can be built, published and even extracted again without this file.
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -115,6 +115,7 @@ executionEnvironments = [
   { root = "packages/maf-sandbox-deepagents/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-docker/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-hyperlight/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-drawio/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-otel/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
 ]
@@ -141,6 +142,7 @@ testpaths = [
     "packages/maf-sandbox-deepagents/tests",
     "packages/maf-sandbox-docker/tests",
     "packages/maf-sandbox-hyperlight/tests",
+    "packages/maf-sandbox-drawio/tests",
     "packages/maf-sandbox-otel/tests",
     "packages/maf-sandbox-wslc/tests",
 ]

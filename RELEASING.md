@@ -8,6 +8,10 @@ One-time setup — the PyPI organization, the trusted publishers, the GitHub env
 
 [release-please](https://github.com/googleapis/release-please) watches `main` and keeps a **Release PR** open for every package that has unreleased changes. It works out the bump from the merged commit subjects — which are PR titles here, since this repository squash-merges — and attributes each change to a package by the files it touched. `feat:` bumps the minor; `fix:`, `perf:`, `revert:` and `docs:` bump the patch; a `!` or a `BREAKING CHANGE:` footer bumps the minor whatever the type, because every package is still `0.x`. `refactor`, `test`, `build`, `ci` and `chore` release nothing on their own. The rule behind that list is that any commit which earns a changelog entry earns a release, so it is `changelog-sections` in `release-please-config.json` that decides it.
 
+## Adding a package
+
+A newly configured package at `0.0.0` with no release recorded in its changelog may omit its entry from `.release-please-manifest.json`. [Release-please adds that entry in the first Release PR](https://github.com/googleapis/release-please/blob/v17.3.0/src/manifest.ts#L771-L786), along with the generated version and changelog updates; the configured `extra-files` updater moves `uv.lock`. Existing entries must match their package's declared version, and a package with any recorded release or a version other than `0.0.0` must have an entry. Leave the generated manifest to release-please when adding a package.
+
 ## Cutting a release
 
 There are two steps, and the first one is the decision.

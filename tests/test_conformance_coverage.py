@@ -396,6 +396,7 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-bicep",
         "maf-sandbox-codeact",
         "maf-sandbox-deepagents",
+        "maf-sandbox-drawio",
         "maf-sandbox-otel",
         "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.
     }

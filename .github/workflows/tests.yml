@@ -94,6 +94,10 @@ jobs:
         # tree on their first sync instead.
         run: uv sync --locked
 
+      - name: Install Graphviz for draw.io layout tests
+        if: needs.changes.outputs.code == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends graphviz
+
       - name: Tests
         if: needs.changes.outputs.code == 'true'
         # One worker per runner CPU: 74s to 37s here, and eight measured no better than four.

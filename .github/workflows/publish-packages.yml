@@ -24,6 +24,7 @@ on:
       - "maf-sandbox-codeact-v*"
       - "maf-sandbox-deepagents-v*"
       - "maf-sandbox-docker-v*"
+      - "maf-sandbox-drawio-v*"
       - "maf-sandbox-hyperlight-v*"
       - "maf-sandbox-otel-v*"
       - "maf-sandbox-terraform-v*"
@@ -42,6 +43,7 @@ on:
           - maf-sandbox-codeact
           - maf-sandbox-deepagents
           - maf-sandbox-docker
+          - maf-sandbox-drawio
           - maf-sandbox-hyperlight
           - maf-sandbox-otel
           - maf-sandbox-terraform
