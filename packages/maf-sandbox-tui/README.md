@@ -20,6 +20,23 @@ For a non-interactive protocol check:
 uv run mst --demo --json
 ```
 
+## Use MST from scripts
+
+Running `mst` without a command opens the TUI. Subcommands print plain tables or records; `--json` selects stable JSON and `watch --jsonl` writes one compact snapshot per line. Connection options may appear before or after the command.
+
+```console
+mst hosts [--json]
+mst list [--host SOURCE] [--backend NAME] [--scope SCOPE] [--thread ID] [--kind KIND] [--state STATE] [--older-than 5m] [--json]
+mst show INSTANCE_ID [--json]
+mst watch [--interval 2] [--count 0] [--jsonl]
+mst delete INSTANCE_ID [--timeout 10] [--yes] [--json]
+mst purge-thread --scope SCOPE --thread ID [--timeout 10] [--yes] [--json]
+```
+
+`delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
+
+Successful commands exit zero. Endpoint or incomplete-operation failures use `1`, invalid or missing confirmation uses `2`, an absent physical instance uses `3`, and an operator declining confirmation uses `4`. An interrupted watch uses `130`.
+
 ## Host a real Hyperlight backend
 
 The MAF application remains the sandbox authority. Merely importing or constructing `SandboxControlServer` opens nothing. A host configuration that defaults off must opt in before the application starts the server on its event loop, passing the same backend and router that serve CodeAct calls.
@@ -45,6 +62,6 @@ When enabled, the server binds an ephemeral port on the literal loopback address
 
 ## Control protocol
 
-Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, and `DELETE /v1/sandboxes/{instance_id}`. Delete selects the physical `instance_id`, calls `SandboxRouter.dispose_kind`, and verifies that the instance disappeared. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
+Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` and verifies that the physical instance disappeared. Conversation purge calls `SandboxRouter.dispose_scope` under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
 
 Live inventory comes from the backend registry rather than OpenTelemetry. `maf-sandbox-otel` remains the complementary history and audit surface.

@@ -140,3 +140,56 @@ class DisposalResult:
         return cls(
             DisposalStatus(cast("str", status)), cast("str", instance_id), cast("str", message)
         )
+
+
+class PurgeStatus(StrEnum):
+    """Result of a conversation-wide purge request."""
+
+    PURGED = "purged"
+    PARTIAL = "partial"
+
+
+@dataclass(frozen=True)
+class PurgeResult:
+    """Aggregated outcome of purging one conversation."""
+
+    status: PurgeStatus
+    scope: str
+    thread_id: str
+    disposed: int
+    message: str
+
+    def to_json(self) -> dict[str, object]:
+        """Return the stable JSON representation used by protocol version one."""
+        return {
+            "status": self.status.value,
+            "scope": self.scope,
+            "thread_id": self.thread_id,
+            "disposed": self.disposed,
+            "message": self.message,
+        }
+
+    @classmethod
+    def from_json(cls, value: object) -> PurgeResult:
+        """Read a protocol version one purge result."""
+        if not isinstance(value, dict):
+            raise ValueError("purge result must be an object")
+        data = cast("dict[object, object]", value)
+        status, scope, thread_id, disposed, message = (
+            data.get("status"),
+            data.get("scope"),
+            data.get("thread_id"),
+            data.get("disposed"),
+            data.get("message"),
+        )
+        if not all(isinstance(item, str) for item in (status, scope, thread_id, message)):
+            raise ValueError("purge result text fields must be strings")
+        if isinstance(disposed, bool) or not isinstance(disposed, int) or disposed < 0:
+            raise ValueError("purge result disposed must be a nonnegative integer")
+        return cls(
+            PurgeStatus(cast("str", status)),
+            cast("str", scope),
+            cast("str", thread_id),
+            disposed,
+            cast("str", message),
+        )

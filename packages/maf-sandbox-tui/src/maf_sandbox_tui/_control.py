@@ -10,17 +10,30 @@ from typing import Protocol
 
 from maf_sandbox import SandboxKey, SandboxRouter
 
-from ._models import DisposalResult, DisposalStatus, SandboxRecord, SandboxState
+from ._models import (
+    DisposalResult,
+    DisposalStatus,
+    PurgeResult,
+    PurgeStatus,
+    SandboxRecord,
+    SandboxState,
+)
 
 
 class SandboxControl(Protocol):
-    """Authoritative list and exact-instance disposal operations."""
+    """Authoritative inventory and lifecycle operations."""
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]: ...
+
+    async def get_sandbox(self, instance_id: str) -> SandboxRecord | None: ...
 
     async def dispose_sandbox(
         self, instance_id: str, *, timeout: float = 10.0
     ) -> DisposalResult: ...
+
+    async def purge_thread(
+        self, scope: str, thread_id: str, *, timeout: float = 10.0
+    ) -> PurgeResult: ...
 
 
 class _BackendInfo(Protocol):
@@ -79,6 +92,13 @@ class HyperlightControl:
             )
         return tuple(records)
 
+    async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
+        """Return one physical instance when this host still owns it."""
+        return next(
+            (item for item in await self.list_sandboxes() if item.instance_id == instance_id),
+            None,
+        )
+
     async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
         """Dispose the exact physical instance while preserving a replacement."""
         before = {item.instance_id: item for item in await self._backend.list_sandboxes()}
@@ -108,6 +128,46 @@ class HyperlightControl:
             "Disposal was not confirmed; the backend retained the sandbox for retry.",
         )
 
+    async def purge_thread(
+        self, scope: str, thread_id: str, *, timeout: float = 10.0
+    ) -> PurgeResult:
+        """Purge one conversation through every backend registered with the owning router."""
+        try:
+            async with asyncio.timeout(timeout):
+                purged = await self._router.dispose_scope(scope, thread_id)
+        except TimeoutError:
+            return PurgeResult(
+                PurgeStatus.PARTIAL,
+                scope,
+                thread_id,
+                0,
+                "Conversation purge timed out and was not confirmed.",
+            )
+        remaining = tuple(
+            item
+            for item in await self._backend.list_sandboxes()
+            if item.key.scope == scope and item.key.thread_id == thread_id
+        )
+        complete = purged.undisposed is None and not remaining
+        if complete:
+            return PurgeResult(
+                PurgeStatus.PURGED,
+                scope,
+                thread_id,
+                purged.disposed,
+                "Conversation purged.",
+            )
+        detail = (
+            "matching sandboxes remain" if purged.undisposed is None else purged.undisposed.detail
+        )
+        return PurgeResult(
+            PurgeStatus.PARTIAL,
+            scope,
+            thread_id,
+            purged.disposed,
+            f"Conversation purge was not confirmed: {detail}",
+        )
+
 
 class MemoryControl:
     """Deterministic control source for demonstrations and UI tests."""
@@ -126,6 +186,11 @@ class MemoryControl:
                 )
             )
 
+    async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
+        """Return one physical instance when present."""
+        async with self._lock:
+            return self._records.get(instance_id)
+
     async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
         """Remove exactly one record."""
         del timeout
@@ -137,6 +202,27 @@ class MemoryControl:
                     "The sandbox is already gone or its generation changed.",
                 )
         return DisposalResult(DisposalStatus.DISPOSED, instance_id, "Sandbox disposed.")
+
+    async def purge_thread(
+        self, scope: str, thread_id: str, *, timeout: float = 10.0
+    ) -> PurgeResult:
+        """Remove every demonstration record belonging to one conversation."""
+        del timeout
+        async with self._lock:
+            selected = [
+                instance_id
+                for instance_id, record in self._records.items()
+                if record.scope == scope and record.thread_id == thread_id
+            ]
+            for instance_id in selected:
+                del self._records[instance_id]
+        return PurgeResult(
+            PurgeStatus.PURGED,
+            scope,
+            thread_id,
+            len(selected),
+            "Conversation purged.",
+        )
 
     @classmethod
     def demo(cls, *, now: float | None = None) -> MemoryControl:

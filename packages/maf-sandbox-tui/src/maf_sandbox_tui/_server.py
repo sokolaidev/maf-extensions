@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import math
 import os
 import secrets
 import tempfile
@@ -16,7 +17,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from ._control import SandboxControl
 
@@ -126,6 +127,17 @@ class _ControlHandler(BaseHTTPRequestHandler):
         future = asyncio.run_coroutine_threadsafe(operation, self._control_server.owner.loop)
         return future.result(timeout=self._control_server.owner.request_timeout)
 
+    def _operation_timeout(self) -> float:
+        values = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get("timeout", [])
+        if not values:
+            return self._control_server.owner.dispose_timeout
+        if len(values) != 1:
+            raise ValueError("timeout must be specified once")
+        timeout = float(values[0])
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a finite positive number of seconds")
+        return min(timeout, self._control_server.owner.dispose_timeout)
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
         try:
@@ -165,6 +177,31 @@ class _ControlHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        try:
+            timeout = self._operation_timeout()
+        except ValueError as error:
+            self._send(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+        parts = path.split("/")
+        if len(parts) == 6 and parts[1:3] == ["v1", "scopes"] and parts[4] == "threads":
+            scope, thread_id = unquote(parts[3]), unquote(parts[5])
+            if not scope or not thread_id:
+                self._send(HTTPStatus.BAD_REQUEST, {"error": "scope and thread id are required"})
+                return
+            try:
+                result = self._run(
+                    self._control_server.owner.control.purge_thread(
+                        scope,
+                        thread_id,
+                        timeout=timeout,
+                    )
+                )
+                self._send(HTTPStatus.OK, result.to_json())
+            except FutureTimeoutError:
+                self._send(HTTPStatus.GATEWAY_TIMEOUT, {"error": "purge timed out"})
+            except Exception:
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "purge failed"})
+            return
         if not path.startswith("/v1/sandboxes/"):
             self._send(HTTPStatus.NOT_FOUND, {"error": "route not found"})
             return
@@ -176,7 +213,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
             result = self._run(
                 self._control_server.owner.control.dispose_sandbox(
                     instance_id,
-                    timeout=self._control_server.owner.dispose_timeout,
+                    timeout=timeout,
                 )
             )
             status = HTTPStatus.OK if result.status.value != "failed" else HTTPStatus.CONFLICT
@@ -207,8 +244,8 @@ class SandboxControlServer:
     ) -> None:
         if not source_id:
             raise ValueError("source_id must not be empty")
-        if dispose_timeout <= 0:
-            raise ValueError("dispose_timeout must be positive")
+        if not math.isfinite(dispose_timeout) or dispose_timeout <= 0:
+            raise ValueError("dispose_timeout must be finite and positive")
         self.control = control
         self.source_id = source_id
         self.dispose_timeout = dispose_timeout

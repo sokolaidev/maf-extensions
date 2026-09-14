@@ -5,7 +5,14 @@ import warnings as _warnings
 from ._app import SandboxConsole
 from ._client import CompositeControl, ControlEndpointError, HttpControl, discover_controls
 from ._control import HyperlightControl, MemoryControl, SandboxControl
-from ._models import DisposalResult, DisposalStatus, SandboxRecord, SandboxState
+from ._models import (
+    DisposalResult,
+    DisposalStatus,
+    PurgeResult,
+    PurgeStatus,
+    SandboxRecord,
+    SandboxState,
+)
 from ._server import EndpointManifest, SandboxControlServer, runtime_directory
 
 __all__ = [
@@ -18,6 +25,8 @@ __all__ = [
     "HyperlightControl",
     "MafSandboxTuiExperimentalWarning",
     "MemoryControl",
+    "PurgeResult",
+    "PurgeStatus",
     "SandboxConsole",
     "SandboxControl",
     "SandboxControlServer",

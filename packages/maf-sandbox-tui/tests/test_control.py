@@ -8,14 +8,17 @@ from dataclasses import dataclass, replace
 from typing import cast
 
 import pytest
-from maf_sandbox import SandboxKey, SandboxRouter
+from maf_sandbox import SandboxKey, SandboxRouter, ScopePurge
 
 from maf_sandbox_tui import (
+    CompositeControl,
     DisposalStatus,
     EndpointManifest,
     HttpControl,
     HyperlightControl,
     MemoryControl,
+    PurgeResult,
+    PurgeStatus,
     SandboxControlServer,
     SandboxRecord,
     SandboxState,
@@ -51,6 +54,7 @@ class _Router:
         self.inventory = inventory
         self.replacement = replacement
         self.calls: list[tuple[SandboxKey, str, str | None, float]] = []
+        self.scope_calls: list[tuple[str, str]] = []
 
     async def dispose_kind(
         self,
@@ -63,6 +67,16 @@ class _Router:
         self.calls.append((key, kind, instance_id, timeout))
         self.inventory.records = [self.replacement]
         return True
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        self.scope_calls.append((scope, thread_id))
+        before = len(self.inventory.records)
+        self.inventory.records = [
+            item
+            for item in self.inventory.records
+            if (item.key.scope, item.key.thread_id) != (scope, thread_id)
+        ]
+        return ScopePurge(before - len(self.inventory.records))
 
 
 def test_record_json_round_trip_preserves_the_physical_identity():
@@ -94,6 +108,15 @@ def test_memory_control_disposes_only_the_named_generation():
     asyncio.run(check())
 
 
+def test_composite_control_cannot_confirm_a_purge_without_hosts():
+    async def check() -> None:
+        result = await CompositeControl(()).purge_thread("tenant-labs", "thread-1")
+        assert result.status is PurgeStatus.PARTIAL
+        assert result.disposed == 0
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_routes_exact_generation_and_preserves_replacement():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -111,6 +134,29 @@ def test_hyperlight_control_routes_exact_generation_and_preserves_replacement():
         assert result.status is DisposalStatus.DISPOSED
         assert router.calls == [(key, "codeact", "generation-a", 3.0)]
         assert [item.instance_id for item in await inventory.list_sandboxes()] == ["generation-b"]
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_purges_the_conversation_through_the_router():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        survivor = _Info(
+            SandboxKey("tenant-labs", "thread-2", "agent-1"),
+            "codeact",
+            "generation-b",
+        )
+        inventory = _Inventory([target, survivor])
+        router = _Router(inventory, survivor)
+        control = HyperlightControl(inventory, cast("SandboxRouter", router), source_id="agent-app")
+
+        result = await control.purge_thread("tenant-labs", "thread-1")
+
+        assert result.status is PurgeStatus.PURGED
+        assert result.disposed == 1
+        assert router.scope_calls == [("tenant-labs", "thread-1")]
+        assert [item.instance_id for item in inventory.records] == ["generation-b"]
 
     asyncio.run(check())
 
@@ -134,6 +180,56 @@ def test_loopback_endpoint_lists_and_disposes_end_to_end(tmp_path):
             assert result.status is DisposalStatus.DISPOSED
             assert len(await client.list_sandboxes()) == 2
         assert list(tmp_path.iterdir()) == []
+
+    asyncio.run(check())
+
+
+def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
+    async def check() -> None:
+        async with SandboxControlServer(
+            MemoryControl.demo(now=1_000),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ) as server:
+            client = HttpControl(server.manifest)
+            await HttpControl(EndpointManifest("manual", server.endpoint, 0)).health()
+            instance_id = "f2ecba87b2ce44659a66fd28fd0a1002"
+            record = await client.get_sandbox(instance_id)
+            assert record is not None
+            assert record.thread_id == "forecast-042"
+
+            purged = await client.purge_thread("tenant-labs", "forecast-042")
+            assert purged.status is PurgeStatus.PURGED
+            assert purged.disposed == 1
+            assert await client.get_sandbox(instance_id) is None
+
+    asyncio.run(check())
+
+
+def test_host_timeout_caps_a_shorter_client_purge_timeout(tmp_path):
+    class RecordingControl(MemoryControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.timeouts: list[float] = []
+
+        async def purge_thread(
+            self, scope: str, thread_id: str, *, timeout: float = 10.0
+        ) -> PurgeResult:
+            self.timeouts.append(timeout)
+            return await super().purge_thread(scope, thread_id, timeout=timeout)
+
+    async def check() -> None:
+        control = RecordingControl()
+        async with SandboxControlServer(
+            control,
+            source_id="test-host",
+            manifest_directory=tmp_path,
+            dispose_timeout=1.0,
+        ) as server:
+            client = HttpControl(server.manifest)
+            await client.purge_thread("scope", "long-client", timeout=9.0)
+            await client.purge_thread("scope", "short-client", timeout=0.25)
+        assert control.timeouts == [1.0, 0.25]
 
     asyncio.run(check())
 
