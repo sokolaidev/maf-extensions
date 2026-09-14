@@ -107,8 +107,8 @@ class Isolation(StrEnum):
     CONTAINER = "container"
     #: Syscall interception in a userspace kernel (gVisor-class), between namespaces and hardware.
     HARDENED_CONTAINER = "hardened_container"
-    #: A hypervisor boundary with a minimal or absent guest OS, and no ambient identity
-    #: reachable from inside (ACA Sandboxes, Firecracker, Kata as configured).
+    #: A hypervisor boundary with a minimal or absent guest OS, and only identity explicitly
+    #: provisioned for its workloads (ACA Sandboxes, Firecracker, Kata as configured).
     MICROVM = "microvm"
     #: A dedicated, full VM provisioned for this workload on remote infrastructure.
     VM = "vm"
@@ -318,10 +318,11 @@ def _positive_identity_seconds(value: object, field_name: str) -> None:
 
 @dataclass(frozen=True)
 class AttachedIdentity:
-    """Complete platform authority exposure, including an enforced orphan-lifetime bound.
+    """Declared platform authority, including an enforced orphan-lifetime bound.
 
-    The bound runs from creation and ends authority use even without host cleanup;
-    an idle setting or token expiry alone does not establish it.
+    A nonempty declaration covers every exposed channel. Its bound runs from creation
+    and ends authority use even without host cleanup; idle settings or token expiry
+    alone do not establish it. Declarations do not discover deployment configuration.
     """
 
     scope: IdentityScope = IdentityScope.NONE
@@ -1660,7 +1661,7 @@ class BackendDeclarations:
     #: for a mechanism whose verb list is fixed. An omitted declaration permits none, and the
     #: whole field is ignored unless the capability is declared.
     egress_method_tokens: frozenset[str] | None = frozenset()
-    #: Silence claims no ambient attachment. Backends must verify actual platform exposure.
+    #: No attachment within this policy contract; not a discovery result for deployment identity.
     attached_identity: AttachedIdentity = NO_ATTACHED_IDENTITY
 
 

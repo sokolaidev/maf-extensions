@@ -1674,8 +1674,7 @@ class AcasSandboxBackend:
                     self._registry.pop(registry_key, None)
                 await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
                 raise
-            # Non-fatal: the sandbox runs with SDK default policies. The service default is not
-            # known to include auto-delete, so recovery is operator-owned from here.
+            # The failed update leaves lifecycle state unconfirmed; recovery is operator-owned.
             logger.warning(
                 "acas backend: failed to configure lifecycle policy for sandbox %s; "
                 "it is labelled for recovery but no auto-delete timer was confirmed: %s",

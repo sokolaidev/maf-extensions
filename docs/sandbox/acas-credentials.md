@@ -2,7 +2,7 @@
 
 ACAS control-plane credentials authenticate the host's SDK operations. They remain outside the guest and are independent of host-tool user credentials, guest-provisioned tokens and platform-attached managed identity. `AcasSandboxConfig.credential_resolver` selects this authority; omitting it retains `DefaultAzureCredential`.
 
-Attached managed identity is configured on the sandbox group and is available through ACAS's platform surfaces. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. This is independent of the host credential selected below. See [sandbox group identity](backends/acas.md#sandbox-group-identity).
+ACAS supports managed identity configured on the sandbox group. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. Guest token acquisition was measured for M1's tested API, image and group configuration, as [sandbox group identity](backends/acas.md#sandbox-group-identity) records. The host credential selected below is independent of that configured guest authority.
 
 ## Request and cleanup authority
 
