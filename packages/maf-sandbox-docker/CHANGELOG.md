@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.20.1...maf-sandbox-docker-v0.21.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205))
+* **docker:** keep each backend bound to its resolved daemon ([#1175](https://github.com/sokolaidev/maf-extensions/issues/1175))
+* **docker:** freeze the guest around the tar-plane members, so the path check and the copy see one filesystem state ([#1162](https://github.com/sokolaidev/maf-extensions/issues/1162))
+
+### Fixes
+
+* **docker:** freeze the guest around the tar-plane members, so the path check and the copy see one filesystem state ([#1162](https://github.com/sokolaidev/maf-extensions/issues/1162)) ([b429840](https://github.com/sokolaidev/maf-extensions/commit/b429840ca96459ef981a14f2c0f25ce1209a2e9a))
+* **docker:** keep each backend bound to its resolved daemon ([#1175](https://github.com/sokolaidev/maf-extensions/issues/1175)) ([f0f88a4](https://github.com/sokolaidev/maf-extensions/commit/f0f88a4cdfd428dc235442ffa25cebad1b336984))
+* **sandbox:** rename sandbox agent key to agent_id ([#1205](https://github.com/sokolaidev/maf-extensions/issues/1205)) ([975c134](https://github.com/sokolaidev/maf-extensions/commit/975c1349d02c4f3bab055892bbb90908734a82db))
+
+
+### Documentation
+
+* remove issue references from package descriptions ([#1257](https://github.com/sokolaidev/maf-extensions/issues/1257)) ([1f2d5a5](https://github.com/sokolaidev/maf-extensions/commit/1f2d5a59b2d3c41e2f07c492905b88ec9f493d33))
+
 ## [0.20.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.20.0...maf-sandbox-docker-v0.20.1) (2026-09-12)
 
 > **Added after the release.** No wheel for 0.20.0 reached PyPI, so this is the version that first carries everything in the 0.20.0 section below — including its breaking change. Those entries are left where release-please wrote them rather than copied up; this version's release notes on GitHub list them in full.
