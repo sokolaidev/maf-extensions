@@ -132,7 +132,7 @@ Verified on 2026-09-14 in `swedencentral` with Python 3.13.12 and `azure-contain
 | Non-root guest, writable base | The file owner matched the guest UID, and the guest could append and remove it |
 | Non-root guest, direct protected destination | The guest write was refused while a separate host-plane control write succeeded |
 
-The group was empty before testing and Azure CLI confirmed it empty after fixture cleanup. The first isolated FILES_IN run exposed a fixture dependency: its outside-directory control expected a directory planted by earlier FILES_OUT tests. The same failure reproduced against unchanged baseline `4cd5068b`; explicitly preparing that control directory made the selected run independent. Missing transfer utilities and cleanup failures remain deterministic unit-test coverage rather than live image mutations.
+The group was empty before testing and Azure CLI confirmed it empty after fixture cleanup. The isolated FILES_IN fixture prepares its outside-control directory explicitly, so the selected run remains independent of FILES_OUT ordering. Missing transfer utilities and cleanup failures remain deterministic unit-test coverage rather than live image mutations.
 
 ### Suspending the sandbox cannot close the window
 
