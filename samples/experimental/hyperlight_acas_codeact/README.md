@@ -2,7 +2,7 @@
 
 One Fibonacci task, with the host selecting the sandbox from its environment. The default run asks an agent to write and execute Python; `--smoke` sends a fixed program through the same CodeAct tool without a model. Both check the tool's actual output and clean up before exiting.
 
-This is a **source-only experimental sample** because `maf-sandbox-hyperlight` has not been released. It depends on the Linux support in [PR #1231](https://github.com/sokolaidev/maf-extensions/pull/1231); this sample branch is based on that work. Unlike the numbered PyPI samples, run it from this repository's locked workspace. There is no PEP 723 block or claim that the published packages can run it yet.
+This is a **source-only experimental sample** because `maf-sandbox-hyperlight` has not been released. Unlike the numbered PyPI samples, run it from this repository's locked workspace. There is no PEP 723 block or claim that the published packages can run it yet.
 
 ## Selection
 
