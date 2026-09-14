@@ -33,6 +33,7 @@ _PACKAGES = {
     "maf-sandbox-deepagents": "maf_sandbox_deepagents",
     "maf-sandbox-docker": "maf_sandbox_docker",
     "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
+    "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
@@ -597,6 +598,108 @@ def _smoke_maf_sandbox_terraform() -> str:
     return "both engines require closed call isolation and disposal; no guest binaries imported"
 
 
+def _smoke_maf_sandbox_drawio() -> str:
+    import tempfile
+    from importlib.resources import files
+
+    from maf_sandbox import (
+        DEFAULT_CAPABILITIES,
+        Artifact,
+        Capability,
+        Isolation,
+        LandedArtifact,
+        OsFamily,
+        OutputSink,
+        SandboxRouter,
+        make_file_system_sink,
+    )
+    from maf_sandbox.maf import list_no_files, make_caller_context
+    from maf_sandbox.testing import (
+        FAKE_BACKEND_DECLARATIONS,
+        InProcessSandbox,
+        InProcessSandboxBackend,
+    )
+    from maf_sandbox_drawio import make_drawio_tools
+
+    program = files("maf_sandbox_drawio").joinpath("_renderer.py").read_text(encoding="utf-8")
+    if "def convert(" not in program:
+        raise SystemExit("FAIL: draw.io guest converter is missing")
+    source = (
+        '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>'
+        '<mxCell id="a" parent="1" vertex="1" value="Smoke &amp; check">'
+        '<mxGeometry as="geometry" x="10" y="20" width="160" height="80"/>'
+        "</mxCell></root></mxGraphModel>"
+    )
+    output = f'<mxfile><diagram name="Page-1">{source}</diagram></mxfile>'
+
+    class _Producing(InProcessSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            await self.write_file("diagram.drawio", output, working_directory=working_directory)
+            return result
+
+    sandbox = _Producing()
+    written = _recording(sandbox)
+    backend = InProcessSandboxBackend(
+        sandbox,
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            os_families=frozenset({OsFamily.POSIX}),
+        ),
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    with tempfile.TemporaryDirectory(prefix="drawio-smoke-") as directory:
+        output_directory = pathlib.Path(directory)
+
+        async def deliver(artifact: Artifact) -> LandedArtifact:
+            if artifact.call_id is None:
+                raise SystemExit("FAIL: draw.io delivered an artifact without a call ID")
+            sink = make_file_system_sink(output_directory / artifact.call_id)
+            return await sink.deliver(artifact)
+
+        [tool] = make_drawio_tools(
+            router,
+            "smoke",
+            make_caller_context(list_no_files, lambda: "s", lambda: "t"),
+            OutputSink(deliver, per_call=True),
+        )
+        if tool.name != "create_drawio":
+            raise SystemExit(f"FAIL: expected create_drawio, got {tool.name!r}")
+        refused = asyncio.run(tool.func(xml="x" * (1024 * 1024 + 1)))
+        if "1 MiB" not in str(refused) or backend.keys or any(output_directory.iterdir()):
+            raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
+        result = asyncio.run(tool.func(xml=source))
+        destinations = list(output_directory.glob("*/diagram.drawio"))
+        if not str(result).startswith("diagram.drawio (") or len(destinations) != 1:
+            raise SystemExit(f"FAIL: draw.io did not deliver an artifact: {result!r}")
+        [destination] = destinations
+        landed_call_id = destination.parent.name
+        if destination.read_text(encoding="utf-8") != output:
+            raise SystemExit("FAIL: draw.io did not preserve the converter's output")
+    if len(sandbox.commands) != 1:
+        raise SystemExit(f"FAIL: expected one draw.io converter execution: {sandbox.commands!r}")
+    command, guest_directory, _ = sandbox.commands[0]
+    if landed_call_id != guest_directory.rsplit("/", 1)[-1]:
+        raise SystemExit("FAIL: draw.io landed the output under a different call ID")
+    expected = "python3 -I renderer.py --preserve-layout true --direction TB --timeout 54.0"
+    if command != expected:
+        raise SystemExit(f"FAIL: unexpected draw.io converter command: {command!r}")
+    if written.get(f"{guest_directory}/input.xml") != source:
+        raise SystemExit("FAIL: draw.io did not upload the model's XML")
+    if written.get(f"{guest_directory}/renderer.py") != program:
+        raise SystemExit("FAIL: draw.io did not upload its packaged converter")
+    if len(set(backend.keys)) != 1 or not backend.disposed:
+        raise SystemExit("FAIL: draw.io did not acquire and dispose one sandbox key")
+    return (
+        "create_drawio uploads XML and its packaged converter, executes fixed argv, "
+        "delivers diagram.drawio under its call ID and disposes; oversized input is refused "
+        "before acquiring"
+    )
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -604,6 +707,7 @@ _SMOKES = {
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-deepagents": _smoke_maf_sandbox_deepagents,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
+    "maf-sandbox-drawio": _smoke_maf_sandbox_drawio,
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,

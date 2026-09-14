@@ -14,6 +14,7 @@ members = [
     "maf-sandbox-codeact",
     "maf-sandbox-deepagents",
     "maf-sandbox-docker",
+    "maf-sandbox-drawio",
     "maf-sandbox-hyperlight",
     "maf-sandbox-otel",
     "maf-sandbox-terraform",
@@ -1264,6 +1265,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
+
+[[package]]
+name = "maf-sandbox-drawio"
+version = "0.1.0"
+source = { editable = "packages/maf-sandbox-drawio" }
+dependencies = [
+    { name = "agent-framework-core" },
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-framework-core", specifier = ">=1.18.0,<2" },
+    { name = "maf-sandbox", editable = "packages/maf-sandbox" },
+]
 
 [[package]]
 name = "maf-sandbox-hyperlight"
