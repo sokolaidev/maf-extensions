@@ -27,6 +27,10 @@ PROTOCOL_VERSION = 1
 _CONTROL_FAILURE_STATUS = HTTPStatus(500)
 
 
+def _valid_process_id(value: object) -> bool:
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
 def _windows_runtime_directory() -> Path:
     local = os.environ.get("LOCALAPPDATA")
     if local:
@@ -55,12 +59,14 @@ class EndpointManifest:
 
     source_id: str
     endpoint: str
-    process_id: int
+    process_id: int | None
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
         if not self.source_id:
             raise ValueError("endpoint manifest source_id must be a nonempty string")
+        if not _valid_process_id(self.process_id):
+            raise ValueError("endpoint manifest process_id must be an integer or null")
         parts = urlsplit(self.endpoint)
         try:
             host, port = parts.hostname, parts.port
@@ -98,14 +104,14 @@ class EndpointManifest:
         process_id, version = data.get("process_id"), data.get("protocol_version")
         if not all(isinstance(item, str) and item for item in (source_id, endpoint)):
             raise ValueError("endpoint manifest identity fields must be nonempty strings")
-        if isinstance(process_id, bool) or not isinstance(process_id, int):
-            raise ValueError("endpoint manifest process_id must be an integer")
+        if not _valid_process_id(process_id):
+            raise ValueError("endpoint manifest process_id must be an integer or null")
         if isinstance(version, bool) or not isinstance(version, int) or version != PROTOCOL_VERSION:
             raise ValueError(f"unsupported control protocol version {version!r}")
         return cls(
             cast("str", source_id),
             cast("str", endpoint),
-            process_id,
+            cast("int | None", process_id),
         )
 
 

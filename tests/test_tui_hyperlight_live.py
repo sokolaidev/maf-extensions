@@ -41,17 +41,32 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
         backend = HyperlightSandboxBackend()
         monitored = MonitoredSandboxBackend(backend)
         router = SandboxRouter([monitored])
+        lifecycle_gate = asyncio.Lock()
+
+        async def acquire(key: SandboxKey):
+            async with lifecycle_gate:
+                return await router.acquire(key, _SPEC)
+
+        async def purge(scope: str, thread_id: str):
+            async with lifecycle_gate:
+                return await router.dispose_scope(scope, thread_id)
+
         first_key = SandboxKey("mst-live", "delete", "worker")
         second_key = SandboxKey("mst-live", "purge", "worker")
         try:
-            first = await router.acquire(first_key, _SPEC)
-            second = await router.acquire(second_key, _SPEC)
+            first = await acquire(first_key)
+            second = await acquire(second_key)
             first_result = await first.run_code("print(6 * 7)", timeout=5)
             second_result = await second.run_code("print(7 * 8)", timeout=5)
             assert first_result.stdout == "42\n"
             assert second_result.stdout == "56\n"
 
-            control = HyperlightControl(monitored, router, source_id="hyperlight-live")
+            control = HyperlightControl(
+                monitored,
+                router,
+                source_id="hyperlight-live",
+                quiesced_purge=purge,
+            )
             async with SandboxControlServer(
                 control,
                 source_id="hyperlight-live",

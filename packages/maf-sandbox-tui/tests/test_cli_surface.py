@@ -234,7 +234,25 @@ def test_direct_endpoint_and_source_options_reach_the_named_host(capsys, tmp_pat
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["source_id"] == "direct-label"
     assert payload[0]["status"] == "healthy"
+    assert payload[0]["process_id"] is None
     assert not payload[0]["endpoint"].endswith("/")
+
+
+def test_direct_endpoint_plain_hosts_renders_an_unknown_pid(capsys, tmp_path):
+    async def check() -> None:
+        async with SandboxControlServer(
+            MemoryControl.demo(),
+            source_id="server-label",
+            manifest_directory=tmp_path,
+        ) as server:
+            await asyncio.to_thread(
+                cli_module.main,
+                ["hosts", "--endpoint", server.endpoint, "--source", "direct-label"],
+            )
+
+    asyncio.run(check())
+
+    assert "direct-label  healthy  -" in capsys.readouterr().out
 
 
 def test_delete_accepts_timeout_and_plain_output(capsys):

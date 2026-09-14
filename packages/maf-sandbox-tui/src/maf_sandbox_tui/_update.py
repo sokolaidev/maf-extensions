@@ -116,14 +116,14 @@ def current_version() -> Version:
         raise UpdateError(f"the installed MST version is invalid: {error}") from error
 
 
-def _command_output(command: list[str]) -> str | None:
+def _command_output(command: list[str], *, timeout: float = _MANAGER_TIMEOUT) -> str | None:
     try:
         completed = subprocess.run(
             command,
             capture_output=True,
             check=False,
             text=True,
-            timeout=_MANAGER_TIMEOUT,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -143,13 +143,15 @@ def _owned_environment(prefix: Path, root: Path) -> bool:
     )
 
 
-def _pipx_root(pipx: str, *, global_install: bool) -> Path | None:
+def _pipx_root(
+    pipx: str, *, global_install: bool, timeout: float = _MANAGER_TIMEOUT
+) -> Path | None:
     variable = "PIPX_GLOBAL_HOME" if global_install else "PIPX_HOME"
     command = [pipx, "environment"]
     if global_install:
         command.append("--global")
     command.extend(("--value", variable))
-    output = _command_output(command)
+    output = _command_output(command, timeout=timeout)
     return None if output is None else Path(output) / "venvs"
 
 
@@ -157,19 +159,20 @@ def inspect_installation(
     *,
     prefix: Path | None = None,
     base_prefix: Path | None = None,
+    timeout: float = _MANAGER_TIMEOUT,
 ) -> Installation:
     """Identify only managers that can prove they own the running environment."""
     active = Path(sys.prefix) if prefix is None else prefix
     base = Path(sys.base_prefix) if base_prefix is None else base_prefix
 
     if uv := shutil.which("uv"):
-        if output := _command_output([uv, "tool", "dir"]):
+        if output := _command_output([uv, "tool", "dir"], timeout=timeout):
             if _owned_environment(active, Path(output)):
                 return Installation(InstallationKind.UV_TOOL, active, uv)
 
     if pipx := shutil.which("pipx"):
         for global_install in (False, True):
-            root = _pipx_root(pipx, global_install=global_install)
+            root = _pipx_root(pipx, global_install=global_install, timeout=timeout)
             if root is not None and _owned_environment(active, root):
                 return Installation(
                     InstallationKind.PIPX,
@@ -246,7 +249,9 @@ def check_for_update(
     return UpdateCheck(
         current=current_version(),
         latest=latest_version(prereleases=prereleases, timeout=timeout),
-        installation=inspect_installation() if installation is None else installation,
+        installation=(
+            inspect_installation(timeout=timeout) if installation is None else installation
+        ),
         prereleases=prereleases,
     )
 
@@ -266,7 +271,7 @@ def _upgrade_command(installation: Installation, target: Version) -> list[str]:
     raise UpdateError("this MST installation cannot update itself")
 
 
-def _fresh_installed_version() -> Version:
+def _fresh_installed_version(*, timeout: float = _MANAGER_TIMEOUT) -> Version:
     command = [
         sys.executable,
         "-c",
@@ -278,7 +283,7 @@ def _fresh_installed_version() -> Version:
             capture_output=True,
             check=False,
             text=True,
-            timeout=_MANAGER_TIMEOUT,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError(f"could not verify the updated MST environment: {error}") from error
@@ -313,7 +318,7 @@ def perform_update(
     capture_output: bool = False,
 ) -> UpdateResult:
     """Delegate an explicit update to the manager that owns this executable."""
-    owner = inspect_installation() if installation is None else installation
+    owner = inspect_installation(timeout=timeout) if installation is None else installation
     previous = current_version()
     if target is None:
         selected = latest_version(prereleases=prereleases, timeout=timeout)
@@ -350,7 +355,7 @@ def perform_update(
         suffix = f": {detail}" if detail else ""
         raise UpdateError(f"{owner.kind.value} could not update MST{suffix}")
 
-    installed = _fresh_installed_version()
+    installed = _fresh_installed_version(timeout=timeout)
     if installed != selected:
         raise UpdateError(
             f"{owner.kind.value} completed, but MST {installed} is installed instead of {selected}"

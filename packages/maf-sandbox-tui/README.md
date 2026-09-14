@@ -37,7 +37,7 @@ mst delete INSTANCE_ID [--timeout 10] [--yes] [--json]
 mst purge-thread --scope SCOPE --thread ID [--timeout 10] [--yes] [--json]
 ```
 
-Version checks are explicit and read the fixed HTTPS PyPI project endpoint; MST never checks in the background. An update is delegated only when the running executable belongs to an isolated `uv tool` or pipx environment. `mst update --to VERSION` also permits an explicit rollback and verifies the installed version after the manager finishes. In a project or manually managed virtual environment, MST refuses to rewrite its own dependencies and prints the corresponding `uv lock`/`uv sync` command instead. `--prerelease` includes non-yanked prereleases when choosing the newest version, and `--timeout` bounds both version lookup and the package-manager process.
+Version checks are explicit and read the fixed HTTPS PyPI project endpoint; MST never checks in the background. An update is delegated only when the running executable belongs to an isolated `uv tool` or pipx environment. `mst update --to VERSION` also permits an explicit rollback and verifies the installed version after the manager finishes. In a project or manually managed virtual environment, MST refuses to rewrite its own dependencies and prints the corresponding `uv lock`/`uv sync` command instead. `--prerelease` includes non-yanked prereleases when choosing the newest version, and `--timeout` bounds each manager probe, version lookup, package-manager process and post-update verification.
 
 `delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
 
@@ -55,7 +55,17 @@ from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, SandboxC
 backend = HyperlightSandboxBackend()
 monitored = MonitoredSandboxBackend(backend)
 router = SandboxRouter([monitored], min_cleanup=Cleanup.RESET)
-control = HyperlightControl(monitored, router, source_id="research-agent")
+async def purge_conversation(scope: str, thread_id: str):
+    # This host-owned boundary blocks new work and waits for in-flight work across replicas.
+    async with application_lifecycle.quiesce(scope, thread_id):
+        return await router.dispose_scope(scope, thread_id)
+
+control = HyperlightControl(
+    monitored,
+    router,
+    source_id="research-agent",
+    quiesced_purge=purge_conversation,
+)
 
 if settings.enable_local_sandbox_control:
     # Entering the context is the action that opens the loopback listener.
@@ -67,8 +77,10 @@ else:
 
 When enabled, the server binds an ephemeral port on the literal loopback address `127.0.0.1` and publishes the address in a per-user discovery file. `mst` discovers responsive local endpoints automatically. There are deliberately no keys in this local prototype. Loopback is machine-local, not user-private: any local process that can reach the listener can use it while the host has it enabled. Do not proxy, forward or expose the listener outside the host; remote control requires a separately designed authenticated transport.
 
+`application_lifecycle.quiesce` represents the host's conversation scheduler; it is not supplied by MST. Every path that starts work for that conversation, on every application replica, must participate in the same boundary. Omit `quiesced_purge` if the host cannot provide that guarantee; MST will report the purge as partial without calling the router.
+
 ## Control protocol
 
-Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` and verifies that the physical instance disappeared. Conversation purge calls `SandboxRouter.dispose_scope` under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
+Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` and verifies that the physical instance disappeared. Conversation purge invokes the host-provided quiesced purge under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
 
 Live inventory comes from acquisitions and disposals that pass through `MonitoredSandboxBackend`; applications must register that wrapper with the router instead of registering the wrapped backend directly. The wrapper depends only on the `maf-sandbox` protocol and leaves backend packages unchanged. `maf-sandbox-otel` remains the complementary history and audit surface.

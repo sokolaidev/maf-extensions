@@ -86,7 +86,10 @@ class HttpControl:
             isinstance(version, bool)
             or not isinstance(version, int)
             or version != PROTOCOL_VERSION
-            or (self.manifest.process_id != 0 and data.get("source_id") != self.manifest.source_id)
+            or (
+                self.manifest.process_id is not None
+                and data.get("source_id") != self.manifest.source_id
+            )
         ):
             raise ControlEndpointError("control endpoint returned an incompatible health record")
 
@@ -335,7 +338,9 @@ def read_manifests(directory: Path | None = None) -> tuple[EndpointManifest, ...
     manifests: list[EndpointManifest] = []
     for path in sorted(root.glob("*.json")):
         try:
-            manifests.append(EndpointManifest.from_json(json.loads(path.read_text("utf-8"))))
+            manifest = EndpointManifest.from_json(json.loads(path.read_text("utf-8")))
+            if manifest.process_id is not None:
+                manifests.append(manifest)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
     return tuple(manifests)

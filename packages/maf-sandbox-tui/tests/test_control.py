@@ -547,7 +547,12 @@ def test_monitored_backend_purges_only_the_named_conversation():
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
         router = SandboxRouter([monitored])
-        control = HyperlightControl(monitored, router, source_id="agent-app")
+        control = HyperlightControl(
+            monitored,
+            router,
+            source_id="agent-app",
+            quiesced_purge=router.dispose_scope,
+        )
         target = SandboxKey("tenant-labs", "thread-1", "agent-1")
         survivor = SandboxKey("tenant-labs", "thread-2", "agent-1")
         spec = SandboxSpec(kind="codeact", work_dir=None)
@@ -609,7 +614,7 @@ def test_hyperlight_control_reports_a_concurrent_replacement_as_stale():
     asyncio.run(check())
 
 
-def test_hyperlight_control_reports_a_concurrent_disposal_as_not_found():
+def test_hyperlight_control_reports_a_router_failure_even_when_the_instance_disappears():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         target = _Info(key, "codeact", "generation-a")
@@ -619,8 +624,8 @@ def test_hyperlight_control_reports_a_concurrent_disposal_as_not_found():
 
         result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
 
-        assert result.status is DisposalStatus.NOT_FOUND
-        assert result.message == "The sandbox is already gone or its generation changed."
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "A registered backend reported a disposal failure."
 
     asyncio.run(check())
 
@@ -641,6 +646,41 @@ def test_hyperlight_control_requires_a_positive_backend_disposal_receipt():
     asyncio.run(check())
 
 
+def test_hyperlight_control_preserves_a_router_failure_after_a_positive_receipt():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None, succeeds=False, disposed=1)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
+
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "A registered backend reported a disposal failure."
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_refuses_an_unfenced_conversation_purge():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.purge_thread(key.scope, key.thread_id)
+
+        assert result.status is PurgeStatus.PARTIAL
+        assert result.disposed == 0
+        assert "did not configure a quiescence boundary" in result.message
+        assert router.scope_calls == []
+        assert inventory.records == [target]
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_purges_the_conversation_through_the_router():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -652,7 +692,12 @@ def test_hyperlight_control_purges_the_conversation_through_the_router():
         )
         inventory = _Inventory([target, survivor])
         router = _Router(inventory, survivor)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesced_purge=router.dispose_scope,
+        )
 
         result = await control.purge_thread("tenant-labs", "thread-1")
 
@@ -731,7 +776,12 @@ def test_hyperlight_control_bounds_post_purge_inventory():
         target = _Info(key, "codeact", "generation-a")
         inventory = SlowAfterPurgeInventory([target])
         router = ImmediateRouter(inventory, target)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesced_purge=router.dispose_scope,
+        )
 
         result = await control.purge_thread("tenant-labs", "thread-1", timeout=0.01)
 
@@ -774,7 +824,7 @@ def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
             manifest_directory=tmp_path,
         ) as server:
             client = HttpControl(server.manifest)
-            await HttpControl(EndpointManifest("manual", server.endpoint, 0)).health()
+            await HttpControl(EndpointManifest("manual", server.endpoint, None)).health()
             instance_id = "f2ecba87b2ce44659a66fd28fd0a1002"
             record = await client.get_sandbox(instance_id)
             assert record is not None
@@ -927,8 +977,27 @@ def test_endpoint_manifest_refuses_nonlocal_or_ambiguous_urls(endpoint):
         EndpointManifest("invalid", endpoint, 42)
 
 
+def test_endpoint_manifest_accepts_an_unknown_direct_endpoint_process():
+    manifest = EndpointManifest("manual", "http://127.0.0.1:9000", None)
+
+    assert EndpointManifest.from_json(manifest.to_json()) == manifest
+
+
+@pytest.mark.parametrize("process_id", [True, "42"])
+def test_endpoint_manifest_refuses_a_malformed_process_identity(process_id):
+    with pytest.raises(ValueError, match="integer or null"):
+        EndpointManifest("invalid", "http://127.0.0.1:9000", process_id)
+
+    value = EndpointManifest("invalid", "http://127.0.0.1:9000", None).to_json()
+    value["process_id"] = process_id
+    with pytest.raises(ValueError, match="integer or null"):
+        EndpointManifest.from_json(value)
+
+
 def test_discovery_ignores_incompatible_and_malformed_files(tmp_path):
     (tmp_path / "invalid.json").write_text("{", encoding="utf-8")
+    direct = EndpointManifest("manual", "http://127.0.0.1:1", None).to_json()
+    (tmp_path / "direct.json").write_text(json.dumps(direct), encoding="utf-8")
     incompatible = EndpointManifest("old", "http://127.0.0.1:1", 42).to_json()
     incompatible["protocol_version"] = 2
     (tmp_path / "old.json").write_text(json.dumps(incompatible), encoding="utf-8")

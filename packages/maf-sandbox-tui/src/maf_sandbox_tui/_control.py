@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -293,7 +293,11 @@ class MonitoredSandboxBackend:
 
 
 class HyperlightControl:
-    """Expose a monitored Hyperlight backend through safe router disposal."""
+    """Expose a monitored Hyperlight backend through safe router disposal.
+
+    A ``quiesced_purge`` callback must fence new conversation work across every host replica.
+    Omitting it disables conversation purge while retaining exact-instance disposal.
+    """
 
     def __init__(
         self,
@@ -301,10 +305,12 @@ class HyperlightControl:
         router: SandboxRouter,
         *,
         source_id: str,
+        quiesced_purge: Callable[[str, str], Awaitable[ScopePurge]] | None = None,
     ) -> None:
         self._backend = backend
         self._router = router
         self._source_id = source_id
+        self._quiesced_purge = quiesced_purge
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
         """Snapshot the backend registry without transferring sandbox authority."""
@@ -373,6 +379,12 @@ class HyperlightControl:
             for current in after
         )
         disposed = sum(observed)
+        if not ok:
+            return DisposalResult(
+                DisposalStatus.FAILED,
+                instance_id,
+                "A registered backend reported a disposal failure.",
+            )
         if instance_id not in remaining and ok and disposed > 0:
             return DisposalResult(
                 DisposalStatus.DISPOSED,
@@ -402,11 +414,20 @@ class HyperlightControl:
     async def purge_thread(
         self, scope: str, thread_id: str, *, timeout: float = 10.0
     ) -> PurgeResult:
-        """Purge one conversation through every backend registered with the owning router."""
+        """Purge one conversation through the host's quiescence boundary."""
+        if self._quiesced_purge is None:
+            return PurgeResult(
+                PurgeStatus.PARTIAL,
+                scope,
+                thread_id,
+                0,
+                "Conversation purge is disabled because the host did not configure "
+                "a quiescence boundary.",
+            )
         disposed = 0
         try:
             async with asyncio.timeout(timeout):
-                purged = await self._router.dispose_scope(scope, thread_id)
+                purged = await self._quiesced_purge(scope, thread_id)
                 disposed = purged.disposed
                 remaining = tuple(
                     item

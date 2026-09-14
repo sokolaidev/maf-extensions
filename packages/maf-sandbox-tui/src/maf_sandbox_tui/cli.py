@@ -376,7 +376,7 @@ async def _hosts(probes: Sequence[_HostProbe], *, as_json: bool) -> int:
                 (
                     str(item["source_id"]),
                     str(item["status"]),
-                    str(item["process_id"]),
+                    "-" if item["process_id"] is None else str(item["process_id"]),
                     str(item["endpoint"]),
                     "" if item["error"] is None else str(item["error"]),
                 )
@@ -700,7 +700,7 @@ async def _run(arguments: argparse.Namespace) -> int:
     if arguments.command in {"version", "update"}:
         return await _dispatch(arguments, lambda: ())
     if arguments.endpoint:
-        manifest = EndpointManifest(arguments.source, arguments.endpoint.rstrip("/"), 0)
+        manifest = EndpointManifest(arguments.source, arguments.endpoint.rstrip("/"), None)
         return await _dispatch(arguments, lambda: (manifest,))
     if arguments.demo:
         with tempfile.TemporaryDirectory(prefix="mst-demo-") as temporary:

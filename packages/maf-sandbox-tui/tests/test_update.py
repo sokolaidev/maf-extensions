@@ -48,12 +48,15 @@ def test_inspection_recognizes_only_the_matching_uv_tool_environment(monkeypatch
     monkeypatch.setattr(
         update_module,
         "_command_output",
-        lambda command: str(tool_root) if command == ["uv", "tool", "dir"] else None,
+        lambda command, *, timeout: (
+            str(tool_root) if command == ["uv", "tool", "dir"] and timeout == 0.25 else None
+        ),
     )
 
     installation = update_module.inspect_installation(
         prefix=prefix,
         base_prefix=tmp_path / "python",
+        timeout=0.25,
     )
 
     assert installation == Installation(InstallationKind.UV_TOOL, prefix, "uv")
@@ -69,14 +72,17 @@ def test_inspection_recognizes_a_global_pipx_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(
         update_module,
         "_pipx_root",
-        lambda _pipx, *, global_install: (
-            tmp_path / "global" / "venvs" if global_install else tmp_path / "local" / "venvs"
+        lambda _pipx, *, global_install, timeout: (
+            (tmp_path / "global" / "venvs" if global_install else tmp_path / "local" / "venvs")
+            if timeout == 0.5
+            else None
         ),
     )
 
     installation = update_module.inspect_installation(
         prefix=prefix,
         base_prefix=tmp_path / "python",
+        timeout=0.5,
     )
 
     assert installation.kind is InstallationKind.PIPX
@@ -101,13 +107,19 @@ def test_uv_update_delegates_an_exact_release_and_verifies_it(monkeypatch, tmp_p
     installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
     commands: list[list[str]] = []
     timeouts: list[float] = []
+    verification_timeouts: list[float] = []
     monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
     monkeypatch.setattr(
         update_module,
         "latest_version",
         lambda **_kwargs: Version("0.2.0"),
     )
-    monkeypatch.setattr(update_module, "_fresh_installed_version", lambda: Version("0.2.0"))
+
+    def fresh(*, timeout):
+        verification_timeouts.append(timeout)
+        return Version("0.2.0")
+
+    monkeypatch.setattr(update_module, "_fresh_installed_version", fresh)
 
     def run(command, **_kwargs):
         commands.append(command)
@@ -116,10 +128,15 @@ def test_uv_update_delegates_an_exact_release_and_verifies_it(monkeypatch, tmp_p
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    result = update_module.perform_update(installation=installation, capture_output=True)
+    result = update_module.perform_update(
+        installation=installation,
+        capture_output=True,
+        timeout=0.25,
+    )
 
     assert commands == [["uv", "tool", "install", "maf-sandbox-tui@0.2.0"]]
-    assert timeouts == [10.0]
+    assert timeouts == [0.25]
+    assert verification_timeouts == [0.25]
     assert result.status == "updated"
     assert result.installed == Version("0.2.0")
 
@@ -133,7 +150,11 @@ def test_pipx_can_roll_back_to_an_explicit_version(monkeypatch, tmp_path):
     )
     commands: list[list[str]] = []
     monkeypatch.setattr(update_module, "current_version", lambda: Version("0.2.0"))
-    monkeypatch.setattr(update_module, "_fresh_installed_version", lambda: Version("0.1.0"))
+    monkeypatch.setattr(
+        update_module,
+        "_fresh_installed_version",
+        lambda *, timeout: Version("0.1.0") if timeout == 10.0 else Version("0.0.0"),
+    )
 
     def run(command, **_kwargs):
         commands.append(command)
@@ -163,6 +184,23 @@ def test_update_reports_a_bounded_package_manager_timeout(monkeypatch, tmp_path)
             timeout=0.25,
             installation=installation,
         )
+
+
+def test_update_propagates_timeout_to_the_installation_probe(monkeypatch, tmp_path):
+    installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
+    received: list[float] = []
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.2.0"))
+
+    def inspect(*, timeout):
+        received.append(timeout)
+        return installation
+
+    monkeypatch.setattr(update_module, "inspect_installation", inspect)
+
+    result = update_module.perform_update(target="0.2.0", timeout=0.25)
+
+    assert result.status == "current"
+    assert received == [0.25]
 
 
 def test_version_command_reports_why_workspace_installation_cannot_self_update(
@@ -293,7 +331,7 @@ def test_invalid_target_version_is_reported_by_the_cli(monkeypatch, capsys, tmp_
     monkeypatch.setattr(
         update_module,
         "inspect_installation",
-        lambda: Installation(InstallationKind.UV_TOOL, tmp_path, "uv"),
+        lambda *, timeout: Installation(InstallationKind.UV_TOOL, tmp_path, "uv"),
     )
 
     with pytest.raises(SystemExit) as raised:
@@ -348,13 +386,16 @@ def test_command_output_returns_none_for_every_unusable_result(outcome, monkeypa
 def test_pipx_root_reads_each_manager_environment(global_install, variable, prefix, monkeypatch):
     commands: list[list[str]] = []
 
-    def output(command):
+    def output(command, *, timeout):
         commands.append(command)
+        assert timeout == 0.25
         return "C:/pipx"
 
     monkeypatch.setattr(update_module, "_command_output", output)
 
-    assert update_module._pipx_root("pipx", global_install=global_install) == Path("C:/pipx/venvs")
+    assert update_module._pipx_root("pipx", global_install=global_install, timeout=0.25) == Path(
+        "C:/pipx/venvs"
+    )
     assert commands == [["pipx", "environment", *prefix, "--value", variable]]
 
 
@@ -434,13 +475,20 @@ def test_check_for_update_discovers_the_installation(monkeypatch, tmp_path):
     installation = Installation(InstallationKind.SYSTEM, tmp_path)
     monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
     monkeypatch.setattr(update_module, "latest_version", lambda **_kwargs: Version("0.2.0"))
-    monkeypatch.setattr(update_module, "inspect_installation", lambda: installation)
+    received: list[float] = []
+
+    def inspect(*, timeout):
+        received.append(timeout)
+        return installation
+
+    monkeypatch.setattr(update_module, "inspect_installation", inspect)
 
     checked = update_module.check_for_update(prereleases=True, timeout=0.1)
 
     assert checked.status == "update_available"
     assert checked.installation is installation
     assert checked.to_json()["channel"] == "prerelease"
+    assert received == [0.1]
 
 
 def test_upgrade_command_requires_a_supported_available_manager(tmp_path):
@@ -548,7 +596,11 @@ def test_update_rejects_a_manager_version_mismatch(monkeypatch, tmp_path):
         "run",
         lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", ""),
     )
-    monkeypatch.setattr(update_module, "_fresh_installed_version", lambda: Version("0.3.0"))
+    monkeypatch.setattr(
+        update_module,
+        "_fresh_installed_version",
+        lambda *, timeout: Version("0.3.0") if timeout == 10.0 else Version("0.0.0"),
+    )
     installation = Installation(InstallationKind.UV_TOOL, tmp_path, "uv")
 
     with pytest.raises(UpdateError, match="0.3.0 is installed instead of 0.2.0"):
