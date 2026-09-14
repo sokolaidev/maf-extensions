@@ -76,6 +76,8 @@ The production launcher needs bounded output capture and process supervision. Sh
 
 ## Dependencies, egress and lockfiles
 
+The subsequent [egress investigation](terraform-egress.md) identifies exact registry, provider artifact and module hosts for both engines, with reproducible HTTP redirect evidence and separate image-build requirements.
+
 Start with an image containing a read-only filesystem mirror of explicitly selected providers and a CLI configuration containing only `filesystem_mirror`, with no `direct` fallback. Built-in `terraform_data` needs no external provider; the live probe also validates an installed `random` provider with networking disabled. A missing mirrored dependency is incomplete validation. A plugin cache alone is not an offline installation policy. Both CLIs document explicit provider installation configuration. [Terraform CLI configuration](https://developer.hashicorp.com/terraform/cli/config/config-file), [OpenTofu CLI configuration](https://opentofu.org/docs/cli/config/config-file/).
 
 A provider mirror does not supply remote module source packages. The initial contract supports staged local modules. Remote module and registry access needs a later dependency profile specifying provider identities, versions, checksums, module sources and required download hosts. There is no universal Terraform equivalent of Bicep's four hosts: provider registries can direct downloads elsewhere, and module sources extend beyond registries. A future allowlist must come from host configuration, never from the model's desired URLs; unrestricted runtime egress should not be an engine fallback. [Module source options](https://developer.hashicorp.com/terraform/language/modules/configuration).
