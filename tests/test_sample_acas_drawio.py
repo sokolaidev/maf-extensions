@@ -348,6 +348,11 @@ def test_sample_scaffold_is_the_canonical_copy():
 def test_run_unwinds_storage_backend_and_credentials(sample, monkeypatch, failure):
     for key in (*sample.SANDBOX_VARS, *sample.MODEL_VARS):
         monkeypatch.setenv(key, "test")
+    monkeypatch.setenv("GITHUB_RUN_ID", "9" * 20)
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "10")
+    thread_id = sample.conversation_id("sample-18")
+    monkeypatch.setattr(sample, "THREAD_ID", thread_id)
+    tool_threads = []
     store = InMemoryAgentFileStore()
     backend = SimpleNamespace(aclose=AsyncMock())
     router = SimpleNamespace(
@@ -379,10 +384,14 @@ def test_run_unwinds_storage_backend_and_credentials(sample, monkeypatch, failur
         assert backends == [backend] and isinstance(observer, sample.CallTimings)
         return router
 
+    def make_tools(router, agent_id, context, sink, **kwargs):
+        tool_threads.append(context.current_thread_id())
+        return [object()]
+
     monkeypatch.setattr(sample, "SandboxRouter", make_router)
     monkeypatch.setattr(sample, "DefaultAzureCredential", Credential)
     monkeypatch.setattr(sample, "InMemoryAgentFileStore", lambda: store)
-    monkeypatch.setattr(sample, "make_drawio_tools", lambda *args, **kwargs: [object()])
+    monkeypatch.setattr(sample, "make_drawio_tools", make_tools)
     monkeypatch.setattr(sample, "OpenAIChatClient", lambda **kwargs: object())
     monkeypatch.setattr(sample, "Agent", make_agent)
     monkeypatch.setattr(sample, "repair_diagram", flow)
@@ -399,5 +408,7 @@ def test_run_unwinds_storage_backend_and_credentials(sample, monkeypatch, failur
 
     asyncio.run(check())
     backend.aclose.assert_awaited_once()
-    router.dispose_scope.assert_awaited_once()
+    assert all(len(value) <= 63 for value in tool_threads)
+    assert tool_threads == [thread_id]
+    router.dispose_scope.assert_awaited_once_with(sample.SCOPE, thread_id)
     credential.__aexit__.assert_awaited_once()

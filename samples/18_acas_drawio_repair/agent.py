@@ -29,7 +29,6 @@ from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 from typing import Any
-from uuid import uuid4
 
 from _scaffold import (
     MEASURED,
@@ -309,16 +308,15 @@ async def run() -> int:
     if spec.egress != Egress.CLOSED or spec.egress_allow:
         raise RuntimeError("This sample requires closed guest egress")
     markdown = Path(__file__).with_name("architecture.md").read_text(encoding="utf-8")
-    thread_id = f"{THREAD_ID}-{uuid4().hex}"
     async with AsyncExitStack() as cleanup:
         backend = build_backend({**os.environ, **env})
         cleanup.push_async_callback(backend.aclose)
         router = SandboxRouter([backend], observer=CallTimings())
-        cleanup.push_async_callback(purge_scope, router, thread_id)
+        cleanup.push_async_callback(purge_scope, router, THREAD_ID)
         storage = StoredDiagrams(InMemoryAgentFileStore())
         cleanup.push_async_callback(storage.cleanup)
         credential = await cleanup.enter_async_context(DefaultAzureCredential())
-        context = make_caller_context(list_no_files, lambda: SCOPE, lambda: thread_id)
+        context = make_caller_context(list_no_files, lambda: SCOPE, lambda: THREAD_ID)
         [converter] = make_drawio_tools(
             router, AGENT_ID, context, storage.sink, image=image, direction="LR"
         )
