@@ -33,6 +33,7 @@ _PACKAGES = {
     "maf-sandbox-deepagents": "maf_sandbox_deepagents",
     "maf-sandbox-docker": "maf_sandbox_docker",
     "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
+    "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
@@ -597,6 +598,47 @@ def _smoke_maf_sandbox_terraform() -> str:
     return "both engines require closed call isolation and disposal; no guest binaries imported"
 
 
+def _smoke_maf_sandbox_drawio() -> str:
+    import dataclasses
+    from importlib.resources import files
+
+    from maf_sandbox import (
+        DEFAULT_CAPABILITIES,
+        Capability,
+        Isolation,
+        SandboxRouter,
+        make_file_system_sink,
+    )
+    from maf_sandbox.maf import list_no_files, make_caller_context
+    from maf_sandbox.testing import (
+        FAKE_BACKEND_DECLARATIONS,
+        InProcessSandbox,
+        InProcessSandboxBackend,
+    )
+    from maf_sandbox_drawio import make_drawio_tools
+
+    program = files("maf_sandbox_drawio").joinpath("_renderer.py").read_text(encoding="utf-8")
+    if "def convert(" not in program:
+        raise SystemExit("FAIL: draw.io guest converter is missing")
+    backend = InProcessSandboxBackend(
+        InProcessSandbox(),
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+        ),
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    [tool] = make_drawio_tools(
+        router,
+        "smoke",
+        make_caller_context(list_no_files, lambda: "s", lambda: "t"),
+        make_file_system_sink(pathlib.Path.cwd() / "drawio-smoke"),
+    )
+    result = asyncio.run(tool.func(xml="x" * (1024 * 1024 + 1)))
+    if "1 MiB" not in str(result) or backend.keys:
+        raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
+    return "attaches create_drawio, ships the guest converter and refuses oversized input"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -604,6 +646,7 @@ _SMOKES = {
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-deepagents": _smoke_maf_sandbox_deepagents,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
+    "maf-sandbox-drawio": _smoke_maf_sandbox_drawio,
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,

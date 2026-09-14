@@ -85,6 +85,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-drawio": {
+      "package-name": "maf-sandbox-drawio",
+      "exclude-paths": ["packages/maf-sandbox-drawio/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-drawio')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-hyperlight": {
       "package-name": "maf-sandbox-hyperlight",
       "exclude-paths": ["packages/maf-sandbox-hyperlight/tests"],

@@ -74,6 +74,7 @@ class TestTheGate:
             "maf-sandbox-codeact",
             "maf-sandbox-deepagents",
             "maf-sandbox-docker",
+            "maf-sandbox-drawio",
             "maf-sandbox-hyperlight",
             "maf-sandbox-otel",
             "maf-sandbox-terraform",
