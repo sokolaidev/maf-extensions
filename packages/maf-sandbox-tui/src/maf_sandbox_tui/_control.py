@@ -15,8 +15,10 @@ from maf_sandbox import (
     DEFAULT_BACKEND_DECLARATIONS,
     BackendDeclarations,
     DisposalFailure,
+    EgressReporter,
     EgressRule,
     Isolation,
+    ObservesEgress,
     Sandbox,
     SandboxBackend,
     SandboxKey,
@@ -173,6 +175,12 @@ class MonitoredSandboxBackend:
             BackendDeclarations,
             getattr(self._backend, "declarations", DEFAULT_BACKEND_DECLARATIONS),
         )
+
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+        """Forward the router's egress reporter to the wrapped backend."""
+        if isinstance(self._backend, ObservesEgress):
+            return self._backend.observe_egress(report)
+        return None
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Acquire through the wrapped backend and remember the returned generation."""

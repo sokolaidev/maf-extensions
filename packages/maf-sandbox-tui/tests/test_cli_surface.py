@@ -122,6 +122,14 @@ def test_every_help_option_exits_successfully(command, help_option, capsys):
     assert "usage: mst" in capsys.readouterr().out
 
 
+def test_older_than_help_describes_lifecycle_signal_age(capsys):
+    with pytest.raises(SystemExit) as raised:
+        cli_module.main(["list", "--help"])
+
+    assert raised.value.code == 0
+    assert "last lifecycle signal" in capsys.readouterr().out
+
+
 def test_list_accepts_every_filter_and_duration_unit(capsys):
     cli_module.main(
         [
@@ -201,10 +209,14 @@ def test_plain_output_is_available_for_every_read_command(capsys, monkeypatch, t
     assert "SOURCE" in capsys.readouterr().out
 
     cli_module.main(["list", "--demo"])
-    assert "INSTANCE" in capsys.readouterr().out
+    listing = capsys.readouterr().out
+    assert "INSTANCE" in listing
+    assert "SIGNAL AGE" in listing
 
     cli_module.main(["show", _READY_INSTANCE, "--demo"])
-    assert _READY_INSTANCE in capsys.readouterr().out
+    details = capsys.readouterr().out
+    assert _READY_INSTANCE in details
+    assert "last signal" in details
 
     cli_module.main(["watch", "--demo", "--count", "1"])
     assert "Snapshot 1" in capsys.readouterr().out
@@ -236,6 +248,21 @@ def test_direct_endpoint_and_source_options_reach_the_named_host(capsys, tmp_pat
     assert payload[0]["status"] == "healthy"
     assert payload[0]["process_id"] is None
     assert not payload[0]["endpoint"].endswith("/")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--demo", "delete", _READY_INSTANCE, "--endpoint", "http://127.0.0.1:9000", "--yes"],
+        ["--endpoint", "http://127.0.0.1:9000", "delete", _READY_INSTANCE, "--demo", "--yes"],
+    ],
+)
+def test_connection_selectors_are_mutually_exclusive_across_the_subcommand(arguments, capsys):
+    with pytest.raises(SystemExit) as raised:
+        cli_module.main(arguments)
+
+    assert raised.value.code == 2
+    assert "--demo and --endpoint are mutually exclusive" in capsys.readouterr().err
 
 
 def test_direct_endpoint_plain_hosts_renders_an_unknown_pid(capsys, tmp_path):

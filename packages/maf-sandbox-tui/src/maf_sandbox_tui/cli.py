@@ -123,7 +123,7 @@ def _add_filters(parser: argparse.ArgumentParser) -> None:
         "--older-than",
         type=_duration,
         metavar="AGE",
-        help="select sandboxes idle for at least AGE, such as 30s, 5m, 2h or 1d",
+        help="select sandboxes whose last lifecycle signal is at least AGE old",
     )
 
 
@@ -333,7 +333,7 @@ def _age(stamp: float) -> str:
 
 def _print_records(records: Sequence[SandboxRecord]) -> None:
     _table(
-        ("SOURCE", "BACKEND", "STATE", "KEY", "KIND", "IDLE", "INSTANCE"),
+        ("SOURCE", "BACKEND", "STATE", "KEY", "KIND", "SIGNAL AGE", "INSTANCE"),
         tuple(
             (
                 record.source_id,
@@ -452,7 +452,7 @@ def _show_record(record: SandboxRecord) -> None:
         ("state", record.state.value),
         ("process", "-" if record.process_id is None else str(record.process_id)),
         ("created", str(record.created_at)),
-        ("last activity", str(record.last_activity_at)),
+        ("last signal", str(record.last_activity_at)),
         ("contract", record.execution_contract or "-"),
         ("egress", ", ".join(record.egress_targets) if record.egress_targets else "closed"),
     )
@@ -716,7 +716,10 @@ async def _run(arguments: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Run MST's TUI or one non-interactive local-control command."""
-    arguments = _parser().parse_args(argv)
+    parser = _parser()
+    arguments = parser.parse_args(argv)
+    if arguments.demo and arguments.endpoint:
+        parser.error("--demo and --endpoint are mutually exclusive")
     if os.environ.get("NO_COLOR") is not None:
         os.environ.setdefault("TEXTUAL_COLOR_SYSTEM", "standard")
     try:

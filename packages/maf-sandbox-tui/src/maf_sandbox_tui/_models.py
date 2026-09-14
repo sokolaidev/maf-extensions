@@ -21,7 +21,11 @@ class SandboxState(StrEnum):
 
 @dataclass(frozen=True)
 class SandboxRecord:
-    """One physical sandbox and the trusted MAF key that owns it."""
+    """One physical sandbox and the trusted MAF key that owns it.
+
+    ``last_activity_at`` is the last lifecycle signal observed by the monitor, not a guarantee
+    that no sandbox execution occurred after that time.
+    """
 
     source_id: str
     backend: str

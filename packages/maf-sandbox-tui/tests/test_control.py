@@ -19,10 +19,12 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressReporter,
     EgressRule,
     Isolation,
     Sandbox,
     SandboxKey,
+    SandboxObserver,
     SandboxRouter,
     SandboxSpec,
     ScopePurge,
@@ -202,6 +204,18 @@ class _ObservedBackend:
                 del self.sandboxes[index]
                 disposed += 1
         return ScopePurge(disposed)
+
+
+class _EgressBackend(_ObservedBackend):
+    declarations = BackendDeclarations(observes_egress=True)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reporter: EgressReporter | None = None
+
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+        previous, self.reporter = self.reporter, report
+        return previous
 
 
 def test_record_json_round_trip_preserves_the_physical_identity():
@@ -434,6 +448,37 @@ def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
         assert replaced.created_at >= created_at
 
     asyncio.run(check())
+
+
+def test_monitored_backend_forwards_egress_reporter_install_and_removal():
+    inner = _EgressBackend()
+    monitored = MonitoredSandboxBackend(inner)
+
+    def first(_event: object) -> None:
+        return None
+
+    def second(_event: object) -> None:
+        return None
+
+    assert monitored.observe_egress(first) is None
+    assert inner.reporter is first
+    assert monitored.observe_egress(second) is first
+    assert inner.reporter is second
+    assert monitored.observe_egress(None) is second
+    assert inner.reporter is None
+
+    SandboxRouter([monitored], observer=SandboxObserver())
+    assert inner.reporter is not None
+    SandboxRouter([monitored])
+    assert inner.reporter is None
+
+
+def test_monitored_backend_accepts_router_reporting_for_a_nonobserving_backend():
+    monitored = MonitoredSandboxBackend(_ObservedBackend())
+
+    SandboxRouter([monitored], observer=SandboxObserver())
+
+    assert monitored.observe_egress(None) is None
 
 
 def test_monitored_backend_tolerates_unknown_runtime_metadata():
