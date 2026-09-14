@@ -230,7 +230,7 @@ class StoredDiagrams:
             destination = f"{artifact.call_id}/{artifact.name}"
             if await store.file_exists(destination):
                 raise FileExistsError("Refusing to replace an existing artifact")
-            self_contained(xml_document(artifact.content.decode("utf-8")))
+            architecture(artifact.content.decode("utf-8"))
             self.attempted.add(destination)
             try:
                 landed = await landing.deliver(artifact)

@@ -320,12 +320,13 @@ jobs:
     # flipped now: the jobs run concurrently, so for the few minutes the ACAS samples are live
     # their sandboxes are up at once, in exchange for the run taking one sample's time instead
     # of all of them in turn. A failure still names which sample broke.
-    # Four per run since sample-15 joined — 01, 03, 14 and 15 — and four per run is not four
+    # Five ACAS samples per full run — 01, 03, 14, 15 and 18 — and five per run is not five
     # overall: the workflow-level `concurrency` block above is keyed per package, so a release
     # train verifying several packages has several runs in flight and each holds its own. What
     # each package costs is the number of billable jobs its `if` admits: `maf-sandbox` and
-    # `maf-sandbox-acas` five (01, 03, 14, 15 and `acas-e2e`), `maf-sandbox-codeact` three (03,
-    # 14 and 15), `maf-sandbox-bicep` one (01), everything else none. Count sandboxes rather than
+    # `maf-sandbox-acas` six (01, 03, 14, 15, 18 and `acas-e2e`), `maf-sandbox-codeact` three (03,
+    # 14 and 15), `maf-sandbox-bicep` one (01), `maf-sandbox-drawio` one (18), everything else
+    # none. Count sandboxes rather than
     # jobs, and count them twice, because spend and concurrency are different numbers here.
     # `acas-e2e` **acquires four sandboxes over its run** — one shared by its probes, one the
     # lifecycle test disposes as the thing under test, one the prebuilt-image test boots from the
@@ -333,11 +334,11 @@ jobs:
     # once**: the shared one plus whichever of the other three is alive, because the lifecycle
     # test disposes its own inside the test, the prebuilt one hangs off a *class*-scoped fixture
     # pytest finalises when that class ends, and the egress one comes from a module-scoped fixture
-    # first requested by the class after it. sample-15 holds two, a sandbox per route. So a train
-    # releasing all four peaks at nineteen concurrent billable sandboxes (7 + 7 + 4 + 1) for the
-    # twenty minutes the timeout allows, where this note said thirteen before sample 15, nine
-    # before the live suite and six before sample 14. Total spend is unchanged by the concurrency;
-    # only the peak moved. (#325.)
+    # first requested by the class after it. sample-15 holds two, a sandbox per route; sample-18
+    # holds one at a time, disposing it before the next conversion. One verification of each
+    # of those five packages can therefore peak at 22 concurrent billable sandboxes
+    # (8 + 8 + 4 + 1 + 1). Sample-18 spends two to four sandbox creations per verification,
+    # depending on its repair attempts; that sequential spend does not raise its peak above one.
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
     # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
@@ -2038,6 +2039,24 @@ jobs:
           path: .harness
           sparse-checkout: scripts
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_RESOURCE_GROUP ACAS_SANDBOX_GROUP DRAWIO_SANDBOX_IMAGE \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:

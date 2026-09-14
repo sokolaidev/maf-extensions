@@ -271,8 +271,38 @@ def test_file_access_read_is_required_and_artifact_is_removed_on_failure(sample,
 
 def test_empty_but_valid_diagram_cannot_count_as_a_repair(sample, xml):
     empty = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel>'
-    with pytest.raises(ValueError, match="fixture"):
-        asyncio.run(exercise(sample, xml, [empty]))
+    ask, storage, _ = asyncio.run(exercise(sample, xml, [empty, xml]))
+    assert ask.await_count == 3
+    assert "delivery of diagram.drawio failed" in ask.await_args_list[2].args[0]
+    assert len(storage.attempted) == len(storage.delivered) == 1
+
+
+@pytest.mark.parametrize("defect", ["empty", "label", "connection"])
+def test_wrong_architecture_never_reaches_storage(sample, xml, defect):
+    document = ET.fromstring(xml)
+    if defect == "empty":
+        document.find("root").clear()
+    elif defect == "label":
+        document.find(".//mxCell[@id='web']").set("value", "Wrong client")
+    else:
+        document.find(".//mxCell[@id='web_to_api']").set("target", "database")
+
+    async def check():
+        store = InMemoryAgentFileStore()
+        storage = sample.StoredDiagrams(store)
+        artifact = sample.Artifact(
+            name="diagram.drawio",
+            content=ET.tostring(document),
+            media_type="application/xml",
+            call_id="test",
+            kind="drawio",
+        )
+        with pytest.raises(ValueError):
+            await storage.sink.deliver(artifact)
+        assert not storage.attempted and not storage.delivered
+        assert not await store.file_exists("test/diagram.drawio")
+
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize("error", [RuntimeError("model unavailable"), asyncio.CancelledError()])
