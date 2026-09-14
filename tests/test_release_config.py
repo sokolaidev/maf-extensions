@@ -363,7 +363,7 @@ class TestTheReleasedCellAllowsPendingPublication:
 class TestManifestMatchesDeclaredVersions:
     """Only an unreleased `0.0.0` package may await its first generated manifest entry."""
 
-    @pytest.mark.parametrize("package_path", sorted(MANIFEST))
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_manifest_version_matches_pyproject(self, package_path: str):
         assert manifest_version_matches(
             package_path, declared_version(package_path), changelog_of(package_path), MANIFEST

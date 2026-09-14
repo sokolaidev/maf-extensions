@@ -34,6 +34,7 @@ from ._models import (
     PurgeStatus,
     SandboxRecord,
     SandboxState,
+    validate_source_id,
 )
 
 
@@ -114,22 +115,6 @@ class _TrackedSandbox:
     instance_id: str
     created_at: float
     last_activity_at: float
-    state: SandboxState
-
-
-def _alive(sandbox: Sandbox) -> bool | None:
-    value = getattr(sandbox, "alive", None)
-    return value if type(value) is bool else None
-
-
-def _state(sandbox: Sandbox) -> SandboxState:
-    if _alive(sandbox) is False:
-        return SandboxState.FAILED
-    gate = getattr(sandbox, "_gate", None)
-    locked = getattr(gate, "locked", None)
-    if callable(locked) and locked():
-        return SandboxState.RUNNING
-    return SandboxState.READY
 
 
 def _worker_pid(sandbox: Sandbox) -> int | None:
@@ -202,21 +187,16 @@ class MonitoredSandboxBackend:
                 instance_id,
                 created_at,
                 now,
-                _state(sandbox),
             )
         return sandbox
 
     def _refresh_locked(self, now: float) -> None:
         for tracked in self._tracked.values():
             instance_id = tracked.sandbox.instance_id
-            state = _state(tracked.sandbox)
             if instance_id != tracked.instance_id:
                 tracked.instance_id = instance_id
                 tracked.created_at = now
                 tracked.last_activity_at = now
-            elif state is not tracked.state:
-                tracked.last_activity_at = now
-            tracked.state = state
 
     async def list_sandboxes(self) -> tuple[_MonitoredInfo, ...]:
         """Return the generations observed through this wrapper."""
@@ -228,7 +208,7 @@ class MonitoredSandboxBackend:
                     key=tracked.key,
                     kind=tracked.spec.kind,
                     instance_id=tracked.instance_id,
-                    state=tracked.state.value,
+                    state=SandboxState.READY.value,
                     created_at=tracked.created_at,
                     last_activity_at=tracked.last_activity_at,
                     worker_pid=_worker_pid(tracked.sandbox),
@@ -276,7 +256,7 @@ class MonitoredSandboxBackend:
                     continue
                 if instance_id is not None and tracked.instance_id != instance_id:
                     continue
-                if failure is None and _alive(tracked.sandbox) is False:
+                if failure is None:
                     del self._tracked[index]
                     disposed += 1
         watch = self._disposal_watch.get()
@@ -291,11 +271,7 @@ class MonitoredSandboxBackend:
             self._refresh_locked(time.time())
             if result.undisposed is None:
                 for index, tracked in tuple(self._tracked.items()):
-                    if (
-                        tracked.key.scope == scope
-                        and tracked.key.thread_id == thread_id
-                        and _alive(tracked.sandbox) is False
-                    ):
+                    if tracked.key.scope == scope and tracked.key.thread_id == thread_id:
                         del self._tracked[index]
         return result
 
@@ -317,7 +293,7 @@ class HyperlightControl:
     ) -> None:
         self._backend = backend
         self._router = router
-        self._source_id = source_id
+        self._source_id = validate_source_id(source_id)
         self._quiesced_purge = quiesced_purge
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:

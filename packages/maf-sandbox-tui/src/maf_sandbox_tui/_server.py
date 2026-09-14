@@ -22,6 +22,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from ._control import SandboxControl
+from ._models import validate_source_id
 
 PROTOCOL_VERSION = 1
 _CONTROL_FAILURE_STATUS = HTTPStatus(500)
@@ -67,8 +68,7 @@ class EndpointManifest:
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
-        if not self.source_id:
-            raise ValueError("endpoint manifest source_id must be a nonempty string")
+        validate_source_id(self.source_id)
         if not _valid_protocol_version(self.protocol_version):
             raise ValueError(f"unsupported control protocol version {self.protocol_version!r}")
         if not _valid_process_id(self.process_id):
@@ -286,12 +286,10 @@ class SandboxControlServer:
         manifest_directory: Path | None = None,
         dispose_timeout: float = 10.0,
     ) -> None:
-        if not source_id:
-            raise ValueError("source_id must not be empty")
         if not math.isfinite(dispose_timeout) or dispose_timeout <= 0:
             raise ValueError("dispose_timeout must be finite and positive")
         self.control = control
-        self.source_id = source_id
+        self.source_id = validate_source_id(source_id)
         self.dispose_timeout = dispose_timeout
         self.request_timeout = dispose_timeout + 5.0
         self._manifest_directory = manifest_directory or runtime_directory()

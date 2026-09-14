@@ -167,7 +167,6 @@ class _ObservedBackend:
         self.sandboxes: dict[tuple[SandboxKey, str], _ObservedSandbox] = {}
         self.disposals: list[tuple[SandboxKey, str | None, str | None]] = []
         self.failure: DisposalFailure | None = None
-        self.noop = False
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         sandbox = self.sandboxes.setdefault(
@@ -184,14 +183,15 @@ class _ObservedBackend:
         instance_id: str | None = None,
     ) -> DisposalFailure | None:
         self.disposals.append((key, kind, instance_id))
-        if self.failure is not None or self.noop:
+        if self.failure is not None:
             return self.failure
         for index, sandbox in tuple(self.sandboxes.items()):
             if index[0] != key or (kind is not None and index[1] != kind):
                 continue
             if instance_id is not None and sandbox.instance_id != instance_id:
                 continue
-            sandbox.alive = False
+            if hasattr(sandbox, "alive"):
+                sandbox.alive = False
             del self.sandboxes[index]
         return None
 
@@ -201,7 +201,8 @@ class _ObservedBackend:
         disposed = 0
         for index, sandbox in tuple(self.sandboxes.items()):
             if index[0].scope == scope and index[0].thread_id == thread_id:
-                sandbox.alive = False
+                if hasattr(sandbox, "alive"):
+                    sandbox.alive = False
                 del self.sandboxes[index]
                 disposed += 1
         return ScopePurge(disposed)
@@ -242,6 +243,25 @@ def test_record_json_refuses_non_finite_timestamps(field: str, timestamp: float)
     value[field] = timestamp
     with pytest.raises(ValueError, match=rf"{field} must be finite"):
         SandboxRecord.from_json(value)
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    ["", 1, True, ["host"]],
+    ids=["empty", "integer", "boolean", "array"],
+)
+def test_public_source_identifiers_must_be_nonempty_strings(source_id: object):
+    invalid = cast("str", source_id)
+    record = asyncio.run(MemoryControl.demo(now=1_000).list_sandboxes())[0]
+
+    with pytest.raises(ValueError, match="source_id must be a nonempty string"):
+        replace(record, source_id=invalid)
+    with pytest.raises(ValueError, match="source_id must be a nonempty string"):
+        EndpointManifest(invalid, "http://127.0.0.1:9000", 42)
+    with pytest.raises(ValueError, match="source_id must be a nonempty string"):
+        SandboxControlServer(MemoryControl(), source_id=invalid)
+    with pytest.raises(ValueError, match="source_id must be a nonempty string"):
+        HyperlightControl(_Inventory([]), cast(SandboxRouter, object()), source_id=invalid)
 
 
 def test_memory_control_disposes_only_the_named_generation():
@@ -440,7 +460,7 @@ def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
         concrete = inner.sandboxes[(key, spec.kind)]
         concrete._gate.acquire()
         try:
-            assert (await monitored.list_sandboxes())[0].state == "running"
+            assert (await monitored.list_sandboxes())[0].state == "ready"
         finally:
             concrete._gate.release()
         concrete.instance_id = "replacement"
@@ -568,24 +588,50 @@ def test_monitored_backend_supplies_authoritative_exact_disposal_receipts():
     asyncio.run(check())
 
 
-def test_monitored_backend_retains_an_unconfirmed_or_failed_disposal():
-    async def check(*, failure: DisposalFailure | None) -> None:
+def test_monitored_backend_retains_a_failed_disposal():
+    async def check() -> None:
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
         router = SandboxRouter([monitored])
         control = HyperlightControl(monitored, router, source_id="agent-app")
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         sandbox = await router.acquire(key, SandboxSpec(kind="codeact", work_dir=None))
-        inner.noop = failure is None
-        inner.failure = failure
+        inner.failure = DisposalFailure("unknown", "worker close failed")
 
         result = await control.dispose_sandbox(sandbox.instance_id)
 
         assert result.status is DisposalStatus.FAILED
         assert (await monitored.list_sandboxes())[0].instance_id == sandbox.instance_id
 
-    asyncio.run(check(failure=None))
-    asyncio.run(check(failure=DisposalFailure("unknown", "worker close failed")))
+    asyncio.run(check())
+
+
+def test_monitored_backend_uses_protocol_results_without_a_liveness_extension():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = SandboxRouter([monitored])
+        control = HyperlightControl(monitored, router, source_id="agent-app")
+        exact = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        scoped = SandboxKey("tenant-labs", "thread-1", "agent-2")
+        survivor = SandboxKey("tenant-labs", "thread-2", "agent-1")
+        spec = SandboxSpec(kind="codeact", work_dir=None)
+
+        exact_sandbox = await router.acquire(exact, spec)
+        del inner.sandboxes[(exact, spec.kind)].alive
+        assert (await control.dispose_sandbox(exact_sandbox.instance_id)).status is (
+            DisposalStatus.DISPOSED
+        )
+
+        await router.acquire(scoped, spec)
+        await router.acquire(survivor, spec)
+        del inner.sandboxes[(scoped, spec.kind)].alive
+        purged = await monitored.dispose_scope(scoped.scope, scoped.thread_id)
+
+        assert purged.disposed == 1
+        assert [record.key for record in await monitored.list_sandboxes()] == [survivor]
+
+    asyncio.run(check())
 
 
 def test_monitored_backend_purges_only_the_named_conversation():
@@ -688,6 +734,25 @@ def test_hyperlight_control_requires_a_positive_backend_disposal_receipt():
 
         assert result.status is DisposalStatus.NOT_FOUND
         assert result.message == "The sandbox is already gone or its generation changed."
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_reports_a_retained_instance_as_failed():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, target)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
+
+        assert result.status is DisposalStatus.FAILED
+        assert (
+            result.message
+            == "Disposal was not confirmed; the backend retained the sandbox for retry."
+        )
 
     asyncio.run(check())
 

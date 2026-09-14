@@ -8,6 +8,13 @@ from enum import StrEnum
 from typing import cast
 
 
+def validate_source_id(value: object) -> str:
+    """Return a source identifier that is safe to publish on the control protocol."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("source_id must be a nonempty string")
+    return value
+
+
 class SandboxState(StrEnum):
     """Lifecycle state visible to an operator."""
 
@@ -41,6 +48,9 @@ class SandboxRecord:
     process_id: int | None = None
     execution_contract: str | None = None
     egress_targets: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_source_id(self.source_id)
 
     @property
     def logical_name(self) -> str:
