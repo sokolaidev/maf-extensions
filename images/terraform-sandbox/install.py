@@ -12,10 +12,24 @@ from pathlib import Path
 from typing import Any
 
 
+def load_json(path: Path) -> Any:
+    """Refuse ambiguous image configuration and provider approvals."""
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+
+
 def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dict[str, Any]:
     """Read engine pins and the selected provider profile before downloading anything."""
     config_path = config_path or Path(__file__).with_name("image.json")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config = load_json(config_path)
     if config["schema"] != 1 or config["platform"] != "linux/amd64":
         raise ValueError("unsupported image build configuration")
     if not re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", config["base_image"]):
@@ -38,10 +52,11 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
     if manifest_name is not None:
         if not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.json", manifest_name):
             raise ValueError("provider manifest must be a sibling JSON file")
-        manifest = json.loads(config_path.with_name(manifest_name).read_text(encoding="utf-8"))
+        manifest = load_json(config_path.with_name(manifest_name))
         if manifest["schema"] != 1 or manifest["engine"] != engine:
             raise ValueError("provider manifest engine mismatch")
         providers = manifest["providers"]
+        identities: set[tuple[str, str, str]] = set()
         for provider in providers:
             if (
                 not re.fullmatch(
@@ -54,6 +69,10 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
                 or not re.fullmatch(r"[0-9a-f]{64}", provider["artifact"]["sha256"])
             ):
                 raise ValueError("unsupported provider artifact")
+            identity = (provider["source"], provider["version"], provider["platform"])
+            if identity in identities:
+                raise ValueError("duplicate provider identity")
+            identities.add(identity)
     return {
         **selected,
         "base_image": config["base_image"],

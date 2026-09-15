@@ -37,6 +37,56 @@ def test_profiles_reuse_approved_provider_manifests(engine):
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("changed_digest", [False, True])
+def test_repeated_provider_identity_refused_before_download(
+    config_path, monkeypatch, engine, changed_digest
+):
+    path = config_path.with_name(f"dependencies.{engine}.json")
+    manifest = json.loads(path.read_text())
+    repeated = json.loads(json.dumps(manifest["providers"][0]))
+    if changed_digest:
+        repeated["artifact"]["sha256"] = "0" * 64
+    manifest["providers"].append(repeated)
+    path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(install, "download", lambda *a: pytest.fail("download must not start"))
+    version = json.loads(config_path.read_text())["engines"][engine]["version"]
+    with pytest.raises(ValueError, match="duplicate provider identity"):
+        install.main(
+            engine,
+            "random",
+            version,
+            config_path=config_path,
+            destination=config_path.parent / "output",
+        )
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("target", ["image", "provider", "artifact"])
+def test_ambiguous_image_inputs_refused_before_download(config_path, monkeypatch, engine, target):
+    if target == "image":
+        text = config_path.read_text()
+        config_path.write_text('{"engines":{},' + text.lstrip()[1:])
+    else:
+        path = config_path.with_name(f"dependencies.{engine}.json")
+        text = path.read_text()
+        if target == "provider":
+            text = '{"providers":[],' + text.lstrip()[1:]
+        else:
+            text = text.replace('"artifact": {', '"artifact": {"sha256":"' + "0" * 64 + '",', 1)
+        path.write_text(text)
+    monkeypatch.setattr(install, "download", lambda *a: pytest.fail("download must not start"))
+    version = install.load_plan(engine, "builtin")["version"]
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        install.main(
+            engine,
+            "random",
+            version,
+            config_path=config_path,
+            destination=config_path.parent / "output",
+        )
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
 def test_build_includes_configured_provider_manifest(config_path, monkeypatch, engine):
     config = json.loads(config_path.read_text())
     config["engines"][engine]["profiles"]["custom"] = "approved.custom.json"
