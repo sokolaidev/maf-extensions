@@ -4,6 +4,17 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.24.0...maf-sandbox-acas-v0.25.0) (2026-09-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **acas:** keep file writes within guest authority ([#1266](https://github.com/sokolaidev/maf-extensions/issues/1266))
+
+### Fixes
+
+* **acas:** keep file writes within guest authority ([#1266](https://github.com/sokolaidev/maf-extensions/issues/1266)) ([babee55](https://github.com/sokolaidev/maf-extensions/commit/babee557229e5c632826606eebcc99478a1fc574))
+
 ## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.23.1...maf-sandbox-acas-v0.24.0) (2026-09-14)
 
 
