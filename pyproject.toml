@@ -119,6 +119,7 @@ executionEnvironments = [
   { root = "packages/maf-sandbox-hyperlight/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-drawio/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-otel/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-tui/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
 ]
 
@@ -146,6 +147,7 @@ testpaths = [
     "packages/maf-sandbox-hyperlight/tests",
     "packages/maf-sandbox-drawio/tests",
     "packages/maf-sandbox-otel/tests",
+    "packages/maf-sandbox-tui/tests",
     "packages/maf-sandbox-wslc/tests",
 ]
 faulthandler_timeout = 90.0

@@ -78,6 +78,7 @@ class TestTheGate:
             "maf-sandbox-hyperlight",
             "maf-sandbox-otel",
             "maf-sandbox-terraform",
+            "maf-sandbox-tui",
             "maf-sandbox-wslc",
         ], found
 

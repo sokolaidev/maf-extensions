@@ -19,6 +19,7 @@ import asyncio
 import dataclasses
 import json
 import pathlib
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,7 @@ _PACKAGES = {
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
+    "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -700,6 +702,46 @@ def _smoke_maf_sandbox_drawio() -> str:
     )
 
 
+def _smoke_maf_sandbox_tui() -> str:
+    from maf_sandbox_tui import MemoryControl, SandboxConsole
+
+    records = asyncio.run(MemoryControl.demo().list_sandboxes())
+    if len(records) != 3 or not all(record.instance_id for record in records):
+        raise SystemExit("FAIL: MST demo does not expose physical sandbox identities")
+    if not SandboxConsole.TITLE:
+        raise SystemExit("FAIL: MST console has no title")
+    executable = pathlib.Path(sys.executable).parent / (
+        "mst.exe" if sys.platform == "win32" else "mst"
+    )
+    if not executable.is_file():
+        raise SystemExit(f"FAIL: the wheel installed no MST entry point at {executable}")
+    version_result = subprocess.run(
+        [str(executable), "version", "--json"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    if version_result.returncode != 0:
+        raise SystemExit(f"FAIL: installed 'mst version' failed: {version_result.stderr}")
+    reported = json.loads(version_result.stdout)
+    if reported.get("name") != "maf-sandbox-tui" or not reported.get("version"):
+        raise SystemExit(f"FAIL: installed 'mst version' returned {reported!r}")
+    demo_result = subprocess.run(
+        [str(executable), "--demo", "--json"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    if demo_result.returncode != 0 or len(json.loads(demo_result.stdout)) != 3:
+        raise SystemExit(
+            f"FAIL: installed 'mst --demo --json' failed: "
+            f"{demo_result.stdout!r} / {demo_result.stderr!r}"
+        )
+    return "runs its installed entry point, reports its version and exposes a three-instance demo"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -711,6 +753,7 @@ _SMOKES = {
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
+    "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 
