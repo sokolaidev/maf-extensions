@@ -78,6 +78,15 @@ def test_inspection_recognizes_a_global_pipx_environment(monkeypatch, tmp_path):
             else None
         ),
     )
+    monkeypatch.setattr(
+        update_module,
+        "_command_output",
+        lambda command, *, timeout: (
+            "usage: pipx install [--force] [--upgrade]"
+            if command == ["pipx", "install", "--help"] and timeout == 0.5
+            else None
+        ),
+    )
 
     installation = update_module.inspect_installation(
         prefix=prefix,
@@ -88,6 +97,71 @@ def test_inspection_recognizes_a_global_pipx_environment(monkeypatch, tmp_path):
     assert installation.kind is InstallationKind.PIPX
     assert installation.executable == "pipx"
     assert installation.global_pipx is True
+    assert installation.exact_update_supported is True
+
+
+@pytest.mark.parametrize(
+    ("help_text", "supported"),
+    [
+        ("usage: pipx install [--force] [--upgrade]", True),
+        ("usage: pipx install [--force] [--upgrade-strategy eager]", False),
+        (None, False),
+    ],
+)
+def test_pipx_exact_update_capability_probes_the_manager(help_text, supported: bool, monkeypatch):
+    commands: list[tuple[list[str], float]] = []
+
+    def output(command, *, timeout):
+        commands.append((command, timeout))
+        return help_text
+
+    monkeypatch.setattr(update_module, "_command_output", output)
+    assert update_module._pipx_supports_exact_update("pipx", timeout=0.25) is supported
+    assert commands == [(["pipx", "install", "--help"], 0.25)]
+
+
+def test_old_pipx_owner_is_not_advertised_as_self_updatable(monkeypatch, tmp_path):
+    prefix = tmp_path / "local" / "venvs" / "maf-sandbox-tui"
+    monkeypatch.setattr(shutil, "which", lambda name: "pipx" if name == "pipx" else None)
+    monkeypatch.setattr(
+        update_module,
+        "_pipx_root",
+        lambda _pipx, *, global_install, timeout: (
+            tmp_path / "local" / "venvs" if not global_install and timeout == 0.25 else None
+        ),
+    )
+    monkeypatch.setattr(
+        update_module,
+        "_command_output",
+        lambda command, *, timeout: (
+            "usage: pipx install [--force]"
+            if command == ["pipx", "install", "--help"] and timeout == 0.25
+            else None
+        ),
+    )
+
+    installation = update_module.inspect_installation(
+        prefix=prefix,
+        base_prefix=tmp_path / "python",
+        timeout=0.25,
+    )
+    assert installation.kind is InstallationKind.PIPX
+    assert installation.exact_update_supported is False
+    assert installation.to_json()["self_updatable"] is False
+
+
+def test_old_pipx_refuses_exact_update_before_invoking_the_manager(monkeypatch, tmp_path):
+    installation = Installation(
+        InstallationKind.PIPX,
+        tmp_path,
+        "pipx",
+        exact_update_supported=False,
+    )
+    monkeypatch.setattr(update_module, "current_version", lambda: Version("0.1.0"))
+    monkeypatch.setattr(update_module, "latest_version", lambda **_kwargs: Version("0.2.0"))
+
+    with pytest.raises(UpdateError, match="pipx 1.16 or newer"):
+        update_module.perform_update(installation=installation)
 
 
 def test_update_refuses_to_mutate_a_project_environment(monkeypatch, tmp_path):

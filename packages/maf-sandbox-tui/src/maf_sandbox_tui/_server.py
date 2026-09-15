@@ -465,6 +465,14 @@ class SandboxControlServer:
         finally:
             if entry is not None:
                 entry[2].set()
+            with self._operation_lock:
+                if (
+                    self._closing
+                    and not self._operations
+                    and self._httpd is None
+                    and self._thread is None
+                ):
+                    self._loop = None
 
     def cancel_operation(self, bridge: Future[Any]) -> None:
         """Cancel an operation whose handler-side deadline expired."""
@@ -508,20 +516,12 @@ class SandboxControlServer:
             operation.close()
             bridge.cancel()
             completed.set()
-        active = tuple(
-            (bridge, task, completed)
-            for bridge, (_, task, completed) in entries
-            if task is not None
-        )
-        for bridge, task, _ in active:
+        active = tuple((bridge, task) for bridge, (_, task, _) in entries if task is not None)
+        for bridge, task in active:
             bridge.cancel()
             task.cancel()
         if active:
-            await asyncio.gather(*(task for _, task, _ in active), return_exceptions=True)
-        with self._operation_lock:
-            for bridge, _, completed in active:
-                self._operations.pop(bridge, None)
-                completed.set()
+            await asyncio.wait((task for _, task in active), timeout=_OPERATION_SETTLEMENT_GRACE)
 
     async def start(self) -> SandboxControlServer:
         """Start serving and publish an atomic per-user discovery record."""
@@ -611,7 +611,7 @@ class SandboxControlServer:
             raise ExceptionGroup("control server teardown failed", errors)
 
     async def close(self) -> None:
-        """Withdraw discovery, stop accepting requests and drain handler operations."""
+        """Withdraw discovery and stop serving after bounded operation settlement."""
         with self._operation_lock:
             self._closing = True
         if self._close_task is None:

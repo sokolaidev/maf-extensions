@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -43,11 +44,15 @@ class Installation:
     prefix: Path
     executable: str | None = None
     global_pipx: bool = False
+    exact_update_supported: bool = True
 
     @property
     def self_updatable(self) -> bool:
         """Return whether MST can delegate an update to this owner."""
-        return self.kind in {InstallationKind.UV_TOOL, InstallationKind.PIPX}
+        return self.exact_update_supported and self.kind in {
+            InstallationKind.UV_TOOL,
+            InstallationKind.PIPX,
+        }
 
     def to_json(self) -> dict[str, object]:
         """Return a stable machine-readable installation description."""
@@ -155,6 +160,12 @@ def _pipx_root(
     return None if output is None else Path(output) / "venvs"
 
 
+def _pipx_supports_exact_update(pipx: str, *, timeout: float = _MANAGER_TIMEOUT) -> bool:
+    """Require the manager's exact-spec replacement option before self-update."""
+    output = _command_output([pipx, "install", "--help"], timeout=timeout)
+    return output is not None and re.search(r"(?<![\w-])--upgrade(?![\w-])", output) is not None
+
+
 def inspect_installation(
     *,
     prefix: Path | None = None,
@@ -179,6 +190,7 @@ def inspect_installation(
                     active,
                     pipx,
                     global_pipx=global_install,
+                    exact_update_supported=_pipx_supports_exact_update(pipx, timeout=timeout),
                 )
 
     kind = (
@@ -298,6 +310,11 @@ def _fresh_installed_version(*, timeout: float = _MANAGER_TIMEOUT) -> Version:
 
 def _manual_update_message(installation: Installation, target: Version) -> str:
     requirement = f"{DISTRIBUTION_NAME}=={target}"
+    if installation.kind is InstallationKind.PIPX:
+        return (
+            "This pipx installation cannot safely replace an exact package spec. "
+            "Upgrade pipx to pipx 1.16 or newer before running mst update."
+        )
     if installation.kind is InstallationKind.VIRTUAL_ENVIRONMENT:
         return (
             "MST is running from a project or manually managed virtual environment. "

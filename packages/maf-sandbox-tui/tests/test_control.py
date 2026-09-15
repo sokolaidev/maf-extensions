@@ -1839,6 +1839,52 @@ def test_server_close_cancels_and_drains_active_mutations(tmp_path, operation: s
     asyncio.run(check())
 
 
+def test_server_close_bounds_settlement_for_a_delayed_cancellation(tmp_path):
+    async def check() -> None:
+        server = SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        await server.start()
+        thread = server._thread
+        path = server._manifest_path
+        assert thread is not None
+        assert path is not None
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+
+        async def linger() -> None:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+
+        bridge = server.schedule_operation(linger())
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        closing = asyncio.create_task(server.close())
+        try:
+            await asyncio.wait_for(asyncio.shield(closing), timeout=2)
+            assert cancelled.is_set()
+            assert bridge.cancelled()
+            assert bridge in server._operations
+            assert server._httpd is None
+            assert not thread.is_alive()
+            assert not path.exists()
+        finally:
+            release.set()
+            await closing
+            for _ in range(3):
+                await asyncio.sleep(0)
+        assert bridge not in server._operations
+        assert server._loop is None
+
+    asyncio.run(check())
+
+
 def test_server_close_interrupts_a_client_stalled_in_request_headers(tmp_path):
     async def check() -> None:
         server = SandboxControlServer(
