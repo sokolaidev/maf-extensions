@@ -40,6 +40,21 @@ def _record(instance_id: str = "instance") -> SandboxRecord:
     )
 
 
+def test_an_explicit_empty_endpoint_never_falls_back_to_local_discovery(monkeypatch, capsys):
+    def unexpected_discovery() -> tuple[EndpointManifest, ...]:
+        raise AssertionError("explicit endpoint must not discover another host")
+
+    monkeypatch.setattr(cli_module, "read_manifests", unexpected_discovery)
+    with pytest.raises(SystemExit) as raised:
+        cli_module.main(["--endpoint", "", "list"])
+    assert raised.value.code == 1
+    assert "loopback" in capsys.readouterr().err
+
+    with pytest.raises(SystemExit) as conflicting:
+        cli_module.main(["--demo", "--endpoint", "", "list"])
+    assert conflicting.value.code == 2
+
+
 def _arguments(**values: object) -> argparse.Namespace:
     defaults: dict[str, object] = {
         "instance_id": "instance",

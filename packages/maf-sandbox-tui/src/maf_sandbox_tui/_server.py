@@ -10,6 +10,7 @@ import json
 import math
 import os
 import secrets
+import socket
 import stat
 import tempfile
 import threading
@@ -30,6 +31,7 @@ from ._models import validate_source_id
 PROTOCOL_VERSION = 1
 _CONTROL_FAILURE_STATUS = HTTPStatus(500)
 _OPERATION_SETTLEMENT_GRACE = 0.1
+_SOCKET_IO_TIMEOUT = 0.5
 
 
 def _valid_process_id(value: object) -> bool:
@@ -160,7 +162,35 @@ class _ControlHttpServer(ThreadingHTTPServer):
 
     def __init__(self, owner: SandboxControlServer) -> None:
         self.owner = owner
+        self._clients: set[socket.socket] = set()
+        self._busy_clients: set[socket.socket] = set()
+        self._clients_lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), _ControlHandler)
+
+    def get_request(self) -> tuple[socket.socket, tuple[str, int]]:
+        request, address = super().get_request()
+        request.settimeout(_SOCKET_IO_TIMEOUT)
+        with self._clients_lock:
+            self._clients.add(request)
+        return request, address
+
+    def shutdown_request(self, request: Any) -> None:
+        with self._clients_lock:
+            self._clients.discard(request)
+            self._busy_clients.discard(request)
+        super().shutdown_request(request)
+
+    def mark_busy(self, request: socket.socket) -> None:
+        with self._clients_lock:
+            self._busy_clients.add(request)
+
+    def close_clients(self) -> None:
+        with self._clients_lock:
+            clients = tuple(self._clients - self._busy_clients)
+        for request in clients:
+            with suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
+            request.close()
 
 
 class _ControlHandler(BaseHTTPRequestHandler):
@@ -179,7 +209,9 @@ class _ControlHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _run(self, operation: Coroutine[Any, Any, Any], *, timeout: float | None = None) -> Any:
-        owner = self._control_server.owner
+        server = self._control_server
+        server.mark_busy(self.request)
+        owner = server.owner
         future = owner.schedule_operation(operation)
         handler_timeout = (
             owner.request_timeout
@@ -496,8 +528,11 @@ class SandboxControlServer:
             temporary.write_text(json.dumps(self.manifest.to_json()), encoding="utf-8")
             temporary.replace(manifest_path)
             self._manifest_path = manifest_path
-        except BaseException:
-            await self.close()
+        except BaseException as startup_error:
+            try:
+                await self.close()
+            except BaseException as teardown_error:
+                raise startup_error from teardown_error
             raise
         finally:
             if temporary is not None:
@@ -525,6 +560,11 @@ class SandboxControlServer:
             await self._cancel_active_operations()
         except Exception as error:  # noqa: BLE001
             errors.append(error)
+        if httpd is not None:
+            try:
+                await asyncio.to_thread(httpd.close_clients)
+            except Exception as error:  # noqa: BLE001
+                errors.append(error)
         httpd_closed = httpd is None
         if httpd is not None:
             try:

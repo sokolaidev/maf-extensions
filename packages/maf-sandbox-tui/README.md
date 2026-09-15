@@ -39,7 +39,7 @@ mst purge-thread --scope SCOPE --thread ID [--timeout 10] [--yes] [--json]
 
 `--older-than` compares the age of the last lifecycle signal observed by MST. It is not an execution-idle guarantee: an execution that starts and finishes between inventory snapshots may not change that timestamp.
 
-Version checks are explicit and read the fixed HTTPS PyPI project endpoint; MST never checks in the background. An update is delegated only when the running executable belongs to an isolated `uv tool` or pipx environment. `mst update --to VERSION` also permits an explicit rollback and verifies the installed version after the manager finishes. In a project or manually managed virtual environment, MST refuses to rewrite its own dependencies and prints the corresponding `uv lock`/`uv sync` command instead. `--prerelease` includes non-yanked prereleases when choosing the newest version, and `--timeout` bounds each manager probe, version lookup, package-manager process and post-update verification.
+Version checks are explicit and read the fixed HTTPS PyPI project endpoint; MST never checks in the background. An update is delegated only when the running executable belongs to an isolated `uv tool` or pipx environment. `mst update --to VERSION` also permits an explicit rollback and verifies the installed version after the manager finishes. In a project or manually managed virtual environment, MST refuses to rewrite its own dependencies and names the pinned requirement for that environment's package manager and lock file. `--prerelease` includes non-yanked prereleases when choosing the newest version, and `--timeout` bounds each manager probe, version lookup, package-manager process and post-update verification.
 
 `delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
 
@@ -50,13 +50,13 @@ Successful commands exit zero. Endpoint or incomplete-operation failures use `1`
 The MAF application remains the sandbox authority. Merely importing or constructing `SandboxControlServer` opens nothing. A host configuration that defaults off must opt in before the application starts the server on its event loop, passing the same backend and router that serve CodeAct calls.
 
 ```python
-from maf_sandbox import Cleanup, SandboxRouter
+from maf_sandbox import Cleanup
 from maf_sandbox_hyperlight import HyperlightSandboxBackend
-from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, SandboxControlServer
+from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, MonitoredSandboxRouter, SandboxControlServer
 
 backend = HyperlightSandboxBackend()
 monitored = MonitoredSandboxBackend(backend)
-router = SandboxRouter([monitored], min_cleanup=Cleanup.RESET)
+router = MonitoredSandboxRouter([monitored], min_cleanup=Cleanup.RESET)
 async def purge_conversation(scope: str, thread_id: str):
     # This host-owned boundary blocks new work and waits for in-flight work across replicas.
     async with application_lifecycle.quiesce(scope, thread_id):
@@ -88,4 +88,4 @@ When enabled, the server binds an ephemeral port on the literal loopback address
 
 Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` and verifies that the physical instance disappeared. Conversation purge invokes the host-provided quiesced purge under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
 
-Live inventory comes from acquisitions and disposals that pass through `MonitoredSandboxBackend`; applications must register that wrapper with the router instead of registering the wrapped backend directly. The wrapper depends only on the `maf-sandbox` protocol and leaves backend packages unchanged. It reports a tracked acquisition as `ready` and does not infer active execution from backend-private locks; a backend-specific inventory may provide richer lifecycle states. `maf-sandbox-otel` remains the complementary history and audit surface.
+Live inventory comes from acquisitions admitted by `MonitoredSandboxRouter` through `MonitoredSandboxBackend`; applications must use both instead of registering the wrapped backend directly. The wrapper requires an observed worker process exit before confirming physical disposal; a backend without that signal remains visible and is reported as unconfirmed. It depends only on `maf-sandbox` and leaves backend packages unchanged. It reports a tracked acquisition as `ready` and does not infer active execution from backend-private locks; a backend-specific inventory may provide richer lifecycle states. `maf-sandbox-otel` remains the complementary history and audit surface.

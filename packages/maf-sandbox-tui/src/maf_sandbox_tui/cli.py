@@ -699,7 +699,7 @@ async def _dispatch(
 async def _run(arguments: argparse.Namespace) -> int:
     if arguments.command in {"version", "update"}:
         return await _dispatch(arguments, lambda: ())
-    if arguments.endpoint:
+    if arguments.endpoint is not None:
         manifest = EndpointManifest(arguments.source, arguments.endpoint.rstrip("/"), None)
         return await _dispatch(arguments, lambda: (manifest,))
     if arguments.demo:
@@ -725,7 +725,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Run MST's TUI or one non-interactive local-control command."""
     parser = _parser()
     arguments = parser.parse_args(argv)
-    if arguments.demo and arguments.endpoint:
+    if arguments.demo and arguments.endpoint is not None:
         parser.error("--demo and --endpoint are mutually exclusive")
     if os.environ.get("NO_COLOR") is not None:
         os.environ.setdefault("TEXTUAL_COLOR_SYSTEM", "standard")

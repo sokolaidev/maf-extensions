@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Generator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from maf_sandbox import (
     DEFAULT_BACKEND_DECLARATIONS,
@@ -125,6 +125,18 @@ def _worker_pid(sandbox: Sandbox) -> int | None:
     return value if type(value) is int else None
 
 
+def _worker_exited(sandbox: Sandbox) -> bool:
+    worker = getattr(sandbox, "worker", None)
+    process = getattr(worker, "process", None)
+    poll = getattr(process, "poll", None)
+    if not callable(poll):
+        return False
+    try:
+        return poll() is not None
+    except OSError:
+        return False
+
+
 def _egress_targets(spec: SandboxSpec) -> tuple[str, ...]:
     return tuple(
         sorted(
@@ -139,6 +151,7 @@ class MonitoredSandboxBackend:
     def __init__(self, backend: SandboxBackend) -> None:
         self._backend = backend
         self._tracked: dict[tuple[SandboxKey, str], _TrackedSandbox] = {}
+        self._pending: dict[tuple[SandboxKey, str], _TrackedSandbox] = {}
         self._state_lock = threading.Lock()
         self._disposal_watch: ContextVar[tuple[SandboxKey, str, str, list[int]] | None] = (
             ContextVar(f"mst_disposal_watch_{id(self)}", default=None)
@@ -169,7 +182,7 @@ class MonitoredSandboxBackend:
         return None
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
-        """Acquire through the wrapped backend and remember the returned generation."""
+        """Acquire through the backend; publication waits for router admission."""
         sandbox = await self._backend.acquire(key, spec)
         now = time.time()
         instance_id = sandbox.instance_id
@@ -181,7 +194,7 @@ class MonitoredSandboxBackend:
                 if previous is not None and previous.instance_id == instance_id
                 else now
             )
-            self._tracked[index] = _TrackedSandbox(
+            self._pending[index] = _TrackedSandbox(
                 key,
                 spec,
                 sandbox,
@@ -190,6 +203,20 @@ class MonitoredSandboxBackend:
                 now,
             )
         return sandbox
+
+    def admit_acquired(self, key: SandboxKey, spec: SandboxSpec, sandbox: Sandbox) -> None:
+        """Publish only a generation returned by a successful router acquisition."""
+        index = (key, spec.kind)
+        with self._state_lock:
+            pending = self._pending.get(index)
+            if pending is not None and pending.sandbox is sandbox:
+                self._tracked[index] = pending
+                del self._pending[index]
+
+    def discard_unadmitted(self, key: SandboxKey, kind: str) -> None:
+        """Withhold a generation when the router refuses its acquisition."""
+        with self._state_lock:
+            self._pending.pop((key, kind), None)
 
     def _refresh_locked(self, now: float) -> None:
         for tracked in self._tracked.values():
@@ -258,7 +285,7 @@ class MonitoredSandboxBackend:
                     continue
                 if instance_id is not None and tracked.instance_id != instance_id:
                     continue
-                if failure is None:
+                if failure is None and _worker_exited(tracked.sandbox):
                     del self._tracked[index]
                     disposed += 1
         watch = self._disposal_watch.get()
@@ -273,11 +300,29 @@ class MonitoredSandboxBackend:
             self._refresh_locked(time.time())
             for index, tracked in tuple(self._tracked.items()):
                 if tracked.key.scope == scope and tracked.key.thread_id == thread_id:
-                    if result.undisposed is None:
+                    if _worker_exited(tracked.sandbox):
                         del self._tracked[index]
-                    elif result.disposed:
+                    elif result.undisposed is not None and result.disposed:
                         tracked.published = False
         return result
+
+
+class MonitoredSandboxRouter(SandboxRouter):
+    """Publish monitored generations only after the owning router admits them."""
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec, **kwargs: Any) -> Sandbox:
+        monitored = tuple(
+            backend for backend in self._backends if isinstance(backend, MonitoredSandboxBackend)
+        )
+        try:
+            sandbox = await super().acquire(key, spec, **kwargs)
+        except BaseException:
+            for backend in monitored:
+                backend.discard_unadmitted(key, spec.kind)
+            raise
+        for backend in monitored:
+            backend.admit_acquired(key, spec, sandbox)
+        return sandbox
 
 
 class HyperlightControl:

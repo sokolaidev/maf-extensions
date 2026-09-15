@@ -6,6 +6,7 @@ import asyncio
 import gc
 import getpass
 import json
+import socket
 import tempfile
 import threading
 from collections.abc import Generator
@@ -51,6 +52,7 @@ from maf_sandbox_tui import (
     HyperlightControl,
     MemoryControl,
     MonitoredSandboxBackend,
+    MonitoredSandboxRouter,
     PurgeResult,
     PurgeStatus,
     SandboxControlServer,
@@ -144,8 +146,11 @@ class _ObservedSandbox:
     def __init__(self, instance_id: str, *, pid: object = 42) -> None:
         self.instance_id = instance_id
         self.alive: object = True
+        self._running = True
         self._gate = threading.Lock()
-        self.worker = SimpleNamespace(process=SimpleNamespace(pid=pid))
+        self.worker = SimpleNamespace(
+            process=SimpleNamespace(pid=pid, poll=lambda: None if self._running else 0)
+        )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         del directory, working_directory, timeout
@@ -194,6 +199,7 @@ class _ObservedBackend:
                 continue
             if hasattr(sandbox, "alive"):
                 sandbox.alive = False
+            sandbox._running = False
             del self.sandboxes[index]
         return None
 
@@ -205,6 +211,7 @@ class _ObservedBackend:
             if index[0].scope == scope and index[0].thread_id == thread_id:
                 if hasattr(sandbox, "alive"):
                     sandbox.alive = False
+                sandbox._running = False
                 del self.sandboxes[index]
                 disposed += 1
         return ScopePurge(disposed)
@@ -442,6 +449,8 @@ def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
         )
 
         sandbox = await monitored.acquire(key, spec)
+        assert await monitored.list_sandboxes() == ()
+        monitored.admit_acquired(key, spec, sandbox)
         records = await monitored.list_sandboxes()
 
         assert monitored.name == inner.name
@@ -457,6 +466,7 @@ def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
 
         created_at = records[0].created_at
         assert await monitored.acquire(key, spec) is sandbox
+        monitored.admit_acquired(key, spec, sandbox)
         assert (await monitored.list_sandboxes())[0].created_at == created_at
 
         concrete = inner.sandboxes[(key, spec.kind)]
@@ -469,6 +479,47 @@ def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
         replaced = (await monitored.list_sandboxes())[0]
         assert replaced.instance_id == "replacement"
         assert replaced.created_at >= created_at
+
+    asyncio.run(check())
+
+
+def test_monitored_router_withholds_an_acquire_rejected_after_backend_return():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = MonitoredSandboxRouter([monitored])
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        first = SandboxSpec(kind="codeact", execution_contract="python-a")
+        second = SandboxSpec(kind="codeact", execution_contract="python-b")
+        sandbox = await router.acquire(key, first)
+
+        with pytest.raises(ValueError, match="different execution contract"):
+            await router.acquire(key, second)
+
+        records = await monitored.list_sandboxes()
+        assert len(records) == 1
+        assert records[0].instance_id == sandbox.instance_id
+        assert records[0].execution_contract == "python-a"
+        assert monitored._pending == {}
+
+    asyncio.run(check())
+
+
+def test_monitored_router_never_publishes_an_invalid_backend_result():
+    class InvalidBackend(_ObservedBackend):
+        async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
+            del key, spec
+            return cast(Sandbox, SimpleNamespace(instance_id="invalid"))
+
+    async def check() -> None:
+        monitored = MonitoredSandboxBackend(InvalidBackend())
+        router = MonitoredSandboxRouter([monitored])
+        with pytest.raises(TypeError, match="reclaim"):
+            await router.acquire(
+                SandboxKey("scope", "thread", "agent"), SandboxSpec(kind="codeact")
+            )
+        assert await monitored.list_sandboxes() == ()
+        assert monitored._pending == {}
 
     asyncio.run(check())
 
@@ -511,6 +562,7 @@ def test_monitored_backend_tolerates_unknown_runtime_metadata():
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         spec = SandboxSpec(kind="codeact", work_dir=None)
         await monitored.acquire(key, spec)
+        monitored.admit_acquired(key, spec, inner.sandboxes[(key, spec.kind)])
         inner.sandboxes[(key, spec.kind)].alive = "unknown"
         record = (await monitored.list_sandboxes())[0]
         assert record.state == "ready"
@@ -549,7 +601,9 @@ def test_monitored_backend_filters_direct_exact_disposal():
         survivor = SandboxKey("tenant-labs", "thread-2", "agent-1")
         spec = SandboxSpec(kind="codeact", work_dir=None)
         sandbox = await monitored.acquire(target, spec)
-        await monitored.acquire(survivor, spec)
+        monitored.admit_acquired(target, spec, sandbox)
+        other = await monitored.acquire(survivor, spec)
+        monitored.admit_acquired(survivor, spec, other)
 
         assert (
             await monitored.dispose(target, kind=spec.kind, instance_id="not-the-owned-generation")
@@ -569,7 +623,7 @@ def test_monitored_backend_supplies_authoritative_exact_disposal_receipts():
     async def check() -> None:
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
-        router = SandboxRouter([monitored])
+        router = MonitoredSandboxRouter([monitored])
         control = HyperlightControl(monitored, router, source_id="agent-app")
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         spec = SandboxSpec(kind="codeact", work_dir=None)
@@ -594,7 +648,7 @@ def test_monitored_backend_retains_a_failed_disposal():
     async def check() -> None:
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
-        router = SandboxRouter([monitored])
+        router = MonitoredSandboxRouter([monitored])
         control = HyperlightControl(monitored, router, source_id="agent-app")
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         sandbox = await router.acquire(key, SandboxSpec(kind="codeact", work_dir=None))
@@ -608,11 +662,68 @@ def test_monitored_backend_retains_a_failed_disposal():
     asyncio.run(check())
 
 
+def test_monitored_backend_refuses_a_receipt_when_a_worker_remains():
+    class UncertainBackend(_ObservedBackend):
+        async def dispose(
+            self,
+            key: SandboxKey,
+            *,
+            kind: str | None = None,
+            instance_id: str | None = None,
+        ) -> DisposalFailure | None:
+            self.disposals.append((key, kind, instance_id))
+            return None
+
+    async def check() -> None:
+        inner = UncertainBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = MonitoredSandboxRouter([monitored])
+        control = HyperlightControl(monitored, router, source_id="agent-app")
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        sandbox = await router.acquire(key, SandboxSpec(kind="codeact"))
+
+        result = await control.dispose_sandbox(sandbox.instance_id)
+
+        assert result.status is DisposalStatus.FAILED
+        assert [item.instance_id for item in await monitored.list_sandboxes()] == [
+            sandbox.instance_id
+        ]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("poll", [None, "raises"])
+def test_monitored_backend_withholds_a_receipt_without_a_process_exit_signal(poll):
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        key = SandboxKey("scope", "thread", "agent")
+        spec = SandboxSpec(kind="codeact")
+        sandbox = await monitored.acquire(key, spec)
+        monitored.admit_acquired(key, spec, sandbox)
+        process = cast(_ObservedSandbox, sandbox).worker.process
+        if poll is None:
+            del process.poll
+        else:
+
+            def fail_poll() -> None:
+                raise OSError("cannot check worker")
+
+            process.poll = fail_poll
+
+        assert await monitored.dispose(key, kind=spec.kind, instance_id=sandbox.instance_id) is None
+        assert [item.instance_id for item in await monitored.list_sandboxes()] == [
+            sandbox.instance_id
+        ]
+
+    asyncio.run(check())
+
+
 def test_monitored_backend_uses_protocol_results_without_a_liveness_extension():
     async def check() -> None:
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
-        router = SandboxRouter([monitored])
+        router = MonitoredSandboxRouter([monitored])
         control = HyperlightControl(monitored, router, source_id="agent-app")
         exact = SandboxKey("tenant-labs", "thread-1", "agent-1")
         scoped = SandboxKey("tenant-labs", "thread-1", "agent-2")
@@ -636,11 +747,45 @@ def test_monitored_backend_uses_protocol_results_without_a_liveness_extension():
     asyncio.run(check())
 
 
+def test_monitored_backend_preserves_unverified_purge_survivors():
+    class UncertainPurgeBackend(_ObservedBackend):
+        async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+            for index, sandbox in tuple(self.sandboxes.items()):
+                if index[0].scope == scope and index[0].thread_id == thread_id:
+                    sandbox._running = False
+                    del self.sandboxes[index]
+                    break
+            return ScopePurge(1)
+
+    async def check() -> None:
+        monitored = MonitoredSandboxBackend(UncertainPurgeBackend())
+        router = MonitoredSandboxRouter([monitored])
+        control = HyperlightControl(
+            monitored,
+            router,
+            source_id="agent-app",
+            quiesced_purge=router.dispose_scope,
+        )
+        first = SandboxKey("scope", "thread", "first")
+        second = SandboxKey("scope", "thread", "second")
+        spec = SandboxSpec(kind="codeact")
+        await router.acquire(first, spec)
+        await router.acquire(second, spec)
+
+        result = await control.purge_thread(first.scope, first.thread_id)
+
+        assert result.status is PurgeStatus.PARTIAL
+        assert result.disposed == 1
+        assert [item.key for item in await monitored.list_sandboxes()] == [second]
+
+    asyncio.run(check())
+
+
 def test_monitored_backend_purges_only_the_named_conversation():
     async def check() -> None:
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
-        router = SandboxRouter([monitored])
+        router = MonitoredSandboxRouter([monitored])
         control = HyperlightControl(
             monitored,
             router,
@@ -680,7 +825,7 @@ def test_monitored_backend_hides_generations_made_ambiguous_by_a_partial_purge()
     async def check() -> None:
         inner = PartialBackend()
         monitored = MonitoredSandboxBackend(inner)
-        router = SandboxRouter([monitored])
+        router = MonitoredSandboxRouter([monitored])
         control = HyperlightControl(monitored, router, source_id="agent-app")
         first = SandboxKey("tenant-labs", "thread-1", "agent-1")
         second = SandboxKey("tenant-labs", "thread-1", "agent-2")
@@ -1236,6 +1381,45 @@ def test_server_close_cancels_and_drains_active_mutations(tmp_path, operation: s
     asyncio.run(check())
 
 
+def test_server_close_interrupts_a_client_stalled_in_request_headers(tmp_path):
+    async def check() -> None:
+        server = SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        await server.start()
+        httpd = server._httpd
+        thread = server._thread
+        assert httpd is not None
+        assert thread is not None
+        host, port = httpd.server_address[:2]
+        client = socket.create_connection((host, port), timeout=1)
+        try:
+            client.sendall(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\n")
+            accepted = False
+            for _ in range(100):
+                with httpd._clients_lock:
+                    accepted = client.getsockname() in {
+                        request.getpeername() for request in httpd._clients
+                    }
+                if accepted:
+                    break
+                await asyncio.sleep(0.01)
+            assert accepted
+
+            await asyncio.wait_for(server.close(), timeout=2)
+
+            assert not thread.is_alive()
+            assert not httpd._clients
+        finally:
+            client.close()
+            if server._httpd is not None:
+                await server.close()
+
+    asyncio.run(check())
+
+
 def test_server_close_defers_caller_cancellation_until_teardown_finishes(monkeypatch, tmp_path):
     entered = threading.Event()
     release = threading.Event()
@@ -1483,6 +1667,36 @@ def test_server_start_removes_temporary_manifest_after_publication_failure(
         )
         with pytest.raises(OSError, match="manifest publication failed"):
             await server.start()
+        assert server._httpd is None
+        assert server._thread is None
+
+    asyncio.run(check())
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_server_start_preserves_publication_error_when_teardown_also_fails(monkeypatch, tmp_path):
+    original_shutdown = server_module._ControlHttpServer.shutdown
+
+    def fail_after_shutdown(httpd: server_module._ControlHttpServer) -> None:
+        original_shutdown(httpd)
+        raise RuntimeError("teardown failed")
+
+    def fail_replace(_candidate: Path, _target: str | Path) -> Path:
+        raise OSError("publication failed")
+
+    monkeypatch.setattr(server_module._ControlHttpServer, "shutdown", fail_after_shutdown)
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    async def check() -> None:
+        server = SandboxControlServer(
+            MemoryControl(),
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        )
+        with pytest.raises(OSError, match="publication failed") as raised:
+            await server.start()
+        assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "teardown failed"
         assert server._httpd is None
         assert server._thread is None
 

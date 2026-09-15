@@ -10,9 +10,14 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
-from maf_sandbox import Capability, SandboxKey, SandboxRouter, SandboxSpec
+from maf_sandbox import Capability, SandboxKey, SandboxSpec
 from maf_sandbox_hyperlight import HyperlightSandboxBackend
-from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, SandboxControlServer
+from maf_sandbox_tui import (
+    HyperlightControl,
+    MonitoredSandboxBackend,
+    MonitoredSandboxRouter,
+    SandboxControlServer,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAF_HYPERLIGHT_LIVE") != "1" or sys.platform != "win32",
@@ -40,7 +45,7 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
     async def check() -> None:
         backend = HyperlightSandboxBackend()
         monitored = MonitoredSandboxBackend(backend)
-        router = SandboxRouter([monitored])
+        router = MonitoredSandboxRouter([monitored])
         lifecycle_gate = asyncio.Lock()
 
         async def acquire(key: SandboxKey):
