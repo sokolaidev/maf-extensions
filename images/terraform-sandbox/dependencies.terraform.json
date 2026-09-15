@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "engine": "terraform",
+  "providers": [
+    {
+      "source": "registry.terraform.io/hashicorp/random",
+      "version": "3.7.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://releases.hashicorp.com/terraform-provider-random/3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
+        "sha256": "7b8434212eef0f8c83f5a90c6d76feaf850f6502b61b53c329e85b3b281cba34",
+        "provenance": "HashiCorp random 3.7.2 release SHA256SUMS - existing image pin"
+      }
+    }
+  ],
+  "modules": [
+    {
+      "name": "random-string",
+      "revision": "bc2ddb552b4676d16997987a9bf2875c7b98d342",
+      "subdir": "terraform-provider-random-bc2ddb552b4676d16997987a9bf2875c7b98d342/examples/resources/random_string",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/hashicorp/terraform-provider-random/zip/bc2ddb552b4676d16997987a9bf2875c7b98d342",
+        "sha256": "a1ce2bca7712f6b295644135486fee8fe45de66acc00c3ba3556eea82c12c8b3",
+        "provenance": "Reviewed random_string example at hashicorp random v3.7.2 commit - 2026-09-14"
+      }
+    }
+  ]
+}

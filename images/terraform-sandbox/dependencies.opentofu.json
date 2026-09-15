@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.7.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-random/releases/download/v3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
+        "github_repository_id": "691499456",
+        "sha256": "9b0ac4c1d8e36a86b59ced94fa517ae9b015b1d044b3455465cc6f0eab70915d",
+        "provenance": "OpenTofu random 3.7.2 release SHA256SUMS - existing image pin"
+      }
+    }
+  ],
+  "modules": [
+    {
+      "name": "random-string",
+      "revision": "bc2ddb552b4676d16997987a9bf2875c7b98d342",
+      "subdir": "terraform-provider-random-bc2ddb552b4676d16997987a9bf2875c7b98d342/examples/resources/random_string",
+      "graph": {".": {}},
+      "artifact": {
+        "url": "https://codeload.github.com/hashicorp/terraform-provider-random/zip/bc2ddb552b4676d16997987a9bf2875c7b98d342",
+        "sha256": "a1ce2bca7712f6b295644135486fee8fe45de66acc00c3ba3556eea82c12c8b3",
+        "provenance": "Reviewed random_string example at hashicorp random v3.7.2 commit - 2026-09-14"
+      }
+    }
+  ]
+}

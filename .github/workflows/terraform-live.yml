@@ -29,8 +29,8 @@ jobs:
         run: uv sync --locked
       - name: Build pinned engine and provider images
         run: |
-          docker build --platform linux/amd64 --build-arg ENGINE=terraform --build-arg PROFILE=random -t "$MAF_TERRAFORM_E2E_IMAGE" images/terraform-sandbox
-          docker build --platform linux/amd64 --build-arg ENGINE=opentofu --build-arg PROFILE=random -t "$MAF_OPENTOFU_E2E_IMAGE" images/terraform-sandbox
+          uv run python images/terraform-sandbox/build_image.py --engine terraform --profile random --tag "$MAF_TERRAFORM_E2E_IMAGE"
+          uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile random --tag "$MAF_OPENTOFU_E2E_IMAGE"
       - name: Validate and observe disposal
         run: uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py
 
