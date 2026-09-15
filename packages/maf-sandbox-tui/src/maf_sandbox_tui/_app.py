@@ -306,6 +306,7 @@ class SandboxConsole(App[None]):
         self.records = records
         table = cast("DataTable[object]", self.query_one("#sandboxes", DataTable))
         table.clear(columns=False)
+        selected_row_index: int | None = None
         for row_key, record in self.records.items():
             table.add_row(
                 _state_cell(record.state),
@@ -316,8 +317,14 @@ class SandboxConsole(App[None]):
                 record.instance_id[:8],
                 key=row_key,
             )
+            if row_key == self.selected_id:
+                selected_row_index = table.row_count - 1
         if self.selected_id not in self.records:
             self.selected_id = next(iter(self.records), None)
+            if self.selected_id is not None:
+                selected_row_index = 0
+        if selected_row_index is not None:
+            table.move_cursor(row=selected_row_index)
         self._show_selected()
         noun = "instance" if len(snapshot) == 1 else "instances"
         message = f"{len(snapshot)} live {noun} · refreshed just now"

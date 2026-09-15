@@ -500,7 +500,7 @@ async def _delete(probes: Sequence[_HostProbe], arguments: argparse.Namespace) -
     if errors:
         _print_errors(errors)
         return _EXIT_ERROR
-    client, record = next(iter(matches))
+    _, record = next(iter(matches))
     confirmed = _confirmed(
         f"Dispose {record.logical_name} ({record.instance_id})?",
         arguments,
@@ -510,7 +510,7 @@ async def _delete(probes: Sequence[_HostProbe], arguments: argparse.Namespace) -
     if not confirmed:
         print("Sandbox kept.")
         return _EXIT_DECLINED
-    result = await client.dispose_sandbox(record.instance_id, timeout=arguments.timeout)
+    result = await _control(probes).dispose_sandbox(record.instance_id, timeout=arguments.timeout)
     if arguments.json:
         print(json.dumps(result.to_json(), indent=2))
     else:
