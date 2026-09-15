@@ -89,9 +89,7 @@ class HttpControl:
         self, method: str, path: str, *, timeout: float | None = None
     ) -> object:
         """Run one blocking request without abandoning its transport on cancellation."""
-        task = asyncio.create_task(
-            asyncio.to_thread(self._request, method, path, timeout=timeout)
-        )
+        task = asyncio.create_task(asyncio.to_thread(self._request, method, path, timeout=timeout))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:

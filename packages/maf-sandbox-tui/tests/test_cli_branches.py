@@ -186,15 +186,16 @@ def test_delete_refuses_when_single_ownership_is_uncertain(monkeypatch, capsys):
     [(DisposalStatus.NOT_FOUND, 3), (DisposalStatus.FAILED, 1)],
 )
 def test_delete_propagates_non_success_disposal_status(status, exit_code, monkeypatch, capsys):
-    class Client:
+    class Control:
         async def dispose_sandbox(self, instance_id, *, timeout):
             assert instance_id == "instance" and timeout == 0.1
             return DisposalResult(status, instance_id, "outcome")
 
     async def find(*_args):
-        return ((Client(), _record()),), ()
+        return ((object(), _record()),), ()
 
     monkeypatch.setattr(cli_module, "_find", find)
+    monkeypatch.setattr(cli_module, "_control", lambda _probes: Control())
 
     assert asyncio.run(cli_module._delete((), _arguments())) == exit_code
     assert status.value in capsys.readouterr().out
