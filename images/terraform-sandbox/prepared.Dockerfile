@@ -10,7 +10,17 @@ import json
 from pathlib import Path
 p = Path("/opt/maf-terraform")
 receipt = json.loads((p / "dependencies.json").read_text())
-assert json.loads((p / "engine.json").read_text())["engine"] == receipt["engine"]
+metadata = json.loads((p / "engine.json").read_text())
+assert metadata["engine"] == receipt["engine"]
+metadata["profile"] = "prepared"
+metadata["dependencies_manifest_sha256"] = receipt["manifest_sha256"]
+metadata["dependencies_policy_sha256"] = receipt["policy_sha256"]
+(p / "engine.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+written = json.loads((p / "engine.json").read_text())
+assert written["engine"] == receipt["engine"]
+assert written["profile"] == "prepared"
+assert written["dependencies_manifest_sha256"] == receipt["manifest_sha256"]
+assert written["dependencies_policy_sha256"] == receipt["policy_sha256"]
 expected = {}
 for provider in receipt["providers"]:
     name = provider["source"].split("/")[-1]
