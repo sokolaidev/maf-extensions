@@ -70,6 +70,9 @@ def required_images(
     all_jobs = package in ("", "maf-sandbox", "maf-sandbox-acas")
     bicep = all_jobs or package == "maf-sandbox-bicep"
     codeact = all_jobs or package == "maf-sandbox-codeact"
+    drawio = (all_jobs or package == "maf-sandbox-drawio") and (
+        root / "samples/18_acas_drawio_repair/agent.py"
+    ).is_file()
     required: dict[str, list[str]] = {}
     skipped: list[str] = []
     missing = []
@@ -77,6 +80,8 @@ def required_images(
         missing.extend(
             name for name in ("ACAS_SANDBOX_REGISTRY", "BICEP_SANDBOX_IMAGE") if not env.get(name)
         )
+    if drawio and not env.get("DRAWIO_SANDBOX_IMAGE"):
+        missing.append("DRAWIO_SANDBOX_IMAGE")
     if missing:
         raise ValueError("the live-verify environment is missing: " + ", ".join(missing))
 
@@ -87,6 +92,8 @@ def required_images(
 
     if bicep:
         add(env["BICEP_SANDBOX_IMAGE"], "sample-01 / acas-e2e" if all_jobs else "sample-01")
+    if drawio:
+        add(env["DRAWIO_SANDBOX_IMAGE"], "sample-18")
     if codeact:
         for sample in _CODEACT_SAMPLES:
             add(

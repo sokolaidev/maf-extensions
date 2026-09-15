@@ -41,6 +41,45 @@ Type checking comes in two passes. The per-package one is **strict** and covers 
 
 CI runs all of that, plus something worth knowing about: it builds each wheel, installs it into a clean environment and *uses* it. That catches the class of defect no test here can see — a missing `py.typed`, a file the build backend never included, an import that only resolved because the workspace had every sibling on the path.
 
+## Adding a sample
+
+A numbered sample is a consumer of published packages and a live verification target. Add its program, workflow wiring, evidence checker and tests together. [Sample 18](samples/18_acas_drawio_repair/) and its `sample-18` job in [Verify (live)](.github/workflows/verify-live.yml) provide a complete example, including artifact cleanup and per-call timing logs.
+
+### Program and dependencies
+
+Create the next numbered directory under [samples/](samples/README.md), with `agent.py`, a README and any input fixtures. Declare every runtime dependency in the agent's PEP 723 block, including dependencies imported by helper modules. Use the same `maf-sandbox>=...` floor as the other numbered samples. Floors must name published versions; workspace imports and local wheel overrides do not establish that a consumer can install them. Keep an example requiring unpublished packages under `samples/experimental/` until publication, then promote it and add normal live verification. Do not change generated versions or changelogs to make it installable.
+
+Copy the canonical [_scaffold.py](samples/01_acas_bicep/_scaffold.py) unchanged. Use its installed-version report, `quoted` for model output, and `MEASURED` or `evidence` for host-established facts. For a hosted backend, derive a module constant whose name contains `THREAD` from `conversation_id("sample-18")`, substituting the new sample's name; this keeps concurrent workflow runs from purging each other's sandboxes. Put execution behind the main guard so importing the sample creates no resources.
+
+Success must establish the workload's result, not just a model's claim or exit code zero. For stored outputs, verify actual bytes and read-back, track ownership of each destination, and clean up files and sandboxes on success, failure and cancellation. Report incomplete cleanup as failure. When reporting tool latency, use core's `SandboxObserver.tool_call_ended` and `ToolCallEnded.seconds`; it includes the tool body and cleanup, and is distinct from model latency or the whole sample's elapsed time.
+
+### Workflow wiring
+
+1. Add a job to [verify-live.yml](.github/workflows/verify-live.yml). Select it when `inputs.package` is empty or names a package the sample exercises: core, the backend, the kind and any adapter it uses. Normal sample jobs run in both `published` and `branch` modes; do not add a branch-only condition. Billable execution belongs in live verification, not ordinary pull-request tests.
+2. If a package joins live verification for the first time, add it to all three matching filters in [publish-packages.yml](.github/workflows/publish-packages.yml): `wait-for-propagation`, `train-status` and `verify`. Keep their conditions identical. A job in the called workflow alone does not make that package's releases dispatch it.
+3. Follow the existing source-selection and harness pattern. On release tags, check out the default branch's `scripts/` into `.harness`; run checkers through `$HARNESS`, while the sample stays at the ref under test. Wait with `await_live_version.py` when a release version is supplied. Obtain `$source_args` from [sample_source_args.py](scripts/sample_source_args.py), then run `uv run --no-project $source_args` on the agent. Published mode must resolve from PyPI; do not substitute `uv sync` and workspace execution. Retain the `check_live_versions.py` assertion for published runs with a supplied version, and skip that assertion in branch mode.
+4. Add a standard-library-only checker under `scripts/` for the sample's evidence; [check_live_drawio_sample.py](scripts/check_live_drawio_sample.py) is an example. Read host-tagged records and reject missing results, wrong artifact attribution, invalid timings and incomplete cleanup. Use `set -euo pipefail` with `tee` so logging cannot hide a failed sample. Keep timing records visible on successful runs, and retain logs with an `always()` artifact step when later inspection is needed. Pin every action to a commit SHA.
+5. For ACAS, make the job depend on `acas-images`, extend that job's package filter and configuration, and update [check_acas_live_images.py](scripts/check_acas_live_images.py). Check only images used by the selected jobs and source under test, including older release tags that lack the new sample. Build and import required images before verification; do not widen guest egress to install prerequisites at runtime. Use the existing `live-verify` environment and OIDC login. Keep actual resource names, endpoints and identifiers out of repository files.
+6. Add the sample to [samples/README.md](samples/README.md). Update [docs/maintainers.md](docs/maintainers.md) for prerequisites, environment variables, coverage and billable resource counts. If the release dispatch package set changed, update the matching paragraph in [RELEASING.md](RELEASING.md) as well.
+
+### Tests and verification
+
+Put sample integration tests in root `tests/`; do not make a kind's unit suite import backend or other sibling packages to test application wiring. Keep offline tests independent of Azure credentials and real model calls. An optional live pytest entry point must skip unless explicitly enabled; the normal workflow job still runs the sample directly in its declared environment.
+
+| Check | What to cover or update |
+| --- | --- |
+| [test_sample_metadata.py](tests/test_sample_metadata.py) | Numbered samples are discovered automatically. Dependencies must cover imports, share the core floor and name released versions. |
+| [test_sample_scaffold.py](tests/test_sample_scaffold.py) | Keep scaffold copies identical. Add a hosted sample to the expected hosted-sample list and use the conversation naming convention. |
+| [test_sample_modules_import.py](tests/test_sample_modules_import.py) | Every module must import without live configuration. Tests loading `_scaffold` must restore `sys.modules` so another sample cannot inherit it. |
+| Sample and evidence tests | Exercise the real converter where practical, plus rejection, repair, output ownership, cleanup failure and cancellation. Test that model-authored or incomplete evidence cannot satisfy the checker. |
+| [test_verify_live_harness.py](tests/test_verify_live_harness.py) | The shared checks discover direct sample jobs and verify harness checkout, source selection, index waiting and installed-version assertions. |
+| [test_check_acas_live_images.py](tests/test_check_acas_live_images.py) | Update consumer sets, package-selection expectations and fake image inventories. Cover missing images and older source trees. |
+| [test_drawio_live_workflow.py](tests/test_drawio_live_workflow.py) and [test_release_config.py](tests/test_release_config.py) | Use the former as a pattern for the new job's trigger, log and failure-propagation checks. The latter keeps release dispatch filters and documentation aligned. Mark new workflow test modules with `pytestmark = pytest.mark.workflow`. |
+
+Run the affected tests first, then `uv run poe gate`, `uv run poe md-blocks` and `uv run poe sample-floors`. The workspace type check alone does not verify the sample's published dependency floor. Stage new or moved documentation before checking paths, because [check_doc_paths.py](scripts/check_doc_paths.py) enumerates tracked files. On Windows, [check_workflows.ps1](scripts/check_workflows.ps1) runs the portable workflow checks; Bash-only checks require Linux.
+
+Finally, run the published-package sample against its real prerequisites and feed the saved log to its checker. Verify cleanup and the installed-version report. A branch live run answers a separate question about checkout code; record which mode was verified and whether execution happened locally or in GitHub Actions. Do not describe local live verification as a completed CI run.
+
 ## What the tests are protecting
 
 Some tests exist to stop a specific mistake, and their failure messages say which. Worth reading rather than working around:
