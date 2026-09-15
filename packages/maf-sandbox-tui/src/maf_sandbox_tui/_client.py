@@ -270,14 +270,15 @@ class CompositeControl:
         """Route exact-instance disposal to the endpoint currently reporting it."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        locating_timeout = DisposalResult(
+            DisposalStatus.FAILED,
+            instance_id,
+            "Disposal timed out while locating the owning host.",
+        )
         probes = tuple(asyncio.create_task(control.list_sandboxes()) for control in self._controls)
         _, pending = await self._wait_bounded(probes, timeout=timeout)
         if pending:
-            return DisposalResult(
-                DisposalStatus.FAILED,
-                instance_id,
-                "Disposal timed out while locating the owning host.",
-            )
+            return locating_timeout
         owners: list[SandboxControl] = []
         errors = list(self._initial_errors)
         for control, probe in zip(self._controls, probes, strict=True):
@@ -308,8 +309,17 @@ class CompositeControl:
                 instance_id,
                 f"Sandbox ownership could not be confirmed on {len(errors)} unavailable host(s).",
             )
-        remaining = max(deadline - loop.time(), 0.001)
-        disposing = asyncio.create_task(owners[0].dispose_sandbox(instance_id, timeout=remaining))
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return locating_timeout
+
+        async def dispose_before_deadline() -> DisposalResult:
+            owner_remaining = deadline - loop.time()
+            if owner_remaining <= 0:
+                return locating_timeout
+            return await owners[0].dispose_sandbox(instance_id, timeout=owner_remaining)
+
+        disposing = asyncio.create_task(dispose_before_deadline())
         _, pending = await self._wait_bounded((disposing,), timeout=remaining)
         if pending:
             return DisposalResult(

@@ -45,7 +45,7 @@ Exact-version self-update through pipx requires pipx 1.16 or newer, whose `insta
 
 `delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
 
-Composite exact delete and conversation purge bound cancellation settlement when an endpoint catches cancellation and delays settling. A timed-out command reports an unconfirmed result and retains late tasks for completion callbacks; a later physical outcome is never retroactively reported as success for that command.
+Composite exact delete and conversation purge bound cancellation settlement when an endpoint catches cancellation and delays settling. Exact delete does not start owner disposal after its shared deadline expires, even if ownership probes or event-loop scheduling consume the remaining time. A timed-out command reports an unconfirmed result and retains late tasks for completion callbacks; a later physical outcome is never retroactively reported as success for that command.
 
 Successful commands exit zero. Endpoint or incomplete-operation failures use `1`, invalid or missing confirmation uses `2`, an absent physical instance uses `3`, and an operator declining confirmation uses `4`. An interrupted watch uses `130`.
 

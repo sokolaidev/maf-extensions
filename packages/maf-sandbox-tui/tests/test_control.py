@@ -9,13 +9,14 @@ import json
 import socket
 import tempfile
 import threading
+import time
 from collections.abc import AsyncIterator, Generator
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from maf_sandbox import (
@@ -387,6 +388,69 @@ def test_composite_disposal_is_bounded_while_locating_hosts():
         )
         assert result.status is DisposalStatus.FAILED
         assert result.message == "Disposal timed out while locating the owning host."
+
+    asyncio.run(check())
+
+
+def test_composite_disposal_does_not_invoke_owner_after_shared_deadline():
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        owner_calls = 0
+
+        class LateProbeOwner(MemoryControl):
+            async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+                await asyncio.sleep(0)
+                time.sleep(0.05)
+                return await super().list_sandboxes()
+
+            async def dispose_sandbox(
+                self, instance_id: str, *, timeout: float = 10.0
+            ) -> DisposalResult:
+                nonlocal owner_calls
+                owner_calls += 1
+                return await super().dispose_sandbox(instance_id, timeout=timeout)
+
+        result = await CompositeControl((LateProbeOwner((record,)),)).dispose_sandbox(
+            record.instance_id, timeout=0.01
+        )
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "Disposal timed out while locating the owning host."
+        assert owner_calls == 0
+
+    asyncio.run(check())
+
+
+def test_composite_disposal_rechecks_deadline_when_owner_task_starts():
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        owner_calls = 0
+
+        class ObservedOwner(MemoryControl):
+            async def dispose_sandbox(
+                self, instance_id: str, *, timeout: float = 10.0
+            ) -> DisposalResult:
+                nonlocal owner_calls
+                owner_calls += 1
+                return await super().dispose_sandbox(instance_id, timeout=timeout)
+
+        class DelayedDispatch(CompositeControl):
+            delay_next = True
+
+            async def _wait_bounded(
+                self, tasks: tuple[asyncio.Task[Any], ...], *, timeout: float
+            ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+                result = await super()._wait_bounded(tasks, timeout=timeout)
+                if self.delay_next:
+                    self.delay_next = False
+                    asyncio.get_running_loop().call_soon(time.sleep, 0.6)
+                return result
+
+        result = await DelayedDispatch((ObservedOwner((record,)),)).dispose_sandbox(
+            record.instance_id, timeout=0.5
+        )
+        assert result.status is DisposalStatus.FAILED
+        assert result.message == "Disposal timed out while locating the owning host."
+        assert owner_calls == 0
 
     asyncio.run(check())
 
