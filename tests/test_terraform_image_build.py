@@ -37,6 +37,52 @@ def test_profiles_reuse_approved_provider_manifests(engine):
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize(
+    "source", ["example.com/foo_bar/random", "example.com/hashicorp/random_type"]
+)
+def test_provider_source_uses_preparation_manifest_grammar(config_path, engine, source):
+    path = config_path.with_name(f"dependencies.{engine}.json")
+    manifest = json.loads(path.read_text())
+    manifest["providers"][0]["source"] = source
+    path.write_text(json.dumps(manifest))
+    assert install.load_plan(engine, "random", config_path)["providers"][0]["source"] == source
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("version", ["3.7.2-rc1", "3.7.2-beta.2"])
+def test_provider_prerelease_uses_preparation_manifest_grammar(config_path, engine, version):
+    path = config_path.with_name(f"dependencies.{engine}.json")
+    manifest = json.loads(path.read_text())
+    manifest["providers"][0]["version"] = version
+    path.write_text(json.dumps(manifest))
+    assert install.load_plan(engine, "random", config_path)["providers"][0]["version"] == version
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("target", ["image", "provider"])
+@pytest.mark.parametrize("schema", [True, 1.0])
+def test_schema_requires_integer_one_before_download(
+    config_path, monkeypatch, engine, target, schema
+):
+    path = (
+        config_path if target == "image" else config_path.with_name(f"dependencies.{engine}.json")
+    )
+    document = json.loads(path.read_text())
+    document["schema"] = schema
+    path.write_text(json.dumps(document))
+    monkeypatch.setattr(install, "download", lambda *a: pytest.fail("download must not start"))
+    version = install.load_plan(engine, "builtin")["version"]
+    with pytest.raises(ValueError):
+        install.main(
+            engine,
+            "random",
+            version,
+            config_path=config_path,
+            destination=config_path.parent / "output",
+        )
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
 @pytest.mark.parametrize("changed_digest", [False, True])
 def test_repeated_provider_identity_refused_before_download(
     config_path, monkeypatch, engine, changed_digest

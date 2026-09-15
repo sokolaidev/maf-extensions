@@ -367,10 +367,10 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
     observed: dict[str, dict[str, str]] = {}
     families: dict[str, bool] = {}
     for name, data in files.items():
+        parts = name.split("/")
         require(
-            not any(
-                part.startswith(".") for part in name.split("/") if part != ".terraform.lock.hcl"
-            ),
+            not any(part.startswith(".") for part in parts[:-1])
+            and (parts[-1] == ".terraform.lock.hcl" or not parts[-1].startswith(".")),
             "module-hidden",
         )
         require(

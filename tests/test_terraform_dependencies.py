@@ -648,6 +648,8 @@ def test_redirect_limit_signed_second_hop_and_complete_response(receiver):
         ({"repo/module/extra.tofu.json": "{}"}, "module-precedence"),
         ({"repo/module/override.tf": ""}, "module-override"),
         ({"repo/module/.terraform/credentials": "secret"}, "module-hidden"),
+        ({"repo/module/.terraform.lock.hcl/secret.txt": "secret"}, "module-hidden"),
+        ({"repo/module/child/.terraform.lock.hcl/secret.txt": "secret"}, "module-hidden"),
         ({"repo/module/terraform.tfstate": "{}"}, "module-state"),
     ],
 )
@@ -674,3 +676,15 @@ def test_module_cycle_is_refused():
     )
     with pytest.raises(prep.Refused, match="module-cycle"):
         prep.module_files(module, data, "terraform")
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_root_and_child_lockfiles_remain_allowed(engine):
+    files = {
+        "main.tf": 'module "child" { source = "./child" }',
+        "child/main.tf": 'output "x" { value = 1 }',
+        ".terraform.lock.hcl": "# root lock\n",
+        "child/.terraform.lock.hcl": "# child lock\n",
+    }
+    data = bundle({"repo/module/" + name: text for name, text in files.items()})
+    assert prep.module_files(manifest()["modules"][0], data, engine) == files

@@ -11,6 +11,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+_PROVIDER_NAME = r"[a-z0-9][a-z0-9_-]{0,63}"
+
 
 def load_json(path: Path) -> Any:
     """Refuse ambiguous image configuration and provider approvals."""
@@ -30,7 +32,11 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
     """Read engine pins and the selected provider profile before downloading anything."""
     config_path = config_path or Path(__file__).with_name("image.json")
     config = load_json(config_path)
-    if config["schema"] != 1 or config["platform"] != "linux/amd64":
+    if (
+        type(config["schema"]) is not int
+        or config["schema"] != 1
+        or config["platform"] != "linux/amd64"
+    ):
         raise ValueError("unsupported image build configuration")
     if not re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", config["base_image"]):
         raise ValueError("base image must be pinned by digest")
@@ -53,17 +59,22 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
         if not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.json", manifest_name):
             raise ValueError("provider manifest must be a sibling JSON file")
         manifest = load_json(config_path.with_name(manifest_name))
-        if manifest["schema"] != 1 or manifest["engine"] != engine:
+        if type(manifest["schema"]) is not int or manifest["schema"] != 1:
+            raise ValueError("unsupported provider manifest schema")
+        if manifest["engine"] != engine:
             raise ValueError("provider manifest engine mismatch")
         providers = manifest["providers"]
         identities: set[tuple[str, str, str]] = set()
         for provider in providers:
             if (
                 not re.fullmatch(
-                    r"[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,63}/[a-z0-9-]+/[a-z0-9-]+",
+                    r"[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,63}/"
+                    + _PROVIDER_NAME
+                    + "/"
+                    + _PROVIDER_NAME,
                     provider["source"],
                 )
-                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", provider["version"])
+                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?", provider["version"])
                 or provider["platform"] != config["platform"].replace("/", "_")
                 or not provider["artifact"]["url"].startswith("https://")
                 or not re.fullmatch(r"[0-9a-f]{64}", provider["artifact"]["sha256"])
