@@ -699,6 +699,17 @@ def test_cli_deadline_kills_worker_and_publishes_nothing(tmp_path, monkeypatch, 
     )
     worker = tmp_path / "worker.py"
     worker.write_text("import time\ntime.sleep(30)\n")
+    timeouts = []
+    run = subprocess.run
+
+    def run_worker(*args, **kwargs):
+        try:
+            return run(*args, **kwargs)
+        except subprocess.TimeoutExpired as exc:
+            timeouts.append(exc.timeout)
+            raise
+
+    monkeypatch.setattr(subprocess, "run", run_worker)
     output = tmp_path / "prepared"
     monkeypatch.setattr(prep, "__file__", str(worker))
     monkeypatch.setattr(prep, "DEADLINE", 0.1)
@@ -710,6 +721,7 @@ def test_cli_deadline_kills_worker_and_publishes_nothing(tmp_path, monkeypatch, 
         prep.main()
     assert exited.value.code == 1
     assert time.monotonic() - started < 5
+    assert timeouts == [0.1]
     assert not output.exists()
     assert not list(tmp_path.glob(".terraform-preparation-*"))
     assert "preparation-failed" in capsys.readouterr().err
