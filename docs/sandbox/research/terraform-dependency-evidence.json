@@ -1,4 +1,14 @@
 {
+  "measurement": {
+    "status": "historical",
+    "implementation_commit": "fe0207baebe80912b407fe17a6f9366bdf8bbe01",
+    "implementation_source": "https://github.com/sokolaidev/maf-extensions/blob/fe0207baebe80912b407fe17a6f9366bdf8bbe01/scripts/terraform_dependencies.py",
+    "implementation_sha256": "2dc0cbb1b2c6b25b33bf7e183dc972c815293d465e890d2e546aa7b2467de033",
+    "implementation_encoding": "UTF-8 with LF line endings",
+    "manifest_source": "images/terraform-sandbox/dependencies.<engine>.json at implementation_commit",
+    "policy_identity_scheme": "SHA-256 of UTF-8 json.dumps(manifest, sort_keys=True, separators=(comma, colon)); manifest only, without the later policy-contract fingerprint",
+    "applies_to": "All measurements below, including policy identities, prepared image IDs, adapter results and gate counts; these are not current-implementation qualification results"
+  },
   "observed_date": "2026-09-14",
   "scope": "Controlled public HTTPS preparation plus real Docker adapter validation; no ACAS or WSLC live qualification",
   "host": "Windows amd64, Python 3.13",
