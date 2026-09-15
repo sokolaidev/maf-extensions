@@ -75,15 +75,17 @@ control = HyperlightControl(
     quiesce_instance=quiesce_instance,
     quiesced_purge=purge_conversation,
 )
+server = SandboxControlServer(control, source_id="research-agent")
 
 try:
     if settings.enable_local_sandbox_control:
-        # Entering the context is the action that opens the loopback listener.
-        async with SandboxControlServer(control, source_id="research-agent"):
-            await run_application(router)
-    else:
-        await run_application(router)
+        await server.start()
+    await run_application(router)
 finally:
+    if settings.enable_local_sandbox_control:
+        # Host-provided lifecycle coordination waits for local control work to settle.
+        await server.close()
+        await application_lifecycle.wait_for_control_settlement()
     await backend.aclose()
 ```
 
