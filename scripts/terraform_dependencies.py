@@ -20,7 +20,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlsplit
 
 import hcl2
@@ -29,6 +29,7 @@ MAX_MANIFEST = 1024 * 1024
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_TOTAL = 256 * 1024 * 1024
 MAX_TEXT = 8 * 1024 * 1024
+MAX_RESPONSE_HEAD = 32 * 1024
 DEADLINE = 180
 _NAME = r"[a-z0-9][a-z0-9_-]{0,63}"
 _DIGEST = r"[0-9a-f]{64}"
@@ -238,8 +239,38 @@ def public_addresses(host: str) -> list[tuple[int, tuple[Any, ...]]]:
     return addresses
 
 
+class _HeadReader:
+    """Bound raw status and header bytes before the HTTP parser retains them."""
+
+    def __init__(self, stream: Any) -> None:
+        self.stream = stream
+        self.available = MAX_RESPONSE_HEAD
+
+    def readline(self, size: int = -1) -> bytes:
+        limit = self.available + 1
+        data = self.stream.readline(min(size, limit) if size >= 0 else limit)
+        self.available -= len(data)
+        require(self.available >= 0, "response-headers")
+        return data
+
+
+class BoundedResponse(http.client.HTTPResponse):
+    """Share one response-head budget across status, headers and interim responses."""
+
+    def begin(self) -> None:
+        stream = self.fp
+        try:
+            self.fp = cast(io.BufferedReader, _HeadReader(stream))
+            super().begin()
+        finally:
+            # Body reads and failure cleanup retain the original buffered stream.
+            self.fp = stream
+
+
 class PinnedHTTPS(http.client.HTTPSConnection):
     """Connect directly to a checked IP, retaining certificate and SNI hostname checks."""
+
+    response_class = BoundedResponse
 
     def __init__(self, host: str, deadline: float) -> None:
         self.tls_context = ssl.create_default_context()
@@ -291,10 +322,6 @@ def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARC
                 transport = connection.sock
                 assert transport is not None
                 response = connection.getresponse()
-                require(
-                    sum(len(k) + len(v) for k, v in response.getheaders()) <= 32768,
-                    "response-headers",
-                )
                 if response.status in {301, 302, 303, 307, 308}:
                     locations = response.headers.get_all("Location", [])
                     require(len(locations) == 1 and hop < 3, "redirect-limit")
@@ -323,6 +350,10 @@ def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARC
                     url = location
                     continue
                 require(response.status == 200, "response-status")
+                require(
+                    artifact.get("github_repository_id") is not None or hop == len(chain),
+                    "redirect-unapproved",
+                )
                 require(
                     response.getheader("Content-Encoding", "identity") == "identity",
                     "response-encoding",
@@ -476,6 +507,7 @@ def policy_contract() -> dict[str, Any]:
             "archive": MAX_ARCHIVE,
             "total": MAX_TOTAL,
             "text": MAX_TEXT,
+            "response_head": MAX_RESPONSE_HEAD,
             "deadline": DEADLINE,
         },
     }

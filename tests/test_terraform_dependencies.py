@@ -20,6 +20,7 @@ import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 
 import pytest
 from cryptography import x509
@@ -258,6 +259,64 @@ def test_redirect_cannot_expand_approved_transfer(receiver, location):
 
 def urlsplit_target(url):
     return "/" + url.split("/", 3)[3]
+
+
+@pytest.mark.parametrize("observed", [0, 1])
+def test_ordinary_redirect_chain_must_be_completed(receiver, observed):
+    requests, routes, _ = receiver
+    chain = ["https://approved.example/first.zip", "https://approved.example/last.zip"]
+    if observed:
+        routes["/repository/1.0/artifact.zip"] = (302, {"Location": chain[0]}, b"")
+    with pytest.raises(prep.Refused, match="redirect-unapproved"):
+        prep.fetch(artifact(redirects=chain), time.monotonic() + 5)
+    assert len(requests) == observed + 1
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"HTTP/1.1 200 OK\r\nX-Large: " + b"a" * 50000 + b"\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\n" + (b"X-Many: " + b"a" * 1000 + b"\r\n") * 60 + b"\r\n",
+        b"HTTP/1.1 200 OK\r\nX-Folded: a\r\n" + (b" " + b"a" * 1000 + b"\r\n") * 60 + b"\r\n",
+        b"HTTP/1.1 200 " + b"a" * 50000 + b"\r\n\r\n",
+        b"HTTP/1.1 100 Continue\r\n\r\n" * 1500 + b"HTTP/1.1 200 OK\r\n\r\n",
+    ],
+    ids=["long-line", "many-headers", "folded", "long-status", "interim"],
+)
+def test_response_head_refused_before_accumulation(head):
+    stream = io.BytesIO(head)
+
+    class Socket:
+        def makefile(self, *args):
+            return stream
+
+    response = prep.PinnedHTTPS.response_class(cast(socket.socket, Socket()))
+    try:
+        with pytest.raises(prep.Refused, match="response-headers"):
+            response.begin()
+        assert stream.tell() <= 32769
+    finally:
+        response.close()
+
+
+@pytest.mark.parametrize("interim", [b"", b"HTTP/1.1 100 Continue\r\n\r\n"])
+def test_response_head_boundary_preserves_body(interim):
+    prefix = interim + b"HTTP/1.1 200 OK\r\nContent-Length: 40000\r\nX-Pad: "
+    head = prefix + b"a" * (32768 - len(prefix) - 4) + b"\r\n\r\n"
+    stream = io.BytesIO(head + b"b" * 40000)
+
+    class Socket:
+        def makefile(self, *args):
+            return stream
+
+    response = prep.PinnedHTTPS.response_class(cast(socket.socket, Socket()))
+    try:
+        response.begin()
+        assert stream.tell() == 32768
+        response.begin()
+        assert response.read() == b"b" * 40000
+    finally:
+        response.close()
 
 
 def test_exact_redirect_and_github_transfer_binding(receiver):
