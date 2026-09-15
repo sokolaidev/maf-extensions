@@ -322,6 +322,27 @@ def test_composite_control_preserves_partial_inventory_errors():
     asyncio.run(check())
 
 
+def test_composite_inventory_is_bounded_when_a_host_stalls():
+    class HangingControl(MemoryControl):
+        timeout = 0.01
+
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        control = CompositeControl((MemoryControl([record]), HangingControl()))
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(PartialInventoryError, match="incomplete") as raised:
+            await control.list_sandboxes()
+        assert asyncio.get_running_loop().time() - started < 0.5
+        assert raised.value.records == (record,)
+        assert raised.value.errors == ("1 host(s) did not respond before the inventory deadline.",)
+
+    asyncio.run(check())
+
+
 def test_initial_probe_failure_reaches_the_console_control():
     manifest = EndpointManifest("stopped-host", "http://127.0.0.1:1", 1)
     probe = cli_module._HostProbe(manifest, HttpControl(manifest), "connection refused")
@@ -2021,6 +2042,43 @@ def test_http_mutation_transport_is_joined_before_a_timeout_is_reported(
             assert result.status is DisposalStatus.FAILED
         else:
             assert result.status is PurgeStatus.PARTIAL
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.set()
+
+
+def test_http_joined_request_bounds_settlement_and_tracks_late_transport(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def check() -> None:
+        record = (await MemoryControl.demo().list_sandboxes())[0]
+        client = HttpControl(EndpointManifest("host", "http://127.0.0.1:1", 1))
+
+        def request(method: str, path: str, *, timeout: float | None = None) -> object:
+            del method, path, timeout
+            entered.set()
+            assert release.wait(1)
+            return {"sandboxes": [record.to_json()]}
+
+        monkeypatch.setattr(client, "_request", request)
+        listing = asyncio.create_task(client.list_sandboxes())
+        assert await asyncio.to_thread(entered.wait, 1)
+        listing.cancel()
+
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(asyncio.CancelledError):
+            await listing
+        assert asyncio.get_running_loop().time() - started < 0.5
+        assert len(client._unsettled_transports) == 1
+
+        release.set()
+        async with asyncio.timeout(1):
+            while client._unsettled_transports:
+                await asyncio.sleep(0.01)
+        assert not client._unsettled_transports
 
     try:
         asyncio.run(check())

@@ -22,6 +22,7 @@ from ._server import (
 )
 
 _CONTROL_SETTLEMENT_GRACE = 0.1
+_INVENTORY_TIMEOUT_FALLBACK = 5.0
 
 
 class ControlEndpointError(RuntimeError):
@@ -58,6 +59,7 @@ class HttpControl:
         self.manifest = manifest
         self._endpoint = manifest.endpoint.removesuffix("/")
         self.timeout = timeout
+        self._unsettled_transports: set[asyncio.Task[object]] = set()
 
     def _request(self, method: str, path: str, *, timeout: float | None = None) -> object:
         request = Request(
@@ -86,20 +88,36 @@ class HttpControl:
     async def _joined_request(
         self, method: str, path: str, *, timeout: float | None = None
     ) -> object:
-        """Run one blocking request without abandoning a mutating transport on cancellation."""
-        task = asyncio.create_task(asyncio.to_thread(self._request, method, path, timeout=timeout))
+        """Run one blocking request without abandoning its transport on cancellation."""
+        task = asyncio.create_task(
+            asyncio.to_thread(self._request, method, path, timeout=timeout)
+        )
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            # A cancelled to_thread await does not stop urllib; join it before reporting completion.
+            # A cancelled to_thread await does not stop urllib; join briefly before reporting.
+            deadline = asyncio.get_running_loop().time() + _CONTROL_SETTLEMENT_GRACE
             while not task.done():
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
                 try:
-                    await asyncio.shield(task)
+                    await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+                except TimeoutError:
+                    break
                 except asyncio.CancelledError:
                     continue
-            if not task.cancelled():
+            if task.done() and not task.cancelled():
                 task.exception()
+            if not task.done():
+                self._unsettled_transports.add(task)
+                task.add_done_callback(self._finish_transport)
             raise
+
+    def _finish_transport(self, task: asyncio.Task[object]) -> None:
+        self._unsettled_transports.discard(task)
+        with suppress(asyncio.CancelledError, Exception):
+            task.result()
 
     async def health(self) -> None:
         """Require a compatible local endpoint."""
@@ -121,8 +139,7 @@ class HttpControl:
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
         """Read the endpoint's current authoritative snapshot."""
-        value = await asyncio.to_thread(
-            self._request,
+        value = await self._joined_request(
             "GET",
             f"/v1/sandboxes?timeout={self.timeout}",
             timeout=self.timeout + _TRANSPORT_GRACE,
@@ -138,8 +155,7 @@ class HttpControl:
     async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
         """Read one exact physical instance from this endpoint."""
         try:
-            value = await asyncio.to_thread(
-                self._request,
+            value = await self._joined_request(
                 "GET",
                 f"/v1/sandboxes/{quote(instance_id, safe='')}?timeout={self.timeout}",
                 timeout=self.timeout + _TRANSPORT_GRACE,
@@ -232,22 +248,33 @@ class CompositeControl:
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
         """Return every responsive endpoint's current inventory."""
-        snapshots = await asyncio.gather(
-            *(control.list_sandboxes() for control in self._controls), return_exceptions=True
-        )
+        tasks = tuple(asyncio.create_task(control.list_sandboxes()) for control in self._controls)
+        done, pending = await self._wait_bounded(tasks, timeout=self._inventory_timeout())
         records: list[SandboxRecord] = []
         errors = list(self._initial_errors)
-        for snapshot in snapshots:
-            if isinstance(snapshot, BaseException):
-                errors.append(str(snapshot))
-            else:
-                records.extend(snapshot)
+        for task in done:
+            try:
+                records.extend(task.result())
+            except (asyncio.CancelledError, Exception) as error:
+                errors.append(str(error))
+        if pending:
+            errors.append(f"{len(pending)} host(s) did not respond before the inventory deadline.")
         ordered = tuple(
             sorted(records, key=lambda item: (item.source_id, item.logical_name, item.kind))
         )
         if errors:
             raise PartialInventoryError(ordered, errors)
         return ordered
+
+    def _inventory_timeout(self) -> float:
+        timeouts: list[float] = []
+        for control in self._controls:
+            timeout = getattr(control, "timeout", None)
+            if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
+                continue
+            timeouts.append(float(timeout))
+        base_timeout = max(timeouts) if timeouts else _INVENTORY_TIMEOUT_FALLBACK
+        return base_timeout + _CONTROL_SETTLEMENT_GRACE
 
     async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
         """Find one exact instance across responsive endpoints."""
