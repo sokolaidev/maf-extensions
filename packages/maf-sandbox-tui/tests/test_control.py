@@ -461,6 +461,16 @@ def test_composite_disposal_returns_when_exact_owner_ignores_cancellation():
     asyncio.run(check())
 
 
+def test_composite_disposal_reports_a_self_cancelled_inventory_probe():
+    class CancelledControl(MemoryControl):
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            raise asyncio.CancelledError
+
+    result = asyncio.run(CompositeControl((CancelledControl(),)).dispose_sandbox("generation-a"))
+    assert result.status is DisposalStatus.FAILED
+    assert "owner could not be confirmed" in result.message
+
+
 def test_composite_disposal_refuses_an_unconfirmed_single_owner():
     class FailingControl(MemoryControl):
         async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
@@ -591,6 +601,28 @@ def test_composite_purge_caller_cancellation_does_not_wait_for_a_late_host_failu
         assert failures == []
 
     asyncio.run(check())
+
+
+def test_composite_purge_reports_a_self_cancelled_host():
+    class CancelledControl(MemoryControl):
+        async def purge_thread(
+            self, scope: str, thread_id: str, *, timeout: float = 10.0
+        ) -> PurgeResult:
+            raise asyncio.CancelledError
+
+    result = asyncio.run(CompositeControl((CancelledControl(),)).purge_thread("scope", "thread"))
+    assert result.status is PurgeStatus.PARTIAL
+    assert "incomplete" in result.message
+
+
+def test_composite_completion_callback_propagates_system_exit():
+    class ExitingTask:
+        def result(self) -> object:
+            raise SystemExit(1)
+
+    control = CompositeControl(())
+    with pytest.raises(SystemExit):
+        control._finish_operation(cast("asyncio.Task[object]", ExitingTask()))
 
 
 def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():

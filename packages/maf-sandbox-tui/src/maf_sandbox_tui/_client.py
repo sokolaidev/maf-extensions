@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
@@ -205,10 +206,9 @@ class CompositeControl:
 
     def _finish_operation(self, task: asyncio.Task[Any]) -> None:
         self._unsettled_operations.discard(task)
-        try:
+        # Observe late failures so the event loop does not report lost task exceptions.
+        with suppress(asyncio.CancelledError, Exception):
             task.result()
-        except BaseException:
-            pass
 
     async def _wait_bounded(
         self, tasks: tuple[asyncio.Task[Any], ...], *, timeout: float
@@ -283,7 +283,7 @@ class CompositeControl:
         for control, probe in zip(self._controls, probes, strict=True):
             try:
                 snapshot = probe.result()
-            except BaseException as error:
+            except (asyncio.CancelledError, Exception) as error:
                 errors.append(str(error))
             else:
                 if any(item.instance_id == instance_id for item in snapshot):
@@ -347,7 +347,7 @@ class CompositeControl:
         for task in done:
             try:
                 results.append(task.result())
-            except BaseException as error:
+            except (asyncio.CancelledError, Exception) as error:
                 results.append(error)
         disposed = sum(item.disposed for item in results if isinstance(item, PurgeResult))
         failures = list(self._initial_errors)
