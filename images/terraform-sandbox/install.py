@@ -74,7 +74,9 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
                     + _PROVIDER_NAME,
                     provider["source"],
                 )
-                or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?", provider["version"])
+                or not re.fullmatch(
+                    r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9-]+(?:\.[a-z0-9-]+)*)?", provider["version"]
+                )
                 or provider["platform"] != config["platform"].replace("/", "_")
                 or not provider["artifact"]["url"].startswith("https://")
                 or not re.fullmatch(r"[0-9a-f]{64}", provider["artifact"]["sha256"])

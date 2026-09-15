@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import datetime
 import hashlib
@@ -688,3 +689,84 @@ def test_root_and_child_lockfiles_remain_allowed(engine):
     }
     data = bundle({"repo/module/" + name: text for name, text in files.items()})
     assert prep.module_files(manifest()["modules"][0], data, engine) == files
+
+
+@pytest.mark.parametrize("version", ["3.7.2-.rc", "3.7.2-rc.", "3.7.2-rc..1"])
+def test_preparation_refuses_empty_prerelease_components(version):
+    policy = manifest()
+    policy["providers"][0]["version"] = version
+    with pytest.raises(prep.Refused, match="provider-version"):
+        prep.checked_manifest(policy)
+
+
+@pytest.mark.parametrize("platform", ["windows_amd64", "linux_arm64", "darwin_amd64"])
+def test_preparation_refuses_unsupported_provider_platform(platform):
+    policy = manifest()
+    policy["providers"][0]["platform"] = platform
+    with pytest.raises(prep.Refused, match="provider-platform"):
+        prep.checked_manifest(policy)
+
+
+@pytest.mark.parametrize(
+    "decision", ["artifact-mismatch", "redirect-unapproved", "archive-expansion", "module-hidden"]
+)
+def test_cli_preserves_worker_refusal_without_publishing(tmp_path, monkeypatch, capsys, decision):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        f"import sys\nsys.path.insert(0, {str(Path(prep.__file__).parent)!r})\n"
+        + "import terraform_dependencies as prep\n"
+        + "def fail(manifest, output):\n    output.mkdir()\n"
+        + f"    prep.require(False, {decision!r})\n"
+        + "prep.prepare = fail\nprep.main()\n"
+    )
+    output = tmp_path / "prepared"
+    monkeypatch.setattr(prep, "__file__", str(worker))
+    monkeypatch.setattr(
+        sys, "argv", ["prepare", "--manifest", str(source), "--output", str(output)]
+    )
+    with pytest.raises(SystemExit) as exited:
+        prep.main()
+    assert exited.value.code == 1
+    assert capsys.readouterr().err == f"Dependency preparation refused: {decision}\n"
+    assert not output.exists()
+    assert not list(tmp_path.glob(".terraform-preparation-*"))
+
+
+@pytest.mark.parametrize("exit_code", [1, 255])
+def test_cli_does_not_forward_arbitrary_worker_diagnostics(
+    tmp_path, monkeypatch, capsys, exit_code
+):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        "import sys\nprint('https://secret.example/?token=do-not-log', file=sys.stderr)\n"
+        + f"sys.exit({exit_code})\n"
+    )
+    output = tmp_path / "prepared"
+    monkeypatch.setattr(prep, "__file__", str(worker))
+    monkeypatch.setattr(
+        sys, "argv", ["prepare", "--manifest", str(source), "--output", str(output)]
+    )
+    with pytest.raises(SystemExit):
+        prep.main()
+    assert capsys.readouterr().err == "Dependency preparation refused: preparation-failed\n"
+    assert not output.exists()
+
+
+def test_worker_exit_codes_cover_all_fixed_policy_refusals():
+    decisions = set()
+    for node in ast.walk(ast.parse(Path(prep.__file__).read_text())):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        index = {"require": 1, "Refused": 0, "unique_json": 1}.get(node.func.id)
+        if index is None or len(node.args) <= index:
+            continue
+        argument = node.args[index]
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            decisions.add(argument.value)
+    decisions.discard("preparation-failed")
+    assert set(prep._WORKER_DECISIONS) == decisions
+    assert len(prep._WORKER_DECISIONS) == len(decisions) < 192

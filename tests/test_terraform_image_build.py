@@ -55,7 +55,10 @@ def test_provider_prerelease_uses_preparation_manifest_grammar(config_path, engi
     manifest = json.loads(path.read_text())
     manifest["providers"][0]["version"] = version
     path.write_text(json.dumps(manifest))
+    import terraform_dependencies as prep
+
     assert install.load_plan(engine, "random", config_path)["providers"][0]["version"] == version
+    assert prep.checked_manifest(manifest)["providers"][0]["version"] == version
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
@@ -360,3 +363,28 @@ def test_live_image_labels_match_installed_binary_and_runtime_metadata(engine):
     assert labels["ai.sokol.maf.engine.version"] == metadata["version"]
     assert labels["org.opencontainers.image.version"] == metadata["version"]
     assert metadata["platform"] == "linux/amd64"
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize(
+    "version", ["3.7.2-", "3.7.2-.rc", "3.7.2-rc.", "3.7.2-rc..1", "3.7.2-RC1"]
+)
+def test_provider_invalid_prerelease_refuses_before_download(
+    config_path, monkeypatch, engine, version
+):
+    import terraform_dependencies as prep
+
+    path = config_path.with_name(f"dependencies.{engine}.json")
+    policy = json.loads(path.read_text())
+    policy["providers"][0]["version"] = version
+    path.write_text(json.dumps(policy))
+    monkeypatch.setattr(install, "download", lambda *a: pytest.fail("download must not start"))
+    with pytest.raises(ValueError):
+        install.main(
+            engine,
+            "random",
+            install.load_plan(engine, "builtin")["version"],
+            config_path=config_path,
+        )
+    with pytest.raises(prep.Refused, match="provider-version"):
+        prep.checked_manifest(policy)

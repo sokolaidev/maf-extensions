@@ -38,6 +38,26 @@ _QUERY_KEYS = frozenset(
 )
 
 
+# Worker exit codes carry only fixed policy decisions; arbitrary diagnostics stay private.
+_WORKER_DECISIONS = (
+    "archive-collision archive-empty archive-encryption archive-entries archive-expansion "
+    "archive-size archive-special archive-type artifact-digest artifact-mismatch deadline "
+    "dns-answers dns-private dns-transition download-incomplete download-size engine "
+    "file-path file-segments github-policy github-source manifest-duplicate "
+    "manifest-fields manifest-object manifest-required manifest-schema manifest-size "
+    "module-conflict module-cycle module-duplicate module-edge-name module-edge-target "
+    "module-edges module-engine module-files module-graph module-graph-mismatch "
+    "module-hidden module-json-duplicate module-name module-override module-precedence "
+    "module-remote module-revision module-source module-state module-text "
+    "module-unreachable modules output-exists provenance provider-conflict "
+    "provider-platform provider-source provider-version providers redirect-artifact "
+    "redirect-host redirect-limit redirect-unapproved response-encoding response-headers "
+    "response-length response-status signed-content signed-fields signed-host signed-query "
+    "total-size transfer-failed url-ascii url-authority url-fragment url-path url-query "
+    "url-segments url-shape "
+).split()
+
+
 class Refused(ValueError):
     """A bounded policy decision safe to include in diagnostics."""
 
@@ -162,10 +182,12 @@ def checked_manifest(value: Any) -> dict[str, Any]:
         require(re.fullmatch(r"[a-z0-9.-]+/" + _NAME + "/" + _NAME, source), "provider-source")
         canonical_url("https://" + source)
         require(
-            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?", provider["version"]),
+            re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9-]+(?:\.[a-z0-9-]+)*)?", provider["version"]
+            ),
             "provider-version",
         )
-        require(re.fullmatch(_NAME + "_" + _NAME, provider["platform"]), "provider-platform")
+        require(provider["platform"] == "linux_amd64", "provider-platform")
         identity = f"{source}/{provider['version']}/{provider['platform']}"
         require(identity not in identities, "provider-conflict")
         identities.add(identity)
@@ -527,17 +549,26 @@ def main() -> None:
                 ],
                 input=data,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 timeout=DEADLINE,
                 check=False,
             )
-            require(result.returncode == 0, "preparation-failed")
+            if result.returncode != 0:
+                index = result.returncode - 64
+                decision = (
+                    _WORKER_DECISIONS[index]
+                    if 0 <= index < len(_WORKER_DECISIONS)
+                    else "preparation-failed"
+                )
+                raise Refused(decision)
             # The parent directory and manifest are controlled by the operator, not a guest.
             require(not output.exists() and not output.is_symlink(), "output-exists")
             os.rename(prepared, output)
         print("Dependencies verified; receipt.json records artifact and policy identities.")
     except Exception as exc:
         decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
+        if args.worker and decision in _WORKER_DECISIONS:
+            raise SystemExit(64 + _WORKER_DECISIONS.index(decision)) from None
         print(f"Dependency preparation refused: {decision}", file=sys.stderr)
         raise SystemExit(1) from None
 
