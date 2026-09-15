@@ -93,3 +93,10 @@ def test_watch_can_emit_one_bounded_jsonl_snapshot(capsys):
     assert payload["complete"] is True
     assert len(payload["sandboxes"]) == 2
     assert {item["kind"] for item in payload["sandboxes"]} == {"codeact"}
+
+
+def test_watch_accepts_global_json_before_the_subcommand(capsys):
+    main(["--demo", "--json", "watch", "--count", "1"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["complete"] is True
+    assert len(payload["sandboxes"]) == 3

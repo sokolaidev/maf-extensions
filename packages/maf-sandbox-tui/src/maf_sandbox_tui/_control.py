@@ -284,14 +284,35 @@ class MonitoredSandboxBackend:
         instance_id: str | None = None,
     ) -> DisposalFailure | None:
         """Dispose through the wrapped backend and retire confirmed tracked generations."""
-        failure = await self._backend.dispose(key, kind=kind, instance_id=instance_id)
+        with self._state_lock:
+            self._refresh_locked(time.time())
+            targets = tuple(
+                (index, tracked)
+                for index, tracked in self._tracked.items()
+                if tracked.key == key
+                and (kind is None or tracked.spec.kind == kind)
+                and (instance_id is None or tracked.instance_id == instance_id)
+            )
+        try:
+            failure = await self._backend.dispose(key, kind=kind, instance_id=instance_id)
+        except BaseException:
+            with self._state_lock:
+                self._refresh_locked(time.time())
+                for index, original in targets:
+                    tracked = self._tracked.get(index)
+                    if tracked is None or tracked is not original:
+                        continue
+                    if _worker_exited(tracked.sandbox):
+                        del self._tracked[index]
+                    else:
+                        tracked.published = False
+            raise
         disposed = 0
         with self._state_lock:
             self._refresh_locked(time.time())
-            for index, tracked in tuple(self._tracked.items()):
-                if tracked.key != key or (kind is not None and tracked.spec.kind != kind):
-                    continue
-                if instance_id is not None and tracked.instance_id != instance_id:
+            for index, original in targets:
+                tracked = self._tracked.get(index)
+                if tracked is None or tracked is not original:
                     continue
                 if failure is None and _worker_exited(tracked.sandbox):
                     del self._tracked[index]
@@ -303,7 +324,19 @@ class MonitoredSandboxBackend:
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         """Purge through the wrapped backend without publishing ambiguous generations."""
-        result = await self._backend.dispose_scope(scope, thread_id)
+        try:
+            result = await self._backend.dispose_scope(scope, thread_id)
+        except BaseException:
+            with self._state_lock:
+                self._refresh_locked(time.time())
+                for index, tracked in tuple(self._tracked.items()):
+                    if tracked.key.scope != scope or tracked.key.thread_id != thread_id:
+                        continue
+                    if _worker_exited(tracked.sandbox):
+                        del self._tracked[index]
+                    else:
+                        tracked.published = False
+            raise
         with self._state_lock:
             self._refresh_locked(time.time())
             for index, tracked in tuple(self._tracked.items()):
@@ -313,6 +346,15 @@ class MonitoredSandboxBackend:
                     elif result.undisposed is not None and result.disposed:
                         tracked.published = False
         return result
+
+    def has_retained_scope(self, scope: str, thread_id: str) -> bool:
+        """Include withheld generations when confirming conversation cleanup."""
+        with self._state_lock:
+            self._refresh_locked(time.time())
+            return any(
+                tracked.key.scope == scope and tracked.key.thread_id == thread_id
+                for tracked in self._tracked.values()
+            )
 
 
 class MonitoredSandboxRouter(SandboxRouter):
@@ -381,23 +423,35 @@ class HyperlightControl:
 
     async def get_sandbox(self, instance_id: str) -> SandboxRecord | None:
         """Return one physical instance when this host still owns it."""
-        return next(
-            (item for item in await self.list_sandboxes() if item.instance_id == instance_id),
-            None,
+        matches = tuple(
+            item for item in await self.list_sandboxes() if item.instance_id == instance_id
         )
+        if len(matches) > 1:
+            raise ValueError("duplicate physical instance id reported by one host")
+        return matches[0] if matches else None
 
     async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
         """Dispose the exact physical instance while preserving a replacement."""
         try:
             async with asyncio.timeout(timeout):
-                before = {item.instance_id: item for item in await self._backend.list_sandboxes()}
-                item = before.get(instance_id)
-                if item is None:
+                before = tuple(
+                    entry
+                    for entry in await self._backend.list_sandboxes()
+                    if entry.instance_id == instance_id
+                )
+                if len(before) > 1:
+                    return DisposalResult(
+                        DisposalStatus.FAILED,
+                        instance_id,
+                        "Duplicate physical instance id reported; exact disposal refused.",
+                    )
+                if not before:
                     return DisposalResult(
                         DisposalStatus.NOT_FOUND,
                         instance_id,
                         "The sandbox is already gone or its generation changed.",
                     )
+                item = before[0]
                 if self._quiesce_instance is None:
                     return DisposalResult(
                         DisposalStatus.FAILED,
@@ -407,12 +461,14 @@ class HyperlightControl:
                     )
                 async with self._quiesce_instance(item.key):
                     current = await self._backend.list_sandboxes()
-                    if not any(
-                        entry.instance_id == instance_id
-                        and entry.key == item.key
-                        and entry.kind == item.kind
-                        for entry in current
-                    ):
+                    matches = tuple(entry for entry in current if entry.instance_id == instance_id)
+                    if len(matches) > 1:
+                        return DisposalResult(
+                            DisposalStatus.FAILED,
+                            instance_id,
+                            "Duplicate physical instance id reported; exact disposal refused.",
+                        )
+                    if not matches or matches[0].key != item.key or matches[0].kind != item.kind:
                         return DisposalResult(
                             DisposalStatus.NOT_FOUND,
                             instance_id,
@@ -505,7 +561,12 @@ class HyperlightControl:
                 disposed,
                 "Conversation purge timed out and was not confirmed.",
             )
-        complete = purged.undisposed is None and not remaining
+        retained = (
+            self._backend.has_retained_scope(scope, thread_id)
+            if isinstance(self._backend, MonitoredSandboxBackend)
+            else False
+        )
+        complete = purged.undisposed is None and not remaining and not retained
         if complete:
             return PurgeResult(
                 PurgeStatus.PURGED,

@@ -10,6 +10,7 @@ import socket
 import tempfile
 import threading
 from collections.abc import AsyncIterator, Generator
+from concurrent.futures import Future
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -750,6 +751,145 @@ def test_monitored_backend_withholds_a_receipt_without_a_process_exit_signal(pol
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("exited", [False, True])
+def test_monitored_backend_reconciles_a_cancelled_exact_disposal(exited: bool):
+    class CancelledBackend(_ObservedBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+
+        async def dispose(
+            self,
+            key: SandboxKey,
+            *,
+            kind: str | None = None,
+            instance_id: str | None = None,
+        ) -> DisposalFailure | None:
+            del instance_id
+            assert kind is not None
+            if exited:
+                self.sandboxes[(key, kind)]._running = False
+            self.entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        inner = CancelledBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = MonitoredSandboxRouter([monitored])
+        key = SandboxKey("scope", "thread", "agent")
+        spec = SandboxSpec(kind="codeact")
+        sandbox = await router.acquire(key, spec)
+        deleting = asyncio.create_task(
+            monitored.dispose(key, kind=spec.kind, instance_id=sandbox.instance_id)
+        )
+        await inner.entered.wait()
+        deleting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await deleting
+
+        assert await monitored.list_sandboxes() == ()
+        assert monitored.has_retained_scope(key.scope, key.thread_id) is not exited
+
+    asyncio.run(check())
+
+
+def test_monitored_backend_reconciles_a_cancelled_partial_scope_purge():
+    class CancelledBackend(_ObservedBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+
+        async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+            for key, sandbox in self.sandboxes.items():
+                if (key[0].scope, key[0].thread_id) == (scope, thread_id):
+                    sandbox._running = False
+                    break
+            self.entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def check() -> None:
+        inner = CancelledBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = MonitoredSandboxRouter([monitored])
+        first = SandboxKey("scope", "thread", "first")
+        second = SandboxKey("scope", "thread", "second")
+        other = SandboxKey("scope", "other", "third")
+        spec = SandboxSpec(kind="codeact")
+        await router.acquire(first, spec)
+        await router.acquire(second, spec)
+        await router.acquire(other, spec)
+        purging = asyncio.create_task(monitored.dispose_scope(first.scope, first.thread_id))
+        await inner.entered.wait()
+        purging.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await purging
+
+        assert [item.key for item in await monitored.list_sandboxes()] == [other]
+        assert monitored.has_retained_scope(first.scope, first.thread_id)
+        assert monitored.has_retained_scope(other.scope, other.thread_id)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_monitored_backend_preserves_a_replacement_during_disposal(cancelled: bool):
+    spec = SandboxSpec(kind="codeact")
+
+    class ReplacingBackend(_ObservedBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.monitored: MonitoredSandboxBackend | None = None
+            self.entered = asyncio.Event()
+
+        async def dispose(
+            self,
+            key: SandboxKey,
+            *,
+            kind: str | None = None,
+            instance_id: str | None = None,
+        ) -> DisposalFailure | None:
+            del instance_id
+            assert kind == spec.kind
+            monitor = self.monitored
+            assert monitor is not None
+            old = self.sandboxes[(key, kind)]
+            old._running = False
+            self.sandboxes[(key, kind)] = _ObservedSandbox("replacement")
+            replacement = await monitor.acquire(key, spec)
+            monitor.admit_acquired(key, spec, replacement)
+            self.entered.set()
+            if cancelled:
+                await asyncio.Event().wait()
+            return None
+
+    async def check() -> None:
+        inner = ReplacingBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        inner.monitored = monitored
+        router = MonitoredSandboxRouter([monitored])
+        key = SandboxKey("scope", "thread", "agent")
+        original = await router.acquire(key, spec)
+        disposing = asyncio.create_task(
+            monitored.dispose(key, kind=spec.kind, instance_id=original.instance_id)
+        )
+        await inner.entered.wait()
+        if cancelled:
+            disposing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await disposing
+        else:
+            assert await disposing is None
+
+        records = await monitored.list_sandboxes()
+        assert len(records) == 1
+        assert records[0].instance_id == "replacement"
+        assert records[0].state == "ready"
+
+    asyncio.run(check())
+
+
 def test_monitored_backend_uses_protocol_results_without_a_liveness_extension():
     async def check() -> None:
         inner = _ObservedBackend()
@@ -878,6 +1018,43 @@ def test_monitored_backend_hides_generations_made_ambiguous_by_a_partial_purge()
     asyncio.run(check())
 
 
+def test_hyperlight_control_does_not_confirm_a_purge_with_withheld_workers():
+    class PartialThenEmptyBackend(_ObservedBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+            del scope, thread_id
+            self.calls += 1
+            if self.calls == 1:
+                return ScopePurge(1, DisposalFailure("unknown", "partial disposal"))
+            return ScopePurge(0)
+
+    async def check() -> None:
+        monitored = MonitoredSandboxBackend(PartialThenEmptyBackend())
+        router = MonitoredSandboxRouter([monitored])
+        control = HyperlightControl(
+            monitored,
+            router,
+            source_id="agent-app",
+            quiesced_purge=router.dispose_scope,
+        )
+        key = SandboxKey("scope", "thread", "agent")
+        await router.acquire(key, SandboxSpec(kind="codeact"))
+
+        first = await control.purge_thread(key.scope, key.thread_id)
+        assert first.status is PurgeStatus.PARTIAL
+        assert await monitored.list_sandboxes() == ()
+        assert monitored.has_retained_scope(key.scope, key.thread_id)
+
+        second = await control.purge_thread(key.scope, key.thread_id)
+        assert second.status is PurgeStatus.PARTIAL
+        assert "matching sandboxes remain" in second.message
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_routes_exact_generation():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -899,6 +1076,59 @@ def test_hyperlight_control_routes_exact_generation():
         assert result.status is DisposalStatus.DISPOSED
         assert router.calls == [(key, "codeact", "generation-a", 3.0)]
         assert await inventory.list_sandboxes() == ()
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_refuses_a_duplicate_physical_id_within_one_host():
+    async def check() -> None:
+        key = SandboxKey("scope", "thread", "first")
+        target = _Info(key, "codeact", "duplicate")
+        other = replace(target, key=SandboxKey("scope", "thread", "second"))
+        inventory = _Inventory([target, other])
+        router = _Router(inventory, None)
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
+
+        with pytest.raises(ValueError, match="duplicate physical instance id"):
+            await control.get_sandbox(target.instance_id)
+        result = await control.dispose_sandbox(target.instance_id)
+        assert result.status is DisposalStatus.FAILED
+        assert "Duplicate physical instance id" in result.message
+        assert router.calls == []
+        assert inventory.records == [target, other]
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_refuses_a_duplicate_added_inside_the_host_fence():
+    async def check() -> None:
+        key = SandboxKey("scope", "thread", "first")
+        target = _Info(key, "codeact", "duplicate")
+        other = replace(target, key=SandboxKey("scope", "thread", "second"))
+        inventory = _Inventory([target])
+        router = _Router(inventory, None)
+
+        @asynccontextmanager
+        async def quiesce(item_key: SandboxKey) -> AsyncIterator[None]:
+            assert item_key == key
+            inventory.records.append(other)
+            yield
+
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=quiesce,
+        )
+        result = await control.dispose_sandbox(target.instance_id)
+        assert result.status is DisposalStatus.FAILED
+        assert router.calls == []
+        assert inventory.records == [target, other]
 
     asyncio.run(check())
 
@@ -1291,6 +1521,42 @@ def test_loopback_endpoint_shows_and_purges_a_conversation(tmp_path):
     asyncio.run(check())
 
 
+def test_loopback_endpoint_refuses_a_duplicate_physical_id_on_show(tmp_path):
+    first = asyncio.run(MemoryControl.demo(now=1_000).list_sandboxes())[0]
+    second = replace(first, agent_id="other")
+
+    class DuplicateControl(MemoryControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.disposal_calls = 0
+
+        async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+            return first, second
+
+        async def dispose_sandbox(
+            self, instance_id: str, *, timeout: float = 10.0
+        ) -> DisposalResult:
+            self.disposal_calls += 1
+            return await super().dispose_sandbox(instance_id, timeout=timeout)
+
+    async def check() -> None:
+        control = DuplicateControl()
+        async with SandboxControlServer(
+            control,
+            source_id="test-host",
+            manifest_directory=tmp_path,
+        ) as server:
+            client = HttpControl(server.manifest)
+            assert len(await client.list_sandboxes()) == 2
+            with pytest.raises(ControlEndpointError) as raised:
+                await client.get_sandbox(first.instance_id)
+            assert raised.value.status_code == 409
+            assert (await client.dispose_sandbox(first.instance_id)).status is DisposalStatus.FAILED
+            assert control.disposal_calls == 0
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -1341,6 +1607,35 @@ def test_client_inventory_deadline_cancels_the_server_operation(tmp_path):
             await asyncio.wait_for(control.cancelled.wait(), timeout=1)
 
     asyncio.run(check())
+
+
+def test_server_cancel_operation_bounds_wait_for_a_stalled_owner_loop():
+    server = SandboxControlServer(MemoryControl(), source_id="test-host")
+    bridge: Future[object] = Future()
+    completed = threading.Event()
+
+    async def never() -> None:
+        await asyncio.Event().wait()
+
+    operation = never()
+    server._loop = cast(
+        asyncio.AbstractEventLoop,
+        SimpleNamespace(call_soon_threadsafe=lambda *_: None),
+    )
+    server._operations[bridge] = (operation, None, completed)
+    worker = threading.Thread(target=server.cancel_operation, args=(bridge,), daemon=True)
+    worker.start()
+    worker.join(0.5)
+    try:
+        assert not worker.is_alive()
+        assert bridge.cancelled()
+        assert bridge in server._operations
+    finally:
+        completed.set()
+        worker.join(1)
+        operation.close()
+        server._operations.clear()
+        server._loop = None
 
 
 @pytest.mark.parametrize("operation", ["dispose", "purge"])

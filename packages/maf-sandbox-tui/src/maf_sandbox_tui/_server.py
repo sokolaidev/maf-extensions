@@ -26,7 +26,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from ._control import SandboxControl
-from ._models import validate_source_id
+from ._models import DisposalResult, DisposalStatus, validate_source_id
 
 PROTOCOL_VERSION = 1
 _CONTROL_FAILURE_STATUS = HTTPStatus(500)
@@ -193,6 +193,19 @@ class _ControlHttpServer(ThreadingHTTPServer):
             request.close()
 
 
+async def _dispose_if_unique(
+    control: SandboxControl, instance_id: str, *, timeout: float
+) -> DisposalResult:
+    records = await control.list_sandboxes()
+    if sum(item.instance_id == instance_id for item in records) > 1:
+        return DisposalResult(
+            DisposalStatus.FAILED,
+            instance_id,
+            "Duplicate physical instance id reported; exact disposal refused.",
+        )
+    return await control.dispose_sandbox(instance_id, timeout=timeout)
+
+
 class _ControlHandler(BaseHTTPRequestHandler):
     @property
     def _control_server(self) -> _ControlHttpServer:
@@ -271,11 +284,16 @@ class _ControlHandler(BaseHTTPRequestHandler):
                     self._control_server.owner.control.list_sandboxes(),
                     timeout=timeout,
                 )
-                record = next((item for item in records if item.instance_id == instance_id), None)
-                if record is None:
+                matches = tuple(item for item in records if item.instance_id == instance_id)
+                if len(matches) > 1:
+                    self._send(
+                        HTTPStatus.CONFLICT,
+                        {"error": "duplicate physical instance id reported by this host"},
+                    )
+                elif not matches:
                     self._send(HTTPStatus.NOT_FOUND, {"error": "sandbox not found"})
                 else:
-                    self._send(HTTPStatus.OK, record.to_json())
+                    self._send(HTTPStatus.OK, matches[0].to_json())
                 return
             self._send(HTTPStatus.NOT_FOUND, {"error": "route not found"})
         except FutureTimeoutError:
@@ -320,7 +338,8 @@ class _ControlHandler(BaseHTTPRequestHandler):
             return
         try:
             result = self._run(
-                self._control_server.owner.control.dispose_sandbox(
+                _dispose_if_unique(
+                    self._control_server.owner.control,
                     instance_id,
                     timeout=timeout,
                 ),
@@ -459,7 +478,7 @@ class SandboxControlServer:
             loop.call_soon_threadsafe(self._cancel_operation, bridge)
         except RuntimeError:
             return
-        entry[2].wait()
+        entry[2].wait(_OPERATION_SETTLEMENT_GRACE)
 
     def _cancel_operation(self, bridge: Future[Any]) -> None:
         with self._operation_lock:
