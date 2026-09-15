@@ -32,6 +32,9 @@ MAX_TEXT = 8 * 1024 * 1024
 DEADLINE = 180
 _NAME = r"[a-z0-9][a-z0-9_-]{0,63}"
 _DIGEST = r"[0-9a-f]{64}"
+_NUMBER = r"(?:0|[1-9][0-9]*)"
+_PRERELEASE = rf"(?:{_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
+_VERSION = rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRERELEASE}(?:\.{_PRERELEASE})*)?"
 _QUERY_KEYS = frozenset(
     "sp sv sr spr se rscd rsct skoid sktid skt ske sks skv sig jwt "
     "response-content-disposition response-content-type".split()
@@ -182,9 +185,7 @@ def checked_manifest(value: Any) -> dict[str, Any]:
         require(re.fullmatch(r"[a-z0-9.-]+/" + _NAME + "/" + _NAME, source), "provider-source")
         canonical_url("https://" + source)
         require(
-            re.fullmatch(
-                r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9-]+(?:\.[a-z0-9-]+)*)?", provider["version"]
-            ),
+            re.fullmatch(_VERSION, provider["version"]),
             "provider-version",
         )
         require(provider["platform"] == "linux_amd64", "provider-platform")
@@ -414,7 +415,11 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
         )
         is_tofu = name.endswith((".tofu", ".tofu.json"))
         require(engine == "opentofu" or not is_tofu, "module-engine")
-        counterpart = name.replace(".tofu", ".tf") if is_tofu else name.replace(".tf", ".tofu")
+        extension = ".tofu" if is_tofu else ".tf"
+        ending = ".json" if name.endswith(".json") else ""
+        counterpart = (
+            name.removesuffix(extension + ending) + (".tf" if is_tofu else ".tofu") + ending
+        )
         require(counterpart not in files, "module-precedence")
         directory = posixpath.dirname(name) or "."
         require(families.setdefault(directory, is_tofu) == is_tofu, "module-precedence")

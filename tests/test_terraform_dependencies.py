@@ -862,3 +862,65 @@ def test_policy_receipt_identifies_contract_and_normalizes_source_newlines(tmp_p
         ).hexdigest()
         == first
     )
+
+
+@pytest.mark.parametrize("version", ["03.7.2", "3.07.2", "3.7.02", "3.7.2-01", "3.7.2-rc.01"])
+def test_preparation_refuses_leading_zero_numeric_components(version):
+    policy = manifest()
+    policy["providers"][0]["version"] = version
+    with pytest.raises(prep.Refused, match="provider-version"):
+        prep.checked_manifest(policy)
+
+
+@pytest.mark.parametrize("json_suffix", ["", ".json"])
+def test_module_counterparts_do_not_rewrite_directory_names(json_suffix):
+    module = manifest()["modules"][0]
+    module["graph"] = {".": {"tf": "foo.tf", "tofu": "foo.tofu"}, "foo.tf": {}, "foo.tofu": {}}
+    root = 'module "tf" { source = "./foo.tf" }\nmodule "tofu" { source = "./foo.tofu" }'
+    files = {
+        "main.tf": root,
+        "foo.tf/main.tf" + json_suffix: "{}" if json_suffix else "",
+        "foo.tofu/main.tofu" + json_suffix: "{}" if json_suffix else "",
+    }
+    data = bundle({"repo/module/" + name: text for name, text in files.items()})
+    assert prep.module_files(module, data, "opentofu") == files
+
+
+def test_request_host_occurrences_survive_receiver_capture(receiver, monkeypatch):
+    _, routes, _ = receiver
+    seen = []
+    original = BaseHTTPRequestHandler.parse_request
+
+    def capture(handler):
+        parsed = original(handler)
+        if parsed:
+            seen.append(handler.headers.get_all("Host"))
+        return parsed
+
+    monkeypatch.setattr(BaseHTTPRequestHandler, "parse_request", capture)
+    routes["/repository/1.0/artifact.zip"] = (302, {"Location": "https://github.com/approved"}, b"")
+    policy = artifact(redirects=["https://github.com/approved"])
+    assert prep.fetch(policy, time.monotonic() + 5) == b"artifact"
+    assert seen == [["approved.example"], ["github.com"]]
+    seen.clear()
+    putrequest = prep.PinnedHTTPS.putrequest
+
+    def duplicate_host(connection, *args, **kwargs):
+        putrequest(connection, *args, **kwargs)
+        connection.putheader("Host", connection.host)
+
+    monkeypatch.setattr(prep.PinnedHTTPS, "putrequest", duplicate_host)
+    assert prep.fetch(policy, time.monotonic() + 5) == b"artifact"
+    assert seen == [["approved.example", "approved.example"], ["github.com", "github.com"]]
+
+
+@pytest.mark.parametrize("json_suffix", ["", ".json"])
+def test_module_counterpart_in_same_directory_still_refused(json_suffix):
+    module = manifest()["modules"][0]
+    module["graph"] = {".": {}}
+    files = {
+        "repo/module/main.tf" + json_suffix: "{}" if json_suffix else "",
+        "repo/module/main.tofu" + json_suffix: "{}" if json_suffix else "",
+    }
+    with pytest.raises(prep.Refused, match="module-precedence"):
+        prep.module_files(module, bundle(files), "opentofu")

@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 _PROVIDER_NAME = r"[a-z0-9][a-z0-9_-]{0,63}"
+_NUMBER = r"(?:0|[1-9][0-9]*)"
+_PRERELEASE = rf"(?:{_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
+_VERSION = rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRERELEASE}(?:\.{_PRERELEASE})*)?"
 
 
 def load_json(path: Path) -> Any:
@@ -45,9 +48,7 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
     selected = config["engines"][engine]
     if selected["executable"] != ("terraform" if engine == "terraform" else "tofu"):
         raise ValueError("engine executable mismatch")
-    if not re.fullmatch(
-        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?", selected["version"]
-    ):
+    if not re.fullmatch(_VERSION, selected["version"], flags=re.IGNORECASE | re.ASCII):
         raise ValueError("engine version must be explicit")
     if not selected["url"].startswith("https://") or not re.fullmatch(
         r"[0-9a-f]{64}", selected["sha256"]
@@ -76,9 +77,7 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
                     + _PROVIDER_NAME,
                     provider["source"],
                 )
-                or not re.fullmatch(
-                    r"[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9-]+(?:\.[a-z0-9-]+)*)?", provider["version"]
-                )
+                or not re.fullmatch(_VERSION, provider["version"])
                 or provider["platform"] != config["platform"].replace("/", "_")
                 or not provider["artifact"]["url"].startswith("https://")
                 or not re.fullmatch(r"[0-9a-f]{64}", provider["artifact"]["sha256"])

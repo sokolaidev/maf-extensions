@@ -406,3 +406,45 @@ def test_engine_accepts_nonempty_prerelease_identifiers(config_path, engine, ver
     config["engines"][engine]["version"] = version
     config_path.write_text(json.dumps(config))
     assert install.load_plan(engine, "builtin", config_path)["version"] == version
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("target", ["engine", "provider"])
+@pytest.mark.parametrize("version", ["03.7.2", "3.07.2", "3.7.02", "3.7.2-01", "3.7.2-rc.01"])
+def test_numeric_version_components_refuse_leading_zeroes(
+    config_path, monkeypatch, engine, target, version
+):
+    path = (
+        config_path if target == "engine" else config_path.with_name(f"dependencies.{engine}.json")
+    )
+    document = json.loads(path.read_text())
+    record = document["engines"][engine] if target == "engine" else document["providers"][0]
+    record["version"] = version
+    path.write_text(json.dumps(document))
+    monkeypatch.setattr(install, "download", lambda *a: pytest.fail("download must not start"))
+    with pytest.raises(ValueError):
+        install.main(
+            engine,
+            "builtin" if target == "engine" else "random",
+            version if target == "engine" else install.load_plan(engine, "builtin")["version"],
+            config_path=config_path,
+        )
+    if target == "provider":
+        with pytest.raises(prep.Refused, match="provider-version"):
+            prep.checked_manifest(document)
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize(
+    "version", ["0.0.0", "3.7.2-0", "3.7.2-rc.0", "3.7.2-01a", "3.7.2-01-", "3.7.2--"]
+)
+def test_version_numeric_and_nonnumeric_positive_controls(config_path, engine, version):
+    config = json.loads(config_path.read_text())
+    config["engines"][engine]["version"] = version
+    config_path.write_text(json.dumps(config))
+    path = config_path.with_name(f"dependencies.{engine}.json")
+    policy = json.loads(path.read_text())
+    policy["providers"][0]["version"] = version
+    path.write_text(json.dumps(policy))
+    assert install.load_plan(engine, "random", config_path)["version"] == version
+    assert prep.checked_manifest(policy)["providers"][0]["version"] == version
