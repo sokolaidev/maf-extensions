@@ -459,6 +459,75 @@ def test_connection_tries_validated_addresses_with_shared_deadline(monkeypatch, 
     assert attempts[-1] == addresses[-1][-1]
 
 
+@pytest.mark.parametrize("header_delay", [12.0, 19.0])
+def test_response_headers_use_shared_deadline_after_tls(monkeypatch, header_delay):
+    connection = prep.PinnedHTTPS("approved.example", time.monotonic() + 20)
+    clock = [100.0]
+    connection.deadline = 120.0
+    monkeypatch.setattr(prep.time, "monotonic", lambda: clock[0])
+    addresses = [(socket.AF_INET, (address, 443)) for address in ("1.1.1.1", "8.8.8.8")]
+    monkeypatch.setattr(prep, "public_addresses", lambda host: addresses)
+    attempts = []
+
+    class RawSocket:
+        timeout = 0.0
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            attempts.append(address)
+            clock[0] += 1
+
+        def close(self):
+            pass
+
+    raw = RawSocket()
+
+    class DelayedHeaders(io.BytesIO):
+        waiting = True
+
+        def readline(self, size: int | None = -1):
+            if self.waiting:
+                self.waiting = False
+                clock[0] += min(header_delay, tls.timeout)
+                if header_delay > tls.timeout:
+                    raise TimeoutError("response head timeout")
+            return super().readline(size)
+
+    class TLSSocket(RawSocket):
+        def sendall(self, data):
+            pass
+
+        def makefile(self, *args):
+            return DelayedHeaders(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nartifact")
+
+    tls = TLSSocket()
+
+    def wrap(raw, *, server_hostname):
+        assert server_hostname == "approved.example"
+        clock[0] += 1
+        tls.timeout = raw.timeout
+        return tls
+
+    monkeypatch.setattr(prep.socket, "socket", lambda *args: raw)
+    monkeypatch.setattr(connection.tls_context, "wrap_socket", wrap)
+    try:
+        connection.request("GET", "/artifact.zip")
+        if header_delay < 18:
+            response = connection.getresponse()
+            assert response.read() == b"artifact"
+            assert clock[0] == 114
+        else:
+            with pytest.raises(TimeoutError, match="response head timeout"):
+                connection.getresponse()
+            assert clock[0] <= connection.deadline
+        assert attempts == [addresses[0][1]]
+        assert raw.timeout == 9
+    finally:
+        connection.close()
+
+
 def test_download_integrity_size_deadline_and_diagnostic_redaction(receiver, monkeypatch):
     _, routes, _ = receiver
     with pytest.raises(prep.Refused, match="artifact-mismatch"):
@@ -723,6 +792,28 @@ def test_module_inventory_refuses_unlisted_or_ambiguous_configuration(extra, dec
     )
     with pytest.raises(prep.Refused, match=decision):
         prep.module_files(manifest()["modules"][0], data, "opentofu")
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("directory", ["", "child/"])
+@pytest.mark.parametrize("suffix", ["tfstate", "tfstate.backup", "tfvars", "tfvars.json"])
+@pytest.mark.parametrize("spelling", ["lower", "upper", "mixed"])
+def test_module_state_and_variable_suffixes_are_case_insensitive(
+    engine, directory, suffix, spelling
+):
+    if spelling == "upper":
+        suffix = suffix.upper()
+    elif spelling == "mixed":
+        suffix = "".join(char.upper() if index % 2 else char for index, char in enumerate(suffix))
+    data = bundle(
+        {
+            "repo/module/main.tf": 'module "child" { source = "./child" }',
+            "repo/module/child/main.tf": 'output "hello" { value = "world" }',
+            f"repo/module/{directory}secrets.{suffix}": "{}",
+        }
+    )
+    with pytest.raises(prep.Refused, match="module-state"):
+        prep.module_files(manifest()["modules"][0], data, engine)
 
 
 def test_module_cycle_is_refused():

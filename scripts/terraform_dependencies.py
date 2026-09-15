@@ -292,6 +292,7 @@ class PinnedHTTPS(http.client.HTTPSConnection):
                 raw.connect(address)
                 raw.settimeout(remaining(attempt_deadline))
                 self.sock = self.tls_context.wrap_socket(raw, server_hostname=self.host)
+                self.sock.settimeout(remaining(self.deadline))
                 return
             except OSError:
                 if index == len(addresses) - 1:
@@ -428,7 +429,9 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
             "module-hidden",
         )
         require(
-            not name.endswith((".tfstate", ".tfstate.backup", ".tfvars", ".tfvars.json")),
+            not name.casefold().endswith(
+                (".tfstate", ".tfstate.backup", ".tfvars", ".tfvars.json")
+            ),
             "module-state",
         )
         require(b"\x00" not in data, "module-text")
