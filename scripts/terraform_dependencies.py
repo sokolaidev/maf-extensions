@@ -400,7 +400,10 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
             "module-state",
         )
         require(b"\x00" not in data, "module-text")
-        texts[name] = data.decode("utf-8")
+        try:
+            texts[name] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise Refused("module-text") from None
         if not name.endswith((".tf", ".tf.json", ".tofu", ".tofu.json")):
             continue
         require(
@@ -457,12 +460,36 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
     return texts
 
 
+def policy_contract() -> dict[str, Any]:
+    """Fingerprint the implementation and effective limits independently of artifact approvals."""
+    source = Path(__file__).read_text(encoding="utf-8").encode("utf-8")
+    return {
+        "schema": 1,
+        "implementation_sha256": hashlib.sha256(source).hexdigest(),
+        "limits": {
+            "manifest": MAX_MANIFEST,
+            "archive": MAX_ARCHIVE,
+            "total": MAX_TOTAL,
+            "text": MAX_TEXT,
+            "deadline": DEADLINE,
+        },
+    }
+
+
 def prepare(manifest: dict[str, Any], output: Path) -> str:
     """Write a fresh preparation directory; the CLI publishes it only on complete success."""
     checked_manifest(manifest)
     deadline = time.monotonic() + DEADLINE
-    identity = hashlib.sha256(
+    contract = policy_contract()
+    manifest_digest = hashlib.sha256(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    identity = hashlib.sha256(
+        json.dumps(
+            {"manifest_sha256": manifest_digest, "contract": contract},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()
     output.mkdir()
     (output / "mirror").mkdir()
@@ -471,6 +498,8 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
         "schema": 1,
         "engine": manifest["engine"],
         "policy_sha256": identity,
+        "manifest_sha256": manifest_digest,
+        "policy_contract": contract,
         "providers": [],
         "modules": [],
     }
@@ -516,18 +545,24 @@ def load_manifest(data: bytes) -> dict[str, Any]:
     return checked_manifest(unique_json(data, "manifest-duplicate"))
 
 
+def _worker(output: str) -> None:
+    """Run only as the child of the CLI's deadline and temporary-output supervisor."""
+    try:
+        manifest = load_manifest(sys.stdin.buffer.read(MAX_MANIFEST + 1))
+        prepare(manifest, Path(output))
+    except Exception as exc:
+        decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
+        code = 64 + _WORKER_DECISIONS.index(decision) if decision in _WORKER_DECISIONS else 1
+        raise SystemExit(code) from None
+
+
 def main() -> None:
     """Isolate blocking DNS/HTTP/archive work behind a parent-enforced deadline."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
-        if args.worker:
-            manifest = load_manifest(sys.stdin.buffer.read(MAX_MANIFEST + 1))
-            prepare(manifest, args.output)
-            return
         require(args.manifest is not None, "manifest-required")
         with args.manifest.open("rb") as stream:
             data = stream.read(MAX_MANIFEST + 1)
@@ -542,9 +577,9 @@ def main() -> None:
             result = subprocess.run(
                 [
                     sys.executable,
+                    "-c",
+                    "import runpy, sys; runpy.run_path(sys.argv[1])['_worker'](sys.argv[2])",
                     str(Path(__file__).resolve()),
-                    "--worker",
-                    "--output",
                     str(prepared),
                 ],
                 input=data,
@@ -567,8 +602,6 @@ def main() -> None:
         print("Dependencies verified; receipt.json records artifact and policy identities.")
     except Exception as exc:
         decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
-        if args.worker and decision in _WORKER_DECISIONS:
-            raise SystemExit(64 + _WORKER_DECISIONS.index(decision)) from None
         print(f"Dependency preparation refused: {decision}", file=sys.stderr)
         raise SystemExit(1) from None
 

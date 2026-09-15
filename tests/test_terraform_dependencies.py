@@ -719,7 +719,7 @@ def test_cli_preserves_worker_refusal_without_publishing(tmp_path, monkeypatch, 
         + "import terraform_dependencies as prep\n"
         + "def fail(manifest, output):\n    output.mkdir()\n"
         + f"    prep.require(False, {decision!r})\n"
-        + "prep.prepare = fail\nprep.main()\n"
+        + "prep.prepare = fail\n_worker = prep._worker\n"
     )
     output = tmp_path / "prepared"
     monkeypatch.setattr(prep, "__file__", str(worker))
@@ -770,3 +770,95 @@ def test_worker_exit_codes_cover_all_fixed_policy_refusals():
     decisions.discard("preparation-failed")
     assert set(prep._WORKER_DECISIONS) == decisions
     assert len(prep._WORKER_DECISIONS) == len(decisions) < 192
+
+
+@pytest.mark.parametrize("content", [b"\xff", b"\xc3"])
+def test_module_invalid_utf8_has_fixed_refusal(content):
+    module = manifest()["modules"][0]
+    module["graph"] = {".": {}}
+    with pytest.raises(prep.Refused, match="^module-text$"):
+        prep.module_files(module, bundle({"repo/module/main.tf": content}), "terraform")
+
+
+@pytest.mark.parametrize("change", ["limit", "implementation"])
+def test_policy_identity_changes_with_request_contract(tmp_path, monkeypatch, change):
+    policy = {"schema": 1, "engine": "terraform", "providers": [], "modules": []}
+    first = prep.prepare(policy, tmp_path / "first")
+    if change == "limit":
+        monkeypatch.setattr(prep, "MAX_ARCHIVE", prep.MAX_ARCHIVE - 1)
+    else:
+        source = tmp_path / "policy.py"
+        source.write_text(Path(prep.__file__).read_text() + "\n# changed policy implementation\n")
+        monkeypatch.setattr(prep, "__file__", str(source))
+    second = prep.prepare(policy, tmp_path / "second")
+    assert first != second
+
+
+def test_cli_rejects_worker_flag_without_reading_stdin(tmp_path):
+    output = tmp_path / "prepared"
+    process = subprocess.Popen(
+        [sys.executable, str(Path(prep.__file__)), "--worker", "--output", str(output)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    completed = False
+    try:
+        process.wait(timeout=3)
+        completed = True
+    except subprocess.TimeoutExpired:
+        process.kill()
+    finally:
+        _, stderr = process.communicate(timeout=5)
+    assert completed, "worker flag bypassed supervision and blocked on stdin"
+    assert process.returncode == 2
+    assert b"unrecognized arguments: --worker" in stderr
+    assert not output.exists()
+
+
+def test_cli_supervised_success_publishes_once(tmp_path):
+    source = tmp_path / "manifest.json"
+    source.write_text(
+        json.dumps({"schema": 1, "engine": "terraform", "providers": [], "modules": []})
+    )
+    output = tmp_path / "prepared"
+    command = [
+        sys.executable,
+        str(Path(prep.__file__)),
+        "--manifest",
+        str(source),
+        "--output",
+        str(output),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    receipt = (output / "receipt.json").read_bytes()
+    assert not list(tmp_path.glob(".terraform-preparation-*"))
+    repeated = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    assert repeated.returncode == 1 and "output-exists" in repeated.stderr
+    assert (output / "receipt.json").read_bytes() == receipt
+
+
+def test_policy_receipt_identifies_contract_and_normalizes_source_newlines(tmp_path, monkeypatch):
+    policy = {"schema": 1, "engine": "terraform", "providers": [], "modules": []}
+    source = tmp_path / "policy.py"
+    source.write_bytes(b"# stable implementation\n")
+    monkeypatch.setattr(prep, "__file__", str(source))
+    first = prep.prepare(policy, tmp_path / "first")
+    source.write_bytes(b"# stable implementation\r\n")
+    second = prep.prepare(dict(reversed(list(policy.items()))), tmp_path / "second")
+    assert first == second
+    receipt = json.loads((tmp_path / "first/receipt.json").read_text())
+    assert receipt["policy_contract"]["schema"] == 1
+    assert receipt["policy_contract"]["limits"]["archive"] == prep.MAX_ARCHIVE
+    manifest_digest = hashlib.sha256(
+        json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert receipt["manifest_sha256"] == manifest_digest
+    identity_input = {"manifest_sha256": manifest_digest, "contract": receipt["policy_contract"]}
+    assert (
+        hashlib.sha256(
+            json.dumps(identity_input, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        == first
+    )

@@ -16,8 +16,10 @@ import pytest
 
 IMAGE_SOURCE = Path(__file__).resolve().parents[1] / "images/terraform-sandbox"
 sys.path.insert(0, str(IMAGE_SOURCE))
+sys.path.insert(0, str(IMAGE_SOURCE.parents[1] / "scripts"))
 import build_image  # noqa: E402
 import install  # noqa: E402
+import terraform_dependencies as prep  # noqa: E402
 
 
 @pytest.fixture
@@ -55,8 +57,6 @@ def test_provider_prerelease_uses_preparation_manifest_grammar(config_path, engi
     manifest = json.loads(path.read_text())
     manifest["providers"][0]["version"] = version
     path.write_text(json.dumps(manifest))
-    import terraform_dependencies as prep
-
     assert install.load_plan(engine, "random", config_path)["providers"][0]["version"] == version
     assert prep.checked_manifest(manifest)["providers"][0]["version"] == version
 
@@ -372,8 +372,6 @@ def test_live_image_labels_match_installed_binary_and_runtime_metadata(engine):
 def test_provider_invalid_prerelease_refuses_before_download(
     config_path, monkeypatch, engine, version
 ):
-    import terraform_dependencies as prep
-
     path = config_path.with_name(f"dependencies.{engine}.json")
     policy = json.loads(path.read_text())
     policy["providers"][0]["version"] = version
@@ -388,3 +386,23 @@ def test_provider_invalid_prerelease_refuses_before_download(
         )
     with pytest.raises(prep.Refused, match="provider-version"):
         prep.checked_manifest(policy)
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("version", ["1.16.2-.rc", "1.16.2-rc.", "1.16.2-rc..1"])
+def test_engine_refuses_empty_prerelease_components(config_path, monkeypatch, engine, version):
+    config = json.loads(config_path.read_text())
+    config["engines"][engine]["version"] = version
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setattr(install, "download", lambda *a: pytest.fail("download must not start"))
+    with pytest.raises(ValueError, match="engine version"):
+        install.main(engine, "builtin", version, config_path=config_path)
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("version", ["1.16.2-rc1", "1.16.2-RC.1"])
+def test_engine_accepts_nonempty_prerelease_identifiers(config_path, engine, version):
+    config = json.loads(config_path.read_text())
+    config["engines"][engine]["version"] = version
+    config_path.write_text(json.dumps(config))
+    assert install.load_plan(engine, "builtin", config_path)["version"] == version

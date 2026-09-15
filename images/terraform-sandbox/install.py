@@ -45,7 +45,9 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
     selected = config["engines"][engine]
     if selected["executable"] != ("terraform" if engine == "terraform" else "tofu"):
         raise ValueError("engine executable mismatch")
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", selected["version"]):
+    if not re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?", selected["version"]
+    ):
         raise ValueError("engine version must be explicit")
     if not selected["url"].startswith("https://") or not re.fullmatch(
         r"[0-9a-f]{64}", selected["sha256"]
