@@ -705,8 +705,8 @@ def test_cli_deadline_kills_worker_and_publishes_nothing(tmp_path, monkeypatch, 
     def run_worker(*args, **kwargs):
         try:
             return run(*args, **kwargs)
-        except subprocess.TimeoutExpired as exc:
-            timeouts.append(exc.timeout)
+        except subprocess.TimeoutExpired:
+            timeouts.append(kwargs["timeout"])
             raise
 
     monkeypatch.setattr(subprocess, "run", run_worker)
