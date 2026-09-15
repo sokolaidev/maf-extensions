@@ -391,6 +391,76 @@ def test_composite_disposal_is_bounded_while_locating_hosts():
     asyncio.run(check())
 
 
+def test_composite_disposal_returns_with_unsettled_inventory_probe():
+    async def check() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class DelayedControl(MemoryControl):
+            async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+                    return ()
+                raise AssertionError("inventory probe completed without cancellation")
+
+        control = CompositeControl((DelayedControl(),))
+        disposing = asyncio.create_task(control.dispose_sandbox("generation-a", timeout=0.01))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(disposing), timeout=1)
+            assert result.status is DisposalStatus.FAILED
+            assert result.message == "Disposal timed out while locating the owning host."
+            assert len(control._unsettled_operations) == 1
+        finally:
+            release.set()
+            await disposing
+            for _ in range(3):
+                await asyncio.sleep(0)
+        assert not control._unsettled_operations
+
+    asyncio.run(check())
+
+
+def test_composite_disposal_returns_when_exact_owner_ignores_cancellation():
+    async def check() -> None:
+        record = (await MemoryControl.demo(now=1_000).list_sandboxes())[0]
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class DelayedOwner(MemoryControl):
+            async def dispose_sandbox(
+                self, instance_id: str, *, timeout: float = 10.0
+            ) -> DisposalResult:
+                del timeout
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+                    return await super().dispose_sandbox(instance_id)
+                raise AssertionError("owner disposal completed without cancellation")
+
+        control = CompositeControl((DelayedOwner((record,)),))
+        disposing = asyncio.create_task(control.dispose_sandbox(record.instance_id, timeout=0.01))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(disposing), timeout=1)
+            assert result.status is DisposalStatus.FAILED
+            assert result.message == "Disposal timed out while invoking the owning host."
+            assert len(control._unsettled_operations) == 1
+        finally:
+            release.set()
+            await disposing
+            for _ in range(3):
+                await asyncio.sleep(0)
+        assert not control._unsettled_operations
+
+    asyncio.run(check())
+
+
 def test_composite_disposal_refuses_an_unconfirmed_single_owner():
     class FailingControl(MemoryControl):
         async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
@@ -438,6 +508,87 @@ def test_composite_purge_cancels_hosts_at_the_shared_deadline():
         assert result.disposed == 1
         assert result.message == "Conversation purge timed out before 1 host(s) responded."
         assert cancelled
+
+    asyncio.run(check())
+
+
+def test_composite_purge_returns_with_an_unsettled_cancelled_host():
+    async def check() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class DelayedControl(MemoryControl):
+            async def purge_thread(
+                self, scope: str, thread_id: str, *, timeout: float = 10.0
+            ) -> PurgeResult:
+                del timeout
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+                    return await super().purge_thread(scope, thread_id)
+                raise AssertionError("host purge completed without cancellation")
+
+        control = CompositeControl((DelayedControl(),))
+        purging = asyncio.create_task(control.purge_thread("tenant-labs", "thread-1", timeout=0.01))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(purging), timeout=1)
+            assert result.status is PurgeStatus.PARTIAL
+            assert "timed out" in result.message
+            assert len(control._unsettled_operations) == 1
+        finally:
+            release.set()
+            await purging
+            for _ in range(3):
+                await asyncio.sleep(0)
+        assert not control._unsettled_operations
+
+    asyncio.run(check())
+
+
+def test_composite_purge_caller_cancellation_does_not_wait_for_a_late_host_failure():
+    async def check() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        failures: list[dict[str, object]] = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: failures.append(context))
+
+        class DelayedControl(MemoryControl):
+            async def purge_thread(
+                self, scope: str, thread_id: str, *, timeout: float = 10.0
+            ) -> PurgeResult:
+                del scope, thread_id, timeout
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+                    raise RuntimeError("late host failure") from None
+                raise AssertionError("host purge completed without cancellation")
+
+        control = CompositeControl((DelayedControl(),))
+        purging = asyncio.create_task(control.purge_thread("tenant-labs", "thread-1"))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            purging.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(purging), timeout=1)
+            assert len(control._unsettled_operations) == 1
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await purging
+            for _ in range(3):
+                await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+            loop.set_exception_handler(previous_handler)
+        assert not control._unsettled_operations
+        assert failures == []
 
     asyncio.run(check())
 
@@ -1874,13 +2025,19 @@ def test_server_close_bounds_settlement_for_a_delayed_cancellation(tmp_path):
             assert server._httpd is None
             assert not thread.is_alive()
             assert not path.exists()
+            with pytest.raises(RuntimeError, match="prior control operations"):
+                await server.start()
         finally:
             release.set()
             await closing
             for _ in range(3):
                 await asyncio.sleep(0)
+            if server._httpd is not None:
+                await server.close()
         assert bridge not in server._operations
         assert server._loop is None
+        await server.start()
+        await server.close()
 
     asyncio.run(check())
 

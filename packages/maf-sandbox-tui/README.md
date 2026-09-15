@@ -45,6 +45,8 @@ Exact-version self-update through pipx requires pipx 1.16 or newer, whose `insta
 
 `delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
 
+Composite exact delete and conversation purge bound cancellation settlement when an endpoint catches cancellation and delays settling. A timed-out command reports an unconfirmed result and retains late tasks for completion callbacks; a later physical outcome is never retroactively reported as success for that command.
+
 Successful commands exit zero. Endpoint or incomplete-operation failures use `1`, invalid or missing confirmation uses `2`, an absent physical instance uses `3`, and an operator declining confirmation uses `4`. An interrupted watch uses `130`.
 
 ## Host a real Hyperlight backend
@@ -95,6 +97,6 @@ Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{i
 
 If one host reports the same physical ID for multiple keys or kinds, its show and exact-delete routes refuse that ID. A cancelled backend disposal with uncertain physical outcome withholds affected generations from the public inventory; the monitor still counts them when deciding whether a later conversation purge is complete.
 
-Server shutdown withdraws discovery, closes clients and waits briefly for canceled control operations. If a host operation delays cancellation, server shutdown can finish while that operation remains registered until it settles; the host must coordinate its own router/backend teardown with any still-running work rather than treat server closure as disposal confirmation.
+Server shutdown withdraws discovery, closes clients and waits briefly for canceled control operations. If a host operation delays cancellation, server shutdown can finish while that operation remains registered until it settles; restarting the same server object is refused until prior operations and teardown settle. The host must coordinate its own router/backend teardown with any still-running work rather than treat server closure as disposal confirmation.
 
 Live inventory comes from acquisitions admitted by `MonitoredSandboxRouter` through `MonitoredSandboxBackend`; applications must use both instead of registering the wrapped backend directly. The wrapper requires an observed worker process exit before confirming physical disposal; a backend without that signal remains visible and is reported as unconfirmed. It depends only on `maf-sandbox` and leaves backend packages unchanged. It reports a tracked acquisition as `ready` while its worker is observed running and as `failed` when the worker has exited or its liveness cannot be checked; it does not infer active execution from backend-private locks. A backend-specific inventory may provide richer lifecycle states. `maf-sandbox-otel` remains the complementary history and audit surface.

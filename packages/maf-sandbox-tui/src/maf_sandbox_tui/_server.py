@@ -525,10 +525,18 @@ class SandboxControlServer:
 
     async def start(self) -> SandboxControlServer:
         """Start serving and publish an atomic per-user discovery record."""
-        if self._httpd is not None:
-            return self
-        self._loop = asyncio.get_running_loop()
         with self._operation_lock:
+            if self._httpd is not None and not self._closing:
+                return self
+            if (
+                self._httpd is not None
+                or self._close_task is not None
+                or self._operations
+                or self._thread is not None
+                or self._manifest_path is not None
+            ):
+                raise RuntimeError("cannot restart: prior control operations or teardown remain")
+            self._loop = asyncio.get_running_loop()
             self._closing = False
         httpd = _ControlHttpServer(self)
         self._httpd = httpd

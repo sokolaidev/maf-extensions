@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -19,6 +19,8 @@ from ._server import (
     ensure_private_runtime_directory,
     runtime_directory,
 )
+
+_CONTROL_SETTLEMENT_GRACE = 0.1
 
 
 class ControlEndpointError(RuntimeError):
@@ -199,6 +201,34 @@ class CompositeControl:
     ) -> None:
         self._controls = tuple(controls)
         self._initial_errors = tuple(initial_errors)
+        self._unsettled_operations: set[asyncio.Task[Any]] = set()
+
+    def _finish_operation(self, task: asyncio.Task[Any]) -> None:
+        self._unsettled_operations.discard(task)
+        try:
+            task.result()
+        except BaseException:
+            pass
+
+    async def _wait_bounded(
+        self, tasks: tuple[asyncio.Task[Any], ...], *, timeout: float
+    ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+        if not tasks:
+            return set(), set()
+        for task in tasks:
+            self._unsettled_operations.add(task)
+            task.add_done_callback(self._finish_operation)
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=timeout)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending, timeout=_CONTROL_SETTLEMENT_GRACE)
+            return done, pending
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            raise
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
         """Return every responsive endpoint's current inventory."""
@@ -240,50 +270,60 @@ class CompositeControl:
         """Route exact-instance disposal to the endpoint currently reporting it."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        try:
-            async with asyncio.timeout(timeout):
-                snapshots = await asyncio.gather(
-                    *(control.list_sandboxes() for control in self._controls),
-                    return_exceptions=True,
-                )
-                owners: list[SandboxControl] = []
-                errors = list(self._initial_errors)
-                for control, snapshot in zip(self._controls, snapshots, strict=True):
-                    if isinstance(snapshot, BaseException):
-                        errors.append(str(snapshot))
-                    elif any(item.instance_id == instance_id for item in snapshot):
-                        owners.append(control)
-                if len(owners) > 1:
-                    raise ControlEndpointError(
-                        f"instance id {instance_id!r} is reported by several hosts"
-                    )
-                if not owners:
-                    if errors:
-                        return DisposalResult(
-                            DisposalStatus.FAILED,
-                            instance_id,
-                            "Sandbox owner could not be confirmed on "
-                            f"{len(errors)} unavailable host(s).",
-                        )
-                    return DisposalResult(
-                        DisposalStatus.NOT_FOUND,
-                        instance_id,
-                        "The sandbox is already gone or its generation changed.",
-                    )
-                if errors:
-                    return DisposalResult(
-                        DisposalStatus.FAILED,
-                        instance_id,
-                        "Sandbox ownership could not be confirmed on "
-                        f"{len(errors)} unavailable host(s).",
-                    )
-                remaining = max(deadline - loop.time(), 0.001)
-                return await owners[0].dispose_sandbox(instance_id, timeout=remaining)
-        except TimeoutError:
+        probes = tuple(asyncio.create_task(control.list_sandboxes()) for control in self._controls)
+        _, pending = await self._wait_bounded(probes, timeout=timeout)
+        if pending:
             return DisposalResult(
                 DisposalStatus.FAILED,
                 instance_id,
                 "Disposal timed out while locating the owning host.",
+            )
+        owners: list[SandboxControl] = []
+        errors = list(self._initial_errors)
+        for control, probe in zip(self._controls, probes, strict=True):
+            try:
+                snapshot = probe.result()
+            except BaseException as error:
+                errors.append(str(error))
+            else:
+                if any(item.instance_id == instance_id for item in snapshot):
+                    owners.append(control)
+        if len(owners) > 1:
+            raise ControlEndpointError(f"instance id {instance_id!r} is reported by several hosts")
+        if not owners:
+            if errors:
+                return DisposalResult(
+                    DisposalStatus.FAILED,
+                    instance_id,
+                    f"Sandbox owner could not be confirmed on {len(errors)} unavailable host(s).",
+                )
+            return DisposalResult(
+                DisposalStatus.NOT_FOUND,
+                instance_id,
+                "The sandbox is already gone or its generation changed.",
+            )
+        if errors:
+            return DisposalResult(
+                DisposalStatus.FAILED,
+                instance_id,
+                f"Sandbox ownership could not be confirmed on {len(errors)} unavailable host(s).",
+            )
+        remaining = max(deadline - loop.time(), 0.001)
+        disposing = asyncio.create_task(owners[0].dispose_sandbox(instance_id, timeout=remaining))
+        _, pending = await self._wait_bounded((disposing,), timeout=remaining)
+        if pending:
+            return DisposalResult(
+                DisposalStatus.FAILED,
+                instance_id,
+                "Disposal timed out while invoking the owning host.",
+            )
+        try:
+            return disposing.result()
+        except TimeoutError:
+            return DisposalResult(
+                DisposalStatus.FAILED,
+                instance_id,
+                "Disposal timed out while invoking the owning host.",
             )
 
     async def purge_thread(
@@ -302,16 +342,7 @@ class CompositeControl:
             asyncio.create_task(control.purge_thread(scope, thread_id, timeout=timeout))
             for control in self._controls
         )
-        try:
-            done, pending = await asyncio.wait(tasks, timeout=timeout)
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        done, pending = await self._wait_bounded(tasks, timeout=timeout)
         results: list[PurgeResult | BaseException] = []
         for task in done:
             try:

@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from importlib.metadata import version
 from pathlib import Path
 
@@ -27,6 +27,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))
+_MST_COMMAND_TIMEOUT = 30.0
 
 
 async def _mst(*arguments: str) -> object:
@@ -38,9 +39,41 @@ async def _mst(*arguments: str) -> object:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=_MST_COMMAND_TIMEOUT)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.communicate()
+        raise
     assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
     return json.loads(stdout)
+
+
+def test_mst_timeout_kills_and_reaps_the_child(monkeypatch):
+    async def check() -> None:
+        original_exec = asyncio.create_subprocess_exec
+        processes: list[asyncio.subprocess.Process] = []
+
+        async def slow_exec(*_args: str, **_kwargs: object) -> asyncio.subprocess.Process:
+            process = await original_exec(
+                sys.executable,
+                "-c",
+                "import time; time.sleep(60)",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            processes.append(process)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", slow_exec)
+        monkeypatch.setattr(sys.modules[__name__], "_MST_COMMAND_TIMEOUT", 0.01)
+        with pytest.raises(TimeoutError):
+            await _mst("version", "--json")
+        assert len(processes) == 1
+        assert processes[0].returncode is not None
+
+    asyncio.run(check())
 
 
 def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
