@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib.metadata import version
 from pathlib import Path
 
@@ -56,13 +58,21 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
             async with lifecycle_gate:
                 return await router.dispose_scope(scope, thread_id)
 
+        @asynccontextmanager
+        async def quiesce_instance(key: SandboxKey) -> AsyncIterator[None]:
+            assert key.scope == "mst-live"
+            async with lifecycle_gate:
+                yield
+
         first_key = SandboxKey("mst-live", "delete", "worker")
         second_key = SandboxKey("mst-live", "purge", "worker")
         try:
             first = await acquire(first_key)
             second = await acquire(second_key)
-            first_result = await first.run_code("print(6 * 7)", timeout=5)
-            second_result = await second.run_code("print(7 * 8)", timeout=5)
+            async with lifecycle_gate:
+                first_result = await first.run_code("print(6 * 7)", timeout=5)
+            async with lifecycle_gate:
+                second_result = await second.run_code("print(7 * 8)", timeout=5)
             assert first_result.stdout == "42\n"
             assert second_result.stdout == "56\n"
 
@@ -70,6 +80,7 @@ def test_every_mst_command_against_real_hyperlight_workers(tmp_path: Path):
                 monitored,
                 router,
                 source_id="hyperlight-live",
+                quiesce_instance=quiesce_instance,
                 quiesced_purge=purge,
             )
             async with SandboxControlServer(

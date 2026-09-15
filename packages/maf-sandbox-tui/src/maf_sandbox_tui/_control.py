@@ -6,7 +6,7 @@ import asyncio
 import threading
 import time
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -125,16 +125,20 @@ def _worker_pid(sandbox: Sandbox) -> int | None:
     return value if type(value) is int else None
 
 
-def _worker_exited(sandbox: Sandbox) -> bool:
+def _worker_running(sandbox: Sandbox) -> bool | None:
     worker = getattr(sandbox, "worker", None)
     process = getattr(worker, "process", None)
     poll = getattr(process, "poll", None)
     if not callable(poll):
-        return False
+        return None
     try:
-        return poll() is not None
+        return poll() is None
     except OSError:
-        return False
+        return None
+
+
+def _worker_exited(sandbox: Sandbox) -> bool:
+    return _worker_running(sandbox) is False
 
 
 def _egress_targets(spec: SandboxSpec) -> tuple[str, ...]:
@@ -236,7 +240,11 @@ class MonitoredSandboxBackend:
                     key=tracked.key,
                     kind=tracked.spec.kind,
                     instance_id=tracked.instance_id,
-                    state=SandboxState.READY.value,
+                    state=(
+                        SandboxState.READY.value
+                        if _worker_running(tracked.sandbox) is True
+                        else SandboxState.FAILED.value
+                    ),
                     created_at=tracked.created_at,
                     last_activity_at=tracked.last_activity_at,
                     worker_pid=_worker_pid(tracked.sandbox),
@@ -328,8 +336,8 @@ class MonitoredSandboxRouter(SandboxRouter):
 class HyperlightControl:
     """Expose a monitored Hyperlight backend through safe router disposal.
 
-    A ``quiesced_purge`` callback must fence new conversation work across every host replica.
-    Omitting it disables conversation purge while retaining exact-instance disposal.
+    Host quiescence callbacks must fence new work and drain active calls across replicas.
+    Without them, their respective disposal operations are disabled.
     """
 
     def __init__(
@@ -338,11 +346,13 @@ class HyperlightControl:
         router: SandboxRouter,
         *,
         source_id: str,
+        quiesce_instance: Callable[[SandboxKey], AbstractAsyncContextManager[None]] | None = None,
         quiesced_purge: Callable[[str, str], Awaitable[ScopePurge]] | None = None,
     ) -> None:
         self._backend = backend
         self._router = router
         self._source_id = validate_source_id(source_id)
+        self._quiesce_instance = quiesce_instance
         self._quiesced_purge = quiesced_purge
 
     async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
@@ -388,16 +398,36 @@ class HyperlightControl:
                         instance_id,
                         "The sandbox is already gone or its generation changed.",
                     )
-                with self._backend.observe_instance_disposal(
-                    item.key, item.kind, instance_id
-                ) as observed:
-                    ok = await self._router.dispose_kind(
-                        item.key,
-                        item.kind,
-                        instance_id=instance_id,
-                        timeout=timeout,
+                if self._quiesce_instance is None:
+                    return DisposalResult(
+                        DisposalStatus.FAILED,
+                        instance_id,
+                        "Exact disposal is disabled because the host did not configure "
+                        "a quiescence boundary.",
                     )
-                after = await self._backend.list_sandboxes()
+                async with self._quiesce_instance(item.key):
+                    current = await self._backend.list_sandboxes()
+                    if not any(
+                        entry.instance_id == instance_id
+                        and entry.key == item.key
+                        and entry.kind == item.kind
+                        for entry in current
+                    ):
+                        return DisposalResult(
+                            DisposalStatus.NOT_FOUND,
+                            instance_id,
+                            "The sandbox generation changed before disposal could be confirmed.",
+                        )
+                    with self._backend.observe_instance_disposal(
+                        item.key, item.kind, instance_id
+                    ) as observed:
+                        ok = await self._router.dispose_kind(
+                            item.key,
+                            item.kind,
+                            instance_id=instance_id,
+                            timeout=timeout,
+                        )
+                    after = await self._backend.list_sandboxes()
         except TimeoutError:
             return DisposalResult(
                 DisposalStatus.FAILED,

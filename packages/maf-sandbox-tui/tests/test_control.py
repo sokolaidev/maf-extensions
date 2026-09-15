@@ -9,8 +9,8 @@ import json
 import socket
 import tempfile
 import threading
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -215,6 +215,12 @@ class _ObservedBackend:
                 del self.sandboxes[index]
                 disposed += 1
         return ScopePurge(disposed)
+
+
+@asynccontextmanager
+async def _test_quiescence(key: SandboxKey) -> AsyncIterator[None]:
+    del key
+    yield
 
 
 class _EgressBackend(_ObservedBackend):
@@ -483,6 +489,24 @@ def test_monitored_backend_tracks_only_acquisitions_through_the_wrapper():
     asyncio.run(check())
 
 
+def test_monitored_backend_reports_an_exited_worker_as_failed_without_retiring_it():
+    async def check() -> None:
+        inner = _ObservedBackend()
+        monitored = MonitoredSandboxBackend(inner)
+        router = MonitoredSandboxRouter([monitored])
+        key = SandboxKey("scope", "thread", "agent")
+        sandbox = await router.acquire(key, SandboxSpec(kind="codeact"))
+        assert (await monitored.list_sandboxes())[0].state == "ready"
+
+        cast(_ObservedSandbox, sandbox)._running = False
+        records = await monitored.list_sandboxes()
+        assert len(records) == 1
+        assert records[0].instance_id == sandbox.instance_id
+        assert records[0].state == "failed"
+
+    asyncio.run(check())
+
+
 def test_monitored_router_withholds_an_acquire_rejected_after_backend_return():
     async def check() -> None:
         inner = _ObservedBackend()
@@ -624,7 +648,9 @@ def test_monitored_backend_supplies_authoritative_exact_disposal_receipts():
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
         router = MonitoredSandboxRouter([monitored])
-        control = HyperlightControl(monitored, router, source_id="agent-app")
+        control = HyperlightControl(
+            monitored, router, source_id="agent-app", quiesce_instance=_test_quiescence
+        )
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         spec = SandboxSpec(kind="codeact", work_dir=None)
         sandbox = await router.acquire(key, spec)
@@ -649,7 +675,9 @@ def test_monitored_backend_retains_a_failed_disposal():
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
         router = MonitoredSandboxRouter([monitored])
-        control = HyperlightControl(monitored, router, source_id="agent-app")
+        control = HyperlightControl(
+            monitored, router, source_id="agent-app", quiesce_instance=_test_quiescence
+        )
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         sandbox = await router.acquire(key, SandboxSpec(kind="codeact", work_dir=None))
         inner.failure = DisposalFailure("unknown", "worker close failed")
@@ -678,7 +706,9 @@ def test_monitored_backend_refuses_a_receipt_when_a_worker_remains():
         inner = UncertainBackend()
         monitored = MonitoredSandboxBackend(inner)
         router = MonitoredSandboxRouter([monitored])
-        control = HyperlightControl(monitored, router, source_id="agent-app")
+        control = HyperlightControl(
+            monitored, router, source_id="agent-app", quiesce_instance=_test_quiescence
+        )
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
         sandbox = await router.acquire(key, SandboxSpec(kind="codeact"))
 
@@ -715,6 +745,7 @@ def test_monitored_backend_withholds_a_receipt_without_a_process_exit_signal(pol
         assert [item.instance_id for item in await monitored.list_sandboxes()] == [
             sandbox.instance_id
         ]
+        assert (await monitored.list_sandboxes())[0].state == "failed"
 
     asyncio.run(check())
 
@@ -724,7 +755,9 @@ def test_monitored_backend_uses_protocol_results_without_a_liveness_extension():
         inner = _ObservedBackend()
         monitored = MonitoredSandboxBackend(inner)
         router = MonitoredSandboxRouter([monitored])
-        control = HyperlightControl(monitored, router, source_id="agent-app")
+        control = HyperlightControl(
+            monitored, router, source_id="agent-app", quiesce_instance=_test_quiescence
+        )
         exact = SandboxKey("tenant-labs", "thread-1", "agent-1")
         scoped = SandboxKey("tenant-labs", "thread-1", "agent-2")
         survivor = SandboxKey("tenant-labs", "thread-2", "agent-1")
@@ -851,7 +884,12 @@ def test_hyperlight_control_routes_exact_generation():
         target = _Info(key, "codeact", "generation-a")
         inventory = _Inventory([target])
         router = _Router(inventory, None)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         listed = await control.list_sandboxes()
         assert listed[0].source_id == "agent-app"
@@ -865,6 +903,96 @@ def test_hyperlight_control_routes_exact_generation():
     asyncio.run(check())
 
 
+def test_hyperlight_control_refuses_exact_disposal_without_host_quiescence():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None)
+        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+
+        result = await control.dispose_sandbox(target.instance_id)
+
+        assert result.status is DisposalStatus.FAILED
+        assert "did not configure a quiescence boundary" in result.message
+        assert router.calls == []
+        assert inventory.records == [target]
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_drains_an_active_call_before_exact_disposal():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None)
+        call_gate = asyncio.Lock()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        fenced: list[SandboxKey] = []
+
+        @asynccontextmanager
+        async def quiesce(item_key: SandboxKey) -> AsyncIterator[None]:
+            async with call_gate:
+                fenced.append(item_key)
+                yield
+
+        async def active_call() -> None:
+            async with call_gate:
+                started.set()
+                await release.wait()
+
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=quiesce,
+        )
+        running = asyncio.create_task(active_call())
+        await started.wait()
+        deleting = asyncio.create_task(control.dispose_sandbox(target.instance_id))
+        await asyncio.sleep(0)
+        assert router.calls == []
+        assert fenced == []
+        release.set()
+        await running
+        result = await deleting
+        assert result.status is DisposalStatus.DISPOSED
+        assert fenced == [key]
+        assert router.calls[0][:3] == (key, "codeact", "generation-a")
+
+    asyncio.run(check())
+
+
+def test_hyperlight_control_rechecks_a_generation_inside_the_host_fence():
+    async def check() -> None:
+        key = SandboxKey("tenant-labs", "thread-1", "agent-1")
+        target = _Info(key, "codeact", "generation-a")
+        replacement = replace(target, instance_id="generation-b")
+        inventory = _Inventory([target])
+        router = _Router(inventory, None)
+
+        @asynccontextmanager
+        async def quiesce(item_key: SandboxKey) -> AsyncIterator[None]:
+            assert item_key == key
+            inventory.records = [replacement]
+            yield
+
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=quiesce,
+        )
+        result = await control.dispose_sandbox(target.instance_id)
+        assert result.status is DisposalStatus.NOT_FOUND
+        assert router.calls == []
+        assert inventory.records == [replacement]
+
+    asyncio.run(check())
+
+
 def test_hyperlight_control_reports_a_concurrent_replacement_as_stale():
     async def check() -> None:
         key = SandboxKey("tenant-labs", "thread-1", "agent-1")
@@ -872,7 +1000,12 @@ def test_hyperlight_control_reports_a_concurrent_replacement_as_stale():
         replacement = replace(target, instance_id="generation-b")
         inventory = _Inventory([target])
         router = _Router(inventory, replacement)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
 
@@ -891,7 +1024,12 @@ def test_hyperlight_control_reports_a_router_failure_even_when_the_instance_disa
         target = _Info(key, "codeact", "generation-a")
         inventory = _Inventory([target])
         router = _Router(inventory, None, succeeds=False)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
 
@@ -907,7 +1045,12 @@ def test_hyperlight_control_requires_a_positive_backend_disposal_receipt():
         target = _Info(key, "codeact", "generation-a")
         inventory = _Inventory([target])
         router = _Router(inventory, None, disposed=0)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
 
@@ -923,7 +1066,12 @@ def test_hyperlight_control_reports_a_retained_instance_as_failed():
         target = _Info(key, "codeact", "generation-a")
         inventory = _Inventory([target])
         router = _Router(inventory, target)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
 
@@ -942,7 +1090,12 @@ def test_hyperlight_control_preserves_a_router_failure_after_a_positive_receipt(
         target = _Info(key, "codeact", "generation-a")
         inventory = _Inventory([target])
         router = _Router(inventory, None, succeeds=False, disposed=1)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=3.0)
 
@@ -1010,7 +1163,12 @@ def test_hyperlight_control_bounds_disposal_inventory():
         target = _Info(key, "codeact", "generation-a")
         inventory = SlowInventory([target])
         router = _Router(inventory, target)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=0.01)
 
@@ -1029,7 +1187,7 @@ def test_hyperlight_control_bounds_disposal_confirmation():
 
         async def list_sandboxes(self) -> tuple[_Info, ...]:
             self.calls += 1
-            if self.calls == 2:
+            if self.calls == 3:
                 await asyncio.sleep(1)
             return await super().list_sandboxes()
 
@@ -1039,7 +1197,12 @@ def test_hyperlight_control_bounds_disposal_confirmation():
         replacement = replace(target, instance_id="generation-b")
         inventory = SlowSecondInventory([target])
         router = _Router(inventory, replacement)
-        control = HyperlightControl(inventory, cast(SandboxRouter, router), source_id="agent-app")
+        control = HyperlightControl(
+            inventory,
+            cast(SandboxRouter, router),
+            source_id="agent-app",
+            quiesce_instance=_test_quiescence,
+        )
 
         result = await control.dispose_sandbox(target.instance_id, timeout=0.01)
 

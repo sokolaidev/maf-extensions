@@ -50,15 +50,17 @@ Successful commands exit zero. Endpoint or incomplete-operation failures use `1`
 The MAF application remains the sandbox authority. Merely importing or constructing `SandboxControlServer` opens nothing. A host configuration that defaults off must opt in before the application starts the server on its event loop, passing the same backend and router that serve CodeAct calls.
 
 ```python
-from maf_sandbox import Cleanup
+from maf_sandbox import Cleanup, SandboxKey
 from maf_sandbox_hyperlight import HyperlightSandboxBackend
 from maf_sandbox_tui import HyperlightControl, MonitoredSandboxBackend, MonitoredSandboxRouter, SandboxControlServer
 
 backend = HyperlightSandboxBackend()
 monitored = MonitoredSandboxBackend(backend)
 router = MonitoredSandboxRouter([monitored], min_cleanup=Cleanup.RESET)
+def quiesce_instance(key: SandboxKey):
+    return application_lifecycle.quiesce(key.scope, key.thread_id)
+
 async def purge_conversation(scope: str, thread_id: str):
-    # This host-owned boundary blocks new work and waits for in-flight work across replicas.
     async with application_lifecycle.quiesce(scope, thread_id):
         return await router.dispose_scope(scope, thread_id)
 
@@ -66,6 +68,7 @@ control = HyperlightControl(
     monitored,
     router,
     source_id="research-agent",
+    quiesce_instance=quiesce_instance,
     quiesced_purge=purge_conversation,
 )
 
@@ -82,10 +85,10 @@ finally:
 
 When enabled, the server binds an ephemeral port on the literal loopback address `127.0.0.1` and publishes the address in a per-user discovery file. `mst` discovers responsive local endpoints automatically. On POSIX hosts, MST atomically creates the discovery directory and refuses one that is not owned by the current user or is accessible to another user. There are deliberately no keys in this local prototype. Loopback is machine-local, not user-private: any local process that can reach the listener can use it while the host has it enabled. Windows discovery still needs an explicit user ACL or a named-pipe transport before production use. Do not proxy, forward or expose the listener outside the host; remote control requires a separately designed authenticated transport.
 
-`application_lifecycle.quiesce` represents the host's conversation scheduler; it is not supplied by MST. Every path that starts work for that conversation, on every application replica, must participate in the same boundary. Omit `quiesced_purge` if the host cannot provide that guarantee; MST will report the purge as partial without calling the router.
+`application_lifecycle.quiesce` represents the host's conversation scheduler; it is not supplied by MST. Every path that starts work for that conversation, on every application replica, must participate in the same boundary. `quiesce_instance` must fence new work and drain active calls for the key before exact disposal, and MST rechecks the generation inside that boundary. Omit either callback if the host cannot provide its guarantee; MST will refuse that disposal operation without calling the router.
 
 ## Control protocol
 
-Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` and verifies that the physical instance disappeared. Conversation purge invokes the host-provided quiesced purge under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
+Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` only inside host-provided quiescence and verifies that the physical instance disappeared. Conversation purge invokes the host-provided quiesced purge under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
 
-Live inventory comes from acquisitions admitted by `MonitoredSandboxRouter` through `MonitoredSandboxBackend`; applications must use both instead of registering the wrapped backend directly. The wrapper requires an observed worker process exit before confirming physical disposal; a backend without that signal remains visible and is reported as unconfirmed. It depends only on `maf-sandbox` and leaves backend packages unchanged. It reports a tracked acquisition as `ready` and does not infer active execution from backend-private locks; a backend-specific inventory may provide richer lifecycle states. `maf-sandbox-otel` remains the complementary history and audit surface.
+Live inventory comes from acquisitions admitted by `MonitoredSandboxRouter` through `MonitoredSandboxBackend`; applications must use both instead of registering the wrapped backend directly. The wrapper requires an observed worker process exit before confirming physical disposal; a backend without that signal remains visible and is reported as unconfirmed. It depends only on `maf-sandbox` and leaves backend packages unchanged. It reports a tracked acquisition as `ready` while its worker is observed running and as `failed` when the worker has exited or its liveness cannot be checked; it does not infer active execution from backend-private locks. A backend-specific inventory may provide richer lifecycle states. `maf-sandbox-otel` remains the complementary history and audit surface.
