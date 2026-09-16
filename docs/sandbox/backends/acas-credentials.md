@@ -2,7 +2,7 @@
 
 ACAS control-plane credentials authenticate the host's SDK operations. They remain outside the guest and are independent of host-tool user credentials, guest-provisioned tokens and platform-attached managed identity. `AcasSandboxConfig.credential_resolver` selects this authority; omitting it retains `DefaultAzureCredential`.
 
-ACAS supports managed identity configured on the sandbox group. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. Guest token acquisition was measured for M1's tested API, image and group configuration, as [sandbox group identity](backends/acas.md#sandbox-group-identity) records. The host credential selected below is independent of that configured guest authority.
+ACAS supports managed identity configured on the sandbox group. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. Guest token acquisition was measured for M1's tested API, image and group configuration, as [sandbox group identity](acas.md#sandbox-group-identity) records. The host credential selected below is independent of that configured guest authority.
 
 ## Request and cleanup authority
 
@@ -24,7 +24,7 @@ Every replica needs the same trusted authority-selection policy and access to th
 
 The backend does not persist bearer tokens or authority references in resource labels. Disposal resolves from scope/thread/key, not a creator's process-local credential object. A host needing per-creator recovery must maintain the corresponding durable mapping itself. Long scope labels can be irreversible digests; a group-wide operator sweep needs a trusted target registry or independently configured operator authority. Deleting a sandbox on another replica does not require sticky request routing or a surviving creator cache.
 
-The credential pool supplies local client ownership, not distributed sandbox locking or exactly-once deletion. The host must still stop new work across replicas before conversation purge and follow the [tool-call concurrency contract](tool-call.md). Repeated discovery/deletion of an already absent sandbox remains safe. No guarantee is made that an expired or revoked caller grant can delete its former resources.
+The credential pool supplies local client ownership, not distributed sandbox locking or exactly-once deletion. The host must still stop new work across replicas before conversation purge and follow the [tool-call concurrency contract](../tool-call.md). Repeated discovery/deletion of an already absent sandbox remains safe. No guarantee is made that an expired or revoked caller grant can delete its former resources.
 
 ## Host wiring
 
@@ -74,7 +74,7 @@ Eager task factories are supported: construction and retirement suspend before r
 
 Call `await backend.aclose()` before stopping its owner event loops. It permanently refuses new leases, drains admitted operations, and dispatches resource closure to every still-running owner loop. It does not dispose sandboxes. `AcasClientCloseError` reports timeout, a stopped owner loop or failed resource closure; retained resources permit a later close attempt. Resume a stopped owner loop before retrying closure there. A cancelled close caller does not revoke already admitted work. Successfully closed resources are not closed again. `AcasCredentialError` reports resolver/construction/capacity failures without including potentially sensitive provider error text; disposal translates these into its existing incomplete-cleanup report.
 
-The [research record](research/acas-host-credentials.md) contains the baseline findings and the implementation disposition. Tests exercise fake service replicas and the installed SDK authentication policy; live delegated-token acceptance and distributed deployment performance remain unverified.
+The [research record](../research/acas.md) contains the baseline findings and the implementation disposition. Tests exercise fake service replicas and the installed SDK authentication policy; live delegated-token acceptance and distributed deployment performance remain unverified.
 
 ## Status
 
