@@ -9,7 +9,7 @@
       "artifact": {
         "url": "https://github.com/Azure/terraform-provider-azapi/releases/download/v2.12.0/terraform-provider-azapi_2.12.0_linux_amd64.zip",
         "sha256": "71402acfa1ad35788a5d1669bdd59040434a45aea990d062dcc41f17163c8e1b",
-        "provenance": "Azure azapi v2.12.0 release SHA256SUMS matching registry download metadata - 2026-09-16",
+        "provenance": "Azure azapi v2.12.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "409095307"
       }
     },
@@ -20,7 +20,7 @@
       "artifact": {
         "url": "https://github.com/Azure/terraform-provider-modtm/releases/download/v0.4.0/terraform-provider-modtm_0.4.0_linux_amd64.zip",
         "sha256": "6968bbd28ccdeefa33a77393e1695a896b02e6eeab6ca3384a371675e86587f4",
-        "provenance": "Azure modtm v0.4.0 release SHA256SUMS matching registry download metadata - 2026-09-16",
+        "provenance": "Azure modtm v0.4.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "680040111"
       }
     },
@@ -31,7 +31,7 @@
       "artifact": {
         "url": "https://releases.hashicorp.com/terraform-provider-random/3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
         "sha256": "7b8434212eef0f8c83f5a90c6d76feaf850f6502b61b53c329e85b3b281cba34",
-        "provenance": "HashiCorp random 3.7.2 release SHA256SUMS - existing image pin"
+        "provenance": "HashiCorp random 3.7.2 release SHA256SUMS matching registry download metadata"
       }
     }
   ],
@@ -56,7 +56,7 @@
       "artifact": {
         "url": "https://codeload.github.com/Azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/c08763d616fc9f1932075a70d53fa826dfbdc72f",
         "sha256": "77c9d29b6eadb23f3c2508311e7a720fa438e825a1fc733e94d8638037c37b38",
-        "provenance": "Registry 0.22.2 download and tag v0.22.2 resolve to this commit - reviewed 2026-09-16"
+        "provenance": "Registry 0.22.2 download and tag v0.22.2 resolve to this commit"
       }
     },
     {
@@ -64,13 +64,11 @@
       "source": "registry.terraform.io/Azure/avm-utl-interfaces/azure",
       "version": "0.6.0",
       "revision": "74b7aebabcee9d1d5454f55b3c00516767d14838",
-      "graph": {
-        ".": {}
-      },
+      "graph": {".": {}},
       "artifact": {
         "url": "https://codeload.github.com/Azure/terraform-azure-avm-utl-interfaces/zip/74b7aebabcee9d1d5454f55b3c00516767d14838",
         "sha256": "afbfa671664bb48b2de29e6762a8abd12b627644cd2e71ff9ae956ef71dfe814",
-        "provenance": "Registry 0.6.0 download and tag v0.6.0 resolve to this commit - reviewed 2026-09-16"
+        "provenance": "Registry 0.6.0 download and tag v0.6.0 resolve to this commit"
       }
     }
   ]

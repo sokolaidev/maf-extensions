@@ -242,3 +242,63 @@ def test_egress_probe_connects_where_the_network_is_open():
         timeout=60,
     )
     assert (result.returncode, result.stdout.strip()) == (0, b"connected")
+
+
+LINK_PROBE = (
+    "import importlib.util, json, os, tempfile\n"
+    "from pathlib import Path\n"
+    "call = Path(tempfile.mkdtemp())\n"
+    "(call / 'project').mkdir()\n"
+    "(call / 'project' / 'main.tf').write_text(%(main)r)\n"
+    "spec = importlib.util.spec_from_file_location('runner', '/opt/maf-terraform/runner.py')\n"
+    "runner = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(runner)\n"
+    "os.chdir(call)\n"
+    "result = runner.execute('terraform', '.', 300)\n"
+    "providers = call / '.runner' / 'data' / 'providers'\n"
+    "copied = links = outside = 0\n"
+    "for path in providers.rglob('*') if providers.is_dir() else ():\n"
+    "    if path.is_symlink():\n"
+    "        links += 1\n"
+    "        outside += 0 if str(path.resolve()).startswith('/opt/maf-terraform/mirror') else 1\n"
+    "    elif path.is_file():\n"
+    "        copied += 1\n"
+    "print(json.dumps({'error': result['error'], 'init': result['phases'].get('init', {}).get("
+    "'exit_code'), 'copied': copied, 'links': links, 'outside': outside}))\n"
+)
+
+
+@pytest.mark.skipif(
+    not DOCKER_IMAGE or not (PREPARED / "receipt.json").is_file(),
+    reason="needs MAF_TERRAFORM_AVM_IMAGE and MAF_TERRAFORM_AVM_DIR",
+)
+def test_prepared_providers_link_into_the_mirror_instead_of_copying():
+    receipt = json.loads((PREPARED / "receipt.json").read_text(encoding="utf-8"))
+    provider = receipt["providers"][0]
+    main = (
+        "terraform {\n  required_providers {\n"
+        f'    {provider["source"].split("/")[-1]} = {{ source = "{provider["source"]}", '
+        f'version = "{provider["version"]}" }}\n  }}\n}}\n'
+    )
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            DOCKER_IMAGE,
+            "python3",
+            "-I",
+            "-c",
+            LINK_PROBE % {"main": main},
+        ],
+        capture_output=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    observed = json.loads(result.stdout.decode().strip().splitlines()[-1])
+    assert observed["error"] is None, observed
+    assert observed["init"] == 0, observed
+    assert observed["copied"] == 0, observed
+    assert observed["links"] >= 1 and observed["outside"] == 0, observed

@@ -1,6 +1,6 @@
 # Terraform and OpenTofu research
 
-> Consolidated research record, 2026-09-14 through 2026-09-16. It combines the CLI, implementation, dependency-preparation, egress, Azure Verified Module (AVM) catalog and provider-linking investigations for [`maf-sandbox-terraform`](../kinds/terraform.md). The validation kind and approved dependency preparation are implemented; catalog-wide baking and unpacked provider linking remain follow-up work.
+> Consolidated research record, 2026-09-14 through 2026-09-16. It combines the CLI, implementation, dependency-preparation, egress, Azure Verified Module (AVM) catalog and provider-linking investigations for [`maf-sandbox-terraform`](../kinds/terraform.md). The validation kind and approved dependency preparation are implemented; catalog-wide baking remains follow-up work, and unpacked provider linking is implemented in [#1283](https://github.com/sokolaidev/maf-extensions/pull/1283).
 
 ## Decisions at a glance
 
@@ -215,7 +215,7 @@ The 27-version unpacked mirror occupied 2.52 GiB; gzipped layer size was 549 MiB
 6. Change mirror assertions and wrong-lock fixtures from ZIP-only digests to unpacked digests and `h1:` locks.
 7. Keep the small profiles for routine CI; build and publish the catalog image on a schedule or by explicit operator action.
 
-The guest can still write into the image mirror when it runs as root, as it can today; disposal removes the call. A read-only bind mount would need privileges unavailable to the sandbox. Reading provider bytes still consumes I/O and page cache. The provider-linking route was measured on Docker and ACAS but is not yet the default image layout.
+The guest can still write into the image mirror when it runs as root, as it can today; disposal removes the call. A read-only bind mount would need privileges unavailable to the sandbox. Reading provider bytes still consumes I/O and page cache. #1283 implements this route: prepared images unpack the mirror, the launcher refuses a copy, and a `zh:`-only lock is no longer verifiable against the unpacked mirror.
 
 ## Overall limits and follow-ups
 
