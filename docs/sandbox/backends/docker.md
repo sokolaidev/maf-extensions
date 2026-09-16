@@ -4,7 +4,7 @@
 
 ## What "Docker" means here
 
-The Docker CLI talking to a Docker-API-compatible socket. Daemon binding requires Docker's context-inspection schema, so the previously advertised `docker_path="podman"` escape hatch no longer works. A compatible engine socket reached through the Docker CLI remains best effort; Docker Desktop and Docker Engine are the supported engines. The consolidated engine-contract research is [`../research/docker.md`](../research/docker.md).
+The Docker CLI talking to a Docker-API-compatible socket. Daemon binding requires Docker's context-inspection schema, so the previously advertised `docker_path="podman"` escape hatch no longer works. A compatible engine socket reached through the Docker CLI remains best effort; Docker Desktop and Docker Engine are the supported engines. The consolidated engine-contract research is [`../research/docker-backend.md`](../research/docker-backend.md).
 
 ## What it declares
 
@@ -81,7 +81,7 @@ Amortising per phase — every input of a call under one freeze and every output
 
 ## `FILES_LIST` is withheld because a listing transfers the subtree
 
-Docker's directory archive carries names and entry types, so enumeration is possible through the engine. It is expensive: `docker cp <name>:<directory> -` recursively streams file bodies between headers, and the archive API offers no depth limit or headers-only form. Discovering the next immediate child can require consuming an entire nested subtree. Ten 100 MiB files transfer about 1 GiB to learn ten names; a directory with two children can cost just as much if one child holds that data. The [investigation](../research/docker.md) records the measured bytes, ordering, symlinks and cancellation behavior.
+Docker's directory archive carries names and entry types, so enumeration is possible through the engine. It is expensive: `docker cp <name>:<directory> -` recursively streams file bodies between headers, and the archive API offers no depth limit or headers-only form. Discovering the next immediate child can require consuming an entire nested subtree. Ten 100 MiB files transfer about 1 GiB to learn ten names; a directory with two children can cost just as much if one child holds that data. The [investigation](../research/docker-backend.md) records the measured bytes, ordering, symlinks and cancellation behavior.
 
 The backend withholds `FILES_LIST` rather than impose that subtree cost on a one-level listing. A bounded implementation would have to raise on any byte, entry, metadata or time limit, never return the entries seen so far as complete. `ls`/`find` over `exec` is not a substitute: the guest controls the executable and its answer, while the pull surface requires engine observations. The distinction holds even on an image that supplies those utilities.
 
@@ -180,7 +180,7 @@ The inventory includes stopped containers, proxies without a workload and networ
 | Cleanup ownership, lifecycle guidance and a reference operator deployment | implemented — deployment-owned scheduling and an ACAS reference example in [operations.md](../operations.md) | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (closed) by [#1014](https://github.com/sokolaidev/maf-extensions/pull/1014) (merged) |
 | Explicit age-based cleanup of Docker workloads, proxies and networks | shipped | [#1009](https://github.com/sokolaidev/maf-extensions/issues/1009) (closed) by [#1012](https://github.com/sokolaidev/maf-extensions/pull/1012) (merged), under umbrella [#808](https://github.com/sokolaidev/maf-extensions/issues/808) (closed) |
 | The backend, its declarations, and `FILES_OUT` from the day the package existed | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the docker item landed first, as the gate |
-| `FILES_LIST` withheld — directory archives transfer the whole subtree | investigated — retain the refusal on cost grounds | [#353](https://github.com/sokolaidev/maf-extensions/issues/353) (closed) by [#1059](https://github.com/sokolaidev/maf-extensions/pull/1059) (merged); [measurements and decision](../research/docker.md) |
+| `FILES_LIST` withheld — directory archives transfer the whole subtree | investigated — retain the refusal on cost grounds | [#353](https://github.com/sokolaidev/maf-extensions/issues/353) (closed) by [#1059](https://github.com/sokolaidev/maf-extensions/pull/1059) (merged); [measurements and decision](../research/docker-backend.md) |
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
 | `observes_egress = True` with a proxy image: the proxy's own `ALLOW`/`DENY` lines are drained before every removal that would take them, and become `EgressObserved` keyed to the sandbox | shipped | [#948](https://github.com/sokolaidev/maf-extensions/issues/948) (closed) by [#963](https://github.com/sokolaidev/maf-extensions/pull/963) (merged) |
 | `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — the image's runtime is the image's property, and this backend does not parse the reference | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |

@@ -74,7 +74,7 @@ Eager task factories are supported: construction and retirement suspend before r
 
 Call `await backend.aclose()` before stopping its owner event loops. It permanently refuses new leases, drains admitted operations, and dispatches resource closure to every still-running owner loop. It does not dispose sandboxes. `AcasClientCloseError` reports timeout, a stopped owner loop or failed resource closure; retained resources permit a later close attempt. Resume a stopped owner loop before retrying closure there. A cancelled close caller does not revoke already admitted work. Successfully closed resources are not closed again. `AcasCredentialError` reports resolver/construction/capacity failures without including potentially sensitive provider error text; disposal translates these into its existing incomplete-cleanup report.
 
-The [research record](../research/acas.md) contains the baseline findings and the implementation disposition. Tests exercise fake service replicas and the installed SDK authentication policy; live delegated-token acceptance and distributed deployment performance remain unverified.
+The [research record](../research/acas-backend.md) contains the baseline findings and the implementation disposition. Tests exercise fake service replicas and the installed SDK authentication policy; live delegated-token acceptance and distributed deployment performance remain unverified.
 
 ## Status
 
