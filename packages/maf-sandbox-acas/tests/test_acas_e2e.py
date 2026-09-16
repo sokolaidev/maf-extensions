@@ -1174,6 +1174,7 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
         work_dir=f"/maf-sandbox/acquire-{uuid.uuid4().hex}/nested",
         requires=frozenset({Capability.EXEC}),
     )
+    nonroot = image == _NONROOT_IMAGE
 
     async def scenario() -> None:
         sandbox = await backend.acquire(key, spec)
@@ -1181,12 +1182,26 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
         assert ran.exit_code == 0, ran.stderr
         assert ran.stdout.strip() == spec.work_dir
 
-        await sandbox.write_file(f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir)
+        # The data plane can only mint root-owned directories, so on a non-root image the
+        # guest cannot write its own base and the refusal is the expected result, not a
+        # failure of the preparation this test checks.
+        if nonroot:
+            with pytest.raises(PermissionError):
+                await sandbox.write_file(
+                    f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir
+                )
+        else:
+            await sandbox.write_file(
+                f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir
+            )
         warm = await backend.acquire(key, spec)
         assert warm.instance_id == sandbox.instance_id
-        kept = await warm.exec("cat marker", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT)
-        assert kept.exit_code == 0, kept.stderr
-        assert kept.stdout == "kept"
+        if not nonroot:
+            kept = await warm.exec(
+                "cat marker", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT
+            )
+            assert kept.exit_code == 0, kept.stderr
+            assert kept.stdout == "kept"
 
         async with backend._client_pool.lease(default_binding()) as gc:
             sc = gc.get_sandbox_client(sandbox.sandbox_id)
