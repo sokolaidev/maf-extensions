@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import copy
 import datetime
 import hashlib
@@ -655,6 +656,26 @@ def test_archive_symlink_and_expansion():
         prep.zip_files(bundle({"large": "x" * 1001}), limit=1000)
 
 
+def test_package_hash_is_terraform_h1():
+    data = bundle({"terraform-provider-random_v3.7.2": "binary", "LICENSE": "MIT"})
+    lines = (
+        f"{hashlib.sha256(b'MIT').hexdigest()}  LICENSE\n"
+        f"{hashlib.sha256(b'binary').hexdigest()}  terraform-provider-random_v3.7.2\n"
+    )
+    expected = "h1:" + base64.b64encode(hashlib.sha256(lines.encode()).digest()).decode()
+    assert prep.package_hash(data) == expected
+
+
+def test_package_hash_ignores_directory_entries_and_zip_order():
+    plain = bundle({"LICENSE": "MIT", "terraform-provider-random_v3.7.2": "binary"})
+    with io.BytesIO() as output:
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("docs/", "")
+            archive.writestr("terraform-provider-random_v3.7.2", "binary")
+            archive.writestr("LICENSE", "MIT")
+        assert prep.package_hash(output.getvalue()) == prep.package_hash(plain)
+
+
 def test_manifest_conflicts_unknown_policy_and_duplicate_json():
     value = manifest()
     value["providers"].append(copy.deepcopy(value["providers"][0]))
@@ -1189,6 +1210,43 @@ def test_registry_packages_bake_declared_directories_and_inventory(tmp_path, mon
     ]
     assert shared["inventory"] == []
     assert "url" not in json.dumps(receipt)
+
+
+def test_prepared_receipt_records_each_provider_files_and_h1(tmp_path, monkeypatch):
+    policy = registry_policy()
+    provider_archive = bundle({"terraform-provider-random_v3.7.2": b"never executed"})
+    archives = {
+        "network": bundle(network_files()),
+        "shared": bundle({f"terraform-shared-{SHARED_REVISION}/main.tf": "terraform {}\n"}),
+        "provider": provider_archive,
+    }
+    policy["providers"][0]["artifact"] = artifact(provider_archive)
+    for item in policy["registry_modules"]:
+        item["artifact"]["sha256"] = hashlib.sha256(archives[item["name"]]).hexdigest()
+    by_digest = {hashlib.sha256(data).hexdigest(): data for data in archives.values()}
+    monkeypatch.setattr(prep, "fetch", lambda spec, _, **limits: by_digest[spec["sha256"]])
+    prep.prepare(policy, tmp_path / "prepared")
+    receipt = json.loads((tmp_path / "prepared/receipt.json").read_text())
+    provider = receipt["providers"][0]
+    with zipfile.ZipFile(io.BytesIO(provider_archive)) as archive:
+        files = {
+            item.filename: hashlib.sha256(archive.read(item.filename)).hexdigest()
+            for item in archive.infolist()
+            if not item.is_dir()
+        }
+    lines = "".join(f"{digest}  {name}\n" for name, digest in sorted(files.items()))
+    assert provider["files"] == files
+    assert provider["h1"] == (
+        "h1:" + base64.b64encode(hashlib.sha256(lines.encode()).digest()).decode()
+    )
+    stored = (
+        tmp_path
+        / "prepared"
+        / "mirror"
+        / provider["source"]
+        / "terraform-provider-random_3.7.2_linux_amd64.zip"
+    )
+    assert stored.read_bytes() == provider_archive
 
 
 def _set(path, value):

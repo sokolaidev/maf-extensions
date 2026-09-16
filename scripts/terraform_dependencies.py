@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import http.client
 import io
@@ -496,6 +497,25 @@ def zip_files(data: bytes, *, limit: int, retain: bool = True) -> dict[str, byte
     return result
 
 
+def package_hash(data: bytes) -> str:
+    """Terraform's h1 package hash, computed from provider ZIP bytes."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        lines = "".join(
+            f"{hashlib.sha256(archive.read(name)).hexdigest()}  {name}\n"
+            for name in sorted(item.filename for item in archive.infolist() if not item.is_dir())
+        )
+    return "h1:" + base64.b64encode(hashlib.sha256(lines.encode()).digest()).decode()
+
+
+def zip_entry_digests(data: bytes) -> dict[str, str]:
+    """SHA-256 of each regular ZIP entry, keyed by entry name."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        return {
+            name: hashlib.sha256(archive.read(name)).hexdigest()
+            for name in sorted(item.filename for item in archive.infolist() if not item.is_dir())
+        }
+
+
 def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, str]:
     """Preserve an approved local module graph and its original source bytes."""
     archive = zip_files(data, limit=MAX_TEXT)
@@ -882,6 +902,8 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 record = {key: item[key] for key in ("source", "version", "platform")}
+                record["files"] = zip_entry_digests(data)
+                record["h1"] = package_hash(data)
             elif kind == "registry_modules":
                 selected, sources[item["name"]] = registry_module_files(
                     item, data, catalog, manifest["providers"]

@@ -1,4 +1,4 @@
-"""The launcher's offline module records, checked on the host without an engine."""
+"""The launcher's offline module records and provider-link refusals, checked host-side."""
 
 from __future__ import annotations
 
@@ -191,3 +191,48 @@ def test_inventory_naming_an_unbaked_package_is_an_error(tmp_path):
     broken = [PACKAGES[0]]
     with pytest.raises(ValueError, match="unbaked"):
         runner.module_records(tmp_path, tmp_path, broken)
+
+
+MIRROR_PACKAGE = (
+    "/opt/maf-terraform/mirror"
+    "/registry.terraform.io/hashicorp/random/3.7.2/linux_amd64"
+    "/terraform-provider-random_v3.7.2"
+)
+
+
+def _package(data: Path) -> Path:
+    return data / "providers/registry.terraform.io/hashicorp/random/3.7.2/linux_amd64"
+
+
+def _link(entry: Path, target: str) -> None:
+    """Create one symlink; Windows may refuse without developer mode enabled."""
+    try:
+        entry.symlink_to(target)
+    except OSError:
+        pytest.skip("Windows cannot always create symlinks")
+
+
+def test_providers_installed_by_link_into_the_mirror_pass(tmp_path):
+    data = tmp_path / "data"
+    runner.refuse_copied_providers(data)
+    _package(data).mkdir(parents=True)
+    _link(_package(data) / "terraform-provider-random_v3.7.2", MIRROR_PACKAGE)
+    runner.refuse_copied_providers(data)
+
+
+def test_a_copied_provider_under_the_data_directory_is_refused(tmp_path):
+    data = tmp_path / "data"
+    _package(data).mkdir(parents=True)
+    (_package(data) / "terraform-provider-random_v3.7.2").write_bytes(b"copied bytes")
+    with pytest.raises(ValueError, match="copied"):
+        runner.refuse_copied_providers(data)
+
+
+def test_a_provider_link_pointing_outside_the_mirror_is_refused(tmp_path):
+    data = tmp_path / "data"
+    _package(data).mkdir(parents=True)
+    _link(
+        _package(data) / "terraform-provider-random_v3.7.2", "/etc/terraform-provider-random_v3.7.2"
+    )
+    with pytest.raises(ValueError, match="outside"):
+        runner.refuse_copied_providers(data)
