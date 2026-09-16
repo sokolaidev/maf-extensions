@@ -1,6 +1,6 @@
 # Operating sandbox cleanup
 
-The deployment owns cleanup after an application process dies. Backends and operator scripts provide resource discovery and deletion; the deployment supplies the target, credentials, retention policy, schedule, and response to failures. The extension starts no daemon and requires no persistent router inventory. The argument for this boundary is recorded in [`research/orphan-cleanup-ownership.md`](research/orphan-cleanup-ownership.md).
+The deployment owns cleanup after an application process dies. Backends and operator scripts provide resource discovery and deletion; the deployment supplies the target, credentials, retention policy, schedule, and response to failures. The extension starts no daemon and requires no persistent router inventory. The argument for this boundary is recorded in [`research/cleanup.md`](research/cleanup.md).
 
 ## Ownership boundary
 

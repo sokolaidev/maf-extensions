@@ -198,7 +198,7 @@ The `USER` host-tool refusal used to be read as the fourth, and it was not. It n
 
 ## File-store provenance — what a kind reads, and what it is worth
 
-A kind that reads the agent's file store reads content the framework can no longer label. `AgentFileStore` holds a `str` and returns a `str`, and the information-flow middleware expands a variable reference into the bytes it stands for *before* the tool body that writes them runs — so nothing that reaches the store says what it was worth. That is [#841](https://github.com/sokolaidev/maf-extensions/issues/841), and [`research/labelling-the-file-store.md`](research/labelling-the-file-store.md) is where the three candidate seams were measured.
+A kind that reads the agent's file store reads content the framework can no longer label. `AgentFileStore` holds a `str` and returns a `str`, and the information-flow middleware expands a variable reference into the bytes it stands for *before* the tool body that writes them runs — so nothing that reaches the store says what it was worth. That is [#841](https://github.com/sokolaidev/maf-extensions/issues/841), and [`research/file-store.md`](research/file-store.md) is where the three candidate seams were measured.
 
 **What is recoverable is who wrote it, and only at the call boundary.** A write through `FileAccessProvider` is a *tool call*, and a tool call is the unambiguous signal that the model drove it. `FileStoreProvenance` is the record, `file_store_provenance_middleware` fills it, and a host wires the two beside its information-flow middleware:
 
