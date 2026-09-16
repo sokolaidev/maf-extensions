@@ -363,6 +363,25 @@ def module_records(
     return records
 
 
+def refuse_copied_providers(data_dir: Path) -> None:
+    """A prepared mirror serves providers by symlink; Terraform copies when it cannot.
+
+    It reports success either way, so every entry below the call's providers directory
+    must be a link into the image mirror, never a regular file.
+    """
+    providers = data_dir / "providers"
+    if not providers.is_dir():
+        return
+    for directory, names, files in os.walk(providers, followlinks=False):
+        for name in names + files:
+            entry = Path(directory) / name
+            if entry.is_symlink():
+                if not entry.resolve().is_relative_to(INSTALL / "mirror"):
+                    raise ValueError("provider linked outside the image mirror")
+            elif entry.is_file():
+                raise ValueError("provider copied into the call")
+
+
 def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
     """Initialize, validate, and check formatting using only fixed command arguments."""
     result: dict[str, Any] = {
@@ -421,6 +440,9 @@ def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
         if original_lock is not None and lock.read_bytes() != original_lock:
             raise ValueError("supplied lock changed")
         if phases["init"]["exit_code"] == 0:
+            if metadata["profile"] == "prepared":
+                # Only the prepared mirror serves providers unpacked; the ZIP profiles copy.
+                refuse_copied_providers(private / "data")
             phases["validate"] = supervisor.execute_phase([str(binary), "validate", "-json"], root)
             phases["fmt"] = supervisor.execute_phase(
                 [str(binary), "fmt", "-check", "-recursive", "-no-color"], project
