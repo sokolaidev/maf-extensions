@@ -633,12 +633,13 @@ def _bodies(parsed: Any, kind: str) -> list[dict[str, Any]]:
 
 
 def _blocks(parsed: Any, kind: str, json_syntax: bool) -> list[tuple[str, Any]]:
-    """Flatten one labelled block type, unquoting native-syntax labels."""
+    """Flatten one labelled block type, unquoting native-syntax labels and skipping comments."""
+    skipped = {"//"} if json_syntax else {"__is_block__", "__comments__", "__inline_comments__"}
     return [
         (json.loads(label) if not json_syntax and label.startswith('"') else label, body)
         for block in _bodies(parsed, kind)
         for label, body in block.items()
-        if label != "__is_block__"
+        if label not in skipped
     ]
 
 

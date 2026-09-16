@@ -1334,6 +1334,35 @@ def test_registry_package_accepts_builtin_and_legacy_provider_requirements():
     assert sources["."] == {"shared": SHARED_SOURCE, "subnet": "./modules/subnet"}
 
 
+@pytest.mark.parametrize(
+    "name,requirements",
+    [
+        (
+            "terraform.tf",
+            "terraform {\n  required_providers {\n    # pinned below\n    random = {\n"
+            '      source  = "hashicorp/random" # the only provider\n'
+            '      version = "~> 3.5"\n    }\n  }\n}\n',
+        ),
+        (
+            "terraform.tf.json",
+            json.dumps(
+                {
+                    "terraform": {
+                        "required_providers": {
+                            "//": "pinned below",
+                            "random": {"source": "hashicorp/random", "version": "~> 3.5"},
+                        }
+                    }
+                }
+            ),
+        ),
+    ],
+)
+def test_registry_package_ignores_comments_among_provider_requirements(name, requirements):
+    files, _ = verify_network(**{"terraform.tf": None, name: requirements})
+    assert name in files
+
+
 def test_registry_graph_must_reach_every_declared_directory():
     policy = registry_policy()
     policy["registry_modules"][0]["graph"]["modules/unused"] = {}
