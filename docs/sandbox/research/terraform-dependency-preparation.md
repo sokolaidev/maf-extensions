@@ -32,7 +32,7 @@ Terraform's module installer reuses a `modules.json` record when the record's so
 
 The preparer therefore pins each package to a codeload archive of the commit the registry resolves, parses every declared module directory, and requires the operator's graph, version constraints and provider requirements to match. The receipt carries the records Terraform would write below one call of each package. The launcher reads the staged project's calls, follows local calls inside the project, and writes those records before `init`, using the authored source spelling. It uses a small reader for HCL block structure rather than a full parser. A misread call can only lose a record, because Terraform re-checks every record against the configuration and falls back to the registry. The base CLI configuration disables module registry discovery, so that fallback fails at once and validation is INCOMPLETE. The image build runs the launcher offline against every baked package and refuses to publish on failure. The graph must be complete before any guest runs.
 
-The design adds no guest request surface. A loopback registry service inside the guest was rejected for the same reason as a network mirror.
+The design adds no guest request surface. A loopback registry service inside the guest was rejected for the same reason as a network mirror. [Baking every latest AVM module](terraform-avm-catalog.md) measures what extending this to the whole AVM catalog would take.
 
 ## Evidence required
 
