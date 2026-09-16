@@ -79,6 +79,36 @@ A note on the reach rule, which is satisfied here for an uncomfortable reason. O
 
 `code_run` exists and runs Python, TypeScript or JavaScript, but `RUN_CODE` should stay undeclared: which runtime a snapshot carries is the snapshot's property, and the guide is explicit that a backend accepting arbitrary images may not declare a capability as a claim about someone else's artifact. A config pinned to one known snapshot could revisit it.
 
+## What it could declare
+
+One fact runs through the whole capability set. Every file capability rests on a check the guest answers, and `stat_by_asking_the_guest` asks it over `exec`. So on this backend the file capabilities sit downstream of `EXEC`, not beside it: a Daytona backend that withheld `EXEC` could honestly declare no file capability at all.
+
+| Member | Verdict | What it rests on |
+|---|---|---|
+| `EXEC` | Declare | `/process/execute`, with `cwd` and `envs`. The suite goes green only through a capture wrapper, since `exec-byte-fidelity` and `streams-stay-separate` both fail on the raw endpoint |
+| `FILES_IN` | Declare | `upload_file` takes bytes. Every refusal is the backend's, because the engine writes through a symlinked destination |
+| `FILES_OUT` | Declare, as a stated posture | `get_file_info` for the size, `download_file` for the bytes, and a streaming download so `max_bytes` can refuse before the whole file is buffered. The kind of the final component cannot come from the engine, whose `os.Stat` has already followed the link |
+| `FILES_DELETE` | Declare | `delete_file` for the ordinary cases, and `exec` for the link cases below |
+| `RECLAIM` | Declare on `container` | Removal through `exec`, as the principal the program ran under |
+| `HOST_TOOLS` | Declare | `host_tool_calls_over_exec` needs `EXEC`, `FILES_IN` and `FILES_OUT`, and all three are here. Each served call costs several remote round trips |
+| `FILES_LIST` | Withhold | Declarable, at a price not worth paying |
+| `RUN_CODE` | Withhold | The runtime is the snapshot's property, as above |
+| `SNAPSHOT` | Withhold on `container`; open on `linux-vm` | Fork, pause and snapshots taken from a running sandbox are VM-class only |
+| `ATTACHED_IDENTITY` | Withhold | `NO_ATTACHED_IDENTITY`. The core contract a candidate would have to meet is not built |
+| `EGRESS_METHODS` | Withhold | Nothing in the surface scopes by HTTP method |
+
+**`RECLAIM` is declarable where ACAS had to refuse it.** ACAS withholds it because it cannot establish safe ancestor ownership ([#710](https://github.com/sokolaidev/maf-extensions/issues/710)). On the `container` class the daemon and the workload are both root. There is one principal and no authority gap, so removal over `exec` as that principal satisfies the reach rule by construction. The same fact makes `stat_by_asking_the_guest` the right spelling here, not `stat_by_asking_the_guest_as_root`. Its docstring warns that a backend whose file plane runs raised has a check "blind where its writes are not"; on this class the check is exactly as blind as the writes. The vendor states the root fact for the container class only, so on `linux-vm` both conclusions wait on a probe.
+
+**`FILES_DELETE` routes its link cases around the file plane.** `delete_file` stats before it removes. A dangling link answers `404`, and reading that as "absent is success" would leave the link in place. A link to a directory is refused as a directory without `recursive`. The protocol wants both unlinked, so the backend tells them apart with a guest probe and removes them through `exec`. The rule that holds natively is the sharpest one: with `recursive=true`, `RemoveAll` unlinks a symlink operand rather than following it.
+
+**`FILES_LIST` is withheld on trust, not on cost.** `list_files` classifies each entry through the same following `getFileInfo`, so the listing cannot mark its links — and "never hide a link from the listing" is the rule. Recovering the kinds means probing every entry through the guest. Docker withholds this capability because a listing would transfer the subtree. Here the reason is worse: the least trusted enumeration in the system would be answered by the least trustworthy source available, for a capability only a name-discovering kind needs.
+
+**`SNAPSHOT` is open on `linux-vm`, and may not be worth declaring.** The rung owes every written path and every started process gone, restored from a baseline taken at create. A snapshot taken at acquire, then a delete and a create from it, is the shape the guide names. But the rung exists to be cheaper than a create, and the service advertises creates in under 90ms. It earns a declaration only if a measured reset beats a measured create.
+
+**`ATTACHED_IDENTITY` is withheld, and `secrets` is worth remembering.** A secret reaches the guest as an opaque placeholder. An outbound proxy substitutes the real value only on requests to that secret's allowed hosts. That is authority bounded by audience, close to the shape [#757](https://github.com/sokolaidev/maf-extensions/issues/757) describes. A declaration needs every authority channel declared and a retention bound enforced, and that contract is not built.
+
+**`EGRESS_METHODS` is withheld from Daytona, not necessarily from the package.** `outboundProxyUrl` routes the sandbox's HTTP(S) egress through a proxy the host operates. That would put method enforcement in our hands, the way docker's allowlist proxy puts host enforcement there. It is set at create only. Whether a program that ignores proxy settings is still routed through it is not documented, and without that it enforces nothing.
+
 ## What it gives that no local backend does
 
 The lifecycle surface is the strongest single argument for the package, and it is the thing docker and wslc structurally cannot offer. `autoStopInterval`, `autoArchiveInterval`, `autoDeleteInterval` and a wall-clock `ttlMinutes` are all enforced by the service, so **a sandbox goes away when the host dies** — where a crashed host leaves containers behind on a local engine and an operator cleanup job to find them. `ephemeral=True` is `autoDeleteInterval=0`: deleted on stop.
@@ -101,7 +131,7 @@ The lifecycle surface is the strongest single argument for the package, and it i
 
 For an account at Tier 3 or above, in roughly this order:
 
-1. Does `get_file_info` on a symlink describe the link or its target, against the **current** daemon — and does `mode` ever carry Go's `L` prefix? This single answer decides whether `FILES_OUT` and `FILES_LIST` are declarable at all.
+1. Does `get_file_info` on a symlink describe the link or its target, against the **current** daemon — and does `mode` ever carry Go's `L` prefix? This single answer decides whether `FILES_OUT` rests on the engine or on a stated guest-answered posture.
 2. Does `upload_file` to a path whose final component is a symlink write through it?
 3. Does `delete_file` without `recursive` refuse a link to a directory, and what does it answer for a dangling link?
 4. Are `SessionExecuteResponse.stdout` and `.stderr` separate pipes, or one log split afterwards?
@@ -112,11 +142,13 @@ For an account at Tier 3 or above, in roughly this order:
 9. Does creating two sandboxes with the same `name` concurrently fail the second one?
 10. What is inside the guest that the control plane trusts — the auth token's reach, and whether anything else in the environment widens it.
 11. Cold-create and warm-reacquire latency, since the whole point of get-or-create is a fix-round loop that does not pay a create per iteration.
+12. On the `linux-vm` class, which user runs the workload and which runs the daemon? `RECLAIM` and the plain guest-stat spelling both rest on the two being one principal.
+13. Is a program that ignores proxy settings still routed through `outboundProxyUrl`, or can it open a socket around it?
 
 ## Verdict, held loosely
 
 There is a real backend here, and it is not the one the pricing page invites you to try. On the `container` class at Tier 1 or 2 the honest declarations are `CONTAINER` with an empty `egress_modes`, which is a backend that serves nothing — so the free path is not a starting point but a dead end. The package that could exist is pinned to a `linux-vm` snapshot family on a Tier 3 organization: a second remote backend with server-enforced lifecycle, server-side label queries, a native domain allowlist that matches our grammar, and a genuinely async client.
 
-What it can never be is a peer of ACAS on the file surface. The file plane lives inside the guest, it follows every symlink it is given, and the freeze that closed the window on Docker is unavailable because the thing to freeze and the thing doing the copying are the same process tree. A Daytona backend would either declare `FILES_OUT` and `FILES_LIST` on top of a guest-answered check with the posture written down where a kind author reads it, or withhold them and serve `EXEC` and `FILES_IN` alone. Both are honest; only the second is cheap.
+What it can never be is a peer of ACAS on the file surface. The file plane lives inside the guest, it follows every symlink it is given, and the freeze that closed the window on Docker is unavailable because the thing to freeze and the thing doing the copying are the same process tree. A Daytona backend would either declare `FILES_OUT` on top of a guest-answered check, with the posture written down where a kind author reads it, or withhold it and serve `EXEC` and `FILES_IN` alone. Both are honest; only the second is cheap. `FILES_LIST` it withholds either way.
 
 So: worth doing, after the open confinement work rather than before it, and not as the next backend. The reason to do it is the front door's claim — that these services are backends beneath a contract rather than alternatives beside it — and a service whose file plane fits this contract this badly is the strongest available test of it.
