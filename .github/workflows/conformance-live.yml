@@ -96,7 +96,8 @@ jobs:
       - name: Sync workspace
         run: uv sync --locked
 
-      # Include the CodeAct imports even though this suite does not boot them.
+      # The preflight covers every live ACAS job, not only this suite's: include the CodeAct
+      # imports and sample 18's draw.io image even though this suite does not boot them.
       - name: Check all live ACAS image prerequisites
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
@@ -105,6 +106,7 @@ jobs:
           ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
           ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+          DRAWIO_SANDBOX_IMAGE: ${{ vars.DRAWIO_SANDBOX_IMAGE }}
           ACAS_SANDBOX_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
         run: uv run --locked python scripts/check_acas_live_images.py --summary "$GITHUB_STEP_SUMMARY"
 
