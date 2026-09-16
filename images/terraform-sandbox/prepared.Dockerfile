@@ -105,10 +105,12 @@ expected = {
 }
 assert inventory(p / "registry") == expected, "registry modules must contain exactly the verified files"
 PY
-# Initialize every provider and baked registry package offline through the launcher.
+# Initialize every provider version and every root package offline through the launcher.
+# A root is a package no other package calls; the packages it calls initialize with it.
 RUN python3 -I - <<'PY'
 import importlib.util
 import json
+import multiprocessing
 import os
 import shutil
 import stat
@@ -119,29 +121,57 @@ root = Path("/opt/maf-terraform")
 receipt = json.loads((root / "dependencies.json").read_text())
 providers = receipt.get("providers", [])
 packages = receipt.get("registry_modules", [])
-requirements = "".join(
-    f'    {"-".join(provider["source"].split("/")[-2:])} = {{ source = "{provider["source"]}", version = "{provider["version"]}" }}\n'
-    for provider in providers
-)
-call = Path(tempfile.mkdtemp())
-(call / "project").mkdir()
-(call / "project" / "main.tf").write_text(
-    (f"terraform {{\n  required_providers {{\n{requirements}  }}\n}}\n" if providers else "")
-    + "".join(
-        f'module "package_{index}" {{\n  source  = "{package["source"]}"\n  version = "{package["version"]}"\n}}\n'
-        for index, package in enumerate(packages)
+ranks = {}
+for provider in providers:
+    ranks.setdefault(provider["source"], []).append(provider)
+probes = []
+for rank in range(max((len(items) for items in ranks.values()), default=0)):
+    requirements = "".join(
+        f'    {"-".join(items[rank]["source"].split("/")[-2:])} = {{ source = "{items[rank]["source"]}", version = "= {items[rank]["version"]}" }}\n'
+        for items in ranks.values()
+        if rank < len(items)
     )
-)
-spec = importlib.util.spec_from_file_location("runner", "/opt/maf-terraform/runner.py")
-runner = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(runner)
-os.chdir(call)
-result = runner.execute(receipt["engine"], ".", 300)
-init = result["phases"].get("init", {})
-assert result["error"] is None and init.get("exit_code") == 0, init.get("stderr", "")[-4000:]
+    probes.append((f"providers rank {rank}", f"terraform {{\n  required_providers {{\n{requirements}  }}\n}}\n"))
+called = {
+    edge["registry"]
+    for package in packages
+    for edges in package["graph"].values()
+    for edge in edges.values()
+    if "registry" in edge
+}
+for package in packages:
+    if package["name"] not in called:
+        probes.append(
+            (package["name"], f'module "root" {{\n  source  = "{package["source"]}"\n  version = "= {package["version"]}"\n}}\n')
+        )
+
+
+def probe(item):
+    label, configuration = item
+    spec = importlib.util.spec_from_file_location("runner", "/opt/maf-terraform/runner.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    call = Path(tempfile.mkdtemp())
+    (call / "project").mkdir()
+    (call / "project" / "main.tf").write_text(configuration)
+    os.chdir(call)
+    try:
+        result = runner.execute(receipt["engine"], ".", 300)
+    finally:
+        os.chdir("/")
+        shutil.rmtree(call)
+    init = result["phases"].get("init", {})
+    ok = result["error"] is None and init.get("exit_code") == 0
+    return label, ok, init.get("stderr", "")[-2000:]
+
+
+with multiprocessing.get_context("fork").Pool(min(4, os.cpu_count() or 1)) as pool:
+    failures = [(label, stderr) for label, ok, stderr in pool.imap_unordered(probe, probes) if not ok]
+for label, stderr in sorted(failures):
+    print(f"offline init failed for {label}:\n{stderr}")
+assert not failures, f"{len(failures)} of {len(probes)} offline probes failed"
+print(f"{len(probes)} offline probes passed")
 for path in (root / "mirror").rglob("*"):
     if path.is_file():
         assert stat.S_IMODE(path.stat().st_mode) & 0o111, path
-os.chdir("/")
-shutil.rmtree(call)
 PY

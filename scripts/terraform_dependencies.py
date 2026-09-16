@@ -789,6 +789,48 @@ def configuration(name: str, text: str) -> tuple[dict[str, Any], list[tuple[str,
     return calls, requirements, types
 
 
+def directory_configuration(
+    texts: list[tuple[str, str]],
+) -> tuple[dict[str, Any], dict[str, list[Any]], set[str]]:
+    """Merge one directory's files in Terraform's order: primary files, then override files.
+
+    Returns module calls, provider requirements by local name, and implied provider names.
+    """
+    found: list[tuple[str, Any]] = []
+    required: dict[str, list[Any]] = {}
+    implied: set[str] = set()
+    for name, text in sorted(texts, key=lambda item: (runner.is_override(item[0]), item[0])):
+        calls, requirements, types = configuration(name, text)
+        found.append((name, calls))
+        implied |= types
+        for local, requirement in requirements:
+            if runner.is_override(name):
+                required[local] = [requirement]
+            else:
+                required.setdefault(local, []).append(requirement)
+    return runner.merge_module_calls(found), required, implied
+
+
+def provider_needs(required: dict[str, list[Any]], implied: set[str]) -> dict[str, list[str]]:
+    """Map each registry provider address to its literal constraints; builtins need nothing."""
+    needs: dict[str, list[str]] = {}
+    for local, requirements in required.items():
+        for requirement in requirements:
+            source, constraint = local, requirement
+            if isinstance(requirement, dict):
+                source = requirement.get("source", local)
+                constraint = requirement.get("version", _ABSENT)
+            require(isinstance(source, str) and constraint is not None, "registry-provider")
+            address = _provider_source(source)
+            if address is not None:
+                needs.setdefault(address, [])
+                if constraint is not _ABSENT:
+                    needs[address].append(constraint)
+    for local in implied - required.keys() - {"terraform"}:
+        needs.setdefault(f"{REGISTRY_HOST}/hashicorp/{local}", [])
+    return needs
+
+
 def registry_module_files(
     module: dict[str, Any], data: bytes, catalog: dict[str, dict[str, Any]], providers: list[Any]
 ) -> tuple[dict[str, bytes], dict[str, dict[str, str]]]:
@@ -801,11 +843,8 @@ def registry_module_files(
     pins: dict[str, list[str]] = {}
     for item in providers:
         pins.setdefault(item["source"], []).append(item["version"])
-    calls: dict[str, list[tuple[str, Any]]] = {directory: [] for directory in graph}
-    required: dict[str, dict[str, list[Any]]] = {directory: {} for directory in graph}
-    implied: dict[str, set[str]] = {directory: set() for directory in graph}
-    ordered = sorted(files.items(), key=lambda item: (runner.is_override(item[0]), item[0]))
-    for name, content in ordered:
+    texts: dict[str, list[tuple[str, str]]] = {directory: [] for directory in graph}
+    for name, content in sorted(files.items()):
         require(
             not name.casefold().endswith(
                 (".tfstate", ".tfstate.backup", ".tfvars", ".tfvars.json")
@@ -817,21 +856,14 @@ def registry_module_files(
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             raise Refused("module-text") from None
-        if not name.endswith((".tf", ".tf.json")):
-            continue
-        directory = posixpath.dirname(name) or "."
-        found, requirements, types = configuration(name, text)
-        calls[directory].append((posixpath.basename(name), found))
-        implied[directory] |= types
-        for local, requirement in requirements:
-            if runner.is_override(posixpath.basename(name)):
-                required[directory][local] = [requirement]
-            else:
-                required[directory].setdefault(local, []).append(requirement)
+        if name.endswith((".tf", ".tf.json")):
+            texts[posixpath.dirname(name) or "."].append((posixpath.basename(name), text))
+    read = {directory: directory_configuration(texts[directory]) for directory in graph}
     observed: dict[str, dict[str, Any]] = {directory: {} for directory in graph}
     sources: dict[str, dict[str, str]] = {directory: {} for directory in graph}
     for directory in graph:
-        for label, arguments in sorted(runner.merge_module_calls(calls[directory]).items()):
+        calls, required, implied = read[directory]
+        for label, arguments in sorted(calls.items()):
             require(arguments is not None, "module-duplicate")
             source = arguments.get("source")
             require(source is not None, "module-source")
@@ -866,33 +898,16 @@ def registry_module_files(
             )
             observed[directory][label] = edge
             sources[directory][label] = address + (f"//{subdir}" if subdir else "")
-        declared: set[str] = set()
-        for local, requirements in required[directory].items():
-            for requirement in requirements:
-                source, constraint = local, None
-                if isinstance(requirement, dict):
-                    source = requirement.get("source", local)
-                    constraint = requirement.get("version", _ABSENT)
-                else:
-                    constraint = requirement
-                require(source is not None, "registry-provider")
-                declared.add(local)
-                address = _provider_source(source)
-                if address is None:
-                    continue
-                require(address in pins, "registry-provider")
-                if constraint is not _ABSENT:
-                    require(
-                        isinstance(constraint, str)
-                        and any(
-                            re.fullmatch(_RELEASE, version)
-                            and satisfies(version, constraint, "registry-provider")
-                            for version in pins[address]
-                        ),
-                        "registry-provider",
-                    )
-        for local in implied[directory] - declared - {"terraform"}:
-            require(f"{REGISTRY_HOST}/hashicorp/{local}" in pins, "registry-provider")
+        for address, constraints in provider_needs(required, implied).items():
+            require(
+                any(
+                    re.fullmatch(_RELEASE, version)
+                    and all(satisfies(version, item, "registry-provider") for item in constraints)
+                    for version in pins.get(address, [])
+                )
+                or (address in pins and not constraints),
+                "registry-provider",
+            )
     require(
         all(
             any(
