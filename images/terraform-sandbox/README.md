@@ -1,6 +1,8 @@
 # Terraform and OpenTofu validation images
 
-This page describes what the validation images contain and the rules their inputs follow. To build, try, check or deploy an image, see [USAGE.md](USAGE.md).
+> **To build, try, check or deploy an image, see [USAGE.md](USAGE.md).**
+
+This page describes what the validation images contain and the rules their inputs follow.
 
 [image.json](image.json) owns the base-image digest, platform, engine versions, download URLs, archive checksums and profile mappings. The Python [builder](build_image.py) reads that file and passes matching version metadata to Docker; [install.py](install.py) reads the same file inside the build and verifies the downloaded binary's reported version. Each image holds one engine. The initial platform is **Linux amd64**. The `builtin` profile has an empty provider mirror and supports built-in resources and local modules. The `random` profile reads its providers from the corresponding `dependencies.terraform.json` or `dependencies.opentofu.json` manifest. Downloads happen during image construction; validation has closed egress.
 
