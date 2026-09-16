@@ -364,3 +364,8 @@ def test_daily_check_covers_all_images_before_any_sandbox_is_created():
     env = steps[preflight]["env"]
     assert set(check._CONFIG.values()) <= set(env)
     assert env["ACAS_SANDBOX_NONROOT_IMAGE"] == "${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}"
+    for variable in sorted(_ENV):
+        reduced = {key: value for key, value in _ENV.items() if key != variable}
+        with pytest.raises(ValueError, match=variable):
+            check.required_images(_ROOT, "", reduced)
+        assert variable in env
