@@ -13,7 +13,7 @@ Cleanup after an application process dies is not the same promise as cleaning an
 ## Ownership boundary
 
 | Responsibility | Owner |
-|---|---|
+| --- | --- |
 | Dispose a key/kind during normal host operation | Router and backend, with failures reported through cleanup records/events |
 | Discover resources after process memory is gone | Backend/provider API using labels, immutable IDs and backend-specific ownership rules |
 | Choose retention and maximum age | Deployment operator |
@@ -26,7 +26,7 @@ Cleanup after an application process dies is not the same promise as cleaning an
 ## Three different cleanup promises
 
 | Promise | Evidence required | Appropriate policy |
-|---|---|---|
+| --- | --- | --- |
 | Remove resources older than a chosen maximum lifetime | Creation time, ownership, immutable identity and explicit permission to interrupt eligible active work | Backend primitive plus deployment retention policy |
 | Remove resources after their exclusive owner ended | Authoritative owner lifecycle and a rule preventing another owner from adopting the resource | Platform or controller that owns both lifecycles |
 | Preserve arbitrarily long active use while removing abandoned resources | Renewable lease, expiry clock, fencing and recovery when the controller fails | Separate platform/controller design |
@@ -88,7 +88,7 @@ A successful disposal result means the requested sweep reported success, not tha
 The deployment owns installing and enabling its scheduler. Existing platform options are sufficient:
 
 | Deployment | Example | Boundary |
-|---|---|---|
+| --- | --- | --- |
 | Persistent Docker host | systemd timer or equivalent invokes the Docker backend sweep | Requires explicit engine target, scope, age policy and failure reporting |
 | Developer WSLC/Docker Desktop | Windows Task Scheduler, maintenance task or explicit operator command | A sleeping/unavailable machine cannot promise wall-clock cleanup |
 | ACAS | Scheduled Container Apps Job, GitHub Actions workflow or equivalent invokes the group cleanup | Requires OIDC/credentials, dedicated group policy and monitoring |
