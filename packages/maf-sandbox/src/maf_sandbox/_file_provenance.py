@@ -17,7 +17,7 @@ convention a caller could break.
   entries for it to lose to.
 
 ``docs/sandbox/hosts.md`` carries why the boundary is the tool call rather than the store, and
-``docs/sandbox/research/labelling-the-file-store.md`` the measurements behind it.
+``docs/sandbox/research/file-store.md`` the measurements behind it.
 """
 
 from __future__ import annotations

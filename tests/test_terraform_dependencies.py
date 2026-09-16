@@ -1086,3 +1086,328 @@ def test_module_counterpart_in_same_directory_still_refused(json_suffix):
     }
     with pytest.raises(prep.Refused, match="module-precedence"):
         prep.module_files(module, bundle(files), "opentofu")
+
+
+NETWORK_REVISION = "b" * 40
+SHARED_REVISION = "c" * 40
+NETWORK_ROOT = f"terraform-network-{NETWORK_REVISION}/"
+SHARED_SOURCE = "registry.terraform.io/Azure/shared/azure"
+
+
+def registry_policy():
+    policy = manifest()
+    policy["modules"] = []
+    policy["registry_modules"] = [
+        {
+            "name": "network",
+            "source": "registry.terraform.io/Azure/network/azurerm",
+            "version": "1.2.3",
+            "revision": NETWORK_REVISION,
+            "graph": {
+                ".": {"shared": {"registry": "shared"}, "subnet": {"local": "modules/subnet"}},
+                "modules/subnet": {"shared": {"registry": "shared"}},
+            },
+            "artifact": artifact(
+                url=f"https://codeload.github.com/Azure/terraform-network/zip/{NETWORK_REVISION}"
+            ),
+        },
+        {
+            "name": "shared",
+            "source": SHARED_SOURCE,
+            "version": "0.6.0",
+            "revision": SHARED_REVISION,
+            "graph": {".": {}},
+            "artifact": artifact(
+                url=f"https://codeload.github.com/Azure/terraform-shared/zip/{SHARED_REVISION}"
+            ),
+        },
+    ]
+    return policy
+
+
+def network_files(**changes):
+    files = {
+        "main.tf": (
+            'module "shared" {\n  source  = "Azure/shared/azure"\n  version = "~> 0.6"\n}\n'
+            'module "subnet" {\n  source = "./modules/subnet/"\n}\n'
+            'resource "random_id" "suffix" {\n  byte_length = 4\n}\n'
+        ),
+        "terraform.tf": (
+            "terraform {\n  required_providers {\n    random = {\n"
+            '      source  = "hashicorp/random"\n      version = ">= 3.5, < 4.0"\n    }\n  }\n}\n'
+        ),
+        "modules/subnet/main.tf.json": json.dumps(
+            {"module": {"shared": {"source": SHARED_SOURCE, "version": "0.6.0"}}}
+        ),
+        "README.md": "# network\n",
+        ".gitignore": ".terraform\n",
+        ".github/workflows/check.yml": "on: push\n",
+        "examples/default/main.tf": 'module "x" {\n  source = "git::https://example.com/x"\n}\n',
+    }
+    files.update(changes)
+    return {NETWORK_ROOT + name: data for name, data in files.items() if data is not None}
+
+
+def verify_network(policy=None, **changes):
+    policy = policy or registry_policy()
+    catalog = {item["name"]: item for item in policy["registry_modules"]}
+    data = bundle(network_files(**changes))
+    return prep.registry_module_files(catalog["network"], data, catalog, policy["providers"])
+
+
+def test_registry_packages_bake_declared_directories_and_inventory(tmp_path, monkeypatch):
+    policy = registry_policy()
+    archives = {
+        "network": bundle(network_files()),
+        "shared": bundle({f"terraform-shared-{SHARED_REVISION}/main.tf": "terraform {}\n"}),
+        "provider": bundle({"terraform-provider-random_v3.7.2": b"never executed"}),
+    }
+    policy["providers"][0]["artifact"] = artifact(archives["provider"])
+    for item in policy["registry_modules"]:
+        item["artifact"]["sha256"] = hashlib.sha256(archives[item["name"]]).hexdigest()
+    by_digest = {hashlib.sha256(data).hexdigest(): data for data in archives.values()}
+    monkeypatch.setattr(prep, "fetch", lambda spec, _, **limits: by_digest[spec["sha256"]])
+    prep.prepare(policy, tmp_path / "prepared")
+    receipt = json.loads((tmp_path / "prepared/receipt.json").read_text())
+    network, shared = receipt["registry_modules"]
+    baked = ["README.md", "main.tf", "modules/subnet/main.tf.json", "terraform.tf"]
+    assert sorted(network["files"]) == baked
+    for name, content in network_files().items():
+        path = tmp_path / "prepared/registry/network" / name.removeprefix(NETWORK_ROOT)
+        assert path.exists() == (name.removeprefix(NETWORK_ROOT) in baked)
+        assert not path.exists() or path.read_bytes() == content.encode()
+    nested = {"source": SHARED_SOURCE, "version": "0.6.0", "package": "shared", "dir": "."}
+    assert network["inventory"] == [
+        {"key": "shared", **nested},
+        {
+            "key": "subnet",
+            "source": "./modules/subnet",
+            "package": "network",
+            "dir": "modules/subnet",
+        },
+        {"key": "subnet.shared", **nested},
+    ]
+    assert shared["inventory"] == []
+    assert "url" not in json.dumps(receipt)
+
+
+def _set(path, value):
+    def change(policy):
+        target = policy
+        for part in path[:-1]:
+            target = target[part]
+        target[path[-1]] = value
+
+    return change
+
+
+CODELOAD = "https://codeload.github.com/Azure/terraform-network/zip/"
+
+
+@pytest.mark.parametrize(
+    "change,decision",
+    [
+        (_set(["engine"], "opentofu"), "registry-engine"),
+        (_set(["registry_modules", 0, "source"], "Azure/network/azurerm"), "registry-source"),
+        (_set(["registry_modules", 0, "source"], "example.com/Azure/x/azurerm"), "registry-source"),
+        (
+            _set(["registry_modules", 1, "source"], "registry.terraform.io/azure/NETWORK/azurerm"),
+            "registry-conflict",
+        ),
+        (_set(["registry_modules", 0, "version"], "1.2.3-beta"), "registry-version"),
+        (_set(["registry_modules", 0, "revision"], "main"), "registry-revision"),
+        (
+            _set(["registry_modules", 0, "artifact", "url"], CODELOAD + "d" * 40),
+            "registry-revision",
+        ),
+        (
+            _set(["registry_modules", 0, "artifact", "github_repository_id"], "123"),
+            "github-source",
+        ),
+        (
+            _set(["registry_modules", 1, "graph", "."], {"loop": {"registry": "network"}}),
+            "module-cycle",
+        ),
+        (
+            _set(["registry_modules", 0, "graph", ".", "shared"], {"registry": "absent"}),
+            "registry-edge",
+        ),
+        (
+            _set(
+                ["registry_modules", 0, "graph", ".", "shared"],
+                {"registry": "shared", "local": "."},
+            ),
+            "registry-edge",
+        ),
+        (_set(["registry_modules", 0, "graph", ".github"], {}), "module-hidden"),
+        (
+            _set(["registry_modules", 0, "graph", ".", "subnet"], {"local": "absent"}),
+            "module-edge-target",
+        ),
+    ],
+)
+def test_registry_manifest_refusals(change, decision):
+    policy = registry_policy()
+    change(policy)
+    with pytest.raises(prep.Refused, match=decision):
+        prep.checked_manifest(policy)
+
+
+def _module(body):
+    return f'module "shared" {{\n{body}}}\n'
+
+
+@pytest.mark.parametrize(
+    "changes,decision",
+    [
+        ({"main.tf": _module('  source = "Azure/shared/azure"\n')}, "registry-version"),
+        (
+            {"main.tf": _module('  source = "Azure/shared/azure"\n  version = "~> 0.7"\n')},
+            "registry-constraint",
+        ),
+        (
+            {"main.tf": _module('  source = "Azure/shared/azure"\n  version = "~> 0"\n')},
+            "registry-constraint",
+        ),
+        (
+            {
+                "main.tf": _module(
+                    '  source = "example.com/Azure/shared/azure"\n  version = "0.6.0"\n'
+                )
+            },
+            "registry-host",
+        ),
+        (
+            {"main.tf": _module('  source = "Azure/other/azure"\n  version = "0.6.0"\n')},
+            "registry-edge",
+        ),
+        ({"main.tf": _module('  source = "git::https://example.com/shared"\n')}, "module-remote"),
+        ({"main.tf": _module("  source = var.source\n")}, "module-source"),
+        (
+            {"modules/subnet/extra.tf": 'module "x" {\n  source = "../../../outside"\n}\n'},
+            "file-segments",
+        ),
+        (
+            {"modules/subnet/extra.tf": 'module "x" {\n  source = "./more"\n}\n'},
+            "module-graph-mismatch",
+        ),
+        (
+            {"modules/subnet/main.tf.json": None, "modules/subnet/notes.md": "none"},
+            "registry-directory",
+        ),
+        (
+            {"terraform.tf": None, "time.tf": 'resource "time_sleep" "wait" {}\n'},
+            "registry-provider",
+        ),
+        (
+            {
+                "terraform.tf": 'terraform {\n  required_providers {\n    azapi = {\n      source = "Azure/azapi"\n    }\n  }\n}\n'
+            },
+            "registry-provider",
+        ),
+        (
+            {
+                "terraform.tf": 'terraform {\n  required_providers {\n    random = "~> 4.0"\n  }\n}\n'
+            },
+            "registry-provider",
+        ),
+        ({"versions_override.tf": "terraform {}\n"}, "module-override"),
+        ({"main.tofu": "terraform {}\n"}, "module-engine"),
+        ({"terraform.tfstate": "{}"}, "module-state"),
+        ({"notes.txt": b"\xff"}, "module-text"),
+    ],
+)
+def test_registry_package_refusals(changes, decision):
+    with pytest.raises(prep.Refused, match=decision):
+        verify_network(**changes)
+
+
+def test_registry_package_accepts_builtin_and_legacy_provider_requirements():
+    requirements = (
+        'terraform {\n  required_providers {\n    random = "~> 3.5"\n'
+        '    terraform = {\n      source = "terraform.io/builtin/terraform"\n    }\n  }\n}\n'
+    )
+    files, sources = verify_network(
+        **{"terraform.tf": requirements, "data.tf": 'resource "terraform_data" "x" {}\n'}
+    )
+    assert "data.tf" in files
+    assert sources["."] == {"shared": SHARED_SOURCE, "subnet": "./modules/subnet"}
+
+
+@pytest.mark.parametrize(
+    "name,requirements",
+    [
+        (
+            "terraform.tf",
+            "terraform {\n  required_providers {\n    # pinned below\n    random = {\n"
+            '      source  = "hashicorp/random" # the only provider\n'
+            '      version = "~> 3.5"\n    }\n  }\n}\n',
+        ),
+        (
+            "terraform.tf.json",
+            json.dumps(
+                {
+                    "terraform": {
+                        "required_providers": {
+                            "//": "pinned below",
+                            "random": {"source": "hashicorp/random", "version": "~> 3.5"},
+                        }
+                    }
+                }
+            ),
+        ),
+    ],
+)
+def test_registry_package_ignores_comments_among_provider_requirements(name, requirements):
+    files, _ = verify_network(**{"terraform.tf": None, name: requirements})
+    assert name in files
+
+
+def test_registry_graph_must_reach_every_declared_directory():
+    policy = registry_policy()
+    policy["registry_modules"][0]["graph"]["modules/unused"] = {}
+    with pytest.raises(prep.Refused, match="module-unreachable"):
+        verify_network(policy, **{"modules/unused/main.tf": "terraform {}\n"})
+
+
+def test_registry_inventory_is_bounded(monkeypatch):
+    policy = registry_policy()
+    catalog = {item["name"]: item for item in policy["registry_modules"]}
+    _, sources = verify_network(policy)
+    monkeypatch.setattr(prep, "MAX_INVENTORY", 2)
+    with pytest.raises(prep.Refused, match="registry-inventory"):
+        prep.registry_inventory("network", catalog, {"network": sources, "shared": {".": {}}})
+
+
+@pytest.mark.parametrize(
+    "version,constraint,expected",
+    [
+        ("2.12.0", "~> 2.12", True),
+        ("3.0.0", "~> 2.12", False),
+        ("0.4.0", "~> 0.3", True),
+        ("3.6.0", "~> 3.5.0", False),
+        ("3.5.9", "~> 3.5.0", True),
+        ("4.90.0", ">= 4.81, < 5.1", True),
+        ("5.1.0", ">= 4.81, < 5.1", False),
+        ("0.6.0", "0.6.0", True),
+        ("0.6.0", "= 0.6", True),
+        ("0.6.0", "!= 0.6.0", False),
+    ],
+)
+def test_version_constraints_follow_registry_semantics(version, constraint, expected):
+    assert prep.satisfies(version, constraint, "registry-constraint") is expected
+
+
+@pytest.mark.parametrize("constraint", ["~> 1", "", "latest", ">= 1.0.0-beta", "v1.0.0"])
+def test_unsupported_version_constraints_are_refused(constraint):
+    with pytest.raises(prep.Refused, match="registry-constraint"):
+        prep.satisfies("1.0.0", constraint, "registry-constraint")
+
+
+def test_provider_archives_are_checked_without_retaining_content():
+    data = bundle({"terraform-provider-random_v3.7.2": b"x" * 5000})
+    assert prep.zip_files(data, limit=5000, retain=False) == {
+        "terraform-provider-random_v3.7.2": b""
+    }
+    with pytest.raises(prep.Refused, match="archive-expansion"):
+        prep.zip_files(data, limit=4999, retain=False)

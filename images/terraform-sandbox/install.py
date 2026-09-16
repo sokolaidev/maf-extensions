@@ -170,6 +170,9 @@ def main(
     (destination / "terraform.rc").write_text(
         "disable_checkpoint = true\nprovider_installation {\n"
         '  filesystem_mirror { path = "/opt/maf-terraform/mirror" }\n}\n'
+        # Registry modules resolve only through records the launcher writes from baked trees.
+        'host "registry.terraform.io" {\n  services = {}\n}\n'
+        'host "registry.opentofu.org" {\n  services = {}\n}\n'
     )
 
 

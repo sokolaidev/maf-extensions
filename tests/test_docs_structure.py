@@ -86,7 +86,8 @@ _MAIN_DOCS = [
     for path in _markdown(_SANDBOX)
     if path != _SANDBOX / "README.md" and _RESEARCH not in path.parents
 ]
-_RECORDS = _markdown(_RESEARCH)
+# `AGENTS.md` contains directory instructions, not a research record.
+_RECORDS = [path for path in _markdown(_RESEARCH) if path.name != "AGENTS.md"]
 _INDEX_READMES = [_SANDBOX / "kinds" / "README.md", _SANDBOX / "backends" / "README.md"]
 
 
@@ -167,7 +168,7 @@ class TestNoRecordCitesALine:
     reading of what a reference looks like would pass exactly the ones it failed to recognise.
     """
 
-    @pytest.mark.parametrize("doc", _markdown(_RESEARCH), ids=_ids(_markdown(_RESEARCH)))
+    @pytest.mark.parametrize("doc", _RECORDS, ids=_ids(_RECORDS))
     def test_it_names_no_line(self, doc: Path):
         cited = _check.line_references(_check.document_text(doc))
         assert [reference.written for reference in cited] == []

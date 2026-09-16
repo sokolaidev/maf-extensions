@@ -18,10 +18,12 @@ concurrency:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       MAF_TERRAFORM_E2E_IMAGE: maf-terraform:ci
       MAF_OPENTOFU_E2E_IMAGE: maf-opentofu:ci
+      MAF_TERRAFORM_AVM_IMAGE: maf-terraform:ci-avm
+      MAF_TERRAFORM_AVM_DIR: dist/dependencies/terraform-avm
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -33,6 +35,14 @@ jobs:
           uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile random --tag "$MAF_OPENTOFU_E2E_IMAGE"
       - name: Validate and observe disposal
         run: uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py
+      - name: Prepare the pinned AVM graph
+        run: uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.terraform-avm.json --output "$MAF_TERRAFORM_AVM_DIR"
+      - name: Build the prepared AVM image without network
+        run: |
+          uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-terraform:ci-builtin
+          docker build --platform linux/amd64 --network none --build-arg BASE_IMAGE=maf-terraform:ci-builtin -f images/terraform-sandbox/prepared.Dockerfile -t "$MAF_TERRAFORM_AVM_IMAGE" "$MAF_TERRAFORM_AVM_DIR"
+      - name: Validate the AVM graph offline and observe disposal
+        run: uv run pytest -q tests/test_terraform_avm_offline.py
 
   report-failure:
     name: Report Terraform live failure
@@ -55,5 +65,5 @@ jobs:
           --marker '<!-- terraform-live-failure-tracker -->'
           --title 'Terraform and OpenTofu live checks failed'
           --reproduce 'Re-run the linked attempt, or dispatch terraform-live.yml against the failing commit. Inspect the first failed step for image, registry, daemon, or test failures.'
-          --expected 'Both engine profiles validate correctly and leave no workload containers.'
+          --expected 'Both engine profiles and the pinned AVM graph validate correctly offline and leave no workload containers.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-terraform

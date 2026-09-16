@@ -120,7 +120,7 @@ The transport captures bounded Linux `/proc` snapshots before launch, after laun
 
 Launch observations share the run deadline. Process cleanup has one five-second budget for observation, signalling and verification; pre-signal observation can spend at most one quarter of it. Expired observations remain visible as unavailable audit records. Directory reclamation has its own bound and still runs after the process budget expires.
 
-Four snapshots cannot find every descendant: an intermediate parent can exit before a scan, a guest can alter the collector, and numeric IDs can be reused between checking and signalling. A successful group signal or empty final snapshot is therefore not a clean-sandbox guarantee. Cgroups and stable kernel process handles are outside this design. See the [decision record](research/process-cleanup-and-reuse.md) and [process audit events](observability.md#process-observations).
+Four snapshots cannot find every descendant: an intermediate parent can exit before a scan, a guest can alter the collector, and numeric IDs can be reused between checking and signalling. A successful group signal or empty final snapshot is therefore not a clean-sandbox guarantee. Cgroups and stable kernel process handles are outside this design. See the [decision record](research/cleanup.md) and [process audit events](observability.md#process-observations).
 
 ## Concurrency, as the other consequence
 

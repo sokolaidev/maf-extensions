@@ -207,7 +207,7 @@ class Egress(StrEnum):
     The router serves a workload iff its mode is in the backend's set, and refuses otherwise —
     never substituting a different mode.  Confining **less** than asked silently widens what the
     workload reaches; confining **more** hands it a posture it was not built for; so neither is
-    done in place of the other.  See ``docs/sandbox/research/egress-resolution.md``.
+    done in place of the other.  See ``docs/sandbox/research/egress.md``.
     """
 
     #: Reach anything the host can — no confinement. The least isolated.
@@ -895,7 +895,7 @@ class SandboxSpec:
     ``egress`` is the one network posture the workload runs in — an :class:`Egress` mode,
     default :data:`Egress.CLOSED` (no network).  The router serves it only on a backend that can
     enforce that exact mode and refuses otherwise, never substituting another; see
-    ``docs/sandbox/research/egress-resolution.md``.  ``egress_allow`` is the payload of an
+    ``docs/sandbox/research/egress.md``.  ``egress_allow`` is the payload of an
     :data:`Egress.ALLOWLIST` run — the hostnames reached, **everything not listed denied** — and
     is consulted only in that mode.  A non-empty ``egress_allow`` therefore requires
     ``egress is Egress.ALLOWLIST``, refused here otherwise: naming hosts with no network to reach
@@ -1631,7 +1631,7 @@ class BackendDeclarations:
     #: undeclared ceiling is the default ceiling, and a bigger ask is refused.
     limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS
     #: The modes the backend can *enforce*, resolved against a spec's
-    #: :attr:`SandboxSpec.egress` (see ``docs/sandbox/research/egress-resolution.md``).  Empty
+    #: :attr:`SandboxSpec.egress` (see ``docs/sandbox/research/egress.md``).  Empty
     #: refuses every spec, which is the honest reading: a backend declaring no mode enforces
     #: none.
     egress_modes: frozenset[Egress] = frozenset()
