@@ -620,7 +620,8 @@ def main() -> None:
         else:
             text = json.dumps(value, indent=1, sort_keys=True).replace("\n", "\n ")
             lines.append(f' "{key}": {text}')
-    args.output.write_text("{\n" + ",\n".join(lines) + "\n}\n", encoding="utf-8")
+    output = "{\n" + ",\n".join(lines) + "\n}\n"
+    args.output.write_text(output, encoding="utf-8", newline="\n")
     print(json.dumps(summary, indent=1))
 
 
