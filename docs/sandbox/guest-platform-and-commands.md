@@ -226,7 +226,7 @@ Every candidate field for a `FilesystemTraits` declaration dissolves on inspecti
 
 Four consequences, all settled here.
 
-**The rung is earned, unlike the one a plain container backend must refuse.** [`research/docker-backend-exploration.md`](research/docker-backend-exploration.md) rejects rounding a desktop container up to `microvm` because one VM hosts every container and the boundary between two sandboxes is namespaces. One VM per workload does not have that problem, so a local-hypervisor backend claims a hypervisor rung honestly.
+**The rung is earned, unlike the one a plain container backend must refuse.** [`research/docker.md`](research/docker.md) rejects rounding a desktop container up to `microvm` because one VM hosts every container and the boundary between two sandboxes is namespaces. One VM per workload does not have that problem, so a local-hypervisor backend claims a hypervisor rung honestly.
 
 **Which of the two rungs it claims depends on the image, and the standing rule is that a declared rung is a constant no configuration raises.** The same backend booting a stripped Linux image is `microvm`; booting a full Windows Server guest it is `vm`. Under the constant-rung rule one instance must declare the lower of the two, which strands a host that asked for `vm`.
 

@@ -1,6 +1,6 @@
 # Daytona as a backend: what it would be entitled to claim
 
-> An exploration, not a proposal: whether the suite should grow a `maf-sandbox-daytona` backend, and what such a package could honestly declare. Read against [`../backends/writing-a-backend.md`](../backends/writing-a-backend.md), [`../policy-isolation.md`](../policy-isolation.md), [`../network.md`](../network.md) and [`../capabilities.md`](../capabilities.md). Nothing is decided here and no package exists; the sibling record for the Docker decision is [`docker-backend-exploration.md`](docker-backend-exploration.md).
+> An exploration, not a proposal: whether the suite should grow a `maf-sandbox-daytona` backend, and what such a package could honestly declare. Read against [`../backends/writing-a-backend.md`](../backends/writing-a-backend.md), [`../policy-isolation.md`](../policy-isolation.md), [`../network.md`](../network.md) and [`../capabilities.md`](../capabilities.md). Nothing is decided here and no package exists; the sibling record for the Docker decision is [`docker.md`](docker.md).
 
 Read on 2026-09-16 from four sources, and it matters which: the documentation corpus at `www.daytona.io/docs`, both published OpenAPI documents (the control plane and the Toolbox API the guest daemon serves), the Python SDK's published reference, and the daemon's own Go source at tag **v0.190.0**. Nothing was run against a live account. Every claim below is a document read or a source read, and the probe list at the end is what an account would settle.
 
