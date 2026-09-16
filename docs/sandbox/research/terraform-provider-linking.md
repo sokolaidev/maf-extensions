@@ -1,6 +1,6 @@
 # One image with every provider, linked and never copied
 
-> Analysis, 2026-09-16, in [#1279](https://github.com/sokolaidev/maf-extensions/pull/1279). It follows [baking every latest AVM module](terraform-avm-catalog.md). Nothing here is implemented.
+> Analysis, 2026-09-16, in [#1279](https://github.com/sokolaidev/maf-extensions/pull/1279). It follows [baking every latest AVM module](terraform-avm-catalog.md). Implemented in [#1282](https://github.com/sokolaidev/maf-extensions/pull/1282).
 
 ## Question
 
