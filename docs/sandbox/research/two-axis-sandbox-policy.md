@@ -55,7 +55,7 @@ Production's floor is only as strong as the weakest backend allowed to claim the
 
 1. **A hardware virtualization boundary.** The guest executes behind a hypervisor — not shared-kernel namespaces, not userspace-kernel syscall interception. The host kernel is out of the attack surface.
 2. **No ambient identity reachable from inside.** No credential material, token store, or cloud metadata endpoint is reachable from the guest — by construction (no network device at all) or by enforced block (a deny-all proxy that blackholes link-local and metadata ranges; a NetworkPolicy on Kata). Precisely: **no identity other than one explicitly attached to this sandbox by declared spec is reachable — the host's above all.**
-3. **Confinable egress**: the backend enforces `ALLOWLIST` or `CLOSED` (`egress_modes`), not merely `UNRESTRICTED`. A backend that can enforce nothing tighter than open is capped below `microvm` outright. How a workload's chosen mode resolves against that set is [`egress-resolution.md`](egress-resolution.md).
+3. **Confinable egress**: the backend enforces `ALLOWLIST` or `CLOSED` (`egress_modes`), not merely `UNRESTRICTED`. A backend that can enforce nothing tighter than open is capped below `microvm` outright. How a workload's chosen mode resolves against that set is [`egress.md`](egress.md).
 4. **An explicit guest↔host surface.** The only channels are the declared ones — files in, results out, declared host tools. No host filesystem mounts beyond declared ones, no host socket passthrough, no shared writable state beyond the backend's own transport.
 
 Consequences: gVisor-class backends cap at `hardened_container` by definition — that is the standard working, not a gap; a runtime-sandboxed interpreter (Monty-class, `runtime`) stays a local-floor backend however honest its no-I/O construction; Kata qualifies **only as configured** (per-pod VM runtime class plus the metadata/link-local block), so conformance is a property of a backend package, never of Kata in the abstract; ACA Sandboxes are the reference conformant backend at `microvm` itself — a hardware virtualization boundary, no ambient identity (the control-plane credential never enters the guest), Deny-default allowlist egress, a declared surface — and remote into the bargain, which is more than the standard asks.
@@ -87,7 +87,7 @@ class Capability(StrEnum):
     FILES_IN = "files_in"     # write files into the sandbox before execution
     FILES_OUT = "files_out"   # read files back out after execution
     # (No NETWORK capability: whether a workload needs the network is not a fixed property of
-    #  a kind — it is the egress mode it runs in, resolved per deployment; see egress-resolution.md)
+    #  a kind — it is the egress mode it runs in, resolved per deployment; see egress.md)
     SNAPSHOT = "snapshot"     # snapshot/restore reuse
     ATTACHED_IDENTITY = "attached_identity"  # platform-attached, sandbox-scoped identity
 
