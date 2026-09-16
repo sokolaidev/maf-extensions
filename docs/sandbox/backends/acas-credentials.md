@@ -9,7 +9,7 @@ ACAS supports managed identity configured on the sandbox group. The host owns th
 The async resolver receives an `AcasCredentialRequest` with `scope`, `thread_id`, `operation`, and an optional `key`. The backend supplies these values from the host's `SandboxKey` or disposal target; guest arguments never select an authority. The resolver returns `AcasCredentialBinding(authority, generation, create_credential)`. `authority` and `generation` are nonempty, non-secret host references. The factory returns a fresh Azure `AsyncTokenCredential`, directly or through an awaitable, on the loop that will use it.
 
 | Operation | Resolver input | Required host policy |
-|---|---|---|
+| --- | --- | --- |
 | `acquire` | Captured key, scope and thread | Resolve the current request's grant from trusted host context. Two callers in one scope can return different bindings. |
 | `dispose` | Target key, scope and thread | Resolve an authorized cleanup grant without requiring the original request context. This also covers retained per-key deletion retries before acquire. |
 | `dispose_scope` | Target scope and thread, `key=None` | Resolve authority for discovering and deleting that conversation's sandboxes across replicas. Retained scope-wide retries use this operation too. |
@@ -79,6 +79,6 @@ The [research record](../research/acas-backend.md) contains the baseline finding
 ## Status
 
 | Item | Status | Tracked by |
-|---|---|---|
+| --- | --- | --- |
 | Host-selected authority across sandbox operations, bounded client ownership and replica-independent cleanup | implemented; release pending | [#1169](https://github.com/sokolaidev/maf-extensions/issues/1169) (closed) by [#1225](https://github.com/sokolaidev/maf-extensions/pull/1225) (merged) |
 | Eager task progress and completed capacity-waiter reclamation | implemented; release pending | [#1233](https://github.com/sokolaidev/maf-extensions/issues/1233) (closed), [#1234](https://github.com/sokolaidev/maf-extensions/issues/1234) (closed) by [#1235](https://github.com/sokolaidev/maf-extensions/pull/1235) (merged) |

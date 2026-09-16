@@ -3,7 +3,7 @@
 [`maf-sandbox-terraform`](../../../packages/maf-sandbox-terraform/README.md) adds two selectable workloads alongside Bicep. The host selects `engine="terraform"` or `engine="opentofu"` once, attaching `terraform_validate` or `opentofu_validate`. Each tool receives an explicit file manifest and root module, validates it offline, and checks formatting without modifying the store.
 
 | Contract | Behavior |
-|---|---|
+| --- | --- |
 | Capabilities | `EXEC`, `FILES_IN` |
 | Guest family | `POSIX`, backed initially by pinned Linux amd64 images |
 | Isolation and cleanup | At least container isolation, `CALL` scope, `DISPOSE` floor |
@@ -25,7 +25,7 @@ Additional profiles use [host-controlled dependency preparation](../../../images
 ## Status
 
 | Work | State | Tracker |
-|---|---|---|
+| --- | --- | --- |
 | Offline Terraform/OpenTofu validation, fixed launcher, images, examples, tests, and package registration | implemented; package not yet released | [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) by [#1250](https://github.com/sokolaidev/maf-extensions/pull/1250) (merged) |
 | Dependency preparation restricted to approved artifacts and request paths | repository build tool with pinned provider mirrors and already-local module graphs; validation retains closed egress | [#1249](https://github.com/sokolaidev/maf-extensions/issues/1249) (closed) by [#1267](https://github.com/sokolaidev/maf-extensions/pull/1267) (merged) |
 | Pinned registry module graphs (Azure Verified Modules) baked into prepared images, initialized offline by the fixed launcher | implemented for Terraform; one AVM graph measured on Docker and on live ACAS with CLOSED egress | [#1270](https://github.com/sokolaidev/maf-extensions/issues/1270) (closed) by [#1279](https://github.com/sokolaidev/maf-extensions/pull/1279) (merged) |

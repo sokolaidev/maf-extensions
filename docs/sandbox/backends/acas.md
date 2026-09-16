@@ -9,7 +9,7 @@ Acquire also checks shell invocation for `EXEC` and batches the shell, `mkdir`, 
 The five below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |
-|---|---|
+| --- | --- |
 | `isolation` | `Isolation.MICROVM` |
 | `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `HOST_TOOLS`, never `RUN_CODE`. `FILES_IN` uses guest authority and requires permission and transfer utilities at each write. Three are a ceiling: a failed guest removal probe withdraws `FILES_OUT` and `HOST_TOOLS`, and any result without an observed removal withdraws `FILES_DELETE` |
 | `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` |
@@ -200,7 +200,7 @@ A spec asking for `IsolationScope.CALL` is served here rather than refused. This
 ## Status
 
 | Decision | State | Tracking |
-|---|---|---|
+| --- | --- | --- |
 | Attached identity through trusted sandbox-group configuration | decided — the host owns group configuration; acquisition adds no ARM inspection or attached-identity refusal | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
 | A workload can ask for a sandbox per tool call, and this backend serves one | shipped — the service mints the id, so `call_id` reaches the registry entry and the `call` service label a disposal selects on; a conversation-scoped key keeps the labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) by [#1139](https://github.com/sokolaidev/maf-extensions/pull/1139) (merged) |
 | The backend, its declarations, and `FILES_OUT` served natively | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the ACAS item landed |
