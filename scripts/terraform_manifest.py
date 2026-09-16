@@ -550,7 +550,17 @@ def generate(policy: dict[str, Any]) -> dict[str, Any]:
                 version = resolution.release(source, ANY_RELEASE)
             except ValueError:
                 continue
-            if source.casefold() in resolution.skipped:
+            if not re.fullmatch(
+                re.escape(prep.REGISTRY_HOST) + "/" + prep._REGISTRY_PACKAGE, source
+            ):
+                excluded.append(
+                    {
+                        "source": source,
+                        "version": version,
+                        "reason": "Terraform refuses this registry address",
+                    }
+                )
+            elif source.casefold() in resolution.skipped:
                 excluded.append(
                     {
                         "source": source,

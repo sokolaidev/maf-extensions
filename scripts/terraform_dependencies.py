@@ -291,7 +291,9 @@ def checked_exclusions(excluded: Any) -> None:
         exact_keys(item, {"source", "version", "reason"})
         require(
             isinstance(item["source"], str)
-            and re.fullmatch(re.escape(REGISTRY_HOST) + "/" + _REGISTRY_PACKAGE, item["source"])
+            and re.fullmatch(
+                re.escape(REGISTRY_HOST) + r"(?:/[0-9A-Za-z_-]{1,128}){3}", item["source"]
+            )
             and isinstance(item["version"], str)
             and re.fullmatch(_RELEASE, item["version"])
             and isinstance(item["reason"], str)
