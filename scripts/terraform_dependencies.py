@@ -29,9 +29,17 @@ MAX_MANIFEST = 1024 * 1024
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_TOTAL = 256 * 1024 * 1024
 MAX_TEXT = 8 * 1024 * 1024
+MAX_PROVIDER_EXPANDED = 1024 * 1024 * 1024
 MAX_RESPONSE_HEAD = 32 * 1024
+MAX_INVENTORY = 256
 DEADLINE = 180
+REGISTRY_HOST = "registry.terraform.io"
 _NAME = r"[a-z0-9][a-z0-9_-]{0,63}"
+_LABEL = r"[A-Za-z_][A-Za-z0-9_-]{0,63}"
+_REGISTRY_PART = r"[0-9A-Za-z](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z])?"
+_REGISTRY_PACKAGE = rf"{_REGISTRY_PART}/{_REGISTRY_PART}/[0-9a-z]{{1,64}}"
+_RELEASE = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+_CONSTRAINT = r"\s*(=|!=|>=|<=|>|<|~>)?\s*((?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){0,2})\s*"
 _DIGEST = r"[0-9a-f]{64}"
 _NUMBER = r"(?:0|[1-9][0-9]*)"
 _PRERELEASE = rf"(?:{_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
@@ -55,7 +63,10 @@ _WORKER_DECISIONS = (
     "module-remote module-revision module-source module-state module-text "
     "module-unreachable modules output-exists provenance provider-conflict "
     "provider-platform provider-source provider-version providers redirect-artifact "
-    "redirect-host redirect-limit redirect-unapproved response-encoding response-headers "
+    "redirect-host redirect-limit redirect-unapproved registry-conflict registry-constraint "
+    "registry-directory registry-edge registry-engine registry-host registry-inventory "
+    "registry-modules registry-provider registry-revision registry-source registry-version "
+    "response-encoding response-headers "
     "response-length response-status signed-content signed-fields signed-host signed-query "
     "total-size transfer-failed url-ascii url-authority url-fragment url-path url-query "
     "url-segments url-shape "
@@ -172,9 +183,74 @@ def artifact_policy(value: Any) -> None:
         )
 
 
+def checked_registry_modules(modules: Any, engine: str) -> None:
+    """Pin each registry package to a GitHub commit archive and a declared, acyclic graph."""
+    require(isinstance(modules, list) and len(modules) <= 16, "registry-modules")
+    require(not modules or engine == "terraform", "registry-engine")
+    targets: dict[str, set[str]] = {}
+    sources: set[str] = set()
+    for module in modules:
+        exact_keys(module, {"name", "source", "version", "revision", "graph", "artifact"})
+        name, source = module["name"], module["source"]
+        require(isinstance(name, str) and re.fullmatch(_NAME, name), "module-name")
+        require(isinstance(source, str), "registry-source")
+        require(
+            re.fullmatch(re.escape(REGISTRY_HOST) + "/" + _REGISTRY_PACKAGE, source),
+            "registry-source",
+        )
+        require(name not in targets and source.casefold() not in sources, "registry-conflict")
+        sources.add(source.casefold())
+        version, revision = module["version"], module["revision"]
+        require(isinstance(version, str) and re.fullmatch(_RELEASE, version), "registry-version")
+        require(
+            isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision),
+            "registry-revision",
+        )
+        artifact_policy(module["artifact"])
+        require(
+            module["artifact"].keys() == {"url", "sha256", "provenance"}
+            and re.fullmatch(
+                r"https://codeload\.github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/zip/" + revision,
+                module["artifact"]["url"],
+            ),
+            "registry-revision",
+        )
+        graph = module["graph"]
+        require(isinstance(graph, dict) and "." in graph and len(graph) <= 64, "module-graph")
+        targets[name] = set()
+        for directory, edges in graph.items():
+            relative_path(directory, dot=True)
+            require(
+                directory == "." or not any(part.startswith(".") for part in directory.split("/")),
+                "module-hidden",
+            )
+            require(isinstance(edges, dict) and len(edges) <= 64, "module-edges")
+            for label, edge in edges.items():
+                require(re.fullmatch(_LABEL, label), "module-edge-name")
+                require(isinstance(edge, dict) and len(edge) == 1, "registry-edge")
+                if "local" in edge:
+                    require(edge["local"] in graph, "module-edge-target")
+                else:
+                    exact_keys(edge, {"registry"})
+                    require(isinstance(edge["registry"], str), "registry-edge")
+                    targets[name].add(edge["registry"])
+    visited: set[str] = set()
+
+    def visit(name: str, ancestors: set[str]) -> None:
+        require(name in targets, "registry-edge")
+        require(name not in ancestors, "module-cycle")
+        if name not in visited:
+            for target in targets[name]:
+                visit(target, ancestors | {name})
+            visited.add(name)
+
+    for name in targets:
+        visit(name, set())
+
+
 def checked_manifest(value: Any) -> dict[str, Any]:
     """Bind provider identities and module graphs to a single engine policy."""
-    exact_keys(value, {"schema", "engine", "providers", "modules"})
+    exact_keys(value, {"schema", "engine", "providers", "modules"}, {"registry_modules"})
     require(value["schema"] == 1 and type(value["schema"]) is int, "manifest-schema")
     require(value["engine"] in {"terraform", "opentofu"}, "engine")
     require(isinstance(value["providers"], list) and len(value["providers"]) <= 32, "providers")
@@ -211,6 +287,7 @@ def checked_manifest(value: Any) -> dict[str, Any]:
                 require(re.fullmatch(_NAME, name), "module-edge-name")
                 require(target in graph, "module-edge-target")
         artifact_policy(module["artifact"])
+    checked_registry_modules(value.get("registry_modules", []), value["engine"])
     return value
 
 
@@ -383,8 +460,11 @@ def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARC
     raise Refused("redirect-limit")
 
 
-def zip_files(data: bytes, *, limit: int) -> dict[str, bytes]:
-    """Read regular archive entries into memory; never extract to the host filesystem."""
+def zip_files(data: bytes, *, limit: int, retain: bool = True) -> dict[str, bytes]:
+    """Read regular archive entries as bounded data; never extract to the host filesystem.
+
+    Without ``retain``, entries are checked in chunks and returned empty.
+    """
     result: dict[str, bytes] = {}
     seen: set[str] = set()
     expanded = 0
@@ -402,10 +482,16 @@ def zip_files(data: bytes, *, limit: int) -> dict[str, bytes]:
             require(mode != stat.S_IFDIR, "archive-type")
             expanded += entry.file_size
             require(expanded <= limit, "archive-expansion")
+            parts: list[bytes] = []
+            size = 0
             with archive.open(entry) as stream:
-                content = stream.read(limit + 1)
-            require(len(content) == entry.file_size, "archive-size")
-            result[name] = content
+                while chunk := stream.read(1024 * 1024):
+                    size += len(chunk)
+                    require(size <= entry.file_size, "archive-size")
+                    if retain:
+                        parts.append(chunk)
+            require(size == entry.file_size, "archive-size")
+            result[name] = b"".join(parts)
     require(result, "archive-empty")
     return result
 
@@ -499,6 +585,235 @@ def module_files(module: dict[str, Any], data: bytes, engine: str) -> dict[str, 
     return texts
 
 
+def satisfies(version: str, constraint: str, decision: str) -> bool:
+    """Check a release version against the constraint syntax both registries share."""
+    target = tuple(int(part) for part in version.split("."))
+    for term in constraint.split(","):
+        match = re.fullmatch(_CONSTRAINT, term)
+        require(match, decision)
+        assert match is not None
+        operator, given = match.group(1) or "=", [int(part) for part in match.group(2).split(".")]
+        bound = tuple(given + [0] * (3 - len(given)))
+        # A one-segment pessimistic bound differs between the module and provider libraries.
+        require(operator != "~>" or len(given) > 1, decision)
+        allowed = {
+            "=": target == bound,
+            "!=": target != bound,
+            ">": target > bound,
+            ">=": target >= bound,
+            "<": target < bound,
+            "<=": target <= bound,
+            "~>": target >= bound and target[: len(given) - 1] == bound[: len(given) - 1],
+        }[operator]
+        if not allowed:
+            return False
+    return True
+
+
+def _literal(value: Any, json_syntax: bool) -> str | None:
+    """Return a string attribute only when it is a literal without template sequences."""
+    if not json_syntax:
+        if not (isinstance(value, str) and value.startswith('"')):
+            return None
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, str) or "${" in value or "%{" in value:
+        return None
+    return value
+
+
+def _bodies(parsed: Any, kind: str) -> list[dict[str, Any]]:
+    """Return every body of one block type in either configuration syntax."""
+    value = parsed.get(kind, []) if isinstance(parsed, dict) else []
+    bodies = value if isinstance(value, list) else [value]
+    require(all(isinstance(body, dict) for body in bodies), "module-source")
+    return bodies
+
+
+def _blocks(parsed: Any, kind: str, json_syntax: bool) -> list[tuple[str, Any]]:
+    """Flatten one labelled block type, unquoting native-syntax labels."""
+    return [
+        (json.loads(label) if not json_syntax and label.startswith('"') else label, body)
+        for block in _bodies(parsed, kind)
+        for label, body in block.items()
+        if label != "__is_block__"
+    ]
+
+
+def _provider_source(source: str) -> str | None:
+    """Normalize a required provider address; built-in providers need no artifact."""
+    parts = source.lower().split("/")
+    require(1 <= len(parts) <= 3 and all(parts), "registry-provider")
+    parts = ([REGISTRY_HOST, "hashicorp"] if len(parts) == 1 else [REGISTRY_HOST]) + parts
+    parts = parts[-3:]
+    return None if parts[:2] == ["terraform.io", "builtin"] else "/".join(parts)
+
+
+def registry_module_files(
+    module: dict[str, Any], data: bytes, catalog: dict[str, dict[str, Any]], providers: list[Any]
+) -> tuple[dict[str, bytes], dict[str, dict[str, str]]]:
+    """Select a registry package's module directories and prove its edges and providers.
+
+    Returns the selected file bytes and the source string Terraform records for each edge.
+    """
+    archive = zip_files(data, limit=MAX_TEXT)
+    repository = module["artifact"]["url"].split("/")[4]
+    prefix = f"{repository}-{module['revision']}/"
+    graph = module["graph"]
+    files = {
+        name[len(prefix) :]: content
+        for name, content in archive.items()
+        if name.startswith(prefix)
+        and (posixpath.dirname(name[len(prefix) :]) or ".") in graph
+        and not posixpath.basename(name).startswith(".")
+    }
+    require(len(files) <= 256, "module-files")
+    pins = {item["source"]: item["version"] for item in providers}
+    observed: dict[str, dict[str, Any]] = {directory: {} for directory in graph}
+    sources: dict[str, dict[str, str]] = {directory: {} for directory in graph}
+    declared: dict[str, set[str]] = {directory: set() for directory in graph}
+    implied: dict[str, set[str]] = {directory: set() for directory in graph}
+    for name, content in sorted(files.items()):
+        require(
+            not name.casefold().endswith(
+                (".tfstate", ".tfstate.backup", ".tfvars", ".tfvars.json")
+            ),
+            "module-state",
+        )
+        require(b"\x00" not in content, "module-text")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise Refused("module-text") from None
+        if not name.endswith((".tf", ".tf.json", ".tofu", ".tofu.json")):
+            continue
+        require(not name.endswith((".tofu", ".tofu.json")), "module-engine")
+        stem = posixpath.basename(name).removesuffix(".json").removesuffix(".tf")
+        require(stem != "override" and not stem.endswith("_override"), "module-override")
+        json_syntax = name.endswith(".json")
+        parsed = unique_json(text, "module-json-duplicate") if json_syntax else hcl2.loads(text)
+        directory = posixpath.dirname(name) or "."
+        edges = observed[directory]
+        for label, block in _blocks(parsed, "module", json_syntax):
+            require(label not in edges and isinstance(block, dict), "module-duplicate")
+            source = _literal(block.get("source"), json_syntax)
+            require(source is not None, "module-source")
+            assert source is not None
+            if source.startswith(("./", "../")):
+                require(re.fullmatch(r"[A-Za-z0-9_./-]+", source), "module-source")
+                target = posixpath.normpath(posixpath.join(directory, source))
+                relative_path(target, dot=True)
+                edges[label] = {"local": target}
+                clean = posixpath.normpath(source)
+                sources[directory][label] = clean if clean.startswith("../") else "./" + clean
+                continue
+            match = re.fullmatch(rf"(?:([^/]+)/)?({_REGISTRY_PACKAGE})", source)
+            require(match, "module-remote")
+            assert match is not None
+            require((match.group(1) or REGISTRY_HOST).lower() == REGISTRY_HOST, "registry-host")
+            address = f"{REGISTRY_HOST}/{match.group(2)}"
+            constraint = _literal(block.get("version"), json_syntax)
+            require(constraint is not None, "registry-version")
+            assert constraint is not None
+            target = next(
+                (
+                    item
+                    for item in catalog.values()
+                    if item["source"].casefold() == address.casefold()
+                ),
+                None,
+            )
+            require(target is not None, "registry-edge")
+            assert target is not None
+            require(
+                satisfies(target["version"], constraint, "registry-constraint"),
+                "registry-constraint",
+            )
+            edges[label] = {"registry": target["name"]}
+            sources[directory][label] = address
+        for settings in _bodies(parsed, "terraform"):
+            for local, requirement in _blocks(settings, "required_providers", json_syntax):
+                source: str | None = local
+                constraint = requirement
+                if isinstance(requirement, dict):
+                    if "source" in requirement:
+                        source = _literal(requirement["source"], json_syntax)
+                    constraint = requirement.get("version")
+                require(source is not None, "registry-provider")
+                assert source is not None
+                declared[directory].add(local)
+                address = _provider_source(source)
+                if address is None:
+                    continue
+                require(address in pins, "registry-provider")
+                if constraint is not None:
+                    constraint = _literal(constraint, json_syntax)
+                    require(
+                        constraint is not None
+                        and re.fullmatch(_RELEASE, pins[address])
+                        and satisfies(pins[address], constraint, "registry-provider"),
+                        "registry-provider",
+                    )
+        for kind in ("resource", "data", "ephemeral"):
+            implied[directory].update(
+                label.split("_")[0] for label, _ in _blocks(parsed, kind, json_syntax)
+            )
+    for directory in graph:
+        for local in implied[directory] - declared[directory] - {"terraform"}:
+            require(f"{REGISTRY_HOST}/hashicorp/{local}" in pins, "registry-provider")
+    require(
+        all(
+            any(
+                (posixpath.dirname(name) or ".") == directory
+                for name in files
+                if name.endswith((".tf", ".tf.json"))
+            )
+            for directory in graph
+        ),
+        "registry-directory",
+    )
+    require(observed == graph, "module-graph-mismatch")
+    visited: set[str] = set()
+
+    def visit(directory: str, ancestors: set[str]) -> None:
+        require(directory not in ancestors, "module-cycle")
+        if directory in visited:
+            return
+        for edge in graph[directory].values():
+            if "local" in edge:
+                visit(edge["local"], ancestors | {directory})
+        visited.add(directory)
+
+    visit(".", set())
+    require(visited == graph.keys(), "module-unreachable")
+    return files, sources
+
+
+def registry_inventory(
+    name: str, catalog: dict[str, dict[str, Any]], sources: dict[str, dict[str, dict[str, str]]]
+) -> list[dict[str, str]]:
+    """Expand the manifest records Terraform would write below one call of this package."""
+    records: list[dict[str, str]] = []
+
+    def expand(package: str, directory: str, prefix: str) -> None:
+        for label, edge in sorted(catalog[package]["graph"][directory].items()):
+            key = f"{prefix}.{label}" if prefix else label
+            record = {"key": key, "source": sources[package][directory][label]}
+            if "local" in edge:
+                target, child = package, edge["local"]
+            else:
+                target, child = edge["registry"], "."
+                record["version"] = catalog[target]["version"]
+            records.append({**record, "package": target, "dir": child})
+            require(len(records) <= MAX_INVENTORY, "registry-inventory")
+            expand(target, child, key)
+
+    expand(name, ".", "")
+    return records
+
+
 def policy_contract() -> dict[str, Any]:
     """Fingerprint the implementation and effective limits independently of artifact approvals."""
     source = Path(__file__).read_text(encoding="utf-8").encode("utf-8")
@@ -510,7 +825,9 @@ def policy_contract() -> dict[str, Any]:
             "archive": MAX_ARCHIVE,
             "total": MAX_TOTAL,
             "text": MAX_TEXT,
+            "provider_expanded": MAX_PROVIDER_EXPANDED,
             "response_head": MAX_RESPONSE_HEAD,
+            "inventory": MAX_INVENTORY,
             "deadline": DEADLINE,
         },
     }
@@ -534,6 +851,7 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
     output.mkdir()
     (output / "mirror").mkdir()
     (output / "modules").mkdir()
+    (output / "registry").mkdir()
     receipt: dict[str, Any] = {
         "schema": 1,
         "engine": manifest["engine"],
@@ -542,16 +860,19 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
         "policy_contract": contract,
         "providers": [],
         "modules": [],
+        "registry_modules": [],
     }
+    catalog = {item["name"]: item for item in manifest.get("registry_modules", [])}
+    sources: dict[str, dict[str, dict[str, str]]] = {}
     total = 0
-    for kind in ("providers", "modules"):
-        for item in manifest[kind]:
+    for kind in ("providers", "modules", "registry_modules"):
+        for item in manifest.get(kind, []):
             data = fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
             total += len(data)
             require(total <= MAX_TOTAL, "total-size")
             if kind == "providers":
                 # Validate container structure before giving any archive to a guest installer.
-                zip_files(data, limit=MAX_TOTAL)
+                zip_files(data, limit=MAX_PROVIDER_EXPANDED, retain=False)
                 provider_type = item["source"].split("/")[-1]
                 name = (
                     f"terraform-provider-{provider_type}_{item['version']}_{item['platform']}.zip"
@@ -560,6 +881,20 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 record = {key: item[key] for key in ("source", "version", "platform")}
+            elif kind == "registry_modules":
+                selected, sources[item["name"]] = registry_module_files(
+                    item, data, catalog, manifest["providers"]
+                )
+                for name, content in selected.items():
+                    target = output / "registry" / item["name"] / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(content)
+                record = {
+                    key: item[key] for key in ("name", "source", "version", "revision", "graph")
+                }
+                record["files"] = {
+                    name: hashlib.sha256(content).hexdigest() for name, content in selected.items()
+                }
             else:
                 files = module_files(item, data, manifest["engine"])
                 for name, text in files.items():
@@ -574,6 +909,8 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
             record["provenance"] = item["artifact"]["provenance"]
             record["decision"] = "verified"
             receipt[kind].append(record)
+    for record in receipt["registry_modules"]:
+        record["inventory"] = registry_inventory(record["name"], catalog, sources)
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return identity
 
