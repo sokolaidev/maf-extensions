@@ -62,7 +62,7 @@ An ACA application can instead be designed to call a separate Hyperlight worker 
 | Item | State | Tracking |
 | --- | --- | --- |
 | Initial runtime and reset backend | implemented with Windows WHP validation; umbrella remains open for the independent channels | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged) |
-| Linux x86-64 KVM and WSL2 | shipped — native Linux KVM CI and separate local WSL2 KVM validation, including the kernel memory ceiling, worker death and owner death against a real guest | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (closed) by [#PRNUM](https://github.com/sokolaidev/maf-extensions/pull/PRNUM) (merged); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
+| Linux x86-64 KVM and WSL2 | shipped — native Linux KVM CI and separate local WSL2 KVM validation, including the kernel memory ceiling, worker death and owner death against a real guest | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (closed) by [#1298](https://github.com/sokolaidev/maf-extensions/pull/1298) (merged); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
 | AKS hosting | investigation | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
 | Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
