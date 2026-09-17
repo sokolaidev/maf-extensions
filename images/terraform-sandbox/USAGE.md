@@ -14,13 +14,13 @@ uv run python images/terraform-sandbox/build_image.py --engine terraform --profi
 
 Use `--engine opentofu` for OpenTofu, or `--profile random` to add the `random` provider.
 
-Terraform image with the pinned Azure Verified Modules baked in:
+Terraform image with the Azure Verified Modules catalog baked in:
 
 ```sh
 uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.terraform-avm.json --output dist/dependencies/terraform-avm && uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin && docker build --platform linux/amd64 --network none --build-arg BASE_IMAGE=maf-terraform:1.16.2-builtin -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.2-avm-1 dist/dependencies/terraform-avm
 ```
 
-`dist/dependencies/terraform-avm` must not exist yet.
+`dist/dependencies/terraform-avm` must not exist yet. The command downloads about 540 MB and builds an image of about 3.4 GB. On Windows without long paths enabled, prepare into a short path such as `D:/avm/terraform-avm`, and build from the same path.
 
 ## Build an engine image
 
@@ -73,15 +73,17 @@ Keep the prepared directory in trusted storage. Deploy by image ID or digest, no
 
 ## Build an image with Azure Verified Modules
 
-Terraform only.
+Terraform only. [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json) is the whole catalog. [dependencies.terraform-avm-network.policy.json](dependencies.terraform-avm-network.policy.json) is the small graph CI builds; the steps are the same with its file names.
 
 ### 1. Change the policy
 
-Edit the version constraints in [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json). If generation refuses a registry module the policy does not list, add that module to the policy.
+- To approve a provider, add it to `providers` with a version bound.
+- To bake a module outside the catalog, add it to `registry_modules` with a version constraint.
+- To leave a catalog module out, add it to `catalog.exclude` with a reason.
 
 ### 2. Generate the manifest
 
-Set `GITHUB_TOKEN` first to avoid GitHub's rate limit.
+Set `GITHUB_TOKEN` first to avoid GitHub's rate limit. The catalog takes about 3 minutes.
 
 ```sh
 uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.terraform-avm.policy.json --output images/terraform-sandbox/dependencies.terraform-avm.json
@@ -95,7 +97,7 @@ uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/de
 
 ### 3. Review the change
 
-Review the manifest diff, and read the module code at each new commit.
+Review the manifest diff, and read the module code at each new commit. Read the `excluded` list too: each entry is a root that did not bake, with the reason.
 
 To check a module pin by hand:
 
@@ -114,6 +116,8 @@ uv run python scripts/terraform_dependencies.py --manifest images/terraform-sand
 uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin
 docker build --platform linux/amd64 --network none --build-arg BASE_IMAGE=maf-terraform:1.16.2-builtin -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.2-avm-1 dist/dependencies/terraform-avm
 ```
+
+If an offline probe fails, the build prints that root's `init` output. Add the module to `catalog.exclude` with a reason, then regenerate and rebuild.
 
 ### 5. Import it for ACAS
 
@@ -138,6 +142,6 @@ Configure the ACAS backend with that registry and pass `image="maf-terraform:1.1
 - Custom provider profiles, built live: set `MAF_IMAGE_BUILD_TESTS=1`, then `uv run pytest -q tests/test_terraform_image_build.py -k live_build`
 - Engine images on Docker: set `MAF_TERRAFORM_E2E_IMAGE` and `MAF_OPENTOFU_E2E_IMAGE` to the two `random` images, then `uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py`
 - Prepared images on Docker: set `MAF_TERRAFORM_PREPARED_IMAGE` and `MAF_OPENTOFU_PREPARED_IMAGE` to image IDs, and `MAF_TERRAFORM_PREPARED_DIR` and `MAF_OPENTOFU_PREPARED_DIR` to their prepared directories, then `uv run pytest -q tests/test_terraform_dependencies_docker.py`
-- AVM image: set `MAF_TERRAFORM_AVM_DIR` to the prepared directory, then `uv run pytest -q tests/test_terraform_avm_offline.py`
+- AVM image, catalog or network: set `MAF_TERRAFORM_AVM_DIR` to the prepared directory, then `uv run pytest -q tests/test_terraform_avm_offline.py`
   - For Docker, also set `MAF_TERRAFORM_AVM_IMAGE` to the local image.
   - For ACAS, also set `MAF_TERRAFORM_AVM_ACAS_IMAGE` to the imported `repository:tag`, and `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and `ACAS_SANDBOX_REGISTRY`. Each ACAS call creates one billable sandbox.

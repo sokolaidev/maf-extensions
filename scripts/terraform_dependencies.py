@@ -822,11 +822,14 @@ def provider_needs(required: dict[str, list[Any]], implied: set[str]) -> dict[st
             if isinstance(requirement, dict):
                 source = requirement.get("source", local)
                 constraint = requirement.get("version", _ABSENT)
-            require(isinstance(source, str) and constraint is not None, "registry-provider")
+            if not isinstance(source, str) or not (
+                constraint is _ABSENT or isinstance(constraint, str)
+            ):
+                raise Refused("registry-provider")
             address = _provider_source(source)
             if address is not None:
                 needs.setdefault(address, [])
-                if constraint is not _ABSENT:
+                if isinstance(constraint, str):
                     needs[address].append(constraint)
     for local in implied - required.keys() - {"terraform"}:
         needs.setdefault(f"{REGISTRY_HOST}/hashicorp/{local}", [])
@@ -879,21 +882,23 @@ def registry_module_files(
                 continue
             match = runner._REGISTRY_SOURCE.fullmatch(source)
             require(match, "module-remote")
+            assert match is not None
             require((match.group(1) or REGISTRY_HOST).lower() == REGISTRY_HOST, "registry-host")
             subdir = match.group(3)
             if subdir is not None:
                 relative_path(subdir)
             address = f"{REGISTRY_HOST}/{match.group(2)}"
             constraint = arguments.get("version")
-            require(constraint is not None, "registry-version")
+            if constraint is None:
+                raise Refused("registry-version")
             edge = graph[directory].get(label)
             target = catalog.get(edge.get("registry", "")) if isinstance(edge, dict) else None
-            require(
-                target is not None
-                and target["source"].casefold() == address.casefold()
-                and edge.get("dir") == subdir,
-                "registry-edge",
-            )
+            if (
+                target is None
+                or target["source"].casefold() != address.casefold()
+                or edge.get("dir") != subdir
+            ):
+                raise Refused("registry-edge")
             require(
                 satisfies(target["version"], constraint, "registry-constraint"),
                 "registry-constraint",

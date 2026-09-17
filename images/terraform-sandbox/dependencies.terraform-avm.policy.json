@@ -1,27 +1,20 @@
 {
   "schema": 1,
   "providers": [
-    {
-      "address": "registry.terraform.io/azure/azapi",
-      "constraint": "= 2.12.0"
-    },
-    {
-      "address": "registry.terraform.io/azure/modtm",
-      "constraint": "= 0.4.0"
-    },
-    {
-      "address": "registry.terraform.io/hashicorp/random",
-      "constraint": "= 3.7.2"
-    }
+    {"address": "registry.terraform.io/azure/alz", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/azure/azapi", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/azure/modtm", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/assert", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/azuread", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/azurerm", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/local", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/null", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/random", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/time", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/hashicorp/tls", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/integrations/github", "constraint": ">= 0.0.0"},
+    {"address": "registry.terraform.io/microsoft/azuredevops", "constraint": ">= 0.0.0"}
   ],
-  "registry_modules": [
-    {
-      "source": "registry.terraform.io/Azure/avm-res-network-virtualnetwork/azurerm",
-      "constraint": "= 0.22.2"
-    },
-    {
-      "source": "registry.terraform.io/Azure/avm-utl-interfaces/azure",
-      "constraint": "= 0.6.0"
-    }
-  ]
+  "registry_modules": [],
+  "catalog": {"namespace": "Azure", "prefixes": ["avm-res-", "avm-ptn-", "avm-utl-"]}
 }

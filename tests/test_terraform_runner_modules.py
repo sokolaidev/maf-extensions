@@ -247,7 +247,7 @@ def test_subdirectory_calls_need_a_baked_clean_directory(tmp_path, source):
     ]
 
 
-def test_native_reader_follows_what_python_hcl2_refused():
+def test_native_reader_reads_crlf_heredocs_and_an_attribute_named_in():
     text = (
         "terraform {\r\n  required_providers {\r\n"
         '    azapi = { source = "Azure/azapi", version = "~> 2.4" }\r\n'

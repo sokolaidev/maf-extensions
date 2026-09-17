@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -17,6 +18,12 @@ import pytest
 from maf_sandbox import CallerContext, SandboxRouter
 from maf_sandbox.testing import InMemoryStore
 from maf_sandbox_terraform import make_terraform_tools
+
+_SOURCE = Path(__file__).resolve().parents[1] / "images/terraform-sandbox/runner.py"
+_SPEC = importlib.util.spec_from_file_location("terraform_runner", _SOURCE)
+assert _SPEC is not None and _SPEC.loader is not None
+runner = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(runner)
 
 PREPARED = Path(os.environ.get("MAF_TERRAFORM_AVM_DIR", "")).resolve()
 DOCKER_IMAGE = os.environ.get("MAF_TERRAFORM_AVM_IMAGE", "")
@@ -43,11 +50,7 @@ BACKENDS = [
 PASSED = "validation PASS (0 errors, 0 warnings); formatting PASS."
 UNLOADED = "Validation INCOMPLETE: initialization failed; dependencies were not loaded."
 NO_REGISTRY = "does not provide a modules service"
-# Guest commands run after acquire and before staging; each removes one baked dependency.
-REMOVALS = {
-    "missing-child": "/opt/maf-terraform/registry/avm-utl-interfaces",
-    "missing-provider": "/opt/maf-terraform/mirror/registry.terraform.io/azure/azapi",
-}
+REGISTRY = "/opt/maf-terraform/registry"
 # ACAS denies at a TLS-terminating proxy, so only retrieved registry content counts as reach.
 EGRESS_PROBE = (
     "import urllib.request\n"
@@ -77,6 +80,20 @@ def network_module(version: str = "0.22.2", source: str = NETWORK) -> str:
 """
 
 
+def removal(case: str, receipt: dict[str, Any]) -> str | None:
+    """The baked dependency a case deletes in the guest after acquire and before staging."""
+    if case == "missing-provider":
+        return "/opt/maf-terraform/mirror/registry.terraform.io/azure/azapi"
+    if case != "missing-child":
+        return None
+    network = next(
+        item
+        for item in receipt["registry_modules"]
+        if item["source"].endswith(NETWORK) and item["version"] == "0.22.2"
+    )
+    return f"{REGISTRY}/{network['graph']['.']['interfaces']['registry']}"
+
+
 def package_hash(archive: Path) -> str:
     """Terraform's h1 hash of an unpacked provider package."""
     with zipfile.ZipFile(archive) as bundle:
@@ -89,8 +106,16 @@ def package_hash(archive: Path) -> str:
 
 def lock_file(receipt: dict[str, Any], *, broken: bool) -> str:
     blocks = []
-    for provider in receipt["providers"]:
-        name = provider["source"].split("/")[-1]
+    for name, constraint in CONSTRAINTS.items():
+        provider = max(
+            (
+                item
+                for item in receipt["providers"]
+                if item["source"].endswith("/" + name)
+                and runner.satisfies(item["version"], constraint)
+            ),
+            key=lambda item: tuple(int(part) for part in item["version"].split(".")),
+        )
         archive = (
             PREPARED
             / "mirror"
@@ -101,7 +126,7 @@ def lock_file(receipt: dict[str, Any], *, broken: bool) -> str:
         blocks.append(
             f'provider "{provider["source"]}" {{\n'
             f'  version     = "{provider["version"]}"\n'
-            f'  constraints = "{CONSTRAINTS[name]}"\n'
+            f'  constraints = "{constraint}"\n'
             f'  hashes = [\n    "{digest}",\n  ]\n}}\n'
         )
     return "\n".join(blocks)
@@ -113,9 +138,9 @@ def project(case: str, receipt: dict[str, Any]) -> tuple[dict[str, str], str]:
     if case == "constraint":
         files["root/main.tf"] = network_module("~> 0.22")
     elif case == "incompatible-version":
-        files["root/main.tf"] = network_module("0.21.0")
+        files["root/main.tf"] = network_module("0.0.1")
     elif case == "unbaked-module":
-        files["root/main.tf"] = network_module("0.11.0", "Azure/avm-res-keyvault-vault/azurerm")
+        files["root/main.tf"] = network_module("5.3.0", "Azure/network/azurerm")
     elif case == "local-wrapper":
         files = {
             "root/main.tf": 'module "wrapper" {\n  source = "../wrapper"\n}\n',
@@ -192,9 +217,9 @@ def test_avm_graph_validates_offline(backend_name, case, expected, monkeypatch):
                 timeout=30,
             )
             assert (probe.exit_code, probe.stdout_bytes.strip()) == (0, b"refused")
-            if case in REMOVALS:
+            if (path := removal(case, receipt)) is not None:
                 removed = await sandbox.exec(
-                    ["rm", "-rf", REMOVALS[case]], working_directory="/tmp", timeout=30
+                    ["rm", "-rf", path], working_directory="/tmp", timeout=30
                 )
                 assert removed.exit_code == 0
             return sandbox

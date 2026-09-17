@@ -36,7 +36,7 @@ jobs:
       - name: Validate and observe disposal
         run: uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py
       - name: Prepare the pinned AVM graph
-        run: uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.terraform-avm.json --output "$MAF_TERRAFORM_AVM_DIR"
+        run: uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.terraform-avm-network.json --output "$MAF_TERRAFORM_AVM_DIR"
       - name: Build the prepared AVM image without network
         run: |
           uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-terraform:ci-builtin
