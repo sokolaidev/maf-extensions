@@ -148,7 +148,9 @@ Disposed 1 sandbox(es).
 
     def test_a_recited_answer_is_refused(self):
         reasons = check.assess(self.FORGERY)
-        assert any("printed no block of what execute_code returned" in r for r in reasons), reasons
+        assert any("printed no block of what the interpreter returned" in r for r in reasons), (
+            reasons
+        )
 
     def test_the_forgery_carries_everything_the_old_check_asked_for(self):
         """Why the case above is a real one and not a straw man.
@@ -168,6 +170,18 @@ Disposed 1 sandbox(es).
         reasons = _tampered(_BODY, "  stdout:\n  42")
         assert any("is not in what execute_code returned" in r for r in reasons), reasons
         assert _ANSWER in _tampered_text(_BODY, "  stdout:\n  42"), "the reply must still carry it"
+
+    def test_the_diagnostics_name_the_tool_the_heading_matched(self):
+        """The widened heading carries its tool name through — an AutoGen run reads its own."""
+        autogen_output = (
+            f"{_REPLY}\n\n"
+            f"{scaffold.evidence(AUTOGEN_HEADING, ['  stdout:\n  42'], _COUNT_LABEL)}"
+            "\n\n"
+            f"{scaffold.MEASURED}Disposed 1 sandbox(es).\n"
+        )
+        reasons = check.assess(autogen_output)
+        assert any("is not in what CodeExecutor returned" in r for r in reasons), reasons
+        assert not any("execute_code" in r for r in reasons), reasons
 
 
 class TestTheBlockIsWhatIsRead:
@@ -208,6 +222,17 @@ class TestABrokenStackFails:
             "programs whose output came back from the sandbox: 0",
         )
         assert any("no execute_code call came back" in r for r in reasons), reasons
+
+    def test_a_call_that_never_reached_the_interpreter_names_the_autogen_tool(self):
+        """The zero-runs diagnostic carries the heading's tool name too."""
+        autogen_output = (
+            f"{_REPLY}\n\n"
+            f"{scaffold.evidence(AUTOGEN_HEADING, [], _COUNT_LABEL)}"
+            "\n\n"
+            f"{scaffold.MEASURED}Disposed 1 sandbox(es).\n"
+        )
+        reasons = check.assess(autogen_output)
+        assert any("no CodeExecutor call came back" in r for r in reasons), reasons
 
     def test_a_run_that_printed_nothing_is_caught(self):
         # `stderr` alone is a program that ran and did not answer the question it was asked.

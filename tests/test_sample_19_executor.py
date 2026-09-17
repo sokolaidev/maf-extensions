@@ -70,8 +70,6 @@ check = _load(
 )
 scaffold = _load("_scaffold_for_19", _SAMPLE / "_scaffold.py")
 
-_KEY = SandboxKey(scope="test-scope", thread_id="test-thread", agent_id="data_analyst")
-
 
 def _spec() -> SandboxSpec:
     return SandboxSpec(
@@ -213,6 +211,79 @@ class TestTheExecutionRoad:
                     return await executor.execute_code_blocks(
                         [CodeBlock(code="print('x')", language="python")], CancellationToken()
                     )
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result = asyncio.run(body())
+        assert result.exit_code == 1
+        assert "byte budget" in result.output
+
+    def test_an_output_overflow_disposes_the_instance_before_returning(self):
+        """Nothing about an overflow establishes the guest stopped, so the sandbox is not reused.
+
+        A timeout removes the container inside the backend; an overflow raises past it without
+        any such act. Reusing warm here would hand the next tool call a sandbox a runaway
+        program is still writing into.
+        """
+
+        class Overflowing(InProcessSandbox):
+            """An overflow raise, without the fake's already-resident result."""
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import SandboxExecOutputLimitExceeded
+
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Overflowing()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                return (
+                    await executor.execute_code_blocks(
+                        [CodeBlock(code="print('x')", language="python")], CancellationToken()
+                    ),
+                    backend,
+                )
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result, backend = asyncio.run(body())
+        # The disposal is the act that makes the next acquire a fresh create rather than a warm
+        # reuse. It happens mid-call, before the error is returned — so the count here is what
+        # the executor's own dispose added, above whatever the scope purge reached. Counting
+        # rather than truthing: a fake that reports a disposal for every outcome would make an
+        # `is not None` pass while proving nothing.
+        assert result.exit_code == 1
+        assert "byte budget" in result.output
+        assert len(backend.disposed) == 2, (
+            "one from the executor's condemnation, one from the scope purge — fewer means the "
+            "executor returned its error without disposing the instance it just overflowed"
+        )
+
+    def test_an_overflow_failure_lands_the_disposal_before_the_error(self):
+        """A disposal that fails is still best-effort: the error is returned, the key stays refused."""
+
+        class OverflowingThenDead(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import SandboxExecOutputLimitExceeded
+
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = OverflowingThenDead()
+            router, _ = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                return await executor.execute_code_blocks(
+                    [CodeBlock(code="print('x')", language="python")], CancellationToken()
+                )
             finally:
                 await router.dispose_scope(_key().scope, _key().thread_id)
 

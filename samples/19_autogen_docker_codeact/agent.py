@@ -233,8 +233,15 @@ class SandboxCodeExecutor(CodeExecutor):
         try:
             result = await run
         except TimeoutError:
+            # The backend removes the container itself when an execution times out, so the
+            # next acquire starts fresh without a decision here.
             return f"Error: the program timed out after {EXEC_TIMEOUT_SECONDS}s", 1
         except SandboxExecOutputLimitExceeded:
+            # An overflow stops the host's reading, never the guest: nothing here establishes
+            # the process stopped, and the backend removes the container on a timeout but not
+            # on this raise. Disposing before returning is what keeps a sandbox a runaway
+            # program is still writing into from being reused warm by the next acquire.
+            await self._router.dispose(self._key)
             return f"Error: the program's output exceeded the {MAX_OUTPUT_BYTES}-byte budget", 1
         return _render(result), result.exit_code
 
@@ -373,6 +380,9 @@ async def run() -> int:
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
+        # The client holds the HTTP transport both roads run on; closing it first and keeping
+        # the credential close behind it still guarantees the credential lands if close fails.
+        await model.close()
         if credential is not None:
             await credential.close()
 
