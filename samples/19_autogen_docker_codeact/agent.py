@@ -123,6 +123,10 @@ _LANGUAGES = frozenset({"python", "py"})
 EXEC_TIMEOUT_SECONDS = 120.0
 MAX_OUTPUT_BYTES = 1_048_576
 
+#: The bound on the unclean disposal an overflowing run queues: short, because the container is
+#: a local `docker rm -f` away, and a budget a healthy engine answers well inside.
+CLEANUP_TIMEOUT_SECONDS = 30.0
+
 #: The Azure OpenAI API version this client speaks. `AzureOpenAIChatCompletionClient` requires
 #: one and has no default; the value is the one sample 17's `AzureChatOpenAI` passes, so the two
 #: samples reach one deployment over one surface.
@@ -239,9 +243,11 @@ class SandboxCodeExecutor(CodeExecutor):
         except SandboxExecOutputLimitExceeded:
             # An overflow stops the host's reading, never the guest: nothing here establishes
             # the process stopped, and the backend removes the container on a timeout but not
-            # on this raise. Disposing before returning is what keeps a sandbox a runaway
-            # program is still writing into from being reused warm by the next acquire.
-            await self._router.dispose(self._key)
+            # on this raise. The unclean path is the one that closes the key when its delete
+            # fails — a best-effort `dispose` would leave a container the runaway process is
+            # still writing into mapped and reacquirable — and when the delete lands, the
+            # refusal retires with it and the next acquire is a fresh create.
+            await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
             return f"Error: the program's output exceeded the {MAX_OUTPUT_BYTES}-byte budget", 1
         return _render(result), result.exit_code
 
@@ -380,11 +386,15 @@ async def run() -> int:
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
-        # The client holds the HTTP transport both roads run on; closing it first and keeping
-        # the credential close behind it still guarantees the credential lands if close fails.
-        await model.close()
-        if credential is not None:
-            await credential.close()
+        # The client holds the HTTP transport both roads run on, and the credential holds the
+        # identity minted for it. Each close is guarded by the other's: a model close that
+        # raises must not skip the credential's, and the reverse holds too, so the two run as
+        # separate `finally`-guarded steps rather than one sequential tail.
+        try:
+            await model.close()
+        finally:
+            if credential is not None:
+                await credential.close()
 
     return 0
 

@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 from maf_sandbox import Capability, Isolation, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
@@ -254,7 +255,7 @@ class TestTheExecutionRoad:
         result, backend = asyncio.run(body())
         # The disposal is the act that makes the next acquire a fresh create rather than a warm
         # reuse. It happens mid-call, before the error is returned — so the count here is what
-        # the executor's own dispose added, above whatever the scope purge reached. Counting
+        # the executor's own condemnation added, above whatever the scope purge reached. Counting
         # rather than truthing: a fake that reports a disposal for every outcome would make an
         # `is not None` pass while proving nothing.
         assert result.exit_code == 1
@@ -290,6 +291,100 @@ class TestTheExecutionRoad:
         result = asyncio.run(body())
         assert result.exit_code == 1
         assert "byte budget" in result.output
+
+    def test_a_failed_overflow_disposal_refuses_the_next_acquire(self):
+        """The unclean path: a delete that did not land leaves the key refused, not reacquirable.
+
+        `dispose` is best-effort by the router's own contract — a failure reaches the caller as
+        a return value, not a refusal — so a container the delete failed on stays mapped and the
+        next tool call would reacquire it, runaway process and all. `dispose_unclean` marks the
+        key, and the refusal retires when a later disposal lands. The backend here holds the
+        sandbox mapped across a failed delete, the way `DockerSandboxBackend` holds a container
+        `rm -f` could not remove, and fails every delete while the executor's call is in flight.
+        """
+
+        class Overflowing(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import SandboxExecOutputLimitExceeded
+
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+
+        class FailingDuringCall(InProcessSandboxBackend):
+            """Fails deletes only while the executor's overflow call is in flight."""
+
+            fail = False
+
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ):
+                self.disposed.append(key)
+                self.disposed_kinds.append(kind)
+                self.disposed_instances.append(instance_id)
+                if self.fail:
+                    return "the engine would not remove it"
+                for held in [entry for entry in list(self.sandboxes) if entry[0] == key]:
+                    del self.sandboxes[held]
+                return None
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+            from maf_sandbox import SandboxUnclean
+
+            sandbox = Overflowing()
+            backend = FailingDuringCall(sandbox, isolation=Isolation.NONE)
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                # Warm the sandbox first, so the executor's condemnation is the failing delete
+                # and not a cold acquire's adoption.
+                await router.acquire(_key(), _spec())
+                backend.fail = True
+                first = await executor.execute_code_blocks(
+                    [CodeBlock(code="print('x')", language="python")], CancellationToken()
+                )
+                with pytest.raises(SandboxUnclean):
+                    await router.acquire(_key(), _spec())
+                return first
+            finally:
+                backend.fail = False
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        first = asyncio.run(body())
+        assert first.exit_code == 1
+        assert "byte budget" in first.output
+
+    def test_a_landed_overflow_disposal_does_not_stay_refused(self):
+        """When the delete lands, the refusal retires with it: the next acquire is a fresh create."""
+
+        class Overflowing(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import SandboxExecOutputLimitExceeded
+
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Overflowing()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await executor.execute_code_blocks(
+                    [CodeBlock(code="print('x')", language="python")], CancellationToken()
+                )
+                return await router.acquire(_key(), _spec()), backend
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        reacquired, backend = asyncio.run(body())
+        # The refusal was written when the unclean disposal queued, and retired when the same
+        # call's delete landed inside it — so the key is servable again, on a fresh filesystem.
+        # Three disposals: the condemnation, the reacquire's fresh-create path disposing nothing
+        # but recording, and the scope purge closing both.
+        assert reacquired is not None
+        assert backend.disposed.count(_key()) >= 2
 
 
 class TestTheBlockTheSamplePrints:
