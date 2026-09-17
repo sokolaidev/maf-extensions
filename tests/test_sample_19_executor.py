@@ -309,19 +309,29 @@ class TestTheExecutionRoad:
                 # Warm first: the executor's own acquire reuses, and the failing delete is the
                 # unclean condemnation rather than a cold acquire's adoption.
                 await router.acquire(_key(), _spec())
+                before = len(backend.disposed)
                 backend.fail = True
-                return await executor.execute_code_blocks(
+                result = await executor.execute_code_blocks(
                     [CodeBlock(code="print('x')", language="python")], CancellationToken()
                 )
+                return result, len(backend.disposed) - before
             finally:
                 backend.fail = False
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
-        result = asyncio.run(body())
+        result, condemned = asyncio.run(body())
         # The disposal was attempted before the error came back — the ordering the name names —
         # and the raise never escaped to the model: the router records it, and the error wins.
+        # The window is measured, not inferred: `disposed` also counts the warm acquire's own
+        # adoption, so the assertion is over the disposals taken *after* arming, which are the
+        # executor's condemnation and nothing else. The scope purge records in `purged`, never
+        # here.
         assert result.exit_code == 1
         assert "byte budget" in result.output
+        assert condemned >= 1, (
+            "the unclean disposal never ran — the error was returned without the instance "
+            "having been condemned"
+        )
 
     def test_a_failed_overflow_disposal_refuses_the_next_acquire(self):
         """The unclean path: a delete that did not land leaves the key refused, not reacquirable.
@@ -439,41 +449,27 @@ class TestTheBlockTheSamplePrints:
 
 
 class TestTheModelWiring:
-    def test_the_local_road_constructs_without_a_key(self):
-        import os
+    def test_the_local_road_constructs_without_a_key(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+        model, credential = sample_19.build_model()
+        assert credential is None
+        assert type(model).__name__ == "OpenAIChatCompletionClient"
 
-        saved = {name: os.environ.pop(name, None) for name in ("AZURE_OPENAI_ENDPOINT",)}
-        try:
-            model, credential = sample_19.build_model()
-            assert credential is None
-            assert type(model).__name__ == "OpenAIChatCompletionClient"
-        finally:
-            os.environ.update({name: value for name, value in saved.items() if value is not None})
+    def test_the_azure_road_constructs_with_a_token_provider(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_CHAT_MODEL", "gpt-5.4")
+        model, credential = sample_19.build_model()
+        assert credential is not None
+        assert type(model).__name__ == "AzureOpenAIChatCompletionClient"
+        asyncio.run(credential.close())
 
-    def test_the_azure_road_constructs_with_a_token_provider(self):
-        import os
-
-        os.environ["AZURE_OPENAI_ENDPOINT"] = "https://fake.example.openai.azure.com"
-        os.environ["AZURE_OPENAI_CHAT_MODEL"] = "gpt-5.4"
-        try:
-            model, credential = sample_19.build_model()
-            assert credential is not None
-            assert type(model).__name__ == "AzureOpenAIChatCompletionClient"
-            asyncio.run(credential.close())
-        finally:
-            os.environ.pop("AZURE_OPENAI_ENDPOINT")
-            os.environ.pop("AZURE_OPENAI_CHAT_MODEL")
-
-    def test_an_endpoint_without_a_deployment_is_reported_not_run(self, capsys):
-        import os
-
-        os.environ["AZURE_OPENAI_ENDPOINT"] = "https://fake.example.openai.azure.com"
-        os.environ.pop("AZURE_OPENAI_CHAT_MODEL", None)
-        try:
-            assert sample_19.build_model() is None
-            assert "AZURE_OPENAI_CHAT_MODEL" in capsys.readouterr().err
-        finally:
-            os.environ.pop("AZURE_OPENAI_ENDPOINT")
+    def test_an_endpoint_without_a_deployment_is_reported_not_run(
+        self, monkeypatch: pytest.MonkeyPatch, capsys
+    ):
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
+        monkeypatch.delenv("AZURE_OPENAI_CHAT_MODEL", raising=False)
+        assert sample_19.build_model() is None
+        assert "AZURE_OPENAI_CHAT_MODEL" in capsys.readouterr().err
 
 
 class TestTheResultReading:
