@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shutil
@@ -21,45 +22,57 @@ PREPARE = (
 )
 
 
-def stages() -> dict[str, list[str]]:
-    """Each stage's RUN, COPY and ADD instructions, keyed by stage name; heredocs are skipped."""
-    found: dict[str, list[str]] = {}
-    current, marker = "", None
+def stages() -> dict[str, list[list[str]]]:
+    """Each stage's RUN, COPY and ADD instructions as token lists, keyed by stage name.
+
+    Continuation lines are joined into one instruction; heredoc bodies are skipped.
+    """
+    found: dict[str, list[list[str]]] = {}
+    current, marker, pending = "", None, ""
     for line in DOCKERFILE.read_text(encoding="utf-8").splitlines():
         if marker is not None:
             marker = None if line == marker else marker
             continue
-        if line.startswith("FROM "):
-            match = re.fullmatch(r"FROM \S+(?: AS (\S+))?", line)
-            assert match, line
-            current = match.group(1) or "image"
+        if line.endswith("\\"):
+            pending += line[:-1] + " "
+            continue
+        tokens = (pending + line).split()
+        pending = ""
+        if tokens[:1] == ["FROM"]:
+            assert len(tokens) in (2, 4) and tokens[2:3] in ([], ["AS"]), tokens
+            current = tokens[3] if len(tokens) == 4 else "image"
             found[current] = []
-        elif line.startswith(("RUN ", "COPY ", "ADD ")):
-            found[current].append(line)
-            if heredoc := re.search(r"<<'(\w+)'$", line):
+        elif tokens[:1] in (["RUN"], ["COPY"], ["ADD"]):
+            found[current].append(tokens)
+            if heredoc := re.fullmatch(r"<<'(\w+)'", tokens[-1]):
                 marker = heredoc.group(1)
     return found
+
+
+def flags(instruction: list[str]) -> list[str]:
+    """The options between an instruction's keyword and its first argument."""
+    return list(itertools.takewhile(lambda token: token.startswith("--"), instruction[1:]))
 
 
 def test_only_the_preparation_stage_reaches_the_network():
     found = stages()
     assert list(found) == ["prepare", "prepared", "unpack", "image"]
-    assert [line for line in found["prepare"] if line.startswith("RUN ")] == [PREPARE]
-    later = [
-        line for name in ("unpack", "image") for line in found[name] if line.startswith("RUN ")
-    ]
-    # A second flag such as --mount could bind the build context into a network-less step.
-    assert later and all(re.match(r"RUN --network=none (?!--)", line) for line in later)
+    assert [" ".join(tokens) for tokens in found["prepare"] if tokens[0] == "RUN"] == [PREPARE]
+    later = [tokens for name in ("unpack", "image") for tokens in found[name] if tokens[0] == "RUN"]
+    # Any second flag, such as --mount, could bind the build context into a network-less step.
+    assert later and all(flags(tokens) == ["--network=none"] for tokens in later)
 
 
 def test_later_stages_take_the_preparation_only_from_the_prepared_stage():
     found = stages()
-    assert not [line for lines in found.values() for line in lines if line.startswith("ADD ")]
-    assert found["prepared"] == ["COPY --from=prepare /prepared/ /"]
+    assert not [tokens for stage in found.values() for tokens in stage if tokens[0] == "ADD"]
+    assert found["prepared"] == [["COPY", "--from=prepare", "/prepared/", "/"]]
     copies = [
-        line for name in ("unpack", "image") for line in found[name] if line.startswith("COPY ")
+        tokens for name in ("unpack", "image") for tokens in found[name] if tokens[0] == "COPY"
     ]
-    assert copies and all(re.match(r"COPY --from=(prepared|unpack) ", line) for line in copies)
+    assert copies and all(
+        flags(tokens) in (["--from=prepared"], ["--from=unpack"]) for tokens in copies
+    )
 
 
 def heredoc_step(marker: str) -> str:
