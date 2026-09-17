@@ -66,7 +66,7 @@ docker build --platform linux/amd64 --build-context scripts=scripts --build-arg 
 uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:1.16.2-prepared --prepared dist/dependencies/terraform
 ```
 
-For OpenTofu, use `maf-opentofu:1.12.6-builtin`, `dependencies.opentofu.json` and `--engine opentofu`.
+Prepared OpenTofu images do not build yet: the offline probe fails until [#1289](https://github.com/sokolaidev/maf-extensions/issues/1289) is fixed. After that, use `maf-opentofu:1.12.6-builtin`, `dependencies.opentofu.json` and `--engine opentofu`.
 
 Keep the exported directory in trusted storage. To rebuild from it without preparing again, add `--build-context prepared=<directory>` and drop `MANIFEST`. Deploy by image ID or digest, not by tag.
 
@@ -145,7 +145,7 @@ Configure the ACAS backend with that registry and pass `image="maf-terraform:1.1
 - Launcher module records: `uv run pytest -q tests/test_terraform_runner_modules.py`
 - Custom provider profiles, built live: set `MAF_IMAGE_BUILD_TESTS=1`, then `uv run pytest -q tests/test_terraform_image_build.py -k live_build`
 - Engine images on Docker: set `MAF_TERRAFORM_E2E_IMAGE` and `MAF_OPENTOFU_E2E_IMAGE` to the two `random` images, then `uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py`
-- Prepared images on Docker: set `MAF_TERRAFORM_PREPARED_IMAGE` and `MAF_OPENTOFU_PREPARED_IMAGE` to image IDs, and `MAF_TERRAFORM_PREPARED_DIR` and `MAF_OPENTOFU_PREPARED_DIR` to their exported prepared directories, then `uv run pytest -q tests/test_terraform_dependencies_docker.py`
+- Prepared images on Docker: set `MAF_TERRAFORM_PREPARED_IMAGE` and `MAF_OPENTOFU_PREPARED_IMAGE` to image IDs, and `MAF_TERRAFORM_PREPARED_DIR` and `MAF_OPENTOFU_PREPARED_DIR` to their exported prepared directories, then `uv run pytest -q tests/test_terraform_dependencies_docker.py`. Until [#1289](https://github.com/sokolaidev/maf-extensions/issues/1289) is fixed there is no OpenTofu image, so set its two variables to any value and add `-k "not opentofu"`.
 - AVM image, catalog or network: set `MAF_TERRAFORM_AVM_DIR` to the exported prepared directory, then `uv run pytest -q tests/test_terraform_avm_offline.py`
   - For Docker, also set `MAF_TERRAFORM_AVM_IMAGE` to the local image.
   - For ACAS, also set `MAF_TERRAFORM_AVM_ACAS_IMAGE` to the imported `repository:tag`, and `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and `ACAS_SANDBOX_REGISTRY`. Each ACAS call creates one billable sandbox.
