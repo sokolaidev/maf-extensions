@@ -44,7 +44,6 @@ dev = [
     # only thing here that needs an SDK: the in-memory exporters are what let a test read back
     # what the recorder actually put on a wire, rather than only that it returned.
     "opentelemetry-sdk>=1.44,<2",
-    "python-hcl2==8.1.2",
     "cryptography>=50,<51",
 ]
 

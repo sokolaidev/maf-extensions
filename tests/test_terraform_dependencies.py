@@ -1198,17 +1198,20 @@ def test_registry_packages_bake_declared_directories_and_inventory(tmp_path, mon
         assert path.exists() == (name.removeprefix(NETWORK_ROOT) in baked)
         assert not path.exists() or path.read_bytes() == content.encode()
     nested = {"source": SHARED_SOURCE, "version": "0.6.0", "package": "shared", "dir": "."}
-    assert network["inventory"] == [
-        {"key": "shared", **nested},
-        {
-            "key": "subnet",
-            "source": "./modules/subnet",
-            "package": "network",
-            "dir": "modules/subnet",
-        },
-        {"key": "subnet.shared", **nested},
-    ]
-    assert shared["inventory"] == []
+    assert network["inventories"] == {
+        ".": [
+            {"key": "shared", **nested},
+            {
+                "key": "subnet",
+                "source": "./modules/subnet",
+                "package": "network",
+                "dir": "modules/subnet",
+            },
+            {"key": "subnet.shared", **nested},
+        ],
+        "modules/subnet": [{"key": "shared", **nested}],
+    }
+    assert shared["inventories"] == {".": []}
     assert "url" not in json.dumps(receipt)
 
 
@@ -1269,8 +1272,28 @@ CODELOAD = "https://codeload.github.com/Azure/terraform-network/zip/"
         (_set(["registry_modules", 0, "source"], "Azure/network/azurerm"), "registry-source"),
         (_set(["registry_modules", 0, "source"], "example.com/Azure/x/azurerm"), "registry-source"),
         (
-            _set(["registry_modules", 1, "source"], "registry.terraform.io/azure/NETWORK/azurerm"),
+            lambda policy: policy["registry_modules"][1].update(
+                source="registry.terraform.io/azure/NETWORK/azurerm", version="1.2.3"
+            ),
             "registry-conflict",
+        ),
+        (_set(["registry_modules", 1, "name"], "network"), "registry-conflict"),
+        (_set(["registry_modules", 1, "name"], "Shared"), "module-name"),
+        (
+            _set(
+                ["registry_modules", 0, "graph", ".", "shared"], {"registry": "shared", "dir": "x"}
+            ),
+            "registry-edge",
+        ),
+        (
+            _set(
+                ["registry_modules", 0, "graph", ".", "shared"], {"registry": "shared", "dir": "."}
+            ),
+            "registry-edge",
+        ),
+        (
+            _set(["excluded"], [{"source": SHARED_SOURCE, "version": "1", "reason": "x"}]),
+            "registry-excluded",
         ),
         (_set(["registry_modules", 0, "version"], "1.2.3-beta"), "registry-version"),
         (_set(["registry_modules", 0, "revision"], "main"), "registry-revision"),
@@ -1369,8 +1392,10 @@ def _module(body):
             },
             "registry-provider",
         ),
-        ({"versions_override.tf": "terraform {}\n"}, "module-override"),
-        ({"main.tofu": "terraform {}\n"}, "module-engine"),
+        ({"versions_override.tf": _module('  version = "~> 0.7"\n')}, "registry-constraint"),
+        ({"orphan_override.tf": 'module "orphan" {\n  version = "1.0.0"\n}\n'}, "module-duplicate"),
+        ({"broken.tf": 'module "x" {\n'}, "module-parse"),
+        ({"modules/subnet/bad name.tf": "terraform {}\n"}, "file-path"),
         ({"terraform.tfstate": "{}"}, "module-state"),
         ({"notes.txt": b"\xff"}, "module-text"),
     ],
@@ -1434,7 +1459,93 @@ def test_registry_inventory_is_bounded(monkeypatch):
     _, sources = verify_network(policy)
     monkeypatch.setattr(prep, "MAX_INVENTORY", 2)
     with pytest.raises(prep.Refused, match="registry-inventory"):
-        prep.registry_inventory("network", catalog, {"network": sources, "shared": {".": {}}})
+        prep.registry_inventory("network", ".", catalog, {"network": sources, "shared": {".": {}}})
+
+
+def versioned_policy():
+    """Two versions of one source, the older one reached only through a subdirectory call."""
+    policy = registry_policy()
+    older = copy.deepcopy(policy["registry_modules"][0])
+    older.update(name="network-1.0.0", version="1.0.0", graph={"modules/subnet": {}})
+    policy["registry_modules"].append(older)
+    policy["registry_modules"][0]["graph"]["."]["legacy"] = {
+        "registry": "network-1.0.0",
+        "dir": "modules/subnet",
+    }
+    return policy
+
+
+LEGACY = 'module "legacy" {\n  source  = "Azure/network/azurerm//modules/subnet"\n  version = "~> 1.0.0"\n}\n'
+
+
+def test_one_source_bakes_at_two_versions_through_a_subdirectory_call():
+    policy = versioned_policy()
+    prep.checked_manifest(policy)
+    catalog = {item["name"]: item for item in policy["registry_modules"]}
+    data = bundle(network_files(**{"legacy.tf": LEGACY}))
+    _, sources = prep.registry_module_files(catalog["network"], data, catalog, policy["providers"])
+    assert sources["."]["legacy"] == "registry.terraform.io/Azure/network/azurerm//modules/subnet"
+    older = bundle(network_files(**{"modules/subnet/main.tf.json": "{}"}))
+    files, _ = prep.registry_module_files(
+        catalog["network-1.0.0"], older, catalog, policy["providers"]
+    )
+    assert sorted(files) == ["modules/subnet/main.tf.json"]
+    everything = {
+        "network": sources,
+        "network-1.0.0": {"modules/subnet": {}},
+        "shared": {".": {}},
+    }
+    records = prep.registry_inventory("network", ".", catalog, everything)
+    assert {
+        "key": "legacy",
+        "source": sources["."]["legacy"],
+        "version": "1.0.0",
+        "package": "network-1.0.0",
+        "dir": "modules/subnet",
+    } in records
+
+
+@pytest.mark.parametrize(
+    "legacy,decision",
+    [
+        (LEGACY.replace("~> 1.0.0", "~> 1.2"), "registry-constraint"),
+        (LEGACY.replace("//modules/subnet", ""), "registry-edge"),
+        (LEGACY.replace("modules/subnet", "modules/../subnet"), "file-segments"),
+    ],
+)
+def test_subdirectory_calls_must_match_their_declared_edge(legacy, decision):
+    policy = versioned_policy()
+    catalog = {item["name"]: item for item in policy["registry_modules"]}
+    data = bundle(network_files(**{"legacy.tf": legacy}))
+    with pytest.raises(prep.Refused, match=decision):
+        prep.registry_module_files(catalog["network"], data, catalog, policy["providers"])
+
+
+def test_a_package_directory_nobody_enters_is_unreachable():
+    policy = versioned_policy()
+    del policy["registry_modules"][0]["graph"]["."]["legacy"]
+    catalog = {item["name"]: item for item in policy["registry_modules"]}
+    older = bundle(network_files(**{"modules/subnet/main.tf.json": "{}"}))
+    with pytest.raises(prep.Refused, match="module-unreachable"):
+        prep.registry_module_files(catalog["network-1.0.0"], older, catalog, policy["providers"])
+
+
+def test_only_baked_files_are_policy_and_terraform_ignores_tofu_files():
+    files, _ = verify_network(
+        **{
+            "examples/bad name/main.tf": 'module "x" {\n  source = "git::https://example.com/x"\n}\n',
+            "examples/Case.tf": "a",
+            "examples/case.tf": "b",
+            "docs/huge.bin": b"\xff" * (prep.MAX_TEXT + 1),
+            "main.tofu": "this is not HCL !",
+            "variables.tf": 'variable "in" {\r\n  default = <<-EOT\r\n  "{\r\n  EOT\r\n}\r\n',
+        }
+    )
+    assert "main.tofu" not in files
+    assert "variables.tf" in files
+    assert not any(name.startswith(("examples/", "docs/")) for name in files)
+    with pytest.raises(prep.Refused, match="archive-collision"):
+        verify_network(**{"Main.tf": "terraform {}\n"})
 
 
 @pytest.mark.parametrize(

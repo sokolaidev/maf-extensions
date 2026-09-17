@@ -1,11 +1,11 @@
-"""Generate the prepared AVM dependency manifest from a policy file; run via the CLI.
+"""Generate a prepared Terraform dependency manifest from a policy file; run via the CLI.
 
-The policy names what to bake — provider addresses and registry-module sources with version
-constraints — and this script resolves every pin: exact versions, artifact URLs, digests
-cross-checked against the authoritative release SHA256SUMS, tag-to-commit revisions, module
-call graphs and GitHub repository ids. The manifest stays committed; its diff is the review
-surface, so generation is deterministic for identical policy and registry state. Nothing is
-written before a full dry-run of the real preparer has proven every resolved pin.
+The policy names what a human decides: approved providers with version bounds, registry modules
+with constraints, and optionally a catalog of modules chosen by namespace and name prefix. This
+script resolves the rest. Nested calls bake at the newest release their constraint admits, and
+each root gets the provider versions Terraform would select for it. A catalog root that cannot be
+baked is left out and recorded with its reason. Nothing is written before a dry run of the real
+preparer has proven every pin.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -33,12 +34,15 @@ import terraform_dependencies as prep  # noqa: E402
 REGISTRY = "https://registry.terraform.io"
 GITHUB_API = "https://api.github.com"
 MAX_BODY = 64 * 1024 * 1024
+ANY_RELEASE = ">= 0.0.0"
 GIT_REF = re.compile(r"git::https://github\.com/([^/]+)/([^/?]+)\?ref=([0-9a-f]{40})\Z")
 RELEASE = re.compile(r"\d+\.\d+\.\d+\Z")
 SUMS_LINE = re.compile(r"([0-9a-f]{64})\s+\*?(.+)\Z")
 GITHUB_RELEASE = re.compile(
     r"https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)\Z"
 )
+
+Key = tuple[str, str]
 
 
 def http_bytes(url: str, headers: dict[str, str] | None = None) -> bytes:
@@ -73,10 +77,12 @@ def github_headers() -> dict[str, str]:
     return headers
 
 
-def exact_keys(value: object, keys: set[str], what: str) -> dict[str, Any]:
+def exact_keys(
+    value: object, keys: set[str], what: str, optional: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """Reject unknown or missing policy fields rather than guessing."""
-    if not isinstance(value, dict) or value.keys() != keys:
-        raise ValueError(f"{what} must carry exactly {sorted(keys)}")
+    if not isinstance(value, dict) or not keys <= value.keys() <= keys | optional:
+        raise ValueError(f"{what} must carry exactly {sorted(keys)}, optionally {sorted(optional)}")
     return value
 
 
@@ -88,12 +94,15 @@ def satisfies(version: str, constraint: str, context: str) -> bool:
         raise ValueError(f"{context}: invalid constraint {constraint!r}") from None
 
 
+def release_key(version: str) -> tuple[int, ...]:
+    """Order X.Y.Z releases numerically."""
+    return tuple(int(part) for part in version.split("."))
+
+
 def newest_release(versions: list[str], constraint: str, context: str) -> str:
     """Pick the newest X.Y.Z release the constraint admits; prereleases are never pins."""
     releases = [item for item in versions if RELEASE.fullmatch(item)]
-    for version in sorted(
-        releases, key=lambda item: tuple(map(int, item.split("."))), reverse=True
-    ):
+    for version in sorted(releases, key=release_key, reverse=True):
         if satisfies(version, constraint, context):
             return version
     raise ValueError(f"{context}: no release satisfies {constraint!r} among {sorted(releases)}")
@@ -132,6 +141,31 @@ def module_versions(source: str) -> list[str]:
     ]
 
 
+def module_address(source: str) -> str:
+    """Return the registry's own spelling of a module address."""
+    namespace, name, system = source.split("/")[-3:]
+    body = http_json(f"{REGISTRY}/v1/modules/{namespace}/{name}/{system}")
+    return f"{prep.REGISTRY_HOST}/{body['namespace']}/{body['name']}/{body['provider']}"
+
+
+def catalog_sources(namespace: str, prefixes: list[str]) -> list[str]:
+    """List every module in a namespace whose name starts with one of the prefixes."""
+    found: set[str] = set()
+    offset = 0
+    while True:
+        body = http_json(f"{REGISTRY}/v1/modules?namespace={namespace}&limit=100&offset={offset}")
+        for item in body["modules"]:
+            if item["namespace"].casefold() == namespace.casefold() and item["name"].startswith(
+                tuple(prefixes)
+            ):
+                found.add(
+                    f"{prep.REGISTRY_HOST}/{item['namespace']}/{item['name']}/{item['provider']}"
+                )
+        offset = body["meta"].get("next_offset")
+        if not body["modules"] or offset is None:
+            return sorted(found)
+
+
 def checksum_for(filename: str, sums_url: str) -> str:
     """Find the file's digest in the authoritative SHA256SUMS document."""
     for line in http_bytes(sums_url).decode("utf-8").splitlines():
@@ -146,10 +180,9 @@ def repository_id(owner: str, repo: str) -> str:
     return str(http_json(f"{GITHUB_API}/repos/{owner}/{repo}", github_headers())["id"])
 
 
-def resolve_provider(address: str, constraint: str) -> dict[str, Any]:
-    """Pin one provider: newest release, digest cross-check, repository id when on GitHub."""
+def resolve_provider(address: str, version: str) -> dict[str, Any]:
+    """Pin one provider release: digest cross-check, repository id when on GitHub."""
     _, namespace, kind = address.split("/")
-    version = newest_release(provider_versions(address), constraint, address)
     meta = http_json(f"{REGISTRY}/v1/providers/{namespace}/{kind}/{version}/download/linux/amd64")
     if meta["shasum"] != checksum_for(meta["filename"], meta["shasums_url"]):
         raise ValueError(
@@ -172,83 +205,14 @@ def resolve_provider(address: str, constraint: str) -> dict[str, Any]:
     return {"source": address, "version": version, "platform": "linux_amd64", "artifact": artifact}
 
 
-def module_call_graph(
-    data: bytes, prefix: str, context: str
-) -> tuple[dict[str, dict[str, Any]], list[tuple[str, str, str, str | None]]]:
-    """Parse the package from its root: local edges in the graph, registry calls listed.
-
-    Returns the directory graph with local edges resolved and every registry call as
-    (directory, label, full address, version constraint).
-    """
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        files = {
-            item.filename[len(prefix) :]: item
-            for item in archive.infolist()
-            if item.filename.startswith(prefix) and not item.is_dir()
-        }
-        graph: dict[str, dict[str, Any]] = {}
-        registry_calls: list[tuple[str, str, str, str | None]] = []
-        pending = ["."]
-        while pending:
-            directory = pending.pop()
-            if directory in graph:
-                continue
-            graph[directory] = {}
-            names = sorted(name for name in files if (posixpath.dirname(name) or ".") == directory)
-            if not any(name.endswith((".tf", ".tf.json")) for name in names):
-                raise ValueError(f"{context}: directory {directory} has no configuration files")
-            for name in names:
-                stem = posixpath.basename(name).removesuffix(".json")
-                if stem.endswith((".tofu", ".tofu.json")):
-                    raise ValueError(f"{context}: registry packages must be Terraform: {name}")
-                if stem == "override" or stem.endswith("_override"):
-                    raise ValueError(f"{context}: override files are refused: {name}")
-                if not name.endswith((".tf", ".tf.json")):
-                    continue
-                text = archive.read(files[name]).decode("utf-8")
-                try:
-                    parsed = json.loads(text) if name.endswith(".json") else prep.hcl2.loads(text)
-                except Exception:
-                    parsed = prep.hcl2.loads(text.replace("\r\n", "\n"))
-                json_syntax = name.endswith(".json")
-                for label, block in prep._blocks(parsed, "module", json_syntax):
-                    source = prep._literal(block.get("source"), json_syntax)
-                    if source is None:
-                        raise ValueError(
-                            f"{context}: module {label!r} in {directory} has a dynamic source"
-                        )
-                    if source.startswith(("./", "../")):
-                        target = posixpath.normpath(posixpath.join(directory, source))
-                        if target.startswith("../") or target == "..":
-                            raise ValueError(f"{context}: module {label!r} escapes the package")
-                        graph[directory][label] = {"local": target}
-                        pending.append(target)
-                        continue
-                    match = re.fullmatch(rf"(?:([^/]+)/)?({prep._REGISTRY_PACKAGE})", source)
-                    if (
-                        match is None
-                        or (match.group(1) or prep.REGISTRY_HOST).lower() != prep.REGISTRY_HOST
-                    ):
-                        raise ValueError(
-                            f"{context}: module {label!r} calls an unsupported source {source!r}"
-                        )
-                    constraint = prep._literal(block.get("version"), json_syntax)
-                    registry_calls.append(
-                        (directory, label, f"{prep.REGISTRY_HOST}/{match.group(2)}", constraint)
-                    )
-    for directory in sorted(graph):
-        graph[directory] = {label: graph[directory][label] for label in sorted(graph[directory])}
-    return graph, registry_calls
-
-
 def terraform_get(url: str) -> str:
     """Return the X-Terraform-Get location of one registry module download."""
     with urlopen(Request(url), timeout=120) as response:
         return response.headers.get("X-Terraform-Get", "")
 
 
-def resolve_module(source: str, version: str) -> dict[str, Any]:
-    """Resolve one registry module version to its commit archive and read its call graph."""
+def download_module(source: str, version: str) -> dict[str, Any]:
+    """Resolve one registry module release to its commit archive."""
     namespace, name, system = source.split("/")[-3:]
     location = terraform_get(
         f"{REGISTRY}/v1/modules/{namespace}/{name}/{system}/{version}/download"
@@ -260,82 +224,382 @@ def resolve_module(source: str, version: str) -> dict[str, Any]:
         )
     owner, repo, revision = match.groups()
     data = http_bytes(f"https://codeload.github.com/{owner}/{repo}/zip/{revision}")
-    context = f"{source} {version}"
-    graph, registry_calls = module_call_graph(data, f"{repo}-{revision}/", context)
-    return {
-        "source": source,
-        "version": version,
-        "owner": owner,
-        "repo": repo,
-        "revision": revision,
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "graph": graph,
-        "registry_calls": registry_calls,
-    }
+    return {"owner": owner, "repo": repo, "revision": revision, "data": data}
 
 
-def resolve_modules(policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Resolve the policy's registry modules and their pinned registry dependencies."""
-    policy = {}
-    for entry in policies:
-        exact_keys(entry, {"source", "constraint"}, "registry module")
-        address = full_address(entry["source"], "registry module", modules=True)
-        if address.casefold() in policy:
-            raise ValueError(f"duplicate registry module in policy: {address}")
-        policy[address.casefold()] = entry
-    records: dict[str, dict[str, Any]] = {}
-    pending = list(policy)
-    while pending:
-        key = pending.pop(0)
-        if key in records:
-            continue
-        entry = policy[key]
-        record = resolve_module(
-            entry["source"],
-            newest_release(module_versions(entry["source"]), entry["constraint"], entry["source"]),
+def read_directory(data: bytes, prefix: str, directory: str, context: str) -> Any:
+    """Read one package directory as preparation will: calls, requirements, implied names."""
+    texts: list[tuple[str, str]] = []
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for item in archive.infolist():
+            name = item.filename.removeprefix(prefix)
+            if (
+                name != item.filename
+                and not item.is_dir()
+                and (posixpath.dirname(name) or ".") == directory
+                and not posixpath.basename(name).startswith(".")
+                and name.endswith((".tf", ".tf.json"))
+            ):
+                try:
+                    texts.append((posixpath.basename(name), archive.read(item).decode("utf-8")))
+                except UnicodeDecodeError:
+                    raise ValueError(f"{context}: {name} is not UTF-8") from None
+    if not texts:
+        raise ValueError(f"{context}: directory {directory} has no configuration files")
+    try:
+        return prep.directory_configuration(texts)
+    except ValueError as error:
+        raise ValueError(f"{context}: cannot read directory {directory}: {error}") from None
+
+
+class Resolution:
+    """Resolve one policy against the registry, caching every lookup for the run."""
+
+    def __init__(self, policy: dict[str, Any]) -> None:
+        exact_keys(
+            policy, {"schema", "providers", "registry_modules"}, "policy", frozenset({"catalog"})
         )
-        for _, _, address, _ in record["registry_calls"]:
-            if address.casefold() not in policy:
-                raise ValueError(
-                    f"{entry['source']}: calls {address}, which the policy does not list to bake"
-                )
-            pending.append(address.casefold())
-        records[key] = record
-    modules = []
-    for key in sorted(records):
-        record = records[key]
-        name = record["source"].split("/")[-2]
-        for directory, label, address, constraint in record["registry_calls"]:
-            target = records[address.casefold()]
+        if policy["schema"] != 1 or type(policy["schema"]) is not int:
+            raise ValueError("policy schema must be the integer 1")
+        self.bounds: dict[str, str] = {}
+        for entry in policy["providers"]:
+            exact_keys(entry, {"address", "constraint"}, "provider")
+            address = full_address(entry["address"], "provider", modules=False)
+            if address in self.bounds:
+                raise ValueError(f"duplicate provider in policy: {address}")
+            satisfies("0.0.0", entry["constraint"], address)
+            self.bounds[address] = entry["constraint"]
+        self.explicit: dict[str, dict[str, Any]] = {}
+        for entry in policy["registry_modules"]:
+            exact_keys(entry, {"source", "constraint"}, "registry module")
+            address = full_address(entry["source"], "registry module", modules=True)
+            if address.casefold() in self.explicit:
+                raise ValueError(f"duplicate registry module in policy: {address}")
+            self.explicit[address.casefold()] = entry
+        self.catalog = policy.get("catalog")
+        self.skipped: dict[str, str] = {}
+        if self.catalog is not None:
+            exact_keys(self.catalog, {"namespace", "prefixes"}, "catalog", frozenset({"exclude"}))
+            if not re.fullmatch(prep._REGISTRY_PART, self.catalog["namespace"]) or not (
+                self.catalog["prefixes"]
+                and all(isinstance(item, str) and item for item in self.catalog["prefixes"])
+            ):
+                raise ValueError("catalog needs a namespace and at least one name prefix")
+            for item in self.catalog.get("exclude", []):
+                exact_keys(item, {"source", "reason"}, "catalog exclusion")
+                address = full_address(item["source"], "catalog exclusion", modules=True)
+                self.skipped[address.casefold()] = item["reason"]
+        self.versions: dict[str, list[str]] = {}
+        self.addresses: dict[str, str] = {}
+        self.releases: dict[str, list[str]] = {}
+        self.pins: dict[tuple[str, str], dict[str, Any]] = {}
+        self.archives: dict[Key, dict[str, Any]] = {}
+        self.directories: dict[tuple[Key, str], Any] = {}
+        self.edges: dict[tuple[Key, str, str], dict[str, Any]] = {}
+
+    def listed(self, address: str) -> bool:
+        """Whether the policy approves baking this module source."""
+        if address.casefold() in self.explicit:
+            return True
+        if self.catalog is None:
+            return False
+        namespace, name, _ = address.split("/")[-3:]
+        return namespace.casefold() == self.catalog["namespace"].casefold() and name.startswith(
+            tuple(self.catalog["prefixes"])
+        )
+
+    def address(self, source: str) -> str:
+        if source.casefold() not in self.addresses:
+            self.addresses[source.casefold()] = module_address(source)
+        return self.addresses[source.casefold()]
+
+    def release(self, source: str, constraint: str) -> str:
+        if source not in self.versions:
+            self.versions[source] = module_versions(source)
+        return newest_release(self.versions[source], constraint, source)
+
+    def archive(self, key: Key) -> dict[str, Any]:
+        if key not in self.archives:
+            self.archives[key] = download_module(*key)
+        return self.archives[key]
+
+    def directory(self, key: Key, directory: str) -> Any:
+        if (key, directory) not in self.directories:
+            archive = self.archive(key)
+            prefix = f"{archive['repo']}-{archive['revision']}/"
+            self.directories[key, directory] = read_directory(
+                archive["data"], prefix, directory, f"{key[0]} {key[1]}"
+            )
+        return self.directories[key, directory]
+
+    def edge(self, key: Key, directory: str, label: str, arguments: Any) -> dict[str, Any]:
+        """Resolve one call: a local directory, or a registry release and entry directory."""
+        if (key, directory, label) in self.edges:
+            return self.edges[key, directory, label]
+        context = f"{key[0]} {key[1]}: module {label!r} in {directory}"
+        if arguments is None:
+            raise ValueError(f"{context} is declared twice")
+        source = arguments.get("source")
+        if source is None:
+            raise ValueError(f"{context} has a dynamic source")
+        if source.startswith(("./", "../")):
+            target = posixpath.normpath(posixpath.join(directory, source))
+            if target == ".." or target.startswith("../"):
+                raise ValueError(f"{context} escapes the package")
+            edge: dict[str, Any] = {"local": target}
+        else:
+            match = prep.runner._REGISTRY_SOURCE.fullmatch(source)
+            if (
+                match is None
+                or (match.group(1) or prep.REGISTRY_HOST).lower() != prep.REGISTRY_HOST
+            ):
+                raise ValueError(f"{context} calls an unsupported source {source!r}")
+            requested = f"{prep.REGISTRY_HOST}/{match.group(2)}"
+            if not self.listed(requested):
+                raise ValueError(f"{context} calls {requested}, which the policy does not list")
+            subdir = match.group(3)
+            if subdir is not None:
+                try:
+                    prep.relative_path(subdir)
+                except prep.Refused:
+                    raise ValueError(f"{context} calls an unclean subdirectory") from None
+            constraint = arguments.get("version")
             if constraint is None:
-                raise ValueError(f"{record['source']}: module {label!r} does not pin a version")
-            if not satisfies(target["version"], constraint, f"{record['source']} -> {address}"):
-                raise ValueError(
-                    f"{record['source']}: call to {address} requires {constraint}, "
-                    f"but the policy resolves {target['version']}"
+                raise ValueError(f"{context} does not pin a version")
+            target_source = self.address(requested)
+            edge = {"registry": (target_source, self.release(target_source, constraint))}
+            if subdir is not None:
+                edge["dir"] = subdir
+        self.edges[key, directory, label] = edge
+        return edge
+
+    def tree(self, key: Key, entry: str, loaded: dict[Key, set[str]]) -> None:
+        """Load every directory Terraform reads for a call into this package directory."""
+        pending = [entry]
+        while pending:
+            directory = pending.pop()
+            if directory in loaded.setdefault(key, set()):
+                continue
+            loaded[key].add(directory)
+            calls = self.directory(key, directory)[0]
+            for label, arguments in sorted(calls.items()):
+                edge = self.edge(key, directory, label, arguments)
+                if "local" in edge:
+                    pending.append(edge["local"])
+                else:
+                    self.tree(edge["registry"], edge.get("dir", "."), loaded)
+
+    def pin(self, address: str, version: str) -> dict[str, Any]:
+        if (address, version) not in self.pins:
+            self.pins[address, version] = resolve_provider(address, version)
+        return copy.deepcopy(self.pins[address, version])
+
+    def provider(self, address: str) -> list[str]:
+        if address not in self.releases:
+            self.releases[address] = provider_versions(address)
+        return self.releases[address]
+
+    def root(self, key: Key) -> tuple[dict[Key, set[str]], dict[str, str]]:
+        """Load one root and pick, per provider, the newest release every requirement admits."""
+        loaded: dict[Key, set[str]] = {}
+        self.tree(key, ".", loaded)
+        needs: dict[str, list[str]] = {}
+        for package, directories in loaded.items():
+            for directory in directories:
+                _, required, implied = self.directory(package, directory)
+                try:
+                    found = prep.provider_needs(required, implied)
+                except prep.Refused:
+                    raise ValueError(
+                        f"{package[0]} {package[1]}: a provider requirement in {directory} "
+                        "is not a literal"
+                    ) from None
+                for address, constraints in found.items():
+                    needs.setdefault(address, []).extend(constraints)
+        picks: dict[str, str] = {}
+        for address, constraints in sorted(needs.items()):
+            if address not in self.bounds:
+                raise ValueError(f"needs provider {address}, which the policy does not approve")
+            bound = [self.bounds[address], *sorted(set(constraints))]
+            admitted = [
+                version
+                for version in self.provider(address)
+                if all(satisfies(version, item, address) for item in bound)
+            ]
+            if not admitted:
+                raise ValueError(f"no release of {address} satisfies {bound}")
+            picks[address] = max(admitted, key=release_key)
+        return loaded, picks
+
+    def document(
+        self, kept: dict[Key, tuple[dict[Key, set[str]], dict[str, str]]], excluded: list[Any]
+    ) -> dict[str, Any]:
+        """Build the manifest the kept roots need."""
+        directories: dict[Key, set[str]] = {}
+        pins: set[tuple[str, str]] = set()
+        for loaded, picks in kept.values():
+            for package, found in loaded.items():
+                directories.setdefault(package, set()).update(found)
+            pins.update(picks.items())
+        for address, bound in self.bounds.items():
+            pins.add((address, newest_release(self.provider(address), bound, address)))
+        names: dict[Key, str] = {}
+        for source, version in directories:
+            name, system = source.split("/")[-2:]
+            names[source, version] = f"{name}-{system}-{version}".lower()
+        if len(set(names.values())) != len(names):
+            raise ValueError("registry modules resolve to colliding names")
+        modules = []
+        for package in sorted(directories, key=lambda item: names[item]):
+            graph: dict[str, dict[str, Any]] = {}
+            for directory in sorted(directories[package]):
+                graph[directory] = {}
+                calls = self.directory(package, directory)[0]
+                for label, arguments in sorted(calls.items()):
+                    edge = dict(self.edge(package, directory, label, arguments))
+                    if "registry" in edge:
+                        edge["registry"] = names[edge["registry"]]
+                    graph[directory][label] = edge
+            archive = self.archive(package)
+            modules.append(
+                {
+                    "name": names[package],
+                    "source": package[0],
+                    "version": package[1],
+                    "revision": archive["revision"],
+                    "graph": graph,
+                    "artifact": {
+                        "url": (
+                            f"https://codeload.github.com/{archive['owner']}/{archive['repo']}"
+                            f"/zip/{archive['revision']}"
+                        ),
+                        "sha256": hashlib.sha256(archive["data"]).hexdigest(),
+                        "provenance": f"Registry {package[1]} download resolves to this commit",
+                    },
+                }
+            )
+        document: dict[str, Any] = {
+            "schema": 1,
+            "engine": "terraform",
+            "providers": [
+                self.pin(address, version)
+                for address, version in sorted(
+                    pins, key=lambda item: (item[0], release_key(item[1]))
                 )
-            record["graph"][directory][label] = {"registry": target["source"].split("/")[-2]}
-        modules.append(
-            {
-                "name": name,
-                "source": record["source"],
-                "version": record["version"],
-                "revision": record["revision"],
-                "graph": record["graph"],
-                "artifact": {
-                    "url": f"https://codeload.github.com/{record['owner']}/{record['repo']}/zip/{record['revision']}",
-                    "sha256": record["sha256"],
-                    "provenance": (
-                        f"Registry {record['version']} download and tag v{record['version']} "
-                        "resolve to this commit"
-                    ),
-                },
-            }
-        )
-    names = [item["name"] for item in modules]
-    if len(names) != len(set(names)):
-        raise ValueError("policy modules resolve to colliding names")
-    return modules
+            ],
+            "modules": [],
+            "registry_modules": modules,
+        }
+        if excluded:
+            document["excluded"] = sorted(
+                excluded, key=lambda item: (item["source"], item["version"])
+            )
+        return document
+
+    def refusals(self, document: dict[str, Any]) -> dict[str, str]:
+        """Run the preparer's per-package checks on the cached archives; name what it refuses."""
+        try:
+            prep.checked_manifest(copy.deepcopy(document))
+        except prep.Refused as error:
+            raise ValueError(f"the manifest itself is refused: {error}") from None
+        catalog = {item["name"]: item for item in document["registry_modules"]}
+        keys = {
+            item["name"]: (item["source"], item["version"]) for item in document["registry_modules"]
+        }
+        refused: dict[str, str] = {}
+        sources: dict[str, Any] = {}
+        for item in document["registry_modules"]:
+            data = self.archive(keys[item["name"]])["data"]
+            try:
+                sources[item["name"]] = prep.registry_module_files(
+                    item, data, catalog, document["providers"]
+                )[1]
+            except prep.Refused as error:
+                refused[item["name"]] = str(error)
+        if not refused:
+            for item in document["registry_modules"]:
+                for directory in item["graph"]:
+                    try:
+                        prep.registry_inventory(item["name"], directory, catalog, sources)
+                    except prep.Refused as error:
+                        refused[item["name"]] = str(error)
+        return refused
+
+
+def reason(error: Exception) -> str:
+    """Bound an exclusion reason to the printable ASCII the manifest accepts."""
+    return re.sub(r"[^\x20-\x7e]", "?", str(error))[:300] or "unknown"
+
+
+def generate(policy: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the policy into the manifest document the preparer consumes."""
+    resolution = Resolution(policy)
+    required: list[Key] = []
+    for entry in resolution.explicit.values():
+        source = resolution.address(entry["source"])
+        required.append((source, resolution.release(source, entry["constraint"])))
+    optional: list[Key] = []
+    excluded: list[dict[str, str]] = []
+    if resolution.catalog is not None:
+        for source in catalog_sources(
+            resolution.catalog["namespace"], resolution.catalog["prefixes"]
+        ):
+            if source.casefold() in resolution.explicit:
+                continue
+            try:
+                version = resolution.release(source, ANY_RELEASE)
+            except ValueError:
+                continue
+            if not re.fullmatch(
+                re.escape(prep.REGISTRY_HOST) + "/" + prep._REGISTRY_PACKAGE, source
+            ):
+                excluded.append(
+                    {
+                        "source": source,
+                        "version": version,
+                        "reason": "Terraform refuses this registry address",
+                    }
+                )
+            elif source.casefold() in resolution.skipped:
+                excluded.append(
+                    {
+                        "source": source,
+                        "version": version,
+                        "reason": resolution.skipped[source.casefold()],
+                    }
+                )
+            else:
+                optional.append((source, version))
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(resolution.archive, sorted(set(required + optional))))
+    kept: dict[Key, tuple[dict[Key, set[str]], dict[str, str]]] = {}
+    for key in sorted(set(required)):
+        kept[key] = resolution.root(key)
+    for key in sorted(set(optional) - set(required)):
+        try:
+            kept[key] = resolution.root(key)
+        except ValueError as error:
+            excluded.append({"source": key[0], "version": key[1], "reason": reason(error)})
+    while True:
+        document = resolution.document(kept, excluded)
+        refused = resolution.refusals(document)
+        if not refused:
+            return document
+        names = {
+            item["name"]: (item["source"], item["version"]) for item in document["registry_modules"]
+        }
+        before = len(kept)
+        for key, (loaded, _) in list(kept.items()):
+            blocked = sorted(name for name in refused if names[name] in loaded)
+            if not blocked:
+                continue
+            message = f"preparation refuses {blocked[0]}: {refused[blocked[0]]}"
+            if key in required:
+                raise ValueError(f"{key[0]} {key[1]}: {message}")
+            del kept[key]
+            excluded.append({"source": key[0], "version": key[1], "reason": message})
+        if len(kept) == before:
+            raise ValueError(f"preparation refuses packages no root owns: {sorted(refused)}")
 
 
 def dry_run(document: dict[str, Any]) -> None:
@@ -391,45 +655,23 @@ def pin_changes(previous: dict[str, Any] | None, document: dict[str, Any]) -> li
     if previous is None:
         return ["manifest created"]
     lines: list[str] = []
-    before = {item["source"]: item for item in previous.get("providers", [])}
-    for item in document["providers"]:
-        old = before.get(item["source"], {}).get("version")
-        if old != item["version"]:
-            lines.append(f"provider {item['source']}: {old} -> {item['version']}")
-    old_modules = {item["source"]: item for item in previous.get("registry_modules", [])}
-    for item in document["registry_modules"]:
-        old = old_modules.get(item["source"])
-        if old is None:
-            lines.append(f"module {item['source']}: added at {item['version']}")
-        elif old["version"] != item["version"] or old["revision"] != item["revision"]:
-            lines.append(f"module {item['source']}: {old['version']} -> {item['version']}")
-    for source in sorted(
-        set(old_modules) - {item["source"] for item in document["registry_modules"]}
-    ):
-        lines.append(f"module {source}: removed")
+    for kind in ("providers", "registry_modules"):
+        before = {(item["source"], item["version"]) for item in previous.get(kind, [])}
+        after = {(item["source"], item["version"]) for item in document.get(kind, [])}
+        label = "provider" if kind == "providers" else "module"
+        lines += [
+            f"{label} {source} {version}: added" for source, version in sorted(after - before)
+        ]
+        lines += [
+            f"{label} {source} {version}: removed" for source, version in sorted(before - after)
+        ]
+    before = {(item["source"], item["version"]) for item in previous.get("excluded", [])}
+    after = {(item["source"], item["version"]) for item in document.get("excluded", [])}
+    lines += [f"excluded {source} {version}" for source, version in sorted(after - before)]
+    lines += [
+        f"no longer excluded {source} {version}" for source, version in sorted(before - after)
+    ]
     return lines or ["no pins changed"]
-
-
-def generate(policy: dict[str, Any]) -> dict[str, Any]:
-    """Resolve the policy into the manifest document the preparer consumes."""
-    exact_keys(policy, {"schema", "providers", "registry_modules"}, "policy")
-    if policy["schema"] != 1 or type(policy["schema"]) is not int:
-        raise ValueError("policy schema must be the integer 1")
-    providers = []
-    for entry in policy["providers"]:
-        exact_keys(entry, {"address", "constraint"}, "provider")
-        providers.append(
-            resolve_provider(
-                full_address(entry["address"], "provider", modules=False), entry["constraint"]
-            )
-        )
-    return {
-        "schema": 1,
-        "engine": "terraform",
-        "providers": sorted(providers, key=lambda item: item["source"]),
-        "modules": [],
-        "registry_modules": resolve_modules(policy["registry_modules"]),
-    }
 
 
 def main() -> None:
@@ -442,7 +684,6 @@ def main() -> None:
     )
     args = parser.parse_args()
     document = generate(json.loads(args.policy.read_text(encoding="utf-8")))
-    prep.checked_manifest(copy.deepcopy(document))
     dry_run(document)
     text = render(document) + "\n"
     if args.check:

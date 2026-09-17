@@ -1,6 +1,6 @@
 # Terraform and OpenTofu research
 
-> Consolidated research record, 2026-09-14 through 2026-09-16. It combines the CLI, implementation, dependency-preparation, egress, Azure Verified Module (AVM) catalog and provider-linking investigations for [`maf-sandbox-terraform`](../kinds/terraform.md). The validation kind and approved dependency preparation are implemented; catalog-wide baking remains follow-up work, and unpacked provider linking is implemented in [#1283](https://github.com/sokolaidev/maf-extensions/pull/1283).
+> Consolidated research record, 2026-09-14 through 2026-09-16. It combines the CLI, implementation, dependency-preparation, egress, Azure Verified Module (AVM) catalog and provider-linking investigations for [`maf-sandbox-terraform`](../kinds/terraform.md). The validation kind and approved dependency preparation are implemented; unpacked provider linking is implemented in [#1283](https://github.com/sokolaidev/maf-extensions/pull/1283), and catalog-wide baking in [#1287](https://github.com/sokolaidev/maf-extensions/pull/1287).
 
 ## Decisions at a glance
 
@@ -10,7 +10,7 @@ The initial runtime profile has closed egress, call-scoped disposable sandboxes,
 
 Dependency preparation happens outside the validation sandbox. A trusted host manifest pins provider identities, versions, platforms, archive digests and provenance, while separate module graphs pin local bundles or registry-resolved module packages. The preparer verifies complete artifacts and builds an immutable image. The guest receives no download interface, and validation remains closed-egress.
 
-The measured AVM catalog is large enough for one shared image, but not with the current one-version-per-source graph model. A generated, reviewed manifest, multiple versions per module source, subdirectory support, a Terraform-compatible module reader and an unpacked provider mirror are needed before catalog-wide baking is practical.
+The measured AVM catalog fits one shared image. Baking it needed a generated, reviewed manifest, several versions per module source, subdirectory support, a Terraform-compatible module reader and an unpacked provider mirror. [#1287](https://github.com/sokolaidev/maf-extensions/pull/1287) added the ones [#1283](https://github.com/sokolaidev/maf-extensions/pull/1283) had not, and its catalog image bakes 160 of 165 roots.
 
 ## Validated workload
 
@@ -179,6 +179,28 @@ The recommended starting point is one catalog image with a generated, reviewed m
 
 The catalog implementation order is: make the module reader match Terraform and apply file checks only to baked files; support multiple versions per source and subdirectory edges; add the reviewed manifest generator and larger limits; unpack providers at build time; run offline init for all 165 roots; then refresh on a schedule with a reviewed manifest diff. The catalog image should be refreshed by a scheduled workflow, with each revision producing a new immutable image and ACAS disk image; old images remain available for rollback.
 
+### Catalog image built
+
+[#1287](https://github.com/sokolaidev/maf-extensions/pull/1287) implemented every step of that order except the scheduled refresh. Its measurements were taken on 2026-09-17 on a Windows workstation with Docker Desktop.
+
+| Fact | Measurement |
+| --- | --- |
+| Roots | 165; 160 baked, 5 excluded with a recorded reason |
+| Packages | 221 from 160 sources; 31 sources at more than one version, up to 11; 13 subdirectory edges |
+| Providers | 25 versions, the 27 above without the two unapproved community providers |
+| Generation with the preparer's dry run | 3 minutes |
+| Preparation | 1 minute 46 seconds; 538 MiB; a 1.15 MB receipt |
+| Image build from a cached base | 2 minutes 24 seconds, with `--network none` |
+| Offline probes | 141: one per package no other package calls, and five provider-version ranks; all passed in 58 seconds at four at a time |
+| Image | 3.39 GB (3,388,688,217 bytes) |
+| AVM suite on Docker against this image | 11 cases passed in 2 minutes |
+
+Two exclusions need the unreviewed community providers `chilicat/pkcs12` and `lonegunmanb/ephemeraltls`. One module name is 67 characters long; Terraform 1.16.2 refuses its registry address, which may have at most 64. One module directory holds a 27 MB Terraform release archive and an apt package, which the text check refuses. One holds files whose names contain spaces.
+
+The launcher's parser replaced `python-hcl2`. Across all 7,787 `.tf` files of the 238 packages the catalog probe cached, examples and tests included, it returned the same module calls, provider requirements and resource types wherever `python-hcl2` parsed a file. It also read 6 of the 11 files `python-hcl2` refused. Both refused 5 test fixtures with an unbalanced closing brace.
+
+Terraform 1.16.2 records a registry subdirectory call with the source `registry.terraform.io/Azure/avm-res-network-virtualnetwork/azurerm//modules/subnet`, the package version, and the package's `modules/subnet` directory. The launcher writes the same record. `avm-ptn-alz`, whose `main.telemetry_override.tf` overrides its telemetry blocks, bakes and initializes with override files merged.
+
 ## Provider linking instead of per-call copying
 
 The AVM measurements showed that the provider ZIP mirror is the dominant image and per-call cost. Terraform's filesystem mirror accepts either ZIPs or unpacked directories at `HOST/NAMESPACE/TYPE/VERSION/TARGET/`. The unpacked form lets Terraform link the provider into the call's data directory instead of copying its bytes, provided the executable bit is preserved.
@@ -221,9 +243,8 @@ The guest can still write into the image mirror when it runs as root, as it can 
 
 - The current validation contract does not support plan, apply, destroy, import, state commands, variable-dependent initialization, arbitrary remote modules, optional policy tools, OpenTofu registry graphs, Windows guests or warm reuse.
 - Provider and module compatibility is qualified only for the pinned engine versions, Linux amd64, selected profiles and measured fixtures. Other providers, registries, architectures and backends need independent evidence.
-- The catalog does not yet prove that every newest AVM root validates. Only the network virtual network graph at version 0.22.2 was validated offline.
-- ACAS import and boot for a 1–3 GiB image, memory use on ACAS, and the 165-root offline build time remain unmeasured. The current estimate is roughly nine minutes for 165 roots at about three seconds per root with ZIPs, not a measured result.
-- The Terraform `modules.json` shape for a registry subdirectory call remains to be measured. Override-file semantics, especially the `avm-ptn-alz` package, remain unresolved.
+- Every baked catalog root initializes offline, but `validate` has run only on the network graph at version 0.22.2. A root called without its required inputs fails `validate` for reasons unrelated to the bake.
+- ACAS import and boot for the 3.39 GB catalog image, and memory use on ACAS, remain unmeasured.
 - OpenTofu needs its own mirror, registry graph and compatibility measurements. The current catalog and registry-graph work is Terraform-specific.
 - Online dependency access remains a separate, host-controlled profile. If it is revisited, review the complete pinned graph, redirects, request methods, credentials, private-address checks and receiver-side enforcement before changing egress.
 - The pinned Terraform distribution carries BSL 1.1 and the pinned OpenTofu distribution carries MPL 2.0. Engine and provider notices must remain separate from the Python package's MIT license.

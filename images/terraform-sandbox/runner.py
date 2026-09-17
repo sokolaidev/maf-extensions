@@ -24,7 +24,13 @@ _LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _WORD = re.compile(r"[^\W\d][\w-]*")
 _HEREDOC = re.compile(r"<<-?([A-Za-z_][A-Za-z0-9_-]*)\r?\n")
 _PART = r"[0-9A-Za-z](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z])?"
-_REGISTRY_SOURCE = re.compile(rf"(?:([^/]+)/)?({_PART}/{_PART}/[0-9a-z]{{1,64}})")
+_SUBDIR = r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+_REGISTRY_SOURCE = re.compile(rf"(?:([^/]+)/)?({_PART}/{_PART}/[0-9a-z]{{1,64}})(?://({_SUBDIR}))?")
+_RELEASE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+_CONSTRAINT = re.compile(
+    r"\s*(=|!=|>=|<=|>|<|~>)?\s*((?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){0,2})\s*"
+)
+_CLOSING = {"{": "}", "[": "]", "(": ")"}
 
 
 def clean_environment(private: Path) -> dict[str, str]:
@@ -177,7 +183,7 @@ def _hcl_tokens(text: str) -> list[tuple[str, str | None]]:
         elif word := _WORD.match(text, index):
             tokens.append(("word", word.group()))
             index = word.end()
-        elif char in "{}" or (char == "=" and not text.startswith(("==", "=>"), index)):
+        elif char in "{}[](),:" or (char == "=" and not text.startswith(("==", "=>"), index)):
             tokens.append((char, None))
             index += 1
         else:
@@ -186,59 +192,109 @@ def _hcl_tokens(text: str) -> list[tuple[str, str | None]]:
     return tokens
 
 
+# An attribute's value is its literal string, an object of such values, or None.
+HclValue = str | dict[str, Any] | None
+# A block item carries its labels and body; an attribute item has no labels.
+HclItem = tuple[str, list[str | None] | None, Any]
+
+
+def _hcl_expression(
+    tokens: list[tuple[str, str | None]], index: int, stops: tuple[str, ...]
+) -> tuple[HclValue, int]:
+    """Skip one expression to a line end outside brackets; keep only literal shapes."""
+    start, closers = index, []
+    while index < len(tokens):
+        kind = tokens[index][0]
+        if not closers and (kind in stops or kind in ("newline", "}")):
+            break
+        if kind in _CLOSING:
+            closers.append(_CLOSING[kind])
+        elif kind in ("}", "]", ")") and (not closers or closers.pop() != kind):
+            raise ValueError("unbalanced brackets")
+        index += 1
+    span = tokens[start:index]
+    if closers or not span:
+        raise ValueError("incomplete expression")
+    if len(span) == 1 and span[0][0] == "string":
+        return span[0][1], index
+    if span[0][0] == "{":
+        depth = 0
+        for position, (kind, _) in enumerate(span):
+            depth += 1 if kind in _CLOSING else -1 if kind in ("}", "]", ")") else 0
+            if depth == 0:
+                return (_hcl_object(span[1:-1]) if position == len(span) - 1 else None), index
+    return None, index
+
+
+def _hcl_object(tokens: list[tuple[str, str | None]]) -> dict[str, Any] | None:
+    """Read an object constructor whose keys are all literal; None for anything else."""
+    result: dict[str, Any] = {}
+    index = 0
+    while index < len(tokens):
+        kind, key = tokens[index]
+        if kind in ("newline", ","):
+            index += 1
+            continue
+        if (
+            kind not in ("word", "string")
+            or key is None
+            or index + 1 == len(tokens)
+            or tokens[index + 1][0] not in ("=", ":")
+        ):
+            return None
+        value, index = _hcl_expression(tokens, index + 2, (",",))
+        result[key] = None if key in result else value
+    return result
+
+
+def _hcl_body(
+    tokens: list[tuple[str, str | None]], index: int, nested: bool
+) -> tuple[list[HclItem], int]:
+    """Read attributes and blocks up to the closing brace, or to the end of the file."""
+    items: list[HclItem] = []
+    while True:
+        while index < len(tokens) and tokens[index][0] == "newline":
+            index += 1
+        if index == len(tokens):
+            if nested:
+                raise ValueError("unterminated block")
+            return items, index
+        kind, name = tokens[index]
+        if kind == "}" and nested:
+            return items, index + 1
+        if kind != "word" or name is None:
+            raise ValueError("unexpected token")
+        index += 1
+        if index < len(tokens) and tokens[index][0] == "=":
+            value, index = _hcl_expression(tokens, index + 1, ())
+            items.append((name, None, value))
+            continue
+        labels: list[str | None] = []
+        while index < len(tokens) and tokens[index][0] in ("string", "word"):
+            labels.append(tokens[index][1])
+            index += 1
+        if index == len(tokens) or tokens[index][0] != "{":
+            raise ValueError("unexpected token")
+        body, index = _hcl_body(tokens, index + 1, True)
+        items.append((name, labels, body))
+
+
+def parse_hcl(text: str) -> list[HclItem]:
+    """Parse native syntax into blocks and attributes; raise on what this reader cannot follow."""
+    return _hcl_body(_hcl_tokens(text), 0, False)[0]
+
+
 def _hcl_module_calls(text: str) -> dict[str, dict[str, str | None] | None]:
     """Find top-level module blocks with their literal source and version arguments."""
-    tokens = _hcl_tokens(text) + [("newline", None)] * 3
     calls: dict[str, dict[str, str | None] | None] = {}
-    depth, index, line_start = 0, 0, True
-    while index < len(tokens) - 3:
-        kind, value = tokens[index]
-        header = [token[0] for token in tokens[index : index + 3]]
-        if (
-            depth == 0
-            and line_start
-            and (kind, value) == ("word", "module")
-            and (
-                header[1:] in (["string", "{"], ["word", "{"]) and tokens[index + 1][1] is not None
-            )
-        ):
-            label = tokens[index + 1][1]
-            assert label is not None
-            arguments: dict[str, str | None] = {}
-            index, block_depth, line_start = index + 3, 1, True
-            while block_depth and index < len(tokens) - 3:
-                kind, value = tokens[index]
-                if (
-                    block_depth == 1
-                    and line_start
-                    and kind == "word"
-                    and tokens[index + 1][0] == "="
-                ):
-                    literal = tokens[index + 2][0] == "string" and tokens[index + 3][0] in (
-                        "newline",
-                        "}",
-                    )
-                    if value in ("source", "version"):
-                        assert value is not None
-                        duplicate = value in arguments
-                        arguments[value] = (
-                            None if duplicate or not literal else tokens[index + 2][1]
-                        )
-                block_depth += {"{": 1, "}": -1}.get(kind, 0)
-                line_start = kind in ("newline", "{")
-                index += 1
-            if block_depth:
-                raise ValueError("unterminated block")
-            calls[label] = None if label in calls else arguments
-            line_start = False
+    for kind, labels, body in parse_hcl(text):
+        if kind != "module" or labels is None or len(labels) != 1 or labels[0] is None:
             continue
-        depth += {"{": 1, "}": -1}.get(kind, 0)
-        if depth < 0:
-            raise ValueError("unbalanced braces")
-        line_start = kind == "newline"
-        index += 1
-    if depth:
-        raise ValueError("unbalanced braces")
+        arguments: dict[str, str | None] = {}
+        for name, inner, value in body:
+            if inner is None and name in ("source", "version"):
+                arguments[name] = None if name in arguments or not isinstance(value, str) else value
+        calls[labels[0]] = None if labels[0] in calls else arguments
     return calls
 
 
@@ -268,28 +324,25 @@ def _json_module_calls(text: str) -> dict[str, dict[str, str | None] | None]:
     return calls
 
 
-def directory_module_calls(directory: Path) -> dict[str, dict[str, str | None]]:
-    """Merge a directory's calls in Terraform's order: primary files, then override files."""
+def is_override(name: str) -> bool:
+    """Terraform merges these files into a directory's primary configuration."""
+    stem = name.removesuffix(".json").removesuffix(".tf")
+    return stem == "override" or stem.endswith("_override")
+
+
+def merge_module_calls(
+    found: list[tuple[str, dict[str, dict[str, str | None] | None]]],
+) -> dict[str, dict[str, str | None] | None]:
+    """Merge per-file calls in Terraform's order: primary files, then override files.
+
+    A label declared twice, or overridden without a base, maps to None.
+    """
     merged: dict[str, dict[str, str | None] | None] = {}
-    groups: tuple[list[Path], list[Path]] = ([], [])
-    for path in sorted(directory.iterdir()):
-        name = path.name
-        if path.is_file() and not name.startswith(".") and name.endswith((".tf", ".tf.json")):
-            stem = name.removesuffix(".json").removesuffix(".tf")
-            groups[stem == "override" or stem.endswith("_override")].append(path)
-    for override, paths in enumerate(groups):
-        for path in paths:
-            try:
-                if path.stat().st_size > 8 * 1024 * 1024:
-                    continue
-                text = path.read_text(encoding="utf-8")
-                found = (_json_module_calls if path.name.endswith(".json") else _hcl_module_calls)(
-                    text
-                )
-            except (OSError, UnicodeError, ValueError, RecursionError):
-                # Terraform reports what this reader cannot; it only loses offline records.
+    for override in (False, True):
+        for name, calls in sorted(found, key=lambda item: item[0]):
+            if is_override(name) != override:
                 continue
-            for label, arguments in found.items():
+            for label, arguments in calls.items():
                 base = merged.get(label)
                 if not override:
                     merged[label] = None if label in merged else arguments
@@ -297,7 +350,78 @@ def directory_module_calls(directory: Path) -> dict[str, dict[str, str | None]]:
                     merged[label] = {**base, **arguments}
                 else:
                     merged[label] = None
+    return merged
+
+
+def directory_module_calls(directory: Path) -> dict[str, dict[str, str | None]]:
+    """Read and merge a directory's module calls, dropping files this reader cannot follow."""
+    found: list[tuple[str, dict[str, dict[str, str | None] | None]]] = []
+    for path in sorted(directory.iterdir()):
+        name = path.name
+        if not (path.is_file() and not name.startswith(".") and name.endswith((".tf", ".tf.json"))):
+            continue
+        try:
+            if path.stat().st_size > 8 * 1024 * 1024:
+                continue
+            text = path.read_text(encoding="utf-8")
+            found.append(
+                (name, (_json_module_calls if name.endswith(".json") else _hcl_module_calls)(text))
+            )
+        except (OSError, UnicodeError, ValueError, RecursionError):
+            # Terraform reports what this reader cannot; it only loses offline records.
+            continue
+    merged = merge_module_calls(found)
     return {label: arguments for label, arguments in merged.items() if arguments is not None}
+
+
+def satisfies(version: str, constraint: str) -> bool:
+    """Check a release against a registry constraint; raise ValueError on refused syntax.
+
+    A one-segment `~>` is refused because the module and provider libraries read it differently.
+    """
+    if not _RELEASE.fullmatch(version):
+        raise ValueError("not a release version")
+    target = tuple(int(part) for part in version.split("."))
+    for term in constraint.split(","):
+        match = _CONSTRAINT.fullmatch(term)
+        if match is None:
+            raise ValueError("unsupported constraint")
+        operator, given = match.group(1) or "=", [int(part) for part in match.group(2).split(".")]
+        if operator == "~>" and len(given) == 1:
+            raise ValueError("unsupported constraint")
+        bound = tuple(given + [0] * (3 - len(given)))
+        allowed = {
+            "=": target == bound,
+            "!=": target != bound,
+            ">": target > bound,
+            ">=": target >= bound,
+            "<": target < bound,
+            "<=": target <= bound,
+            "~>": target >= bound and target[: len(given) - 1] == bound[: len(given) - 1],
+        }[operator]
+        if not allowed:
+            return False
+    return True
+
+
+def _newest_admitted(
+    packages: list[dict[str, Any]], arguments: dict[str, str | None]
+) -> dict[str, Any] | None:
+    """Pick the newest baked version the call's constraint admits, as Terraform would."""
+    constraint = arguments.get("version", "")
+    if constraint is None:
+        return None
+    try:
+        admitted = [
+            item for item in packages if not constraint or satisfies(item["version"], constraint)
+        ]
+    except ValueError:
+        return None
+    return max(
+        admitted,
+        key=lambda item: tuple(int(part) for part in item["version"].split(".")),
+        default=None,
+    )
 
 
 def module_records(
@@ -308,7 +432,9 @@ def module_records(
     Terraform still compares each record's source and version with the configuration and
     falls back to the disabled registry on any mismatch, so a missed call stays incomplete.
     """
-    catalog = {package["source"].casefold(): package for package in packages}
+    catalog: dict[str, list[dict[str, Any]]] = {}
+    for package in packages:
+        catalog.setdefault(package["source"].casefold(), []).append(package)
     names = {package["name"] for package in packages}
     records = [{"Key": "", "Source": "", "Dir": "."}]
 
@@ -334,20 +460,24 @@ def module_records(
             match = _REGISTRY_SOURCE.fullmatch(source)
             if match is None or (match.group(1) or REGISTRY_HOST).lower() != REGISTRY_HOST:
                 continue
+            subdir = match.group(3)
+            if subdir is not None and any(part in (".", "..") for part in subdir.split("/")):
+                continue
             address = f"{REGISTRY_HOST}/{match.group(2)}"
-            package = catalog.get(address.casefold())
-            if package is None or len(records) + len(package["inventory"]) >= MAX_RECORDS:
+            package = _newest_admitted(catalog.get(address.casefold(), []), arguments)
+            inventory = None if package is None else package["inventories"].get(subdir or ".")
+            if package is None or inventory is None or len(records) + len(inventory) >= MAX_RECORDS:
                 continue
             base = INSTALL.as_posix() + "/registry"
             records.append(
                 {
                     "Key": key,
-                    "Source": address,
+                    "Source": address + (f"//{subdir}" if subdir else ""),
                     "Version": package["version"],
-                    "Dir": f"{base}/{package['name']}",
+                    "Dir": f"{base}/{package['name']}" + (f"/{subdir}" if subdir else ""),
                 }
             )
-            for item in package["inventory"]:
+            for item in inventory:
                 if item["package"] not in names:
                     raise ValueError("inventory names an unbaked package")
                 record = {

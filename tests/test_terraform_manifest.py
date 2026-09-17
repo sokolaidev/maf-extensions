@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import sys
@@ -118,6 +119,12 @@ def routes() -> dict[str, bytes]:
         "https://registry.terraform.io/v1/modules/Azure/avm-utl-interfaces/azure/versions": json.dumps(
             {"modules": [{"versions": [{"version": "0.6.0"}]}]}
         ).encode(),
+        "https://registry.terraform.io/v1/modules/Azure/avm-res-network-virtualnetwork/azurerm": json.dumps(
+            {"namespace": "Azure", "name": "avm-res-network-virtualnetwork", "provider": "azurerm"}
+        ).encode(),
+        "https://registry.terraform.io/v1/modules/Azure/avm-utl-interfaces/azure": json.dumps(
+            {"namespace": "Azure", "name": "avm-utl-interfaces", "provider": "azure"}
+        ).encode(),
         "https://codeload.github.com/Azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/"
         + NETWORK_REVISION: network,
         "https://codeload.github.com/Azure/terraform-azure-avm-utl-interfaces/zip/"
@@ -146,19 +153,21 @@ POLICY = {
         {"source": "registry.terraform.io/Azure/avm-utl-interfaces/azure", "constraint": "= 0.6.0"},
     ],
 }
+NETWORK_NAME = "avm-res-network-virtualnetwork-azurerm-0.22.2"
+INTERFACES_NAME = "avm-utl-interfaces-azure-0.6.0"
+GETS = {
+    "https://registry.terraform.io/v1/modules/Azure/avm-res-network-virtualnetwork/azurerm/0.22.2/download": (
+        f"git::https://github.com/Azure/terraform-azurerm-avm-res-network-virtualnetwork?ref={NETWORK_REVISION}"
+    ),
+    "https://registry.terraform.io/v1/modules/Azure/avm-utl-interfaces/azure/0.6.0/download": (
+        f"git::https://github.com/Azure/terraform-azure-avm-utl-interfaces?ref={INTERFACES_REVISION}"
+    ),
+}
 
 
-def generated(monkeypatch: pytest.MonkeyPatch, table: dict[str, bytes]) -> dict:
-    gets = {
-        "https://registry.terraform.io/v1/modules/Azure/avm-res-network-virtualnetwork/azurerm/0.22.2/download": (
-            f"git::https://github.com/Azure/terraform-azurerm-avm-res-network-virtualnetwork?ref={NETWORK_REVISION}"
-        ),
-        "https://registry.terraform.io/v1/modules/Azure/avm-utl-interfaces/azure/0.6.0/download": (
-            f"git::https://github.com/Azure/terraform-azure-avm-utl-interfaces?ref={INTERFACES_REVISION}"
-        ),
-    }
-    install(monkeypatch, table, gets)
-    return generator.generate(copy.deepcopy(POLICY))
+def generated(monkeypatch: pytest.MonkeyPatch, table: dict[str, bytes], policy=None) -> dict:
+    install(monkeypatch, table, GETS)
+    return generator.generate(copy.deepcopy(policy or POLICY))
 
 
 def test_generation_resolves_pins_graphs_and_ids(monkeypatch):
@@ -176,18 +185,19 @@ def test_generation_resolves_pins_graphs_and_ids(monkeypatch):
     )
     assert "github_repository_id" not in hashicorp
     network, interfaces = document["registry_modules"]
-    assert network["name"] == "avm-res-network-virtualnetwork"
+    assert network["name"] == NETWORK_NAME
     assert network["graph"] == {
         ".": {
-            "interfaces": {"registry": "avm-utl-interfaces"},
+            "interfaces": {"registry": INTERFACES_NAME},
             "peering": {"local": "modules/peering"},
             "subnet": {"local": "modules/subnet"},
         },
         "modules/peering": {},
-        "modules/subnet": {"interfaces": {"registry": "avm-utl-interfaces"}},
+        "modules/subnet": {"interfaces": {"registry": INTERFACES_NAME}},
     }
     assert interfaces["graph"] == {".": {}}
     assert network["artifact"]["url"].endswith("/zip/" + NETWORK_REVISION)
+    assert "excluded" not in document
 
 
 def test_generation_is_deterministic(monkeypatch):
@@ -211,20 +221,22 @@ def test_a_call_to_an_unlisted_module_is_refused(monkeypatch):
     policy = copy.deepcopy(POLICY)
     policy["registry_modules"] = policy["registry_modules"][:1]
     with pytest.raises(ValueError, match="does not list"):
-        generator.generate(policy)
+        generated(monkeypatch, routes(), policy)
 
 
-def test_a_call_constraint_must_admit_the_pinned_version(monkeypatch):
+def test_a_nested_call_no_release_admits_is_refused(monkeypatch):
+    table = routes()
+    table[f"{REGISTRY_MODULES}/Azure/avm-utl-interfaces/azure/versions"] = json.dumps(
+        {"modules": [{"versions": [{"version": "0.5.0"}, {"version": "0.6.0-rc1"}]}]}
+    ).encode()
     policy = copy.deepcopy(POLICY)
     policy["registry_modules"][1]["constraint"] = "= 0.5.0"
-    versions = generator.module_versions
-    monkeypatch.setattr(
-        generator,
-        "module_versions",
-        lambda source: ["0.5.0", "0.6.0"] if "interfaces" in source else versions(source),
+    older = GETS[f"{REGISTRY_MODULES}/Azure/avm-utl-interfaces/azure/0.6.0/download"]
+    monkeypatch.setitem(
+        GETS, f"{REGISTRY_MODULES}/Azure/avm-utl-interfaces/azure/0.5.0/download", older
     )
-    with pytest.raises(ValueError, match="requires"):
-        generator.generate(policy)
+    with pytest.raises(ValueError, match="no release satisfies"):
+        generated(monkeypatch, table, policy)
 
 
 def test_prereleases_are_never_pinned(monkeypatch):
@@ -234,27 +246,180 @@ def test_prereleases_are_never_pinned(monkeypatch):
         generator.newest_release(["2.13.0-rc1"], "= 2.13.0-rc1", "test")
 
 
-def test_dynamic_remote_and_unpinned_sources_are_refused():
-    prefix = f"terraform-x-{AZAPI_REVISION}/"
+@pytest.mark.parametrize(
+    "arguments,message",
+    [
+        (None, "declared twice"),
+        ({"source": None}, "dynamic source"),
+        ({"source": "../outside"}, "escapes"),
+        ({"source": "git::https://example.com/y"}, "unsupported source"),
+        ({"source": "Azure/avm-x/azurerm//modules/sub", "version": "1.0.0"}, "does not list"),
+        ({"source": "Azure/avm-utl-interfaces/azure"}, "does not pin"),
+        ({"source": "Azure/avm-utl-interfaces/azure//modules/../x", "version": "0.6.0"}, "unclean"),
+    ],
+)
+def test_calls_that_cannot_be_baked_are_refused(monkeypatch, arguments, message):
+    install(monkeypatch, routes(), GETS)
+    resolution = generator.Resolution(copy.deepcopy(POLICY))
+    with pytest.raises(ValueError, match=message):
+        resolution.edge(("registry.terraform.io/Azure/x/azurerm", "1.0.0"), ".", "x", arguments)
 
-    def package(main: str) -> bytes:
-        return archive_bytes({f"{prefix}main.tf": main})
 
-    def graph(main: str):
-        return generator.module_call_graph(package(main), prefix, "test")
-
-    with pytest.raises(ValueError, match="dynamic"):
-        graph('module "x" {\n  source = var.source\n}\n')
-    with pytest.raises(ValueError, match="unsupported source"):
-        graph('module "x" {\n  source = "git::https://example.com/y"\n}\n')
-    with pytest.raises(ValueError, match="unsupported source"):
-        graph('module "x" {\n  source = "Azure/avm-x/azurerm//modules/sub"\n}\n')
-    _, calls = graph('module "x" {\n  source = "Azure/avm-x/azurerm"\n}\n')
-    assert calls == [(".", "x", "registry.terraform.io/Azure/avm-x/azurerm", None)]
+def test_a_subdirectory_call_resolves_to_a_release_and_entry(monkeypatch):
+    table = routes()
+    table[f"{REGISTRY_MODULES}/azure/avm-utl-interfaces/azure"] = table[
+        f"{REGISTRY_MODULES}/Azure/avm-utl-interfaces/azure"
+    ]
+    install(monkeypatch, table, GETS)
+    resolution = generator.Resolution(copy.deepcopy(POLICY))
+    edge = resolution.edge(
+        ("registry.terraform.io/Azure/x/azurerm", "1.0.0"),
+        ".",
+        "x",
+        {"source": "azure/avm-utl-interfaces/azure//modules/x", "version": "~> 0.6.0"},
+    )
+    assert edge == {
+        "registry": ("registry.terraform.io/Azure/avm-utl-interfaces/azure", "0.6.0"),
+        "dir": "modules/x",
+    }
 
 
 def test_an_empty_called_directory_is_refused():
     prefix = f"terraform-x-{AZAPI_REVISION}/"
     data = archive_bytes({f"{prefix}main.tf": 'module "x" {\n  source = "./empty"\n}\n'})
     with pytest.raises(ValueError, match="no configuration"):
-        generator.module_call_graph(data, prefix, "test")
+        generator.read_directory(data, prefix, "empty", "test")
+
+
+REGISTRY_MODULES = "https://registry.terraform.io/v1/modules"
+
+
+def catalog_routes() -> tuple[dict[str, bytes], dict[str, str]]:
+    """A catalog of four roots: two usable, one needing an unapproved provider, one refused."""
+    table = routes()
+    gets = dict(GETS)
+    listing = [
+        ("avm-res-network-virtualnetwork", "azurerm"),
+        ("avm-utl-interfaces", "azure"),
+        ("avm-ptn-legacy", "azurerm"),
+        ("avm-ptn-community", "azure"),
+        ("avm-ptn-stateful", "azure"),
+        ("avm-ptn-skipped", "azure"),
+        ("unrelated", "azurerm"),
+    ]
+    table[f"{REGISTRY_MODULES}?namespace=Azure&limit=100&offset=0"] = json.dumps(
+        {
+            "modules": [
+                {"namespace": "Azure", "name": name, "provider": system} for name, system in listing
+            ],
+            "meta": {},
+        }
+    ).encode()
+    bodies = {
+        "avm-ptn-legacy": (
+            'terraform {\n  required_providers {\n    random = { source = "hashicorp/random", version = "~> 3.6" }\n  }\n}\n'
+            'module "subnet" {\n  source  = "Azure/avm-res-network-virtualnetwork/azurerm//modules/subnet"\n  version = "0.21.0"\n}\n'
+        ),
+        "avm-ptn-community": 'resource "ephemeraltls_certificate" "x" {}\n'
+        'terraform {\n  required_providers {\n    ephemeraltls = { source = "lonegunmanb/ephemeraltls" }\n  }\n}\n',
+        "avm-ptn-stateful": "terraform {}\n",
+        "avm-ptn-skipped": "terraform {}\n",
+    }
+    for name, main in bodies.items():
+        revision = hashlib.sha256(name.encode()).hexdigest()[:40]
+        prefix = f"terraform-azure-{name}-{revision}/"
+        files = {f"{prefix}main.tf": main}
+        if name == "avm-ptn-stateful":
+            files[f"{prefix}terraform.tfstate"] = "{}"
+        table[f"https://codeload.github.com/Azure/terraform-azure-{name}/zip/{revision}"] = (
+            archive_bytes(files)
+        )
+        system = "azurerm" if name == "avm-ptn-legacy" else "azure"
+        table[f"{REGISTRY_MODULES}/Azure/{name}/{system}"] = json.dumps(
+            {"namespace": "Azure", "name": name, "provider": system}
+        ).encode()
+        table[f"{REGISTRY_MODULES}/Azure/{name}/{system}/versions"] = json.dumps(
+            {"modules": [{"versions": [{"version": "1.0.0"}]}]}
+        ).encode()
+        gets[f"{REGISTRY_MODULES}/Azure/{name}/{system}/1.0.0/download"] = (
+            f"git::https://github.com/Azure/terraform-azure-{name}?ref={revision}"
+        )
+    old_prefix = f"terraform-azurerm-avm-res-network-virtualnetwork-{'e' * 40}/"
+    table[
+        "https://codeload.github.com/Azure/terraform-azurerm-avm-res-network-virtualnetwork/zip/"
+        + "e" * 40
+    ] = archive_bytes(
+        {
+            f"{old_prefix}modules/subnet/main.tf": "terraform {}\n",
+            f"{old_prefix}main.tf": "not read !",
+        }
+    )
+    gets[f"{REGISTRY_MODULES}/Azure/avm-res-network-virtualnetwork/azurerm/0.21.0/download"] = (
+        f"git::https://github.com/Azure/terraform-azurerm-avm-res-network-virtualnetwork?ref={'e' * 40}"
+    )
+    return table, gets
+
+
+CATALOG_POLICY = {
+    "schema": 1,
+    "providers": POLICY["providers"],
+    "registry_modules": [],
+    "catalog": {
+        "namespace": "Azure",
+        "prefixes": ["avm-"],
+        "exclude": [
+            {
+                "source": "registry.terraform.io/Azure/avm-ptn-skipped/azure",
+                "reason": "reviewed out",
+            }
+        ],
+    },
+}
+
+
+def test_a_catalog_bakes_what_it_can_and_records_the_rest(monkeypatch):
+    table, gets = catalog_routes()
+    install(monkeypatch, table, gets)
+    document = generator.generate(copy.deepcopy(CATALOG_POLICY))
+    prep.checked_manifest(copy.deepcopy(document))
+    names = [item["name"] for item in document["registry_modules"]]
+    assert names == [
+        "avm-ptn-legacy-azurerm-1.0.0",
+        "avm-res-network-virtualnetwork-azurerm-0.21.0",
+        NETWORK_NAME,
+        INTERFACES_NAME,
+    ]
+    legacy, older = document["registry_modules"][:2]
+    assert legacy["graph"] == {
+        ".": {"subnet": {"registry": older["name"], "dir": "modules/subnet"}}
+    }
+    assert older["graph"] == {"modules/subnet": {}}
+    reasons = {item["source"].split("/")[2]: item["reason"] for item in document["excluded"]}
+    assert reasons.keys() == {"avm-ptn-community", "avm-ptn-stateful", "avm-ptn-skipped"}
+    assert (
+        "lonegunmanb/ephemeraltls, which the policy does not approve"
+        in reasons["avm-ptn-community"]
+    )
+    assert (
+        reasons["avm-ptn-stateful"]
+        == "preparation refuses avm-ptn-stateful-azure-1.0.0: module-state"
+    )
+    assert reasons["avm-ptn-skipped"] == "reviewed out"
+
+
+def test_pin_changes_name_what_moved():
+    previous = {
+        "providers": [{"source": "p", "version": "1.0.0"}],
+        "registry_modules": [{"source": "m", "version": "1.0.0"}],
+    }
+    document = {
+        "providers": [{"source": "p", "version": "1.1.0"}],
+        "registry_modules": [{"source": "m", "version": "1.0.0"}],
+        "excluded": [{"source": "x", "version": "2.0.0", "reason": "r"}],
+    }
+    assert generator.pin_changes(previous, document) == [
+        "provider p 1.1.0: added",
+        "provider p 1.0.0: removed",
+        "excluded x 2.0.0",
+    ]
+    assert generator.pin_changes(previous, previous) == ["no pins changed"]

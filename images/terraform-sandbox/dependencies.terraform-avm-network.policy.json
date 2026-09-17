@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "providers": [
+    {
+      "address": "registry.terraform.io/azure/azapi",
+      "constraint": "= 2.12.0"
+    },
+    {
+      "address": "registry.terraform.io/azure/modtm",
+      "constraint": "= 0.4.0"
+    },
+    {
+      "address": "registry.terraform.io/hashicorp/random",
+      "constraint": "= 3.7.2"
+    }
+  ],
+  "registry_modules": [
+    {
+      "source": "registry.terraform.io/Azure/avm-res-network-virtualnetwork/azurerm",
+      "constraint": "= 0.22.2"
+    },
+    {
+      "source": "registry.terraform.io/Azure/avm-utl-interfaces/azure",
+      "constraint": "= 0.6.0"
+    }
+  ]
+}
