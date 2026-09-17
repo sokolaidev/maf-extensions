@@ -1,11 +1,11 @@
-"""Generate a prepared Terraform dependency manifest from a policy file; run via the CLI.
+"""Generate a prepared dependency manifest from a policy file; run via the CLI.
 
-The policy names what a human decides: approved providers with version bounds, registry modules
-with constraints, and optionally a catalog of modules chosen by namespace and name prefix. This
-script resolves the rest. Nested calls bake at the newest release their constraint admits, and
-each root gets the provider versions Terraform would select for it. A catalog root that cannot be
-baked is left out and recorded with its reason. Nothing is written before a dry run of the real
-preparer has proven every pin.
+The policy names what a human decides: the engine, approved providers with version bounds,
+registry modules with constraints, and optionally a catalog of modules chosen by namespace and
+name prefix. This script resolves the rest against that engine's registry. Nested calls bake at
+the newest release their constraint admits, and each root gets the provider versions the engine
+would select for it. A catalog root that cannot be baked is left out and recorded with its
+reason. Nothing is written before a dry run of the real preparer has proven every pin.
 """
 
 from __future__ import annotations
@@ -31,8 +31,10 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import terraform_dependencies as prep  # noqa: E402
 
-REGISTRY = "https://registry.terraform.io"
+REGISTRY_HOSTS = {"terraform": "registry.terraform.io", "opentofu": "registry.opentofu.org"}
 GITHUB_API = "https://api.github.com"
+# The OpenTofu registry answers 403 to urllib's default agent, so every request names this one.
+USER_AGENT = "maf-manifest-generation/1"
 MAX_BODY = 64 * 1024 * 1024
 ANY_RELEASE = ">= 0.0.0"
 GIT_REF = re.compile(r"git::https://github\.com/([^/]+)/([^/?]+)\?ref=([0-9a-f]{40})\Z")
@@ -49,7 +51,8 @@ def http_bytes(url: str, headers: dict[str, str] | None = None) -> bytes:
     """GET one bounded body, retrying transient failures the way the research probes do."""
     for attempt in range(5):
         try:
-            with urlopen(Request(url, headers=headers or {}), timeout=120) as response:
+            request = Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+            with urlopen(request, timeout=120) as response:
                 data = response.read(MAX_BODY + 1)
             if len(data) > MAX_BODY:
                 raise ValueError(f"response over {MAX_BODY} bytes: {url}")
@@ -108,20 +111,18 @@ def newest_release(versions: list[str], constraint: str, context: str) -> str:
     raise ValueError(f"{context}: no release satisfies {constraint!r} among {sorted(releases)}")
 
 
-def full_address(value: str, what: str, *, modules: bool) -> str:
-    """Require one full registry.terraform.io address; modules carry three name segments."""
+def full_address(value: str, what: str, *, modules: bool, host: str) -> str:
+    """Require one full address on the engine's registry; modules carry three name segments."""
     tail = prep._REGISTRY_PACKAGE if modules else prep._NAME + "/" + prep._NAME
-    if not isinstance(value, str) or not re.fullmatch(
-        re.escape(prep.REGISTRY_HOST) + "/" + tail, value
-    ):
-        raise ValueError(f"{what}: not a registry.terraform.io address: {value!r}")
+    if not isinstance(value, str) or not re.fullmatch(re.escape(host) + "/" + tail, value):
+        raise ValueError(f"{what}: not a {host} address: {value!r}")
     return value
 
 
-def provider_versions(address: str) -> list[str]:
+def provider_versions(address: str, host: str) -> list[str]:
     """List every X.Y.Z release the registry publishes for linux_amd64."""
     _, namespace, kind = address.split("/")
-    body = http_json(f"{REGISTRY}/v1/providers/{namespace}/{kind}/versions")
+    body = http_json(f"https://{host}/v1/providers/{namespace}/{kind}/versions")
     return [
         item["version"]
         for item in body["versions"]
@@ -130,10 +131,10 @@ def provider_versions(address: str) -> list[str]:
     ]
 
 
-def module_versions(source: str) -> list[str]:
+def module_versions(source: str, host: str) -> list[str]:
     """List every X.Y.Z release the registry publishes for one module."""
     namespace, name, system = source.split("/")[-3:]
-    body = http_json(f"{REGISTRY}/v1/modules/{namespace}/{name}/{system}/versions")
+    body = http_json(f"https://{host}/v1/modules/{namespace}/{name}/{system}/versions")
     return [
         item["version"]
         for item in body["modules"][0]["versions"]
@@ -141,26 +142,26 @@ def module_versions(source: str) -> list[str]:
     ]
 
 
-def module_address(source: str) -> str:
+def module_address(source: str, host: str) -> str:
     """Return the registry's own spelling of a module address."""
     namespace, name, system = source.split("/")[-3:]
-    body = http_json(f"{REGISTRY}/v1/modules/{namespace}/{name}/{system}")
-    return f"{prep.REGISTRY_HOST}/{body['namespace']}/{body['name']}/{body['provider']}"
+    body = http_json(f"https://{host}/v1/modules/{namespace}/{name}/{system}")
+    return f"{host}/{body['namespace']}/{body['name']}/{body['provider']}"
 
 
-def catalog_sources(namespace: str, prefixes: list[str]) -> list[str]:
+def catalog_sources(namespace: str, prefixes: list[str], host: str) -> list[str]:
     """List every module in a namespace whose name starts with one of the prefixes."""
     found: set[str] = set()
     offset = 0
     while True:
-        body = http_json(f"{REGISTRY}/v1/modules?namespace={namespace}&limit=100&offset={offset}")
+        body = http_json(
+            f"https://{host}/v1/modules?namespace={namespace}&limit=100&offset={offset}"
+        )
         for item in body["modules"]:
             if item["namespace"].casefold() == namespace.casefold() and item["name"].startswith(
                 tuple(prefixes)
             ):
-                found.add(
-                    f"{prep.REGISTRY_HOST}/{item['namespace']}/{item['name']}/{item['provider']}"
-                )
+                found.add(f"{host}/{item['namespace']}/{item['name']}/{item['provider']}")
         offset = body["meta"].get("next_offset")
         if not body["modules"] or offset is None:
             return sorted(found)
@@ -180,10 +181,12 @@ def repository_id(owner: str, repo: str) -> str:
     return str(http_json(f"{GITHUB_API}/repos/{owner}/{repo}", github_headers())["id"])
 
 
-def resolve_provider(address: str, version: str) -> dict[str, Any]:
+def resolve_provider(address: str, version: str, host: str) -> dict[str, Any]:
     """Pin one provider release: digest cross-check, repository id when on GitHub."""
     _, namespace, kind = address.split("/")
-    meta = http_json(f"{REGISTRY}/v1/providers/{namespace}/{kind}/{version}/download/linux/amd64")
+    meta = http_json(
+        f"https://{host}/v1/providers/{namespace}/{kind}/{version}/download/linux/amd64"
+    )
     if meta["shasum"] != checksum_for(meta["filename"], meta["shasums_url"]):
         raise ValueError(
             f"{address} {version}: registry digest disagrees with the release SHA256SUMS"
@@ -207,15 +210,15 @@ def resolve_provider(address: str, version: str) -> dict[str, Any]:
 
 def terraform_get(url: str) -> str:
     """Return the X-Terraform-Get location of one registry module download."""
-    with urlopen(Request(url), timeout=120) as response:
+    with urlopen(Request(url, headers={"User-Agent": USER_AGENT}), timeout=120) as response:
         return response.headers.get("X-Terraform-Get", "")
 
 
-def download_module(source: str, version: str) -> dict[str, Any]:
+def download_module(source: str, version: str, host: str) -> dict[str, Any]:
     """Resolve one registry module release to its commit archive."""
     namespace, name, system = source.split("/")[-3:]
     location = terraform_get(
-        f"{REGISTRY}/v1/modules/{namespace}/{name}/{system}/{version}/download"
+        f"https://{host}/v1/modules/{namespace}/{name}/{system}/{version}/download"
     )
     match = GIT_REF.fullmatch(location)
     if match is None:
@@ -257,14 +260,24 @@ class Resolution:
 
     def __init__(self, policy: dict[str, Any]) -> None:
         exact_keys(
-            policy, {"schema", "providers", "registry_modules"}, "policy", frozenset({"catalog"})
+            policy,
+            {"schema", "engine", "providers", "registry_modules"},
+            "policy",
+            frozenset({"catalog"}),
         )
         if policy["schema"] != 1 or type(policy["schema"]) is not int:
             raise ValueError("policy schema must be the integer 1")
+        self.engine = policy["engine"]
+        if self.engine not in REGISTRY_HOSTS:
+            raise ValueError(f"policy engine must be one of {sorted(REGISTRY_HOSTS)}")
+        self.host = REGISTRY_HOSTS[self.engine]
+        # Preparation bakes registry modules for Terraform only, so a policy may not ask.
+        if self.engine != "terraform" and (policy["registry_modules"] or "catalog" in policy):
+            raise ValueError(f"registry modules cannot be baked for {self.engine}")
         self.bounds: dict[str, str] = {}
         for entry in policy["providers"]:
             exact_keys(entry, {"address", "constraint"}, "provider")
-            address = full_address(entry["address"], "provider", modules=False)
+            address = full_address(entry["address"], "provider", modules=False, host=self.host)
             if address in self.bounds:
                 raise ValueError(f"duplicate provider in policy: {address}")
             satisfies("0.0.0", entry["constraint"], address)
@@ -272,7 +285,7 @@ class Resolution:
         self.explicit: dict[str, dict[str, Any]] = {}
         for entry in policy["registry_modules"]:
             exact_keys(entry, {"source", "constraint"}, "registry module")
-            address = full_address(entry["source"], "registry module", modules=True)
+            address = full_address(entry["source"], "registry module", modules=True, host=self.host)
             if address.casefold() in self.explicit:
                 raise ValueError(f"duplicate registry module in policy: {address}")
             self.explicit[address.casefold()] = entry
@@ -287,7 +300,9 @@ class Resolution:
                 raise ValueError("catalog needs a namespace and at least one name prefix")
             for item in self.catalog.get("exclude", []):
                 exact_keys(item, {"source", "reason"}, "catalog exclusion")
-                address = full_address(item["source"], "catalog exclusion", modules=True)
+                address = full_address(
+                    item["source"], "catalog exclusion", modules=True, host=self.host
+                )
                 self.skipped[address.casefold()] = item["reason"]
         self.versions: dict[str, list[str]] = {}
         self.addresses: dict[str, str] = {}
@@ -310,17 +325,17 @@ class Resolution:
 
     def address(self, source: str) -> str:
         if source.casefold() not in self.addresses:
-            self.addresses[source.casefold()] = module_address(source)
+            self.addresses[source.casefold()] = module_address(source, self.host)
         return self.addresses[source.casefold()]
 
     def release(self, source: str, constraint: str) -> str:
         if source not in self.versions:
-            self.versions[source] = module_versions(source)
+            self.versions[source] = module_versions(source, self.host)
         return newest_release(self.versions[source], constraint, source)
 
     def archive(self, key: Key) -> dict[str, Any]:
         if key not in self.archives:
-            self.archives[key] = download_module(*key)
+            self.archives[key] = download_module(*key, self.host)
         return self.archives[key]
 
     def directory(self, key: Key, directory: str) -> Any:
@@ -349,12 +364,9 @@ class Resolution:
             edge: dict[str, Any] = {"local": target}
         else:
             match = prep.runner._REGISTRY_SOURCE.fullmatch(source)
-            if (
-                match is None
-                or (match.group(1) or prep.REGISTRY_HOST).lower() != prep.REGISTRY_HOST
-            ):
+            if match is None or (match.group(1) or self.host).lower() != self.host:
                 raise ValueError(f"{context} calls an unsupported source {source!r}")
-            requested = f"{prep.REGISTRY_HOST}/{match.group(2)}"
+            requested = f"{self.host}/{match.group(2)}"
             if not self.listed(requested):
                 raise ValueError(f"{context} calls {requested}, which the policy does not list")
             subdir = match.group(3)
@@ -391,12 +403,12 @@ class Resolution:
 
     def pin(self, address: str, version: str) -> dict[str, Any]:
         if (address, version) not in self.pins:
-            self.pins[address, version] = resolve_provider(address, version)
+            self.pins[address, version] = resolve_provider(address, version, self.host)
         return copy.deepcopy(self.pins[address, version])
 
     def provider(self, address: str) -> list[str]:
         if address not in self.releases:
-            self.releases[address] = provider_versions(address)
+            self.releases[address] = provider_versions(address, self.host)
         return self.releases[address]
 
     def root(self, key: Key) -> tuple[dict[Key, set[str]], dict[str, str]]:
@@ -480,7 +492,7 @@ class Resolution:
             )
         document: dict[str, Any] = {
             "schema": 1,
-            "engine": "terraform",
+            "engine": self.engine,
             "providers": [
                 self.pin(address, version)
                 for address, version in sorted(
@@ -542,7 +554,7 @@ def generate(policy: dict[str, Any]) -> dict[str, Any]:
     excluded: list[dict[str, str]] = []
     if resolution.catalog is not None:
         for source in catalog_sources(
-            resolution.catalog["namespace"], resolution.catalog["prefixes"]
+            resolution.catalog["namespace"], resolution.catalog["prefixes"], resolution.host
         ):
             if source.casefold() in resolution.explicit:
                 continue
@@ -550,9 +562,7 @@ def generate(policy: dict[str, Any]) -> dict[str, Any]:
                 version = resolution.release(source, ANY_RELEASE)
             except ValueError:
                 continue
-            if not re.fullmatch(
-                re.escape(prep.REGISTRY_HOST) + "/" + prep._REGISTRY_PACKAGE, source
-            ):
+            if not re.fullmatch(re.escape(resolution.host) + "/" + prep._REGISTRY_PACKAGE, source):
                 excluded.append(
                     {
                         "source": source,

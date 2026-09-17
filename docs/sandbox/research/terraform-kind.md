@@ -240,13 +240,31 @@ The 27-version unpacked mirror occupied 2.52 GiB; gzipped layer size was 549 MiB
 
 The guest can still write into the image mirror when it runs as root, as it can today; disposal removes the call. A read-only bind mount would need privileges unavailable to the sandbox. Reading provider bytes still consumes I/O and page cache. #1283 implements this route: prepared images unpack the mirror, the launcher refuses a copy, and a `zh:`-only lock is no longer verifiable against the unpacked mirror.
 
+## Prepared OpenTofu images
+
+OpenTofu 1.12.6 installs a provider from the unpacked mirror the way Terraform does, and locks that installation first. `internal/providercache` opens `<version>/<platform>.lock` beside the package path with `O_RDWR|O_CREATE` and mode 0644, flocks it, closes it without ever writing to it, and leaves it there. In the prepared image the call's providers directory then held the `linux_amd64` symlink into the mirror and an empty `linux_amd64.lock`, and the launcher's copy check refused that file and reported the call incomplete, so no prepared OpenTofu image could be built. The check now accepts one shape and no other: an empty regular file whose name is a sibling symlink's name plus `.lock`, where that symlink resolves into the image mirror. Measured against the image launcher, a `.lock` holding bytes, a `.lock` beside a copied package directory and a `.lock` beside a link out of the mirror stay refused.
+
+The registry is the other difference. `registry.opentofu.org` serves the same provider protocol as `registry.terraform.io` and names OpenTofu's own build of each release, so a pin here carries a different digest from the Terraform one. It answers a request that arrives without a `User-Agent` of its own with 403, which the generator now avoids by naming itself. Registry modules stay Terraform-only, so an OpenTofu policy pins providers alone.
+
+| Fact | Measurement |
+| --- | --- |
+| Providers | azapi 2.12.0, azurerm 5.6.0, local 2.9.1, null 3.3.2, random 3.9.1, time 0.14.2, tls 4.4.1 |
+| Downloads | 126.6 MiB of provider archives |
+| Generation, including the preparer's dry run over those bytes | 16 seconds; the same run with `--check` accepted the committed manifest |
+| Image build with `--no-cache` from a cached base | 38 seconds, of which preparation inside the build was 11.9 seconds |
+| Offline probes | 1: every provider is at rank 0, so one `init` installs all seven; passed in 1.6 seconds |
+| Image | 1.18 GB, holding a 672 MB unpacked mirror |
+| Prepared suite on Docker | 12 cases passed in 86 seconds, six per engine, against the images `dependencies.terraform.json` and `dependencies.opentofu.json` produce |
+
+Measured on 2026-09-18 on a Windows workstation with Docker Desktop. ACAS import and boot of the provider image are not measured.
+
 ## Overall limits and follow-ups
 
 - The current validation contract does not support plan, apply, destroy, import, state commands, variable-dependent initialization, arbitrary remote modules, optional policy tools, OpenTofu registry graphs, Windows guests or warm reuse.
 - Provider and module compatibility is qualified only for the pinned engine versions, Linux amd64, selected profiles and measured fixtures. Other providers, registries, architectures and backends need independent evidence.
 - Every baked catalog root initializes offline, but `validate` has run only on the network graph at version 0.22.2. A root called without its required inputs fails `validate` for reasons unrelated to the bake.
 - ACAS import and boot for the 3.39 GB catalog image, and memory use on ACAS, remain unmeasured.
-- OpenTofu needs its own mirror, registry graph and compatibility measurements. The current catalog and registry-graph work is Terraform-specific.
+- OpenTofu has its own prepared provider mirror, measured above. Registry module graphs, and so the catalog work, remain Terraform-specific, and OpenTofu provider compatibility is qualified only for the seven pinned providers.
 - Online dependency access remains a separate, host-controlled profile. If it is revisited, review the complete pinned graph, redirects, request methods, credentials, private-address checks and receiver-side enforcement before changing egress.
 - The pinned Terraform distribution carries BSL 1.1 and the pinned OpenTofu distribution carries MPL 2.0. Engine and provider notices must remain separate from the Python package's MIT license.
 

@@ -1,5 +1,6 @@
 {
   "schema": 1,
+  "engine": "terraform",
   "providers": [
     {
       "address": "registry.terraform.io/azure/azapi",

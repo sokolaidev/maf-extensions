@@ -22,6 +22,10 @@ jobs:
     env:
       MAF_TERRAFORM_E2E_IMAGE: maf-terraform:ci
       MAF_OPENTOFU_E2E_IMAGE: maf-opentofu:ci
+      MAF_TERRAFORM_PREPARED_IMAGE: maf-terraform:ci-prepared
+      MAF_OPENTOFU_PREPARED_IMAGE: maf-opentofu:ci-prepared
+      MAF_TERRAFORM_PREPARED_DIR: dist/dependencies/terraform
+      MAF_OPENTOFU_PREPARED_DIR: dist/dependencies/opentofu
       MAF_TERRAFORM_AVM_IMAGE: maf-terraform:ci-avm
       MAF_TERRAFORM_AVM_DIR: dist/dependencies/terraform-avm
     steps:
@@ -35,9 +39,26 @@ jobs:
           uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile random --tag "$MAF_OPENTOFU_E2E_IMAGE"
       - name: Validate and observe disposal
         run: uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py
+      - name: Build a prepared image of each engine and export its preparation
+        run: |
+          base=maf-terraform:ci-builtin
+          image=$MAF_TERRAFORM_PREPARED_IMAGE
+          directory=$MAF_TERRAFORM_PREPARED_DIR
+          for engine in terraform opentofu; do
+            if [ "$engine" = opentofu ]; then
+              base=maf-opentofu:ci-builtin
+              image=$MAF_OPENTOFU_PREPARED_IMAGE
+              directory=$MAF_OPENTOFU_PREPARED_DIR
+            fi
+            uv run python images/terraform-sandbox/build_image.py --engine "$engine" --profile builtin --tag "$base"
+            build=(docker build --platform linux/amd64 --build-context scripts=scripts --build-arg "BASE_IMAGE=$base" --build-arg "MANIFEST=dependencies.$engine.json" -f images/terraform-sandbox/prepared.Dockerfile)
+            "${build[@]}" -t "$image" images/terraform-sandbox
+            "${build[@]}" --target prepared --output "type=local,dest=$directory" images/terraform-sandbox
+          done
+      - name: Validate prepared providers and modules offline, and observe disposal
+        run: uv run pytest -q tests/test_terraform_dependencies_docker.py
       - name: Build the prepared AVM image and export its preparation
         run: |
-          uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-terraform:ci-builtin
           build=(docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:ci-builtin --build-arg MANIFEST=dependencies.terraform-avm-network.json -f images/terraform-sandbox/prepared.Dockerfile)
           "${build[@]}" -t "$MAF_TERRAFORM_AVM_IMAGE" images/terraform-sandbox
           "${build[@]}" --target prepared --output "type=local,dest=$MAF_TERRAFORM_AVM_DIR" images/terraform-sandbox
