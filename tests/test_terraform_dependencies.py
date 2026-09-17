@@ -75,7 +75,7 @@ def manifest():
 
 
 @pytest.fixture
-def receiver(tmp_path, monkeypatch):
+def receiver(tmp_path, monkeypatch, request):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test receiver")])
     now = datetime.datetime.now(datetime.UTC)
@@ -145,6 +145,12 @@ def receiver(tmp_path, monkeypatch):
     server_context.load_cert_chain(cert_path, key_path)
     server.socket = server_context.wrap_socket(server.socket, server_side=True)
     client_context = ssl.create_default_context(cafile=str(cert_path))
+    if getattr(request, "param", None) == "tls1.1":
+        # A server that stops at TLS 1.1, and a default context that would accept it.
+        for context in (server_context, client_context):
+            context.set_ciphers("DEFAULT:@SECLEVEL=0")
+            context.minimum_version = ssl.TLSVersion.TLSv1
+        server_context.maximum_version = ssl.TLSVersion.TLSv1_1
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     # The production resolver refusal is tested separately. Only the test dial target changes;
@@ -170,6 +176,17 @@ def receiver(tmp_path, monkeypatch):
     server.shutdown()
     server.server_close()
     thread.join(timeout=2)
+
+
+@pytest.mark.filterwarnings("ignore:ssl.TLSVersion.TLSv1:DeprecationWarning")
+@pytest.mark.parametrize("receiver", ["tls1.1"], indirect=True)
+def test_a_default_context_that_admits_tls_1_1_is_raised_to_tls_1_2(receiver):
+    requests, _, unrestricted = receiver
+    assert unrestricted("/repository/1.0/artifact.zip") == (200, b"artifact")
+    requests.clear()
+    with pytest.raises(prep.Refused, match="transfer-failed"):
+        prep.fetch(artifact(), time.monotonic() + 5)
+    assert not requests
 
 
 def test_fixed_request_and_ignored_environment_proxy(receiver, monkeypatch):
