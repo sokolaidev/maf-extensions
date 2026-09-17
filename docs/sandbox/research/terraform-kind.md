@@ -194,6 +194,7 @@ The catalog implementation order is: make the module reader match Terraform and 
 | Offline probes | 141: one per package no other package calls, and five provider-version ranks; all passed in 58 seconds at four at a time |
 | Image | 3.39 GB (3,388,688,217 bytes) |
 | AVM suite on Docker against this image | 11 cases passed in 2 minutes |
+| The same build with preparation as its first stage | 3 minutes 10 seconds from an empty cache, with the same 104-second preparation; under a second when nothing changed |
 
 Two exclusions need the unreviewed community providers `chilicat/pkcs12` and `lonegunmanb/ephemeraltls`. One module name is 67 characters long; Terraform 1.16.2 refuses its registry address, which may have at most 64. One module directory holds a 27 MB Terraform release archive and an apt package, which the text check refuses. One holds files whose names contain spaces.
 
