@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 STANDING_GUIDANCE = (
     "The other result item is derived from configuration and guest programs. Unread, incomplete, "
     "or failed validation is not a pass. Validation checks configuration and provider schemas; "
-    "it does not establish deployment success or run plan, apply, or security policy checks."
+    "it does not establish deployment success or run plan, apply, or security policy checks. "
+    "This tool does not rewrite files, return formatted text, or run other engine commands, so "
+    "fix formatting by editing the files."
 )
 
 
@@ -162,8 +164,11 @@ def _build_tool(
         Pass all configuration siblings, local modules, lock files, and referenced text assets
         together as store-relative paths. Set root_module to the relative module directory.
         Only listed files are staged. Dependencies must already be in the image's offline mirror.
-        Formatting is checked without rewriting files. Initialization failure is incomplete
-        validation. No plan, apply, remote state access, or deployment is performed.
+        Initialization failure is incomplete validation.
+
+        This tool only checks. It reports whether files need formatting, but it does not rewrite
+        them or return the formatted text. It runs no other engine command, downloads nothing, and
+        does not plan, apply, read remote state, or deploy.
         """
         return [
             Content.from_text(await report(files, root_module)),
