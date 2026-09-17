@@ -266,29 +266,60 @@ class TestTheExecutionRoad:
         )
 
     def test_an_overflow_failure_lands_the_disposal_before_the_error(self):
-        """A disposal that fails is still best-effort: the error is returned, the key stays refused."""
+        """A disposal that fails is still best-effort: the error is returned, the attempt ran first.
 
-        class OverflowingThenDead(InProcessSandbox):
+        The backend raises from ``dispose`` rather than reporting a failure — the one failure
+        shape `_dispose_each` catches, and the one this suite's other overflow tests do not
+        carry. The unclean disposal is attempted, its raise is recorded, and the model still
+        gets its error string rather than the raise.
+        """
+
+        class Overflowing(InProcessSandbox):
             async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
                 from maf_sandbox import SandboxExecOutputLimitExceeded
 
                 raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
 
+        class DisposingLoudly(InProcessSandboxBackend):
+            """Raises from ``dispose`` once armed — a delete that breaks, not one that reports."""
+
+            fail = False
+
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ):
+                self.disposed.append(key)
+                self.disposed_kinds.append(kind)
+                self.disposed_instances.append(instance_id)
+                if self.fail:
+                    raise RuntimeError("the engine fell over mid-delete")
+                for held in [entry for entry in list(self.sandboxes) if entry[0] == key]:
+                    del self.sandboxes[held]
+                return None
+
         async def body():
             from autogen_core import CancellationToken
             from autogen_core.code_executor import CodeBlock
 
-            sandbox = OverflowingThenDead()
-            router, _ = _router(sandbox)
+            sandbox = Overflowing()
+            backend = DisposingLoudly(sandbox, isolation=Isolation.NONE)
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
             try:
                 executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                # Warm first: the executor's own acquire reuses, and the failing delete is the
+                # unclean condemnation rather than a cold acquire's adoption.
+                await router.acquire(_key(), _spec())
+                backend.fail = True
                 return await executor.execute_code_blocks(
                     [CodeBlock(code="print('x')", language="python")], CancellationToken()
                 )
             finally:
+                backend.fail = False
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
         result = asyncio.run(body())
+        # The disposal was attempted before the error came back — the ordering the name names —
+        # and the raise never escaped to the model: the router records it, and the error wins.
         assert result.exit_code == 1
         assert "byte budget" in result.output
 

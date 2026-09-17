@@ -18,7 +18,7 @@ AutoGen is in maintenance mode — its README says it will not receive new featu
 
 ## What the executor gives up, said out loud
 
-- **No call admission.** `acquire` without `enter_call` is sound for one turn with nothing else on the key. A host running concurrent calls over one key needs the admission lifecycle `maf-sandbox-deepagents` implements.
+- **No call admission.** `acquire` without `enter_call` is sound for one turn with nothing else on the key, and both model clients set `parallel_tool_calls=False` for exactly this reason — `AssistantAgent` executes every tool call a model response returns concurrently, and two concurrent calls over one unadmitted key is the sharing the sample is not built to referee. A host running concurrent calls over one key — more agents on one conversation, for instance — needs the admission lifecycle `maf-sandbox-deepagents` implements.
 - **Cancelling abandons the wait, not the process.** AutoGen's `CancellationToken` cancels the await — the executor links it before awaiting `exec_bounded`, and a cancelled call raises out of the tool. The guest program keeps running until `dispose_scope` removes the container.
 - **No declarative config.** The executor is not a `Component`, so `dump_component()` raises `NotImplementedError`. So does `PythonCodeExecutionTool.dump_component()`, whose `_to_config` calls the executor's, and so does an agent holding the tool. A router is not serialisable config.
 - **The program travels in argv.** `python3 -c <code>` is bounded by the guest's argument size limit. A large program needs `write_file_over_exec` and a file, which this executor does not build.
@@ -72,7 +72,7 @@ The first tool call pays for creating the container; the router reuses it warm f
   [measured] Disposed 1 sandbox(es).
 ```
 
-What does not vary is the block under the reply. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as CodeExecutor returned it ==` — the interpreter's own stdout, recorded by AutoGen beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). It is the same checker samples 03 and 06 run; its heading accepts both tool names. `Disposed N` reports only the final scope purge; `Disposed 0` is expected when per-call cleanup already disposed the container, which this executor does not do.
+What does not vary is the block under the reply. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as CodeExecutor returned it ==` — the interpreter's own stdout, recorded by AutoGen beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). It is the same checker samples 03 and 06 run; its heading accepts both tool names. `Disposed N` reports only the final scope purge. A healthy run reports `Disposed 1`: the executor performs no per-call cleanup on the happy path. One path does clean up per call — an output overflow disposes the instance before its error is returned, and a run whose only call overflowed then reports `Disposed 0`.
 
 ## Troubleshooting
 
@@ -82,6 +82,6 @@ What does not vary is the block under the reply. `354224848179261915075` is a co
 
 **`ValueError: model_info is required when model name is not a valid OpenAI model`** — the client was built without a `model_info`. Both roads in `build_model` pass one; a copy that dropped it fails at construction, before anything is paid for.
 
-**The tool's answer says the program timed out or exceeded the byte budget** — the executor's bound, not the model's: a two-minute execution ceiling and a 1 MiB output budget, the defaults the Deep Agents adapter carries. A program that overran pays for its sandbox: the docker backend removes the container when an execution times out, and the next tool call creates a fresh one.
+**The tool's answer says the program timed out or exceeded the byte budget** — the executor's bound, not the model's: a two-minute execution ceiling and a 1 MiB output budget, the defaults the Deep Agents adapter carries. A program that overran pays for its sandbox: the docker backend removes the container when an execution times out, and an overflow is refused through the router's unclean path — the key is refused until the instance's delete lands, so the next tool call creates a fresh one either way.
 
 **`NotImplementedError` from `dump_component`** — the executor, the tool and an agent holding them are not serialisable config here. See the give-ups above.

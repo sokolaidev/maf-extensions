@@ -285,6 +285,7 @@ def build_model() -> tuple[ChatCompletionClient, DefaultAzureCredential | None] 
                 base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_LOCAL_BASE_URL,
                 api_key=os.environ.get("OPENAI_API_KEY") or LOCAL_API_KEY_PLACEHOLDER,
                 model_info=_model_info(ModelFamily.UNKNOWN),
+                parallel_tool_calls=False,
             ),
             None,
         )
@@ -308,6 +309,7 @@ def build_model() -> tuple[ChatCompletionClient, DefaultAzureCredential | None] 
             # Sample 06's prerequisite: the deployment is a reasoning model, and `gpt-5.4` is
             # not one of the names AutoGen knows.
             model_info=_model_info(ModelFamily.GPT_5),
+            parallel_tool_calls=False,
         ),
         credential,
     )
