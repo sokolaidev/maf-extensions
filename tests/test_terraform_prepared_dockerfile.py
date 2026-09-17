@@ -38,7 +38,10 @@ def stages() -> dict[str, list[list[str]]]:
             continue
         tokens = (pending + line).split()
         pending = ""
+        # Dockerfile keywords are case-insensitive, so `run` and `as` count too.
+        tokens[:1] = [token.upper() for token in tokens[:1]]
         if tokens[:1] == ["FROM"]:
+            tokens[2:3] = [token.upper() for token in tokens[2:3]]
             assert len(tokens) in (2, 4) and tokens[2:3] in ([], ["AS"]), tokens
             current = tokens[3] if len(tokens) == 4 else "image"
             found[current] = []
