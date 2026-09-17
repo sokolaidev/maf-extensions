@@ -411,6 +411,8 @@ class PinnedHTTPS(http.client.HTTPSConnection):
 
     def __init__(self, host: str, deadline: float) -> None:
         self.tls_context = ssl.create_default_context()
+        # Set the floor here rather than trust the interpreter's or OpenSSL's default.
+        self.tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
         super().__init__(host, timeout=remaining(deadline), context=self.tls_context)
         self.deadline = deadline
 
