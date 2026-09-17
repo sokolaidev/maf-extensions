@@ -58,6 +58,7 @@ jobs:
       - name: Validate prepared providers and modules offline, and observe disposal
         run: uv run pytest -q tests/test_terraform_dependencies_docker.py
       - name: Build the prepared AVM image and export its preparation
+        # The step above built maf-terraform:ci-builtin, the base this one prepares onto.
         run: |
           build=(docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:ci-builtin --build-arg MANIFEST=dependencies.terraform-avm-network.json -f images/terraform-sandbox/prepared.Dockerfile)
           "${build[@]}" -t "$MAF_TERRAFORM_AVM_IMAGE" images/terraform-sandbox
@@ -86,5 +87,5 @@ jobs:
           --marker '<!-- terraform-live-failure-tracker -->'
           --title 'Terraform and OpenTofu live checks failed'
           --reproduce 'Re-run the linked attempt, or dispatch terraform-live.yml against the failing commit. Inspect the first failed step for image, registry, daemon, or test failures.'
-          --expected 'Both engine profiles and the pinned AVM graph validate correctly offline and leave no workload containers.'
+          --expected 'Both engine profiles, a prepared image of each engine, and the pinned AVM graph validate correctly offline and leave no workload containers.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-terraform
