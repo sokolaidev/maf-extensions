@@ -187,6 +187,20 @@ def test_validity_and_formatting_are_independent(valid, fmt):
     assert ("formatting PASS" in report) is (fmt == 0)
 
 
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_a_formatting_verdict_says_the_tool_neither_rewrites_nor_returns_files(engine):
+    data = {"main.tf": 'output "hello" {\nvalue = "world"\n}\n'}
+    sandbox = RecordingSandbox(default_stdout=json.dumps(envelope(engine, fmt=3)))
+    tool, _, store = attach(data, sandbox=sandbox, engine=engine)
+    result = asyncio.run(tool.func(files=["main.tf"]))
+    assert "formatting CHANGES REQUIRED" in result[0].text
+    description = " ".join(tool.description.split())
+    for told in (description, result[1].text):
+        assert "does not rewrite" in told and "formatted text" in told, told
+    assert "fix formatting by editing the files" in result[1].text
+    assert store.files == data
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
