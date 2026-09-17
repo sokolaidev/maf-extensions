@@ -35,12 +35,12 @@ jobs:
           uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile random --tag "$MAF_OPENTOFU_E2E_IMAGE"
       - name: Validate and observe disposal
         run: uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py
-      - name: Prepare the pinned AVM graph
-        run: uv run python scripts/terraform_dependencies.py --manifest images/terraform-sandbox/dependencies.terraform-avm-network.json --output "$MAF_TERRAFORM_AVM_DIR"
-      - name: Build the prepared AVM image without network
+      - name: Build the prepared AVM image and export its preparation
         run: |
           uv run python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-terraform:ci-builtin
-          docker build --platform linux/amd64 --network none --build-arg BASE_IMAGE=maf-terraform:ci-builtin -f images/terraform-sandbox/prepared.Dockerfile -t "$MAF_TERRAFORM_AVM_IMAGE" "$MAF_TERRAFORM_AVM_DIR"
+          build=(docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:ci-builtin --build-arg MANIFEST=dependencies.terraform-avm-network.json -f images/terraform-sandbox/prepared.Dockerfile)
+          "${build[@]}" -t "$MAF_TERRAFORM_AVM_IMAGE" images/terraform-sandbox
+          "${build[@]}" --target prepared --output "type=local,dest=$MAF_TERRAFORM_AVM_DIR" images/terraform-sandbox
       - name: Validate the AVM graph offline and observe disposal
         run: uv run pytest -q tests/test_terraform_avm_offline.py
 

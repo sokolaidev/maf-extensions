@@ -1,12 +1,26 @@
-# Supply a trusted builtin-profile base; deploy the result by immutable image ID/digest.
+# Build from images/terraform-sandbox with `--build-context scripts=scripts` and a MANIFEST
+# there. Supply a trusted builtin-profile base built from the same checkout; deploy the
+# result by immutable image ID/digest. Only preparation reaches the network.
 # The mirror leaves this build holding unpacked providers, which Terraform links into
 # every call instead of copying; the ZIPs never reach a published layer.
 ARG BASE_IMAGE=scratch
+FROM ${BASE_IMAGE} AS prepare
+ARG MANIFEST
+COPY --from=scripts terraform_dependencies.py /src/scripts/terraform_dependencies.py
+COPY runner.py /src/images/terraform-sandbox/runner.py
+COPY ${MANIFEST} /src/manifest.json
+RUN python3 -I /src/scripts/terraform_dependencies.py --manifest /src/manifest.json --output /prepared
+
+# The preparation alone; export it with `--target prepared --output type=local,dest=<dir>`.
+# Adding `--build-context prepared=<dir>` builds from a stored one without preparing again.
+FROM scratch AS prepared
+COPY --from=prepare /prepared/ /
+
 FROM ${BASE_IMAGE} AS unpack
-COPY mirror/ /opt/maf-terraform/mirror/
-COPY registry/ /opt/maf-terraform/registry/
-COPY receipt.json /opt/maf-terraform/dependencies.json
-RUN python3 -I - <<'PY'
+COPY --from=prepared /mirror/ /opt/maf-terraform/mirror/
+COPY --from=prepared /registry/ /opt/maf-terraform/registry/
+COPY --from=prepared /receipt.json /opt/maf-terraform/dependencies.json
+RUN --network=none python3 -I - <<'PY'
 import base64
 import hashlib
 import json
@@ -63,11 +77,11 @@ for path, provider in expected.items():
     assert unpacked == provider["h1"], path
 PY
 FROM ${BASE_IMAGE}
-RUN python3 -I -c 'from pathlib import Path; assert not any(Path("/opt/maf-terraform/mirror").rglob("*")), "base mirror must be empty"'
+RUN --network=none python3 -I -c 'from pathlib import Path; assert not any(Path("/opt/maf-terraform/mirror").rglob("*")), "base mirror must be empty"'
 COPY --from=unpack /opt/maf-terraform/unpacked/ /opt/maf-terraform/mirror/
-COPY registry/ /opt/maf-terraform/registry/
-COPY receipt.json /opt/maf-terraform/dependencies.json
-RUN python3 -I - <<'PY'
+COPY --from=prepared /registry/ /opt/maf-terraform/registry/
+COPY --from=prepared /receipt.json /opt/maf-terraform/dependencies.json
+RUN --network=none python3 -I - <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -76,6 +90,10 @@ p = Path("/opt/maf-terraform")
 receipt = json.loads((p / "dependencies.json").read_text())
 metadata = json.loads((p / "engine.json").read_text())
 assert metadata["engine"] == receipt["engine"]
+launcher = hashlib.sha256((p / "runner.py").read_text().encode()).hexdigest()
+assert launcher == receipt["policy_contract"].get("reader_sha256"), (
+    "the base launcher is not the reader preparation used; rebuild the base from this checkout"
+)
 metadata["profile"] = "prepared"
 metadata["dependencies_manifest_sha256"] = receipt["manifest_sha256"]
 metadata["dependencies_policy_sha256"] = receipt["policy_sha256"]
@@ -107,7 +125,7 @@ assert inventory(p / "registry") == expected, "registry modules must contain exa
 PY
 # Initialize every provider version and every root package offline through the launcher.
 # A root is a package no other package calls; the packages it calls initialize with it.
-RUN python3 -I - <<'PY'
+RUN --network=none python3 -I - <<'PY'
 import importlib.util
 import json
 import multiprocessing
