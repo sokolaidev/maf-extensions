@@ -13,7 +13,7 @@ PREPARE = (
 
 
 def stages() -> dict[str, list[str]]:
-    """Each stage's RUN and COPY instructions, keyed by stage name; heredoc bodies are skipped."""
+    """Each stage's RUN, COPY and ADD instructions, keyed by stage name; heredocs are skipped."""
     found: dict[str, list[str]] = {}
     current, marker = "", None
     for line in DOCKERFILE.read_text(encoding="utf-8").splitlines():
@@ -25,7 +25,7 @@ def stages() -> dict[str, list[str]]:
             assert match, line
             current = match.group(1) or "image"
             found[current] = []
-        elif line.startswith(("RUN ", "COPY ")):
+        elif line.startswith(("RUN ", "COPY ", "ADD ")):
             found[current].append(line)
             if heredoc := re.search(r"<<'(\w+)'$", line):
                 marker = heredoc.group(1)
@@ -39,11 +39,13 @@ def test_only_the_preparation_stage_reaches_the_network():
     later = [
         line for name in ("unpack", "image") for line in found[name] if line.startswith("RUN ")
     ]
-    assert later and all(line.startswith("RUN --network=none ") for line in later)
+    # A second flag such as --mount could bind the build context into a network-less step.
+    assert later and all(re.match(r"RUN --network=none (?!--)", line) for line in later)
 
 
 def test_later_stages_take_the_preparation_only_from_the_prepared_stage():
     found = stages()
+    assert not [line for lines in found.values() for line in lines if line.startswith("ADD ")]
     assert found["prepared"] == ["COPY --from=prepare /prepared/ /"]
     copies = [
         line for name in ("unpack", "image") for line in found[name] if line.startswith("COPY ")
