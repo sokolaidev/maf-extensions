@@ -254,6 +254,7 @@ The registry is the other difference. `registry.opentofu.org` serves the same pr
 | Image build with `--no-cache` from a cached base | 38 seconds, of which preparation inside the build was 11.9 seconds |
 | Offline probes | 1: every provider is at rank 0, so one `init` installs all seven; passed in 1.6 seconds |
 | Image | 1.18 GB, holding a 672 MB unpacked mirror |
+| An Azure configuration in that image | `azurerm_resource_group`, `azapi_resource` and `random_string` initialized offline, validated with 0 errors and 0 warnings, and passed `fmt` |
 | Prepared suite on Docker | 12 cases passed in 86 seconds, six per engine, against the images `dependencies.terraform.json` and `dependencies.opentofu.json` produce |
 
 Measured on 2026-09-18 on a Windows workstation with Docker Desktop. ACAS import and boot of the provider image are not measured.
