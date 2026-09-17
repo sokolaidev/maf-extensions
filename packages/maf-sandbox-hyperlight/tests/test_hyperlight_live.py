@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+import select
+import signal
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -32,7 +36,9 @@ from maf_sandbox_hyperlight import (
     HyperlightOutputLimitExceeded,
     HyperlightSandboxBackend,
     HyperlightSandboxConfig,
+    HyperlightWorkerError,
     _backend,
+    _linux,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -259,3 +265,146 @@ asyncio.run(check())
         [sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=10
     )
     assert result.returncode == 0, result.stderr
+
+
+LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux cgroup containment")
+KILL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
+# The guest loops forever, so this worker is inside a native call and cannot see stdin close.
+OWNER = """import asyncio, sys
+from maf_sandbox import Capability, SandboxKey, SandboxSpec
+from maf_sandbox_hyperlight import HyperlightSandboxBackend, HyperlightSandboxConfig, _linux
+_linux._LOCK_PATH = sys.argv[1]
+
+async def main():
+    backend = HyperlightSandboxBackend(HyperlightSandboxConfig(linux_cgroup_root=sys.argv[2]))
+    spec = SandboxSpec(kind='python', work_dir=None, requires=frozenset({Capability.RUN_CODE}))
+    sandbox = await backend.acquire(SandboxKey('hyperlight-live', 'owner', 'agent'), spec)
+    print((await sandbox.run_code("print('live')", timeout=30)).stdout.strip(), flush=True)
+    running = asyncio.create_task(sandbox.run_code("while True: pass", timeout=3600))
+    await asyncio.sleep(1)
+    print('busy', flush=True)
+    await running
+
+asyncio.run(main())
+"""
+CLAIM = "import sys; from maf_sandbox_hyperlight import _linux; _linux._LOCK_PATH = sys.argv[1]; _linux.claim_host()"
+
+
+def cgroup_root() -> Path:
+    return Path(os.environ.get("MAF_HYPERLIGHT_CGROUP_ROOT") or _linux.DEFAULT_CGROUP_ROOT)
+
+
+def worker_groups() -> set[str]:
+    return {entry.name for entry in cgroup_root().iterdir() if entry.name.startswith("worker-")}
+
+
+def group_kills() -> int:
+    """Count kernel group-OOM kills below the delegated root; a removed group keeps its count."""
+    rows = (cgroup_root() / "memory.events").read_text().splitlines()
+    return int(dict(row.split() for row in rows)["oom_group_kill"])
+
+
+def native_worker_pid(sandbox: _backend._HyperlightSandbox) -> int:
+    if sys.platform != "linux":
+        return sandbox.worker.process.pid
+    # The Linux process is the supervisor; only its cgroup names the contained worker.
+    (group,) = worker_groups()
+    return int((cgroup_root() / group / "cgroup.procs").read_text().split()[0])
+
+
+def settles(condition: Callable[[], bool], *, seconds: float = 10) -> bool:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return condition()
+
+
+def claimed(lock: str) -> bool:
+    command = [sys.executable, "-I", "-c", CLAIM, lock]
+    return subprocess.run(command, capture_output=True, timeout=30).returncode == 0
+
+
+def exited(fd: int) -> None:
+    if sys.platform != "linux":
+        pytest.skip("Linux pidfd API")
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    assert poller.poll(10_000), "a micro-VM worker survived its owner"
+
+
+def answer(process: subprocess.Popen[bytes]) -> bytes:
+    assert process.stdout is not None and process.stderr is not None
+    ready, _, _ = select.select([process.stdout], [], [], 60)
+    assert ready, "the owner did not answer"
+    if not (value := process.stdout.readline()):
+        raise AssertionError(process.stderr.read().decode(errors="replace"))
+    return value.strip()
+
+
+@LINUX_ONLY
+def test_kernel_memory_ceiling_kills_the_real_guest_and_removes_its_cgroup():
+    backend = HyperlightSandboxBackend(
+        HyperlightSandboxConfig(
+            linux_cgroup_root=str(cgroup_root()), max_worker_memory_bytes=128 * 1024**2
+        )
+    )
+    kills = group_kills()
+    with pytest.raises(HyperlightWorkerError, match="worker communication failed"):
+        asyncio.run(backend.acquire(SandboxKey("hyperlight-live", "memory", "agent"), SPEC))
+    assert group_kills() == kills + 1
+    assert not worker_groups()
+
+
+def test_abrupt_worker_death_retires_the_sandbox_and_a_fresh_acquire_replaces_it(live_backend):
+    async def check():
+        sandbox = cast("_backend._HyperlightSandbox", await live_backend.acquire(KEY, SPEC))
+        assert (await sandbox.run_code("print(6 * 7)", timeout=5)).stdout == "42\n"
+        os.kill(native_worker_pid(sandbox), KILL)
+        # Termination is asynchronous, and a worker alive a moment longer still answers.
+        sandbox.worker.process.wait(timeout=10)
+        with pytest.raises(HyperlightWorkerError):
+            await sandbox.run_code("print('must not run')", timeout=5)
+        if sys.platform == "linux":
+            assert not worker_groups()
+        fresh = await live_backend.acquire(KEY, SPEC)
+        assert fresh.instance_id != sandbox.instance_id
+        assert (await fresh.run_code("print(6 * 7)", timeout=5)).stdout == "42\n"
+
+    asyncio.run(check())
+
+
+@LINUX_ONLY
+def test_abrupt_owner_death_leaves_no_micro_vm_worker_and_releases_ownership(tmp_path: Path):
+    if sys.platform != "linux":
+        pytest.skip("Linux pidfd API")
+    lock = str(tmp_path / "owner.lock")
+    existing = worker_groups()
+    owner = subprocess.Popen(
+        [sys.executable, "-I", "-u", "-c", OWNER, lock, str(cgroup_root())],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    handles: list[int] = []
+    try:
+        assert answer(owner) == b"live"
+        assert answer(owner) == b"busy"
+        (group,) = worker_groups() - existing
+        handles = [
+            os.pidfd_open(int(pid))
+            for pid in (cgroup_root() / group / "cgroup.procs").read_text().split()
+        ]
+        assert handles
+        owner.kill()
+        owner.wait(timeout=10)
+        for handle in handles:
+            exited(handle)
+        assert settles(lambda: not (cgroup_root() / group).exists())
+        assert settles(lambda: claimed(lock))
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.communicate(timeout=10)
+        for handle in handles:
+            os.close(handle)
