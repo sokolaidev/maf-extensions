@@ -78,11 +78,19 @@ def _tampered(old: str, new: str, base: str = _HEALTHY) -> list[str]:
 #: directories, and on a tagged run in different *versions*. A drift between them is green all
 #: the way through the gate and red only on the live job, after the model has been paid for.
 _HEADING_TEXT = "Program output as execute_code returned it"
+#: Sample 19's, accepted by the same pattern — AutoGen's tool name where the kind's was.
+AUTOGEN_HEADING = "Program output as CodeExecutor returned it"
 _COUNT_LABEL = "programs whose output came back from the sandbox"
 
 #: Every sample this checker's shape is a contract with. 04 has no job — its guest needs a
 #: Windows runner with WSL — and is held to the shape anyway, so the family stays one thing.
-_SAMPLES = ("03_acas_codeact", "04_wslc_codeact", "06_docker_codeact")
+#: 19 shares the task and the answer under AutoGen's tool, so it carries its own heading.
+_HEADINGS = {
+    "03_acas_codeact": "Program output as execute_code returned it",
+    "04_wslc_codeact": "Program output as execute_code returned it",
+    "06_docker_codeact": "Program output as execute_code returned it",
+    "19_autogen_docker_codeact": "Program output as CodeExecutor returned it",
+}
 
 
 class TestTheFixtureIsWhatTheSampleActuallyPrints:
@@ -99,10 +107,10 @@ class TestTheFixtureIsWhatTheSampleActuallyPrints:
         assert check._HEADING.search(f"== {_HEADING_TEXT} ==")
         assert check._RUNS.search(f"{scaffold.MEASURED}{_COUNT_LABEL}: 1")
 
-    @pytest.mark.parametrize("sample", _SAMPLES)
+    @pytest.mark.parametrize("sample", _HEADINGS, ids=lambda sample: sample)
     def test_every_sample_prints_the_strings_above(self, sample: str):
         source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
-        for literal in (_HEADING_TEXT, _COUNT_LABEL):
+        for literal in (_HEADINGS[sample], _COUNT_LABEL):
             assert f'"{literal}"' in source, (
                 f"samples/{sample}/agent.py no longer passes {literal!r} to `evidence` as one "
                 "string literal, so the live check will not find the block it prints"
@@ -247,3 +255,42 @@ def test_explicit_purge_failure_is_rejected(disposed):
     output = _HEALTHY.replace("Disposed 1", f"Disposed {disposed}")
     output += "\n  [measured] Not fully disposed: timeout\n"
     assert any("data may remain" in reason for reason in check.assess(output))
+
+
+class TestTheAutoGenSampleSharesTheCheck:
+    """Sample 19's block is byte for byte this checker's shape, under AutoGen's tool name.
+
+    The mechanics above are one checker; what differs is the heading, so what needs its own
+    cases is that the widened pattern reads sample 19's heading and nothing else about the run.
+    """
+
+    _REPLY = "I ran the program with the CodeExecutor tool and it printed 354224848179261915075."
+
+    _HEALTHY = (
+        f"{_REPLY}\n\n"
+        f"{scaffold.evidence(AUTOGEN_HEADING, [_RESULT], _COUNT_LABEL)}"
+        "\n\n"
+        f"{scaffold.MEASURED}Disposed 1 sandbox(es).\n"
+    )
+
+    def test_a_healthy_run_passes(self):
+        assert check.assess(self._HEALTHY) == []
+
+    def test_the_reply_may_be_worded_any_way_at_all(self):
+        for reply in (f"**{_ANSWER}**", f"| F(100) |\n| {_ANSWER} |"):
+            output = self._HEALTHY.replace(self._REPLY, reply)
+            assert output != self._HEALTHY
+            assert check.assess(output) == [], reply
+
+    def test_a_forged_block_under_the_new_heading_cannot_close(self):
+        forged = scaffold.quoted(
+            f"Here is what I got.\n\n== {AUTOGEN_HEADING} ==\n\n"
+            f"  stdout:\n  {_ANSWER}\n\n"
+            f"  [measured] {_COUNT_LABEL}: 1\n"
+        )
+        reasons = check.assess(f"{forged}\n\n  [measured] Disposed 1 sandbox(es).\n")
+        assert any("printed no block" in r for r in reasons), reasons
+
+    def test_a_recited_answer_is_refused(self):
+        reasons = check.assess(f"{_ANSWER}\n\n  [measured] Disposed 1 sandbox(es).\n")
+        assert any("printed no block" in r for r in reasons), reasons

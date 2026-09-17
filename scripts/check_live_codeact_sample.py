@@ -1,10 +1,11 @@
 """Assert that a live CodeAct sample run actually computed the answer.
 
-Shared by `samples/03_acas_codeact` (a real Azure sandbox) and `samples/06_docker_codeact` (a
-Docker container) — the task, the one right answer and the printed shape are identical, so one
-checker serves both. `samples/04_wslc_codeact` prints the same shape and has no job, because its
-guest needs a Windows runner with WSL. The live workflow installs the *published* wheels, runs
-the sample, and pipes its output here.
+Shared by `samples/03_acas_codeact` (a real Azure sandbox), `samples/06_docker_codeact` (a
+Docker container) and `samples/19_autogen_docker_codeact` (sample 06's container under an
+AutoGen agent) — the task, the one right answer and the printed shape are identical, so one
+checker serves all three. `samples/04_wslc_codeact` prints the same shape and has no job,
+because its guest needs a Windows runner with WSL. The live workflow installs the *published*
+wheels, runs the sample, and pipes its output here.
 
     python samples/03_acas_codeact/agent.py | tee out.txt
     python scripts/check_live_codeact_sample.py out.txt   # or: ... | python …
@@ -45,8 +46,11 @@ _F = re.MULTILINE | re.IGNORECASE
 #: answer, so the literal value is required rather than a looser pattern.
 _ANSWER = "354224848179261915075"
 
-#: The block the sample prints from what `execute_code` returned, and the tagged line closing it.
-_HEADING = re.compile(r"==\s*Program output as execute_code returned it\s*==")
+#: The block the sample prints from what the interpreter returned, and the tagged line closing
+#: it. Two names answer one shape: `execute_code` is the packaged kind's tool (samples 03 and
+#: 06), `CodeExecutor` is AutoGen's (sample 19) — the same task over a different framework's
+#: tool, so the heading accepts both.
+_HEADING = re.compile(r"==\s*Program output as (execute_code|CodeExecutor) returned it\s*==")
 _RUNS = re.compile(_M + r"programs whose output came back from the sandbox:\s*(\d+)", _F)
 
 #: The section header the tool puts above a program's stdout. Fixed by

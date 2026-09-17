@@ -40,6 +40,14 @@ dev = [
     # transitive edge is a declared-dependency violation the moment that graph changes.
     "langchain-core>=1,<2",
     "langchain-openai>=1,<2",
+    # Sample 19's AutoGen wiring, for the same reason as the two lines above. `autogen-core`
+    # arrives with agentchat today and is named anyway, by the same rule. The ceiling is real
+    # rather than conventional: AutoGen is in maintenance mode and 0.7.5 is its last release, so
+    # the band is a pinned band, and `autogen-core`'s `protobuf~=5.29.3` pin narrows every later
+    # resolve of this lockfile.
+    "autogen-agentchat>=0.7.5,<0.8",
+    "autogen-core>=0.7.5,<0.8",
+    "autogen-ext[openai]>=0.7.5,<0.8",
     # `maf-sandbox-otel` ships against the OpenTelemetry *API* alone, so its own tests are the
     # only thing here that needs an SDK: the in-memory exporters are what let a test read back
     # what the recorder actually put on a wire, rather than only that it returned.
