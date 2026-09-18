@@ -48,6 +48,7 @@ from maf_sandbox.conformance import (
 
 from maf_sandbox_wslc import WslcReapResult, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import _container_name
+from maf_sandbox_wslc._reap import listing_rows
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
@@ -177,6 +178,18 @@ def test_write_checks_remove_private_host_copies(tmp_path, monkeypatch):
     assert not _names_on_the_machine(_container_name(key, _spec().kind))
 
 
+def _listed_name(row: dict) -> str:
+    """The name a listing row carries, under either field the CLI has used for it.
+
+    Raises rather than returning nothing, because the callers below assert on absence: a row
+    this cannot read has to fail the test, not answer it.
+    """
+    value = row.get("Name", row.get("Names"))
+    if not isinstance(value, str) or not value:
+        raise AssertionError(f"a listing row carries no name: {row}")
+    return value
+
+
 def _names_on_the_machine(name: str) -> list[str]:
     """Every container currently named ``name``, read with wslc rather than the backend.
 
@@ -190,8 +203,7 @@ def _names_on_the_machine(name: str) -> list[str]:
         timeout=60,
         check=True,
     ).stdout
-    rows = json.loads(listing) if listing.strip() else []
-    return [row["Name"] for row in rows if row.get("Name") == name]
+    return [n for row in listing_rows(listing) if (n := _listed_name(row)) == name]
 
 
 @pytest.mark.parametrize(
@@ -384,14 +396,14 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sy
         # WSLC lifecycle timestamps and the operator can read different host/VM clocks.
         skew = timedelta(seconds=10)
         assert started - skew <= created_at <= stopped_at <= datetime.now(UTC) + skew
-        listing = json.loads(
+        listing = listing_rows(
             command("container", "list", "-a", "--format", "json", "--filter", f"name={old}")
         )
-        listed = next(row for row in listing if row["Name"] == old)
-        assert listed["CreatedAt"] == int(created_at.timestamp())
-        # The state-change event and inspected process exit have separate timestamps.
-        listed_stop = datetime.fromtimestamp(listed["StateChangedAt"], UTC)
-        assert stop_requested_at - skew <= listed_stop <= datetime.now(UTC) + skew
+        # Only the two fields the reaper reads back off a listing. Every other one has changed
+        # type or gone between CLI versions, and nothing here consumes them.
+        listed = next(row for row in listing if _listed_name(row) == old)
+        assert str(listed.get("Id", listed.get("ID"))).startswith(metadata["Id"][:12])
+        assert stop_requested_at - skew <= stopped_at <= datetime.now(UTC) + skew
         print(
             json.dumps(
                 {
@@ -400,8 +412,7 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sy
                     "created": metadata["Created"],
                     "finished": metadata["State"]["FinishedAt"],
                     "operator_now": datetime.now(UTC).isoformat(),
-                    "listed_created": listed["CreatedAt"],
-                    "listed_state_changed": listed["StateChangedAt"],
+                    "listed": listed,
                 }
             )
         )
@@ -630,8 +641,7 @@ def _network_present(name: str) -> bool:
         timeout=60,
         check=True,
     ).stdout
-    rows = json.loads(listing) if listing.strip() else []
-    return any(row.get("Name") == name for row in rows)
+    return any(_listed_name(row) == name for row in listing_rows(listing))
 
 
 @pytest.mark.skipif(

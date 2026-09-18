@@ -75,7 +75,7 @@ from maf_sandbox.paths import (
 from ._config import WslcSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
-from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, reap
+from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
 logger = logging.getLogger(__name__)
 
@@ -466,21 +466,28 @@ _STAT_STDOUT_LIMIT = 512
 _STDERR_LIMIT = 64 * 1024
 
 
+class _UnreadableListing(ValueError):
+    """A ``container list`` payload whose shape this code does not know."""
+
+
 def _listed_names(payload: str) -> list[str]:
-    """The container names in a ``container list --format json`` payload."""
+    """The container names in a ``container list --format json`` payload.
+
+    Raises :class:`_UnreadableListing` rather than answering with no names. Both callers read
+    an empty listing as "nothing is there" — one skips the reuse it should have taken, the
+    other sweeps nothing — so a shape this cannot read has to arrive as a failure.
+    """
     try:
-        parsed: object = json.loads(payload or "[]")
-    except ValueError:
-        return []
-    if not isinstance(parsed, list):
-        return []
+        rows = listing_rows(payload)
+    except ValueError as exc:
+        raise _UnreadableListing(f"could not read the container listing: {exc}") from exc
     names: list[str] = []
-    for row in cast("list[object]", parsed):
-        if not isinstance(row, dict):
-            continue
-        value = cast("dict[str, object]", row).get("Name")
-        if isinstance(value, str):
-            names.append(value)
+    for row in rows:
+        # 2.9.4 named the field `Name`; 2.9.10 and later use docker's `Names`.
+        value = row.get("Name", row.get("Names"))
+        if not isinstance(value, str) or not value:
+            raise _UnreadableListing("a listed container carries no name")
+        names.append(value)
     return names
 
 
@@ -1836,8 +1843,12 @@ class WslcSandboxBackend:
         """Whether ``name`` is listed — running only, or in any state.
 
         Two narrow queries rather than one that reads a state field: ``--filter name=`` is a
-        substring match and the JSON state is an undocumented integer, so the only claim worth
-        making is that an exact name appears in the running listing.
+        substring match and the state field has changed type between CLI versions, so the only
+        claim worth making is that an exact name appears in the running listing.
+
+        Raises :class:`_UnreadableListing` when the payload cannot be read: answering "not
+        listed" there sends ``acquire`` to create a container that already exists, and the name
+        stays taken for every acquire after it.
         """
         args = ["container", "list"]
         if all_states:
@@ -1927,12 +1938,22 @@ class WslcSandboxBackend:
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_EXISTS in result.stderr_text and await self._adopt(name, spec):
-                logger.info("container %s already existed; adopted it instead of creating", name)
-                return image
-            raise RuntimeError(
-                f"wslc could not create container {name}: {result.stderr_text.strip()}"
-            )
+            conflict = result.stderr_text.strip()
+            if _ALREADY_EXISTS in result.stderr_text:
+                try:
+                    adopted = await self._adopt(name, spec)
+                except _UnreadableListing as exc:
+                    # Both halves: the conflict is what failed, the listing is why it stuck.
+                    raise RuntimeError(
+                        f"wslc could not create container {name}: {conflict}; and it could not "
+                        f"be adopted either: {exc}"
+                    ) from exc
+                if adopted:
+                    logger.info(
+                        "container %s already existed; adopted it instead of creating", name
+                    )
+                    return image
+            raise RuntimeError(f"wslc could not create container {name}: {conflict}")
         return image
 
     async def _ensure_egress(
@@ -2103,7 +2124,11 @@ class WslcSandboxBackend:
                 "wslc backend: could not list containers to purge: %s", result.stderr_text.strip()
             )
             return None
-        return _listed_names(result.stdout_text)
+        try:
+            return _listed_names(result.stdout_text)
+        except _UnreadableListing as exc:
+            logger.warning("wslc backend: could not list containers to purge: %s", exc)
+            return None
 
     async def _remove_network(self, net: str) -> bool:
         """Remove an unused network. Returns whether it removed one; never raises.
