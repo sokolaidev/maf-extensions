@@ -229,7 +229,7 @@ class SandboxCodeExecutor(CodeExecutor):
     async def _execute_one(
         self, sandbox: BoundedExec, code: str, cancellation_token: CancellationToken
     ) -> tuple[str, int]:
-        run = asyncio.ensure_future(
+        execution = asyncio.ensure_future(
             sandbox.exec_bounded(
                 ["python3", "-c", code],
                 working_directory=".",
@@ -238,10 +238,10 @@ class SandboxCodeExecutor(CodeExecutor):
             )
         )
         # Cancelling the tool call cancels the *wait*; the guest's end stays unknown either
-        # way, and the handler below condemns the sandbox on every lost run.
-        cancellation_token.link_future(run)
+        # way, and the handler below condemns the sandbox on every lost execution.
+        cancellation_token.link_future(execution)
         try:
-            result = await run
+            result = await execution
         except TimeoutError as error:
             await self._condemn()
             raise _ExecutionLost(self._timeout_text()) from error
@@ -249,7 +249,7 @@ class SandboxCodeExecutor(CodeExecutor):
             await self._condemn()
             raise _ExecutionLost(self._overflow_text()) from error
         except asyncio.CancelledError:
-            # A cancellation condemns like any other lost run — the guest may still be
+            # A cancellation condemns like any other lost execution — the guest may still be
             # running — and propagates.
             await self._condemn()
             raise
@@ -259,7 +259,7 @@ class SandboxCodeExecutor(CodeExecutor):
             await self._condemn()
             raise _ExecutionLost(
                 "Error: the program's execution failed — it may still be running; its "
-                "sandbox was disposed"
+                "sandbox was condemned — refused until its delete lands"
             ) from error
         return _render(result), result.exit_code
 
@@ -270,11 +270,11 @@ class SandboxCodeExecutor(CodeExecutor):
 
 
 class _ExecutionLost(Exception):
-    """A run whose end is unknown, carrying the rendered error the model should see.
+    """An execution whose end is unknown, carrying the rendered error the model should see.
 
     Raised after the sandbox is condemned, and caught by ``execute_code_blocks`` — which
-    turns it back into the ``Error:`` string the tool reports, so a failed run reads to the
-    model as a refusal rather than as an exception out of the tool.
+    turns it back into the ``Error:`` string the tool reports, so a failed execution reads
+    to the model as a refusal rather than as an exception out of the tool.
     """
 
     @property

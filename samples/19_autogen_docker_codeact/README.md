@@ -6,7 +6,7 @@ Sample 06 from the other side of the seam. The agent is [AutoGen](https://micros
 autogen  ->  the sample's CodeExecutor  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
 ```
 
-[`agent.py`](agent.py) is the `app` box. There is no Microsoft Agent Framework here and no `execute_code`; the task, the one right answer and the checker are sample 03's and sample 06's, unchanged, and diffing the two programs shows what changes when the framework does: the agent, the model client and the tool. The fourth piece is the executor itself, and it is sample code — AutoGen ships the contract, not a sandbox.
+[`agent.py`](agent.py) is the `app` box. There is no Microsoft Agent Framework here and no `execute_code`; the task and the one right answer are sample 03's and sample 06's, unchanged, and the checker is theirs with its heading widened to accept the name this tool answers under. Diffing the two programs shows what changes when the framework does: the agent, the model client and the tool. The fourth piece is the executor itself, and it is sample code — AutoGen ships the contract, not a sandbox.
 
 AutoGen is in maintenance mode — its README says it will not receive new features, and names Microsoft Agent Framework as its successor — which is why this is a sample and not a package: the contract will not move, so the executor is cheap to keep here, and a package would cost a range pull request in every core cycle for a framework that has stopped moving.
 
@@ -73,7 +73,7 @@ The first tool call pays for creating the container; the router reuses it warm f
   [measured] Disposed 1 sandbox(es).
 ```
 
-What does not vary is the block under the reply. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as CodeExecutor returned it ==` — the interpreter's own stdout, recorded by AutoGen beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). It is the same checker samples 03 and 06 run; its heading accepts both tool names. `Disposed N` reports only the final scope purge. A healthy run reports `Disposed 1`: the executor performs no per-call cleanup on the happy path. A run whose only call lost its execution — a timeout, an overflow, or any other failure the result did not come back from — does clean up per call, and then reports `Disposed 0`.
+What does not vary is the block under the reply. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as CodeExecutor returned it ==` — the interpreter's own stdout, recorded by AutoGen beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). It is the same checker samples 03 and 06 run; its heading accepts both tool names. `Disposed N` reports only the final scope purge. A healthy run reports `Disposed 1`: the executor performs no per-call cleanup on the happy path. A run whose only call lost its execution — a timeout, an overflow, or any other failure the result did not come back from — does clean up per call, and then reports `Disposed 0` — as long as the per-call delete landed; a delete that did not leaves the instance for the final purge to sweep, and the count reflects that.
 
 ## Troubleshooting
 
@@ -83,6 +83,6 @@ What does not vary is the block under the reply. `354224848179261915075` is a co
 
 **`ValueError: model_info is required when model name is not a valid OpenAI model`** — the client was built without a `model_info`. Both roads in `build_model` pass one; a copy that dropped it fails at construction, before anything is paid for.
 
-**The tool's answer says the program failed, timed out, or exceeded the byte budget** — the executor's bound, not the model's: a two-minute execution ceiling and a 1 MiB output budget, the defaults the Deep Agents adapter carries. A run that loses its execution — a timeout, an overflow, or any other failure the result did not come back from — pays for its sandbox: it is condemned through the router's unclean path, so the key is refused until the instance's delete lands, and the next tool call creates a fresh one. The model reads an `Error:` string in every case, never an exception out of the tool.
+**The tool's answer says the program failed, timed out, or exceeded the byte budget** — the executor's bound, not the model's: a two-minute execution ceiling and a 1 MiB output budget, the defaults the Deep Agents adapter carries. A run that loses its execution — a timeout, an overflow, or any other failure the result did not come back from — pays for its sandbox: it is condemned through the router's unclean path, so the key is refused until the instance's delete lands, and the next tool call creates a fresh one. In every case but a cancellation — which propagates as `CancelledError` — the model reads an `Error:` string, never an exception out of the tool.
 
 **`NotImplementedError` from `dump_component`** — the executor, the tool and an agent holding them are not serialisable config here. See the give-ups above.

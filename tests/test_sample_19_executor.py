@@ -698,24 +698,37 @@ class TestTheExecutionRoad:
             from autogen_core import CancellationToken
             from autogen_core.code_executor import CodeBlock
 
+            # Per-key mode: the fake's default hands back the same object on every acquire,
+            # so a fresh filesystem would be asserted against a fake that had not given one.
             sandbox = Overflowing()
-            router, backend = _router(sandbox)
+            backend = InProcessSandboxBackend(
+                sandbox, isolation=Isolation.NONE, sandbox_per_key=True
+            )
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
             try:
                 executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
                 await executor.execute_code_blocks(
                     [CodeBlock(code="print('x')", language="python")], CancellationToken()
                 )
-                return await router.acquire(_key(), _spec()), backend
+                reacquired = await router.acquire(_key(), _spec())
+                purge = await router.dispose_scope(_key().scope, _key().thread_id)
+                return reacquired, sandbox, backend, purge
             finally:
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
-        reacquired, backend = asyncio.run(body())
+        reacquired, sandbox, backend, purge = asyncio.run(body())
         # The refusal was written when the unclean disposal queued, and retired when the same
         # call's delete landed inside it — so the key is servable again, on a fresh filesystem.
-        # Three disposals: the condemnation, the reacquire's fresh-create path disposing nothing
-        # but recording, and the scope purge closing both.
-        assert reacquired is not None
-        assert backend.disposed.count(_key()) >= 2
+        # Two disposals, recorded and reported: the condemnation, and the scope purge sweeping
+        # the fresh create. The fresh-create path itself records nothing here — per-key mode
+        # handed a genuinely new instance, where the shared fake's default would have handed
+        # back the same object and had the router retire it a second time.
+        assert reacquired is not sandbox, (
+            "the reacquire came back with the same sandbox the overflow ran in — no fresh "
+            "filesystem, so the condemnation did not separate the turns"
+        )
+        assert backend.disposed.count(_key()) == 1
+        assert purge.disposed == 1
 
     @pytest.mark.parametrize("method", ["stop", "restart"])
     def test_a_lifecycle_release_condemns_the_acquired_sandbox(self, method: str):
@@ -820,6 +833,9 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is None
         assert type(model).__name__ == "OpenAIChatCompletionClient"
+        # The flag keeps `AssistantAgent`'s concurrent tool calls off one unadmitted key; the
+        # wiring tests type-check only, so dropping the flag would leave this suite green.
+        assert model._create_args["parallel_tool_calls"] is False  # pyright: ignore[reportPrivateUsage]
 
     def test_the_azure_road_constructs_with_a_token_provider(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
@@ -827,6 +843,7 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is not None
         assert type(model).__name__ == "AzureOpenAIChatCompletionClient"
+        assert model._create_args["parallel_tool_calls"] is False  # pyright: ignore[reportPrivateUsage]
         asyncio.run(credential.close())
 
     def test_an_endpoint_without_a_deployment_is_reported_not_run(
