@@ -102,6 +102,8 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             )
             assert victim.exit_code == 0, victim.stderr
             target = int(victim.stdout)
+            setsid = await sandbox.exec("command -v setsid", working_directory="/tmp", timeout=10)
+            has_setsid = setsid.exit_code == 0
             layout = maf_sandbox.guest_run_layout(
                 "process-test/run" if relative else "/tmp/process-test/run"
             )
@@ -110,11 +112,12 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             assert isinstance(sandbox, maf_sandbox.BoundedExec)
             bounded_execute = sandbox.exec_bounded
             scans = 0
+            session_made: bool | None = None
 
             async def check_launcher_close(
                 command, *, working_directory, timeout, max_output_bytes=None
             ):
-                nonlocal scans
+                nonlocal scans, session_made
                 if " -I -S -c " in str(command) and " --signal " not in str(command):
                     scans += 1
                     if scans == 2:
@@ -150,6 +153,13 @@ else: raise RuntimeError('guest did not create its witness')
                         "assert os.readlink('/proc/'+parent+'/fd/1') == '/dev/null'"
                     )
                     command += " && python3 -c " + shlex.quote(check_closed)
+                    # `setsid` is optional, so which reach a stop can have is the image's to
+                    # decide, and the launcher reports the path it took on its own stdout.
+                    started = await execute(
+                        command, working_directory=working_directory, timeout=timeout
+                    )
+                    session_made = transport.SESSION_MADE in started.stdout
+                    return started
                 if max_output_bytes is not None:
                     return await bounded_execute(
                         command,
@@ -193,7 +203,11 @@ time.sleep(2 if {finish!r} else 90)
             else:
                 with pytest.raises(maf_sandbox.SandboxProgramTimeout) as expired:
                     await maf_sandbox.host_tool_calls_over_exec(sandbox, run, layout, timeout=6)
-                assert expired.value.reach == "group"
+                # Deriving the expectation is only worth something while the marker tracks
+                # the guest: a launcher that found `setsid` and made no session would
+                # otherwise be read as a guest that never had it.
+                assert session_made == has_setsid, (session_made, has_setsid)
+                assert expired.value.reach == ("group" if session_made else "program")
             check = await sandbox.exec(
                 [
                     "python3",
