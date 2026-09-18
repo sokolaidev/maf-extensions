@@ -1,20 +1,9 @@
 """Exercises sample 19's executor offline, on the fake backend the core ships.
 
-The sample is not a uv workspace member and not in any ``testpaths``. ``test_sample_modules_import.py``
-imports it, along with every other sample, which proves only that its module level runs; this
-suite drives the executor the way AutoGen's tool does, against `maf_sandbox.testing`'s in-process
-fake, and holds the block the sample prints to the shared checker:
-
-* a Python block runs as ``python3 -c <code>`` through ``exec_bounded`` — argv, no shell;
-* a block in any other language is refused before a sandbox is acquired;
-* a sandbox without ``exec_bounded`` is refused, as `maf-sandbox-deepagents` refuses one;
-* the guest's own nonzero exit code answers for the result, so AutoGen's `success` is honest;
-* ``stop`` and ``restart`` release the acquired sandbox, per the ``CodeExecutor`` contract;
-* the evidence block the sample prints is the checker's shape, under its own heading.
-
-The fake records rather than runs, so nothing here reaches Docker. The model clients are
-constructed, which proves the wiring and nothing more; no model is called. Async tests follow the
-repo convention: a synchronous ``def test_*`` that drives one ``asyncio.run``.
+The sample is not a uv workspace member and not in any ``testpaths``: this is the suite that
+drives the executor the way AutoGen's tool does, against `maf_sandbox.testing`'s in-process
+fake, and holds the block the sample prints to the shared checker. The fake records rather than
+runs, so nothing here reaches Docker; the model clients are constructed and never called.
 """
 
 from __future__ import annotations
@@ -223,9 +212,9 @@ class TestTheExecutionRoad:
     def test_an_output_overflow_disposes_the_instance_before_returning(self):
         """Nothing about an overflow establishes the guest stopped, so the sandbox is not reused.
 
-        A timeout removes the container inside the backend; an overflow raises past it without
-        any such act. Reusing warm here would hand the next tool call a sandbox a runaway
-        program is still writing into.
+        The overflow raises past the backend's own timeout handler without any removal act.
+        Reusing warm here would hand the next tool call a sandbox a runaway program is still
+        writing into.
         """
 
         class Overflowing(InProcessSandbox):
@@ -268,6 +257,104 @@ class TestTheExecutionRoad:
             f"not {condemned} — fewer means the error was returned without the instance being "
             f"condemned, more means the count is reading something else"
         )
+
+    def test_a_timeout_condemns_the_instance_before_returning(self):
+        """A timeout does not establish the guest stopped either — the sandbox is not reused.
+
+        The docker backend runs a best-effort ``rm -f`` on its own timeout and suppresses every
+        failure from it, so the backend's removal is not a guarantee the executor can lean on;
+        the timed-out process's container must not be reacquirable warm.
+        """
+
+        class Hanging(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                raise TimeoutError("the execution did not finish in time")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Hanging()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                # Warm acquire first: its adoption is the one disposal that must not count,
+                # and the executor's own acquire then reuses rather than adopting again.
+                await router.acquire(_key(), _spec())
+                before = len(backend.disposed)
+                result = await executor.execute_code_blocks(
+                    [CodeBlock(code="print('never')", language="python")], CancellationToken()
+                )
+                return result, len(backend.disposed) - before
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result, condemned = asyncio.run(body())
+        assert result.exit_code == 1
+        assert "timed out" in result.output
+        assert condemned == 1, (
+            f"the timeout's condemnation should be exactly one disposal in the armed window, "
+            f"not {condemned} — fewer means the error was returned without the instance being "
+            f"condemned, more means the count is reading something else"
+        )
+
+    def test_a_timeout_with_a_failed_delete_refuses_the_next_acquire(self):
+        """A timed-out container the backend could not remove leaves the key refused.
+
+        Docker's ``rm -f`` failure is suppressed inside the backend, so the executor cannot
+        learn the delete failed from the raise — the unclean mark is what refuses the key, and
+        the refusal retires when a later disposal lands.
+        """
+
+        class Hanging(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                raise TimeoutError("the execution did not finish in time")
+
+        class HoldingOnFailure(InProcessSandboxBackend):
+            """Holds the sandbox mapped across a failed delete, as a real backend would."""
+
+            fail = False
+
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ):
+                self.disposed.append(key)
+                self.disposed_kinds.append(kind)
+                self.disposed_instances.append(instance_id)
+                if self.fail:
+                    return "the engine would not remove it"
+                for held in [entry for entry in list(self.sandboxes) if entry[0] == key]:
+                    del self.sandboxes[held]
+                return None
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+            from maf_sandbox import SandboxUnclean
+
+            sandbox = Hanging()
+            backend = HoldingOnFailure(sandbox, isolation=Isolation.NONE)
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                # Warm acquire first with deletes landing — its adoption must succeed — then
+                # arm the failure, so the failing delete is the timeout's condemnation rather
+                # than a cold acquire's adoption.
+                await router.acquire(_key(), _spec())
+                backend.fail = True
+                result = await executor.execute_code_blocks(
+                    [CodeBlock(code="print('never')", language="python")], CancellationToken()
+                )
+                with pytest.raises(SandboxUnclean):
+                    await router.acquire(_key(), _spec())
+                return result
+            finally:
+                backend.fail = False
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result = asyncio.run(body())
+        assert result.exit_code == 1
+        assert "timed out" in result.output
 
     def test_an_overflow_failure_lands_the_disposal_before_the_error(self):
         """A disposal that fails is still best-effort: the error is returned, the attempt ran first.

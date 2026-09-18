@@ -3,24 +3,11 @@
 Sample 06's task, image and router under an AutoGen agent::
 
     autogen  ->  the sample's CodeExecutor  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
-                  ^ PythonCodeExecutionTool calls the executor, and the executor calls the router
 
-There is no Microsoft Agent Framework here and no `execute_code`.  The agent is AutoGen's
-`AssistantAgent`, its tool is `PythonCodeExecutionTool`, and what sits behind that tool is the
-`CodeExecutor` this file writes — the contract `autogen_core.code_executor` names — acquiring
-from a `maf_sandbox` router with the same Docker backend and the same image sample 06 runs.
-The task, the one right answer and the checker are sample 03's and sample 06's, unchanged.
-
-What the router keeps is what the sample exists to show: the floor opted down to `CONTAINER`
-explicitly, egress closed, the sandbox keyed by scope, thread and agent directory, and purged
-at the end by `dispose_scope`.  What is given up is said in this directory's README: no call
-admission, a cancelled tool call that abandons the wait rather than the guest process, nothing
-here that is declarative config, and the program travelling in argv.
-
-The model is samples 09 and 13's two roads in `autogen-ext`'s terms: an Azure OpenAI deployment
-reached with `DefaultAzureCredential` when `AZURE_OPENAI_ENDPOINT` is set, and any
-OpenAI-compatible endpoint otherwise.  AutoGen only knows OpenAI's model names, so both roads
-hand the client a `model_info` saying what the deployment actually supports.
+The executor this file writes is the sample: `autogen_core.code_executor.CodeExecutor` acquiring
+from a `maf_sandbox` router, with the same Docker backend and image sample 06 runs. Architecture,
+give-ups and model wiring are this directory's README's to tell; the one caller-relevant constraint
+here is that the router is configured at run() and the sandbox is disposed there, not by AutoGen.
 """
 
 # /// script
@@ -190,12 +177,16 @@ class SandboxCodeExecutor(CodeExecutor):
         The contract says ``stop`` releases resources, and the sandbox *is* one — a no-op here
         would leave a container with its filesystem and any running program alive past a
         ``with`` block that promised cleanup. The unclean path, as on overflow: a delete that
-        does not land refuses the key rather than leaving the instance reacquirable.
+        does not land refuses the key rather than leaving the instance reacquirable. AutoGen
+        0.7.5 never drives the lifecycle in this wiring — ``AssistantAgent.on_reset`` clears
+        only its model context and ``PythonCodeExecutionTool`` forwards nothing — so a host
+        that wants this release calls it, or relies on the explicit ``dispose_scope`` in
+        ``run()``.
         """
         await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
 
     async def restart(self) -> None:
-        """Reset semantics: what one turn left behind, the next turn must not find."""
+        """The same release ``stop`` performs, for a reset — with the same AutoGen caveat."""
         await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
 
     async def execute_code_blocks(
@@ -245,8 +236,12 @@ class SandboxCodeExecutor(CodeExecutor):
         try:
             result = await run
         except TimeoutError:
-            # The backend removes the container itself when an execution times out, so the
-            # next acquire starts fresh without a decision here.
+            # A timeout does not establish the guest stopped either: the docker backend runs a
+            # best-effort `rm -f` on its own timeout and suppresses every failure from it, so
+            # a delete that did not land leaves the timed-out process's container mapped and
+            # reacquirable. The unclean path, as on overflow: the key stays refused until a
+            # delete lands, and a landed one retires the refusal for a fresh create.
+            await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
             return f"Error: the program timed out after {EXEC_TIMEOUT_SECONDS}s", 1
         except SandboxExecOutputLimitExceeded:
             # An overflow stops the host's reading, never the guest: nothing here establishes
