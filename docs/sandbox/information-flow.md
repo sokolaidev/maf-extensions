@@ -185,7 +185,7 @@ The rule above is what a kind is held to. These are the reasons it cannot be che
 | [`terraform`](kinds/terraform.md) | `untrusted` | the report derives from configuration the model wrote and from guest programs reading it |
 | `drawio` | `untrusted` | the diagnostic quotes the model's own diagram source, and which of it and the success line comes back is decided by that source |
 
-All four claim `untrusted`, so none depends on an input-label join or host default to reach that answer, and every body returns unlabelled items. Three of them — `bicep`, `codeact` and `terraform` — commit standing guidance: core rebuilds it as trusted/public and stamps every derived item with the kind's claim. `drawio` commits none, so it declares its claim directly and its items take the framework's own resolution. In every case the derived integrity remains untrusted, and automatic hiding applies while the conversation is still trusted.
+All four claim `untrusted`, so none depends on an input-label join or host default to reach that answer, and every body returns unlabelled results — a string, or `Content` items carrying no label of their own. Three of them — `bicep`, `codeact` and `terraform` — commit standing guidance: core rebuilds it as trusted/public and stamps every derived item with the kind's claim. `drawio` commits none, so it declares its claim directly and its items take the framework's own resolution. In every case the derived integrity remains untrusted, and automatic hiding applies while the conversation is still trusted.
 
 ## Status
 

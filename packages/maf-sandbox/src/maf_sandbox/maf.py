@@ -2573,8 +2573,11 @@ def sandboxed_tool(
             held to the same spec check the derivation applies. Where this tool also commits
             standing guidance the integrity is moved onto :data:`DERIVED_INTEGRITY_PROPERTY`,
             and a spelling this package does not recognise is refused at attach rather than at
-            the first call; a mapping on a tool committing none keeps its ``source_integrity``
-            verbatim and is not validated here. Carrying :data:`DERIVED_INTEGRITY_PROPERTY`
+            the first call; a mapping on a tool committing none reaches the tool with its
+            ``source_integrity`` exactly as it came. Verbatim is not unchecked: the claim's two
+            readings — its text, and the value the framework parses — must name one level on
+            either path, and one naming two is refused at attach. Carrying
+            :data:`DERIVED_INTEGRITY_PROPERTY`
             itself is refused either way — only the wrapper writes it. A mapping is also what
             satisfies ``standing_guidance``'s requirement for an integrity declaration, so one
             carrying none is refused beside a commitment. The result wrapper reads
