@@ -1270,30 +1270,27 @@ def claimed_source_integrity(properties: Mapping[str, Any], *, tool: str) -> Sou
     not a claim to refuse, since the framework acts on its own two spellings and logs anything
     else away.
 
-    A value is read two ways here: as its text, which is what this package compares, and as
-    itself, which is what the framework parses out of ``additional_properties``. Both must
-    answer the same level. A value answering differently is not a claim with a reading to
-    choose between — it is one whose checks and whose effect can be pointed at different levels
-    — so it is refused rather than resolved.
+    A claim must be a ``str`` or a :class:`~maf_sandbox.SourceIntegrity`, and nothing else.
+    Every check of one runs at attach while the mapping is read on every call, so a claim has to
+    be a value that cannot answer differently in between — and those two also read the same
+    whether taken as text or parsed as themselves, which is what makes one reading here binding
+    on what the framework goes on to parse. An unrecognised *spelling* is still a ``str`` and
+    still passes through.
 
     Raises:
-        ValueError: where the two readings of a claim disagree.
+        ValueError: where a claim is of any other type.
     """
     claimed = properties.get("source_integrity")
     if claimed is None:
         return None
-    rendered, itself = _level(str(claimed)), _level(claimed)
-    if rendered is not itself:
+    if type(claimed) is not str and not isinstance(claimed, SourceIntegrity):
         raise ValueError(
-            f"{tool}: source_integrity={claimed!r} reads as "
-            f"{'no level this package recognises' if rendered is None else repr(str(rendered))} "
-            f"by its text and as "
-            f"{'none the framework recognises' if itself is None else repr(str(itself))} "
-            "by itself. This package holds a claim to what its text says and the framework acts "
-            "on the value, so the two must name one level. Declare "
-            f"{str(SourceIntegrity.TRUSTED)!r} or {str(SourceIntegrity.UNTRUSTED)!r}."
+            f"{tool}: source_integrity={claimed!r} is a {type(claimed).__name__}. Every check "
+            "of a claim runs at attach and the mapping is read on every call, so a claim has to "
+            "be a value that cannot answer differently in between: pass a str or a "
+            f"{SourceIntegrity.__name__}."
         )
-    return rendered
+    return _level(claimed)
 
 
 def _implemented_declarations(
@@ -2574,9 +2571,13 @@ def sandboxed_tool(
             standing guidance the integrity is moved onto :data:`DERIVED_INTEGRITY_PROPERTY`,
             and a spelling this package does not recognise is refused at attach rather than at
             the first call; a mapping on a tool committing none reaches the tool with its
-            ``source_integrity`` exactly as it came. Verbatim is not unchecked: the claim's two
-            readings — its text, and the value the framework parses — must name one level on
-            either path, and one naming two is refused at attach. Carrying
+            ``source_integrity`` exactly as it came. Verbatim is not unchecked, and on either
+            path: the claim must be a ``str`` or a :class:`~maf_sandbox.SourceIntegrity`, since
+            every check runs at attach while this mapping is read on every call and only those
+            cannot answer differently in between; and its two readings — its text, and the
+            value the framework parses — must name one level, a claim naming two being refused
+            rather than resolved to either. An unrecognised spelling is still a ``str``, so it
+            passes through as it always did. Carrying
             :data:`DERIVED_INTEGRITY_PROPERTY`
             itself is refused either way — only the wrapper writes it. A mapping is also what
             satisfies ``standing_guidance``'s requirement for an integrity declaration, so one

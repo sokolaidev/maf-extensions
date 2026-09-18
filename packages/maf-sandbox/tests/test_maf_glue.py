@@ -1086,6 +1086,24 @@ class TestAttachedToolShape:
         assert tool.additional_properties == {"source_integrity": "trusted"}
 
 
+class _MutableClaim:
+    """Names no level anything recognises until `arm` is called, and `trusted` after."""
+
+    def __init__(self) -> None:
+        self.armed = False
+
+    def arm(self) -> None:
+        self.armed = True
+
+    def __str__(self) -> str:
+        return str(SourceIntegrity.TRUSTED) if self.armed else "unknown"
+
+    def __eq__(self, other: object) -> bool:
+        return self.armed and other == str(SourceIntegrity.TRUSTED)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 class _TextAndValueDisagree(str):
     """A `str` whose text names one level and whose value names the other."""
 
@@ -1104,14 +1122,14 @@ class _TextOnly:
 
 
 class _Drifting:
-    """Names a different level on each reading, and counts them."""
+    """Names a different level on each reading."""
 
     def __init__(self) -> None:
-        self.reads = 0
+        self._reads = 0
 
     def __str__(self) -> str:
-        self.reads += 1
-        return str(SourceIntegrity.UNTRUSTED if self.reads == 1 else SourceIntegrity.TRUSTED)
+        self._reads += 1
+        return str(SourceIntegrity.UNTRUSTED if self._reads == 1 else SourceIntegrity.TRUSTED)
 
 
 class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
@@ -1154,34 +1172,59 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
     @pytest.mark.parametrize(
         "claim",
         [
-            pytest.param(_TextAndValueDisagree(), id="text-and-value"),
-            pytest.param(_TextOnly(), id="text-and-unparseable"),
+            pytest.param(_TextAndValueDisagree(), id="str-subclass"),
+            pytest.param(_TextOnly(), id="opaque"),
             pytest.param(_Drifting(), id="text-that-changes"),
+            pytest.param(_MutableClaim(), id="mutable"),
         ],
     )
     @pytest.mark.parametrize("commits", [False, True], ids=["no-guidance", "guidance"])
-    def test_a_claim_that_reads_two_ways_is_refused(self, claim, commits):
-        """A claim is what this package checks and what the framework acts on, and those must
-        be one level: a value naming two cannot be held to either."""
-        with pytest.raises(ValueError, match="must name one level|reads as"):
+    def test_a_claim_that_is_not_a_string_is_refused(self, claim, commits):
+        """Every check of a claim runs at attach and the mapping is read on every call, so a
+        claim has to be a value that cannot answer differently in between."""
+        with pytest.raises(ValueError, match="pass a str or a SourceIntegrity"):
             _attach(
                 _router(InProcessSandboxBackend()),
                 standing_guidance=(_GUIDANCE,) if commits else (),
                 declarations={"source_integrity": claim, "confidentiality": "private"},
             )
 
-    def test_a_claim_is_read_once(self):
-        """The reading every check is held to is taken once, so none can be handed another."""
-        claim = _Drifting()
+    def test_a_claim_cannot_be_armed_after_the_tool_is_attached(self):
+        """The attach-time checks are the only ones there are, so nothing they cleared may
+        become a trusted claim once the tool is in a host's hands."""
+        claim = _MutableClaim()
 
         with pytest.raises(ValueError):
             _attach(
                 _router(InProcessSandboxBackend()),
-                standing_guidance=(_GUIDANCE,),
                 declarations={"source_integrity": claim, "confidentiality": "private"},
             )
 
-        assert claim.reads == 1
+        claim.arm()
+        assert str(claim) == str(SourceIntegrity.TRUSTED)
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [str(SourceIntegrity.UNTRUSTED), SourceIntegrity.UNTRUSTED],
+        ids=["str", "enum"],
+    )
+    def test_an_accepted_claim_reads_the_same_way_the_framework_will_read_it(self, spelling):
+        """One reading at attach binds every later call only because these two types cannot be
+        read two ways: as text and parsed as themselves they name the same level."""
+        from agent_framework.security import IntegrityLabel
+
+        (tool,) = _attach(
+            _router(InProcessSandboxBackend()),
+            declarations={"source_integrity": spelling},
+        )
+        attached = tool.additional_properties["source_integrity"]
+
+        assert attached is spelling
+        assert (
+            _maf.claimed_source_integrity(tool.additional_properties, tool="widget_run")
+            is SourceIntegrity.UNTRUSTED
+        )
+        assert IntegrityLabel(attached) is IntegrityLabel.UNTRUSTED
 
     def test_a_mapping_reaches_the_tool_verbatim_without_a_commitment(self):
         """`declarations=` is written as it came, so a host reads back the object it passed."""
