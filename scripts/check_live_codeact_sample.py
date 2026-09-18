@@ -12,11 +12,11 @@ wheels, runs the sample, and pipes its output here.
 
 **The answer is read out of the block the sample prints from the tool result, never out of the
 model's reply.** The 100th Fibonacci number is a constant any model can recite, so a reply
-carrying it is evidence of nothing; the same digits inside `execute_code`'s own output are
+carrying it is evidence of nothing; the same digits inside the tool's own output are
 evidence a program ran in the sandbox and printed them (#314). The sample prints that block from
 what the framework recorded next to the call, so the model does not write it.
 
-Two things together: `execute_code` returned output at all — a call it
+Two things together: the tool returned output at all — a call it
 refuses answers with an `Error:` string and never reaches the interpreter; that output carries
 the one right answer. The final scope purge reports completion, not work: it can remove zero
 sandboxes when per-call cleanup already disposed them.

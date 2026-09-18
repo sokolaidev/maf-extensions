@@ -807,26 +807,42 @@ class TestTheExecutionRoad:
                 return ExecResult(stdout="ran")
 
         class HoldingOnFailure(InProcessSandboxBackend):
+            fail = False
+
             async def dispose(
                 self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
             ):
                 self.disposed.append(key)
                 self.disposed_kinds.append(kind)
                 self.disposed_instances.append(instance_id)
-                return "the engine would not remove it"
+                if self.fail:
+                    return "the engine would not remove it"
+                for held in [entry for entry in self.sandboxes if entry[0] == key]:
+                    del self.sandboxes[held]
+                return None
 
         async def body():
             from maf_sandbox import SandboxUnclean
 
             sandbox = Holder()
-            backend = HoldingOnFailure(sandbox, isolation=Isolation.NONE)
+            backend = HoldingOnFailure(sandbox, isolation=Isolation.NONE, sandbox_per_key=True)
             router = SandboxRouter([backend], min_isolation=Isolation.NONE)
             try:
                 executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                # Warm the sandbox while disposal succeeds, then arm the failure before
+                # the release: the contract this test holds is a refused acquire after a
+                # failed delete of the HELD resource, not of an empty key.
+                await router.acquire(_key(), _spec())
+                backend.fail = True
                 await getattr(executor, method)()
+                assert (_key(), _spec().kind) in backend.sandboxes, (
+                    "nothing was held when the release ran — it refused an empty key, "
+                    "not a failed delete of the held sandbox"
+                )
                 with pytest.raises(SandboxUnclean):
                     await router.acquire(_key(), _spec())
             finally:
+                backend.fail = False
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
         asyncio.run(body())

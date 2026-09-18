@@ -110,8 +110,10 @@ _LANGUAGES = frozenset({"python", "py"})
 EXEC_TIMEOUT_SECONDS = 120.0
 MAX_OUTPUT_BYTES = 1_048_576
 
-#: The bound on the unclean disposal an overflowing run queues: short, because the container is
-#: a local `docker rm -f` away, and a budget a healthy engine answers well inside.
+#: The bound on the unclean disposal every lost execution queues — timeout, overflow,
+#: cancellation, any other failure the result did not come back from — and the lifecycle
+#: release. Short, because the container is a local `docker rm -f` away, and a budget a
+#: healthy engine answers well inside.
 CLEANUP_TIMEOUT_SECONDS = 30.0
 
 #: The Azure OpenAI API version this client speaks. `AzureOpenAIChatCompletionClient` requires
