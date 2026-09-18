@@ -1273,27 +1273,13 @@ def claimed_source_integrity(properties: Mapping[str, Any]) -> SourceIntegrity |
         return None
 
 
-def _snapshot_declarations(declarations: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Copy a caller's mapping with its integrity claim resolved once, before anything acts.
-
-    A value is free to answer differently each time it is read, so two checks reading it apart
-    can disagree about what was claimed — and a claim that two checks answer differently is one
-    neither of them weighed. Resolving it here leaves every reader below a plain string.
-
-    A level this package does not recognise is left exactly as it came: the framework acts on
-    its own two spellings and logs anything else away, which is not a claim to refuse.
-    """
-    if declarations is None:
-        return None
-    snapshot = dict(declarations)
-    claimed = claimed_source_integrity(snapshot)
-    if claimed is not None:
-        snapshot["source_integrity"] = str(claimed)
-    return snapshot
-
-
 def _implemented_declarations(
-    properties: Mapping[str, Any], *, commits_guidance: bool, tool: str
+    properties: Mapping[str, Any],
+    *,
+    claimed: SourceIntegrity | None,
+    spelled: object,
+    commits_guidance: bool,
+    tool: str,
 ) -> dict[str, Any]:
     """Move a declared integrity onto :data:`DERIVED_INTEGRITY_PROPERTY` and declare trusted.
 
@@ -1317,10 +1303,9 @@ def _implemented_declarations(
             "sandboxed_tool may write. Claim an integrity with source_integrity, which is "
             "checked against what the spec opens."
         )
-    claimed = properties.get("source_integrity")
     if not commits_guidance:
         return dict(properties)
-    if claimed is None:
+    if spelled is None:
         raise ValueError(
             f"{tool}: this tool commits standing guidance and declares no source_integrity. "
             "The guidance stays readable because every other item is labelled weaker than the "
@@ -1328,20 +1313,20 @@ def _implemented_declarations(
             "input-label join or the host's default_integrity, which the guidance can then "
             "only restrict. Declare an integrity, or commit no guidance."
         )
-    # Coerced here and not only in `sandbox_tool_declarations`, which a `declarations=` mapping
-    # bypasses: past this point the tool declares trusted, so a spelling nothing recognises
-    # would leave every derived item taking that declaration instead of a weaker label.
-    recognised = claimed_source_integrity(properties)
-    if recognised is None:
+    # Refused rather than coerced here, because `sandbox_tool_declarations` coerces its own
+    # argument and a `declarations=` mapping bypasses it: past this point the tool declares
+    # trusted, so a spelling nothing recognises would leave every derived item taking that
+    # declaration instead of a weaker label.
+    if claimed is None:
         raise ValueError(
             f"{tool}: this tool commits standing guidance and declares "
-            f"source_integrity={claimed!r}, which is not a level this package recognises. "
+            f"source_integrity={spelled!r}, which is not a level this package recognises. "
             "Past the raise every derived item would take the tool's own trusted declaration "
             f"rather than a weaker label. Declare {str(SourceIntegrity.TRUSTED)!r} or "
             f"{str(SourceIntegrity.UNTRUSTED)!r}."
         )
     implemented = dict(properties)
-    implemented[DERIVED_INTEGRITY_PROPERTY] = str(recognised)
+    implemented[DERIVED_INTEGRITY_PROPERTY] = str(claimed)
     implemented["source_integrity"] = str(SourceIntegrity.TRUSTED)
     return implemented
 
@@ -2347,7 +2332,7 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
 def _result_label(
     declarations: Mapping[str, Any], fed: FedFromStore | None
 ) -> dict[str, Any] | None:
-    """Weaken an explicit declaration, preserving the host's confidentiality verbatim.
+    """Weaken an explicit declaration, carrying the host's confidentiality where it set one.
 
     A tool whose declaration was raised to trusted is labelled unconditionally: an item left
     unlabelled there would take the raised declaration.  Its confidentiality floors at
@@ -2671,10 +2656,14 @@ def sandboxed_tool(
         agent_id = agent_dir
     elif agent_dir is not None:
         raise TypeError("pass agent_id or agent_dir, not both")
-    # Resolved before the first check reads it, so no two readers can be handed different
-    # answers by the same value.
-    declarations = _snapshot_declarations(declarations)
-    if output_sink is not None and declarations is not None:
+    # Copied and read **once**, before the first check: a value is free to answer differently
+    # each time it is read, and two checks handed different answers have each weighed a claim
+    # the other did not. The mapping itself is left as it came, which is what `declarations=`
+    # promises; only the reading of it is frozen, here, into `supplied_claim`.
+    supplied = dict(declarations) if declarations is not None else None
+    supplied_spelling = None if supplied is None else supplied.get("source_integrity")
+    supplied_claim = None if supplied is None else claimed_source_integrity(supplied)
+    if output_sink is not None and supplied is not None:
         raise ValueError(
             f"{name}: pass either output_sink or declarations=, never both. An explicit "
             "mapping is written verbatim, so the pair would attach a tool whose declarations "
@@ -2685,10 +2674,7 @@ def sandboxed_tool(
     # Before `_implemented_declarations`, so this weighs the caller's own claim rather than the
     # declaration the wrapper may raise over it, and through the same reader so the two cannot
     # disagree about what was claimed.
-    if (
-        declarations is not None
-        and claimed_source_integrity(declarations) is SourceIntegrity.TRUSTED
-    ):
+    if supplied is not None and supplied_claim is SourceIntegrity.TRUSTED:
         unestablished = _source_channels_not_established_as_trusted(spec, frozenset())
         if unestablished:
             raise _unlicensed_trusted_claim_refusal(
@@ -2758,9 +2744,9 @@ def sandboxed_tool(
     # Materialised before the declarations, which turn on whether anything was committed, and
     # before `_committed_guidance` consumes it: a caller may pass any iterable.
     promised = tuple(standing_guidance)
-    properties = _implemented_declarations(
-        dict(declarations)
-        if declarations is not None
+    derived = (
+        supplied
+        if supplied is not None
         else sandbox_tool_declarations(
             spec,
             source_integrity=source_integrity,
@@ -2769,7 +2755,14 @@ def sandboxed_tool(
             also_carries_out=also_carries_out,
             nothing_survives_from=nothing_survives_from,
             isolation_scope=router.effective_isolation_scope(spec),
-        ),
+        )
+    )
+    properties = _implemented_declarations(
+        derived,
+        # The mapping's reading is the one frozen above; the derivation writes its own coerced
+        # text, so reading that back cannot answer differently.
+        claimed=supplied_claim if supplied is not None else claimed_source_integrity(derived),
+        spelled=supplied_spelling if supplied is not None else derived.get("source_integrity"),
         commits_guidance=bool(promised),
         tool=name,
     )

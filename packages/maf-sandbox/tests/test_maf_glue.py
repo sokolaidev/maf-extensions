@@ -1202,6 +1202,43 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
                 declarations={"source_integrity": Shifting(), "confidentiality": "private"},
             )
 
+    def test_a_claim_whose_first_reading_is_unrecognised_is_still_read_once(self):
+        """An unrecognised first reading must not leave the value free to be read again.
+
+        Freezing only the readings this package recognises left the original in the mapping for
+        the trusted-channel guard and the implementation to read in turn, so `unknown` here,
+        `untrusted` at the guard and `trusted` after it put a trusted label on derived output
+        over a spec that opens the file store.
+        """
+
+        class Drifting:
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def __str__(self) -> str:
+                self.reads += 1
+                return ("unknown", str(SourceIntegrity.UNTRUSTED), str(SourceIntegrity.TRUSTED))[
+                    min(self.reads, 3) - 1
+                ]
+
+        claim = Drifting()
+        with pytest.raises(ValueError, match="not a level this package recognises"):
+            self._tool(
+                source_integrity=None,
+                declarations={"source_integrity": claim, "confidentiality": "private"},
+            )
+        assert claim.reads == 1
+
+    def test_a_mapping_reaches_the_tool_verbatim_without_a_commitment(self):
+        """`declarations=` is written as it came, so a host reads back the object it passed."""
+        (tool,) = _attach(
+            _router(InProcessSandboxBackend()),
+            spec=_NO_CHANNEL_SPEC,
+            declarations={"source_integrity": SourceIntegrity.TRUSTED},
+        )
+
+        assert tool.additional_properties["source_integrity"] is SourceIntegrity.TRUSTED
+
     def test_an_unknown_spelling_is_refused_rather_than_raised(self):
         """Past the raise the tool declares trusted, so a spelling this package cannot weaken
         by is the one value that must not reach an attached tool."""

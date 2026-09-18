@@ -182,8 +182,10 @@ The rule above is what a kind is held to. These are the reasons it cannot be che
 |---|---|---|
 | [`bicep`](kinds/bicep.md) | `untrusted` | the diagnostics quote model-authored Bicep, and the file name in every location is a string the model chose |
 | [`codeact`](kinds/codeact.md) | `untrusted` | what comes back is whatever a model-written `print(...)` emitted, and withholding that text does not remove the guest from what remains |
+| [`terraform`](kinds/terraform.md) | `untrusted` | the report derives from configuration the model wrote and from guest programs reading it |
+| `drawio` | `untrusted` | the diagnostic quotes the model's own diagram source, and which of it and the success line comes back is decided by that source |
 
-Both claim `untrusted`, so neither depends on an input-label join or host default to reach that answer. Both bodies return unlabelled items. Core rebuilds their committed guidance as trusted/public and, because both commit guidance, stamps every derived item with the claim. The derived integrity remains untrusted, and automatic hiding applies while the conversation is still trusted.
+All four claim `untrusted`, so none depends on an input-label join or host default to reach that answer, and every body returns unlabelled items. Three of them — `bicep`, `codeact` and `terraform` — commit standing guidance: core rebuilds it as trusted/public and stamps every derived item with the kind's claim. `drawio` commits none, so it declares its claim directly and its items take the framework's own resolution. In every case the derived integrity remains untrusted, and automatic hiding applies while the conversation is still trusted.
 
 ## Status
 
