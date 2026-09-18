@@ -769,6 +769,31 @@ class TestTheExecutionRoad:
         condemned = asyncio.run(body())
         assert condemned >= 1, f"executor.{method}() released nothing"
 
+    def test_a_lifecycle_release_leaves_a_sibling_kind_on_the_key_alone(self):
+        """`stop` releases what this executor acquired — not every kind sharing the key."""
+
+        async def body():
+            sibling_spec = SandboxSpec(
+                kind="sibling-kind", image="sibling-image", requires=frozenset({Capability.EXEC})
+            )
+            backend = InProcessSandboxBackend(
+                InProcessSandbox(), isolation=Isolation.NONE, sandbox_per_key=True
+            )
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await router.acquire(_key(), _spec())
+                await router.acquire(_key(), sibling_spec)
+                await executor.stop()
+                return set(backend.sandboxes)
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        held = asyncio.run(body())
+        assert held == {(_key(), "sibling-kind")}, (
+            f"stop() swept a sibling workload's sandbox off the shared key: {held}"
+        )
+
     @pytest.mark.parametrize("method", ["stop", "restart"])
     def test_a_failed_lifecycle_release_refuses_the_next_acquire(
         self, method: str, monkeypatch: pytest.MonkeyPatch

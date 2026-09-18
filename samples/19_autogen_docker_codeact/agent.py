@@ -173,11 +173,15 @@ class SandboxCodeExecutor(CodeExecutor):
 
     async def stop(self) -> None:
         """Release what the executor holds: the sandbox it acquired, with refusal on failure."""
-        await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
+        await self._router.dispose_unclean(
+            self._key, kind=self._spec.kind, timeout=CLEANUP_TIMEOUT_SECONDS
+        )
 
     async def restart(self) -> None:
         """The same release ``stop`` performs, for a reset — with the same AutoGen caveat."""
-        await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
+        await self._router.dispose_unclean(
+            self._key, kind=self._spec.kind, timeout=CLEANUP_TIMEOUT_SECONDS
+        )
 
     async def execute_code_blocks(
         self, code_blocks: list[CodeBlock], cancellation_token: CancellationToken
@@ -265,8 +269,11 @@ class SandboxCodeExecutor(CodeExecutor):
 
     async def _condemn(self) -> None:
         """Dispose the acquired sandbox through the unclean path: the key stays refused until
-        a delete lands, and a landed one retires the refusal for a fresh create."""
-        await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
+        a delete lands, and a landed one retires the refusal for a fresh create. The kind
+        selector keeps a sibling workload on the same key out of the deletion."""
+        await self._router.dispose_unclean(
+            self._key, kind=self._spec.kind, timeout=CLEANUP_TIMEOUT_SECONDS
+        )
 
 
 class _ExecutionLost(Exception):
