@@ -3619,30 +3619,6 @@
       }
     },
     {
-      "name": "avm-utl-compute-linuxvirtualmachine-azapi-replicator-azure-0.1.1",
-      "source": "registry.terraform.io/Azure/avm-utl-compute-linuxvirtualmachine-azapi-replicator/azure",
-      "version": "0.1.1",
-      "revision": "11784a7b3559fe1f99892a240c4d5bd670f16d8f",
-      "graph": {".": {}},
-      "artifact": {
-        "url": "https://codeload.github.com/Azure/terraform-azure-avm-utl-compute-linuxvirtualmachine-azapi-replicator/zip/11784a7b3559fe1f99892a240c4d5bd670f16d8f",
-        "sha256": "05f58f715aafe24c93ed184efb3b86a0bd6fe484d2430ba9f55825c08690aed9",
-        "provenance": "Registry 0.1.1 download resolves to this commit"
-      }
-    },
-    {
-      "name": "avm-utl-compute-windowsvirtualmachine-azapi-replicator-azure-0.1.0",
-      "source": "registry.terraform.io/Azure/avm-utl-compute-windowsvirtualmachine-azapi-replicator/azure",
-      "version": "0.1.0",
-      "revision": "199d93ba3495835944d48eade1a479c1ffa523e9",
-      "graph": {".": {}},
-      "artifact": {
-        "url": "https://codeload.github.com/Azure/terraform-azure-avm-utl-compute-windowsvirtualmachine-azapi-replicator/zip/199d93ba3495835944d48eade1a479c1ffa523e9",
-        "sha256": "2bd82969815bb9bdaea75487a495f4185a78000c81c9dfa665f73a8393226d60",
-        "provenance": "Registry 0.1.0 download resolves to this commit"
-      }
-    },
-    {
       "name": "avm-utl-interfaces-azure-0.2.0",
       "source": "registry.terraform.io/Azure/avm-utl-interfaces/azure",
       "version": "0.2.0",
@@ -3748,30 +3724,6 @@
         "url": "https://codeload.github.com/Azure/terraform-azurerm-avm-utl-network-ip-addresses/zip/48e213863146302eaf781c6fd22f41a9657fa57e",
         "sha256": "f164f6feb743ea84995c4df7535047eed420344b1a570c83b477a53afa494ad5",
         "provenance": "Registry 0.1.1 download resolves to this commit"
-      }
-    },
-    {
-      "name": "avm-utl-network-virtualnetwork-azapi-replicator-azure-0.1.0",
-      "source": "registry.terraform.io/Azure/avm-utl-network-virtualnetwork-azapi-replicator/azure",
-      "version": "0.1.0",
-      "revision": "f894d39bbddbb09fe9eaebab6166aaf9db0d8d43",
-      "graph": {".": {}},
-      "artifact": {
-        "url": "https://codeload.github.com/Azure/terraform-azure-avm-utl-network-virtualnetwork-azapi-replicator/zip/f894d39bbddbb09fe9eaebab6166aaf9db0d8d43",
-        "sha256": "202771621c03d9af8d01e7e7fafaa18dbd47fbe74f097e7327cb08a4ab26b9ed",
-        "provenance": "Registry 0.1.0 download resolves to this commit"
-      }
-    },
-    {
-      "name": "avm-utl-privatedns-privatednszone-azapi-replicator-azure-0.1.0",
-      "source": "registry.terraform.io/Azure/avm-utl-privatedns-privatednszone-azapi-replicator/azure",
-      "version": "0.1.0",
-      "revision": "b33100ef79280889a856a4a7428ab1d4c483141d",
-      "graph": {".": {}},
-      "artifact": {
-        "url": "https://codeload.github.com/Azure/terraform-azure-avm-utl-privatedns-privatednszone-azapi-replicator/zip/b33100ef79280889a856a4a7428ab1d4c483141d",
-        "sha256": "1a61cdc2ee1459724802b70716b082bb44425528d79cc2672d73cb4b5bb13445",
-        "provenance": "Registry 0.1.0 download resolves to this commit"
       }
     },
     {
@@ -3906,9 +3858,29 @@
       "reason": "preparation refuses avm-res-automation-automationaccount-azurerm-0.2.0: archive-expansion"
     },
     {
+      "source": "registry.terraform.io/Azure/avm-utl-compute-linuxvirtualmachine-azapi-replicator/azure",
+      "version": "0.1.1",
+      "reason": "withdrawn upstream: the registry, the repository and the pinned archive all answer 404"
+    },
+    {
       "source": "registry.terraform.io/Azure/avm-utl-compute-orchestratedvirtualmachinescaleset-azapi-replicator/azure",
       "version": "0.1.0",
       "reason": "Terraform refuses this registry address"
+    },
+    {
+      "source": "registry.terraform.io/Azure/avm-utl-compute-windowsvirtualmachine-azapi-replicator/azure",
+      "version": "0.1.0",
+      "reason": "withdrawn upstream: the registry, the repository and the pinned archive all answer 404"
+    },
+    {
+      "source": "registry.terraform.io/Azure/avm-utl-network-virtualnetwork-azapi-replicator/azure",
+      "version": "0.1.0",
+      "reason": "withdrawn upstream: the registry, the repository and the pinned archive all answer 404"
+    },
+    {
+      "source": "registry.terraform.io/Azure/avm-utl-privatedns-privatednszone-azapi-replicator/azure",
+      "version": "0.1.0",
+      "reason": "withdrawn upstream: the registry, the repository and the pinned archive all answer 404"
     },
     {
       "source": "registry.terraform.io/Azure/avm-utl-resources-resourcegroup-azapi-replicator/azure",

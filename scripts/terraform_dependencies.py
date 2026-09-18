@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import http.client
 import importlib.util
@@ -84,13 +85,21 @@ _WORKER_DECISIONS = (
 
 
 class Refused(ValueError):
-    """A bounded policy decision safe to include in diagnostics."""
+    """A bounded policy decision safe to include in diagnostics.
+
+    `status` carries the HTTP status a response arrived with, which is bounded to three
+    digits by the parser and is the only number an upstream server contributes to one.
+    """
+
+    def __init__(self, decision: str, status: int = 0) -> None:
+        super().__init__(decision)
+        self.status = status
 
 
-def require(condition: object, decision: str) -> None:
+def require(condition: object, decision: str, status: int = 0) -> None:
     """Keep input and upstream content out of exception messages."""
     if not condition:
-        raise Refused(decision)
+        raise Refused(decision, status)
 
 
 def exact_keys(value: Any, required: set[str], optional: set[str] | None = None) -> None:
@@ -489,7 +498,7 @@ def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARC
                         require(location == chain[hop], "redirect-unapproved")
                     url = location
                     continue
-                require(response.status == 200, "response-status")
+                require(response.status == 200, "response-status", response.status)
                 require(
                     artifact.get("github_repository_id") is not None or hop == len(chain),
                     "redirect-unapproved",
@@ -1003,8 +1012,21 @@ def policy_contract() -> dict[str, Any]:
     }
 
 
-def prepare(manifest: dict[str, Any], output: Path) -> str:
-    """Write a fresh preparation directory; the CLI publishes it only on complete success."""
+def artifact_sequence(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """The order preparation downloads in, so one position names one artifact."""
+    return [
+        (kind, item)
+        for kind in ("providers", "modules", "registry_modules")
+        for item in manifest.get(kind, [])
+    ]
+
+
+def prepare(manifest: dict[str, Any], output: Path, *, progress: Path | None = None) -> str:
+    """Write a fresh preparation directory; the CLI publishes it only on complete success.
+
+    `progress` receives the position in `artifact_sequence` of the artifact being fetched,
+    which is how the CLI names what a refusal — or a crash, or the deadline — stopped on.
+    """
     checked_manifest(manifest)
     deadline = time.monotonic() + DEADLINE
     contract = policy_contract()
@@ -1035,52 +1057,49 @@ def prepare(manifest: dict[str, Any], output: Path) -> str:
     catalog = {item["name"]: item for item in manifest.get("registry_modules", [])}
     sources: dict[str, dict[str, dict[str, str]]] = {}
     total = 0
-    for kind in ("providers", "modules", "registry_modules"):
-        for item in manifest.get(kind, []):
-            data = fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
-            total += len(data)
-            require(total <= MAX_TOTAL, "total-size")
-            if kind == "providers":
-                # Validate container structure before giving any archive to a guest installer.
-                zip_files(data, limit=MAX_PROVIDER_EXPANDED, retain=False)
-                provider_type = item["source"].split("/")[-1]
-                name = (
-                    f"terraform-provider-{provider_type}_{item['version']}_{item['platform']}.zip"
-                )
-                target = output / "mirror" / item["source"] / name
+    for position, (kind, item) in enumerate(artifact_sequence(manifest)):
+        if progress is not None:
+            progress.write_text(f"artifact {position}\n", encoding="ascii", newline="\n")
+        data = fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
+        total += len(data)
+        require(total <= MAX_TOTAL, "total-size")
+        if kind == "providers":
+            # Validate container structure before giving any archive to a guest installer.
+            zip_files(data, limit=MAX_PROVIDER_EXPANDED, retain=False)
+            provider_type = item["source"].split("/")[-1]
+            name = f"terraform-provider-{provider_type}_{item['version']}_{item['platform']}.zip"
+            target = output / "mirror" / item["source"] / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            record = {key: item[key] for key in ("source", "version", "platform")}
+            record["files"] = zip_entry_digests(data)
+            record["h1"] = package_hash(data)
+        elif kind == "registry_modules":
+            selected, sources[item["name"]] = registry_module_files(
+                item, data, catalog, manifest["providers"]
+            )
+            for name, content in selected.items():
+                target = output / "registry" / item["name"] / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-                record = {key: item[key] for key in ("source", "version", "platform")}
-                record["files"] = zip_entry_digests(data)
-                record["h1"] = package_hash(data)
-            elif kind == "registry_modules":
-                selected, sources[item["name"]] = registry_module_files(
-                    item, data, catalog, manifest["providers"]
-                )
-                for name, content in selected.items():
-                    target = output / "registry" / item["name"] / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(content)
-                record = {
-                    key: item[key] for key in ("name", "source", "version", "revision", "graph")
-                }
-                record["files"] = {
-                    name: hashlib.sha256(content).hexdigest() for name, content in selected.items()
-                }
-            else:
-                files = module_files(item, data, manifest["engine"])
-                for name, text in files.items():
-                    target = output / "modules" / item["name"] / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(text.encode("utf-8"))
-                record = {key: item[key] for key in ("name", "revision", "graph")}
-                record["files"] = {
-                    name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()
-                }
-            record["sha256"] = item["artifact"]["sha256"]
-            record["provenance"] = item["artifact"]["provenance"]
-            record["decision"] = "verified"
-            receipt[kind].append(record)
+                target.write_bytes(content)
+            record = {key: item[key] for key in ("name", "source", "version", "revision", "graph")}
+            record["files"] = {
+                name: hashlib.sha256(content).hexdigest() for name, content in selected.items()
+            }
+        else:
+            files = module_files(item, data, manifest["engine"])
+            for name, text in files.items():
+                target = output / "modules" / item["name"] / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(text.encode("utf-8"))
+            record = {key: item[key] for key in ("name", "revision", "graph")}
+            record["files"] = {
+                name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()
+            }
+        record["sha256"] = item["artifact"]["sha256"]
+        record["provenance"] = item["artifact"]["provenance"]
+        record["decision"] = "verified"
+        receipt[kind].append(record)
     for record in receipt["registry_modules"]:
         record["inventories"] = {
             directory: registry_inventory(record["name"], directory, catalog, sources)
@@ -1097,15 +1116,51 @@ def load_manifest(data: bytes) -> dict[str, Any]:
     return checked_manifest(unique_json(data, "manifest-duplicate"))
 
 
-def _worker(output: str) -> None:
+def _worker(output: str, progress: str) -> None:
     """Run only as the child of the CLI's deadline and temporary-output supervisor."""
     try:
         manifest = load_manifest(sys.stdin.buffer.read(MAX_MANIFEST + 1))
-        prepare(manifest, Path(output))
+        prepare(manifest, Path(output), progress=Path(progress))
     except Exception as exc:
         decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
+        status = exc.status if isinstance(exc, Refused) else 0
+        if status:
+            # A failed note costs the status alone; the exit code still carries the decision.
+            with contextlib.suppress(OSError):
+                with open(progress, "a", encoding="ascii", newline="\n") as note:
+                    note.write(f"status {status}\n")
         code = 64 + _WORKER_DECISIONS.index(decision) if decision in _WORKER_DECISIONS else 1
         raise SystemExit(code) from None
+
+
+def artifact_name(kind: str, item: dict[str, Any]) -> str:
+    """Identify one manifest entry the way the policy that approved it names it."""
+    if kind == "providers":
+        return f"provider {item['source']} {item['version']} {item['platform']}"
+    if kind == "registry_modules":
+        return f"registry module {item['source']} {item['version']}"
+    return f"module {item['name']}"
+
+
+def refusal_context(progress: Path, manifest: dict[str, Any]) -> str:
+    """Name what preparation stopped on, reading every word from the operator's manifest.
+
+    A position and an HTTP status are all the worker contributes, so no byte an upstream
+    server sent can reach the message. An unreadable or unrecognised note names nothing.
+    """
+    try:
+        note = progress.read_text(encoding="ascii")
+    except (OSError, ValueError):
+        return ""
+    match = re.fullmatch(r"artifact ([0-9]{1,4})\n(?:status ([0-9]{1,3})\n)?", note)
+    sequence = artifact_sequence(manifest)
+    if match is None or int(match[1]) >= len(sequence):
+        return ""
+    kind, item = sequence[int(match[1])]
+    lines = [f"  artifact: {artifact_name(kind, item)}", f"  url: {item['artifact']['url']}"]
+    if match[2] is not None:
+        lines.append(f"  status: {int(match[2])}")
+    return "\n" + "\n".join(lines)
 
 
 def main() -> None:
@@ -1114,11 +1169,12 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    context = ""
     try:
         require(args.manifest is not None, "manifest-required")
         with args.manifest.open("rb") as stream:
             data = stream.read(MAX_MANIFEST + 1)
-        load_manifest(data)
+        manifest = load_manifest(data)
         output = args.output.absolute()
         require(not output.exists() and not output.is_symlink(), "output-exists")
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -1126,20 +1182,27 @@ def main() -> None:
             prefix=".terraform-preparation-", dir=output.parent
         ) as temporary:
             prepared = Path(temporary) / "prepared"
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    "import runpy, sys; runpy.run_path(sys.argv[1])['_worker'](sys.argv[2])",
-                    str(Path(__file__).resolve()),
-                    str(prepared),
-                ],
-                input=data,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=DEADLINE,
-                check=False,
-            )
+            progress = Path(temporary) / "progress"
+            try:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import runpy, sys;"
+                        " runpy.run_path(sys.argv[1])['_worker'](sys.argv[2], sys.argv[3])",
+                        str(Path(__file__).resolve()),
+                        str(prepared),
+                        str(progress),
+                    ],
+                    input=data,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=DEADLINE,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                context = refusal_context(progress, manifest)
+                raise
             if result.returncode != 0:
                 index = result.returncode - 64
                 decision = (
@@ -1147,6 +1210,7 @@ def main() -> None:
                     if 0 <= index < len(_WORKER_DECISIONS)
                     else "preparation-failed"
                 )
+                context = refusal_context(progress, manifest)
                 raise Refused(decision)
             # The parent directory and manifest are controlled by the operator, not a guest.
             require(not output.exists() and not output.is_symlink(), "output-exists")
@@ -1154,7 +1218,7 @@ def main() -> None:
         print("Dependencies verified; receipt.json records artifact and policy identities.")
     except Exception as exc:
         decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
-        print(f"Dependency preparation refused: {decision}", file=sys.stderr)
+        print(f"Dependency preparation refused: {decision}{context}", file=sys.stderr)
         raise SystemExit(1) from None
 
 
