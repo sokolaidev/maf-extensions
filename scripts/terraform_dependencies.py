@@ -529,9 +529,11 @@ def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARC
                     )
                     return bytes(data)
                 except Refused as refusal:
-                    # Every check above has the response in hand, so name what it arrived with.
+                    # Everything above runs with the response in hand, refusal or not.
                     refusal.status = response.status
                     raise
+                except Exception:
+                    raise Refused("transfer-failed", response.status) from None
             finally:
                 connection.close()
     except Refused:

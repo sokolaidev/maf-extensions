@@ -996,6 +996,15 @@ def test_every_refusal_holding_a_response_carries_the_status_it_arrived_with(
     assert refused.value.status == status
 
 
+def test_an_unexpected_failure_below_a_response_still_names_its_status(receiver):
+    _, routes, _ = receiver
+    # http.client tolerates an unparsable Content-Length, so the preparer's own int() raises.
+    routes["/repository/1.0/artifact.zip"] = (200, {"Content-Length": "eight"}, b"artifact")
+    with pytest.raises(prep.Refused, match="^transfer-failed$") as refused:
+        prep.fetch(artifact(), time.monotonic() + 5)
+    assert refused.value.status == 200
+
+
 @pytest.mark.parametrize(
     "url", ["https://approved.example/a%2fb.zip", "https://denied.example:8443/a.zip"]
 )
