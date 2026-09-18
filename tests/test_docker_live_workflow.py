@@ -49,16 +49,22 @@ def test_process_cleanup_runs_on_an_image_of_each_launcher_path():
         if s.get("name") == "Measure process cleanup reach on both launcher paths"
     )
     assert "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py" in step["run"]
-    assert '"$MAF_SANDBOX_DOCKER_SESSION_IMAGE" "$MAF_SANDBOX_CODEACT_E2E_IMAGE"' in step["run"]
+    # The pairing, not the image names, is what keeps both paths covered: a tag that gains or
+    # loses `setsid` has to red the step rather than run one path twice.
+    assert "command -v setsid" in step["run"]
+    assert 'measure_cleanup_on "$MAF_SANDBOX_DOCKER_SESSION_IMAGE" session' in step["run"]
+    assert 'measure_cleanup_on "$MAF_SANDBOX_CODEACT_E2E_IMAGE" none' in step["run"]
     # Both guests run the suite's Python program, so neither may be the backend suite's own
-    # image; the session one is the digest the fingerprint steps already pull, so it costs
-    # this job no extra registry round trip.
-    observers = {
-        s["env"]["MAF_SANDBOX_DOCKER_OBSERVER_IMAGE"]
-        for s in job["steps"]
-        if "MAF_SANDBOX_DOCKER_OBSERVER_IMAGE" in (s.get("env") or {})
-    }
-    assert observers
-    assert step["env"]["MAF_SANDBOX_DOCKER_SESSION_IMAGE"] in observers
+    # image. Neither `docker run` here reaches the registry: the session image is the digest an
+    # earlier step pulls as its observer, and the CodeAct one is local from the first step.
+    observers = [
+        index
+        for index, s in enumerate(job["steps"])
+        if (s.get("env") or {}).get("MAF_SANDBOX_DOCKER_OBSERVER_IMAGE")
+        == step["env"]["MAF_SANDBOX_DOCKER_SESSION_IMAGE"]
+        and 'docker pull "$MAF_SANDBOX_DOCKER_OBSERVER_IMAGE"' in s.get("run", "")
+    ]
+    assert observers and min(observers) < job["steps"].index(step)
+    assert "docker pull" not in step["run"]
     assert "python" in job["env"]["MAF_SANDBOX_CODEACT_E2E_IMAGE"]
     assert job["env"]["MAF_SANDBOX_DOCKER_E2E_IMAGE"] not in step["run"]

@@ -111,22 +111,6 @@ jobs:
             packages/maf-sandbox-docker/tests/test_docker_e2e.py \
             packages/maf-sandbox-codeact/tests/test_codeact_e2e.py
 
-      - name: Measure process cleanup reach on both launcher paths
-        env:
-          # `setsid` decides which launcher path runs, and so what a stop can reach, so the suite
-          # runs on an image of each kind: the CodeAct interpreter the kind ships with carries
-          # none, and this digest — the fingerprint steps' observer, so already pulled — carries
-          # it. Both carry the `python3` the guest program needs; the backend suite's image does
-          # not.
-          MAF_SANDBOX_DOCKER_SESSION_IMAGE: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
-        run: |
-          set -euo pipefail
-          for image in "$MAF_SANDBOX_DOCKER_SESSION_IMAGE" "$MAF_SANDBOX_CODEACT_E2E_IMAGE"; do
-            docker pull "$image"
-            MAF_SANDBOX_DOCKER_E2E_IMAGE="$image" uv run pytest -q -ra \
-              packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py
-          done
-
       - name: Measure confinement on the rootful engine
         env:
           MAF_SANDBOX_DOCKER_E2E_IMAGE: alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
@@ -136,6 +120,34 @@ jobs:
           docker pull "$MAF_SANDBOX_DOCKER_E2E_IMAGE"
           docker pull "$MAF_SANDBOX_DOCKER_OBSERVER_IMAGE"
           uv run pytest -q -ra packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py
+
+      - name: Measure process cleanup reach on both launcher paths
+        env:
+          # `setsid` decides which launcher path runs, and so what a stop can reach, so the suite
+          # needs an image of each kind. Both carry the `python3` the guest program needs, which
+          # the backend suite's own image does not. This digest is the observer the step above
+          # pulled and the CodeAct interpreter is local from the first step, so no `docker run`
+          # below reaches the registry.
+          MAF_SANDBOX_DOCKER_SESSION_IMAGE: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+        run: |
+          set -euo pipefail
+          # The pairing is the coverage, and a tag moves under it: a CodeAct rebuild that gained
+          # `setsid` would put both runs on the session path with nothing red.
+          measure_cleanup_on() {
+            if docker run --rm --entrypoint sh "$1" -c 'command -v setsid' >/dev/null 2>&1; then
+              found=session
+            else
+              found=none
+            fi
+            if [ "$found" != "$2" ]; then
+              echo "$1 takes the '$found' launcher path, not '$2'" >&2
+              exit 1
+            fi
+            MAF_SANDBOX_DOCKER_E2E_IMAGE="$1" uv run pytest -q -ra \
+              packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py
+          }
+          measure_cleanup_on "$MAF_SANDBOX_DOCKER_SESSION_IMAGE" session
+          measure_cleanup_on "$MAF_SANDBOX_CODEACT_E2E_IMAGE" none
 
       - name: Measure Bicep confinement and module cache cleanup, and the Deep Agents adapter
         env:

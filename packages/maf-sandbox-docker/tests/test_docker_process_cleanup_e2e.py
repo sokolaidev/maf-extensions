@@ -102,6 +102,8 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             )
             assert victim.exit_code == 0, victim.stderr
             target = int(victim.stdout)
+            setsid = await sandbox.exec("command -v setsid", working_directory="/tmp", timeout=10)
+            has_setsid = setsid.exit_code == 0
             layout = maf_sandbox.guest_run_layout(
                 "process-test/run" if relative else "/tmp/process-test/run"
             )
@@ -201,7 +203,10 @@ time.sleep(2 if {finish!r} else 90)
             else:
                 with pytest.raises(maf_sandbox.SandboxProgramTimeout) as expired:
                     await maf_sandbox.host_tool_calls_over_exec(sandbox, run, layout, timeout=6)
-                assert session_made is not None, "the launcher did not run through the wrapper"
+                # Deriving the expectation is only worth something while the marker tracks
+                # the guest: a launcher that found `setsid` and made no session would
+                # otherwise be read as a guest that never had it.
+                assert session_made == has_setsid, (session_made, has_setsid)
                 assert expired.value.reach == ("group" if session_made else "program")
             check = await sandbox.exec(
                 [
