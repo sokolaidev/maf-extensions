@@ -185,10 +185,18 @@ class SandboxCodeExecutor(CodeExecutor):
         """Nothing to start: the router creates the sandbox on the first execution."""
 
     async def stop(self) -> None:
-        """Nothing to stop: the sandbox outlives the tool call and is the host's to dispose."""
+        """Release what the executor holds: the sandbox it acquired, with refusal on failure.
+
+        The contract says ``stop`` releases resources, and the sandbox *is* one — a no-op here
+        would leave a container with its filesystem and any running program alive past a
+        ``with`` block that promised cleanup. The unclean path, as on overflow: a delete that
+        does not land refuses the key rather than leaving the instance reacquirable.
+        """
+        await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
 
     async def restart(self) -> None:
-        """The executor holds nothing per turn, so a reset is a no-op here too."""
+        """Reset semantics: what one turn left behind, the next turn must not find."""
+        await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
 
     async def execute_code_blocks(
         self, code_blocks: list[CodeBlock], cancellation_token: CancellationToken
@@ -209,7 +217,7 @@ class SandboxCodeExecutor(CodeExecutor):
         rendered: list[str] = []
         exit_code = 0
         for block in code_blocks:
-            text, code = await self._run_one(sandbox, block.code, cancellation_token)
+            text, code = await self._execute_one(sandbox, block.code, cancellation_token)
             rendered.append(text)
             # The guest's own exit code answers for the result — the tool reads `success` off
             # it, so a program that exited nonzero is not reported as a success. A list stops
@@ -219,7 +227,7 @@ class SandboxCodeExecutor(CodeExecutor):
                 break
         return CodeResult(exit_code=exit_code, output="\n\n".join(rendered))
 
-    async def _run_one(
+    async def _execute_one(
         self, sandbox: BoundedExec, code: str, cancellation_token: CancellationToken
     ) -> tuple[str, int]:
         run = asyncio.ensure_future(

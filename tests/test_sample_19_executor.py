@@ -9,6 +9,7 @@ fake, and holds the block the sample prints to the shared checker:
 * a block in any other language is refused before a sandbox is acquired;
 * a sandbox without ``exec_bounded`` is refused, as `maf-sandbox-deepagents` refuses one;
 * the guest's own nonzero exit code answers for the result, so AutoGen's `success` is honest;
+* ``stop`` and ``restart`` release the acquired sandbox, per the ``CodeExecutor`` contract;
 * the evidence block the sample prints is the checker's shape, under its own heading.
 
 The fake records rather than runs, so nothing here reaches Docker. The model clients are
@@ -243,26 +244,29 @@ class TestTheExecutionRoad:
             router, backend = _router(sandbox)
             try:
                 executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
-                return (
-                    await executor.execute_code_blocks(
-                        [CodeBlock(code="print('x')", language="python")], CancellationToken()
-                    ),
-                    backend,
+                # Warm acquire first: its adoption is the one disposal that must not count,
+                # and the executor's own acquire then reuses rather than adopting again.
+                await router.acquire(_key(), _spec())
+                before = len(backend.disposed)
+                result = await executor.execute_code_blocks(
+                    [CodeBlock(code="print('x')", language="python")], CancellationToken()
                 )
+                return result, len(backend.disposed) - before
             finally:
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
-        result, backend = asyncio.run(body())
+        result, condemned = asyncio.run(body())
         # The disposal is the act that makes the next acquire a fresh create rather than a warm
-        # reuse. It happens mid-call, before the error is returned — so the count here is what
-        # the executor's own condemnation added, above whatever the scope purge reached. Counting
-        # rather than truthing: a fake that reports a disposal for every outcome would make an
-        # `is not None` pass while proving nothing.
+        # reuse. It happens mid-call, before the error is returned. The count is read as a
+        # window after a warm acquire, because the cold acquire's own adoption also disposes
+        # (the router's unfamiliar-instance path) — the window over a reused sandbox is the
+        # executor's condemnation alone, and the scope purge records in `purged`, never here.
         assert result.exit_code == 1
         assert "byte budget" in result.output
-        assert len(backend.disposed) == 2, (
-            "one from the executor's condemnation, one from the scope purge — fewer means the "
-            "executor returned its error without disposing the instance it just overflowed"
+        assert condemned == 1, (
+            f"the executor's condemnation should be exactly one disposal in the armed window, "
+            f"not {condemned} — fewer means the error was returned without the instance being "
+            f"condemned, more means the count is reading something else"
         )
 
     def test_an_overflow_failure_lands_the_disposal_before_the_error(self):
@@ -426,6 +430,82 @@ class TestTheExecutionRoad:
         # but recording, and the scope purge closing both.
         assert reacquired is not None
         assert backend.disposed.count(_key()) >= 2
+
+    @pytest.mark.parametrize("method", ["stop", "restart"])
+    def test_a_lifecycle_release_condemns_the_acquired_sandbox(self, method: str):
+        """`stop` and `restart` release what the executor acquired, per the contract.
+
+        A no-op ``stop`` would leave the container's filesystem and any running program alive
+        past a ``with`` block that promised cleanup; ``restart`` is called when the agent is
+        reset, and reset means what one turn left behind is not what the next turn finds.
+        """
+
+        class Holder(InProcessSandbox):
+            """Records that a program ran and stays running after its call returned."""
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                self.running.add("leftover-python")
+                return ExecResult(stdout="ran")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Holder()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await executor.execute_code_blocks(
+                    [CodeBlock(code="print('left behind')", language="python")],
+                    CancellationToken(),
+                )
+                before = len(backend.disposed)
+                await getattr(executor, method)()
+                return len(backend.disposed) - before
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        condemned = asyncio.run(body())
+        assert condemned >= 1, f"executor.{method}() released nothing"
+
+    @pytest.mark.parametrize("method", ["stop", "restart"])
+    def test_a_failed_lifecycle_release_refuses_the_next_acquire(
+        self, method: str, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A delete that does not land closes the key — the lifecycle path is not looser."""
+
+        class Holder(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                return ExecResult(stdout="ran")
+
+        class HoldingOnFailure(InProcessSandboxBackend):
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ):
+                self.disposed.append(key)
+                self.disposed_kinds.append(kind)
+                self.disposed_instances.append(instance_id)
+                return "the engine would not remove it"
+
+        async def body():
+            from maf_sandbox import SandboxUnclean
+
+            sandbox = Holder()
+            backend = HoldingOnFailure(sandbox, isolation=Isolation.NONE)
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await getattr(executor, method)()
+                with pytest.raises(SandboxUnclean):
+                    await router.acquire(_key(), _spec())
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        asyncio.run(body())
 
 
 class TestTheBlockTheSamplePrints:
