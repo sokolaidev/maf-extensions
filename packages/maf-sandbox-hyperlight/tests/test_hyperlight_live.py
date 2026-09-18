@@ -269,7 +269,8 @@ asyncio.run(check())
 
 LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux cgroup containment")
 KILL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
-# The guest loops forever, so this worker is inside a native call and cannot see stdin close.
+# The endless guest program is what puts this worker inside a native call, where closing
+# its input cannot end it. Any failure before that propagates instead of being reported ready.
 OWNER = """import asyncio, sys
 from maf_sandbox import Capability, SandboxKey, SandboxSpec
 from maf_sandbox_hyperlight import HyperlightSandboxBackend, HyperlightSandboxConfig, _linux
@@ -280,10 +281,7 @@ async def main():
     spec = SandboxSpec(kind='python', work_dir=None, requires=frozenset({Capability.RUN_CODE}))
     sandbox = await backend.acquire(SandboxKey('hyperlight-live', 'owner', 'agent'), spec)
     print((await sandbox.run_code("print('live')", timeout=30)).stdout.strip(), flush=True)
-    running = asyncio.create_task(sandbox.run_code("while True: pass", timeout=3600))
-    await asyncio.sleep(1)
-    print('busy', flush=True)
-    await running
+    await sandbox.run_code("while True: pass", timeout=3600)
 
 asyncio.run(main())
 """
@@ -317,6 +315,14 @@ def settles(condition: Callable[[], bool], *, seconds: float = 10) -> bool:
     while not condition() and time.monotonic() < deadline:
         time.sleep(0.05)
     return condition()
+
+
+def guest_cpu(pid: int) -> float:
+    """Seconds of CPU the worker has spent. Only a guest program inside its native call spends any."""
+    if sys.platform != "linux":
+        pytest.skip("Linux /proc accounting")
+    fields = (Path("/proc") / str(pid) / "stat").read_text().rsplit(") ", 1)[1].split()
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
 
 
 def claimed(lock: str) -> bool:
@@ -386,25 +392,24 @@ def test_abrupt_owner_death_leaves_no_micro_vm_worker_and_releases_ownership(tmp
         stderr=subprocess.PIPE,
         bufsize=0,
     )
-    handles: list[int] = []
+    handle = -1
     try:
         assert answer(owner) == b"live"
-        assert answer(owner) == b"busy"
         (group,) = worker_groups() - existing
-        handles = [
-            os.pidfd_open(int(pid))
-            for pid in (cgroup_root() / group / "cgroup.procs").read_text().split()
-        ]
-        assert handles
+        (worker,) = (
+            int(pid) for pid in (cgroup_root() / group / "cgroup.procs").read_text().split()
+        )
+        handle = os.pidfd_open(worker)
+        idle = guest_cpu(worker)
+        assert settles(lambda: guest_cpu(worker) > idle + 0.1), "the guest never began executing"
         owner.kill()
         owner.wait(timeout=10)
-        for handle in handles:
-            exited(handle)
+        exited(handle)
         assert settles(lambda: not (cgroup_root() / group).exists())
         assert settles(lambda: claimed(lock))
     finally:
         if owner.poll() is None:
             owner.kill()
         owner.communicate(timeout=10)
-        for handle in handles:
+        if handle >= 0:
             os.close(handle)
