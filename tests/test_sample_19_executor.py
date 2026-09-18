@@ -394,12 +394,57 @@ class TestTheExecutionRoad:
             f"not {condemned} — zero means the sandbox stayed reacquirable in unknown state"
         )
 
-    def test_an_unexpected_execution_error_with_a_failed_delete_refuses_the_next_acquire(self):
-        """The condemnation is the unclean path on *every* lost run, not only the named two."""
+    def test_a_cancelled_execution_condemns_and_propagates(self):
+        """A cancelled tool call is a lost run: the sandbox is condemned and the cancellation
+        propagates out of the executor.
+        """
 
-        class Breaking(InProcessSandbox):
+        class Hanging(InProcessSandbox):
+            """A guest that never answers, the way a cancelled run finds one."""
+
             async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
-                raise RuntimeError("the transport fell over mid-execution")
+                await asyncio.sleep(3600)
+                raise AssertionError("the cancelled wait never returns here")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Hanging()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await router.acquire(_key(), _spec())
+                before = len(backend.disposed)
+                token = CancellationToken()
+                run = asyncio.ensure_future(
+                    executor.execute_code_blocks(
+                        [CodeBlock(code="print('never')", language="python")], token
+                    )
+                )
+                # Let the executor reach its await before cancelling, so the cancellation
+                # lands on the linked future rather than on the not-yet-started call.
+                await asyncio.sleep(0.05)
+                token.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await run
+                return len(backend.disposed) - before
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        condemned = asyncio.run(body())
+        assert condemned == 1, (
+            f"the cancellation should condemn exactly once in the armed window, "
+            f"not {condemned} — zero means the cancelled run left the sandbox reacquirable"
+        )
+
+    def test_a_cancelled_execution_with_a_failed_delete_refuses_the_next_acquire(self):
+        """The condemnation on cancellation is the unclean path, like every other lost run."""
+
+        class Hanging(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                await asyncio.sleep(3600)
+                raise AssertionError("the cancelled wait never returns here")
 
         class HoldingOnFailure(InProcessSandboxBackend):
             fail = False
@@ -421,34 +466,37 @@ class TestTheExecutionRoad:
             from autogen_core.code_executor import CodeBlock
             from maf_sandbox import SandboxUnclean
 
-            sandbox = Breaking()
+            sandbox = Hanging()
             backend = HoldingOnFailure(sandbox, isolation=Isolation.NONE)
             router = SandboxRouter([backend], min_isolation=Isolation.NONE)
             try:
                 executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
                 await router.acquire(_key(), _spec())
                 backend.fail = True
-                result = await executor.execute_code_blocks(
-                    [CodeBlock(code="print('lost')", language="python")], CancellationToken()
+                token = CancellationToken()
+                run = asyncio.ensure_future(
+                    executor.execute_code_blocks(
+                        [CodeBlock(code="print('never')", language="python")], token
+                    )
                 )
+                await asyncio.sleep(0.05)
+                token.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await run
                 with pytest.raises(SandboxUnclean):
                     await router.acquire(_key(), _spec())
-                return result
             finally:
                 backend.fail = False
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
-        result = asyncio.run(body())
-        assert result.exit_code == 1
-        assert result.output.startswith("Error:")
+        asyncio.run(body())
 
-    def test_an_overflow_failure_lands_the_disposal_before_the_error(self):
-        """A disposal that fails is still best-effort: the error is returned, the attempt ran first.
+    def test_an_overflow_failure_attempts_the_disposal_and_still_answers(self):
+        """The unclean disposal is attempted on a lost run even when the delete itself raises,
+        and the model still reads its `Error:` string rather than the raise.
 
-        The backend raises from ``dispose`` rather than reporting a failure — the one failure
-        shape `_dispose_each` catches, and the one this suite's other overflow tests do not
-        carry. The unclean disposal is attempted, its raise is recorded, and the model still
-        gets its error string rather than the raise.
+        `_dispose_each` catches the raise, records it, and the error wins — the one failure
+        shape the suite's other overflow tests do not carry.
         """
 
         class Overflowing(InProcessSandbox):
@@ -497,12 +545,9 @@ class TestTheExecutionRoad:
                 await router.dispose_scope(_key().scope, _key().thread_id)
 
         result, condemned = asyncio.run(body())
-        # The disposal was attempted before the error came back — the ordering the name names —
-        # and the raise never escaped to the model: the router records it, and the error wins.
-        # The window is measured, not inferred: `disposed` also counts the warm acquire's own
-        # adoption, so the assertion is over the disposals taken *after* arming, which are the
-        # executor's condemnation and nothing else. The scope purge records in `purged`, never
-        # here.
+        # Measured over the armed window: `disposed` also counts the warm acquire's adoption,
+        # and the scope purge records in `purged`, so only the delta after arming is the
+        # executor's condemnation.
         assert result.exit_code == 1
         assert "byte budget" in result.output
         assert condemned >= 1, (

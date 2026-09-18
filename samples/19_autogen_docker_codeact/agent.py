@@ -240,9 +240,8 @@ class SandboxCodeExecutor(CodeExecutor):
                 max_output_bytes=MAX_OUTPUT_BYTES,
             )
         )
-        # Cancelling the tool call cancels the *wait*, never the guest: the program runs on
-        # until `dispose_scope` removes its container. That is what this sample gives up, and
-        # the README says so.
+        # Cancelling the tool call cancels the *wait*; the guest's end stays unknown either
+        # way, and the handler below condemns the sandbox on every lost run.
         cancellation_token.link_future(run)
         try:
             result = await run
