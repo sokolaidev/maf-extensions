@@ -140,6 +140,7 @@ def install(monkeypatch: pytest.MonkeyPatch, table: dict[str, bytes], gets: dict
 
 POLICY = {
     "schema": 1,
+    "engine": "terraform",
     "providers": [
         {"address": "registry.terraform.io/azure/azapi", "constraint": "~> 2.12"},
         {"address": "registry.terraform.io/azure/modtm", "constraint": "= 0.4.0"},
@@ -362,6 +363,7 @@ def catalog_routes() -> tuple[dict[str, bytes], dict[str, str]]:
 
 CATALOG_POLICY = {
     "schema": 1,
+    "engine": "terraform",
     "providers": POLICY["providers"],
     "registry_modules": [],
     "catalog": {
@@ -423,3 +425,113 @@ def test_pin_changes_name_what_moved():
         "excluded x 2.0.0",
     ]
     assert generator.pin_changes(previous, previous) == ["no pins changed"]
+
+
+TOFU_RELEASE = "https://github.com/opentofu/terraform-provider-random/releases/download/v3.9.1"
+OPENTOFU_POLICY = {
+    "schema": 1,
+    "engine": "opentofu",
+    "providers": [{"address": "registry.opentofu.org/hashicorp/random", "constraint": ">= 3.7.0"}],
+    "registry_modules": [],
+}
+
+
+def opentofu_routes() -> dict[str, bytes]:
+    """Every request a provider-only OpenTofu policy makes, with canned responses."""
+    filename = "terraform-provider-random_3.9.1_linux_amd64.zip"
+    return {
+        "https://registry.opentofu.org/v1/providers/hashicorp/random/versions": json.dumps(
+            {
+                "versions": [
+                    {"version": "3.9.1", "platforms": [{"os": "linux", "arch": "amd64"}]},
+                    {"version": "3.10.0", "platforms": [{"os": "darwin", "arch": "arm64"}]},
+                ]
+            }
+        ).encode(),
+        "https://registry.opentofu.org/v1/providers/hashicorp/random/3.9.1/download/linux/amd64": json.dumps(
+            {
+                "filename": filename,
+                "download_url": f"{TOFU_RELEASE}/{filename}",
+                "shasums_url": f"{TOFU_RELEASE}/terraform-provider-random_3.9.1_SHA256SUMS",
+                "shasum": "9b" * 32,
+            }
+        ).encode(),
+        f"{TOFU_RELEASE}/terraform-provider-random_3.9.1_SHA256SUMS": sums(filename, "9b" * 32),
+        "https://api.github.com/repos/opentofu/terraform-provider-random": json.dumps(
+            {"id": 691499456}
+        ).encode(),
+    }
+
+
+def test_an_opentofu_policy_pins_from_the_opentofu_registry(monkeypatch):
+    install(monkeypatch, opentofu_routes(), {})
+    document = generator.generate(copy.deepcopy(OPENTOFU_POLICY))
+    prep.checked_manifest(copy.deepcopy(document))
+    assert document["engine"] == "opentofu"
+    assert document["modules"] == [] and document["registry_modules"] == []
+    assert [(item["source"], item["version"]) for item in document["providers"]] == [
+        ("registry.opentofu.org/hashicorp/random", "3.9.1")
+    ]
+    assert document["providers"][0]["artifact"]["github_repository_id"] == "691499456"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"registry_modules": [{"source": "registry.opentofu.org/a/b/c", "constraint": "= 1.0.0"}]},
+        {"catalog": {"namespace": "Azure", "prefixes": ["avm-"]}},
+    ],
+)
+def test_registry_modules_are_refused_for_opentofu(field):
+    policy = copy.deepcopy(OPENTOFU_POLICY) | field
+    with pytest.raises(ValueError, match="cannot be baked for opentofu"):
+        generator.Resolution(policy)
+
+
+def test_an_address_on_the_other_registry_is_refused():
+    policy = copy.deepcopy(OPENTOFU_POLICY)
+    policy["providers"][0]["address"] = "registry.terraform.io/hashicorp/random"
+    with pytest.raises(ValueError, match="not a registry.opentofu.org address"):
+        generator.Resolution(policy)
+
+
+@pytest.mark.parametrize("engine", [None, "terragrunt", ["opentofu"], {"name": "opentofu"}])
+def test_a_policy_names_a_supported_engine(engine):
+    policy = copy.deepcopy(OPENTOFU_POLICY)
+    if engine is None:
+        del policy["engine"]
+    else:
+        policy["engine"] = engine
+    with pytest.raises(ValueError, match="engine"):
+        generator.Resolution(policy)
+
+
+@pytest.mark.parametrize("namespace", [["Azure"], {"name": "Azure"}, 7])
+def test_a_catalog_namespace_that_is_not_a_name_is_refused(namespace):
+    policy = copy.deepcopy(CATALOG_POLICY)
+    policy["catalog"] = dict(policy["catalog"], namespace=namespace)
+    with pytest.raises(ValueError, match="catalog needs a namespace"):
+        generator.Resolution(policy)
+
+
+def test_every_request_names_this_client(monkeypatch):
+    """The OpenTofu registry answers urllib's default agent with 403."""
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *arguments):
+            return False
+
+        def read(self, size):
+            return b"{}"
+
+    seen = []
+    monkeypatch.setattr(
+        generator, "urlopen", lambda request, timeout: seen.append(request) or Response()
+    )
+    generator.http_bytes("https://registry.opentofu.org/v1/providers/hashicorp/random/versions")
+    generator.http_bytes("https://api.github.com/repos/opentofu/x", generator.github_headers())
+    assert [request.get_header("User-agent") for request in seen] == [generator.USER_AGENT] * 2
+    assert seen[1].get_header("Accept") == "application/vnd.github+json"

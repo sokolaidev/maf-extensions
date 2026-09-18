@@ -494,10 +494,11 @@ def module_records(
 
 
 def refuse_copied_providers(data_dir: Path) -> None:
-    """A prepared mirror serves providers by symlink; Terraform copies when it cannot.
+    """A prepared mirror serves providers by symlink; an engine copies when it cannot.
 
-    It reports success either way, so every entry below the call's providers directory
-    must be a link into the image mirror, never a regular file.
+    It reports success either way, so every entry below the call's providers directory must be
+    a link into the image mirror. The one regular file allowed is the empty file OpenTofu locks
+    beside the link it made, named for that link.
     """
     providers = data_dir / "providers"
     if not providers.is_dir():
@@ -509,7 +510,14 @@ def refuse_copied_providers(data_dir: Path) -> None:
                 if not entry.resolve().is_relative_to(INSTALL / "mirror"):
                     raise ValueError("provider linked outside the image mirror")
             elif entry.is_file():
-                raise ValueError("provider copied into the call")
+                link = entry.parent / name.removesuffix(".lock")
+                if not (
+                    name.endswith(".lock")
+                    and entry.stat().st_size == 0
+                    and link.is_symlink()
+                    and link.resolve().is_relative_to(INSTALL / "mirror")
+                ):
+                    raise ValueError("provider copied into the call")
 
 
 def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {"address": "registry.opentofu.org/azure/azapi", "constraint": ">= 0.0.0"},
+    {"address": "registry.opentofu.org/hashicorp/azurerm", "constraint": ">= 0.0.0"},
+    {"address": "registry.opentofu.org/hashicorp/local", "constraint": ">= 0.0.0"},
+    {"address": "registry.opentofu.org/hashicorp/null", "constraint": ">= 0.0.0"},
+    {"address": "registry.opentofu.org/hashicorp/random", "constraint": ">= 0.0.0"},
+    {"address": "registry.opentofu.org/hashicorp/time", "constraint": ">= 0.0.0"},
+    {"address": "registry.opentofu.org/hashicorp/tls", "constraint": ">= 0.0.0"}
+  ],
+  "registry_modules": []
+}

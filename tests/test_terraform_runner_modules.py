@@ -333,3 +333,38 @@ def test_a_provider_link_pointing_outside_the_mirror_is_refused(tmp_path):
     )
     with pytest.raises(ValueError, match="outside"):
         runner.refuse_copied_providers(data)
+
+
+TOFU_MIRROR = "/opt/maf-terraform/mirror/registry.opentofu.org/hashicorp/random/3.9.1/linux_amd64"
+
+
+def _tofu_package(data: Path) -> Path:
+    return data / "providers/registry.opentofu.org/hashicorp/random/3.9.1/linux_amd64"
+
+
+def test_the_lock_opentofu_holds_beside_a_linked_package_passes(tmp_path):
+    data = tmp_path / "data"
+    package = _tofu_package(data)
+    package.parent.mkdir(parents=True)
+    _link(package, TOFU_MIRROR)
+    package.with_name(package.name + ".lock").touch()
+    runner.refuse_copied_providers(data)
+
+
+def test_a_lock_holding_bytes_is_refused(tmp_path):
+    data = tmp_path / "data"
+    package = _tofu_package(data)
+    package.parent.mkdir(parents=True)
+    _link(package, TOFU_MIRROR)
+    package.with_name(package.name + ".lock").write_bytes(b"provider bytes")
+    with pytest.raises(ValueError, match="copied"):
+        runner.refuse_copied_providers(data)
+
+
+def test_a_lock_beside_a_copied_package_is_refused(tmp_path):
+    data = tmp_path / "data"
+    package = _tofu_package(data)
+    package.mkdir(parents=True)
+    package.with_name(package.name + ".lock").touch()
+    with pytest.raises(ValueError, match="copied"):
+        runner.refuse_copied_providers(data)

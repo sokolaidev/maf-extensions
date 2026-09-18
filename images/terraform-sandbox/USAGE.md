@@ -22,6 +22,14 @@ uv run python images/terraform-sandbox/build_image.py --engine terraform --profi
 
 The build downloads about 540 MB and produces an image of about 3.4 GB.
 
+OpenTofu image with its pinned providers baked in:
+
+```sh
+uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin && docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin --build-arg MANIFEST=dependencies.opentofu-providers.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:1.12.6-providers-1 images/terraform-sandbox
+```
+
+The build downloads about 130 MB and produces an image of about 1.2 GB.
+
 ## Build an engine image
 
 Use the builder, not `docker build`.
@@ -66,7 +74,13 @@ docker build --platform linux/amd64 --build-context scripts=scripts --build-arg 
 uv run python images/terraform-sandbox/example.py --engine terraform --image maf-terraform:1.16.2-prepared --prepared dist/dependencies/terraform
 ```
 
-Prepared OpenTofu images do not build yet: the offline probe fails until [#1289](https://github.com/sokolaidev/maf-extensions/issues/1289) is fixed. After that, use `maf-opentofu:1.12.6-builtin`, `dependencies.opentofu.json` and `--engine opentofu`.
+The same three commands build the OpenTofu one:
+
+```sh
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin --build-arg MANIFEST=dependencies.opentofu.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:1.12.6-prepared images/terraform-sandbox
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin --build-arg MANIFEST=dependencies.opentofu.json -f images/terraform-sandbox/prepared.Dockerfile --target prepared --output type=local,dest=dist/dependencies/opentofu images/terraform-sandbox
+uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-opentofu:1.12.6-prepared --prepared dist/dependencies/opentofu
+```
 
 Keep the exported directory in trusted storage. To rebuild from it without preparing again, add `--build-context prepared=<directory>` and drop `MANIFEST`. Deploy by image ID or digest, not by tag.
 
@@ -136,6 +150,39 @@ aca sandboxgroup disk create --group <group> --image <registry>.azurecr.io/maf-t
 
 Configure the ACAS backend with that registry and pass `image="maf-terraform:1.16.2-avm-1"` to `make_terraform_tools`.
 
+## Build an OpenTofu image with pinned providers
+
+OpenTofu only, and providers only: preparation bakes registry modules for Terraform alone. [dependencies.opentofu-providers.policy.json](dependencies.opentofu-providers.policy.json) names the providers, on `registry.opentofu.org`. The steps are those of the section above, without the module review.
+
+### 1. Change the policy
+
+Add an address to `providers` with a version bound, or remove one.
+
+### 2. Generate the manifest
+
+Set `GITHUB_TOKEN` first to avoid GitHub's rate limit.
+
+```sh
+uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.opentofu-providers.policy.json --output images/terraform-sandbox/dependencies.opentofu-providers.json
+```
+
+`--check` fails instead of writing when the committed manifest no longer matches the policy.
+
+### 3. Review the change
+
+Review the manifest diff. To check a pin by hand, compare its digest with the release `SHA256SUMS` and with `https://registry.opentofu.org/v1/providers/<namespace>/<type>/<version>/download/linux/amd64`. That metadata decides the artifact: a provider OpenTofu rebuilds is served from `github.com/opentofu/` and carries a digest of its own, while a vendor-published release such as `azapi` is the same asset Terraform pins. Compare against the registry, not against the Terraform manifest.
+
+### 4. Build
+
+Tag with the engine version, the profile and a revision you never reuse.
+
+```sh
+uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin --build-arg MANIFEST=dependencies.opentofu-providers.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:1.12.6-providers-1 images/terraform-sandbox
+```
+
+The build's offline probe initializes every pinned provider once through the launcher, and prints the `init` output of a probe that failed. Export the preparation and import the image for ACAS as the section above shows, with the OpenTofu tags.
+
 ## Check an image
 
 [README.md](README.md#verification) says what each suite proves.
@@ -145,7 +192,7 @@ Configure the ACAS backend with that registry and pass `image="maf-terraform:1.1
 - Launcher module records: `uv run pytest -q tests/test_terraform_runner_modules.py`
 - Custom provider profiles, built live: set `MAF_IMAGE_BUILD_TESTS=1`, then `uv run pytest -q tests/test_terraform_image_build.py -k live_build`
 - Engine images on Docker: set `MAF_TERRAFORM_E2E_IMAGE` and `MAF_OPENTOFU_E2E_IMAGE` to the two `random` images, then `uv run pytest -q packages/maf-sandbox-terraform/tests/test_terraform_docker.py`
-- Prepared images on Docker: set `MAF_TERRAFORM_PREPARED_IMAGE` and `MAF_OPENTOFU_PREPARED_IMAGE` to image IDs, and `MAF_TERRAFORM_PREPARED_DIR` and `MAF_OPENTOFU_PREPARED_DIR` to their exported prepared directories, then `uv run pytest -q tests/test_terraform_dependencies_docker.py`. Until [#1289](https://github.com/sokolaidev/maf-extensions/issues/1289) is fixed there is no OpenTofu image, so set its two variables to any value and add `-k "not opentofu"`.
+- Prepared images on Docker: set `MAF_TERRAFORM_PREPARED_IMAGE` and `MAF_OPENTOFU_PREPARED_IMAGE` to image IDs, and `MAF_TERRAFORM_PREPARED_DIR` and `MAF_OPENTOFU_PREPARED_DIR` to their exported prepared directories, then `uv run pytest -q tests/test_terraform_dependencies_docker.py`. Both engines need the image and the directory its own `dependencies.<engine>.json` produced.
 - AVM image, catalog or network: set `MAF_TERRAFORM_AVM_DIR` to the exported prepared directory, then `uv run pytest -q tests/test_terraform_avm_offline.py`
   - For Docker, also set `MAF_TERRAFORM_AVM_IMAGE` to the local image.
   - For ACAS, also set `MAF_TERRAFORM_AVM_ACAS_IMAGE` to the imported `repository:tag`, and `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and `ACAS_SANDBOX_REGISTRY`. Each ACAS call creates one billable sandbox.
