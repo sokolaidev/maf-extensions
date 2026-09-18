@@ -170,7 +170,7 @@ uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/de
 
 ### 3. Review the change
 
-Review the manifest diff. To check a pin by hand, compare its digest with the release `SHA256SUMS` and with `https://registry.opentofu.org/v1/providers/<namespace>/<type>/<version>/download/linux/amd64`. The OpenTofu registry serves OpenTofu's own build of a provider, so a digest here does not match the Terraform one.
+Review the manifest diff. To check a pin by hand, compare its digest with the release `SHA256SUMS` and with `https://registry.opentofu.org/v1/providers/<namespace>/<type>/<version>/download/linux/amd64`. That metadata decides the artifact: a provider OpenTofu rebuilds is served from `github.com/opentofu/` and carries a digest of its own, while a vendor-published release such as `azapi` is the same asset Terraform pins. Compare against the registry, not against the Terraform manifest.
 
 ### 4. Build
 

@@ -58,7 +58,6 @@ jobs:
       - name: Validate prepared providers and modules offline, and observe disposal
         run: uv run pytest -q tests/test_terraform_dependencies_docker.py
       - name: Build the prepared AVM image and export its preparation
-        # The step above built maf-terraform:ci-builtin, the base this one prepares onto.
         run: |
           build=(docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-terraform:ci-builtin --build-arg MANIFEST=dependencies.terraform-avm-network.json -f images/terraform-sandbox/prepared.Dockerfile)
           "${build[@]}" -t "$MAF_TERRAFORM_AVM_IMAGE" images/terraform-sandbox

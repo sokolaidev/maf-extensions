@@ -495,7 +495,7 @@ def test_an_address_on_the_other_registry_is_refused():
         generator.Resolution(policy)
 
 
-@pytest.mark.parametrize("engine", [None, "terragrunt"])
+@pytest.mark.parametrize("engine", [None, "terragrunt", ["opentofu"], {"name": "opentofu"}])
 def test_a_policy_names_a_supported_engine(engine):
     policy = copy.deepcopy(OPENTOFU_POLICY)
     if engine is None:
@@ -503,6 +503,14 @@ def test_a_policy_names_a_supported_engine(engine):
     else:
         policy["engine"] = engine
     with pytest.raises(ValueError, match="engine"):
+        generator.Resolution(policy)
+
+
+@pytest.mark.parametrize("namespace", [["Azure"], {"name": "Azure"}, 7])
+def test_a_catalog_namespace_that_is_not_a_name_is_refused(namespace):
+    policy = copy.deepcopy(CATALOG_POLICY)
+    policy["catalog"] = dict(policy["catalog"], namespace=namespace)
+    with pytest.raises(ValueError, match="catalog needs a namespace"):
         generator.Resolution(policy)
 
 

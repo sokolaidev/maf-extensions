@@ -268,7 +268,7 @@ class Resolution:
         if policy["schema"] != 1 or type(policy["schema"]) is not int:
             raise ValueError("policy schema must be the integer 1")
         self.engine = policy["engine"]
-        if self.engine not in REGISTRY_HOSTS:
+        if not isinstance(self.engine, str) or self.engine not in REGISTRY_HOSTS:
             raise ValueError(f"policy engine must be one of {sorted(REGISTRY_HOSTS)}")
         self.host = REGISTRY_HOSTS[self.engine]
         # Preparation bakes registry modules for Terraform only, so a policy may not ask.
@@ -293,9 +293,13 @@ class Resolution:
         self.skipped: dict[str, str] = {}
         if self.catalog is not None:
             exact_keys(self.catalog, {"namespace", "prefixes"}, "catalog", frozenset({"exclude"}))
-            if not re.fullmatch(prep._REGISTRY_PART, self.catalog["namespace"]) or not (
-                self.catalog["prefixes"]
-                and all(isinstance(item, str) and item for item in self.catalog["prefixes"])
+            if (
+                not isinstance(self.catalog["namespace"], str)
+                or not re.fullmatch(prep._REGISTRY_PART, self.catalog["namespace"])
+                or not (
+                    self.catalog["prefixes"]
+                    and all(isinstance(item, str) and item for item in self.catalog["prefixes"])
+                )
             ):
                 raise ValueError("catalog needs a namespace and at least one name prefix")
             for item in self.catalog.get("exclude", []):
