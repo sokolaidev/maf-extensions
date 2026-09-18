@@ -1068,10 +1068,17 @@ def prepare(manifest: dict[str, Any], output: Path, *, progress: Path | None = N
     }
     catalog = {item["name"]: item for item in manifest.get("registry_modules", [])}
     sources: dict[str, dict[str, dict[str, str]]] = {}
-    total = 0
-    for position, (kind, item) in enumerate(artifact_sequence(manifest)):
+    sequence = artifact_sequence(manifest)
+
+    def mark(position: int | None) -> None:
+        """Name the artifact whose work is underway; `None` while none is, so it is not blamed."""
         if progress is not None:
-            progress.write_text(f"artifact {position}\n", encoding="ascii", newline="\n")
+            text = "" if position is None else f"artifact {position}\n"
+            progress.write_text(text, encoding="ascii", newline="\n")
+
+    total = 0
+    for position, (kind, item) in enumerate(sequence):
+        mark(position)
         data = fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
         total += len(data)
         require(total <= MAX_TOTAL, "total-size")
@@ -1112,11 +1119,14 @@ def prepare(manifest: dict[str, Any], output: Path, *, progress: Path | None = N
         record["provenance"] = item["artifact"]["provenance"]
         record["decision"] = "verified"
         receipt[kind].append(record)
-    for record in receipt["registry_modules"]:
+    inventoried = (index for index, (kind, _) in enumerate(sequence) if kind == "registry_modules")
+    for position, record in zip(inventoried, receipt["registry_modules"], strict=True):
+        mark(position)
         record["inventories"] = {
             directory: registry_inventory(record["name"], directory, catalog, sources)
             for directory in sorted(record["graph"])
         }
+    mark(None)
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return identity
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import contextlib
 import copy
 import datetime
 import hashlib
@@ -1624,6 +1625,50 @@ def test_registry_inventory_is_bounded(monkeypatch):
     monkeypatch.setattr(prep, "MAX_INVENTORY", 2)
     with pytest.raises(prep.Refused, match="registry-inventory"):
         prep.registry_inventory("network", ".", catalog, {"network": sources, "shared": {".": {}}})
+
+
+def prepared_registry_policy(monkeypatch):
+    """A registry policy whose archives are served without a request."""
+    policy = registry_policy()
+    archives = {
+        "network": bundle(network_files()),
+        "shared": bundle({f"terraform-shared-{SHARED_REVISION}/main.tf": "terraform {}\n"}),
+        "provider": bundle({"terraform-provider-random_v3.7.2": b"never executed"}),
+    }
+    policy["providers"][0]["artifact"] = artifact(archives["provider"])
+    for item in policy["registry_modules"]:
+        item["artifact"]["sha256"] = hashlib.sha256(archives[item["name"]]).hexdigest()
+    by_digest = {hashlib.sha256(data).hexdigest(): data for data in archives.values()}
+    monkeypatch.setattr(prep, "fetch", lambda spec, _, **limits: by_digest[spec["sha256"]])
+    return policy
+
+
+def test_inventory_work_names_its_own_module_not_the_last_download(tmp_path, monkeypatch):
+    policy = prepared_registry_policy(monkeypatch)
+    monkeypatch.setattr(prep, "MAX_INVENTORY", 2)
+    progress = tmp_path / "progress"
+    with pytest.raises(prep.Refused, match="^registry-inventory$"):
+        prep.prepare(policy, tmp_path / "prepared", progress=progress)
+    # "network" is position 1 of provider, network, shared; "shared" is the last download.
+    assert progress.read_text(encoding="ascii") == "artifact 1\n"
+    assert prep.refusal_context(progress, policy).splitlines()[1] == (
+        "  artifact: registry module registry.terraform.io/Azure/network/azurerm 1.2.3"
+    )
+
+
+@pytest.mark.parametrize("failing", [False, True])
+def test_no_artifact_is_named_once_every_artifact_is_done(tmp_path, monkeypatch, failing):
+    policy = prepared_registry_policy(monkeypatch)
+    if failing:
+        # An unserialisable inventory fails the receipt write, the last step after the marker.
+        monkeypatch.setattr(prep, "registry_inventory", lambda *arguments: object())
+    progress = tmp_path / "progress"
+    with contextlib.ExitStack() as stack:
+        if failing:
+            stack.enter_context(pytest.raises(TypeError))
+        prep.prepare(policy, tmp_path / "prepared", progress=progress)
+    assert progress.read_text(encoding="ascii") == ""
+    assert prep.refusal_context(progress, policy) == ""
 
 
 def versioned_policy():
