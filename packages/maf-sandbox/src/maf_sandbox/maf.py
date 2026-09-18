@@ -1273,6 +1273,25 @@ def claimed_source_integrity(properties: Mapping[str, Any]) -> SourceIntegrity |
         return None
 
 
+def _snapshot_declarations(declarations: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Copy a caller's mapping with its integrity claim resolved once, before anything acts.
+
+    A value is free to answer differently each time it is read, so two checks reading it apart
+    can disagree about what was claimed — and a claim that two checks answer differently is one
+    neither of them weighed. Resolving it here leaves every reader below a plain string.
+
+    A level this package does not recognise is left exactly as it came: the framework acts on
+    its own two spellings and logs anything else away, which is not a claim to refuse.
+    """
+    if declarations is None:
+        return None
+    snapshot = dict(declarations)
+    claimed = claimed_source_integrity(snapshot)
+    if claimed is not None:
+        snapshot["source_integrity"] = str(claimed)
+    return snapshot
+
+
 def _implemented_declarations(
     properties: Mapping[str, Any], *, commits_guidance: bool, tool: str
 ) -> dict[str, Any]:
@@ -2652,6 +2671,9 @@ def sandboxed_tool(
         agent_id = agent_dir
     elif agent_dir is not None:
         raise TypeError("pass agent_id or agent_dir, not both")
+    # Resolved before the first check reads it, so no two readers can be handed different
+    # answers by the same value.
+    declarations = _snapshot_declarations(declarations)
     if output_sink is not None and declarations is not None:
         raise ValueError(
             f"{name}: pass either output_sink or declarations=, never both. An explicit "

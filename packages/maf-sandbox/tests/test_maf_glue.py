@@ -1154,6 +1154,54 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
                 declarations={"source_integrity": StrLike(), "confidentiality": "private"},
             )
 
+    def test_a_claim_that_reads_differently_twice_is_only_read_once(self):
+        """Resolved before the first check, so no reader can be handed a different answer.
+
+        A value free to answer twice would otherwise pass the trusted-channel check as
+        `untrusted` and be coerced to `trusted` immediately after, putting a trusted label on
+        derived items over a spec that opens the file store.
+        """
+
+        class Shifting:
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def __str__(self) -> str:
+                self.reads += 1
+                return str(
+                    SourceIntegrity.UNTRUSTED if self.reads == 1 else SourceIntegrity.TRUSTED
+                )
+
+        claim = Shifting()
+        tool = self._tool(
+            source_integrity=None,
+            declarations={"source_integrity": claim, "confidentiality": "private"},
+        )
+
+        assert claim.reads == 1
+        assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == str(
+            SourceIntegrity.UNTRUSTED
+        )
+
+    def test_a_claim_reading_trusted_first_still_meets_the_spec_check(self):
+        """The direction that matters: the one reading is the one every check is held to."""
+
+        class Shifting:
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def __str__(self) -> str:
+                self.reads += 1
+                return str(
+                    SourceIntegrity.TRUSTED if self.reads == 1 else SourceIntegrity.UNTRUSTED
+                )
+
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
+            self._tool(
+                source_integrity=None,
+                declarations={"source_integrity": Shifting(), "confidentiality": "private"},
+            )
+
     def test_an_unknown_spelling_is_refused_rather_than_raised(self):
         """Past the raise the tool declares trusted, so a spelling this package cannot weaken
         by is the one value that must not reach an attached tool."""
