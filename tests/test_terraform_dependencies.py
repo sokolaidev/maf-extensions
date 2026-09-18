@@ -974,6 +974,38 @@ def test_preparation_records_the_artifact_and_status_a_download_stopped_on(recei
 
 
 @pytest.mark.parametrize(
+    ("route", "decision", "status"),
+    [
+        (
+            (302, {"Location": "https://denied.example/repository/1.0/artifact.zip"}, b""),
+            "redirect-unapproved",
+            302,
+        ),
+        ((307, {"Location": "https://approved.example/a.zip"}, b""), "redirect-unapproved", 307),
+        ((200, {"Content-Encoding": "gzip"}, b"artifact"), "response-encoding", 200),
+        ((200, {}, b"other"), "artifact-mismatch", 200),
+    ],
+)
+def test_every_refusal_holding_a_response_carries_the_status_it_arrived_with(
+    receiver, route, decision, status
+):
+    _, routes, _ = receiver
+    routes["/repository/1.0/artifact.zip"] = route
+    with pytest.raises(prep.Refused, match=f"^{decision}$") as refused:
+        prep.fetch(artifact(), time.monotonic() + 5)
+    assert refused.value.status == status
+
+
+@pytest.mark.parametrize(
+    "url", ["https://approved.example/a%2fb.zip", "https://denied.example:8443/a.zip"]
+)
+def test_a_refusal_raised_before_any_response_carries_no_status(url):
+    with pytest.raises(prep.Refused) as refused:
+        prep.fetch(artifact(url=url), time.monotonic() + 5)
+    assert refused.value.status == 0
+
+
+@pytest.mark.parametrize(
     ("policy", "note", "expected"),
     [
         (
@@ -1031,7 +1063,7 @@ def test_cli_names_the_artifact_a_worker_refusal_stopped_on(tmp_path, monkeypatc
         "def fail(manifest, output, *, progress=None):\n"
         "    output.mkdir()\n"
         "    progress.write_text('artifact 1\\n', encoding='ascii', newline='\\n')\n"
-        "    prep.require(False, 'response-status', 404)\n"
+        "    raise prep.Refused('response-status', 404)\n"
         "prep.prepare = fail\n_worker = prep._worker\n"
     )
     output = tmp_path / "prepared"

@@ -87,8 +87,9 @@ _WORKER_DECISIONS = (
 class Refused(ValueError):
     """A bounded policy decision safe to include in diagnostics.
 
-    `status` carries the HTTP status a response arrived with, which is bounded to three
-    digits by the parser and is the only number an upstream server contributes to one.
+    `status` is the HTTP status of the response being processed when the refusal was
+    raised, or 0 where none had arrived. `fetch` sets it; the parser bounds it to three
+    digits, and it is the only number an upstream server contributes to a refusal.
     """
 
     def __init__(self, decision: str, status: int = 0) -> None:
@@ -96,10 +97,10 @@ class Refused(ValueError):
         self.status = status
 
 
-def require(condition: object, decision: str, status: int = 0) -> None:
+def require(condition: object, decision: str) -> None:
     """Keep input and upstream content out of exception messages."""
     if not condition:
-        raise Refused(decision, status)
+        raise Refused(decision)
 
 
 def exact_keys(value: Any, required: set[str], optional: set[str] | None = None) -> None:
@@ -471,57 +472,66 @@ def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARC
                 transport = connection.sock
                 assert transport is not None
                 response = connection.getresponse()
-                if response.status in {301, 302, 303, 307, 308}:
-                    locations = response.headers.get_all("Location", [])
-                    require(len(locations) == 1 and hop < 3, "redirect-limit")
-                    location = locations[0]
-                    repository = artifact.get("github_repository_id")
-                    if repository is not None and hop == 0:
-                        redirected_host, redirected_target = canonical_url(location, signed=True)
-                        require(
-                            redirected_host == "release-assets.githubusercontent.com",
-                            "redirect-host",
-                        )
-                        require(
-                            re.fullmatch(
-                                r"/github-production-release-asset/"
-                                + repository
-                                + r"/[a-zA-Z0-9-]+",
-                                redirected_target.split("?", 1)[0],
-                            ),
-                            "redirect-artifact",
-                        )
-                        signed = True
-                    else:
-                        require(not signed and hop < len(chain), "redirect-unapproved")
-                        canonical_url(location)
-                        require(location == chain[hop], "redirect-unapproved")
-                    url = location
-                    continue
-                require(response.status == 200, "response-status", response.status)
-                require(
-                    artifact.get("github_repository_id") is not None or hop == len(chain),
-                    "redirect-unapproved",
-                )
-                require(
-                    response.getheader("Content-Encoding", "identity") == "identity",
-                    "response-encoding",
-                )
-                lengths = response.headers.get_all("Content-Length", [])
-                require(len(lengths) <= 1, "response-length")
-                expected = int(lengths[0]) if lengths else None
-                require(expected is None or 0 <= expected <= limit, "download-size")
-                data = bytearray()
-                while True:
-                    transport.settimeout(remaining(deadline))
-                    chunk = response.read1(min(65536, limit + 1 - len(data)))
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    require(len(data) <= limit, "download-size")
-                require(expected is None or len(data) == expected, "download-incomplete")
-                require(hashlib.sha256(data).hexdigest() == artifact["sha256"], "artifact-mismatch")
-                return bytes(data)
+                try:
+                    if response.status in {301, 302, 303, 307, 308}:
+                        locations = response.headers.get_all("Location", [])
+                        require(len(locations) == 1 and hop < 3, "redirect-limit")
+                        location = locations[0]
+                        repository = artifact.get("github_repository_id")
+                        if repository is not None and hop == 0:
+                            redirected_host, redirected_target = canonical_url(
+                                location, signed=True
+                            )
+                            require(
+                                redirected_host == "release-assets.githubusercontent.com",
+                                "redirect-host",
+                            )
+                            require(
+                                re.fullmatch(
+                                    r"/github-production-release-asset/"
+                                    + repository
+                                    + r"/[a-zA-Z0-9-]+",
+                                    redirected_target.split("?", 1)[0],
+                                ),
+                                "redirect-artifact",
+                            )
+                            signed = True
+                        else:
+                            require(not signed and hop < len(chain), "redirect-unapproved")
+                            canonical_url(location)
+                            require(location == chain[hop], "redirect-unapproved")
+                        url = location
+                        continue
+                    require(response.status == 200, "response-status")
+                    require(
+                        artifact.get("github_repository_id") is not None or hop == len(chain),
+                        "redirect-unapproved",
+                    )
+                    require(
+                        response.getheader("Content-Encoding", "identity") == "identity",
+                        "response-encoding",
+                    )
+                    lengths = response.headers.get_all("Content-Length", [])
+                    require(len(lengths) <= 1, "response-length")
+                    expected = int(lengths[0]) if lengths else None
+                    require(expected is None or 0 <= expected <= limit, "download-size")
+                    data = bytearray()
+                    while True:
+                        transport.settimeout(remaining(deadline))
+                        chunk = response.read1(min(65536, limit + 1 - len(data)))
+                        if not chunk:
+                            break
+                        data.extend(chunk)
+                        require(len(data) <= limit, "download-size")
+                    require(expected is None or len(data) == expected, "download-incomplete")
+                    require(
+                        hashlib.sha256(data).hexdigest() == artifact["sha256"], "artifact-mismatch"
+                    )
+                    return bytes(data)
+                except Refused as refusal:
+                    # Every check above has the response in hand, so name what it arrived with.
+                    refusal.status = response.status
+                    raise
             finally:
                 connection.close()
     except Refused:
@@ -1188,8 +1198,7 @@ def main() -> None:
                     [
                         sys.executable,
                         "-c",
-                        "import runpy, sys;"
-                        " runpy.run_path(sys.argv[1])['_worker'](sys.argv[2], sys.argv[3])",
+                        "import runpy, sys; runpy.run_path(sys.argv[1])['_worker'](*sys.argv[2:])",
                         str(Path(__file__).resolve()),
                         str(prepared),
                         str(progress),
