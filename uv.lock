@@ -1200,7 +1200,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "agent-framework-core", specifier = ">=1.18.0,<2" }]
+requires-dist = [{ name = "agent-framework-core", specifier = ">=1.18.0,<1.19" }]
 
 [[package]]
 name = "maf-sandbox-acas"
