@@ -37,8 +37,10 @@ dependencies = [
     # release the floor is for, never which release that is.
     "maf-sandbox>=0.40.0,<0.41",
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
-    # application.
-    "agent-framework-core>=1.18.0,<2",
+    # application. 1.19 combines an item's embedded label with the source_integrity
+    # declaration, so the untrusted declaration hides the standing-guidance sentence behind
+    # a variable reference.
+    "agent-framework-core>=1.18.0,<1.19",
 ]
 
 [project.urls]
