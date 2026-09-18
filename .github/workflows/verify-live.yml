@@ -36,7 +36,9 @@ name: Verify (live)
 # this side of the machine rather than across backends. 09 runs 01's bicep workload against the
 # CLI on the runner itself, so it pairs with nothing and names no backend. 13 repairs Bicep
 # over multiple turns. 18 repairs draw.io XML, verifies storage read-back, reports each call's
-# duration and removes its diagram and sandboxes.
+# duration and removes its diagram and sandboxes. 19 returns the same Fibonacci answer through
+# an AutoGen agent's own code-execution tool over 06's router, image and container — pairing
+# across frameworks as 17 does with 05.
 #
 # This is the half of issue #33 that runs after a release rather than on a pull request. The
 # ACAS jobs each create a billable Azure sandbox and need a subscription; the docker jobs create
@@ -2108,3 +2110,101 @@ jobs:
           path: ${{ runner.temp }}/drawio-live.log
           if-no-files-found: ignore
           retention-days: 7
+  sample-19:
+    name: samples/19_autogen_docker_codeact against a live container
+    # Sample 06's task, image and router under an AutoGen agent's own `CodeExecutor`, so a red
+    # here while sample-06 is green names the framework rather than the task or the container.
+    # The executor is sample code and no kind package is involved, so this runs for the router
+    # (maf-sandbox) and the backend (maf-sandbox-docker) only; an acas, bicep, codeact, wslc,
+    # deepagents or drawio release cannot change what this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # For the model only, as in sample-06: `live-verify` holds the non-secret Azure OpenAI
+    # configuration and is half the federated-credential subject. There is no sandbox
+    # configuration to hold — the docker backend reads none.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      # ubuntu-latest ships a running Docker daemon, so the sandbox is free and local. The
+      # sample authenticates the model with DefaultAzureCredential, which the az login above
+      # satisfies — the AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs only and are
+      # deliberately not exported here, so DefaultAzureCredential resolves through the CLI.
+      - name: Run sample 19 and assert the computed answer came back
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/19_autogen_docker_codeact --source "$SOURCE")"
+          uv run --no-project $source_args samples/19_autogen_docker_codeact/agent.py | tee /tmp/sample19-out.txt
+          # Sample 03's and 06's assertion, unchanged: same task, same one right answer, same
+          # printed shape — under AutoGen's tool name, which the checker's heading accepts.
+          python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample19-out.txt
+
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample19-out.txt "$PACKAGE" "$VERSION"

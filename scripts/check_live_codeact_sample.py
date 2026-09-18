@@ -1,21 +1,22 @@
 """Assert that a live CodeAct sample run actually computed the answer.
 
-Shared by `samples/03_acas_codeact` (a real Azure sandbox) and `samples/06_docker_codeact` (a
-Docker container) — the task, the one right answer and the printed shape are identical, so one
-checker serves both. `samples/04_wslc_codeact` prints the same shape and has no job, because its
-guest needs a Windows runner with WSL. The live workflow installs the *published* wheels, runs
-the sample, and pipes its output here.
+Shared by `samples/03_acas_codeact` (a real Azure sandbox), `samples/06_docker_codeact` (a
+Docker container) and `samples/19_autogen_docker_codeact` (sample 06's container under an
+AutoGen agent) — the task, the one right answer and the printed shape are identical, so one
+checker serves all three. `samples/04_wslc_codeact` prints the same shape and has no job,
+because its guest needs a Windows runner with WSL. The live workflow installs the *published*
+wheels, runs the sample, and pipes its output here.
 
     python samples/03_acas_codeact/agent.py | tee out.txt
     python scripts/check_live_codeact_sample.py out.txt   # or: ... | python …
 
 **The answer is read out of the block the sample prints from the tool result, never out of the
 model's reply.** The 100th Fibonacci number is a constant any model can recite, so a reply
-carrying it is evidence of nothing; the same digits inside `execute_code`'s own output are
+carrying it is evidence of nothing; the same digits inside the tool's own output are
 evidence a program ran in the sandbox and printed them (#314). The sample prints that block from
 what the framework recorded next to the call, so the model does not write it.
 
-Two things together: `execute_code` returned output at all — a call it
+Two things together: the tool returned output at all — a call it
 refuses answers with an `Error:` string and never reaches the interpreter; that output carries
 the one right answer. The final scope purge reports completion, not work: it can remove zero
 sandboxes when per-call cleanup already disposed them.
@@ -45,8 +46,12 @@ _F = re.MULTILINE | re.IGNORECASE
 #: answer, so the literal value is required rather than a looser pattern.
 _ANSWER = "354224848179261915075"
 
-#: The block the sample prints from what `execute_code` returned, and the tagged line closing it.
-_HEADING = re.compile(r"==\s*Program output as execute_code returned it\s*==")
+#: The block the sample prints from what the interpreter returned, and the tagged line closing
+#: it. Two names answer one shape: `execute_code` is the packaged kind's tool (samples 03 and
+#: 06), `CodeExecutor` is AutoGen's (sample 19) — the same task over a different framework's
+#: tool, so the heading accepts both. The name the heading matched is what the diagnostics
+#: carry: a failed AutoGen run is told apart from a failed kind run by its own tool's name.
+_HEADING = re.compile(r"==\s*Program output as (execute_code|CodeExecutor) returned it\s*==")
 _RUNS = re.compile(_M + r"programs whose output came back from the sandbox:\s*(\d+)", _F)
 
 #: The section header the tool puts above a program's stdout. Fixed by
@@ -59,8 +64,8 @@ _DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
 _NOT_DISPOSED = re.compile(_M + r"Not fully disposed:[^\r\n]*", _F)
 
 
-def _split(output: str) -> tuple[str, str, int] | None:
-    """The model's reply, the tool's own output, and the count that closes it.
+def _split(output: str) -> tuple[str, str, int, str] | None:
+    """The model's reply, the tool's own output, the count closing it, and the tool's name.
 
     ``None`` when there is no block to read. The closing line carries `[measured]`, which the
     sample takes away from anything the model said before printing it, so exactly one can exist
@@ -70,7 +75,9 @@ def _split(output: str) -> tuple[str, str, int] | None:
 
     The reply is everything before the heading, and the block everything between. The *last*
     heading before the closing line is the sample's, so a reply that quoted the heading leaves
-    its own text in the reply half, where it belongs.
+    its own text in the reply half, where it belongs. The name is the heading's own — read out
+    of the same match, so the diagnostics name the tool the sample actually runs rather than
+    the one kind of sample's.
     """
     closes = list(_RUNS.finditer(output))
     if len(closes) != 1:
@@ -82,6 +89,7 @@ def _split(output: str) -> tuple[str, str, int] | None:
         output[: opened[-1].start()],
         output[opened[-1].end() : closes[0].start()],
         int(closes[0].group(1)),
+        opened[-1].group(1),
     )
 
 
@@ -90,25 +98,25 @@ def assess(output: str) -> list[str]:
     split = _split(output)
     if split is None:
         return [
-            "the run printed no block of what execute_code returned — the number in the reply is "
-            "then a constant the model could recite, which is what this sample exists to rule "
-            "out (#314)"
+            "the run printed no block of what the interpreter returned — the number in the "
+            "reply is then a constant the model could recite, which is what this sample exists "
+            "to rule out (#314)"
         ] + _assess_disposal(output)
 
-    reply, block, runs = split
-    failures = _assess_run(block, runs)
+    reply, block, runs, tool = split
+    failures = _assess_run(block, runs, tool)
     failures.extend(_assess_reply(reply))
     failures.extend(_assess_disposal(output))
     return failures
 
 
-def _assess_run(block: str, runs: int) -> list[str]:
+def _assess_run(block: str, runs: int, tool: str) -> list[str]:
     """What the interpreter printed, read from the interpreter."""
     failures: list[str] = []
 
     if runs < 1:
         failures.append(
-            "no execute_code call came back with a program's output — the tool answers a call it "
+            f"no {tool} call came back with a program's output — the tool answers a call it "
             "refuses with an `Error:` string, without reaching the interpreter, so this is a run "
             "that answered from the model alone"
         )
@@ -121,7 +129,7 @@ def _assess_run(block: str, runs: int) -> list[str]:
 
     if _ANSWER not in block:
         failures.append(
-            f"{_ANSWER!r} is not in what execute_code returned — the 100th Fibonacci number did "
+            f"{_ANSWER!r} is not in what {tool} returned — the 100th Fibonacci number did "
             "not come back from the sandbox"
         )
     return failures
