@@ -450,9 +450,10 @@ class TestWithheldOutputAgainstARealInterpreter:
 
         assert len(answer) == 2, answer
         assert "non-zero status" in str(answer[0].text)
-        assert (answer[0].additional_properties or {}).get("security_label") is None, (
-            "the call-derived half must stay unlabelled, or it replaces the call's confidentiality"
-        )
+        assert (answer[0].additional_properties or {}).get("security_label") == {
+            "integrity": "untrusted",
+            "confidentiality": "public",
+        }, "the call-derived half must say untrusted for itself, beneath the tool's declaration"
         assert (answer[1].additional_properties or {}).get("security_label") == {
             "integrity": "trusted",
             "confidentiality": "public",

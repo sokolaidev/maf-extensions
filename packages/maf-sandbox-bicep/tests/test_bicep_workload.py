@@ -1359,7 +1359,7 @@ class TestFidesDeclarations:
 
 
 # ---------------------------------------------------------------------------
-# The result splits: a standing sentence is trusted, the call-derived half carries no label
+# The result splits: a standing sentence is trusted, the call-derived half says untrusted
 # ---------------------------------------------------------------------------
 
 

@@ -359,11 +359,7 @@ def test_incomplete_guest_reports_never_pass(case):
 
 
 class TestWhatAFidesHostSeesOfASplitResult:
-    """Driven against the real middleware, because the value of the split is entirely its.
-
-    This kind commits standing guidance and nothing watched it, so a framework release that
-    stopped honouring the split would have left this suite green and the sentence hidden.
-    """
+    """Driven against the real middleware, because the value of the split is entirely its."""
 
     def _processed(self, tool, files):
         from agent_framework import FunctionInvocationContext

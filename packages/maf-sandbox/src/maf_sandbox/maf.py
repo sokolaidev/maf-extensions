@@ -570,8 +570,8 @@ def _reachable_middleware() -> Any | None:
 
 #: Where the framework keeps a call's arguments as they arrived, before it expands any
 #: reference into them.  **Not a published contract** — a string literal inside
-#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.18,<1.19``
-#: — so the next minor that ceiling admits may rename it and this would stop answering.  Two
+#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.18,<1.20``
+#: — so either minor that range admits may rename it and this would stop answering.  Two
 #: things keep that from being silent: a divergence alarm in the suite, and, for a host whose
 #: upgrade this suite never saw, `_warn_once_about_a_missing_record` beside an answer that names
 #: every position rather than quoting one.
@@ -1240,8 +1240,8 @@ def sandbox_tool_declarations(
 #:
 #: This records source integrity alone.  The framework's ``security_label`` names both axes and
 #: an integrity-only one is discarded whole, so the item falls back to the invocation label
-#: and loses the integrity claim too. Only the result wrapper may mint one, and only where a
-#: kind declared both.
+#: and loses the integrity claim too. Only the result wrapper may mint one: from a kind's claim
+#: alone where the tool commits guidance, and otherwise only where a kind declared both axes.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 
 #: What a kind claimed about the output its body derives, on the attached tool.
@@ -1265,9 +1265,21 @@ def _implemented_declarations(
     declaration.
 
     Raises:
-        ValueError: where a tool commits guidance while declaring no integrity, or declares one
-            this package cannot weaken by.
+        ValueError: where declarations carry :data:`DERIVED_INTEGRITY_PROPERTY`, which is this
+            function's to write, or a tool commits guidance while declaring no integrity, or
+            declares one this package cannot weaken by.
     """
+    if DERIVED_INTEGRITY_PROPERTY in properties:
+        # Only this function writes it, and everything downstream reads it as proof that the
+        # declaration beside it was raised. A caller-supplied one is a per-item integrity
+        # nothing weighed: it reaches every derived item without passing the spec check a
+        # `source_integrity` claim is held to, and on a core where a per-item label still
+        # supplies integrity outright it promotes what the sandbox produced.
+        raise ValueError(
+            f"{tool}: declarations carry {DERIVED_INTEGRITY_PROPERTY!r}, which only "
+            "sandboxed_tool may write. Claim an integrity with source_integrity, which is "
+            "checked against what the spec opens."
+        )
     claimed = properties.get("source_integrity")
     if not commits_guidance:
         return dict(properties)
@@ -2506,10 +2518,13 @@ def sandboxed_tool(
         declarations: ``additional_properties`` to write verbatim, for a workload that wants
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
             Refused together with ``output_sink``. A ``source_integrity`` of ``"trusted"`` is
-            held to the same spec check the derivation applies, and is then moved onto
-            :data:`DERIVED_INTEGRITY_PROPERTY` like any other — a mapping declaring an integrity
-            this package does not recognise is refused here rather than at the first call. The
-            result wrapper reads that key and the attached tool's ``confidentiality`` on each
+            held to the same spec check the derivation applies. Where this tool also commits
+            standing guidance the integrity is moved onto :data:`DERIVED_INTEGRITY_PROPERTY`,
+            and a spelling this package does not recognise is refused at attach rather than at
+            the first call; a mapping on a tool committing none keeps its ``source_integrity``
+            verbatim and is not validated here. Carrying :data:`DERIVED_INTEGRITY_PROPERTY`
+            itself is refused either way — only the wrapper writes it. The result wrapper reads
+            whichever key holds the claim, and the attached tool's ``confidentiality``, on each
             return; the host may set its classification on that tool before use. No declaration
             keyword is honoured beside this mapping.
         source_integrity: A :class:`~maf_sandbox.SourceIntegrity`, passed to

@@ -1110,6 +1110,25 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
             "house_key": "kept",
         }
 
+    @pytest.mark.parametrize("commits", [False, True], ids=["no-guidance", "guidance"])
+    def test_the_derived_integrity_key_is_refused_from_a_caller(self, commits):
+        """Everything downstream reads it as proof that the declaration beside it was raised.
+
+        Supplied by a caller it is a per-item integrity nothing weighed — it never meets the
+        spec check a `source_integrity` claim is held to, and reaches every derived item. The
+        no-guidance path is the dangerous one: nothing is raised there, so without this the key
+        survives and stamps `trusted` over output the sandbox produced.
+        """
+        with pytest.raises(ValueError, match=DERIVED_INTEGRITY_PROPERTY):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                standing_guidance=(_GUIDANCE,) if commits else (),
+                declarations={
+                    DERIVED_INTEGRITY_PROPERTY: "trusted",
+                    "confidentiality": "private",
+                },
+            )
+
     def test_an_unknown_spelling_is_refused_rather_than_raised(self):
         """Past the raise the tool declares trusted, so a spelling this package cannot weaken
         by is the one value that must not reach an attached tool."""
@@ -4142,9 +4161,9 @@ class TestSessionReadFile:
         assert self._label(item) == "untrusted"
 
     def test_a_carried_item_does_not_count_as_labelled_to_the_result_check(self):
-        """`sandboxed_tool` refuses a result whose *every* item carries a label, because an
-        unlabelled item is where the call's own confidentiality comes from. An item that came
-        out of the store must not consume that allowance just by having been read."""
+        """`sandboxed_tool` refuses any item arriving with a `security_label`, because only the
+        wrapper may write one. An item that came out of the store must not trip that refusal
+        just by having been read."""
         store = _ReadStore({"a.txt": "1"})
         item = asyncio.run(
             _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
@@ -5224,7 +5243,7 @@ class TestArgumentProvenanceMiddleware:
 
         The exact answer is read out of `original_arguments_for_messages`, which is a string
         literal inside `LabelTrackingFunctionMiddleware` rather than anything the framework
-        publishes — and this package accepts `agent-framework-core>=1.18,<1.19`. A rename turns
+        publishes — and this package accepts `agent-framework-core>=1.18,<1.20`. A rename turns
         most of this class red at once, because failing closed makes every test that expects a
         particular answer expect the wrong one, and none of them says what happened. This is
         the one that does.
@@ -5799,7 +5818,7 @@ def _text(text):
 
 
 class TestAResultThatIsItems:
-    """Bodies supply unlabelled items; the wrapper stamps only committed guidance."""
+    """Bodies supply unlabelled items; the wrapper is the only thing that labels any of them."""
 
     def _tool(self, build, **kw):
         return _attach_with(build, _router(InProcessSandboxBackend()), **kw)[0]

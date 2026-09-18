@@ -3505,7 +3505,7 @@ class TestAWithheldTimeoutQuotesNothing:
 
 
 # ---------------------------------------------------------------------------
-# The withheld result splits: the route is trusted, the call-derived half carries no label
+# The withheld result splits: the route is trusted, the call-derived half says untrusted
 # ---------------------------------------------------------------------------
 
 

@@ -269,7 +269,7 @@ The keys have different jobs:
 | Tool `max_allowed_confidentiality` | Maximum classification an outbound sink may accept | No |
 | `FileStoreProvenance.floor` | Integrity of paths with no recorded write | No; it supplies read evidence only |
 
-If either result declaration is absent or invalid, core leaves derived items unlabelled and preserves framework resolution; it still validates and stamps committed guidance. A source declaration alone cannot safely produce a whole per-item label because that would also overwrite confidentiality. The [design decision table](information-flow.md#how-core-labels-a-call) covers every case, and the [kind-authoring guide](kinds/writing-a-kind.md#let-the-host-supply-provenance-and-confidentiality) shows a complete listing, session, and middleware setup.
+For a tool committing no guidance, if either result declaration is absent or invalid, core leaves derived items unlabelled and preserves framework resolution. A tool that commits guidance stamps them regardless — an item left unlabelled there would take its raised declaration — flooring an absent or unreadable classification at `public`, which the framework's combine cannot let loosen the call's own. Either way core validates and stamps committed guidance. A source declaration alone cannot safely produce a whole per-item label because that would also overwrite confidentiality. The [design decision table](information-flow.md#how-core-labels-a-call) covers every case, and the [kind-authoring guide](kinds/writing-a-kind.md#let-the-host-supply-provenance-and-confidentiality) shows a complete listing, session, and middleware setup.
 
 ## Where the storage base comes from
 
