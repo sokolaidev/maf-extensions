@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import contextlib
 import copy
 import datetime
 import hashlib
@@ -732,11 +733,14 @@ def test_cli_fails_without_publishing_or_leaking_content(tmp_path):
 
 def test_cli_deadline_kills_worker_and_publishes_nothing(tmp_path, monkeypatch, capsys):
     source = tmp_path / "manifest.json"
-    source.write_text(
-        json.dumps({"schema": 1, "engine": "terraform", "providers": [], "modules": []})
-    )
+    source.write_text(json.dumps(manifest()))
     worker = tmp_path / "worker.py"
-    worker.write_text("import time\ntime.sleep(30)\n")
+    worker.write_text(
+        "import pathlib, time\n"
+        "def _worker(output, progress):\n"
+        "    pathlib.Path(progress).write_text('artifact 0\\n', newline='\\n')\n"
+        "    time.sleep(30)\n"
+    )
     timeouts = []
     run = subprocess.run
 
@@ -762,7 +766,11 @@ def test_cli_deadline_kills_worker_and_publishes_nothing(tmp_path, monkeypatch, 
     assert timeouts == [0.1]
     assert not output.exists()
     assert not list(tmp_path.glob(".terraform-preparation-*"))
-    assert "preparation-failed" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "Dependency preparation refused: preparation-failed\n"
+        "  artifact: provider registry.terraform.io/hashicorp/random 3.7.2 linux_amd64\n"
+        "  url: https://approved.example/repository/1.0/artifact.zip\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -917,7 +925,7 @@ def test_cli_preserves_worker_refusal_without_publishing(tmp_path, monkeypatch, 
     worker.write_text(
         f"import sys\nsys.path.insert(0, {str(Path(prep.__file__).parent)!r})\n"
         + "import terraform_dependencies as prep\n"
-        + "def fail(manifest, output):\n    output.mkdir()\n"
+        + "def fail(manifest, output, *, progress=None):\n    output.mkdir()\n"
         + f"    prep.require(False, {decision!r})\n"
         + "prep.prepare = fail\n_worker = prep._worker\n"
     )
@@ -954,6 +962,136 @@ def test_cli_does_not_forward_arbitrary_worker_diagnostics(
         prep.main()
     assert capsys.readouterr().err == "Dependency preparation refused: preparation-failed\n"
     assert not output.exists()
+
+
+def test_preparation_records_the_artifact_and_status_a_download_stopped_on(receiver, tmp_path):
+    _, routes, _ = receiver
+    routes["/repository/1.0/artifact.zip"] = (404, {}, b"not found")
+    progress = tmp_path / "progress"
+    with pytest.raises(prep.Refused, match="^response-status$") as refused:
+        prep.prepare(manifest(), tmp_path / "prepared", progress=progress)
+    assert refused.value.status == 404
+    assert progress.read_text(encoding="ascii") == "artifact 0\n"
+
+
+@pytest.mark.parametrize(
+    ("route", "decision", "status"),
+    [
+        (
+            (302, {"Location": "https://denied.example/repository/1.0/artifact.zip"}, b""),
+            "redirect-unapproved",
+            302,
+        ),
+        ((307, {"Location": "https://approved.example/a.zip"}, b""), "redirect-unapproved", 307),
+        ((200, {"Content-Encoding": "gzip"}, b"artifact"), "response-encoding", 200),
+        ((200, {}, b"other"), "artifact-mismatch", 200),
+    ],
+)
+def test_every_refusal_holding_a_response_carries_the_status_it_arrived_with(
+    receiver, route, decision, status
+):
+    _, routes, _ = receiver
+    routes["/repository/1.0/artifact.zip"] = route
+    with pytest.raises(prep.Refused, match=f"^{decision}$") as refused:
+        prep.fetch(artifact(), time.monotonic() + 5)
+    assert refused.value.status == status
+
+
+def test_an_unexpected_failure_below_a_response_still_names_its_status(receiver):
+    _, routes, _ = receiver
+    # http.client tolerates an unparsable Content-Length, so the preparer's own int() raises.
+    routes["/repository/1.0/artifact.zip"] = (200, {"Content-Length": "eight"}, b"artifact")
+    with pytest.raises(prep.Refused, match="^transfer-failed$") as refused:
+        prep.fetch(artifact(), time.monotonic() + 5)
+    assert refused.value.status == 200
+
+
+@pytest.mark.parametrize(
+    "url", ["https://approved.example/a%2fb.zip", "https://denied.example:8443/a.zip"]
+)
+def test_a_refusal_raised_before_any_response_carries_no_status(url):
+    with pytest.raises(prep.Refused) as refused:
+        prep.fetch(artifact(url=url), time.monotonic() + 5)
+    assert refused.value.status == 0
+
+
+@pytest.mark.parametrize(
+    ("policy", "note", "expected"),
+    [
+        (
+            manifest,
+            "artifact 0\nstatus 404\n",
+            [
+                "  artifact: provider registry.terraform.io/hashicorp/random 3.7.2 linux_amd64",
+                "  url: https://approved.example/repository/1.0/artifact.zip",
+                "  status: 404",
+            ],
+        ),
+        (
+            manifest,
+            "artifact 1\n",
+            [
+                "  artifact: module example",
+                "  url: https://approved.example/repository/1.0/artifact.zip",
+            ],
+        ),
+    ],
+)
+def test_a_refusal_names_its_artifact_from_the_manifest(tmp_path, policy, note, expected):
+    progress = tmp_path / "progress"
+    progress.write_text(note, encoding="ascii", newline="\n")
+    assert prep.refusal_context(progress, policy()) == "\n" + "\n".join(expected)
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        None,
+        b"",
+        b"artifact 0",
+        b"artifact 0\nstatus 404",
+        b"artifact 9\n",
+        b"status 404\n",
+        b"artifact 0\nhttps://secret.example/?token=do-not-log\n",
+        "artifact 0\n".encode("utf-16"),
+    ],
+)
+def test_a_note_that_is_not_one_complete_position_names_nothing(tmp_path, note):
+    progress = tmp_path / "progress"
+    if note is not None:
+        progress.write_bytes(note)
+    assert prep.refusal_context(progress, manifest()) == ""
+
+
+def test_cli_names_the_artifact_a_worker_refusal_stopped_on(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "manifest.json"
+    source.write_text(json.dumps(manifest()))
+    worker = tmp_path / "worker.py"
+    worker.write_text(
+        f"import sys\nsys.path.insert(0, {str(Path(prep.__file__).parent)!r})\n"
+        "import terraform_dependencies as prep\n"
+        "def fail(manifest, output, *, progress=None):\n"
+        "    output.mkdir()\n"
+        "    progress.write_text('artifact 1\\n', encoding='ascii', newline='\\n')\n"
+        "    raise prep.Refused('response-status', 404)\n"
+        "prep.prepare = fail\n_worker = prep._worker\n"
+    )
+    output = tmp_path / "prepared"
+    monkeypatch.setattr(prep, "__file__", str(worker))
+    monkeypatch.setattr(
+        sys, "argv", ["prepare", "--manifest", str(source), "--output", str(output)]
+    )
+    with pytest.raises(SystemExit) as exited:
+        prep.main()
+    assert exited.value.code == 1
+    assert capsys.readouterr().err == (
+        "Dependency preparation refused: response-status\n"
+        "  artifact: module example\n"
+        "  url: https://approved.example/repository/1.0/artifact.zip\n"
+        "  status: 404\n"
+    )
+    assert not output.exists()
+    assert not list(tmp_path.glob(".terraform-preparation-*"))
 
 
 def test_worker_exit_codes_cover_all_fixed_policy_refusals():
@@ -1191,6 +1329,16 @@ def verify_network(policy=None, **changes):
     catalog = {item["name"]: item for item in policy["registry_modules"]}
     data = bundle(network_files(**changes))
     return prep.registry_module_files(catalog["network"], data, catalog, policy["providers"])
+
+
+def test_a_refusal_names_a_registry_module_by_its_registry_address(tmp_path):
+    progress = tmp_path / "progress"
+    progress.write_text("artifact 2\nstatus 403\n", encoding="ascii", newline="\n")
+    assert prep.refusal_context(progress, registry_policy()) == (
+        "\n  artifact: registry module registry.terraform.io/Azure/shared/azure 0.6.0"
+        f"\n  url: https://codeload.github.com/Azure/terraform-shared/zip/{SHARED_REVISION}"
+        "\n  status: 403"
+    )
 
 
 def test_registry_packages_bake_declared_directories_and_inventory(tmp_path, monkeypatch):
@@ -1477,6 +1625,50 @@ def test_registry_inventory_is_bounded(monkeypatch):
     monkeypatch.setattr(prep, "MAX_INVENTORY", 2)
     with pytest.raises(prep.Refused, match="registry-inventory"):
         prep.registry_inventory("network", ".", catalog, {"network": sources, "shared": {".": {}}})
+
+
+def prepared_registry_policy(monkeypatch):
+    """A registry policy whose archives are served without a request."""
+    policy = registry_policy()
+    archives = {
+        "network": bundle(network_files()),
+        "shared": bundle({f"terraform-shared-{SHARED_REVISION}/main.tf": "terraform {}\n"}),
+        "provider": bundle({"terraform-provider-random_v3.7.2": b"never executed"}),
+    }
+    policy["providers"][0]["artifact"] = artifact(archives["provider"])
+    for item in policy["registry_modules"]:
+        item["artifact"]["sha256"] = hashlib.sha256(archives[item["name"]]).hexdigest()
+    by_digest = {hashlib.sha256(data).hexdigest(): data for data in archives.values()}
+    monkeypatch.setattr(prep, "fetch", lambda spec, _, **limits: by_digest[spec["sha256"]])
+    return policy
+
+
+def test_inventory_work_names_its_own_module_not_the_last_download(tmp_path, monkeypatch):
+    policy = prepared_registry_policy(monkeypatch)
+    monkeypatch.setattr(prep, "MAX_INVENTORY", 2)
+    progress = tmp_path / "progress"
+    with pytest.raises(prep.Refused, match="^registry-inventory$"):
+        prep.prepare(policy, tmp_path / "prepared", progress=progress)
+    # "network" is position 1 of provider, network, shared; "shared" is the last download.
+    assert progress.read_text(encoding="ascii") == "artifact 1\n"
+    assert prep.refusal_context(progress, policy).splitlines()[1] == (
+        "  artifact: registry module registry.terraform.io/Azure/network/azurerm 1.2.3"
+    )
+
+
+@pytest.mark.parametrize("failing", [False, True])
+def test_no_artifact_is_named_once_every_artifact_is_done(tmp_path, monkeypatch, failing):
+    policy = prepared_registry_policy(monkeypatch)
+    if failing:
+        # An unserialisable inventory fails the receipt write, the last step after the marker.
+        monkeypatch.setattr(prep, "registry_inventory", lambda *arguments: object())
+    progress = tmp_path / "progress"
+    with contextlib.ExitStack() as stack:
+        if failing:
+            stack.enter_context(pytest.raises(TypeError))
+        prep.prepare(policy, tmp_path / "prepared", progress=progress)
+    assert progress.read_text(encoding="ascii") == ""
+    assert prep.refusal_context(progress, policy) == ""
 
 
 def versioned_policy():

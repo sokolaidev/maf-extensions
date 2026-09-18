@@ -137,6 +137,8 @@ docker build --platform linux/amd64 --build-context scripts=scripts --build-arg 
 
 If an offline probe fails, the build prints that root's `init` output. Add the module to `catalog.exclude` with a reason, then regenerate and rebuild.
 
+If preparation refuses first, its message names the artifact, its URL and the HTTP status a response carried. A 404 says only that this artifact URL is gone, and a renamed repository, a rewritten history or a transient failure produce one as readily as a withdrawal does, so confirm before removing anything. Retry the request, then ask the registry (`/v1/modules/<namespace>/<name>/<system>`) and GitHub (`/repos/<owner>/<repository>`) whether they still know the module. Only once all three are gone is the pin withdrawn: drop it from `registry_modules`, record it in `excluded`, and add it to `catalog.exclude` if it should stay out of a later regeneration.
+
 ### 5. Import it for ACAS
 
 Push the tag, then create a disk image from it, as the [Bicep image guide](../bicep-sandbox/README.md#import-it-into-the-sandbox-group) describes. Never overwrite an imported tag; bump the revision instead.

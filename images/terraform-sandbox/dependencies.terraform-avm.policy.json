@@ -17,5 +17,30 @@
     {"address": "registry.terraform.io/microsoft/azuredevops", "constraint": ">= 0.0.0"}
   ],
   "registry_modules": [],
-  "catalog": {"namespace": "Azure", "prefixes": ["avm-res-", "avm-ptn-", "avm-utl-"]}
+  "catalog": {
+    "namespace": "Azure",
+    "prefixes": ["avm-res-", "avm-ptn-", "avm-utl-"],
+    "exclude": [
+      {
+        "source": "registry.terraform.io/Azure/avm-utl-compute-linuxvirtualmachine-azapi-replicator/azure",
+        "reason": "the azapi-replicator family stays out: two members refused preparation, then the registry withdrew all of them"
+      },
+      {
+        "source": "registry.terraform.io/Azure/avm-utl-compute-windowsvirtualmachine-azapi-replicator/azure",
+        "reason": "the azapi-replicator family stays out: two members refused preparation, then the registry withdrew all of them"
+      },
+      {
+        "source": "registry.terraform.io/Azure/avm-utl-network-virtualnetwork-azapi-replicator/azure",
+        "reason": "the azapi-replicator family stays out: two members refused preparation, then the registry withdrew all of them"
+      },
+      {
+        "source": "registry.terraform.io/Azure/avm-utl-privatedns-privatednszone-azapi-replicator/azure",
+        "reason": "the azapi-replicator family stays out: two members refused preparation, then the registry withdrew all of them"
+      },
+      {
+        "source": "registry.terraform.io/Azure/avm-utl-resources-resourcegroup-azapi-replicator/azure",
+        "reason": "the azapi-replicator family stays out: two members refused preparation, then the registry withdrew all of them"
+      }
+    ]
+  }
 }
