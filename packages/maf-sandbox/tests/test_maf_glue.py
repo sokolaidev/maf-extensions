@@ -1086,6 +1086,34 @@ class TestAttachedToolShape:
         assert tool.additional_properties == {"source_integrity": "trusted"}
 
 
+class _TextAndValueDisagree(str):
+    """A `str` whose text names one level and whose value names the other."""
+
+    def __new__(cls) -> _TextAndValueDisagree:
+        return super().__new__(cls, str(SourceIntegrity.TRUSTED))
+
+    def __str__(self) -> str:
+        return str(SourceIntegrity.UNTRUSTED)
+
+
+class _TextOnly:
+    """Names a level by its text and none the framework can parse out of the mapping."""
+
+    def __str__(self) -> str:
+        return str(SourceIntegrity.UNTRUSTED)
+
+
+class _Drifting:
+    """Names a different level on each reading, and counts them."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __str__(self) -> str:
+        self.reads += 1
+        return str(SourceIntegrity.UNTRUSTED if self.reads == 1 else SourceIntegrity.TRUSTED)
+
+
 class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
     """Committed guidance is the one item a sandbox workload returns trusted, and the framework
     reads a single declaration per tool — so a tool with guidance to keep visible declares the
@@ -1112,13 +1140,7 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
 
     @pytest.mark.parametrize("commits", [False, True], ids=["no-guidance", "guidance"])
     def test_the_derived_integrity_key_is_refused_from_a_caller(self, commits):
-        """Everything downstream reads it as proof that the declaration beside it was raised.
-
-        Supplied by a caller it is a per-item integrity nothing weighed — it never meets the
-        spec check a `source_integrity` claim is held to, and reaches every derived item. The
-        no-guidance path is the dangerous one: nothing is raised there, so without this the key
-        survives and stamps `trusted` over output the sandbox produced.
-        """
+        """Only the wrapper writes it, so a caller carrying one is refused on either path."""
         with pytest.raises(ValueError, match=DERIVED_INTEGRITY_PROPERTY):
             _attach(
                 _router(InProcessSandboxBackend()),
@@ -1129,104 +1151,36 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
                 },
             )
 
-    def test_a_str_like_trusted_claim_meets_the_spec_check(self):
-        """The claim is read once, so no check can disagree with another about what it says.
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            pytest.param(_TextAndValueDisagree(), id="text-and-value"),
+            pytest.param(_TextOnly(), id="text-and-unparseable"),
+            pytest.param(_Drifting(), id="text-that-changes"),
+        ],
+    )
+    @pytest.mark.parametrize("commits", [False, True], ids=["no-guidance", "guidance"])
+    def test_a_claim_that_reads_two_ways_is_refused(self, claim, commits):
+        """A claim is what this package checks and what the framework acts on, and those must
+        be one level: a value naming two cannot be held to either."""
+        with pytest.raises(ValueError, match="must name one level|reads as"):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                standing_guidance=(_GUIDANCE,) if commits else (),
+                declarations={"source_integrity": claim, "confidentiality": "private"},
+            )
 
-        A value comparing unequal to the enum while rendering as its spelling would otherwise
-        pass the trusted-channel check untested and be coerced to trusted immediately after,
-        putting a trusted label on derived items over a spec that opens the file store.
-        """
+    def test_a_claim_is_read_once(self):
+        """The reading every check is held to is taken once, so none can be handed another."""
+        claim = _Drifting()
 
-        class StrLike:
-            def __str__(self) -> str:
-                return str(SourceIntegrity.TRUSTED)
-
-            def __eq__(self, other: object) -> bool:
-                return False
-
-            def __hash__(self) -> int:
-                return 0
-
-        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
+        with pytest.raises(ValueError):
             _attach(
                 _router(InProcessSandboxBackend()),
                 standing_guidance=(_GUIDANCE,),
-                declarations={"source_integrity": StrLike(), "confidentiality": "private"},
-            )
-
-    def test_a_claim_that_reads_differently_twice_is_only_read_once(self):
-        """Resolved before the first check, so no reader can be handed a different answer.
-
-        A value free to answer twice would otherwise pass the trusted-channel check as
-        `untrusted` and be coerced to `trusted` immediately after, putting a trusted label on
-        derived items over a spec that opens the file store.
-        """
-
-        class Shifting:
-            def __init__(self) -> None:
-                self.reads = 0
-
-            def __str__(self) -> str:
-                self.reads += 1
-                return str(
-                    SourceIntegrity.UNTRUSTED if self.reads == 1 else SourceIntegrity.TRUSTED
-                )
-
-        claim = Shifting()
-        tool = self._tool(
-            source_integrity=None,
-            declarations={"source_integrity": claim, "confidentiality": "private"},
-        )
-
-        assert claim.reads == 1
-        assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == str(
-            SourceIntegrity.UNTRUSTED
-        )
-
-    def test_a_claim_reading_trusted_first_still_meets_the_spec_check(self):
-        """The direction that matters: the one reading is the one every check is held to."""
-
-        class Shifting:
-            def __init__(self) -> None:
-                self.reads = 0
-
-            def __str__(self) -> str:
-                self.reads += 1
-                return str(
-                    SourceIntegrity.TRUSTED if self.reads == 1 else SourceIntegrity.UNTRUSTED
-                )
-
-        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
-            self._tool(
-                source_integrity=None,
-                declarations={"source_integrity": Shifting(), "confidentiality": "private"},
-            )
-
-    def test_a_claim_whose_first_reading_is_unrecognised_is_still_read_once(self):
-        """An unrecognised first reading must not leave the value free to be read again.
-
-        Freezing only the readings this package recognises left the original in the mapping for
-        the trusted-channel guard and the implementation to read in turn, so `unknown` here,
-        `untrusted` at the guard and `trusted` after it put a trusted label on derived output
-        over a spec that opens the file store.
-        """
-
-        class Drifting:
-            def __init__(self) -> None:
-                self.reads = 0
-
-            def __str__(self) -> str:
-                self.reads += 1
-                return ("unknown", str(SourceIntegrity.UNTRUSTED), str(SourceIntegrity.TRUSTED))[
-                    min(self.reads, 3) - 1
-                ]
-
-        claim = Drifting()
-        with pytest.raises(ValueError, match="not a level this package recognises"):
-            self._tool(
-                source_integrity=None,
                 declarations={"source_integrity": claim, "confidentiality": "private"},
             )
+
         assert claim.reads == 1
 
     def test_a_mapping_reaches_the_tool_verbatim_without_a_commitment(self):

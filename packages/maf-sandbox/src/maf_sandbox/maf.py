@@ -1255,22 +1255,45 @@ SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 DERIVED_INTEGRITY_PROPERTY = "maf_sandbox_derived_integrity"
 
 
-def claimed_source_integrity(properties: Mapping[str, Any]) -> SourceIntegrity | None:
-    """The integrity a declarations mapping claims, read the one way every check reads it.
+def _level(value: object) -> SourceIntegrity | None:
+    """``value`` as a level, or ``None`` where it names none this package recognises."""
+    try:
+        return SourceIntegrity(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def claimed_source_integrity(properties: Mapping[str, Any], *, tool: str) -> SourceIntegrity | None:
+    """The integrity a declarations mapping claims, and the only reading anything may act on.
 
     ``None`` where it claims none, or names a level this package does not recognise — which is
     not a claim to refuse, since the framework acts on its own two spellings and logs anything
-    else away. Every reader goes through this: a check comparing the raw value and a coercion
-    taking ``str()`` of it disagree on a value that is not a ``str``, and the gap between two
-    such readings is a claim that passed no check.
+    else away.
+
+    A value is read two ways here: as its text, which is what this package compares, and as
+    itself, which is what the framework parses out of ``additional_properties``. Both must
+    answer the same level. A value answering differently is not a claim with a reading to
+    choose between — it is one whose checks and whose effect can be pointed at different levels
+    — so it is refused rather than resolved.
+
+    Raises:
+        ValueError: where the two readings of a claim disagree.
     """
     claimed = properties.get("source_integrity")
     if claimed is None:
         return None
-    try:
-        return SourceIntegrity(str(claimed))
-    except ValueError:
-        return None
+    rendered, itself = _level(str(claimed)), _level(claimed)
+    if rendered is not itself:
+        raise ValueError(
+            f"{tool}: source_integrity={claimed!r} reads as "
+            f"{'no level this package recognises' if rendered is None else repr(str(rendered))} "
+            f"by its text and as "
+            f"{'none the framework recognises' if itself is None else repr(str(itself))} "
+            "by itself. This package holds a claim to what its text says and the framework acts "
+            "on the value, so the two must name one level. Declare "
+            f"{str(SourceIntegrity.TRUSTED)!r} or {str(SourceIntegrity.UNTRUSTED)!r}."
+        )
+    return rendered
 
 
 def _implemented_declarations(
@@ -1293,11 +1316,9 @@ def _implemented_declarations(
             declares one this package cannot weaken by.
     """
     if DERIVED_INTEGRITY_PROPERTY in properties:
-        # Only this function writes it, and everything downstream reads it as proof that the
-        # declaration beside it was raised. A caller-supplied one is a per-item integrity
-        # nothing weighed: it reaches every derived item without passing the spec check a
-        # `source_integrity` claim is held to, and on a core where a per-item label still
-        # supplies integrity outright it promotes what the sandbox produced.
+        # This function is the only writer, and every reader below takes the key as proof
+        # that the declaration beside it was raised. A claim belongs in `source_integrity`,
+        # which is what the spec check is held against.
         raise ValueError(
             f"{tool}: declarations carry {DERIVED_INTEGRITY_PROPERTY!r}, which only "
             "sandboxed_tool may write. Claim an integrity with source_integrity, which is "
@@ -2656,13 +2677,11 @@ def sandboxed_tool(
         agent_id = agent_dir
     elif agent_dir is not None:
         raise TypeError("pass agent_id or agent_dir, not both")
-    # Copied and read **once**, before the first check: a value is free to answer differently
-    # each time it is read, and two checks handed different answers have each weighed a claim
-    # the other did not. The mapping itself is left as it came, which is what `declarations=`
-    # promises; only the reading of it is frozen, here, into `supplied_claim`.
+    # Read once, here, into `supplied_claim`: one reading is what every check below is held
+    # to. The mapping itself is left as it came, which is what `declarations=` promises.
     supplied = dict(declarations) if declarations is not None else None
     supplied_spelling = None if supplied is None else supplied.get("source_integrity")
-    supplied_claim = None if supplied is None else claimed_source_integrity(supplied)
+    supplied_claim = None if supplied is None else claimed_source_integrity(supplied, tool=name)
     if output_sink is not None and supplied is not None:
         raise ValueError(
             f"{name}: pass either output_sink or declarations=, never both. An explicit "
@@ -2761,7 +2780,9 @@ def sandboxed_tool(
         derived,
         # The mapping's reading is the one frozen above; the derivation writes its own coerced
         # text, so reading that back cannot answer differently.
-        claimed=supplied_claim if supplied is not None else claimed_source_integrity(derived),
+        claimed=supplied_claim
+        if supplied is not None
+        else claimed_source_integrity(derived, tool=name),
         spelled=supplied_spelling if supplied is not None else derived.get("source_integrity"),
         commits_guidance=bool(promised),
         tool=name,
