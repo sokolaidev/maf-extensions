@@ -3597,9 +3597,10 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
     def test_a_raised_host_default_no_longer_decides_the_call(self):
         """A raised `default_integrity` does not reach this call: the declaration replaces it.
 
-        The unlabelled half takes the call's label, so without a declaration that label is
-        whatever the host set. Tier 2 replaces the default rather than flooring it, which is
-        what makes this host's answer the same as every other's.
+        The wrapper stamps the derived half untrusted for itself, so without a declaration
+        that restriction is all that stands between a raised default and the call. Tier 2
+        replaces the default rather than flooring it, which is what makes this host's answer
+        the same as every other's.
         """
         from agent_framework.security import IntegrityLabel
 

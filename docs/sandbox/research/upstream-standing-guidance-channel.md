@@ -1,6 +1,6 @@
 # A standing-guidance channel a tool may declare
 
-> The upstream request behind [#1306](https://github.com/sokolaidev/maf-extensions/issues/1306), drafted against `agent-framework-core` 1.19.0 and not yet filed. What it asks for is one slot a tool declares at attach time, which the framework itself appends to that tool's results labelled trusted. Everything below is 1.19 behaviour measured on 2026-09-18; nothing argues from an older core. The interim this repository ships while the request is open is in [`information-flow.md`](../information-flow.md).
+> The upstream request behind [#1306](https://github.com/sokolaidev/maf-extensions/issues/1306), drafted against `agent-framework-core` 1.19.0 and not yet filed. What it asks for is one slot a tool declares at attach time, which the framework itself appends to that tool's results labelled trusted. Everything below was measured on 2026-09-18 against 1.19.0 and, where the two are compared, against the 1.18.0 it replaced; nothing argues from a core older than the range this suite admits. The interim this repository ships while the request is open is in [`information-flow.md`](../information-flow.md).
 
 ## Why a request rather than a workaround
 

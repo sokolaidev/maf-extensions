@@ -5860,7 +5860,7 @@ class TestAResultThatIsItems:
 
     @pytest.mark.parametrize("committed", [(_GUIDANCE,), (_GUIDANCE, "Read the diagnostics.")])
     def test_a_result_that_is_only_guidance_is_refused(self, committed):
-        """Guidance is the one trusted item, so a result of nothing else is wholly trusted."""
+        """Guidance says what the rest of the result is worth, so it needs a rest to say it of."""
         tool = self._tool(
             _items(*(_text(sentence) for sentence in committed)), standing_guidance=committed
         )

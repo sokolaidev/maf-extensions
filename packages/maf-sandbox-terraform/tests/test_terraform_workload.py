@@ -297,8 +297,8 @@ def test_manifest_keeps_the_original_provenance_entry():
 
 
 def test_result_integrity_does_not_promote_compiler_output():
-    """The standing sentence is the one trusted item; the engine's own text says otherwise for
-    itself, so neither depends on which tier the framework would have answered from."""
+    """The standing sentence stays trusted; the engine's own text says untrusted for itself,
+    so neither depends on which tier the framework would have answered from."""
     tool, _, _ = attach()
     assert tool.additional_properties == {
         "source_integrity": "trusted",

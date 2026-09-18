@@ -2391,9 +2391,9 @@ def _label_tool_result(
         )
     if derived_count == 0:
         raise ValueError(
-            f"{tool}: this result needs a derived item before its standing guidance. Committed "
-            "guidance is the only trusted item a sandbox workload returns, and a result made of "
-            "nothing else is a wholly trusted one."
+            f"{tool}: this result needs a derived item before its standing guidance. The "
+            "guidance says what the rest of the result is worth, and a result that is nothing "
+            "else says it of nothing."
         )
     label = _result_label(declarations, fed)
     labelled: list[Content] = []
@@ -2482,7 +2482,7 @@ def sandboxed_tool(
     8. **The wrapper owns result labels.** A body returns one string or unlabelled items,
        ending with its committed guidance. The wrapper stamps those sentences trusted/public.
        A tool committing guidance declares ``trusted`` to the framework so those sentences are
-       the one trusted item, keeps the kind's claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
+       trusted whatever the kind claims, keeps that claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
        stamps every derived item from it. One committing none stamps only with valid
        ``source_integrity`` and host-set ``confidentiality`` declarations, and otherwise leaves
        derived items to the framework's fallback. Either way a stamp weakens integrity when
@@ -2523,7 +2523,9 @@ def sandboxed_tool(
             and a spelling this package does not recognise is refused at attach rather than at
             the first call; a mapping on a tool committing none keeps its ``source_integrity``
             verbatim and is not validated here. Carrying :data:`DERIVED_INTEGRITY_PROPERTY`
-            itself is refused either way — only the wrapper writes it. The result wrapper reads
+            itself is refused either way — only the wrapper writes it. A mapping is also what
+            satisfies ``standing_guidance``'s requirement for an integrity declaration, so one
+            carrying none is refused beside a commitment. The result wrapper reads
             whichever key holds the claim, and the attached tool's ``confidentiality``, on each
             return; the host may set its classification on that tool before use. No declaration
             keyword is honoured beside this mapping.
@@ -2565,7 +2567,11 @@ def sandboxed_tool(
             Only ``{call_id}`` may interpolate; the wrapper renders it from this call and
             rebuilds the guidance without other fields from the body's items. A malformed or
             empty sentence, or a call-id sentence on a synchronous body, is refused at attach.
-            Empty commits no guidance; body-supplied labels are still refused.
+            **Committing any sentence requires an integrity declaration** — this keyword or a
+            ``source_integrity`` in ``declarations`` — because the guidance stays readable by
+            sitting above what every other item is labelled, and an undeclared tool has nothing
+            for it to sit above; committing one without is refused at attach. Empty commits no
+            guidance; body-supplied labels are still refused.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
