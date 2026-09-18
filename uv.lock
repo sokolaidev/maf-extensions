@@ -1232,7 +1232,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.18.0,<2" },
+    { name = "agent-framework-core", specifier = ">=1.18.0,<1.19" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.18.0,<2" },
+    { name = "agent-framework-core", specifier = ">=1.18.0,<1.19" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1288,7 +1288,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.18.0,<2" },
+    { name = "agent-framework-core", specifier = ">=1.18.0,<1.19" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.18.0,<2" },
+    { name = "agent-framework-core", specifier = ">=1.18.0,<1.19" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
