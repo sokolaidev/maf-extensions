@@ -175,15 +175,16 @@ def _rendered(result: object) -> str:
     return str(result)
 
 
-def _labelled(result: object) -> list[object]:
-    """The items of ``result`` carrying a label of their own."""
+def _integrities(result: object) -> list[object]:
+    """Each item's own declared integrity, or ``None`` where it carries no label."""
     if not isinstance(result, list):
         return []
     items: list[object] = result
     return [
-        item
+        (getattr(item, "additional_properties", None) or {})
+        .get("security_label", {})
+        .get("integrity")
         for item in items
-        if "security_label" in (getattr(item, "additional_properties", None) or {})
     ]
 
 
@@ -225,10 +226,18 @@ def _smoke_maf_sandbox_bicep() -> str:
     out = _rendered(answer)
     if "BCP035" not in out:
         raise SystemExit(f"FAIL: diagnostics missing from tool output: {out!r}")
-    # The split a FIDES host reads: the standing sentence carries a label of its own and the
-    # diagnostics carry none, so hiding the untrusted half leaves the sentence readable.
-    if len(_labelled(answer)) != 1 or _labelled(answer)[0] is not answer[-1]:
-        raise SystemExit(f"FAIL: the result is not one labelled sentence closing it: {answer!r}")
+    # The split a FIDES host reads: the standing sentence is the one trusted item and every
+    # derived item says untrusted for itself, so hiding leaves the sentence readable.
+    integrities = _integrities(answer)
+    if (
+        len(integrities) < 2
+        or integrities[-1] != "trusted"
+        or set(integrities[:-1]) != {"untrusted"}
+    ):
+        raise SystemExit(
+            f"FAIL: the result is not untrusted items closed by one trusted sentence: "
+            f"{integrities!r}"
+        )
     if not any(path.endswith("/main.bicep") for path in written):
         raise SystemExit(f"FAIL: the workload never wrote the file into the sandbox: {written}")
     # Adoption can acquire the same key again before serving the call.

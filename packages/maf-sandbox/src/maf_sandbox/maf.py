@@ -2469,10 +2469,13 @@ def sandboxed_tool(
        synchronous one is not held to a rule it cannot break.
     8. **The wrapper owns result labels.** A body returns one string or unlabelled items,
        ending with its committed guidance. The wrapper stamps those sentences trusted/public.
-       With valid ``source_integrity`` and host-set ``confidentiality`` declarations, it also
-       stamps every derived item, weakening integrity when this call read an untrusted or
-       unestablished file. A string becomes one item. Without both declarations, derived items
-       retain the framework's fallback. Neither the declaration nor another call is changed.
+       A tool committing guidance declares ``trusted`` to the framework so those sentences are
+       the one trusted item, keeps the kind's claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
+       stamps every derived item from it. One committing none stamps only with valid
+       ``source_integrity`` and host-set ``confidentiality`` declarations, and otherwise leaves
+       derived items to the framework's fallback. Either way a stamp weakens integrity when
+       this call read an untrusted or unestablished file, a string becomes one item, and
+       neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -2609,9 +2612,10 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
-    # The attach check reads this key raw: FIDES acts on exactly this spelling
-    # (`IntegrityLabel(value)`, anything else logged and dropped), so an unrecognised value is
-    # not a claim to refuse — and the mapping's vocabulary is the host's, not this package's.
+    # Read raw and before `_implemented_declarations`, so this weighs the caller's own claim
+    # rather than the declaration the wrapper may raise over it. An unrecognised value is no
+    # claim to refuse here: FIDES acts on exactly this spelling and logs anything else away.
+    # A tool committing guidance is refused one later, where the raise makes it unweakenable.
     if declarations is not None and declarations.get("source_integrity") == SourceIntegrity.TRUSTED:
         unestablished = _source_channels_not_established_as_trusted(spec, frozenset())
         if unestablished:
