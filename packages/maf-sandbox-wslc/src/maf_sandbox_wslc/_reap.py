@@ -70,11 +70,20 @@ def _objects(payload: str) -> list[dict[str, object]]:
     return cast("list[dict[str, object]]", data)
 
 
-def _listing(payload: str) -> list[dict[str, object]]:
-    if payload.lstrip().startswith("["):
-        return _objects(payload)
-    # WSLC 2.9.10 emits one JSON object per line, including no output for an empty list.
-    return _objects("[" + ",".join(payload.splitlines()) + "]")
+def listing_rows(payload: str) -> list[dict[str, object]]:
+    """The rows of a ``list --format json`` payload, in either shape the CLI emits.
+
+    2.9.4 emitted a JSON array; 2.9.10 and later emit one object per line, and nothing at all
+    for an empty listing. Neither is pinned, so both are read. Raises ``ValueError`` on a
+    payload that is neither: a listing this cannot read is not a listing with nothing in it,
+    and every caller here reads "no rows" as "nothing is there".
+    """
+    text = payload.strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        return _objects(text)
+    return _objects("[" + ",".join(line for line in text.splitlines() if line.strip()) + "]")
 
 
 def _timestamp(value: object) -> datetime:
@@ -169,7 +178,7 @@ class _Sweep:
             result = await self.command(*args)
             if result.returncode:
                 raise RuntimeError(result.stderr_text.strip() or f"list exited {result.returncode}")
-            rows = _listing(result.stdout_text)
+            rows = listing_rows(result.stdout_text)
             seen: set[str] = set()
             for row in rows:
                 # Newer CLIs use Docker-shaped ID/Names; inspection retains Id/Name.

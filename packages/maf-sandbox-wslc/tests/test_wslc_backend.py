@@ -206,6 +206,15 @@ class _FakeWslc:
         return found[0]
 
 
+def _json_lines(names: Sequence[str]) -> str:
+    """A ``container list --format json`` payload in the shape wslc 2.9.12 emits.
+
+    One object per line and the name under ``Names``, so every test driving this fake reads
+    the listing the installed CLI writes rather than the array an earlier one did.
+    """
+    return "".join(json.dumps({"ID": f"id-{n}", "Names": n}) + "\n" for n in names)
+
+
 def _machine(
     running: Sequence[str] = (),
     stopped: Sequence[str] = (),
@@ -224,8 +233,7 @@ def _machine(
         if args[:2] == ("container", "list"):
             names = [*running, *stopped] if "-a" in args else list(running)
             if "--format" in args:
-                payload = [{"Id": f"id-{n}", "Name": n} for n in names]
-                return _WslcResult(0, json.dumps(payload).encode(), b"")
+                return _WslcResult(0, _json_lines(names).encode(), b"")
             return _WslcResult(0, "".join(f"id-{n}\n" for n in names).encode(), b"")
         if args[:2] == ("container", "cp") and args[2] != "-":
             # A copy *out* that nothing overrides is a path that is not there, and it says so
@@ -699,8 +707,7 @@ class TestAcquireRecoversFromANameConflict:
         def respond(args: tuple[str, ...]) -> _WslcResult:
             if args[:2] == ("container", "list"):
                 if "--format" in args:
-                    payload = [{"Id": f"id-{n}", "Name": n} for n in present]
-                    return _WslcResult(0, json.dumps(payload).encode(), b"")
+                    return _WslcResult(0, _json_lines(present).encode(), b"")
                 return _WslcResult(0, "".join(f"id-{n}\n" for n in present).encode(), b"")
             if args[:2] == ("container", "run"):
                 if running_after_the_conflict:
@@ -731,6 +738,99 @@ class TestAcquireRecoversFromANameConflict:
 
         with pytest.raises(RuntimeError, match="WSLC_E_IMAGE_NOT_FOUND"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+class TestAListingNobodyCanReadIsNotAnEmptyOne:
+    """A shape this code does not know has to refuse, not answer "there is nothing there".
+
+    A listing the parser silently read as empty sends `acquire` to create a container that
+    already exists, which fails on the name and keeps failing, and it leaves a scope purge
+    reporting a clean sweep of a machine it never read.
+    """
+
+    #: What `--format json` writes when it is not honoured — the table, holding a real name.
+    _WRONG_SHAPE = b"CONTAINER ID  IMAGE     NAMES\nabc123456789  alpine:3  a\n"
+
+    def test_the_parser_refuses_a_payload_that_is_not_json(self):
+        from maf_sandbox_wslc._backend import _listed_names, _UnreadableListing
+
+        with pytest.raises(_UnreadableListing):
+            _listed_names(self._WRONG_SHAPE.decode())
+
+    def test_the_parser_refuses_a_row_that_carries_no_name(self):
+        """A renamed field reaches here as rows without one, which is not a listing of nothing."""
+        from maf_sandbox_wslc._backend import _listed_names, _UnreadableListing
+
+        with pytest.raises(_UnreadableListing):
+            _listed_names('{"ID":"abc123456789","ContainerName":"a","State":"running"}')
+
+    def test_an_empty_listing_is_still_no_names(self):
+        """The CLI prints nothing at all for a listing that matched nothing."""
+        from maf_sandbox_wslc._backend import _listed_names
+
+        assert _listed_names("") == []
+        assert _listed_names("\n") == []
+        assert _listed_names("[]") == []
+
+    def test_acquire_refuses_rather_than_creating_a_second_container(self):
+        from maf_sandbox_wslc._backend import _UnreadableListing
+
+        overrides = {("container", "list"): _WslcResult(0, self._WRONG_SHAPE, b"")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        with pytest.raises(_UnreadableListing):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("container", "run") == []
+
+    def test_a_failed_adoption_reports_the_conflict_and_why_it_stuck(self):
+        """The conflict is what failed; the listing is why the fallback could not clear it."""
+        overrides = {
+            ("container", "list"): _WslcResult(0, self._WRONG_SHAPE, b""),
+            ("container", "run"): _WslcResult(1, b"", b"Error code: ERROR_ALREADY_EXISTS"),
+        }
+        backend, _ = _backend_with(_machine(overrides=overrides))
+        backend._is_listed = _only_on_create(backend, self._WRONG_SHAPE)  # noqa: SLF001
+
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert "ERROR_ALREADY_EXISTS" in str(raised.value)
+        assert "could not read the container listing" in str(raised.value)
+
+    def test_a_scope_purge_says_it_may_be_partial(self):
+        overrides = {("container", "list"): _WslcResult(0, self._WRONG_SHAPE, b"")}
+        backend, fake = _backend_with(_machine(stopped=["a", "b"], overrides=overrides))
+
+        purge = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+
+        assert purge.undisposed is not None
+        assert purge.undisposed.code == "unlisted"
+        assert fake.matching("container", "remove") == []
+
+
+def _only_on_create(backend, payload: bytes):
+    """`_is_listed` that answers "absent" until a create has run, then cannot read the listing.
+
+    Acquire has to reach the create branch for the conflict to happen at all, so the listing
+    breaks where `_adopt` reads it rather than where `acquire` does.
+    """
+    from maf_sandbox_wslc._backend import _UnreadableListing
+
+    created = False
+    original = backend._create_workload  # noqa: SLF001
+
+    async def create(*args, **kwargs):
+        nonlocal created
+        created = True
+        return await original(*args, **kwargs)
+
+    backend._create_workload = create  # noqa: SLF001
+
+    async def is_listed(name: str, *, all_states: bool) -> bool:
+        if created:
+            raise _UnreadableListing(f"could not read the container listing: {payload!r}")
+        return False
+
+    return is_listed
 
 
 # ---------------------------------------------------------------------------
@@ -2517,49 +2617,68 @@ class TestTheSeamReapsARealChild:
         assert self._stopped_growing(beat)
 
 
+#: Verbatim ``container list --format json`` output, and the names each capture carries.
+#:
+#: Every other listing in this file is invented, and an invented listing agrees with the code
+#: that reads it. These do not: 2.9.4.0 emitted a JSON array of ``Name`` rows, and 2.9.12.0
+#: emits one ``Names`` object per line with nothing enclosing them. Neither version is pinned,
+#: so both are read, and a third shape upstream fails here rather than only on a machine with
+#: WSL. Regenerate either with throwaway containers:
+#:
+#:     wslc container run -d --name maf-sandbox-wslc-<12 hex> --network none alpine:3 sleep infinity
+#:     wslc container list -a --format json --filter name=<a shared prefix>
+#:     wslc container remove -f <those names>
+_REAL_LISTINGS = {
+    "2.9.4": ("wslc-container-list-2.9.4.json", ["maf-sandbox-wslc-c63d0bd23ebf"]),
+    "2.9.12": (
+        "wslc-container-list-2.9.12.jsonl",
+        ["maf-sandbox-wslc-5059e019ae0b", "maf-sandbox-wslc-5059e019ae0a"],
+    ),
+}
+
+
+@pytest.mark.parametrize("version", sorted(_REAL_LISTINGS))
 class TestAgainstRealWslcOutput:
-    """A verbatim ``container list --format json`` payload from wslc 2.9.4.0.
-
-    Every other listing in this file is invented, and an invented listing agrees with the code
-    that reads it — ``{"Id", "Name"}`` is a guess that happens to be right. Real output carries
-    ``CreatedAt``, ``Image``, ``Ports`` and an integer ``State`` too, and the name arrives
-    without the leading slash some container CLIs put there. Rename the field upstream and this
-    fails in CI rather than only on a machine with WSL. Regenerate with a throwaway container:
-
-        wslc container run -d --name maf-sandbox-wslc-<12 hex> --network none alpine:3 sleep infinity
-        wslc container list --format json --filter name=<that name>
-        wslc container remove -f <that name>
-    """
-
-    #: The name the captured container was created with — an exact match for the payload.
-    _CAPTURED = "maf-sandbox-wslc-c63d0bd23ebf"
-
-    def _payload(self) -> str:
+    def _payload(self, version: str) -> str:
         import pathlib
 
-        fixture = pathlib.Path(__file__).parent / "fixtures" / "wslc-container-list-real.json"
-        return fixture.read_text(encoding="utf-8")
+        name, _ = _REAL_LISTINGS[version]
+        return (pathlib.Path(__file__).parent / "fixtures" / name).read_text(encoding="utf-8")
 
-    def _seam(self):
-        payload = self._payload()
+    def _seam(self, version: str):
+        payload = self._payload(version)
         return _backend_with(lambda args: _WslcResult(0, payload.encode("utf-8"), b""))
 
-    def test_the_exact_name_is_found_in_real_output(self):
-        backend, _ = self._seam()
-        assert asyncio.run(backend._is_listed(self._CAPTURED, all_states=False)) is True
-
-    def test_a_name_the_payload_does_not_carry_is_not_found(self):
-        """`--filter name=` is a substring match, so a real payload can hold a longer name."""
-        backend, _ = self._seam()
-        assert asyncio.run(backend._is_listed(self._CAPTURED[:-4], all_states=True)) is False
-
-    def test_the_row_carries_the_container_id_a_listing_consumer_reads(self):
+    def test_every_captured_name_is_read_out_of_real_output(self, version):
         from maf_sandbox_wslc._backend import _listed_names
 
-        rows = json.loads(self._payload())
-        assert _listed_names(self._payload()) == [self._CAPTURED]
-        assert len(rows[0]["Id"]) == 64
-        assert rows[0]["Image"] == "alpine:3"
+        _, names = _REAL_LISTINGS[version]
+        assert _listed_names(self._payload(version)) == names
+
+    def test_the_exact_name_is_found_in_real_output(self, version):
+        backend, _ = self._seam(version)
+        name = _REAL_LISTINGS[version][1][0]
+        assert asyncio.run(backend._is_listed(name, all_states=False)) is True
+
+    def test_a_name_the_payload_does_not_carry_is_not_found(self, version):
+        """`--filter name=` is a substring match, so a real payload can hold a longer name."""
+        backend, _ = self._seam(version)
+        name = _REAL_LISTINGS[version][1][0]
+        assert asyncio.run(backend._is_listed(name[:-4], all_states=True)) is False
+
+    def test_a_scope_purge_reaches_every_container_the_listing_returned(self, version):
+        """The names the purge removes are the names the payload carried, in its own shape."""
+        _, names = _REAL_LISTINGS[version]
+        payload = self._payload(version)
+        backend, fake = _backend_with(
+            _machine(overrides={("container", "list"): _WslcResult(0, payload.encode(), b"")})
+        )
+
+        purge = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+
+        assert purge.undisposed is None
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == names
+        assert purge.disposed == len(names)
 
 
 # ---------------------------------------------------------------------------
