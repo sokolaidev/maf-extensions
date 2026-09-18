@@ -1255,6 +1255,24 @@ SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 DERIVED_INTEGRITY_PROPERTY = "maf_sandbox_derived_integrity"
 
 
+def claimed_source_integrity(properties: Mapping[str, Any]) -> SourceIntegrity | None:
+    """The integrity a declarations mapping claims, read the one way every check reads it.
+
+    ``None`` where it claims none, or names a level this package does not recognise — which is
+    not a claim to refuse, since the framework acts on its own two spellings and logs anything
+    else away. Every reader goes through this: a check comparing the raw value and a coercion
+    taking ``str()`` of it disagree on a value that is not a ``str``, and the gap between two
+    such readings is a claim that passed no check.
+    """
+    claimed = properties.get("source_integrity")
+    if claimed is None:
+        return None
+    try:
+        return SourceIntegrity(str(claimed))
+    except ValueError:
+        return None
+
+
 def _implemented_declarations(
     properties: Mapping[str, Any], *, commits_guidance: bool, tool: str
 ) -> dict[str, Any]:
@@ -1294,8 +1312,17 @@ def _implemented_declarations(
     # Coerced here and not only in `sandbox_tool_declarations`, which a `declarations=` mapping
     # bypasses: past this point the tool declares trusted, so a spelling nothing recognises
     # would leave every derived item taking that declaration instead of a weaker label.
+    recognised = claimed_source_integrity(properties)
+    if recognised is None:
+        raise ValueError(
+            f"{tool}: this tool commits standing guidance and declares "
+            f"source_integrity={claimed!r}, which is not a level this package recognises. "
+            "Past the raise every derived item would take the tool's own trusted declaration "
+            f"rather than a weaker label. Declare {str(SourceIntegrity.TRUSTED)!r} or "
+            f"{str(SourceIntegrity.UNTRUSTED)!r}."
+        )
     implemented = dict(properties)
-    implemented[DERIVED_INTEGRITY_PROPERTY] = str(SourceIntegrity(str(claimed)))
+    implemented[DERIVED_INTEGRITY_PROPERTY] = str(recognised)
     implemented["source_integrity"] = str(SourceIntegrity.TRUSTED)
     return implemented
 
@@ -2633,11 +2660,13 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
-    # Read raw and before `_implemented_declarations`, so this weighs the caller's own claim
-    # rather than the declaration the wrapper may raise over it. An unrecognised value is no
-    # claim to refuse here: FIDES acts on exactly this spelling and logs anything else away.
-    # A tool committing guidance is refused one later, where the raise makes it unweakenable.
-    if declarations is not None and declarations.get("source_integrity") == SourceIntegrity.TRUSTED:
+    # Before `_implemented_declarations`, so this weighs the caller's own claim rather than the
+    # declaration the wrapper may raise over it, and through the same reader so the two cannot
+    # disagree about what was claimed.
+    if (
+        declarations is not None
+        and claimed_source_integrity(declarations) is SourceIntegrity.TRUSTED
+    ):
         unestablished = _source_channels_not_established_as_trusted(spec, frozenset())
         if unestablished:
             raise _unlicensed_trusted_claim_refusal(

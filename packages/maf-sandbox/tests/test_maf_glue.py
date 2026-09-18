@@ -1129,6 +1129,31 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
                 },
             )
 
+    def test_a_str_like_trusted_claim_meets_the_spec_check(self):
+        """The claim is read once, so no check can disagree with another about what it says.
+
+        A value comparing unequal to the enum while rendering as its spelling would otherwise
+        pass the trusted-channel check untested and be coerced to trusted immediately after,
+        putting a trusted label on derived items over a spec that opens the file store.
+        """
+
+        class StrLike:
+            def __str__(self) -> str:
+                return str(SourceIntegrity.TRUSTED)
+
+            def __eq__(self, other: object) -> bool:
+                return False
+
+            def __hash__(self) -> int:
+                return 0
+
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                standing_guidance=(_GUIDANCE,),
+                declarations={"source_integrity": StrLike(), "confidentiality": "private"},
+            )
+
     def test_an_unknown_spelling_is_refused_rather_than_raised(self):
         """Past the raise the tool declares trusted, so a spelling this package cannot weaken
         by is the one value that must not reach an attached tool."""
