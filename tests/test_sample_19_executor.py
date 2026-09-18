@@ -356,6 +356,92 @@ class TestTheExecutionRoad:
         assert result.exit_code == 1
         assert "timed out" in result.output
 
+    def test_an_unexpected_execution_error_condemns_and_reads_as_a_refusal(self):
+        """Any failure the result did not come back from condemns the sandbox — not just the
+        two the handler names. The model still reads an ``Error:`` string, not an exception.
+        """
+
+        class Breaking(InProcessSandbox):
+            """A failure that is neither a timeout nor an overflow."""
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                raise RuntimeError("the transport fell over mid-execution")
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Breaking()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await router.acquire(_key(), _spec())
+                before = len(backend.disposed)
+                result = await executor.execute_code_blocks(
+                    [CodeBlock(code="print('lost')", language="python")], CancellationToken()
+                )
+                return result, len(backend.disposed) - before
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result, condemned = asyncio.run(body())
+        # The unknown-state container is condemned before anything reuses it, and the tool's
+        # answer is the Error string a model can act on — not a RuntimeError out of the tool.
+        assert result.exit_code == 1
+        assert result.output.startswith("Error:")
+        assert condemned == 1, (
+            f"the unexpected failure should condemn exactly once in the armed window, "
+            f"not {condemned} — zero means the sandbox stayed reacquirable in unknown state"
+        )
+
+    def test_an_unexpected_execution_error_with_a_failed_delete_refuses_the_next_acquire(self):
+        """The condemnation is the unclean path on *every* lost run, not only the named two."""
+
+        class Breaking(InProcessSandbox):
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                raise RuntimeError("the transport fell over mid-execution")
+
+        class HoldingOnFailure(InProcessSandboxBackend):
+            fail = False
+
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ):
+                self.disposed.append(key)
+                self.disposed_kinds.append(kind)
+                self.disposed_instances.append(instance_id)
+                if self.fail:
+                    return "the engine would not remove it"
+                for held in [entry for entry in list(self.sandboxes) if entry[0] == key]:
+                    del self.sandboxes[held]
+                return None
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+            from maf_sandbox import SandboxUnclean
+
+            sandbox = Breaking()
+            backend = HoldingOnFailure(sandbox, isolation=Isolation.NONE)
+            router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                await router.acquire(_key(), _spec())
+                backend.fail = True
+                result = await executor.execute_code_blocks(
+                    [CodeBlock(code="print('lost')", language="python")], CancellationToken()
+                )
+                with pytest.raises(SandboxUnclean):
+                    await router.acquire(_key(), _spec())
+                return result
+            finally:
+                backend.fail = False
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result = asyncio.run(body())
+        assert result.exit_code == 1
+        assert result.output.startswith("Error:")
+
     def test_an_overflow_failure_lands_the_disposal_before_the_error(self):
         """A disposal that fails is still best-effort: the error is returned, the attempt ran first.
 

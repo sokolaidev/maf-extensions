@@ -73,7 +73,7 @@ The first tool call pays for creating the container; the router reuses it warm f
   [measured] Disposed 1 sandbox(es).
 ```
 
-What does not vary is the block under the reply. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as CodeExecutor returned it ==` — the interpreter's own stdout, recorded by AutoGen beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). It is the same checker samples 03 and 06 run; its heading accepts both tool names. `Disposed N` reports only the final scope purge. A healthy run reports `Disposed 1`: the executor performs no per-call cleanup on the happy path. One path does clean up per call — an output overflow disposes the instance before its error is returned, and a run whose only call overflowed then reports `Disposed 0`.
+What does not vary is the block under the reply. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as CodeExecutor returned it ==` — the interpreter's own stdout, recorded by AutoGen beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). It is the same checker samples 03 and 06 run; its heading accepts both tool names. `Disposed N` reports only the final scope purge. A healthy run reports `Disposed 1`: the executor performs no per-call cleanup on the happy path. A run whose only call lost its execution — a timeout, an overflow, or any other failure the result did not come back from — does clean up per call, and then reports `Disposed 0`.
 
 ## Troubleshooting
 
@@ -83,6 +83,6 @@ What does not vary is the block under the reply. `354224848179261915075` is a co
 
 **`ValueError: model_info is required when model name is not a valid OpenAI model`** — the client was built without a `model_info`. Both roads in `build_model` pass one; a copy that dropped it fails at construction, before anything is paid for.
 
-**The tool's answer says the program timed out or exceeded the byte budget** — the executor's bound, not the model's: a two-minute execution ceiling and a 1 MiB output budget, the defaults the Deep Agents adapter carries. A program that overran pays for its sandbox either way: a timeout and an overflow are both refused through the router's unclean path — the backend's own `rm -f` on a timeout is best-effort and can fail silently — so the key is refused until the instance's delete lands, and the next tool call creates a fresh one.
+**The tool's answer says the program failed, timed out, or exceeded the byte budget** — the executor's bound, not the model's: a two-minute execution ceiling and a 1 MiB output budget, the defaults the Deep Agents adapter carries. A run that loses its execution — a timeout, an overflow, or any other failure the result did not come back from — pays for its sandbox: it is condemned through the router's unclean path, so the key is refused until the instance's delete lands, and the next tool call creates a fresh one. The model reads an `Error:` string in every case, never an exception out of the tool.
 
 **`NotImplementedError` from `dump_component`** — the executor, the tool and an agent holding them are not serialisable config here. See the give-ups above.

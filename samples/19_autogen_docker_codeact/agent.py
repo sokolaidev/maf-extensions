@@ -208,7 +208,10 @@ class SandboxCodeExecutor(CodeExecutor):
         rendered: list[str] = []
         exit_code = 0
         for block in code_blocks:
-            text, code = await self._execute_one(sandbox, block.code, cancellation_token)
+            try:
+                text, code = await self._execute_one(sandbox, block.code, cancellation_token)
+            except _ExecutionLost as lost:
+                text, code = lost.rendered, 1
             rendered.append(text)
             # The guest's own exit code answers for the result — the tool reads `success` off
             # it, so a program that exited nonzero is not reported as a success. A list stops
@@ -217,6 +220,14 @@ class SandboxCodeExecutor(CodeExecutor):
             if code:
                 break
         return CodeResult(exit_code=exit_code, output="\n\n".join(rendered))
+
+    @staticmethod
+    def _timeout_text() -> str:
+        return f"Error: the program timed out after {EXEC_TIMEOUT_SECONDS}s"
+
+    @staticmethod
+    def _overflow_text() -> str:
+        return f"Error: the program's output exceeded the {MAX_OUTPUT_BYTES}-byte budget"
 
     async def _execute_one(
         self, sandbox: BoundedExec, code: str, cancellation_token: CancellationToken
@@ -235,24 +246,44 @@ class SandboxCodeExecutor(CodeExecutor):
         cancellation_token.link_future(run)
         try:
             result = await run
-        except TimeoutError:
-            # A timeout does not establish the guest stopped either: the docker backend runs a
-            # best-effort `rm -f` on its own timeout and suppresses every failure from it, so
-            # a delete that did not land leaves the timed-out process's container mapped and
-            # reacquirable. The unclean path, as on overflow: the key stays refused until a
-            # delete lands, and a landed one retires the refusal for a fresh create.
-            await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
-            return f"Error: the program timed out after {EXEC_TIMEOUT_SECONDS}s", 1
-        except SandboxExecOutputLimitExceeded:
-            # An overflow stops the host's reading, never the guest: nothing here establishes
-            # the process stopped, and the backend removes the container on a timeout but not
-            # on this raise. The unclean path is the one that closes the key when its delete
-            # fails — a best-effort `dispose` would leave a container the runaway process is
-            # still writing into mapped and reacquirable — and when the delete lands, the
-            # refusal retires with it and the next acquire is a fresh create.
-            await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
-            return f"Error: the program's output exceeded the {MAX_OUTPUT_BYTES}-byte budget", 1
+        except TimeoutError as error:
+            await self._condemn()
+            raise _ExecutionLost(self._timeout_text()) from error
+        except SandboxExecOutputLimitExceeded as error:
+            await self._condemn()
+            raise _ExecutionLost(self._overflow_text()) from error
+        except asyncio.CancelledError:
+            # A cancellation condemns like any other lost run — the guest may still be
+            # running — and propagates.
+            await self._condemn()
+            raise
+        except BaseException as error:
+            # Any other failure the result did not come back from condemns too: the guest's
+            # end is unknown, so the sandbox is not reusable, and the model reads a refusal.
+            await self._condemn()
+            raise _ExecutionLost(
+                "Error: the program's execution failed — it may still be running; its "
+                "sandbox was disposed"
+            ) from error
         return _render(result), result.exit_code
+
+    async def _condemn(self) -> None:
+        """Dispose the acquired sandbox through the unclean path: the key stays refused until
+        a delete lands, and a landed one retires the refusal for a fresh create."""
+        await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
+
+
+class _ExecutionLost(Exception):
+    """A run whose end is unknown, carrying the rendered error the model should see.
+
+    Raised after the sandbox is condemned, and caught by ``execute_code_blocks`` — which
+    turns it back into the ``Error:`` string the tool reports, so a failed run reads to the
+    model as a refusal rather than as an exception out of the tool.
+    """
+
+    @property
+    def rendered(self) -> str:
+        return str(self)
 
 
 def _render(result: ExecResult) -> str:
