@@ -1824,8 +1824,7 @@ class TestNarrowedDisposal:
                     for name, value in labels.items()
                     if not filters or filters == [f"label=maf-sandbox.kind={value}"]
                 ]
-                payload = json.dumps([{"Id": name, "Name": name} for name in names]).encode()
-                return _WslcResult(0, payload, b"")
+                return _WslcResult(0, _json_lines(names).encode(), b"")
             return _WslcResult(0, b"", b"")
 
         backend, fake = _backend_with(respond)

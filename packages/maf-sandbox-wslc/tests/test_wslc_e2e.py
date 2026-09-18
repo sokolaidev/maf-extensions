@@ -412,8 +412,7 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sy
                     "created": metadata["Created"],
                     "finished": metadata["State"]["FinishedAt"],
                     "operator_now": datetime.now(UTC).isoformat(),
-                    "listed_created": listed["CreatedAt"],
-                    "listed_state_changed": listed["StateChangedAt"],
+                    "listed": listed,
                 }
             )
         )
