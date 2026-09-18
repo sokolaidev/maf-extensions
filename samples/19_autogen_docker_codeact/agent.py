@@ -172,17 +172,7 @@ class SandboxCodeExecutor(CodeExecutor):
         """Nothing to start: the router creates the sandbox on the first execution."""
 
     async def stop(self) -> None:
-        """Release what the executor holds: the sandbox it acquired, with refusal on failure.
-
-        The contract says ``stop`` releases resources, and the sandbox *is* one — a no-op here
-        would leave a container with its filesystem and any running program alive past a
-        ``with`` block that promised cleanup. The unclean path, as on overflow: a delete that
-        does not land refuses the key rather than leaving the instance reacquirable. AutoGen
-        0.7.5 never drives the lifecycle in this wiring — ``AssistantAgent.on_reset`` clears
-        only its model context and ``PythonCodeExecutionTool`` forwards nothing — so a host
-        that wants this release calls it, or relies on the explicit ``dispose_scope`` in
-        ``run()``.
-        """
+        """Release what the executor holds: the sandbox it acquired, with refusal on failure."""
         await self._router.dispose_unclean(self._key, timeout=CLEANUP_TIMEOUT_SECONDS)
 
     async def restart(self) -> None:
@@ -192,22 +182,29 @@ class SandboxCodeExecutor(CodeExecutor):
     async def execute_code_blocks(
         self, code_blocks: list[CodeBlock], cancellation_token: CancellationToken
     ) -> CodeResult:
-        """Run each block in order as ``python3 -c <code>`` inside one acquired sandbox."""
-        for block in code_blocks:
-            if block.language.casefold() not in _LANGUAGES:
-                return CodeResult(
-                    exit_code=1,
-                    output=f"Error: only Python runs in this sandbox, not {block.language!r}",
-                )
-        sandbox = await self._router.acquire(self._key, self._spec)
-        if not isinstance(sandbox, BoundedExec):
-            return CodeResult(
-                exit_code=1,
-                output="Error: the backend has no exec_bounded, so no program runs here",
-            )
+        """Run each block in order as ``python3 -c <code>`` inside one acquired sandbox.
+
+        A block in any language but Python stops the list at that block — preceding blocks
+        have run, as both of AutoGen's reference executors do. The sandbox is acquired only
+        when a runnable block is reached, so a list that begins with an unsupported language
+        never pays for one.
+        """
+        sandbox: BoundedExec | None = None
         rendered: list[str] = []
         exit_code = 0
         for block in code_blocks:
+            if block.language.casefold() not in _LANGUAGES:
+                rendered.append(f"Error: only Python runs in this sandbox, not {block.language!r}")
+                exit_code = 1
+                break
+            if sandbox is None:
+                acquired = await self._router.acquire(self._key, self._spec)
+                if not isinstance(acquired, BoundedExec):
+                    return CodeResult(
+                        exit_code=1,
+                        output="Error: the backend has no exec_bounded, so no program runs here",
+                    )
+                sandbox = acquired
             try:
                 text, code = await self._execute_one(sandbox, block.code, cancellation_token)
             except _ExecutionLost as lost:
@@ -403,9 +400,8 @@ async def run() -> int:
         # check trusts the `[measured]` tag completely.
         print(quoted(final_reply(result)))
 
-        # What the interpreter printed, taken from the tool result rather than from the reply.
-        # The 100th Fibonacci number is a constant any model can recite, so the reply alone is
-        # not evidence a program ran — this block is (#314).
+        # Prose is never execution evidence: a model can recite the constant, so the count is
+        # read out of the tool's own recorded results, filtered to what reached the sandbox.
         runs = [one for one in executor_results(result) if _RAN.search(one)]
         print()
         print(

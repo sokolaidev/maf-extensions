@@ -117,6 +117,74 @@ class TestTheExecutionRoad:
         assert result.output.startswith("Error:")
         assert backend.keys == [], "a refused block must not pay for a sandbox"
 
+    def test_a_mixed_list_runs_the_python_blocks_before_the_unsupported_one_stops_it(self):
+        """Both reference executors run the preceding blocks and stop at the unsupported one."""
+
+        class Counting(InProcessSandbox):
+            ran = 0
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                Counting.ran += 1
+                return ExecResult(stdout="done", exit_code=0)
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            sandbox = Counting()
+            router, backend = _router(sandbox)
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                return (
+                    await executor.execute_code_blocks(
+                        [
+                            CodeBlock(code="print('first')", language="python"),
+                            CodeBlock(code="console.log('no')", language="javascript"),
+                        ],
+                        CancellationToken(),
+                    ),
+                    sandbox,
+                    backend,
+                )
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result, sandbox, backend = asyncio.run(body())
+        assert result.exit_code == 1
+        assert "stdout:\ndone" in result.output and "Error: only Python" in result.output
+        assert Counting.ran == 1
+        assert backend.keys, "the runnable block paid for its sandbox"
+
+    def test_a_list_that_begins_with_an_unsupported_language_never_acquires(self):
+        """The sandbox is acquired only when a runnable block is reached."""
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, backend = _router(InProcessSandbox())
+            try:
+                executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+                return (
+                    await executor.execute_code_blocks(
+                        [
+                            CodeBlock(code="console.log('no')", language="javascript"),
+                            CodeBlock(code="print('first')", language="python"),
+                        ],
+                        CancellationToken(),
+                    ),
+                    backend,
+                )
+            finally:
+                await router.dispose_scope(_key().scope, _key().thread_id)
+
+        result, backend = asyncio.run(body())
+        assert result.exit_code == 1
+        assert result.output.startswith("Error: only Python")
+        assert backend.keys == [], "a list that never reaches a runnable block pays for nothing"
+
     def test_the_guests_own_exit_code_answers_for_the_result(self):
         """AutoGen reads `success` off `CodeResult.exit_code`, so the guest's exit stands."""
 
