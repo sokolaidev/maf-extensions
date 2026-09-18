@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 from maf_sandbox import CallerContext, Cleanup, Egress, SandboxRouter
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 import maf_sandbox_bicep._tool as _tool_module
@@ -1321,15 +1322,17 @@ class TestFidesDeclarations:
     fire, and nothing in this suite — or in the host's — would report the change as a
     failure. It would simply become a different policy.
 
-    `source_integrity` is the same kind of contract read the other way round. A declared
-    integrity level *replaces* the framework's input-label join rather than flooring it, so
-    declaring `"trusted"` here would tell a host's middleware to disregard where the result
-    came from — and it came from a template the model wrote. This kind declares `"untrusted"`,
-    which is that same replacement used the safe way round: it closes the input-label join and
-    the host's `default_integrity` together, and neither is something this package controls.
-    The factory in :mod:`maf_sandbox.maf` defaults to `None` and CAN derive an egress cap;
-    this kind asks for the first and not the second (see the comment at its `sandboxed_tool`
-    call). These tests are what hold both decisions in place.
+    Integrity is the same kind of contract read the other way round. A declared level
+    *replaces* the framework's input-label join rather than flooring it, so this kind's
+    `"untrusted"` is that replacement used the safe way round: it closes the input-label join
+    and the host's `default_integrity` together, and neither is something this package
+    controls. The framework reads one declaration per tool and applies it to every item,
+    while this kind needs two answers in one result — so the wrapper declares `"trusted"` and
+    carries the kind's own claim on `maf_sandbox_derived_integrity`, which is the key a host
+    auditing this tool's output reads. The factory in :mod:`maf_sandbox.maf` defaults to
+    `None` and CAN derive an egress cap; this kind asks for the first and not the second (see
+    the comment at its `sandboxed_tool` call). These tests are what hold both decisions in
+    place.
     """
 
     def _properties(self):
@@ -1337,14 +1340,17 @@ class TestFidesDeclarations:
         return dict(_tool(store, _fake_backend()).additional_properties or {})
 
     def test_the_tool_declares_its_integrity_and_nothing_else(self):
-        assert self._properties() == {"source_integrity": "untrusted"}
+        assert self._properties() == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def test_it_declares_untrusted_rather_than_leaving_it_to_the_host(self):
         """Silence is not the same answer. The library default is `None`, and an undeclared
         tool takes whichever of the two remaining tiers speaks: the input-label join, or the
         host's `default_integrity` — and a host that raised that default would get `trusted`
         back for a result derived from a template the model wrote."""
-        assert self._properties()["source_integrity"] == "untrusted"
+        assert self._properties()[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
 
     def test_it_declares_nothing_about_confidentiality(self):
         properties = self._properties()
@@ -1392,10 +1398,14 @@ class TestTheResultSplits:
             "confidentiality": "public",
         }
 
-    def test_the_call_derived_half_carries_no_label_of_its_own(self):
-        """A label on it would replace the call's own, confidentiality included, and those
-        values are the host's rather than this package's."""
-        assert self._label(self._answer()[0]) is None
+    def test_the_call_derived_half_is_labelled_untrusted(self):
+        """What the tool declares to the framework is trusted, so this half says otherwise for
+        itself. Its `public` is a floor and not a classification: the framework keeps the
+        stricter of it and the call's own, which is the host's to set."""
+        assert self._label(self._answer()[0]) == {
+            "integrity": "untrusted",
+            "confidentiality": "public",
+        }
 
     def test_the_sentence_says_nothing_a_call_could_vary(self):
         """Same sentence whatever ran: it is what the label rests on."""
@@ -1459,7 +1469,10 @@ class TestTheResultSplits:
         for path, (answer, derived) in answers.items():
             assert derived in str(answer[0].text), path
             assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS, path
-            assert self._label(answer[0]) is None, path
+            assert self._label(answer[0]) == {
+                "integrity": "untrusted",
+                "confidentiality": "public",
+            }, path
             assert self._label(answer[-1]) == {
                 "integrity": "trusted",
                 "confidentiality": "public",

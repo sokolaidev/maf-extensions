@@ -69,6 +69,7 @@ from maf_sandbox import (
     launcher_script,
     sandbox_tool,
 )
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -1329,20 +1330,38 @@ class TestWithholdingDeclaresUntrustedToo:
     """Withholding takes the guest's *text* out of the result, not the guest out of its
     derivation: the exit status and every output's presence bit are chosen
     by a program the model wrote. So there is nothing here to call trusted, and the declaration
-    says so on both renderings rather than only on the noisier one."""
+    says so on both renderings rather than only on the noisier one.
+
+    Where the two renderings differ is which key carries it. Only the withholding one commits
+    standing guidance, and a tool with a sentence to keep visible declares `"trusted"` to the
+    framework so the wrapper owns every item's label — its own claim moving to
+    `maf_sandbox_derived_integrity`. A host reads that key where it is present and
+    `source_integrity` otherwise."""
+
+    def _claim(self, tool: Any) -> Any:
+        properties = dict(tool.additional_properties or {})
+        return properties.get(DERIVED_INTEGRITY_PROPERTY, properties.get("source_integrity"))
 
     def test_a_withholding_tool_declares_untrusted(self):
-        tool = _withholding_tool(_ScriptedSandbox())
-        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
+        assert self._claim(_withholding_tool(_ScriptedSandbox())) == "untrusted"
 
     def test_a_withholding_tool_declares_that_and_nothing_else(self):
         tool = _withholding_tool(_ScriptedSandbox())
-        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def test_a_showing_tool_declares_untrusted_too(self):
         """The two renderings differ in what the result holds, never in what it claims."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
-        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
+        assert self._claim(tool) == "untrusted"
+
+    def test_a_showing_tool_commits_nothing_so_its_declaration_is_left_alone(self):
+        """Nothing it returns has to stay visible, so it keeps declaring its own integrity and
+        the wrapper leaves its items to the framework's own fallback."""
+        tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
+        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
 
     def _with_registry(self, *tools: Callable[..., Any]):
         return _tool(
@@ -1361,8 +1380,7 @@ class TestWithholdingDeclaresUntrustedToo:
         """A registry's `result_integrity` can only weaken a workload's own claim, and this
         workload makes none — so a trusted source, a sink-only tool and an unstamped one all
         read alike."""
-        tool = self._with_registry(registered)
-        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
+        assert self._claim(self._with_registry(registered)) == "untrusted"
 
 
 class TestTheModelIsToldUpFront:
@@ -3514,12 +3532,13 @@ class TestAWithheldResultSplits:
 
         assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
 
-    def test_the_call_derived_half_carries_no_label_of_its_own(self):
-        """That is what keeps the call's confidentiality: a labelled item would replace it with
-        this package's, and confidentiality values are the host's."""
+    def test_the_call_derived_half_is_labelled_untrusted(self):
+        """What the tool declares to the framework is trusted, so this half says otherwise for
+        itself. Its `public` is a floor rather than a classification — the framework keeps the
+        stricter of it and the call's own, which is the host's to set."""
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
 
-        assert self._label(answer[0]) is None
+        assert self._label(answer[0]) == {"integrity": "untrusted", "confidentiality": "public"}
 
     def test_a_tool_that_withholds_nothing_still_answers_with_one_string(self):
         answer = _items(_tool(_backend(_ScriptedSandbox(ExecResult(stdout="42")))), "print(1)")

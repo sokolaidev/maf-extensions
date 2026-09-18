@@ -41,9 +41,9 @@ classifiers = [
 # import `agent_framework`; the boundary test's zero-dependency claim narrows to name the
 # protocol modules explicitly rather than the whole distribution once that module lands.
 dependencies = [
-    # 1.19 combines an item's embedded label with the source_integrity declaration, so the
-    # untrusted declaration hides the standing-guidance sentence behind a variable reference.
-    "agent-framework-core>=1.18.0,<1.19",
+    # Both ends measured: 1.19 made an item's embedded label restrict-only, which the result
+    # wrapper now works with rather than against. The ceiling is the minor that was measured.
+    "agent-framework-core>=1.18.0,<1.20",
 ]
 
 [project.urls]

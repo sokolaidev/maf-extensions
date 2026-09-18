@@ -39,9 +39,9 @@ dependencies = [
     "maf-sandbox>=0.40.0,<0.41",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
-    # 1.19 combines an item's embedded label with the source_integrity declaration, so the
-    # untrusted declaration hides the standing-guidance sentence behind a variable reference.
-    "agent-framework-core>=1.18.0,<1.19",
+    # Both ends measured: 1.19 made an item's embedded label restrict-only, which the result
+    # wrapper now works with rather than against. The ceiling is the minor that was measured.
+    "agent-framework-core>=1.18.0,<1.20",
 ]
 
 [project.urls]

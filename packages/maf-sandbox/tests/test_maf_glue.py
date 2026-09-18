@@ -67,6 +67,7 @@ from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     _ORIGINAL_ARGUMENTS_KEY,
+    DERIVED_INTEGRITY_PROPERTY,
     ISOLATION_SCOPE_KEY,
     SOURCE_INTEGRITY_PROPERTY,
     SandboxPurger,
@@ -1085,6 +1086,37 @@ class TestAttachedToolShape:
         assert tool.additional_properties == {"source_integrity": "trusted"}
 
 
+class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
+    """Committed guidance is the one item a sandbox workload returns trusted, and the framework
+    reads a single declaration per tool — so a tool with guidance to keep visible declares the
+    stronger and the wrapper labels every item itself."""
+
+    def _tool(self, **kw):
+        (tool,) = _attach(_router(InProcessSandboxBackend()), standing_guidance=(_GUIDANCE,), **kw)
+        return tool
+
+    def test_the_kinds_claim_moves_to_a_key_of_this_packages_own(self):
+        assert self._tool(source_integrity="untrusted").additional_properties == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
+
+    def test_a_mapping_is_raised_the_same_way_and_keeps_its_other_keys(self):
+        assert self._tool(
+            declarations={"source_integrity": "untrusted", "house_key": "kept"}
+        ).additional_properties == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+            "house_key": "kept",
+        }
+
+    def test_an_unknown_spelling_is_refused_rather_than_raised(self):
+        """Past the raise the tool declares trusted, so a spelling this package cannot weaken
+        by is the one value that must not reach an attached tool."""
+        with pytest.raises(ValueError, match="Trusted"):
+            self._tool(declarations={"source_integrity": "Trusted"})
+
+
 class TestAttachedToolRuns:
     def test_the_body_reaches_the_sandbox_through_the_session(self):
         backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
@@ -1212,6 +1244,10 @@ def _typed_body(session: SandboxToolSession):
 
 def _attach_with(build, router, *, spec=_SPEC, name="widget_run", **kw):
     kw.setdefault("logger", logging.getLogger("test_workload"))
+    if kw.get("standing_guidance") and "declarations" not in kw:
+        # Committed guidance needs a declaration to stay readable, and the cases reaching this
+        # default are about the sentences rather than about what a result claims.
+        kw.setdefault("source_integrity", "untrusted")
     return sandboxed_tool(
         build,
         router=router,
@@ -5780,7 +5816,10 @@ class TestAResultThatIsItems:
         }
         assert "security_label" not in derived.additional_properties
         assert "security_label" not in guidance.additional_properties
-        assert "security_label" not in result[0].additional_properties
+        assert result[0].additional_properties["security_label"] == {
+            "integrity": "untrusted",
+            "confidentiality": "public",
+        }
 
     @pytest.mark.parametrize("build", [_items, _sync_items])
     @pytest.mark.parametrize("committed", [(), (_GUIDANCE,)])
@@ -5801,11 +5840,12 @@ class TestAResultThatIsItems:
             _call(self._tool(_items()), target="x")
 
     @pytest.mark.parametrize("committed", [(_GUIDANCE,), (_GUIDANCE, "Read the diagnostics.")])
-    def test_guidance_alone_cannot_replace_the_calls_confidentiality(self, committed):
+    def test_a_result_that_is_only_guidance_is_refused(self, committed):
+        """Guidance is the one trusted item, so a result of nothing else is wholly trusted."""
         tool = self._tool(
             _items(*(_text(sentence) for sentence in committed)), standing_guidance=committed
         )
-        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+        with pytest.raises(ValueError, match="needs a derived item"):
             _call(tool, target="x")
 
     def test_the_call_is_still_reclaimed_when_the_shape_is_refused(self):
@@ -5934,7 +5974,18 @@ class TestWhatASplitResultDoesToTheCallsLabel:
             asyncio.run(tracker.process(context, enforce))
         assert [entry["type"] for entry in policy.get_audit_log()] == ["untrusted_arguments"]
 
-    @pytest.mark.parametrize("source", [None, "untrusted"])
+    def test_guidance_without_a_declaration_is_refused_at_attach(self):
+        """An undeclared tool's result takes the join or the host's default, and guidance can
+        only restrict from there — so the sentence could not be kept readable."""
+        with pytest.raises(ValueError, match="declares no source_integrity"):
+            _attach_with(
+                _items(_text("EXIT=1"), _text(_GUIDANCE)),
+                _router(InProcessSandboxBackend()),
+                declarations={"confidentiality": "private"},
+                standing_guidance=(_GUIDANCE,),
+            )
+
+    @pytest.mark.parametrize("source", ["untrusted"])
     @pytest.mark.parametrize("declare_confidentiality", [False, True])
     def test_guidance_stays_visible_and_the_derived_half_keeps_its_classification(
         self, source, declare_confidentiality
@@ -5943,8 +5994,7 @@ class TestWhatASplitResultDoesToTheCallsLabel:
         from agent_framework.security import ConfidentialityLabel, LabelTrackingFunctionMiddleware
 
         declarations = {"confidentiality": "private"} if declare_confidentiality else {}
-        if source is not None:
-            declarations["source_integrity"] = source
+        declarations["source_integrity"] = source
         tool = _attach_with(
             _items(_text("EXIT=1"), _text(_GUIDANCE)),
             _router(InProcessSandboxBackend()),
@@ -6589,12 +6639,14 @@ class TestTheCommittedSentencesAreASequence:
         return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
 
     def test_a_duplicate_in_the_derived_half_gets_no_trusted_label(self):
+        """Repeating the sentence earlier does not buy a second trusted item: only the last
+        ones are the commitment, and the rest are derived however they read."""
         tool = self._attach(
             [_text("EXIT=1"), _text(_GUIDANCE), _text(_GUIDANCE)],
             standing_guidance=(_GUIDANCE,),
         )
         result = asyncio.run(tool.invoke(arguments={"target": "t"}))
-        assert "security_label" not in result[1].additional_properties
+        assert result[1].additional_properties["security_label"]["integrity"] == "untrusted"
         assert result[2].additional_properties["security_label"]["integrity"] == "trusted"
 
     def test_two_committed_sentences_out_of_order_are_refused(self):
