@@ -5,7 +5,9 @@ from typing import Literal
 from maf_sandbox import Cleanup, Egress, Isolation, IsolationScope, OsFamily, SandboxSpec
 
 TerraformEngine = Literal["terraform", "opentofu"]
-TERRAFORM_TOOL_NAMES: frozenset[str] = frozenset({"terraform_validate", "opentofu_validate"})
+TERRAFORM_TOOL_NAMES: frozenset[str] = frozenset(
+    {"terraform_validate", "opentofu_validate", "terraform_format", "opentofu_format"}
+)
 
 
 def checked_engine(engine: TerraformEngine) -> TerraformEngine:

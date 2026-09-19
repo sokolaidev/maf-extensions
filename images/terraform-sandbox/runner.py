@@ -520,8 +520,45 @@ def refuse_copied_providers(data_dir: Path) -> None:
                     raise ValueError("provider copied into the call")
 
 
-def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
-    """Initialize, validate, and check formatting using only fixed command arguments."""
+def format_project(
+    supervisor: Supervisor, binary: Path, project: Path, result: dict[str, Any]
+) -> None:
+    """Return changed whole files only when the complete result fits the output allowance."""
+    originals: dict[Path, bytes] = {}
+    for path in sorted(project.rglob("*")):
+        if time.monotonic() >= supervisor.deadline:
+            raise TimeoutError("deadline")
+        if path.is_symlink():
+            raise ValueError("linked input")
+        if path.is_file():
+            with path.open("rb") as stream:
+                originals[path] = hashlib.file_digest(stream, "sha256").digest()
+    phase = supervisor.execute_phase([str(binary), "fmt", "-recursive", "-no-color"], project)
+    result["phases"]["fmt"] = phase
+    if phase["exit_code"] != 0 or phase["stderr"]:
+        return
+    files: dict[str, str] = {}
+    for path, before in originals.items():
+        if time.monotonic() >= supervisor.deadline:
+            raise TimeoutError("deadline")
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("changed file type")
+        with path.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").digest() == before:
+                continue
+            stream.seek(0)
+            content = stream.read(supervisor.remaining + 1)
+        supervisor.remaining -= len(content)
+        if supervisor.remaining < 0:
+            raise RuntimeError("output limit")
+        files[path.relative_to(project).as_posix()] = content.decode("utf-8", errors="strict")
+    result["formatted_files"] = files
+
+
+def execute(
+    engine: str, root_module: str, timeout: float, mode: str = "validate"
+) -> dict[str, Any]:
+    """Validate or format using only fixed command arguments."""
     result: dict[str, Any] = {
         "protocol": 1,
         "engine": engine,
@@ -529,9 +566,12 @@ def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
         "phases": {},
         "error": None,
     }
+    if mode == "format":
+        result["mode"] = mode
     try:
         if (
             engine not in ("terraform", "opentofu")
+            or mode not in ("validate", "format")
             or not math.isfinite(timeout)
             or not 0 < timeout <= 600
         ):
@@ -559,6 +599,11 @@ def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
             or json.loads(version["stdout"])["terraform_version"] != metadata["version"]
         ):
             raise ValueError("engine version mismatch")
+        if mode == "format":
+            format_project(supervisor, binary, project, result)
+            if len(json.dumps(result, ensure_ascii=True).encode("ascii")) + 1 > OUTPUT_LIMIT:
+                raise RuntimeError("output limit")
+            return result
         receipt = INSTALL / "dependencies.json"
         packages = (
             json.loads(receipt.read_text()).get("registry_modules", []) if receipt.is_file() else []
@@ -588,14 +633,23 @@ def execute(engine: str, root_module: str, timeout: float) -> dict[str, Any]:
     except Exception:
         # The host renders this as incomplete regardless of any completed phase's verdict.
         result["error"] = "launcher could not complete the bounded execution"
+        if mode == "format":
+            result["phases"] = {}
+            result.pop("formatted_files", None)
     return result
 
 
 def main() -> None:
     """Emit exactly one bounded protocol object; never consume model-authored flags."""
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         raise SystemExit(2)
-    print(json.dumps(execute(sys.argv[1], sys.argv[2], float(sys.argv[3])), ensure_ascii=True))
+    result = execute(
+        sys.argv[1],
+        sys.argv[2],
+        float(sys.argv[3]),
+        sys.argv[4] if len(sys.argv) == 5 else "validate",
+    )
+    print(json.dumps(result, ensure_ascii=True))
 
 
 if __name__ == "__main__":
