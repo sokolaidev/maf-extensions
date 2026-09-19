@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.41.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.40.2...maf-sandbox-v0.41.0) (2026-09-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt agent-framework-core 1.19, and re-pair every package on maf-sandbox 0.41 ([#1316](https://github.com/sokolaidev/maf-extensions/issues/1316))
+
+### Features
+
+* adopt agent-framework-core 1.19, and re-pair every package on maf-sandbox 0.41 ([#1316](https://github.com/sokolaidev/maf-extensions/issues/1316)) ([a1a2dec](https://github.com/sokolaidev/maf-extensions/commit/a1a2dec8ff5bb936d4c044b666b74dd5dc4c9b1b))
+
 ## [0.40.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.40.1...maf-sandbox-v0.40.2) (2026-09-18)
 
 
