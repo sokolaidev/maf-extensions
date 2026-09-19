@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {
+      "source": "registry.opentofu.org/azure/azapi",
+      "version": "2.12.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/azure/terraform-provider-azapi/releases/download/v2.12.0/terraform-provider-azapi_2.12.0_linux_amd64.zip",
+        "sha256": "71402acfa1ad35788a5d1669bdd59040434a45aea990d062dcc41f17163c8e1b",
+        "provenance": "azure azapi v2.12.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "409095307"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/databricks/databricks",
+      "version": "1.132.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/databricks/terraform-provider-databricks/releases/download/v1.132.0/terraform-provider-databricks_1.132.0_linux_amd64.zip",
+        "sha256": "5b46a1dba01e74b01f443e65f5ccdff4fd5c63ee4c45f146882db30a1453c589",
+        "provenance": "databricks databricks v1.132.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "240289534"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azuread",
+      "version": "3.9.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azuread/releases/download/v3.9.0/terraform-provider-azuread_3.9.0_linux_amd64.zip",
+        "sha256": "0a7dc1ff619857ffe4b8fec3c223aa8c65334044b2282652dff341d7edeb434a",
+        "provenance": "opentofu azuread v3.9.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499692"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "5.6.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v5.6.0/terraform-provider-azurerm_5.6.0_linux_amd64.zip",
+        "sha256": "bd6b640a6c68a6ebb75c9f30c182f48fc4d65f008a3f3b25a99eecfbb230de19",
+        "provenance": "opentofu azurerm v5.6.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/local",
+      "version": "2.9.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-local/releases/download/v2.9.1/terraform-provider-local_2.9.1_linux_amd64.zip",
+        "sha256": "5f25e3e5e58d516e3c81ef1ba712bdab3a40e45028bbb62c7ec98659a6dab65f",
+        "provenance": "opentofu local v2.9.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499490"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/null",
+      "version": "3.3.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-null/releases/download/v3.3.2/terraform-provider-null_3.3.2_linux_amd64.zip",
+        "sha256": "73ac02bc3b680e1ea75aab24ec2a359c8f0a021f73d43b2feae0a899e75a93ad",
+        "provenance": "opentofu null v3.3.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499464"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.9.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-random/releases/download/v3.9.1/terraform-provider-random_3.9.1_linux_amd64.zip",
+        "sha256": "624fb6ed552abc34a5aaac41e76a373da65ac08e524b09b672f29c60e6ac896a",
+        "provenance": "opentofu random v3.9.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499456"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/time",
+      "version": "0.14.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-time/releases/download/v0.14.2/terraform-provider-time_0.14.2_linux_amd64.zip",
+        "sha256": "0c5caf61f978612c78eead85fac256ce42a62e5a04616afedf41065a98639c9f",
+        "provenance": "opentofu time v0.14.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499419"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/tls",
+      "version": "4.4.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-tls/releases/download/v4.4.1/terraform-provider-tls_4.4.1_linux_amd64.zip",
+        "sha256": "3fcc9caff4fd3b7b4790ad0a2050379d953de46298c61455535bfbeffe93e53f",
+        "provenance": "opentofu tls v4.4.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499409"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/microsoft/azuredevops",
+      "version": "1.16.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/microsoft/terraform-provider-azuredevops/releases/download/v1.16.0/terraform-provider-azuredevops_1.16.0_linux_amd64.zip",
+        "sha256": "a1561528f3bc53957a9fb9dd726fa46bea08b8a25a346c12a67e6d0e7bbedcc3",
+        "provenance": "microsoft azuredevops v1.16.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "273244625"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/microsoft/fabric",
+      "version": "1.14.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/microsoft/terraform-provider-fabric/releases/download/v1.14.0/terraform-provider-fabric_1.14.0_linux_amd64.zip",
+        "sha256": "b69a03b91dc457c776e05aa7b28525d1f27ea5ebc34af62f507e08b94cf7214e",
+        "provenance": "microsoft fabric v1.14.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "721263834"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/microsoft/power-platform",
+      "version": "4.2.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/microsoft/terraform-provider-power-platform/releases/download/v4.2.0/terraform-provider-power-platform_4.2.0_linux_amd64.zip",
+        "sha256": "dd03c63680f10298e51b9026c4cfb638b52985282d2038b5cf731dd4abd7d3db",
+        "provenance": "microsoft power-platform v4.2.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "593716393"
+      }
+    }
+  ],
+  "modules": [],
+  "registry_modules": []
+}

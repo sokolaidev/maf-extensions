@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {"address": "registry.opentofu.org/azure/azapi", "constraint": "= 2.12.0"},
+    {"address": "registry.opentofu.org/databricks/databricks", "constraint": "= 1.132.0"},
+    {"address": "registry.opentofu.org/hashicorp/azuread", "constraint": "= 3.9.0"},
+    {"address": "registry.opentofu.org/hashicorp/azurerm", "constraint": "= 5.6.0"},
+    {"address": "registry.opentofu.org/hashicorp/local", "constraint": "= 2.9.1"},
+    {"address": "registry.opentofu.org/hashicorp/null", "constraint": "= 3.3.2"},
+    {"address": "registry.opentofu.org/hashicorp/random", "constraint": "= 3.9.1"},
+    {"address": "registry.opentofu.org/hashicorp/time", "constraint": "= 0.14.2"},
+    {"address": "registry.opentofu.org/hashicorp/tls", "constraint": "= 4.4.1"},
+    {"address": "registry.opentofu.org/microsoft/azuredevops", "constraint": "= 1.16.0"},
+    {"address": "registry.opentofu.org/microsoft/fabric", "constraint": "= 1.14.0"},
+    {"address": "registry.opentofu.org/microsoft/power-platform", "constraint": "= 4.2.0"}
+  ],
+  "registry_modules": []
+}
