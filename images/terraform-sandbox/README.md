@@ -94,11 +94,33 @@ A catalog root that cannot be baked is left out, and the manifest's `excluded` l
 
 Generation is deterministic, so the committed manifest's diff is the review surface. Generated provenance records where each value came from and carries no date; the commit does. The preparer verifies bytes, not signatures, so a reviewer still reads the module code at each new commit. The catalog policy approves the HashiCorp, Azure, Microsoft and `integrations/github` providers AVM modules use. It does not approve the community providers `chilicat/pkcs12` and `lonegunmanb/ephemeraltls`, which need their own review. The `random` profile manifests are not generated: each pins one provider beside its engine version and changes only when the engine does.
 
+### Azure platform provider image
+
+[dependencies.opentofu-platform.policy.json](dependencies.opentofu-platform.policy.json) and its generated [manifest](dependencies.opentofu-platform.json) define a separate, opt-in OpenTofu image, tagged `maf-opentofu:1.12.6-platform-1`. The small seven-provider manifest stays independent. This policy explicitly approves the additional provider sources for this image alone and fixes one version per provider, including AzureRM 5.6.0; updating it requires a policy edit, regeneration and a new image revision.
+
+| Providers | Pinned versions | Purpose |
+| --- | --- | --- |
+| `azure/azapi`, `hashicorp/azurerm` | 2.12.0, 5.6.0 | Azure resources, including Data Factory, Foundry and Power BI Embedded |
+| `hashicorp/local`, `hashicorp/null`, `hashicorp/random`, `hashicorp/time`, `hashicorp/tls` | 2.9.1, 3.3.2, 3.9.1, 0.14.2, 4.4.1 | Supporting resources |
+| `databricks/databricks` | 1.132.0 | Databricks workspaces, jobs and Unity Catalog |
+| `hashicorp/azuread` | 3.9.0 | Entra directory objects |
+| `microsoft/fabric` | 1.14.0 | Fabric and Power BI content, including reports and semantic models |
+| `microsoft/azuredevops` | 1.16.0 | Azure DevOps projects and resources |
+| `microsoft/power-platform` | 4.2.0 | Power Platform environments; separate from Power BI content |
+
+All identities use `registry.opentofu.org`. The image contains no registry modules or AVM graph, no additional Foundry or Power BI provider, and no alternative provider versions. Local modules can use the baked providers. It supports offline initialization and validation, not plan, apply or authenticated service checks. A provider's inclusion does not qualify every resource it exposes. Provider binaries execute only inside the selected sandbox image.
+
+The registry does not supply GPG keys for the pinned Databricks, Fabric and Power Platform downloads. The generator cross-checks registry download digests against release SHA256SUMS and preparation verifies the archive bytes; neither step verifies release signatures or establishes signer trust. [USAGE.md](USAGE.md#build-the-opentofu-platform-image) covers building, importing and checking this image. The `platform` input to `terraform-live.yml` opts into its build and Docker checks on manual dispatch; push and nightly runs retain their existing image set.
+
 ## Verification
 
 The deterministic package tests need neither Docker nor installed engine binaries. `tests/test_terraform_dependencies.py` covers TLS receiver controls, policy refusals, artifact integrity, graph verification and archive bounds. The receiver accepts the negative controls under unrestricted requests before the preparer refuses them. DNS-private refusal tests are separate from the local TLS receiver, whose dial address and trust root are deliberately replaced by the test fixture. `tests/test_terraform_runner_modules.py` checks how the launcher reads module calls and builds records, without an engine. The `live_build` tests in `tests/test_terraform_image_build.py` build and check custom provider profiles for both engines.
 
 The engine suite, `packages/maf-sandbox-terraform/tests/test_terraform_docker.py`, runs real CLI calls against the two `random` profile images, checks the daemon after each call, and also executes [test_runner.py](test_runner.py) inside each Linux image to exercise bounded pipes, deadlines, environment isolation, and lock behavior.
+
+[test_opentofu_platform_offline.py](../../tests/test_opentofu_platform_offline.py) validates one resource root each for Azure, Databricks, Fabric and Azure DevOps through the OpenTofu tool, and rejects an unsupported resource argument for each. It checks source nonmutation, Docker network isolation and container disposal. ACAS uses the same roots when explicitly configured; a skipped ACAS leg supplies no import or execution evidence.
+
+The platform image was built locally on 2026-09-19: Docker reported 1,497,729,174 bytes (about 1.50 GB), its offline initialization probe passed for all 12 provider pins, and all eight Docker resource cases passed. Manifest regeneration with `--check` passed. This measures the local image and Docker adapter, not an ACAS disk import or a GitHub Actions run; ACAS import and runtime measurement remain tracked by [#1332](https://github.com/sokolaidev/maf-extensions/issues/1332).
 
 The prepared suite, `tests/test_terraform_dependencies_docker.py`, runs for both engines against a prepared image and its exported preparation. It verifies provider/module initialization, correct and mismatched readonly locks, missing dependencies, source nonmutation, daemon-observed network mode and disposal. A separate Docker receiver accepts direct HTTP and raw CONNECT controls over bridge networking before the identical controls are denied inside CLOSED adapter sandboxes. This is Docker evidence; ACAS and WSLC have not been live-qualified for this preparation profile.
 

@@ -49,11 +49,18 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
     workflow = SCHEDULED[name]
     assert workflow["permissions"] == {"contents": "read"}
     reporter = workflow["jobs"]["report-failure"]
-    source = reporter["needs"]
-    assert set(workflow["jobs"]) == {source, "report-failure"}
-    assert reporter["if"] == f"always() && needs.{source}.result == 'failure'"
+    sources = reporter["needs"]
+    if isinstance(sources, str):
+        sources = [sources]
+    assert set(workflow["jobs"]) == {*sources, "report-failure"}
+    condition = " || ".join(f"needs.{source}.result == 'failure'" for source in sources)
+    if len(sources) > 1:
+        condition = f"({condition})"
+    assert reporter["if"] == f"always() && {condition}"
     assert reporter["permissions"] == {"contents": "read", "issues": "write"}
-    assert workflow["jobs"][source].get("permissions", {}).get("issues") is None
+    assert all(
+        workflow["jobs"][source].get("permissions", {}).get("issues") is None for source in sources
+    )
     assert "environment" not in reporter
     assert reporter["runs-on"] == "ubuntu-latest"
     assert reporter["timeout-minutes"] == 5
@@ -63,6 +70,21 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
     assert checkout["with"]["persist-credentials"] is False
     assert reporter["steps"][-1]["env"]["GH_TOKEN"] == "${{ github.token }}"
     reporter_arguments(name)
+
+
+def test_opentofu_platform_build_is_opt_in_and_reports_failures():
+    workflow = SCHEDULED["terraform-live.yml"]
+    triggers = workflow.get("on", workflow.get(True, {}))
+    option = triggers["workflow_dispatch"]["inputs"]["platform"]
+    assert option["type"] == "boolean" and option["default"] is False
+    job = workflow["jobs"]["opentofu-platform"]
+    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.platform"
+    assert "opentofu-platform" in workflow["jobs"]["report-failure"]["needs"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "dependencies.opentofu-platform.json --check" in commands
+    assert "MANIFEST=dependencies.opentofu-platform.json" in commands
+    assert "pytest -q tests/test_opentofu_platform_offline.py" in commands
+    assert job["env"]["MAF_OPENTOFU_PLATFORM_IMAGE"]
 
 
 def test_workflow_trackers_are_distinct_and_keep_the_existing_docker_marker():
