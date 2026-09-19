@@ -250,7 +250,7 @@ def test_multiple_provider_lines_generate_stable_pins(monkeypatch, tmp_path, eng
     policy_path, output = tmp_path / "policy.json", tmp_path / "manifest.json"
     policy_path.write_text(json.dumps(policy))
     output.write_text(generator.render(document) + "\n")
-    monkeypatch.setattr(generator, "dry_run", lambda value: prep.checked_manifest(value))
+    monkeypatch.setattr(generator, "dry_run", prep.checked_manifest)
     monkeypatch.setattr(
         sys, "argv", ["manifest", "--policy", str(policy_path), "--output", str(output), "--check"]
     )
