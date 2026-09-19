@@ -144,7 +144,13 @@ def assess(
     ceilings: dict[str, dict[tuple[int, ...], tuple[str, ...]]],
     published: dict[str, list[str]],
 ) -> list[Finding]:
-    """Place every declared ceiling against what its distribution publishes."""
+    """Place every declared ceiling against what its distribution publishes.
+
+    A distribution on two ceilings is walked once per ceiling, and the walks overlap only above
+    the higher one: everything between the two ends the higher walk at its first `admits`,
+    before a document is asked for. So the reads this repeats are the ones a release above
+    *every* declared ceiling costs, which is a handful and not worth a cache.
+    """
     findings: list[Finding] = []
     for distribution in sorted(ceilings):
         for ceiling, declared_by in sorted(ceilings[distribution].items()):

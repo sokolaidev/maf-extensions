@@ -203,6 +203,23 @@ class TestPlacingACeilingAgainstTheIndex:
         # 1.18.0 and everything under it is admitted, so no document is fetched for it.
         assert asked == ["1.20.0", "1.19.0"]
 
+    def test_two_ceilings_repeat_only_the_reads_above_the_higher_one(self, monkeypatch):
+        """What says a cache is not worth having: the walks overlap by exactly the releases
+        above *every* declared ceiling, because each release between the two ends the higher
+        walk at its first `admits` before a document is asked for."""
+        asked: list[str] = []
+
+        def _record(_distribution: str, released: str) -> bool:
+            asked.append(released)
+            return False
+
+        monkeypatch.setattr(check, "settled", _record)
+        check.assess(
+            {_CORE: {(1, 19): ("a/pyproject.toml",), (1, 20): ("b/pyproject.toml",)}},
+            {_CORE: ["1.20.0", "1.19.0", "1.18.0"]},
+        )
+        assert asked == ["1.20.0", "1.19.0", "1.20.0"]
+
 
 class TestWhatTheRunSays:
     @staticmethod
