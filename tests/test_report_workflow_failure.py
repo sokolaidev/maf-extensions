@@ -162,6 +162,8 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
         ):
             assert guidance in body["body"]
     if not existing:
+        if name == "terraform-live.yml":
+            assert "optional OpenTofu platform image (when platform=true)" in body["body"]
         assert body["title"] == argv[argv.index("--title") + 1]
         assert marker in body["body"]
         assert argv[argv.index("--reproduce") + 1] in body["body"]

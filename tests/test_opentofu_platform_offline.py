@@ -29,7 +29,17 @@ BACKENDS = [
     pytest.param(
         "acas",
         marks=pytest.mark.skipif(
-            not ACAS_IMAGE or not os.environ.get("ACAS_SANDBOX_ENDPOINT"),
+            not ACAS_IMAGE
+            or not all(
+                os.environ.get(name)
+                for name in (
+                    "ACAS_SANDBOX_ENDPOINT",
+                    "ACAS_SANDBOX_SUBSCRIPTION_ID",
+                    "ACAS_SANDBOX_RESOURCE_GROUP",
+                    "ACAS_SANDBOX_GROUP",
+                    "ACAS_SANDBOX_REGISTRY",
+                )
+            ),
             reason="needs MAF_OPENTOFU_PLATFORM_ACAS_IMAGE and ACAS_SANDBOX_*",
         ),
     ),

@@ -42,7 +42,18 @@ BACKENDS = [
     pytest.param(
         "acas",
         marks=pytest.mark.skipif(
-            not ACAS_IMAGE or not ACAS_ENDPOINT or not (PREPARED / "receipt.json").is_file(),
+            not ACAS_IMAGE
+            or not all(
+                os.environ.get(name)
+                for name in (
+                    "ACAS_SANDBOX_ENDPOINT",
+                    "ACAS_SANDBOX_SUBSCRIPTION_ID",
+                    "ACAS_SANDBOX_RESOURCE_GROUP",
+                    "ACAS_SANDBOX_GROUP",
+                    "ACAS_SANDBOX_REGISTRY",
+                )
+            )
+            or not (PREPARED / "receipt.json").is_file(),
             reason="needs MAF_TERRAFORM_AVM_ACAS_IMAGE, ACAS_SANDBOX_* and MAF_TERRAFORM_AVM_DIR",
         ),
     ),
