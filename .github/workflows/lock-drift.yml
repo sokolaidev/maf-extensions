@@ -1,8 +1,17 @@
 name: Lockfile drift
 
-# Asks whether `uv.lock` still holds the newest agent-framework release the declared ranges
-# admit. The offline suite runs under `uv sync --locked`, so the locked version is the one it
-# asserts against; an adopter resolves the newest `>=1.13.0,<2` admits.
+# Asks two questions about the agent-framework this repository runs on, and they fail
+# differently.
+#
+# **Is `uv.lock` behind the declared ranges?** The offline suite runs under `uv sync --locked`,
+# so the locked version is the one it asserts against; an adopter resolves the newest those
+# ranges admit. Clearing that red is one `uv lock`.
+#
+# **Are the declared ranges behind the index?** The question above re-resolves *inside* those
+# ranges, so a ceiling below the next minor puts its answer out of reach: while every package
+# caps below a minor, nothing a re-resolve can touch goes past the one under it, and the release
+# nobody adopted is announced by nothing (#1315). Clearing that red is an adoption — a floor
+# raised in every package that declares it, and a release each.
 #
 # **`.github/dependabot.yml` proposes the refresh; this reports whether one landed.** The
 # question is the lockfile's state, so a Dependabot that proposes nothing reds this exactly as
@@ -32,7 +41,7 @@ concurrency:
 
 jobs:
   framework:
-    name: uv.lock holds the newest agent-framework the ranges admit
+    name: The lockfile and the ranges both keep up with agent-framework
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,6 +69,16 @@ jobs:
           set -euo pipefail
           python3 scripts/check_locked_framework.py "$RUNNER_TEMP/uv.lock.committed" uv.lock \
             | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Runs whatever the steps above decided. The two questions are independent, and a lock
+      # behind its range is exactly the run where a range behind the index matters most — so
+      # neither red may hide the other. This one reads the manifests, which the re-resolve
+      # above leaves alone.
+      - name: Say whether the index has moved past the declared ceilings
+        if: "!cancelled()"
+        run: |
+          set -euo pipefail
+          python3 scripts/check_framework_ceiling.py | tee -a "$GITHUB_STEP_SUMMARY"
 
   report-failure:
     name: Report lockfile drift failure

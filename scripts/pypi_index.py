@@ -207,6 +207,19 @@ def version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.group("release").split("."))
 
 
+def is_prerelease(text: str) -> bool:
+    """Whether ``text`` is a pre-release or a development release.
+
+    A resolver does not select one for a range that does not ask for it, so a check measuring
+    what an adopter actually gets has to tell it from a final release. A post-release is final —
+    the same release remade — and so is a local version, and neither answers True.
+    """
+    match = _PEP440.match(text)
+    if match is None:
+        raise ValueError(f"{text!r} is not a PEP 440 version")
+    return bool(match.group("pre_letter")) or match.group("dev_number") is not None
+
+
 def sort_key(text: str) -> tuple[object, ...]:
     """PEP 440's ordering: epoch, release, then dev before pre before final before post.
 
