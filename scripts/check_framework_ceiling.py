@@ -4,10 +4,10 @@
 
 `check_locked_framework.py` asks whether `uv.lock` holds the newest release the declared ranges
 **admit**, and re-resolves inside those ranges to find out. A ceiling below the next minor puts
-the answer out of that question's reach: while every package caps at `<1.19`, nothing a
-re-resolve can reach goes past 1.18.x, so the run is green and the release nobody has adopted is
-never announced (#1315). This asks the other half — whether the index carries a release the
-declared ranges exclude.
+the answer out of that question's reach: while every package caps below a minor, nothing a
+re-resolve can reach goes past the one under it, so the run is green and the release nobody has
+adopted is announced by nothing (#1315). This asks the other half — whether the index carries a
+release the declared ranges exclude.
 
 **The two reds call for different work**, which is why this is a separate entry point rather
 than another branch of that one. *The lock is behind the range* is one `uv lock` command. *The
