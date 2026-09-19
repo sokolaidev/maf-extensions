@@ -13,17 +13,20 @@ name: Lockfile drift
 # nobody adopted is announced by nothing (#1315). Clearing that red is an adoption — a floor
 # raised in every package that declares it, and a release each.
 #
-# **`.github/dependabot.yml` proposes the refresh; this reports whether one landed.** The
-# question is the lockfile's state, so a Dependabot that proposes nothing reds this exactly as
-# an unmerged proposal does — and its uv updater has an open defect on workspace repositories
-# (dependabot-core#14004), which is this repository's shape. Monthly against its weekly, so a
-# red means a month with nothing landing rather than a proposal a day old.
+# **`.github/dependabot.yml` proposes the refresh; the first question reports whether one
+# landed.** What it asks is the lockfile's state, so a Dependabot that proposes nothing reds it
+# exactly as an unmerged proposal does — and its uv updater has an open defect on workspace
+# repositories (dependabot-core#14004), which is this repository's shape. Monthly against its
+# weekly, so a red means a month with nothing landing rather than a proposal a day old. The bot
+# is blind to the second question for the same reason the re-resolve is: it rewrites pinned
+# versions, and every framework declaration here is a range.
 #
-# **`uv` decides what the newest admitted release is**, so this re-resolves and compares two
-# lockfiles rather than re-deriving the range against the index. Nothing is committed and no
-# pull request is opened: a branch pushed by this workflow's own token has its required checks
-# held at `action_required` (docs/maintainers.md), so a person opens the refresh and the full
-# gate runs on it.
+# **`uv` decides what the newest admitted release is**, so the first question re-resolves and
+# compares two lockfiles rather than re-deriving the range against the index. Nothing is
+# committed and no pull request is opened: a branch pushed by this workflow's own token has its
+# required checks held at `action_required` (docs/maintainers.md), so a person opens the refresh
+# and the full gate runs on it. The second question reads the index directly, because what is
+# newest *published* is not something a resolve held inside the ranges can answer.
 on:
   schedule:
     # 04:40 UTC on the 1st: off the top of the hour, and clear of the daily conformance run and
