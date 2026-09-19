@@ -87,6 +87,19 @@ class TestTheDefectItExistsFor:
         source = 'blobs = [\n    b"first"\n    b"second",\n    b"other",\n]\n'
         assert len(check.findings(source, "x.py")) == 1
 
+    def test_an_element_that_is_an_expression_is_reported(self):
+        """The element need not *be* the literals — a `+` chain ending in two of them is the same.
+
+        `scripts/check_title_diff.py` had this shape while the gate was green.
+        """
+        source = 'lines = [\n    "start " + name\n    + "first half "\n    "second half",\n]\n'
+        assert [line.split(":")[1] for line in check.findings(source, "x.py")] == ["3"]
+
+    def test_a_collection_inside_a_replacement_field_is_reported(self):
+        """A list written inside `f"{…}"` loses a comma the same way any other one does."""
+        source = "shown = [\n    f\"{['first' 'second']}\",\n]\n"
+        assert len(check.findings(source, "x.py")) == 1
+
 
 class TestWhatItLeavesAlone:
     """Every deliberate form. Each of these exists in this repository, which is the point."""
@@ -115,6 +128,19 @@ class TestWhatItLeavesAlone:
 
     def test_a_call_argument_may_be_written_in_parts(self):
         source = 'print(\n    "first half "\n    "second half",\n    file=sys.stderr,\n)\n'
+        assert check.findings(source, "x.py") == []
+
+    def test_a_call_that_is_itself_an_element_keeps_that_freedom(self):
+        """The nearest comma-separated container owns the run, and here it is the call.
+
+        44 of this repository's wrapped messages sit exactly here; reading them as elements of
+        the enclosing list is what would make the check unusable.
+        """
+        source = 'cases = [\n    case(\n        "first half "\n        "second half",\n    ),\n]\n'
+        assert check.findings(source, "x.py") == []
+
+    def test_a_dict_nested_in_a_list_keeps_it_too(self):
+        source = 'rows = [\n    {"key": "first half "\n     "second half"},\n    "other",\n]\n'
         assert check.findings(source, "x.py") == []
 
     def test_a_literal_inside_a_replacement_field_is_not_a_second_part(self):

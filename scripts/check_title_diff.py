@@ -318,8 +318,10 @@ def assess(
             valid_titles,
             "valid title prefixes are: "
             + valid_prefixes
-            + "; if the behavior change is intentional, use a behavior type; otherwise move the "
-            "executable changes to a separate pull request",
+            + (
+                "; if the behavior change is intentional, use a behavior type; otherwise move "
+                "the executable changes to a separate pull request"
+            ),
         ]
     return []
 
