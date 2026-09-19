@@ -372,6 +372,55 @@ class TestEveryVersionAnIndexCarriesIsReported:
             index.sort_key(nonsense)
 
 
+class TestAnEpochIsAboveEveryBoundWrittenWithoutOne:
+    """`version` answers the release segment, so an epoch has to be asked for separately or a
+    reader places `2!0.1` under `<2` — and PEP 440 puts it above."""
+
+    @pytest.mark.parametrize(
+        ("released", "expected"), [("1.0.0", 0), ("2!0.1", 2), ("0!1.0", 0), ("10!1.0.0", 10)]
+    )
+    def test_the_epoch_is_read_and_defaults_to_zero(self, released: str, expected: int):
+        assert index.epoch(released) == expected
+
+    def test_the_release_segment_alone_would_place_it_under_the_bound(self):
+        # The pair this exists to keep apart, and why a caller has to ask both.
+        assert index.admits(index.version("2!0.1"), (2,))
+        assert index.epoch("2!0.1") != 0
+
+    def test_it_sorts_above_every_zero_epoch_release(self):
+        assert index.sort_key("2!0.1") > index.sort_key("999.0.0")
+
+    @pytest.mark.parametrize("nonsense", ["latest", "", "v"])
+    def test_something_that_is_not_a_version_raises(self, nonsense: str):
+        with pytest.raises(ValueError):
+            index.epoch(nonsense)
+
+
+class TestAPreReleaseIsNotWhatAnAdopterResolves:
+    """`uv` does not select one for a range that did not ask for it, so a check measuring what
+    an adopter actually gets has to tell it from a final release."""
+
+    @pytest.mark.parametrize("released", ["1.0.0a1", "1.0.0b2", "1.0.0rc1", "1.0.0.dev3"])
+    def test_a_pre_or_dev_release_is_named_as_one(self, released: str):
+        assert index.is_prerelease(released)
+
+    @pytest.mark.parametrize("released", ["1.0.0", "1.0.0.post1", "1.0.0+local", "2!0.1"])
+    def test_a_final_a_post_and_a_local_release_are_not(self, released: str):
+        """A post-release is the same release remade, and a local version is one relabelled;
+        both are what a range resolves to, so neither may be skipped as a pre-release."""
+        assert not index.is_prerelease(released)
+
+    def test_a_development_post_release_is_still_a_development_one(self):
+        # `sort_key` places `1.0.0.post1.dev1` below `1.0.0.post1`, and it is not a release
+        # anybody resolves — the `post` must not be read as making it final.
+        assert index.is_prerelease("1.0.0.post1.dev1")
+
+    @pytest.mark.parametrize("nonsense", ["latest", "", "v"])
+    def test_something_that_is_not_a_version_raises(self, nonsense: str):
+        with pytest.raises(ValueError):
+            index.is_prerelease(nonsense)
+
+
 class TestWhichIndexesAreRead:
     """The checks read exactly what `uv` would resolve from: its variables, in its order.
 

@@ -63,14 +63,19 @@ def _requirement_name(requirement: str) -> str:
     return head
 
 
-def ceiling_of(requires_dist: list[str]) -> tuple[int, ...] | None:
-    """The `<Y` bound the entry for maf-sandbox declares, or None if it names no upper bound.
+def ceiling_of(requires_dist: list[str], distribution: str = _CORE) -> tuple[int, ...] | None:
+    """The `<Y` bound the entry for ``distribution`` declares, or None if it names no upper bound.
 
     Order-independent by necessity, and `<=` is deliberately not a match: it bounds inclusively
     and means something this function would misreport.
+
+    The distribution is a parameter rather than this module's `_CORE` because the same parse
+    reads a range this repository *declares*, not only one PyPI hands back —
+    `check_framework_ceiling.py` asks it what ceiling each package caps `agent-framework-core`
+    at. Every caller here still means the core, so it stays the default.
     """
     for requirement in requires_dist:
-        if _requirement_name(requirement) != _CORE:
+        if _requirement_name(requirement) != distribution:
             continue
         # The name is glued to the first clause, so strip it before splitting: `maf-sandbox<0.7`
         # does not start with `<`, and a parser that forgets this finds no ceiling and passes.
