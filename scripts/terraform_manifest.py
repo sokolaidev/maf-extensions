@@ -274,14 +274,15 @@ class Resolution:
         # Preparation bakes registry modules for Terraform only, so a policy may not ask.
         if self.engine != "terraform" and (policy["registry_modules"] or "catalog" in policy):
             raise ValueError(f"registry modules cannot be baked for {self.engine}")
-        self.bounds: dict[str, str] = {}
+        self.bounds: dict[str, list[str]] = {}
         for entry in policy["providers"]:
             exact_keys(entry, {"address", "constraint"}, "provider")
             address = full_address(entry["address"], "provider", modules=False, host=self.host)
-            if address in self.bounds:
-                raise ValueError(f"duplicate provider in policy: {address}")
             satisfies("0.0.0", entry["constraint"], address)
-            self.bounds[address] = entry["constraint"]
+            bounds = self.bounds.setdefault(address, [])
+            if entry["constraint"] in bounds:
+                raise ValueError(f"duplicate provider in policy: {address} {entry['constraint']}")
+            bounds.append(entry["constraint"])
         self.explicit: dict[str, dict[str, Any]] = {}
         for entry in policy["registry_modules"]:
             exact_keys(entry, {"source", "constraint"}, "registry module")
@@ -436,14 +437,18 @@ class Resolution:
         for address, constraints in sorted(needs.items()):
             if address not in self.bounds:
                 raise ValueError(f"needs provider {address}, which the policy does not approve")
-            bound = [self.bounds[address], *sorted(set(constraints))]
+            bounds = self.bounds[address]
+            requirements = sorted(set(constraints))
             admitted = [
                 version
                 for version in self.provider(address)
-                if all(satisfies(version, item, address) for item in bound)
+                if any(satisfies(version, bound, address) for bound in bounds)
+                and all(satisfies(version, item, address) for item in requirements)
             ]
             if not admitted:
-                raise ValueError(f"no release of {address} satisfies {bound}")
+                raise ValueError(
+                    f"no release of {address} satisfies {requirements} under policy bounds {bounds}"
+                )
             picks[address] = max(admitted, key=release_key)
         return loaded, picks
 
@@ -457,8 +462,16 @@ class Resolution:
             for package, found in loaded.items():
                 directories.setdefault(package, set()).update(found)
             pins.update(picks.items())
-        for address, bound in self.bounds.items():
-            pins.add((address, newest_release(self.provider(address), bound, address)))
+        policy_pins: set[tuple[str, str]] = set()
+        for address, bounds in self.bounds.items():
+            for bound in bounds:
+                version = newest_release(self.provider(address), bound, address)
+                if (address, version) in policy_pins:
+                    raise ValueError(
+                        f"provider constraints resolve to the same version: {address} {version}"
+                    )
+                policy_pins.add((address, version))
+        pins.update(policy_pins)
         names: dict[Key, str] = {}
         for source, version in directories:
             name, system = source.split("/")[-2:]

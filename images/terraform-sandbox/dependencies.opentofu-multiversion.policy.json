@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {"address": "registry.opentofu.org/hashicorp/azurerm", "constraint": "~> 4.0"},
+    {"address": "registry.opentofu.org/hashicorp/azurerm", "constraint": "~> 5.0"}
+  ],
+  "registry_modules": []
+}

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "engine": "opentofu",
+  "providers": [
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "4.81.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v4.81.0/terraform-provider-azurerm_4.81.0_linux_amd64.zip",
+        "sha256": "faf96f32e7bd9bf4886a34635c93e80f512214228531e7548ac5b2e3b93a525d",
+        "provenance": "opentofu azurerm v4.81.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "5.6.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v5.6.0/terraform-provider-azurerm_5.6.0_linux_amd64.zip",
+        "sha256": "bd6b640a6c68a6ebb75c9f30c182f48fc4d65f008a3f3b25a99eecfbb230de19",
+        "provenance": "opentofu azurerm v5.6.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      }
+    }
+  ],
+  "modules": [],
+  "registry_modules": []
+}
