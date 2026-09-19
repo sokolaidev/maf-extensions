@@ -10,5 +10,5 @@
   "packages/maf-sandbox-terraform": "0.1.1",
   "packages/maf-sandbox-wslc": "0.22.0",
   "packages/maf-sandbox-drawio": "0.1.0",
-  "packages/maf-sandbox-tui": "0.1.0"
+  "packages/maf-sandbox-tui": "0.2.0"
 }
