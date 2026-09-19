@@ -350,8 +350,10 @@ class TestTurnOneActuallyAuthoredTheFile:
         """
         clean = _HEALTHY
         for line in (
-            '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never '
-            "used.\n",
+            (
+                '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never '
+                "used.\n"
+            ),
             '    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing the following required properties: "sku".\n',
         ):
             assert clean.count(line) == 2, f"the fixture moved: {line!r}"

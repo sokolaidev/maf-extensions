@@ -397,8 +397,10 @@ class TestBreaks:
         candidates = [("maf-sandbox-docker", "0.2.0"), ("maf-sandbox-docker", "0.6.0")]
         failures = check.breaks(Path("core.whl"), candidates, _breaks_docker_020)
         assert failures == [
-            "maf-sandbox-docker==0.2.0: ImportError: cannot import name 'CallerContext' "
-            "from 'maf_sandbox'"
+            (
+                "maf-sandbox-docker==0.2.0: ImportError: cannot import name 'CallerContext' "
+                "from 'maf_sandbox'"
+            )
         ]
 
     def test_only_the_broken_version_is_reported(self):

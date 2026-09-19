@@ -40,9 +40,11 @@ def assess(output: str, package: str, version: str) -> list[str]:
     if len(matches) == 1:
         return []
     return [
-        f"the published set has not caught up: expected exactly one installed match for "
-        f"{package} {version}, found: "
-        f"{', '.join(f'{name} {ver}' for name, ver in pairs) or 'none'}"
+        (
+            f"the published set has not caught up: expected exactly one installed match for "
+            f"{package} {version}, found: "
+            f"{', '.join(f'{name} {ver}' for name, ver in pairs) or 'none'}"
+        )
     ]
 
 

@@ -1587,9 +1587,11 @@ def test_registry_package_accepts_builtin_and_legacy_provider_requirements():
     [
         (
             "terraform.tf",
-            "terraform {\n  required_providers {\n    # pinned below\n    random = {\n"
-            '      source  = "hashicorp/random" # the only provider\n'
-            '      version = "~> 3.5"\n    }\n  }\n}\n',
+            (
+                "terraform {\n  required_providers {\n    # pinned below\n    random = {\n"
+                '      source  = "hashicorp/random" # the only provider\n'
+                '      version = "~> 3.5"\n    }\n  }\n}\n'
+            ),
         ),
         (
             "terraform.tf.json",

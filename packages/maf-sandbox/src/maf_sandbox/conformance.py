@@ -2443,8 +2443,10 @@ async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: flo
         [
             "sh",
             "-c",
-            f"curl -s -o /dev/null -w '%{{http_code}}' "
-            f"--max-time {_curl_max_time(exec_timeout)} {shlex.quote(url)}",
+            (
+                f"curl -s -o /dev/null -w '%{{http_code}}' "
+                f"--max-time {_curl_max_time(exec_timeout)} {shlex.quote(url)}"
+            ),
         ],
         working_directory=subject.working_directory,
         timeout=exec_timeout,
@@ -2566,8 +2568,11 @@ class ExecEgressMethodsSubject:
             [
                 "sh",
                 "-c",
-                f"curl -s -o /dev/null -w '%{{http_code}}' --max-time {_curl_max_time(timeout)} "
-                f"-X {shlex.quote(method)} {shlex.quote(url)}",
+                (
+                    f"curl -s -o /dev/null -w '%{{http_code}}' "
+                    f"--max-time {_curl_max_time(timeout)} "
+                    f"-X {shlex.quote(method)} {shlex.quote(url)}"
+                ),
             ],
             working_directory=self.working_directory,
             timeout=timeout,

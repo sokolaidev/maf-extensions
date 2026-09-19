@@ -183,8 +183,10 @@ def _assess_reply(reply: str) -> list[str]:
     """The half that proves the value reached the *model*, not merely the log."""
     if not _number(_GRAND_TOTAL).search(reply):
         return [
-            f"{_GRAND_TOTAL} is not in the reply as a number — the read-back may have happened, "
-            "but a total the model never states is a round trip that did not finish"
+            (
+                f"{_GRAND_TOTAL} is not in the reply as a number — the read-back may have happened, "
+                "but a total the model never states is a round trip that did not finish"
+            )
         ]
     return []
 
@@ -194,15 +196,19 @@ def _assess_landing(output: str) -> list[str]:
     landed = _LANDED.search(output)
     if landed is None:
         return [
-            "no measured 'Landed this turn in the outputs store' line — the sample did not "
-            "reach its final report"
+            (
+                "no measured 'Landed this turn in the outputs store' line — the sample did not "
+                "reach its final report"
+            )
         ]
     paths = _landed_paths(landed.group(1))
     if not any(_LANDED_PATH.match(path) for path in paths):
         return [
-            f"the host recorded landing {landed.group(1).strip()!r}, and none of those is a "
-            f"per-call folder holding {_SUMMARY_NAME!r} — either the declared output never "
-            "reached the sink, or it landed without this call's id"
+            (
+                f"the host recorded landing {landed.group(1).strip()!r}, and none of those is a "
+                f"per-call folder holding {_SUMMARY_NAME!r} — either the declared output never "
+                "reached the sink, or it landed without this call's id"
+            )
         ]
     return []
 
@@ -218,15 +224,19 @@ def _assess_read_of_the_landing(output: str) -> list[str]:
     read = _READ_OUT.search(output)
     if read is None:
         return [
-            "no measured 'Read out of the outputs store' line — the sample did not reach its "
-            "final report, so nothing says a read returned what was landed"
+            (
+                "no measured 'Read out of the outputs store' line — the sample did not reach its "
+                "final report, so nothing says a read returned what was landed"
+            )
         ]
     paths = _landed_paths(read.group(1))
     if not any(_LANDED_PATH.match(path) for path in paths):
         return [
-            f"no read returned the bytes landed at a per-call {_SUMMARY_NAME!r} — the "
-            "read-backs can then be a refusal quoting a name the model chose, which carries "
-            "whatever tokens that name was built out of"
+            (
+                f"no read returned the bytes landed at a per-call {_SUMMARY_NAME!r} — the "
+                "read-backs can then be a refusal quoting a name the model chose, which carries "
+                "whatever tokens that name was built out of"
+            )
         ]
     return []
 
@@ -252,9 +262,11 @@ def assess(output: str) -> list[str]:
     if split is None:
         return (
             [
-                "the run printed no block of what the outputs store returned — the total in the "
-                "reply is then a constant the model could recite, which is what the fence exists "
-                "to rule out"
+                (
+                    "the run printed no block of what the outputs store returned — the total in the "
+                    "reply is then a constant the model could recite, which is what the fence exists "
+                    "to rule out"
+                )
             ]
             + _assess_landing(output)
             + _assess_read_of_the_landing(output)

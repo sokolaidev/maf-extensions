@@ -184,6 +184,10 @@ cmd = "python scripts/check_md_code_blocks.py README.md 'packages/*/README.md' '
 help = "Refuse a documentation link or path that no longer resolves"
 cmd = "python scripts/check_doc_paths.py"
 
+[tool.poe.tasks.implicit-concat]
+help = "Refuse two literals in a list, tuple or set that read as a missing comma"
+cmd = "python scripts/check_implicit_concatenation.py"
+
 # Outside `gate`, and for the reason `md-blocks` is: the gate is hermetic, and this one asks
 # GitHub what a Status row's tracker actually says. It skips rather than fails without a token
 # or a network, so putting it in the sequence would add a step that is silent exactly when a
@@ -200,5 +204,5 @@ help = "Refuse a sample that cannot run on the core its own PEP 723 block names"
 cmd = "python scripts/check_samples_against_declared_core.py"
 
 [tool.poe.tasks.gate]
-help = "The full pre-PR gate: tests, lint, format, both pyright passes, doc references"
-sequence = ["test", "lint", "format", "types-packages", "types", "doc-paths"]
+help = "The full pre-PR gate: tests, lint, format, both pyright passes, doc references, commas"
+sequence = ["test", "lint", "format", "types-packages", "types", "doc-paths", "implicit-concat"]

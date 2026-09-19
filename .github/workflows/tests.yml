@@ -206,6 +206,13 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: uv run ruff format --check .
 
+      - name: Commas in collection literals
+        if: needs.changes.outputs.code == 'true'
+        # In this job rather than the suite that also runs it: two literals a reader would
+        # restore a comma into are worth reporting in the seconds this job takes, not at the
+        # end of the offline shard.
+        run: uv run python scripts/check_implicit_concatenation.py
+
       - name: Pre-commit (commit-msg stage)
         if: needs.changes.outputs.code == 'true'
         # The commit-msg guard against a clean fixture message, so the stage's entry and

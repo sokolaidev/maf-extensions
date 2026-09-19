@@ -21,7 +21,15 @@ from gate_tasks import packages_with_pyright  # noqa: E402
 _PYPROJECT = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 _TASKS = _PYPROJECT["tool"]["poe"]["tasks"]
 
-_GATE_MEMBERS = ["test", "lint", "format", "types-packages", "types", "doc-paths"]
+_GATE_MEMBERS = [
+    "test",
+    "lint",
+    "format",
+    "types-packages",
+    "types",
+    "doc-paths",
+    "implicit-concat",
+]
 
 
 class TestTheGate:
@@ -47,6 +55,12 @@ class TestTheGate:
         assert _TASKS["doc-paths"]["cmd"] == "python scripts/check_doc_paths.py", _TASKS[
             "doc-paths"
         ]
+
+    def test_the_comma_check_runs_the_script_it_names(self):
+        """Same second value as `doc-paths` above: a table whose `cmd` points elsewhere."""
+        assert _TASKS["implicit-concat"]["cmd"] == (
+            "python scripts/check_implicit_concatenation.py"
+        ), _TASKS["implicit-concat"]
 
     def test_the_enumerated_pass_is_wired_to_the_helper_it_is_pinned_against(self):
         """The task below pins what the helper *finds*; nothing pinned that poe calls it.
@@ -81,6 +95,21 @@ class TestTheGate:
             "maf-sandbox-tui",
             "maf-sandbox-wslc",
         ], found
+
+
+class TestTheCommaCheck:
+    """The gate member and the CI step must run the same script.
+
+    It is written twice — once as a poe task, once as a `tests.yml` step — and a contributor's
+    green local run only says something about CI while both name the same check.
+    """
+
+    def test_ci_runs_the_script_the_gate_member_names(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        command = _TASKS["implicit-concat"]["cmd"].removeprefix("python ")
+        assert f"uv run python {command}" in workflow, (
+            f"tests.yml runs no step for {command}; the check then gates only a local run."
+        )
 
 
 class TestTheMarkdownBlockLinter:

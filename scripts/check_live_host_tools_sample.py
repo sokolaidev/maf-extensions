@@ -241,9 +241,11 @@ def _assess_narrowing(output: str) -> list[str]:
     line = _line_containing(output, "folds to identities=")
     if line is None:
         return [
-            "act 4 did not report the narrowed registry — the way past the identity refusal is "
-            "a smaller surface registered from the start, and the sample runs it rather than "
-            "describing it"
+            (
+                "act 4 did not report the narrowed registry — the way past the identity refusal is "
+                "a smaller surface registered from the start, and the sample runs it rather than "
+                "describing it"
+            )
         ]
     failures: list[str] = []
     narrowed = _brace_set(_after(line, "folds to identities="))
@@ -269,8 +271,10 @@ def _assess_footer(output: str) -> list[str]:
     footer = _FOOTER.search(output)
     if footer is None:
         return [
-            "no 'Completed N of 4 acts. Acquired N sandbox(es).' line — the sample did not run "
-            "to completion"
+            (
+                "no 'Completed N of 4 acts. Acquired N sandbox(es).' line — the sample did not run "
+                "to completion"
+            )
         ]
     failures: list[str] = []
     if int(footer.group(1)) != 4:
