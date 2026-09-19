@@ -372,6 +372,30 @@ class TestEveryVersionAnIndexCarriesIsReported:
             index.sort_key(nonsense)
 
 
+class TestAnEpochIsAboveEveryBoundWrittenWithoutOne:
+    """`version` answers the release segment, so an epoch has to be asked for separately or a
+    reader places `2!0.1` under `<2` — and PEP 440 puts it above."""
+
+    @pytest.mark.parametrize(
+        ("released", "expected"), [("1.0.0", 0), ("2!0.1", 2), ("0!1.0", 0), ("10!1.0.0", 10)]
+    )
+    def test_the_epoch_is_read_and_defaults_to_zero(self, released: str, expected: int):
+        assert index.epoch(released) == expected
+
+    def test_the_release_segment_alone_would_place_it_under_the_bound(self):
+        # The pair this exists to keep apart, and why a caller has to ask both.
+        assert index.admits(index.version("2!0.1"), (2,))
+        assert index.epoch("2!0.1") != 0
+
+    def test_it_sorts_above_every_zero_epoch_release(self):
+        assert index.sort_key("2!0.1") > index.sort_key("999.0.0")
+
+    @pytest.mark.parametrize("nonsense", ["latest", "", "v"])
+    def test_something_that_is_not_a_version_raises(self, nonsense: str):
+        with pytest.raises(ValueError):
+            index.epoch(nonsense)
+
+
 class TestAPreReleaseIsNotWhatAnAdopterResolves:
     """`uv` does not select one for a range that did not ask for it, so a check measuring what
     an adopter actually gets has to tell it from a final release."""

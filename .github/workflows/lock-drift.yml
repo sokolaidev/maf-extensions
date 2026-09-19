@@ -104,6 +104,6 @@ jobs:
           python3 scripts/report_workflow_failure.py
           --marker '<!-- lock-drift-failure-tracker -->'
           --title 'Lockfile drift checks failed'
-          --reproduce 'Re-run the linked attempt, or dispatch lock-drift.yml against the failing commit. Inspect the first failed step and the version comparison in the run summary.'
-          --expected 'The lockfile holds the newest agent-framework releases admitted by the declared ranges.'
+          --reproduce 'Re-run the linked attempt, or dispatch lock-drift.yml against the failing commit. The job asks two questions and either can fail alone, so read the run summary rather than assuming the first: it carries the version comparison for one and the ceiling table for the other.'
+          --expected 'The lockfile holds the newest agent-framework releases admitted by the declared ranges, and no agent-framework release sits above a ceiling those ranges declare.'
           --packages maf-sandbox-bicep maf-sandbox-codeact

@@ -207,6 +207,20 @@ def version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.group("release").split("."))
 
 
+def epoch(text: str) -> int:
+    """The epoch ``text`` declares, or 0 where it declares none, which PEP 440 implies.
+
+    `version` answers the release segment alone, because that is what a ``<ceiling`` bound is
+    written as — and a bound written without an epoch is an epoch-0 bound. A release in a later
+    epoch is therefore *above* every such bound however small its release segment reads, so a
+    caller placing one against a ceiling has to ask this before `admits`.
+    """
+    match = _PEP440.match(text)
+    if match is None:
+        raise ValueError(f"{text!r} is not a PEP 440 version")
+    return int(match.group("epoch") or 0)
+
+
 def is_prerelease(text: str) -> bool:
     """Whether ``text`` is a pre-release or a development release.
 

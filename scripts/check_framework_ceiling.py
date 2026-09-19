@@ -1,35 +1,14 @@
-"""Say whether an agent-framework release sits above the ceiling this repository declares.
+"""Say whether an agent-framework release sits above a ceiling this repository declares.
 
     python scripts/check_framework_ceiling.py
 
-`check_locked_framework.py` asks whether `uv.lock` holds the newest release the declared ranges
-**admit**, and re-resolves inside those ranges to find out. A ceiling below the next minor puts
-the answer out of that question's reach: while every package caps below a minor, nothing a
-re-resolve can reach goes past the one under it, so the run is green and the release nobody has
-adopted is announced by nothing (#1315). This asks the other half — whether the index carries a
-release the declared ranges exclude.
+The complement of `check_locked_framework.py`, which asks whether `uv.lock` holds the newest
+release the declared ranges **admit** and re-resolves inside them to find out. A ceiling below
+the next minor puts a published release out of that question's reach (#1315), and the two reds
+want different work: a lockfile refresh there, an adoption here.
 
-**The two reds call for different work**, which is why this is a separate entry point rather
-than another branch of that one. *The lock is behind the range* is one `uv lock` command. *The
-range is behind the index* is an adoption: a floor raised in every package that declares it, a
-release each, and a re-measurement of whatever the new minor moved. Keeping them apart also
-keeps that script's contract — `uv` decides what is newest *admitted*, and nothing reaches the
-network — which asking what is newest *published* would break in both halves.
-
-**A red has to survive a CDN-cached index.** A version that has just published is visible to one
-endpoint minutes before another, so a release is announced only once the simple index *and* that
-version's own document both carry it. That costs at most one run — the schedule is monthly and
-there is a dispatch — and it buys a red a maintainer can reproduce rather than one that clears
-itself. The release held back is still named in the summary, so the run says what it saw.
-
-Pre-releases are not announced: `uv` does not select one for a range that did not ask for it, so
-a `1.20.0rc1` above a `<1.20` ceiling is not a release anyone here would resolve. A yanked one is
-not announced either, one step further along the same sentence.
-
-The ceilings come from the `pyproject.toml` manifests — the root and every package — which is
-where this repository makes its promise to adopters and what `uv.lock` resolves from. The
-samples declare the framework unbounded in their PEP 723 blocks, so they bound nothing and are
-deliberately not read here.
+Its own entry point because that script's contract is that `uv` decides what is newest admitted
+and that nothing reaches the network. This reads the index.
 """
 
 from __future__ import annotations
@@ -43,6 +22,7 @@ from check_locked_framework import FRAMEWORK
 from check_published_dependents_admit import ceiling_of
 from pypi_index import (
     admits,
+    epoch,
     fetch_published_versions,
     fetch_version_document,
     is_prerelease,
@@ -60,10 +40,11 @@ class Finding:
     distribution: str
     ceiling: tuple[int, ...]
     declared_by: tuple[str, ...]
-    #: The newest settled release above the ceiling, or None when nothing is above it.
+    #: The newest announceable release above the ceiling, or None when nothing is above it.
     announced: str | None
-    #: Releases above it that only one endpoint carries yet, newest first.
-    unsettled: tuple[str, ...]
+    #: Releases above it that only one endpoint carries yet, newest first. A yanked release is
+    #: not one of these: its state is settled and it will never become announceable.
+    unconfirmed: tuple[str, ...]
 
     def bound(self) -> str:
         """The ceiling as the `<Y` a manifest writes."""
@@ -79,7 +60,9 @@ def declared_ceilings(repo_root: Path) -> dict[str, dict[tuple[int, ...], tuple[
 
     `[dependency-groups]` and `[project.optional-dependencies]` are read beside
     `[project.dependencies]`: the root's dev group is where `agent-framework-openai` is declared
-    for the samples, and a bound there holds this repository exactly as a package's does.
+    for the samples, and a bound there holds this repository exactly as a package's does. A
+    sample's own PEP 723 block is not read — those declare the framework unbounded, so they
+    bound nothing.
     """
     found: dict[str, dict[tuple[int, ...], list[str]]] = {}
     manifests = [repo_root / "pyproject.toml", *sorted(repo_root.glob("packages/*/pyproject.toml"))]
@@ -109,35 +92,52 @@ def declared_ceilings(repo_root: Path) -> dict[str, dict[tuple[int, ...], tuple[
     }
 
 
-def settled(distribution: str, released: str) -> bool:
-    """Whether a second endpoint agrees ``released`` is published and has not been yanked.
+#: What a second endpoint can say about a release, and the three answers are acted on
+#: differently: only PUBLISHED is announceable, only UNCONFIRMED may clear on a re-run.
+PUBLISHED, YANKED, UNCONFIRMED = "published", "yanked", "unconfirmed"
 
-    The simple index is the fresher of the two and is what `uv` resolves from, so it is what
-    finds a candidate; the per-version document is what makes the finding reproducible. A
-    release only the simple index carries has just published, and the next run announces it.
+
+def confirmation(distribution: str, released: str) -> str:
+    """What ``released``'s own version document says about it.
+
+    The simple index is the fresher of the two endpoints and is what `uv` resolves from, so it
+    is what finds a candidate; this is what makes the finding reproducible. A release only the
+    simple index carries is UNCONFIRMED — it has just published, and the next run announces it.
+
+    A withdrawn one is YANKED rather than UNCONFIRMED, and the caller must keep them apart: no
+    resolver takes a yanked release, so it holds nothing back, and calling it unconfirmed would
+    promise a re-run that clears a state which never changes.
     """
     payload = fetch_version_document(distribution, released)
-    return payload is not None and not payload["info"].get("yanked")
+    if payload is None:
+        return UNCONFIRMED
+    return YANKED if payload["info"].get("yanked") else PUBLISHED
 
 
 def above(
     distribution: str, ceiling: tuple[int, ...], published: list[str]
 ) -> tuple[str | None, tuple[str, ...]]:
-    """The newest settled release of ``distribution`` above ``ceiling``, and what is unsettled.
+    """The newest announceable release of ``distribution`` above ``ceiling``, and what is not yet.
 
     ``published`` is newest-first, so the first release the ceiling *admits* ends the walk:
     everything below it is admitted too, and nothing further down can be above the bound.
     """
-    unsettled: list[str] = []
+    unconfirmed: list[str] = []
     for released in published:
         if is_prerelease(released):
             continue
-        if admits(version(released), ceiling):
-            return None, tuple(unsettled)
-        if settled(distribution, released):
-            return released, tuple(unsettled)
-        unsettled.append(released)
-    return None, tuple(unsettled)
+        # A later epoch is above every ceiling a manifest writes, because PEP 440 compares
+        # epoch first and a bound without one is epoch 0. Asked before `admits`, which reads
+        # the release segment alone and would place `2!0.1` under `<2` — and since an epoch
+        # sorts newest, that one release would end the walk and silence the distribution.
+        if epoch(released) == 0 and admits(version(released), ceiling):
+            return None, tuple(unconfirmed)
+        answer = confirmation(distribution, released)
+        if answer == PUBLISHED:
+            return released, tuple(unconfirmed)
+        if answer == UNCONFIRMED:
+            unconfirmed.append(released)
+    return None, tuple(unconfirmed)
 
 
 def assess(
@@ -154,8 +154,8 @@ def assess(
     findings: list[Finding] = []
     for distribution in sorted(ceilings):
         for ceiling, declared_by in sorted(ceilings[distribution].items()):
-            announced, unsettled = above(distribution, ceiling, published[distribution])
-            findings.append(Finding(distribution, ceiling, declared_by, announced, unsettled))
+            announced, unconfirmed = above(distribution, ceiling, published[distribution])
+            findings.append(Finding(distribution, ceiling, declared_by, announced, unconfirmed))
     return findings
 
 
@@ -172,7 +172,7 @@ def report(findings: list[Finding]) -> str:
         "document is not served yet. A just-published release reaches one endpoint before the "
         "other, so this run holds rather than announcing something a re-run might not find."
         for finding in findings
-        for released in finding.unsettled
+        for released in finding.unconfirmed
     )
     if not rows:
         # Named rather than summarised: a green run has to say what it placed, or a tree that

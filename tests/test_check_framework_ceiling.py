@@ -56,13 +56,22 @@ def _tree(tmp_path: Path, root: str, packages: dict[str, str]) -> Path:
 
 
 @pytest.fixture
-def settles(monkeypatch: pytest.MonkeyPatch):
-    """Decide which releases a second endpoint agrees on, without asking one."""
+def confirms(monkeypatch: pytest.MonkeyPatch):
+    """Say what the second endpoint answers for each release, without asking one.
 
-    def _settling(*settled: str) -> None:
-        monkeypatch.setattr(check, "settled", lambda _distribution, released: released in settled)
+    A release named in neither set answers UNCONFIRMED, which is the state a just-published one
+    is in — so a test that lists nothing is testing the endpoint-lag path.
+    """
 
-    return _settling
+    def _confirming(*published: str, yanked: tuple[str, ...] = ()) -> None:
+        def _answer(_distribution: str, released: str) -> str:
+            if released in published:
+                return check.PUBLISHED
+            return check.YANKED if released in yanked else check.UNCONFIRMED
+
+        monkeypatch.setattr(check, "confirmation", _answer)
+
+    return _confirming
 
 
 class TestReadingTheCeilingsThisRepositoryDeclares:
@@ -167,38 +176,53 @@ class TestThisRepositorysOwnManifests:
 
 
 class TestPlacingACeilingAgainstTheIndex:
-    def test_a_settled_release_above_the_ceiling_is_announced(self, settles):
-        settles("1.20.0")
+    def test_an_announceable_release_above_the_ceiling_is_announced(self, confirms):
+        confirms("1.20.0")
         assert check.above(_CORE, (1, 19), _PUBLISHED) == ("1.20.0", ())
 
-    def test_nothing_above_the_ceiling_announces_nothing(self, settles):
-        settles(*_PUBLISHED)
+    def test_nothing_above_the_ceiling_announces_nothing(self, confirms):
+        confirms(*_PUBLISHED)
         assert check.above(_CORE, (1, 21), _PUBLISHED) == (None, ())
 
-    def test_a_prerelease_above_the_ceiling_is_not_announced(self, settles):
+    def test_a_prerelease_above_the_ceiling_is_not_announced(self, confirms):
         # uv does not select one for a range that did not ask for it, so it is not a release
         # anybody here would resolve — and announcing it would ask for an adoption of nothing.
-        settles("1.20.0rc1", "1.19.0")
+        confirms("1.20.0rc1", "1.19.0")
         assert check.above(_CORE, (1, 19), ["1.20.0rc1", "1.19.0"]) == ("1.19.0", ())
 
-    def test_a_yanked_release_is_passed_over_for_the_one_below_it(self, settles):
-        # `settled` answers False for a yanked release: it is on the index and no resolver will
-        # take it, so it holds nothing back.
-        settles("1.19.0")
-        assert check.above(_CORE, (1, 19), ["1.20.0", "1.19.0"]) == ("1.19.0", ("1.20.0",))
+    def test_a_yanked_release_is_passed_over_for_the_one_below_it(self, confirms):
+        # And it is *not* reported as unconfirmed: no resolver takes it, so it holds nothing
+        # back, and the endpoint-lag note promises a re-run that would never clear it.
+        confirms("1.19.0", yanked=("1.20.0",))
+        assert check.above(_CORE, (1, 19), ["1.20.0", "1.19.0"]) == ("1.19.0", ())
 
-    def test_a_release_only_one_endpoint_carries_is_held_and_named(self, settles):
-        settles()
+    def test_a_yanked_release_with_nothing_under_it_announces_nothing_at_all(self, confirms):
+        confirms(yanked=("1.20.0",))
+        assert check.above(_CORE, (1, 19), ["1.20.0", "1.18.0"]) == (None, ())
+
+    def test_a_release_only_one_endpoint_carries_is_held_and_named(self, confirms):
+        confirms()
         assert check.above(_CORE, (1, 19), ["1.20.0", "1.19.0"]) == (None, ("1.20.0", "1.19.0"))
+
+    def test_a_later_epoch_is_above_every_ceiling_a_manifest_writes(self, confirms):
+        # `version` answers the release segment alone, so `2!0.1` reads as (0, 1) and a naive
+        # `admits` places it under `<2`. It also sorts newest, so that one release would end
+        # the walk on its first step and report the distribution current.
+        confirms("2!0.1")
+        assert check.above(_CORE, (2,), ["2!0.1", "1.19.0"]) == ("2!0.1", ())
+
+    def test_an_epoch_release_does_not_end_the_walk_for_the_ones_under_it(self, confirms):
+        confirms("1.19.0", yanked=("2!0.1",))
+        assert check.above(_CORE, (1, 19), ["2!0.1", "1.19.0"]) == ("1.19.0", ())
 
     def test_the_walk_stops_at_the_first_release_the_ceiling_admits(self, monkeypatch):
         asked: list[str] = []
 
-        def _record(_distribution: str, released: str) -> bool:
+        def _record(_distribution: str, released: str) -> str:
             asked.append(released)
-            return False
+            return check.UNCONFIRMED
 
-        monkeypatch.setattr(check, "settled", _record)
+        monkeypatch.setattr(check, "confirmation", _record)
         check.above(_CORE, (1, 19), _PUBLISHED)
         # 1.18.0 and everything under it is admitted, so no document is fetched for it.
         assert asked == ["1.20.0", "1.19.0"]
@@ -209,11 +233,11 @@ class TestPlacingACeilingAgainstTheIndex:
         walk at its first `admits` before a document is asked for."""
         asked: list[str] = []
 
-        def _record(_distribution: str, released: str) -> bool:
+        def _record(_distribution: str, released: str) -> str:
             asked.append(released)
-            return False
+            return check.UNCONFIRMED
 
-        monkeypatch.setattr(check, "settled", _record)
+        monkeypatch.setattr(check, "confirmation", _record)
         check.assess(
             {_CORE: {(1, 19): ("a/pyproject.toml",), (1, 20): ("b/pyproject.toml",)}},
             {_CORE: ["1.20.0", "1.19.0", "1.18.0"]},
@@ -223,9 +247,9 @@ class TestPlacingACeilingAgainstTheIndex:
 
 class TestWhatTheRunSays:
     @staticmethod
-    def _finding(announced: str | None, unsettled: tuple[str, ...] = ()) -> object:
+    def _finding(announced: str | None, unconfirmed: tuple[str, ...] = ()) -> object:
         return check.Finding(
-            _CORE, (1, 19), ("packages/maf-sandbox/pyproject.toml",), announced, unsettled
+            _CORE, (1, 19), ("packages/maf-sandbox/pyproject.toml",), announced, unconfirmed
         )
 
     def test_a_current_ceiling_says_so_rather_than_printing_an_empty_table(self):
@@ -280,17 +304,19 @@ class TestWhatTheRunSays:
 class TestConfirmingARelease:
     """A red that a re-run cannot reproduce is worse than a red one run late."""
 
-    def test_a_release_both_endpoints_carry_is_settled(self, monkeypatch):
+    def test_a_release_both_endpoints_carry_is_announceable(self, monkeypatch):
         monkeypatch.setattr(check, "fetch_version_document", lambda *_: {"info": {"yanked": False}})
-        assert check.settled(_CORE, "1.20.0") is True
+        assert check.confirmation(_CORE, "1.20.0") == check.PUBLISHED
 
     def test_a_release_the_version_document_does_not_serve_yet_is_not(self, monkeypatch):
         monkeypatch.setattr(check, "fetch_version_document", lambda *_: None)
-        assert check.settled(_CORE, "1.20.0") is False
+        assert check.confirmation(_CORE, "1.20.0") == check.UNCONFIRMED
 
-    def test_a_yanked_release_is_not_settled(self, monkeypatch):
+    def test_a_yanked_release_is_its_own_answer_not_an_unconfirmed_one(self, monkeypatch):
+        # The two are both "not announceable" and must not be one value: an unconfirmed release
+        # is what a re-run resolves, and a yanked one is a state that never changes.
         monkeypatch.setattr(check, "fetch_version_document", lambda *_: {"info": {"yanked": True}})
-        assert check.settled(_CORE, "1.20.0") is False
+        assert check.confirmation(_CORE, "1.20.0") == check.YANKED
 
 
 class TestTheCommandLine:
@@ -304,15 +330,15 @@ class TestTheCommandLine:
 
         return _publishing
 
-    def test_a_ceiling_the_index_has_not_passed_is_green(self, index, settles, capsys):
+    def test_a_ceiling_the_index_has_not_passed_is_green(self, index, confirms, capsys):
         index(["1.18.0"])
-        settles("1.18.0")
+        confirms("1.18.0")
         assert check.main(["check_framework_ceiling.py"]) == 0
         assert "No agent-framework release sits above" in capsys.readouterr().out
 
-    def test_a_release_above_the_ceiling_fails_and_annotates(self, index, settles, capsys):
+    def test_a_release_above_the_ceiling_fails_and_annotates(self, index, confirms, capsys):
         index(_PUBLISHED)
-        settles("1.20.0")
+        confirms("1.20.0")
         assert check.main(["check_framework_ceiling.py"]) == 1
         captured = capsys.readouterr()
         assert "| `agent-framework-core` | `<1.19` | 1.20.0 |" in captured.out
