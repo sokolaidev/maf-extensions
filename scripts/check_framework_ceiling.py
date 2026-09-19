@@ -216,8 +216,9 @@ def annotation(findings: list[Finding]) -> str:
     return (
         f"::error::agent-framework has released above a ceiling declared here: {listed}. The "
         "declared ranges exclude it, so the lockfile drift question cannot reach it and "
-        "Dependabot proposes nothing. Adopting it is a floor raise and a release across every "
-        "package that declares it; the run summary carries the detail."
+        "Dependabot proposes nothing. Adopting it widens that ceiling in every package "
+        "declaring it, and releases each, once whatever the new minor moved has been "
+        "re-measured; the run summary carries the detail."
     )
 
 

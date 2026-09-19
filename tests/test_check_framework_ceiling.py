@@ -294,6 +294,16 @@ class TestWhatTheRunSays:
         assert "| `agent-framework-core` | `<1.19` | 1.19.0 |" in rendered
         assert "1.20.0 is on the simple index" in rendered
 
+    def test_the_annotation_and_the_summary_prescribe_the_same_work(self):
+        # Two copies of one instruction, and they had drifted: the summary said *widen the
+        # ceiling* while the one-line annotation said *raise the floor*. Clearing this red
+        # needs neither — the floor is a separate decision, and the 1.19 adoption moved the
+        # ceiling from `<1.19` to `<1.20` with `>=1.18.0` untouched.
+        finding = self._finding("1.20.0")
+        for rendered in (check.report([finding]), check.annotation([finding])):
+            assert "ceiling" in rendered
+            assert "floor" not in rendered
+
     def test_the_annotation_is_one_line_and_names_the_release_and_the_bound(self):
         line = check.annotation([self._finding("1.20.0"), self._finding(None)])
         assert line.startswith("::error::")
