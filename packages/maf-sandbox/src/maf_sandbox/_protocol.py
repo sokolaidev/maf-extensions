@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import warnings
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast, runtime_checkable
@@ -1676,12 +1676,13 @@ class BackendCallAdmission(Protocol):
     """Optional backend ownership spanning a call, its output delivery and cleanup.
 
     The router enters before acquire and exits after cleanup, possibly from another task.
+    The yielded synchronous context grants that task cleanup authority for this lease only.
     Implementations must bound admission and release ownership even on cancellation.
     """
 
     def call_admission(
         self, key: SandboxKey, spec: SandboxSpec, *, owner: str, timeout: float
-    ) -> AbstractAsyncContextManager[None]:
+    ) -> AbstractAsyncContextManager[AbstractContextManager[None]]:
         """Reserve the shared backend instance for this call's lifetime."""
         ...
 

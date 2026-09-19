@@ -248,6 +248,146 @@ def test_two_routers_hold_outputs_until_delivery_and_cleanup(backend):
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_all_admitted_keys_remain_authorized_until_their_own_release(backend, reverse):
+    async def check():
+        router = SandboxRouter([backend], min_cleanup=Cleanup.RESET)
+        keys = [KEY, replace(KEY, thread_id="other")]
+        held = {}
+        try:
+            for key in keys:
+                admission = await router.enter_call(key, SPEC, owner="call")
+                held[key] = admission
+            sandboxes = {key: await router.acquire(key, SPEC, _admission=held[key]) for key in keys}
+            for sandbox in sandboxes.values():
+                await sandbox.run_code("write", timeout=1)
+            for key in reversed(keys) if reverse else keys:
+                sandbox = sandboxes[key]
+                assert (
+                    await sandbox.read_file("result.bin", working_directory=".", max_bytes=2)
+                    == b"\x00\xff"
+                )
+                assert (
+                    await router.finish_call(
+                        key, SPEC, admission=held[key], sandbox=sandbox, owner="call"
+                    )
+                    is None
+                )
+                del held[key]
+        finally:
+            for key in reversed(held):
+                await router.release_call(key, SPEC.kind, owner="call")
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("cleanup", [Cleanup.RESET, Cleanup.DISPOSE])
+@pytest.mark.parametrize("other_loop", [False, True])
+def test_cleanup_transfers_authority_to_a_fresh_context(backend, cleanup, other_loop):
+    async def check():
+        router = SandboxRouter([backend], min_cleanup=cleanup)
+        admission = await router.enter_call(KEY, SPEC, owner="call")
+        sandbox = cast(
+            _backend._HyperlightSandbox, await router.acquire(KEY, SPEC, _admission=admission)
+        )
+        assert sandbox.outputs is not None
+        directory = sandbox.outputs.path
+        await sandbox.run_code("write", timeout=1)
+
+        async def finish():
+            # A fresh task cannot touch files until the router activates its retained authority.
+            with pytest.raises(RuntimeError, match="call_admission"):
+                await sandbox.read_file("result.bin", working_directory=".", max_bytes=2)
+            return await router.finish_call(
+                KEY, SPEC, admission=admission, sandbox=sandbox, owner="call"
+            )
+
+        if other_loop:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                failure = await asyncio.wrap_future(executor.submit(asyncio.run, finish()))
+        else:
+            failure = await asyncio.create_task(finish(), context=contextvars.Context())
+        assert failure is None
+        if cleanup is Cleanup.RESET:
+            assert directory.exists() and not list(directory.iterdir())
+        else:
+            assert not directory.exists()
+        with pytest.raises(RuntimeError, match="call_admission"):
+            await sandbox.stat_file(".", working_directory=".")
+        async with backend.call_admission(KEY, SPEC, owner="next", timeout=1):
+            await backend.acquire(KEY, SPEC)
+
+    asyncio.run(check())
+
+
+def test_cancelled_cleanup_releases_transferred_authority_and_retires_worker(backend, monkeypatch):
+    async def check():
+        router = SandboxRouter([backend], min_cleanup=Cleanup.RESET)
+        admission = await router.enter_call(KEY, SPEC, owner="call")
+        sandbox = cast(
+            _backend._HyperlightSandbox, await router.acquire(KEY, SPEC, _admission=admission)
+        )
+        await sandbox.run_code("write", timeout=1)
+        started, stopped = threading.Event(), threading.Event()
+        request, close = sandbox.worker.request, sandbox.worker.close
+
+        def resetting(message, *, deadline):
+            if message["op"] == "reset":
+                started.set()
+                assert stopped.wait(5)
+            return request(message, deadline=deadline)
+
+        def stopping():
+            close()
+            stopped.set()
+
+        monkeypatch.setattr(sandbox.worker, "request", resetting)
+        monkeypatch.setattr(sandbox.worker, "close", stopping)
+        task = asyncio.create_task(
+            router.finish_call(KEY, SPEC, admission=admission, sandbox=sandbox, owner="call"),
+            context=contextvars.Context(),
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not sandbox.alive
+        assert sandbox.outputs is not None and not sandbox.outputs.path.exists()
+        async with backend.call_admission(KEY, SPEC, owner="next", timeout=1):
+            fresh = await backend.acquire(KEY, SPEC)
+            assert fresh.instance_id != sandbox.instance_id
+
+    asyncio.run(check())
+
+
+def test_expired_context_cannot_reuse_authority_when_owner_name_is_reused(backend):
+    async def check():
+        queued, entered, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def next_call():
+            queued.set()
+            async with backend.call_admission(KEY, SPEC, owner="same", timeout=2):
+                entered.set()
+                await release.wait()
+
+        async with backend.call_admission(KEY, SPEC, owner="same", timeout=1):
+            sandbox = await backend.acquire(KEY, SPEC)
+            old_context = contextvars.copy_context()
+            next_task = asyncio.create_task(next_call(), context=contextvars.Context())
+            await queued.wait()
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            with pytest.raises(RuntimeError, match="call_admission"):
+                await asyncio.create_task(
+                    sandbox.stat_file(".", working_directory="."), context=old_context
+                )
+        finally:
+            release.set()
+            await next_task
+
+    asyncio.run(check())
+
+
 def test_cancelled_waiter_does_not_release_owner_and_other_instances_can_run(backend):
     async def check():
         async with backend.call_admission(KEY, SPEC, owner="first", timeout=1):

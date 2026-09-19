@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import Future
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractContextManager, asynccontextmanager, suppress
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from maf_sandbox import (
@@ -392,13 +392,13 @@ class HyperlightSandboxBackend:
     @asynccontextmanager
     async def call_admission(
         self, key: SandboxKey, spec: SandboxSpec, *, owner: str, timeout: float
-    ) -> AsyncGenerator[None]:
+    ) -> AsyncGenerator[AbstractContextManager[None]]:
         """Hold instance ownership through execution, output delivery and cleanup.
 
         Routers enter this automatically. Direct file-enabled users must enter it explicitly.
         """
-        async with admit(key, spec.kind, owner=owner, timeout=timeout):
-            yield
+        async with admit(key, spec.kind, owner=owner, timeout=timeout) as cleanup_authority:
+            yield cleanup_authority
 
     def _targets(self, spec: SandboxSpec) -> tuple[str, ...]:
         missing = spec.required_capabilities - self.declarations.capabilities

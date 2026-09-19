@@ -19,7 +19,12 @@ import threading
 import time
 import weakref
 from collections.abc import AsyncGenerator, Iterable, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+    nullcontext,
+)
 from enum import StrEnum
 from typing import cast
 
@@ -804,7 +809,11 @@ class SandboxRouter:
         # Admission closes before cleanup can remove a running sibling's sandbox.
         self._slots = ExclusiveSlots()
         self._backend_admissions: dict[
-            tuple[SandboxKey, str, str], AbstractAsyncContextManager[None]
+            tuple[SandboxKey, str, str],
+            tuple[
+                AbstractAsyncContextManager[AbstractContextManager[None]],
+                AbstractContextManager[None],
+            ],
         ] = {}
         self._backend_admissions_guard = threading.Lock()
         self._adoptions = ExclusiveSlots()
@@ -1959,9 +1968,9 @@ class SandboxRouter:
             self._refuse_unless_this_backend_can_serve(backend, spec)
             if isinstance(backend, BackendCallAdmission):
                 scope = backend.call_admission(key, spec, owner=owner, timeout=timeout)
-                await scope.__aenter__()
+                cleanup_authority = await scope.__aenter__()
                 with self._backend_admissions_guard:
-                    self._backend_admissions[key, spec.kind, owner] = scope
+                    self._backend_admissions[key, spec.kind, owner] = scope, cleanup_authority
             return CallAdmission(backend, self._cleanup_on(backend, spec))
         except BaseException:
             await self.release_call(key, spec.kind, owner=owner)
@@ -2013,13 +2022,14 @@ class SandboxRouter:
         self, key: SandboxKey, kind: str, *, owner: str, interrupted: bool = False
     ) -> None:
         """Leave the call and execute pending cleanup if this was the last active owner."""
+        with self._backend_admissions_guard:
+            admitted = self._backend_admissions.pop((key, kind, owner), None)
         try:
-            await self._release_call(key, kind, owner=owner, interrupted=interrupted)
+            with admitted[1] if admitted is not None else nullcontext():
+                await self._release_call(key, kind, owner=owner, interrupted=interrupted)
         finally:
-            with self._backend_admissions_guard:
-                scope = self._backend_admissions.pop((key, kind, owner), None)
-            if scope is not None:
-                await scope.__aexit__(None, None, None)
+            if admitted is not None:
+                await admitted[0].__aexit__(None, None, None)
 
     async def _release_call(
         self, key: SandboxKey, kind: str, *, owner: str, interrupted: bool
