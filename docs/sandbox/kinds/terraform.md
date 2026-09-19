@@ -30,6 +30,8 @@ Additional profiles use [host-controlled dependency preparation](../../../images
 
 For platform-specific roots, the separate [OpenTofu platform image](../../../images/terraform-sandbox/README.md#azure-platform-provider-image) adds Databricks, Entra, Fabric, Azure DevOps and Power Platform providers to the small Azure image's seven. Its exact pins serve AzureRM 5.6.0 and do not change the small image. Fabric covers Power BI content; AzureRM and AzAPI cover Azure service resources. Hosts select the image explicitly. Registry modules remain Terraform-only, and validation checks configuration against baked provider schemas without authenticating to those services. The larger Docker build is opt-in on manual workflow dispatch.
 
+Policies can repeat a provider address with different version constraints to offer several lines in one image. The generator resolves each entry separately, refuses repeated constraints or entries resolving to the same version, and retains the newest provider each catalog root can use under any approved bound. The [two-line OpenTofu example](../../../images/terraform-sandbox/USAGE.md#build-an-image-with-two-provider-lines) serves AzureRM 4.x and 5.x from the same offline mirror, including supplied `h1:` locks for either version.
+
 ## Status
 
 | Work | State | Tracker |

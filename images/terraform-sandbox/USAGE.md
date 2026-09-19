@@ -84,6 +84,20 @@ uv run python images/terraform-sandbox/example.py --engine opentofu --image maf-
 
 Keep the exported directory in trusted storage. To rebuild from it without preparing again, add `--build-context prepared=<directory>` and drop `MANIFEST`. Deploy by image ID or digest, not by tag.
 
+## Build an image with two provider lines
+
+This small OpenTofu example offers AzureRM 4.x and 5.x in the same mirror. Each policy entry chooses its newest admitted release; `--check` reports drift if either line has advanced since generation.
+
+```sh
+uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.opentofu-multiversion.policy.json --output images/terraform-sandbox/dependencies.opentofu-multiversion.json
+uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.opentofu-multiversion.policy.json --output images/terraform-sandbox/dependencies.opentofu-multiversion.json --check
+uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin --build-arg MANIFEST=dependencies.opentofu-multiversion.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:1.12.6-multiversion images/terraform-sandbox
+MAF_OPENTOFU_MULTIVERSION_IMAGE=maf-opentofu:1.12.6-multiversion uv run pytest -q tests/test_terraform_multiversion_offline.py
+```
+
+The six Docker cases use `--network=none`: one root per line, a supplied `h1:` lock for each version under a constraint admitting both, and a mismatched hash for each version. Supplied locks and source files must remain unchanged. The image build also initializes both provider versions offline. See [README.md](README.md#generating-a-manifest) for catalog selection and size limits.
+
 ## Build an image with Azure Verified Modules
 
 Terraform only. [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json) is the whole catalog. [dependencies.terraform-avm-network.policy.json](dependencies.terraform-avm-network.policy.json) is the small graph CI builds; the steps are the same with its file names.

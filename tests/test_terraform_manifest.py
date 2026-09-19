@@ -209,6 +209,116 @@ def test_generation_is_deterministic(monkeypatch):
     prep.checked_manifest(json.loads(text))
 
 
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_multiple_provider_lines_generate_stable_pins(monkeypatch, tmp_path, engine):
+    host = generator.REGISTRY_HOSTS[engine]
+    address = f"{host}/hashicorp/azurerm"
+    policy = {
+        "schema": 1,
+        "engine": engine,
+        "providers": [
+            {"address": address, "constraint": "~> 5.0"},
+            {"address": address, "constraint": "~> 4.0"},
+        ],
+        "registry_modules": [],
+    }
+    lookups = []
+    monkeypatch.setattr(
+        generator,
+        "provider_versions",
+        lambda source, registry: lookups.append(source) or ["5.6.0", "4.9.0", "4.10.0"],
+    )
+    monkeypatch.setattr(
+        generator,
+        "resolve_provider",
+        lambda source, version, registry: {
+            "source": source,
+            "version": version,
+            "platform": "linux_amd64",
+            "artifact": {
+                "url": f"https://releases.hashicorp.com/terraform-provider-azurerm/{version}/terraform-provider-azurerm_{version}_linux_amd64.zip",
+                "sha256": "a" * 64,
+                "provenance": "test fixture",
+            },
+        },
+    )
+    document = generator.generate(policy)
+    assert [item["version"] for item in document["providers"]] == ["4.10.0", "5.6.0"]
+    assert lookups == [address]
+    policy["providers"].reverse()
+    assert generator.render(generator.generate(policy)) == generator.render(document)
+    policy_path, output = tmp_path / "policy.json", tmp_path / "manifest.json"
+    policy_path.write_text(json.dumps(policy))
+    output.write_text(generator.render(document) + "\n")
+    monkeypatch.setattr(generator, "dry_run", lambda value: prep.checked_manifest(value))
+    monkeypatch.setattr(
+        sys, "argv", ["manifest", "--policy", str(policy_path), "--output", str(output), "--check"]
+    )
+    before = output.read_bytes()
+    with pytest.raises(SystemExit) as exit_info:
+        generator.main()
+    assert exit_info.value.code == 0
+    assert output.read_bytes() == before
+
+
+def test_repeated_provider_constraint_is_refused_before_lookup(monkeypatch):
+    policy = copy.deepcopy(OPENTOFU_POLICY)
+    policy["providers"] *= 2
+    monkeypatch.setattr(generator, "provider_versions", lambda *args: pytest.fail("lookup"))
+    with pytest.raises(ValueError, match="duplicate provider in policy"):
+        generator.generate(policy)
+
+
+def test_different_constraints_resolving_to_one_version_are_refused(monkeypatch):
+    policy = copy.deepcopy(OPENTOFU_POLICY)
+    policy["providers"].append(
+        {"address": policy["providers"][0]["address"], "constraint": "~> 3.9"}
+    )
+    install(monkeypatch, opentofu_routes(), {})
+    with pytest.raises(
+        ValueError, match="same version: registry.opentofu.org/hashicorp/random 3.9.1"
+    ):
+        generator.generate(policy)
+
+
+@pytest.mark.parametrize(
+    "requirements,expected",
+    [
+        (["~> 4.0"], "4.10.0"),
+        ([">= 4.0"], "5.6.0"),
+        ([">= 4.0", "< 5.0"], "4.10.0"),
+        (["~> 3.0"], None),
+        (["~> 4.0", "~> 5.0"], None),
+    ],
+)
+def test_catalog_root_uses_union_of_policy_bounds_and_all_requirements(
+    monkeypatch, requirements, expected
+):
+    address = "registry.terraform.io/hashicorp/azurerm"
+    policy = {
+        "schema": 1,
+        "engine": "terraform",
+        "providers": [
+            {"address": address, "constraint": "~> 4.0"},
+            {"address": address, "constraint": "~> 5.0"},
+        ],
+        "registry_modules": [],
+    }
+    resolution = generator.Resolution(policy)
+    root = ("registry.terraform.io/Azure/example/azurerm", "1.0.0")
+    monkeypatch.setattr(resolution, "tree", lambda key, entry, loaded: loaded.update({key: {"."}}))
+    monkeypatch.setattr(resolution, "directory", lambda *args: ({}, {}, {}))
+    monkeypatch.setattr(prep, "provider_needs", lambda *args: {address: requirements})
+    monkeypatch.setattr(
+        resolution, "provider", lambda source: ["3.9.0", "4.10.0", "5.6.0", "6.0.0"]
+    )
+    if expected is None:
+        with pytest.raises(ValueError, match="no release"):
+            resolution.root(root)
+    else:
+        assert resolution.root(root)[1] == {address: expected}
+
+
 def test_a_checksum_disagreement_is_refused(monkeypatch):
     table = routes()
     for url, body in list(table.items()):
@@ -407,6 +517,40 @@ def test_a_catalog_bakes_what_it_can_and_records_the_rest(monkeypatch):
         == "preparation refuses avm-ptn-stateful-azure-1.0.0: module-state"
     )
     assert reasons["avm-ptn-skipped"] == "reviewed out"
+
+
+def test_catalog_keeps_provider_picks_for_roots_on_different_lines(monkeypatch):
+    table, gets = catalog_routes()
+    for url, data in list(table.items()):
+        if "avm-ptn-legacy/zip/" in url:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                files = {
+                    name: archive.read(name).decode().replace('"~> 3.6"', '"~> 3.6.0"')
+                    for name in archive.namelist()
+                }
+            table[url] = archive_bytes(files)
+        if "/hashicorp/random/3.7.2/" in url or "/terraform-provider-random/3.7.2/" in url:
+            table[url.replace("3.7.2", "3.6.0")] = data.replace(b"3.7.2", b"3.6.0")
+    table["https://registry.terraform.io/v1/providers/hashicorp/random/versions"] = json.dumps(
+        {
+            "versions": [
+                {"version": version, "platforms": [{"os": "linux", "arch": "amd64"}]}
+                for version in ("3.6.0", "3.7.2")
+            ]
+        }
+    ).encode()
+    policy = copy.deepcopy(CATALOG_POLICY)
+    policy["providers"].append(
+        {"address": "registry.terraform.io/hashicorp/random", "constraint": "~> 3.6.0"}
+    )
+    install(monkeypatch, table, gets)
+    document = generator.generate(policy)
+    assert [
+        item["version"] for item in document["providers"] if item["source"].endswith("/random")
+    ] == ["3.6.0", "3.7.2"]
+    names = {item["name"] for item in document["registry_modules"]}
+    assert {"avm-ptn-legacy-azurerm-1.0.0", NETWORK_NAME} <= names
+    assert not any("legacy" in item["source"] for item in document["excluded"])
 
 
 def test_pin_changes_name_what_moved():
