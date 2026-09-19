@@ -18,6 +18,36 @@ spec.loader.exec_module(runner)
 class LauncherTests(unittest.TestCase):
     """Exercise actual subprocess pipes, environment, locks, and engine commands."""
 
+    def test_formatting_needs_no_dependencies_and_only_returns_changed_files(self):
+        """Missing modules and providers do not prevent formatting the authored project."""
+        engine = json.loads((runner.INSTALL / "engine.json").read_text())["engine"]
+        original_cwd = Path.cwd()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                project = Path(directory) / "project"
+                project.mkdir()
+                source = 'module "absent" {\nsource="./missing"\n}\n'
+                (project / "main.tf").write_text(source)
+                (project / "clean.tf").write_text("locals { x = 1 }\n")
+                (project / "main.tf.json").write_text("{}")
+                (project / ".terraform.lock.hcl").write_text("sentinel")
+                if engine == "opentofu":
+                    (project / "extra.tofu").write_text("locals {\ny=2\n}\n")
+                os.chdir(directory)
+                result = runner.execute(engine, ".", 10, "format")
+                self.assertIsNone(result["error"], result)
+                self.assertEqual(set(result["phases"]), {"fmt"})
+                self.assertEqual(result["phases"]["fmt"]["exit_code"], 0)
+                expected = {"main.tf": 'module "absent" {\n  source = "./missing"\n}\n'}
+                if engine == "opentofu":
+                    expected["extra.tofu"] = "locals {\n  y = 2\n}\n"
+                self.assertEqual(result["formatted_files"], expected)
+                self.assertEqual((project / ".terraform.lock.hcl").read_text(), "sentinel")
+                self.assertEqual(list((Path(directory) / ".runner/data").iterdir()), [])
+                self.assertFalse(list(project.rglob("*.tfstate*")))
+        finally:
+            os.chdir(original_cwd)
+
     def test_environment_is_built_without_ambient_values(self):
         """No inherited TF flags, credentials, logging, or variables reach a child."""
         os.environ.update(TF_CLI_ARGS="-help", AWS_ACCESS_KEY_ID="sentinel", TF_VAR_x="sentinel")

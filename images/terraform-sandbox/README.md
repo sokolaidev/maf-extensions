@@ -14,6 +14,8 @@ The image carries Docker/OCI labels `org.opencontainers.image.version`, `ai.soko
 
 The base is Python 3.13.15 slim pinned by digest in `image.json`. The installer checks every downloaded archive before extracting it, preserves engine license notices, and leaves provider licenses inside their mirror archives (in a prepared image they are unpacked beside the providers). [runner.py](runner.py) verifies the recorded binary identity and version before executing a request. Deploy the resulting image by immutable digest; a deployment owns its trusted image and provider selection.
 
+The launcher also accepts the fixed `format` mode used by the kind's opt-in `terraform_format` and `opentofu_format` tools. It runs only `version -json` and `fmt -recursive -no-color`, returning complete changed files within the 128 KiB output bound; no providers, modules, or initialization are needed. Rebuild the base images and every derived prepared image to adopt this launcher. The prepared receipt pins its digest as `reader_sha256`; an old receipt cannot be reused with a replaced launcher.
+
 ## Pinned components
 
 | Component | Version | Source | Archive SHA-256 |

@@ -74,7 +74,7 @@ Record the source argument in your kind's design page and package README. A revi
 | [`bicep`](bicep.md) | `bicep_validate` | `{EXEC, FILES_IN}` — the protocol default, left unaltered | `{UNRESTRICTED, ALLOWLIST, CLOSED}`, defaulting to `ALLOWLIST` with the four AVM hosts fixed in the package | [`maf-sandbox-bicep`](../../../packages/maf-sandbox-bicep/README.md) |
 | [`codeact`](codeact.md) | `execute_code` | `{EXEC, FILES_IN}`, grown by `FILES_OUT` and `HOST_TOOLS` as the host wires channels | `{CLOSED, ALLOWLIST}`, derived rather than passed: hosts named runs `ALLOWLIST`, none runs `CLOSED`, and `UNRESTRICTED` is not expressible | [`maf-sandbox-codeact`](../../../packages/maf-sandbox-codeact/README.md) |
 | [`drawio`](drawio.md) | `create_drawio` | `{EXEC, FILES_IN, FILES_OUT}` | `{CLOSED}`; validates XML with Python and computes missing or replacement layout with Graphviz | [`maf-sandbox-drawio`](../../../packages/maf-sandbox-drawio/README.md) |
-| [`terraform` / `opentofu`](terraform.md) | `terraform_validate` / `opentofu_validate` | `{EXEC, FILES_IN}` | `CLOSED`, with dependencies in an immutable image mirror | [`maf-sandbox-terraform`](../../../packages/maf-sandbox-terraform/README.md) |
+| [`terraform` / `opentofu`](terraform.md) | `terraform_validate` / `opentofu_validate`; opt-in `terraform_format` / `opentofu_format` | `{EXEC, FILES_IN}` | `CLOSED`, with validation dependencies in an immutable image mirror | [`maf-sandbox-terraform`](../../../packages/maf-sandbox-terraform/README.md) |
 
 Draw.io delivers an editable file. Bicep, CodeAct and draw.io leave the isolation floor to the host. Terraform and OpenTofu require at least container isolation, POSIX guests, call scope, and disposal because provider validation executes native code.
 
