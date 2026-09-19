@@ -100,7 +100,6 @@ Guidance qualifies as public because its committed text and presence carry no in
 |---|---|---|
 | Plain string, no item label | untrusted/private | Framework resolves the tool's classification |
 | Guidance trusted/public; diagnostics labelled only for integrity | untrusted/private | The partial label is discarded whole, so the item takes the invocation label and loses its integrity claim; this body shape is refused |
-| Guidance trusted/public; diagnostics unlabelled | untrusted/private | The derived item retains framework confidentiality resolution. Only reachable for a tool committing no guidance — a committing one declares trusted, where an unlabelled item would read trusted too |
 | Guidance trusted/public; diagnostics stamped untrusted/private by core | untrusted/private | The host's explicit classification is present in the complete label |
 | Guidance trusted/public; diagnostics stamped untrusted/public by core | untrusted/private | The floor a committing tool takes where the host set no readable classification; the invocation's `private` is the stricter and wins |
 

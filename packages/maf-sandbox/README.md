@@ -252,7 +252,7 @@ def code_for(error: BaseException) -> str:
 
 ## A result the model may read half of
 
-A body returns a string or a list of unlabelled `Content` items. To keep a standing sentence readable beside diagnostics, commit it with `sandboxed_tool(..., standing_guidance=(RECOVERY_ROUTE,))` and return it last on every path:
+A body returns a string or a list of unlabelled `Content` items. To keep a standing sentence readable beside diagnostics, commit it with `sandboxed_tool(..., source_integrity=SourceIntegrity.UNTRUSTED, standing_guidance=(RECOVERY_ROUTE,))` — a commitment needs an integrity declaration to sit above — and return it last on every path:
 
 ```python
 from agent_framework import Content
