@@ -185,6 +185,23 @@ docker build --platform linux/amd64 --build-context scripts=scripts --build-arg 
 
 The build's offline probe initializes every pinned provider once through the launcher, and prints the `init` output of a probe that failed. Export the preparation and import the image for ACAS as the section above shows, with the OpenTofu tags.
 
+## Build the OpenTofu platform image
+
+Choose this separate profile for Databricks, Fabric/Power BI content, Azure DevOps, Entra or Power Platform roots. The [image guide](README.md#azure-platform-provider-image) lists its 12 pins and limitations. Keep the smaller provider image for roots that need only its seven providers.
+
+```sh
+uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.opentofu-platform.policy.json --output images/terraform-sandbox/dependencies.opentofu-platform.json --check
+uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:1.12.6-builtin --build-arg MANIFEST=dependencies.opentofu-platform.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-opentofu:1.12.6-platform-1 images/terraform-sandbox
+MAF_OPENTOFU_PLATFORM_IMAGE=maf-opentofu:1.12.6-platform-1 uv run pytest -q tests/test_opentofu_platform_offline.py
+```
+
+Set `GITHUB_TOKEN` for manifest generation to avoid GitHub API rate limits. The exact policy constraints keep `--check` stable when newer releases appear. To change a pin, edit the platform policy, run the generator without `--check`, review its manifest diff and use a new revision tag. The image build initializes all 12 providers offline; the suite validates resource schemas for the four named platforms without credentials or cloud deployment.
+
+For ACAS, follow [Import it for ACAS](#5-import-it-for-acas) using repository `maf-opentofu`, tag `1.12.6-platform-1` and disk name `maf-opentofu-1-12-6-platform-1`. Record the imported disk size and wait for import readiness before running the suite. Pass `engine="opentofu"` and `image="maf-opentofu:1.12.6-platform-1"` to `make_terraform_tools`. Set `MAF_OPENTOFU_PLATFORM_ACAS_IMAGE` to that repository and tag, together with `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and `ACAS_SANDBOX_REGISTRY`, then run the same suite. Each ACAS case creates a billable sandbox and disposes it. Image build success does not establish ACAS import, disk size or runtime validation.
+
+To run the larger Docker build in GitHub Actions, manually dispatch `terraform-live.yml` with `platform=true`. The default is false and scheduled/push runs do not build it. This job checks the manifest, builds the image and runs the platform suite; registry publication and ACAS import remain operator steps.
+
 ## Check an image
 
 [README.md](README.md#verification) says what each suite proves.

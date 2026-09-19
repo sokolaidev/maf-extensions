@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "15 5 * * *"
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Build and validate the larger OpenTofu platform image
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -65,10 +70,32 @@ jobs:
       - name: Validate the AVM graph offline and observe disposal
         run: uv run pytest -q tests/test_terraform_avm_offline.py
 
+  opentofu-platform:
+    if: github.event_name == 'workflow_dispatch' && inputs.platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MAF_OPENTOFU_PLATFORM_IMAGE: maf-opentofu:ci-platform
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Sync workspace
+        run: uv sync --locked
+      - name: Check the pinned platform manifest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.opentofu-platform.policy.json --output images/terraform-sandbox/dependencies.opentofu-platform.json --check
+      - name: Build the platform image
+        run: |
+          uv run python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin --tag maf-opentofu:ci-platform-base
+          docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:ci-platform-base --build-arg MANIFEST=dependencies.opentofu-platform.json -f images/terraform-sandbox/prepared.Dockerfile -t "$MAF_OPENTOFU_PLATFORM_IMAGE" images/terraform-sandbox
+      - name: Validate platform resources offline and observe disposal
+        run: uv run pytest -q tests/test_opentofu_platform_offline.py
+
   report-failure:
     name: Report Terraform live failure
-    needs: terraform
-    if: always() && needs.terraform.result == 'failure'
+    needs: [terraform, opentofu-platform]
+    if: always() && (needs.terraform.result == 'failure' || needs.opentofu-platform.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -86,5 +113,5 @@ jobs:
           --marker '<!-- terraform-live-failure-tracker -->'
           --title 'Terraform and OpenTofu live checks failed'
           --reproduce 'Re-run the linked attempt, or dispatch terraform-live.yml against the failing commit. Inspect the first failed step for image, registry, daemon, or test failures.'
-          --expected 'Both engine profiles, a prepared image of each engine, and the pinned AVM graph validate correctly offline and leave no workload containers.'
+          --expected 'Both engine profiles, a prepared image of each engine, the pinned AVM graph, and the optional OpenTofu platform image (when platform=true) validate correctly offline and leave no workload containers.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-terraform

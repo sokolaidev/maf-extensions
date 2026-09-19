@@ -475,6 +475,28 @@ def test_an_opentofu_policy_pins_from_the_opentofu_registry(monkeypatch):
     assert document["providers"][0]["artifact"]["github_repository_id"] == "691499456"
 
 
+def test_platform_policy_keeps_its_pins_when_new_releases_appear(monkeypatch):
+    directory = Path(__file__).resolve().parents[1] / "images/terraform-sandbox"
+    policy = json.loads((directory / "dependencies.opentofu-platform.policy.json").read_text())
+    manifest = json.loads((directory / "dependencies.opentofu-platform.json").read_text())
+    pins = {item["source"]: item for item in manifest["providers"]}
+    monkeypatch.setattr(
+        generator, "provider_versions", lambda address, host: [pins[address]["version"], "999.0.0"]
+    )
+    monkeypatch.setattr(
+        generator,
+        "resolve_provider",
+        lambda address, version, host: (
+            copy.deepcopy(pins[address])
+            if version == pins[address]["version"]
+            else pytest.fail("platform pin moved")
+        ),
+    )
+    assert generator.generate(policy) == manifest
+    prep.checked_manifest(copy.deepcopy(manifest))
+    assert manifest["modules"] == manifest["registry_modules"] == []
+
+
 @pytest.mark.parametrize(
     "field",
     [
