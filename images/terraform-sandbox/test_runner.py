@@ -130,8 +130,13 @@ resource "random_integer" "r" {
                     if lock is not None:
                         (project / ".terraform.lock.hcl").write_text(lock)
                     os.chdir(call)
-                    result = runner.execute(engine, ".", 10)
-                    self.assertIsNone(result["error"], result)
+                    # This test is about locks, not speed. A call measures under two seconds,
+                    # so the budget only has to outlast a stalled runner; the deadline itself
+                    # is pinned by the two tests above.
+                    started = time.monotonic()
+                    result = runner.execute(engine, ".", 30)
+                    elapsed = time.monotonic() - started
+                    self.assertIsNone(result["error"], f"{elapsed:.1f}s elapsed: {result}")
                     if number == 2:
                         self.assertNotEqual(result["phases"]["init"]["exit_code"], 0)
                         self.assertNotIn("validate", result["phases"])
