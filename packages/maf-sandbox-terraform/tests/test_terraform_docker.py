@@ -200,6 +200,9 @@ def test_launcher_supervision_in_linux(engine):
         ],
         input=source.read_bytes(),
         capture_output=True,
-        timeout=30,
+        # Above the guest budgets it contains: the lock test alone may spend 30 seconds per
+        # call over three calls. A cap below that turns a slow runner into a failure here
+        # instead of a verdict from the suite.
+        timeout=150,
     )
     assert result.returncode == 0, result.stderr.decode()
