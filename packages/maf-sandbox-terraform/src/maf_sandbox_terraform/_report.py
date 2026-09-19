@@ -58,6 +58,8 @@ def _envelope(raw: bytes, engine: TerraformEngine, limit: int) -> dict[str, Any]
         or not re.fullmatch(r"\d+\.\d+\.\d+", envelope["version"])
     ):
         raise ValueError("unsupported launcher or engine identity")
+    if "error" not in envelope:
+        raise ValueError("missing launcher error status")
     return envelope
 
 
@@ -68,7 +70,7 @@ def render_format_report(
     envelope = _envelope(raw, engine, MAX_FORMAT_BYTES)
     if envelope.get("mode") != "format":
         raise ValueError("wrong launcher mode")
-    if envelope.get("error") is not None:
+    if envelope["error"] is not None:
         return (
             "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. "
             "No formatted files returned; try a smaller complete manifest."
@@ -105,7 +107,7 @@ def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) 
     another file's name anywhere, including source snippets and arbitrary provider messages.
     """
     envelope = _envelope(raw, engine, MAX_REPORT_BYTES)
-    if envelope.get("error") is not None:
+    if envelope["error"] is not None:
         # Never render arbitrary launcher error text as a host-authored instruction.
         return "Validation INCOMPLETE: the guest launcher could not complete its bounded execution."
     phases = _mapping(envelope.get("phases"))

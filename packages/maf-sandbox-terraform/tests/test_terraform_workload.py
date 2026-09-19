@@ -172,6 +172,25 @@ def test_failed_formatting_never_returns_partially_changed_files(failure):
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("formatting", [False, True])
+def test_missing_launcher_error_status_is_incomplete(engine, formatting):
+    data = format_envelope(engine) if formatting else envelope(engine)
+    del data["error"]
+    tool, backend, store = attach(
+        sandbox=RecordingSandbox(default_stdout=json.dumps(data)),
+        engine=engine,
+        formatting=formatting,
+    )
+    original = store.files.copy()
+    result = asyncio.run(tool.func(files=["main.tf"]))
+    operation = "Formatting" if formatting else "Validation"
+    assert result[0].text.startswith(f"{operation} INCOMPLETE:")
+    assert "locals" not in result[0].text and "PASS" not in result[0].text
+    assert store.files == original
+    assert len(backend.disposed) == 1
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
 def test_engine_contract_and_call_disposal(engine):
     spec = terraform_sandbox_spec(engine=engine)
     assert spec.kind == engine and spec.egress is Egress.CLOSED
