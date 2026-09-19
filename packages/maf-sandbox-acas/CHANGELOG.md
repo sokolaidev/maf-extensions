@@ -4,6 +4,17 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.25.0...maf-sandbox-acas-v0.26.0) (2026-09-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt agent-framework-core 1.19, and re-pair every package on maf-sandbox 0.41 ([#1316](https://github.com/sokolaidev/maf-extensions/issues/1316))
+
+### Features
+
+* adopt agent-framework-core 1.19, and re-pair every package on maf-sandbox 0.41 ([#1316](https://github.com/sokolaidev/maf-extensions/issues/1316)) ([a1a2dec](https://github.com/sokolaidev/maf-extensions/commit/a1a2dec8ff5bb936d4c044b666b74dd5dc4c9b1b))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.24.0...maf-sandbox-acas-v0.25.0) (2026-09-15)
 
 
