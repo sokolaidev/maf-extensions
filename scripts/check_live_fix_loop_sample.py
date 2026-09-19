@@ -243,8 +243,10 @@ def _authored_faults(output: str) -> tuple[set[str], list[str]]:
     compiled = _section(output, _AUTHORED_COMPILE, last=True)
     if compiled is None:
         return set(), [
-            "the run never showed what the compiler said about the file turn 1 wrote — without "
-            "that baseline there is nothing to measure the repair against"
+            (
+                "the run never showed what the compiler said about the file turn 1 wrote — without "
+                "that baseline there is nothing to measure the repair against"
+            )
         ]
 
     # Both phases, exactly as the final compile demands. A partial compile would undercount what
@@ -252,8 +254,10 @@ def _authored_faults(output: str) -> tuple[set[str], list[str]]:
     phases = {match.group(1).lower() for match in _PHASE.finditer(compiled)}
     if phases != {"build", "lint"}:
         return set(), [
-            f"the baseline compile reported {sorted(phases) or 'no'} phase(s), expected both "
-            "build and lint — a partial compile undercounts what the authored file started with"
+            (
+                f"the baseline compile reported {sorted(phases) or 'no'} phase(s), expected both "
+                "build and lint — a partial compile undercounts what the authored file started with"
+            )
         ]
 
     match = _AUTHORED_FAULTS.search(compiled)
@@ -513,14 +517,18 @@ def _assess_compiler_agrees(
     compiled = _section(output, _COMPILE, last=True)
     if compiled is None:
         return [
-            "the compiler was never run over the file the model left — every claim below it is "
-            "then the model's own account of its work, which is what this sample exists to avoid"
+            (
+                "the compiler was never run over the file the model left — every claim below it is "
+                "then the model's own account of its work, which is what this sample exists to avoid"
+            )
         ]
     phases = {match.group(1).lower() for match in _PHASE.finditer(compiled)}
     if phases != {"build", "lint"}:
         return [
-            f"the compile reported {sorted(phases) or 'no'} phase(s), expected both build and "
-            "lint — a file can pass one and fail the other"
+            (
+                f"the compile reported {sorted(phases) or 'no'} phase(s), expected both build and "
+                "lint — a file can pass one and fail the other"
+            )
         ]
 
     failures: list[str] = []

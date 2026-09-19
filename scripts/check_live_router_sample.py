@@ -350,13 +350,17 @@ def _assess_footer(output: str) -> list[str]:
     footers = _FOOTER.findall(output)
     if not footers:
         return [
-            "no 'Completed N of 6 acts. Disposed N sandbox(es) across N backends.' line — the "
-            "sample did not run to completion"
+            (
+                "no 'Completed N of 6 acts. Disposed N sandbox(es) across N backends.' line — the "
+                "sample did not run to completion"
+            )
         ]
     if len(footers) > 1:
         return [
-            f"the footer appears {len(footers)} times — the sample prints it once, so a second "
-            "came from somewhere else and neither can be read"
+            (
+                f"the footer appears {len(footers)} times — the sample prints it once, so a second "
+                "came from somewhere else and neither can be read"
+            )
         ]
     acts, disposed, registered = (int(group) for group in footers[0])
     failures: list[str] = []

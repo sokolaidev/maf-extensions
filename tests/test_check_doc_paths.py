@@ -701,8 +701,10 @@ class TestLineReferences:
         """Two in a row are held to two names, so the second cannot lean on the first's."""
         root = repo({"docs/a.md": "`write_file` (`testing.py:5`) and (`:5`)", _HERE: _SOURCE})
         assert check.broken_line_references(root) == [
-            "docs/a.md: line -> `:5` carries no name beside it, so nothing says what the line "
-            "should hold"
+            (
+                "docs/a.md: line -> `:5` carries no name beside it, so nothing says what the line "
+                "should hold"
+            )
         ]
 
     def test_a_name_in_the_paragraph_above_does_not_reach_the_reference(self, repo):
@@ -710,8 +712,10 @@ class TestLineReferences:
             {"docs/a.md": "`write_file` is a member.\n\nSee `testing.py:5`.", _HERE: _SOURCE}
         )
         assert check.broken_line_references(root) == [
-            "docs/a.md: line -> `testing.py:5` carries no name beside it, so nothing says what "
-            "the line should hold"
+            (
+                "docs/a.md: line -> `testing.py:5` carries no name beside it, so nothing says what "
+                "the line should hold"
+            )
         ]
 
     def test_a_file_left_off_with_nothing_before_it_names_nothing_and_is_not_a_reference(
@@ -742,8 +746,10 @@ class TestLineReferences:
     def test_a_range_is_refused_because_only_its_first_line_could_be_checked(self, repo):
         root = repo({"docs/a.md": "`write_file` (`testing.py:5-9`)", _HERE: _SOURCE})
         assert check.broken_line_references(root) == [
-            "docs/a.md: line -> `testing.py:5-9` names a range, and only the line a definition "
-            "starts on can be checked"
+            (
+                "docs/a.md: line -> `testing.py:5-9` names a range, and only the line a definition "
+                "starts on can be checked"
+            )
         ]
 
     def test_a_basename_that_means_several_files_is_refused(self, repo):
@@ -755,8 +761,10 @@ class TestLineReferences:
             }
         )
         assert check.broken_line_references(root) == [
-            "docs/a.md: line -> `testing.py:5` names testing.py, which is "
-            "packages/p/src/m/testing.py and packages/q/src/m/testing.py; link it"
+            (
+                "docs/a.md: line -> `testing.py:5` names testing.py, which is "
+                "packages/p/src/m/testing.py and packages/q/src/m/testing.py; link it"
+            )
         ]
 
     def test_a_link_says_which_file_a_shared_basename_means(self, repo):
@@ -790,8 +798,10 @@ class TestLineReferences:
     def test_a_reference_into_something_that_is_not_python_is_refused(self, repo):
         root = repo({"docs/a.md": "`write_file` (`docs/b.md:3`)", "docs/b.md": "x\ny\nz\n"})
         assert check.broken_line_references(root) == [
-            "docs/a.md: line -> `docs/b.md:3` points into docs/b.md, and only Python source "
-            "carries definitions to check"
+            (
+                "docs/a.md: line -> `docs/b.md:3` points into docs/b.md, and only Python source "
+                "carries definitions to check"
+            )
         ]
 
     def test_a_reference_to_a_file_that_is_not_tracked_is_reported(self, repo):

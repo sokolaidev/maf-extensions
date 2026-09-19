@@ -153,8 +153,10 @@ def _once[M](matches: list[M], what: str) -> tuple[M | None, list[str]]:
         return None, [f"no tagged '{what}' line — the sample did not report it"]
     if len(matches) > 1:
         return None, [
-            f"'{what}' appears {len(matches)} times, so none of them can be trusted — the "
-            "sample prints it once per run"
+            (
+                f"'{what}' appears {len(matches)} times, so none of them can be trusted — the "
+                "sample prints it once per run"
+            )
         ]
     return matches[0], []
 
@@ -519,9 +521,11 @@ def _assess_the_round_trips(output: str) -> list[str]:
     matches = _ROUND_TRIP.findall(output)
     if any(m[0] == _DIRECT for m in matches):
         failures = [
-            "a round-trip line was printed for the direct route — its lookups run in the host "
-            "process between two model turns, so whatever that measured is not a round trip and "
-            "inviting the reader to compare it with the host-tool-call figure is the wrong reading"
+            (
+                "a round-trip line was printed for the direct route — its lookups run in the host "
+                "process between two model turns, so whatever that measured is not a round trip and "
+                "inviting the reader to compare it with the host-tool-call figure is the wrong reading"
+            )
         ]
     else:
         failures = []

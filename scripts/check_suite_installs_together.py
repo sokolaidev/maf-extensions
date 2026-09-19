@@ -385,8 +385,10 @@ def main(argv: list[str]) -> int:
         "",
         f"`{'`, `'.join(warned)}` cannot be installed beside the **newest** published siblings.",
         "",
-        "Candidate conflicts are warnings. The separate whole-set and per-package checks "
-        "validate the artifacts being released.",
+        (
+            "Candidate conflicts are warnings. The separate whole-set and per-package checks "
+            "validate the artifacts being released."
+        ),
         "",
     ]
     conflicts: list[tuple[str, str]] = []
@@ -404,15 +406,19 @@ def main(argv: list[str]) -> int:
             lines += [f"- `{left}` against `{right}`" for left, right in conflicts]
             lines += [
                 "",
-                "This published range conflict is a warning so compatible releases can repair "
-                "the set. Publish the adapted dependents until every pair shares a core line; "
-                "the candidate's tests and the whole-set install must still pass.",
+                (
+                    "This published range conflict is a warning so compatible releases can repair "
+                    "the set. Publish the adapted dependents until every pair shares a core line; "
+                    "the candidate's tests and the whole-set install must still pass."
+                ),
                 "",
             ]
         else:
             lines += [
-                "The published set could not be installed, and no disjoint core ranges "
-                "explain the failure. This check fails; inspect the installer error below.",
+                (
+                    "The published set could not be installed, and no disjoint core ranges "
+                    "explain the failure. This check fails; inspect the installer error below."
+                ),
                 "",
             ]
         lines += ["```", error, "```"]

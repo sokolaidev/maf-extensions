@@ -128,9 +128,11 @@ def assess(output: str) -> list[str]:
     split = _split(output)
     if split is None:
         return [
-            "the run printed no block of what execute returned — every claim about the compiler "
-            "is then the model's own account of it, which is what this sample exists to avoid "
-            "(#314)"
+            (
+                "the run printed no block of what execute returned — every claim about the compiler "
+                "is then the model's own account of it, which is what this sample exists to avoid "
+                "(#314)"
+            )
         ] + _assess_disposal(output)
 
     reply, block, compiles = split
@@ -194,8 +196,10 @@ def _assess_reply(reply: str, block: str) -> list[str]:
     if not missing:
         return []
     return [
-        f"the model's reply never names {', '.join(missing)} — the compiler reported it and the "
-        "sample asks for every diagnostic back, so it reached the log without reaching the answer"
+        (
+            f"the model's reply never names {', '.join(missing)} — the compiler reported it and the "
+            "sample asks for every diagnostic back, so it reached the log without reaching the answer"
+        )
     ]
 
 

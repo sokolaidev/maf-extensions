@@ -107,10 +107,12 @@ def _program(stdout: bytes, stderr: bytes, status: int = 7) -> list[str]:
     return [
         "python3",
         "-c",
-        "import base64,sys; "
-        f"sys.stdout.buffer.write(base64.b64decode({base64.b64encode(stdout).decode()!r})); "
-        f"sys.stderr.buffer.write(base64.b64decode({base64.b64encode(stderr).decode()!r})); "
-        f"sys.exit({status})",
+        (
+            "import base64,sys; "
+            f"sys.stdout.buffer.write(base64.b64decode({base64.b64encode(stdout).decode()!r})); "
+            f"sys.stderr.buffer.write(base64.b64decode({base64.b64encode(stderr).decode()!r})); "
+            f"sys.exit({status})"
+        ),
     ]
 
 

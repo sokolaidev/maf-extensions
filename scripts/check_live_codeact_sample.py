@@ -98,9 +98,11 @@ def assess(output: str) -> list[str]:
     split = _split(output)
     if split is None:
         return [
-            "the run printed no block of what the interpreter returned — the number in the "
-            "reply is then a constant the model could recite, which is what this sample exists "
-            "to rule out (#314)"
+            (
+                "the run printed no block of what the interpreter returned — the number in the "
+                "reply is then a constant the model could recite, which is what this sample exists "
+                "to rule out (#314)"
+            )
         ] + _assess_disposal(output)
 
     reply, block, runs, tool = split
@@ -145,9 +147,11 @@ def _assess_reply(reply: str) -> list[str]:
     if _ANSWER in reply:
         return []
     return [
-        f"the model's reply never carries {_ANSWER!r} — the sandbox printed it and the sample "
-        "asks for exactly what the tool returned, so it reached the log without reaching the "
-        "answer"
+        (
+            f"the model's reply never carries {_ANSWER!r} — the sandbox printed it and the sample "
+            "asks for exactly what the tool returned, so it reached the log without reaching the "
+            "answer"
+        )
     ]
 
 

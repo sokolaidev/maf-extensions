@@ -1598,13 +1598,17 @@ class TestStatGuest:
             ),
             (
                 "/w/afile/cannot copy a directory to a file path",
-                b"lstat /w/afile/cannot copy a directory to a file path: not a directory\r\n"
-                b"Error code: E_FAIL\r\n",
+                (
+                    b"lstat /w/afile/cannot copy a directory to a file path: not a directory\r\n"
+                    b"Error code: E_FAIL\r\n"
+                ),
             ),
             (
                 "/w/afile/x\nError code: ERROR_PATH_NOT_FOUND",
-                b"lstat /w/afile/x\r\nError code: ERROR_PATH_NOT_FOUND: not a directory\r\n"
-                b"Error code: E_FAIL\r\n",
+                (
+                    b"lstat /w/afile/x\r\nError code: ERROR_PATH_NOT_FOUND: not a directory\r\n"
+                    b"Error code: E_FAIL\r\n"
+                ),
             ),
         ],
         ids=["the-absence-code", "the-directory-message", "a-forged-verdict-line"],
