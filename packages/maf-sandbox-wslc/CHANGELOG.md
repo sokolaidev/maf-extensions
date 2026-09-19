@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.22.0...maf-sandbox-wslc-v0.23.0) (2026-09-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt agent-framework-core 1.19, and re-pair every package on maf-sandbox 0.41 ([#1316](https://github.com/sokolaidev/maf-extensions/issues/1316))
+
+### Features
+
+* adopt agent-framework-core 1.19, and re-pair every package on maf-sandbox 0.41 ([#1316](https://github.com/sokolaidev/maf-extensions/issues/1316)) ([a1a2dec](https://github.com/sokolaidev/maf-extensions/commit/a1a2dec8ff5bb936d4c044b666b74dd5dc4c9b1b))
+
+
+### Fixes
+
+* **wslc:** read a container listing in either shape the CLI emits, and refuse one in neither ([#1313](https://github.com/sokolaidev/maf-extensions/issues/1313)) ([bd5c236](https://github.com/sokolaidev/maf-extensions/commit/bd5c23601c85e735da7ed4748d7affe29a3d49ac))
+
 ## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.21.1...maf-sandbox-wslc-v0.22.0) (2026-09-14)
 
 

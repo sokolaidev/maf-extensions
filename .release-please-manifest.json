@@ -1,14 +1,14 @@
 {
   "packages/maf-sandbox": "0.41.0",
-  "packages/maf-sandbox-acas": "0.25.0",
-  "packages/maf-sandbox-bicep": "0.17.0",
-  "packages/maf-sandbox-codeact": "0.18.0",
-  "packages/maf-sandbox-deepagents": "0.3.0",
-  "packages/maf-sandbox-docker": "0.21.0",
-  "packages/maf-sandbox-hyperlight": "0.1.0",
-  "packages/maf-sandbox-otel": "0.6.0",
-  "packages/maf-sandbox-terraform": "0.1.1",
-  "packages/maf-sandbox-wslc": "0.22.0",
-  "packages/maf-sandbox-drawio": "0.1.0",
-  "packages/maf-sandbox-tui": "0.1.0"
+  "packages/maf-sandbox-acas": "0.26.0",
+  "packages/maf-sandbox-bicep": "0.18.0",
+  "packages/maf-sandbox-codeact": "0.19.0",
+  "packages/maf-sandbox-deepagents": "0.4.0",
+  "packages/maf-sandbox-docker": "0.22.0",
+  "packages/maf-sandbox-hyperlight": "0.2.0",
+  "packages/maf-sandbox-otel": "0.7.0",
+  "packages/maf-sandbox-terraform": "0.2.0",
+  "packages/maf-sandbox-wslc": "0.23.0",
+  "packages/maf-sandbox-drawio": "0.2.0",
+  "packages/maf-sandbox-tui": "0.2.0"
 }
