@@ -26,9 +26,9 @@ from maf_sandbox.testing import (
 )
 
 import maf_sandbox_terraform._tool as workload
-from maf_sandbox_terraform import make_terraform_tools, terraform_sandbox_spec
+from maf_sandbox_terraform import TERRAFORM_TOOL_NAMES, make_terraform_tools, terraform_sandbox_spec
 from maf_sandbox_terraform._paths import resolve_manifest
-from maf_sandbox_terraform._report import render_report
+from maf_sandbox_terraform._report import render_format_report, render_report
 
 
 def envelope(engine="terraform", *, valid=True, fmt=0):
@@ -64,7 +64,7 @@ class RecordingSandbox(InProcessSandbox):
         await super().write_file(path, content, working_directory=working_directory)
 
 
-def attach(data=None, *, sandbox=None, engine="terraform", **kwargs):
+def attach(data=None, *, sandbox=None, engine="terraform", formatting=False, **kwargs):
     sandbox = sandbox or RecordingSandbox(default_stdout=json.dumps(envelope(engine)))
     backend = InProcessSandboxBackend(
         sandbox,
@@ -82,8 +82,93 @@ def attach(data=None, *, sandbox=None, engine="terraform", **kwargs):
         list_files=InMemoryStore.list,
     )
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
-    tool = make_terraform_tools(router, store, "agent", context, engine=engine, **kwargs)[0]
+    tools = make_terraform_tools(
+        router, store, "agent", context, engine=engine, formatting=formatting, **kwargs
+    )
+    assert [tool.name for tool in tools] == [f"{engine}_validate"] + (
+        [f"{engine}_format"] if formatting else []
+    )
+    tool = tools[-1] if formatting else tools[0]
     return tool, backend, store
+
+
+def format_envelope(engine="terraform", files=None):
+    return {
+        "protocol": 1,
+        "engine": engine,
+        "version": "1.16.2",
+        "mode": "format",
+        "error": None,
+        "phases": {"fmt": {"exit_code": 0, "stdout": "main.tf\n", "stderr": ""}},
+        "formatted_files": {"main.tf": "locals { x = 1 }\n"} if files is None else files,
+    }
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("changed", [False, True])
+def test_formatting_is_opt_in_returns_whole_files_and_does_not_write_store(engine, changed):
+    files = {"main.tf": "locals { x = 1 }\n"} if changed else {}
+    sandbox = RecordingSandbox(default_stdout=json.dumps(format_envelope(engine, files)))
+    data = {"main.tf": "locals { x=1 }\n"}
+    tool, backend, store = attach(data, sandbox=sandbox, engine=engine, formatting=True)
+    assert tool.name in TERRAFORM_TOOL_NAMES
+    result = asyncio.run(tool.func(files=["main.tf"]))
+    assert json.loads(result[0].text.split("mapping):\n")[1]) == files
+    assert result[1].text == workload.FORMAT_GUIDANCE
+    assert result[0].additional_properties["security_label"]["integrity"] == "untrusted"
+    assert result[1].additional_properties["security_label"]["integrity"] == "trusted"
+    assert store.files == data
+    assert len(backend.disposed) == 1
+    assert sandbox.commands[0][0].endswith(" format")
+
+
+@pytest.mark.parametrize("argument", ["files", "root_module"])
+def test_hidden_formatting_withholds_all_returned_file_text(argument, monkeypatch):
+    sandbox = RecordingSandbox(default_stdout=json.dumps(format_envelope()))
+    tool, _, _ = attach(sandbox=sandbox, formatting=True)
+    monkeypatch.setattr(
+        workload,
+        "positions_holding_hidden_content",
+        lambda *a, **kw: frozenset({0}) if kw["argument"] == argument else frozenset(),
+    )
+    result = asyncio.run(tool.func(files=["main.tf"]))
+    assert "withheld" in result[0].text
+    assert "main.tf" not in result[0].text and "locals" not in result[0].text
+
+
+@pytest.mark.parametrize(
+    "case", ["mode", "phases", "outside", "unchanged", "nontext", "surrogate", "oversize"]
+)
+def test_format_reports_refuse_corrupt_or_unrequested_files(case):
+    data = format_envelope()
+    if case in {"mode", "phases"}:
+        data[case] = "wrong"
+    else:
+        data["formatted_files"] = {
+            "outside": {"../other.tf": "text"},
+            "unchanged": {"main.tf": "original"},
+            "nontext": {"main.tf": None},
+            "surrogate": {"main.tf": "\ud800"},
+            "oversize": {"main.tf": "x" * (128 * 1024)},
+        }[case]
+    with pytest.raises(ValueError):
+        render_format_report(json.dumps(data).encode(), "terraform", {"main.tf": "original"})
+
+
+@pytest.mark.parametrize("failure", ["launcher", "fmt"])
+def test_failed_formatting_never_returns_partially_changed_files(failure):
+    data = format_envelope()
+    if failure == "launcher":
+        data["error"] = "private error text"
+    else:
+        data["phases"]["fmt"]["exit_code"] = 2
+    tool, backend, _ = attach(
+        sandbox=RecordingSandbox(default_stdout=json.dumps(data)), formatting=True
+    )
+    result = asyncio.run(tool.func(files=["main.tf"]))
+    assert "Formatting INCOMPLETE" in result[0].text
+    assert "locals" not in result[0].text and "private error" not in result[0].text
+    assert len(backend.disposed) == 1
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
@@ -154,8 +239,9 @@ def test_nested_modules_json_and_ancillary_assets_preserve_layout():
 
 
 @pytest.mark.parametrize("failure", ["missing", "read", "write", "oversize"])
-def test_transfer_failures_prevent_exec(failure, monkeypatch):
-    tool, backend, store = attach({"main.tf": "", "other.tf": ""})
+@pytest.mark.parametrize("formatting", [False, True])
+def test_transfer_failures_prevent_exec(failure, formatting, monkeypatch):
+    tool, backend, store = attach({"main.tf": "", "other.tf": ""}, formatting=formatting)
     if failure == "write":
 
         async def fail(*args, **kwargs):
@@ -264,7 +350,8 @@ def test_hidden_argument_suppresses_diagnostic_text(monkeypatch):
     assert "hidden.tf" not in result[0].text and '"summary"' not in result[0].text
 
 
-def test_cancellation_waits_for_exec_then_disposes():
+@pytest.mark.parametrize("formatting", [False, True])
+def test_cancellation_waits_for_exec_then_disposes(formatting):
     async def scenario():
         started, finished = asyncio.Event(), asyncio.Event()
 
@@ -274,7 +361,7 @@ def test_cancellation_waits_for_exec_then_disposes():
                 await finished.wait()
                 return ExecResult(stdout=json.dumps(envelope()))
 
-        tool, backend, _ = attach(sandbox=Delayed())
+        tool, backend, _ = attach(sandbox=Delayed(), formatting=formatting)
         pending = asyncio.create_task(tool.func(files=["main.tf"]))
         await started.wait()
         pending.cancel()

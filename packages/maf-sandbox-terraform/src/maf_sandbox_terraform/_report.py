@@ -7,6 +7,7 @@ from typing import Any, cast
 from ._spec import TerraformEngine
 
 MAX_REPORT_BYTES = 1024 * 1024
+MAX_FORMAT_BYTES = 128 * 1024
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -45,13 +46,8 @@ def _phase(value: Any) -> dict[str, Any]:
     return value
 
 
-def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) -> str:
-    """Validate the launcher envelope and CLI counts before rendering a verdict.
-
-    With hidden argument names, suppress all guest prose and locations. Diagnostics can repeat
-    another file's name anywhere, including source snippets and arbitrary provider messages.
-    """
-    if len(raw) > MAX_REPORT_BYTES:
+def _envelope(raw: bytes, engine: TerraformEngine, limit: int) -> dict[str, Any]:
+    if len(raw) > limit:
         raise ValueError("report exceeded the output bound")
     envelope = _json(raw.decode("utf-8", errors="strict"))
     if (
@@ -62,6 +58,53 @@ def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) 
         or not re.fullmatch(r"\d+\.\d+\.\d+", envelope["version"])
     ):
         raise ValueError("unsupported launcher or engine identity")
+    return envelope
+
+
+def render_format_report(
+    raw: bytes, engine: TerraformEngine, staged: dict[str, str], *, hidden: bool = False
+) -> str:
+    """Return only complete changed files from the manifest; hidden names suppress all prose."""
+    envelope = _envelope(raw, engine, MAX_FORMAT_BYTES)
+    if envelope.get("mode") != "format":
+        raise ValueError("wrong launcher mode")
+    if envelope.get("error") is not None:
+        return (
+            "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. "
+            "No formatted files returned; try a smaller complete manifest."
+        )
+    phases = _mapping(envelope.get("phases"))
+    if set(phases) != {"fmt"}:
+        raise ValueError("unexpected formatting phases")
+    fmt = _phase(phases["fmt"])
+    if fmt["exit_code"] != 0 or fmt["stderr"]:
+        detail = "" if hidden else f"\n{fmt['stdout']}\n{fmt['stderr']}"
+        return "Formatting INCOMPLETE: formatter failed; no formatted files returned." + detail
+    files = _mapping(envelope.get("formatted_files"))
+    for path, content in files.items():
+        if (
+            path not in staged
+            or not isinstance(content, str)
+            or "\x00" in content
+            or content == staged[path]
+        ):
+            raise ValueError("invalid formatted file")
+        content.encode("utf-8", errors="strict")
+    if hidden:
+        return "Formatting complete; text and locations withheld because argument names are hidden."
+    return (
+        f"{engine} {envelope['version']}: formatting complete; {len(files)} changed files.\n"
+        "Formatted files (JSON path-to-text mapping):\n" + json.dumps(files, ensure_ascii=True)
+    )
+
+
+def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) -> str:
+    """Validate the launcher envelope and CLI counts before rendering a verdict.
+
+    With hidden argument names, suppress all guest prose and locations. Diagnostics can repeat
+    another file's name anywhere, including source snippets and arbitrary provider messages.
+    """
+    envelope = _envelope(raw, engine, MAX_REPORT_BYTES)
     if envelope.get("error") is not None:
         # Never render arbitrary launcher error text as a host-authored instruction.
         return "Validation INCOMPLETE: the guest launcher could not complete its bounded execution."
