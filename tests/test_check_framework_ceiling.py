@@ -295,10 +295,9 @@ class TestWhatTheRunSays:
         assert "1.20.0 is on the simple index" in rendered
 
     def test_the_annotation_and_the_summary_prescribe_the_same_work(self):
-        # Two copies of one instruction, and they had drifted: the summary said *widen the
-        # ceiling* while the one-line annotation said *raise the floor*. Clearing this red
-        # needs neither — the floor is a separate decision, and the 1.19 adoption moved the
-        # ceiling from `<1.19` to `<1.20` with `>=1.18.0` untouched.
+        # Two copies of one instruction, held to one answer. Clearing this red widens a
+        # ceiling; a floor moves only where the code needs the version, which is a separate
+        # decision, so neither copy may ask for one.
         finding = self._finding("1.20.0")
         for rendered in (check.report([finding]), check.annotation([finding])):
             assert "ceiling" in rendered
