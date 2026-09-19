@@ -17,6 +17,7 @@ from maf_sandbox import (
     SandboxRouter,
     SourceIntegrity,
 )
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -296,13 +297,19 @@ def test_manifest_keeps_the_original_provenance_entry():
 
 
 def test_result_integrity_does_not_promote_compiler_output():
+    """The standing sentence stays trusted; the engine's own text says untrusted for itself,
+    so neither depends on which tier the framework would have answered from."""
     tool, _, _ = attach()
     assert tool.additional_properties == {
-        "source_integrity": "untrusted",
+        "source_integrity": "trusted",
+        DERIVED_INTEGRITY_PROPERTY: "untrusted",
         "sandbox_isolation_scope": "call",
     }
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert result[0].additional_properties.get("security_label") is None
+    assert result[0].additional_properties["security_label"] == {
+        "integrity": "untrusted",
+        "confidentiality": "public",
+    }
     assert result[1].additional_properties["security_label"] == {
         "integrity": "trusted",
         "confidentiality": "public",
@@ -349,3 +356,59 @@ def test_incomplete_guest_reports_never_pass(case):
     result = asyncio.run(tool.func(files=["main.tf"]))
     assert "INCOMPLETE" in result[0].text and "PASS" not in result[0].text
     assert len(backend.disposed) == 1
+
+
+class TestWhatAFidesHostSeesOfASplitResult:
+    """Driven against the real middleware, because the value of the split is entirely its."""
+
+    def _processed(self, tool, files):
+        from agent_framework import FunctionInvocationContext
+        from agent_framework.security import LabelTrackingFunctionMiddleware
+
+        middleware = LabelTrackingFunctionMiddleware()
+        arguments = {"files": files}
+        context = FunctionInvocationContext(function=tool, arguments=arguments)
+
+        async def call_next() -> None:
+            context.result = await tool.invoke(arguments=arguments)
+
+        asyncio.run(middleware.process(context, call_next))
+        seen = [
+            "hidden" if (item.additional_properties or {}).get("_variable_reference") else item.text
+            for item in context.result
+        ]
+        return seen, context.metadata["result_label"], middleware.get_context_label()
+
+    def _tool_answering_one_string(self, text):
+        """What this kind would be without the split: the same claim over a single string."""
+        from agent_framework import tool as as_tool
+
+        async def terraform_validate(files: list[str]) -> str:
+            return text
+
+        return as_tool(
+            name="terraform_validate",
+            additional_properties={"source_integrity": "untrusted"},
+        )(terraform_validate)
+
+    def test_the_sentence_stays_readable_while_the_report_is_hidden(self):
+        tool, _, _ = attach()
+
+        seen, _, _ = self._processed(tool, ["main.tf"])
+
+        assert seen == ["hidden", workload.STANDING_GUIDANCE]
+
+    def test_one_string_would_have_hidden_the_sentence_with_it(self):
+        """The counterfactual: the same host, the same claim, one item."""
+        seen, _, _ = self._processed(self._tool_answering_one_string("PASS"), ["main.tf"])
+
+        assert seen == ["hidden"]
+
+    def test_the_conversation_stays_trusted(self):
+        """Only visible items taint, and the visible one is a constant this package ships."""
+        tool, _, _ = attach()
+
+        _, result, conversation = self._processed(tool, ["main.tf"])
+
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"

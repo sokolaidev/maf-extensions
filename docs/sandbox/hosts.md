@@ -249,7 +249,7 @@ Two limits worth stating plainly. A refusal the tools return as a *string* rathe
 
 ## Classify derived tool results
 
-The host supplies result confidentiality independently of file provenance. To enable core's complete per-item stamp, the attached tool must have both a valid `source_integrity` declaration and an explicit `confidentiality` classification in `additional_properties`. A kind supplies its justified source declaration; the host configures confidentiality before exposing the tool to calls:
+The host supplies result confidentiality independently of file provenance. A tool committing standing guidance stamps every derived item whatever the host sets, flooring the classification at `public` where no readable one is there; the framework keeps the stricter of that and the call's own, so setting one is how the host's classification reaches the item rather than how the stamp is switched on. For a tool committing no guidance the stamp is conditional: the attached tool must have both a valid `source_integrity` declaration and an explicit `confidentiality` classification in `additional_properties`. A kind supplies its justified source declaration; the host configures confidentiality before exposing the tool to calls:
 
 ```python
 for tool in tools:
@@ -258,18 +258,18 @@ for tool in tools:
 
 Here `private` is this host's classification, not a default imposed by the library. Use the value appropriate to the application. This setting applies to the derived results; committed guidance remains trusted/public because its text and presence carry no input information. The framework combines the items, so the complete result retains the derived items' classification.
 
-Core copies the host's classification and weakens source integrity if the call successfully read an untrusted or unestablished file. Reading trusted files never promotes an untrusted tool. Both shipped kinds remain untrusted. A custom kind with a justified trusted declaration is demoted on a weak read even when it declared `nothing_survives_from=(SourceChannel.FILE_STORE,)`.
+Core copies the host's classification and weakens source integrity if the call successfully read an untrusted or unestablished file. Reading trusted files never promotes an untrusted tool. Every shipped kind remains untrusted. A custom kind with a justified trusted declaration is demoted on a weak read even when it declared `nothing_survives_from=(SourceChannel.FILE_STORE,)`.
 
 The keys have different jobs:
 
 | Setting | Meaning | Enables core's derived-item stamp? |
 |---|---|---|
-| Tool `confidentiality` | Classification of that tool's results | Yes, alongside valid `source_integrity` |
+| Tool `confidentiality` | Classification of that tool's results | Committing guidance, no — the stamp is unconditional and this sets its classification. Otherwise yes, alongside valid `source_integrity` |
 | Middleware `default_confidentiality` | Framework fallback for undeclared results | No |
 | Tool `max_allowed_confidentiality` | Maximum classification an outbound sink may accept | No |
 | `FileStoreProvenance.floor` | Integrity of paths with no recorded write | No; it supplies read evidence only |
 
-If either result declaration is absent or invalid, core leaves derived items unlabelled and preserves framework resolution; it still validates and stamps committed guidance. A source declaration alone cannot safely produce a whole per-item label because that would also overwrite confidentiality. The [design decision table](information-flow.md#how-core-labels-a-call) covers every case, and the [kind-authoring guide](kinds/writing-a-kind.md#let-the-host-supply-provenance-and-confidentiality) shows a complete listing, session, and middleware setup.
+For a tool committing no guidance, if either result declaration is absent or invalid, core leaves derived items unlabelled and preserves framework resolution. A tool that commits guidance stamps them regardless — an item left unlabelled there would take its raised declaration — flooring an absent or unreadable classification at `public`, which the framework's combine cannot let loosen the call's own. Either way core validates and stamps committed guidance. A source declaration alone cannot safely produce a whole per-item label because that would also overwrite confidentiality. The [design decision table](information-flow.md#how-core-labels-a-call) covers every case, and the [kind-authoring guide](kinds/writing-a-kind.md#let-the-host-supply-provenance-and-confidentiality) shows a complete listing, session, and middleware setup.
 
 ## Where the storage base comes from
 

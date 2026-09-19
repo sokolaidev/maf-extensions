@@ -148,6 +148,7 @@ _warning_lock = threading.Lock()
 
 __all__ = [
     "DEFAULT_OUTPUTS_TOOL_PREFIX",
+    "DERIVED_INTEGRITY_PROPERTY",
     "EFFECTIVE_STATE_KEY",
     "ISOLATION_SCOPE_KEY",
     "SOURCE_INTEGRITY_PROPERTY",
@@ -569,8 +570,8 @@ def _reachable_middleware() -> Any | None:
 
 #: Where the framework keeps a call's arguments as they arrived, before it expands any
 #: reference into them.  **Not a published contract** — a string literal inside
-#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.18,<1.19``
-#: — so the next minor that ceiling admits may rename it and this would stop answering.  Two
+#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.18,<1.20``
+#: — so either minor that range admits may rename it and this would stop answering.  Two
 #: things keep that from being silent: a divergence alarm in the suite, and, for a host whose
 #: upgrade this suite never saw, `_warn_once_about_a_missing_record` beside an answer that names
 #: every position rather than quoting one.
@@ -1239,9 +1240,113 @@ def sandbox_tool_declarations(
 #:
 #: This records source integrity alone.  The framework's ``security_label`` names both axes and
 #: an integrity-only one is discarded whole, so the item falls back to the invocation label
-#: and loses the integrity claim too. Only the result wrapper may mint one, and only where a
-#: kind declared both.
+#: and loses the integrity claim too. Only the result wrapper may mint one: from a kind's claim
+#: alone where the tool commits guidance, and otherwise only where a kind declared both axes.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
+
+#: What a kind claimed about the output its body derives, on the attached tool.
+#:
+#: The framework reads one integrity declaration per tool and applies it to every item a body
+#: returns.  A sandbox workload needs two answers in one result — guidance the model must read,
+#: and output it must not act on — so a declaring tool declares the stronger to the framework
+#: and :func:`sandboxed_tool` labels every item itself.  This key is what the tool actually
+#: claims about its derived half, for a host auditing the tools it attached: read it rather
+#: than ``source_integrity``, which says only that the labels are the wrapper's to write.
+DERIVED_INTEGRITY_PROPERTY = "maf_sandbox_derived_integrity"
+
+
+def _level(value: object) -> SourceIntegrity | None:
+    """``value`` as a level, or ``None`` where it names none this package recognises."""
+    try:
+        return SourceIntegrity(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def claimed_source_integrity(properties: Mapping[str, Any], *, tool: str) -> SourceIntegrity | None:
+    """The integrity a declarations mapping claims, and the only reading anything may act on.
+
+    ``None`` where it claims none, or names a level this package does not recognise — which is
+    not a claim to refuse, since the framework acts on its own two spellings and logs anything
+    else away.
+
+    A claim must be a ``str`` or a :class:`~maf_sandbox.SourceIntegrity`, and nothing else.
+    Every check of one runs at attach while the mapping is read on every call, so a claim has to
+    be a value that cannot answer differently in between — and those two also read the same
+    whether taken as text or parsed as themselves, which is what makes one reading here binding
+    on what the framework goes on to parse. An unrecognised *spelling* is still a ``str`` and
+    still passes through.
+
+    Raises:
+        ValueError: where a claim is of any other type.
+    """
+    claimed = properties.get("source_integrity")
+    if claimed is None:
+        return None
+    if type(claimed) is not str and not isinstance(claimed, SourceIntegrity):
+        raise ValueError(
+            f"{tool}: source_integrity={claimed!r} is a {type(claimed).__name__}. Every check "
+            "of a claim runs at attach and the mapping is read on every call, so a claim has to "
+            "be a value that cannot answer differently in between: pass a str or a "
+            f"{SourceIntegrity.__name__}."
+        )
+    return _level(claimed)
+
+
+def _implemented_declarations(
+    properties: Mapping[str, Any],
+    *,
+    claimed: SourceIntegrity | None,
+    spelled: object,
+    commits_guidance: bool,
+    tool: str,
+) -> dict[str, Any]:
+    """Move a declared integrity onto :data:`DERIVED_INTEGRITY_PROPERTY` and declare trusted.
+
+    A tool committing no guidance is left alone: it has no item to keep visible, so raising it
+    would buy nothing and would hand an unlabelled item — a body's bare string — the raised
+    declaration.
+
+    Raises:
+        ValueError: where declarations carry :data:`DERIVED_INTEGRITY_PROPERTY`, which is this
+            function's to write, or a tool commits guidance while declaring no integrity, or
+            declares one this package cannot weaken by.
+    """
+    if DERIVED_INTEGRITY_PROPERTY in properties:
+        # This function is the only writer, and every reader below takes the key as proof
+        # that the declaration beside it was raised. A claim belongs in `source_integrity`,
+        # which is what the spec check is held against.
+        raise ValueError(
+            f"{tool}: declarations carry {DERIVED_INTEGRITY_PROPERTY!r}, which only "
+            "sandboxed_tool may write. Claim an integrity with source_integrity, which is "
+            "checked against what the spec opens."
+        )
+    if not commits_guidance:
+        return dict(properties)
+    if spelled is None:
+        raise ValueError(
+            f"{tool}: this tool commits standing guidance and declares no source_integrity. "
+            "The guidance stays readable because every other item is labelled weaker than the "
+            "tool's own declaration, and an undeclared tool has none — its result takes the "
+            "input-label join or the host's default_integrity, which the guidance can then "
+            "only restrict. Declare an integrity, or commit no guidance."
+        )
+    # Refused rather than coerced here, because `sandbox_tool_declarations` coerces its own
+    # argument and a `declarations=` mapping bypasses it: past this point the tool declares
+    # trusted, so a spelling nothing recognises would leave every derived item taking that
+    # declaration instead of a weaker label.
+    if claimed is None:
+        raise ValueError(
+            f"{tool}: this tool commits standing guidance and declares "
+            f"source_integrity={spelled!r}, which is not a level this package recognises. "
+            "Past the raise every derived item would take the tool's own trusted declaration "
+            f"rather than a weaker label. Declare {str(SourceIntegrity.TRUSTED)!r} or "
+            f"{str(SourceIntegrity.UNTRUSTED)!r}."
+        )
+    implemented = dict(properties)
+    implemented[DERIVED_INTEGRITY_PROPERTY] = str(claimed)
+    implemented["source_integrity"] = str(SourceIntegrity.TRUSTED)
+    return implemented
 
 
 class _CallClosed(RuntimeError):
@@ -2245,19 +2350,35 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
 def _result_label(
     declarations: Mapping[str, Any], fed: FedFromStore | None
 ) -> dict[str, Any] | None:
-    """Weaken an explicit declaration, preserving the host's confidentiality verbatim."""
+    """Weaken an explicit declaration, carrying the host's confidentiality where it set one.
+
+    A tool whose declaration was raised to trusted is labelled unconditionally: an item left
+    unlabelled there would take the raised declaration.  Its confidentiality floors at
+    ``public`` rather than dropping the label, which costs the item nothing — the framework
+    keeps the stricter of an item's classification and the invocation's.
+    """
     from agent_framework.security import ConfidentialityLabel, ContentLabel, IntegrityLabel
 
-    integrity = declarations.get("source_integrity")
+    raised = declarations.get(DERIVED_INTEGRITY_PROPERTY)
+    integrity = declarations.get("source_integrity") if raised is None else raised
     confidentiality = declarations.get("confidentiality")
-    if integrity is None or confidentiality is None:
+    if integrity is None or (raised is None and confidentiality is None):
         return None
+    # Unreadable either way, the framework falls back to host defaults we cannot know — so an
+    # unraised tool writes nothing and keeps them. A raised one has only its own trusted
+    # declaration to fall back to, and takes the weakest label instead.
     try:
         declared = IntegrityLabel(integrity)
+    except (TypeError, ValueError):
+        if raised is None:
+            return None
+        declared = IntegrityLabel.UNTRUSTED
+    try:
         classified = ConfidentialityLabel(confidentiality)
     except (TypeError, ValueError):
-        # The framework falls back to host defaults for invalid declarations; we cannot know them.
-        return None
+        if raised is None:
+            return None
+        classified = ConfidentialityLabel.PUBLIC
     if fed is not None and fed.weakest is not SourceIntegrity.TRUSTED:
         declared = IntegrityLabel.UNTRUSTED
     return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
@@ -2319,8 +2440,9 @@ def _label_tool_result(
         )
     if derived_count == 0:
         raise ValueError(
-            f"{tool}: this result needs a derived item that carries the call's confidentiality "
-            "before its standing guidance."
+            f"{tool}: this result needs a derived item before its standing guidance. The "
+            "guidance says what the rest of the result is worth, and a result that is nothing "
+            "else says it of nothing."
         )
     label = _result_label(declarations, fed)
     labelled: list[Content] = []
@@ -2408,10 +2530,13 @@ def sandboxed_tool(
        synchronous one is not held to a rule it cannot break.
     8. **The wrapper owns result labels.** A body returns one string or unlabelled items,
        ending with its committed guidance. The wrapper stamps those sentences trusted/public.
-       With valid ``source_integrity`` and host-set ``confidentiality`` declarations, it also
-       stamps every derived item, weakening integrity when this call read an untrusted or
-       unestablished file. A string becomes one item. Without both declarations, derived items
-       retain the framework's fallback. Neither the declaration nor another call is changed.
+       A tool committing guidance declares ``trusted`` to the framework so those sentences are
+       trusted whatever the kind claims, keeps that claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
+       stamps every derived item from it. One committing none stamps only with valid
+       ``source_integrity`` and host-set ``confidentiality`` declarations, and otherwise leaves
+       derived items to the framework's fallback. Either way a stamp weakens integrity when
+       this call read an untrusted or unestablished file, a string becomes one item, and
+       neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -2442,10 +2567,24 @@ def sandboxed_tool(
         declarations: ``additional_properties`` to write verbatim, for a workload that wants
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
             Refused together with ``output_sink``. A ``source_integrity`` of ``"trusted"`` is
-            held to the same spec check the derivation applies. The result wrapper reads the
-            attached tool's ``source_integrity`` and ``confidentiality`` on each return; the
-            host may set its classification on that tool before use. No declaration keyword
-            is honoured beside this mapping.
+            held to the same spec check the derivation applies. Where this tool also commits
+            standing guidance the integrity is moved onto :data:`DERIVED_INTEGRITY_PROPERTY`,
+            and a spelling this package does not recognise is refused at attach rather than at
+            the first call; a mapping on a tool committing none reaches the tool with its
+            ``source_integrity`` exactly as it came. Verbatim is not unchecked, and on either
+            path: the claim must be a ``str`` or a :class:`~maf_sandbox.SourceIntegrity`, since
+            every check runs at attach while this mapping is read on every call and only those
+            cannot answer differently in between; and its two readings — its text, and the
+            value the framework parses — must name one level, a claim naming two being refused
+            rather than resolved to either. An unrecognised spelling is still a ``str``, so it
+            passes through as it always did. Carrying
+            :data:`DERIVED_INTEGRITY_PROPERTY`
+            itself is refused either way — only the wrapper writes it. A mapping is also what
+            satisfies ``standing_guidance``'s requirement for an integrity declaration, so one
+            carrying none is refused beside a commitment. The result wrapper reads
+            whichever key holds the claim, and the attached tool's ``confidentiality``, on each
+            return; the host may set its classification on that tool before use. No declaration
+            keyword is honoured beside this mapping.
         source_integrity: A :class:`~maf_sandbox.SourceIntegrity`, passed to
             :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. ``None`` is the default and declares no integrity at
@@ -2484,7 +2623,11 @@ def sandboxed_tool(
             Only ``{call_id}`` may interpolate; the wrapper renders it from this call and
             rebuilds the guidance without other fields from the body's items. A malformed or
             empty sentence, or a call-id sentence on a synchronous body, is refused at attach.
-            Empty commits no guidance; body-supplied labels are still refused.
+            **Committing any sentence requires an integrity declaration** — this keyword or a
+            ``source_integrity`` in ``declarations`` — because the guidance stays readable by
+            sitting above what every other item is labelled, and an undeclared tool has nothing
+            for it to sit above; committing one without is refused at attach. Empty commits no
+            guidance; body-supplied labels are still refused.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
@@ -2538,7 +2681,12 @@ def sandboxed_tool(
         agent_id = agent_dir
     elif agent_dir is not None:
         raise TypeError("pass agent_id or agent_dir, not both")
-    if output_sink is not None and declarations is not None:
+    # Read once, here, into `supplied_claim`: one reading is what every check below is held
+    # to. The mapping itself is left as it came, which is what `declarations=` promises.
+    supplied = dict(declarations) if declarations is not None else None
+    supplied_spelling = None if supplied is None else supplied.get("source_integrity")
+    supplied_claim = None if supplied is None else claimed_source_integrity(supplied, tool=name)
+    if output_sink is not None and supplied is not None:
         raise ValueError(
             f"{name}: pass either output_sink or declarations=, never both. An explicit "
             "mapping is written verbatim, so the pair would attach a tool whose declarations "
@@ -2546,10 +2694,10 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
-    # The attach check reads this key raw: FIDES acts on exactly this spelling
-    # (`IntegrityLabel(value)`, anything else logged and dropped), so an unrecognised value is
-    # not a claim to refuse — and the mapping's vocabulary is the host's, not this package's.
-    if declarations is not None and declarations.get("source_integrity") == SourceIntegrity.TRUSTED:
+    # Before `_implemented_declarations`, so this weighs the caller's own claim rather than the
+    # declaration the wrapper may raise over it, and through the same reader so the two cannot
+    # disagree about what was claimed.
+    if supplied is not None and supplied_claim is SourceIntegrity.TRUSTED:
         unestablished = _source_channels_not_established_as_trusted(spec, frozenset())
         if unestablished:
             raise _unlicensed_trusted_claim_refusal(
@@ -2616,9 +2764,12 @@ def sandboxed_tool(
         admission_timeout=admission_timeout,
         cleanup_timeout=effective_timeout,
     )
-    properties = (
-        dict(declarations)
-        if declarations is not None
+    # Materialised before the declarations, which turn on whether anything was committed, and
+    # before `_committed_guidance` consumes it: a caller may pass any iterable.
+    promised = tuple(standing_guidance)
+    derived = (
+        supplied
+        if supplied is not None
         else sandbox_tool_declarations(
             spec,
             source_integrity=source_integrity,
@@ -2628,6 +2779,17 @@ def sandboxed_tool(
             nothing_survives_from=nothing_survives_from,
             isolation_scope=router.effective_isolation_scope(spec),
         )
+    )
+    properties = _implemented_declarations(
+        derived,
+        # The mapping's reading is the one frozen above; the derivation writes its own coerced
+        # text, so reading that back cannot answer differently.
+        claimed=supplied_claim
+        if supplied is not None
+        else claimed_source_integrity(derived, tool=name),
+        spelled=supplied_spelling if supplied is not None else derived.get("source_integrity"),
+        commits_guidance=bool(promised),
+        tool=name,
     )
 
     # Imported here rather than at module scope so that merely importing this module — which
@@ -2642,7 +2804,7 @@ def sandboxed_tool(
     body = build(session)
     # Validated here rather than at first use: a sentence that cannot render is a wiring
     # mistake in a kind, and finding it at attach costs a reviewer nothing.
-    committed = _committed_guidance(standing_guidance, tool=name, awaits=_awaits(body))
+    committed = _committed_guidance(promised, tool=name, awaits=_awaits(body))
     if not _awaits(body):
         # Keep the wrapper synchronous so MAF runs the body and result labelling off
         # the event loop, as it does for other synchronous tools.

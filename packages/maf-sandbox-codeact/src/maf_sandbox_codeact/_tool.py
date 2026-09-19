@@ -551,8 +551,9 @@ def make_codeact_tools(
         # Withheld or not: what comes back is chosen by a program the model wrote, an exit bit
         # and a presence bit per output being as much its choice as the text. Declared rather
         # than omitted because a declaration replaces the other two tiers, and neither is this
-        # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
-        # which is tier 1 and read first — `information-flow.md` carries both.
+        # kind's to answer for. Where the withheld route commits guidance the wrapper raises
+        # what reaches the framework and stamps every derived item from this claim instead —
+        # `information-flow.md` carries both.
         source_integrity=SourceIntegrity.UNTRUSTED,
         # The wrapper validates and stamps this suffix so the body cannot choose which
         # returned items become trusted.

@@ -33,6 +33,7 @@ from maf_sandbox import (
     Selection,
     SourceIntegrity,
 )
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -441,7 +442,9 @@ def test_withholding_collects_after_guest_failure_without_returning_streams():
     assert "non-zero" in result[0].text
     assert "declared output" in result[-1].text
     assert landed[0].content == b"secret"
-    assert tool.additional_properties["source_integrity"] == SourceIntegrity.UNTRUSTED
+    # Withholding commits standing guidance, so the tool declares trusted and the wrapper
+    # labels every item; its own claim about the derived half moves to this key.
+    assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == SourceIntegrity.UNTRUSTED
 
 
 def test_runtime_instructions_do_not_promise_an_exec_image_or_implicit_working_directory():

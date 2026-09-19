@@ -16,7 +16,7 @@ from maf_sandbox import (
     SourceChannel,
     SourceIntegrity,
 )
-from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY, SandboxToolSession, sandboxed_tool
 from maf_sandbox.testing import InMemoryStore, InProcessSandboxBackend
 
 _GUIDANCE = "A hidden result is not a successful check."
@@ -86,7 +86,14 @@ def test_every_result_path_is_stamped_and_a_trusted_read_never_promotes(
             "integrity": "trusted",
             "confidentiality": "public",
         }
-    assert tool.additional_properties["source_integrity"] == source
+    if split:
+        # Guidance to keep visible is what raises the declaration: the tool tells the framework
+        # the labels are the wrapper's to write, and keeps its own claim on a key of its own.
+        assert tool.additional_properties["source_integrity"] == "trusted"
+        assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == source
+    else:
+        assert tool.additional_properties["source_integrity"] == source
+        assert DERIVED_INTEGRITY_PROPERTY not in tool.additional_properties
 
 
 @pytest.mark.parametrize("confidentiality", [None, "", "unknown"])
@@ -95,6 +102,26 @@ def test_without_a_valid_host_confidentiality_the_result_keeps_its_fallback(conf
     if confidentiality is not None:
         tool.additional_properties["confidentiality"] = confidentiality
     assert asyncio.run(tool.invoke(arguments={}))[0].additional_properties == {}
+
+
+@pytest.mark.parametrize("confidentiality", [None, "", "unknown"])
+def test_a_raised_tool_floors_an_unreadable_confidentiality_rather_than_dropping_the_label(
+    confidentiality,
+):
+    """The fallback a dropped label falls to is the raised declaration, so the label is written
+    either way. The framework keeps the stricter of the item's classification and the
+    invocation's, so flooring costs the item nothing."""
+    tool = _reading(
+        [None],
+        answer=[Content.from_text("derived"), Content.from_text(_GUIDANCE)],
+        guidance=(_GUIDANCE,),
+    )
+    if confidentiality is not None:
+        tool.additional_properties["confidentiality"] = confidentiality
+    assert asyncio.run(tool.invoke(arguments={}))[0].additional_properties["security_label"] == {
+        "integrity": "untrusted",
+        "confidentiality": "public",
+    }
 
 
 def test_without_an_integrity_declaration_the_wrapper_cannot_override_the_input_join():
@@ -202,3 +229,60 @@ def test_synchronous_bodies_use_the_same_labelling_wrapper():
         "integrity": "untrusted",
         "confidentiality": "private",
     }
+
+
+class TestTheFrameworkContractARaisedToolRestsOn:
+    """Three framework behaviours, driven against a bare tool so a change in them fails here.
+
+    Raising a committing tool's declaration to ``trusted`` puts the weight on per-item labels:
+    what keeps a sandbox's own output out of the conversation is the wrapper's ``untrusted``
+    stamp rather than the tool's declaration. A framework that stopped honouring that stamp
+    would hand every derived item the raised declaration, visible and trusted — so these are
+    asserted at the boundary rather than trusted to stay true.
+    """
+
+    def _processed(self, items, *, declarations):
+        from agent_framework import FunctionInvocationContext, FunctionTool
+
+        async def body() -> list[Content]:
+            return items
+
+        tool = FunctionTool(name="probe", func=body, additional_properties=declarations)
+        middleware = LabelTrackingFunctionMiddleware()
+        context = FunctionInvocationContext(function=tool, arguments={})
+
+        async def call_next() -> None:
+            context.result = await tool.invoke(arguments={})
+
+        asyncio.run(middleware.process(context, call_next))
+        return context, middleware
+
+    @staticmethod
+    def _labelled(text, **label):
+        return Content.from_text(text, additional_properties={"security_label": label})
+
+    def test_an_items_untrusted_label_restricts_a_trusted_declaration(self):
+        """The one that must not change: this is what hides a sandbox's output."""
+        context, _ = self._processed(
+            [self._labelled("derived", integrity="untrusted", confidentiality="public")],
+            declarations={"source_integrity": "trusted"},
+        )
+        assert context.result[0].additional_properties.get("_variable_reference")
+        assert str(context.metadata["result_label"].integrity) == "untrusted"
+
+    def test_an_unlabelled_item_takes_the_declaration_whole(self):
+        """Why every item of a raised tool is labelled: silence here reads as trusted."""
+        context, _ = self._processed(
+            [Content.from_text("derived")], declarations={"source_integrity": "trusted"}
+        )
+        assert not context.result[0].additional_properties.get("_variable_reference")
+        assert str(context.metadata["result_label"].integrity) == "trusted"
+
+    def test_an_items_public_floor_does_not_declassify_the_call(self):
+        """Why an unreadable host classification floors at ``public`` instead of dropping the
+        label: confidentiality combines, so the floor cannot loosen what the call carries."""
+        context, _ = self._processed(
+            [self._labelled("derived", integrity="untrusted", confidentiality="public")],
+            declarations={"source_integrity": "trusted", "confidentiality": "private"},
+        )
+        assert str(context.metadata["result_label"].confidentiality) == "private"

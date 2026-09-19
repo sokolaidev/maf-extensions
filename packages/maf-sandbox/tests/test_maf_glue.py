@@ -67,6 +67,7 @@ from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     _ORIGINAL_ARGUMENTS_KEY,
+    DERIVED_INTEGRITY_PROPERTY,
     ISOLATION_SCOPE_KEY,
     SOURCE_INTEGRITY_PROPERTY,
     SandboxPurger,
@@ -1085,6 +1086,163 @@ class TestAttachedToolShape:
         assert tool.additional_properties == {"source_integrity": "trusted"}
 
 
+class _MutableClaim:
+    """Names no level anything recognises until `arm` is called, and `trusted` after."""
+
+    def __init__(self) -> None:
+        self.armed = False
+
+    def arm(self) -> None:
+        self.armed = True
+
+    def __str__(self) -> str:
+        return str(SourceIntegrity.TRUSTED) if self.armed else "unknown"
+
+    def __eq__(self, other: object) -> bool:
+        return self.armed and other == str(SourceIntegrity.TRUSTED)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+class _TextAndValueDisagree(str):
+    """A `str` whose text names one level and whose value names the other."""
+
+    def __new__(cls) -> _TextAndValueDisagree:
+        return super().__new__(cls, str(SourceIntegrity.TRUSTED))
+
+    def __str__(self) -> str:
+        return str(SourceIntegrity.UNTRUSTED)
+
+
+class _TextOnly:
+    """Names a level by its text and none the framework can parse out of the mapping."""
+
+    def __str__(self) -> str:
+        return str(SourceIntegrity.UNTRUSTED)
+
+
+class _Drifting:
+    """Names a different level on each reading."""
+
+    def __init__(self) -> None:
+        self._reads = 0
+
+    def __str__(self) -> str:
+        self._reads += 1
+        return str(SourceIntegrity.UNTRUSTED if self._reads == 1 else SourceIntegrity.TRUSTED)
+
+
+class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
+    """Committed guidance is the one item a sandbox workload returns trusted, and the framework
+    reads a single declaration per tool — so a tool with guidance to keep visible declares the
+    stronger and the wrapper labels every item itself."""
+
+    def _tool(self, **kw):
+        (tool,) = _attach(_router(InProcessSandboxBackend()), standing_guidance=(_GUIDANCE,), **kw)
+        return tool
+
+    def test_the_kinds_claim_moves_to_a_key_of_this_packages_own(self):
+        assert self._tool(source_integrity="untrusted").additional_properties == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
+
+    def test_a_mapping_is_raised_the_same_way_and_keeps_its_other_keys(self):
+        assert self._tool(
+            declarations={"source_integrity": "untrusted", "house_key": "kept"}
+        ).additional_properties == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+            "house_key": "kept",
+        }
+
+    @pytest.mark.parametrize("commits", [False, True], ids=["no-guidance", "guidance"])
+    def test_the_derived_integrity_key_is_refused_from_a_caller(self, commits):
+        """Only the wrapper writes it, so a caller carrying one is refused on either path."""
+        with pytest.raises(ValueError, match=DERIVED_INTEGRITY_PROPERTY):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                standing_guidance=(_GUIDANCE,) if commits else (),
+                declarations={
+                    DERIVED_INTEGRITY_PROPERTY: "trusted",
+                    "confidentiality": "private",
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "claim",
+        [
+            pytest.param(_TextAndValueDisagree(), id="str-subclass"),
+            pytest.param(_TextOnly(), id="opaque"),
+            pytest.param(_Drifting(), id="text-that-changes"),
+            pytest.param(_MutableClaim(), id="mutable"),
+        ],
+    )
+    @pytest.mark.parametrize("commits", [False, True], ids=["no-guidance", "guidance"])
+    def test_a_claim_that_is_not_a_string_is_refused(self, claim, commits):
+        """Every check of a claim runs at attach and the mapping is read on every call, so a
+        claim has to be a value that cannot answer differently in between."""
+        with pytest.raises(ValueError, match="pass a str or a SourceIntegrity"):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                standing_guidance=(_GUIDANCE,) if commits else (),
+                declarations={"source_integrity": claim, "confidentiality": "private"},
+            )
+
+    def test_a_claim_cannot_be_armed_after_the_tool_is_attached(self):
+        """The attach-time checks are the only ones there are, so nothing they cleared may
+        become a trusted claim once the tool is in a host's hands."""
+        claim = _MutableClaim()
+
+        with pytest.raises(ValueError):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                declarations={"source_integrity": claim, "confidentiality": "private"},
+            )
+
+        claim.arm()
+        assert str(claim) == str(SourceIntegrity.TRUSTED)
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [str(SourceIntegrity.UNTRUSTED), SourceIntegrity.UNTRUSTED],
+        ids=["str", "enum"],
+    )
+    def test_an_accepted_claim_reads_the_same_way_the_framework_will_read_it(self, spelling):
+        """One reading at attach binds every later call only because these two types cannot be
+        read two ways: as text and parsed as themselves they name the same level."""
+        from agent_framework.security import IntegrityLabel
+
+        (tool,) = _attach(
+            _router(InProcessSandboxBackend()),
+            declarations={"source_integrity": spelling},
+        )
+        attached = tool.additional_properties["source_integrity"]
+
+        assert attached is spelling
+        assert (
+            _maf.claimed_source_integrity(tool.additional_properties, tool="widget_run")
+            is SourceIntegrity.UNTRUSTED
+        )
+        assert IntegrityLabel(attached) is IntegrityLabel.UNTRUSTED
+
+    def test_a_mapping_reaches_the_tool_verbatim_without_a_commitment(self):
+        """`declarations=` is written as it came, so a host reads back the object it passed."""
+        (tool,) = _attach(
+            _router(InProcessSandboxBackend()),
+            spec=_NO_CHANNEL_SPEC,
+            declarations={"source_integrity": SourceIntegrity.TRUSTED},
+        )
+
+        assert tool.additional_properties["source_integrity"] is SourceIntegrity.TRUSTED
+
+    def test_an_unknown_spelling_is_refused_rather_than_raised(self):
+        """Past the raise the tool declares trusted, so a spelling this package cannot weaken
+        by is the one value that must not reach an attached tool."""
+        with pytest.raises(ValueError, match="Trusted"):
+            self._tool(declarations={"source_integrity": "Trusted"})
+
+
 class TestAttachedToolRuns:
     def test_the_body_reaches_the_sandbox_through_the_session(self):
         backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
@@ -1212,6 +1370,10 @@ def _typed_body(session: SandboxToolSession):
 
 def _attach_with(build, router, *, spec=_SPEC, name="widget_run", **kw):
     kw.setdefault("logger", logging.getLogger("test_workload"))
+    if kw.get("standing_guidance") and "declarations" not in kw:
+        # Committed guidance needs a declaration to stay readable, and the cases reaching this
+        # default are about the sentences rather than about what a result claims.
+        kw.setdefault("source_integrity", "untrusted")
     return sandboxed_tool(
         build,
         router=router,
@@ -4106,9 +4268,9 @@ class TestSessionReadFile:
         assert self._label(item) == "untrusted"
 
     def test_a_carried_item_does_not_count_as_labelled_to_the_result_check(self):
-        """`sandboxed_tool` refuses a result whose *every* item carries a label, because an
-        unlabelled item is where the call's own confidentiality comes from. An item that came
-        out of the store must not consume that allowance just by having been read."""
+        """`sandboxed_tool` refuses any item arriving with a `security_label`, because only the
+        wrapper may write one. An item that came out of the store must not trip that refusal
+        just by having been read."""
         store = _ReadStore({"a.txt": "1"})
         item = asyncio.run(
             _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
@@ -5188,7 +5350,7 @@ class TestArgumentProvenanceMiddleware:
 
         The exact answer is read out of `original_arguments_for_messages`, which is a string
         literal inside `LabelTrackingFunctionMiddleware` rather than anything the framework
-        publishes — and this package accepts `agent-framework-core>=1.18,<1.19`. A rename turns
+        publishes — and this package accepts `agent-framework-core>=1.18,<1.20`. A rename turns
         most of this class red at once, because failing closed makes every test that expects a
         particular answer expect the wrong one, and none of them says what happened. This is
         the one that does.
@@ -5763,7 +5925,7 @@ def _text(text):
 
 
 class TestAResultThatIsItems:
-    """Bodies supply unlabelled items; the wrapper stamps only committed guidance."""
+    """Bodies supply unlabelled items; the wrapper is the only thing that labels any of them."""
 
     def _tool(self, build, **kw):
         return _attach_with(build, _router(InProcessSandboxBackend()), **kw)[0]
@@ -5780,7 +5942,10 @@ class TestAResultThatIsItems:
         }
         assert "security_label" not in derived.additional_properties
         assert "security_label" not in guidance.additional_properties
-        assert "security_label" not in result[0].additional_properties
+        assert result[0].additional_properties["security_label"] == {
+            "integrity": "untrusted",
+            "confidentiality": "public",
+        }
 
     @pytest.mark.parametrize("build", [_items, _sync_items])
     @pytest.mark.parametrize("committed", [(), (_GUIDANCE,)])
@@ -5801,11 +5966,12 @@ class TestAResultThatIsItems:
             _call(self._tool(_items()), target="x")
 
     @pytest.mark.parametrize("committed", [(_GUIDANCE,), (_GUIDANCE, "Read the diagnostics.")])
-    def test_guidance_alone_cannot_replace_the_calls_confidentiality(self, committed):
+    def test_a_result_that_is_only_guidance_is_refused(self, committed):
+        """Guidance says what the rest of the result is worth, so it needs a rest to say it of."""
         tool = self._tool(
             _items(*(_text(sentence) for sentence in committed)), standing_guidance=committed
         )
-        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+        with pytest.raises(ValueError, match="needs a derived item"):
             _call(tool, target="x")
 
     def test_the_call_is_still_reclaimed_when_the_shape_is_refused(self):
@@ -5934,7 +6100,18 @@ class TestWhatASplitResultDoesToTheCallsLabel:
             asyncio.run(tracker.process(context, enforce))
         assert [entry["type"] for entry in policy.get_audit_log()] == ["untrusted_arguments"]
 
-    @pytest.mark.parametrize("source", [None, "untrusted"])
+    def test_guidance_without_a_declaration_is_refused_at_attach(self):
+        """An undeclared tool's result takes the join or the host's default, and guidance can
+        only restrict from there — so the sentence could not be kept readable."""
+        with pytest.raises(ValueError, match="declares no source_integrity"):
+            _attach_with(
+                _items(_text("EXIT=1"), _text(_GUIDANCE)),
+                _router(InProcessSandboxBackend()),
+                declarations={"confidentiality": "private"},
+                standing_guidance=(_GUIDANCE,),
+            )
+
+    @pytest.mark.parametrize("source", ["untrusted"])
     @pytest.mark.parametrize("declare_confidentiality", [False, True])
     def test_guidance_stays_visible_and_the_derived_half_keeps_its_classification(
         self, source, declare_confidentiality
@@ -5943,8 +6120,7 @@ class TestWhatASplitResultDoesToTheCallsLabel:
         from agent_framework.security import ConfidentialityLabel, LabelTrackingFunctionMiddleware
 
         declarations = {"confidentiality": "private"} if declare_confidentiality else {}
-        if source is not None:
-            declarations["source_integrity"] = source
+        declarations["source_integrity"] = source
         tool = _attach_with(
             _items(_text("EXIT=1"), _text(_GUIDANCE)),
             _router(InProcessSandboxBackend()),
@@ -6589,12 +6765,14 @@ class TestTheCommittedSentencesAreASequence:
         return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
 
     def test_a_duplicate_in_the_derived_half_gets_no_trusted_label(self):
+        """Repeating the sentence earlier does not buy a second trusted item: only the last
+        ones are the commitment, and the rest are derived however they read."""
         tool = self._attach(
             [_text("EXIT=1"), _text(_GUIDANCE), _text(_GUIDANCE)],
             standing_guidance=(_GUIDANCE,),
         )
         result = asyncio.run(tool.invoke(arguments={"target": "t"}))
-        assert "security_label" not in result[1].additional_properties
+        assert result[1].additional_properties["security_label"]["integrity"] == "untrusted"
         assert result[2].additional_properties["security_label"]["integrity"] == "trusted"
 
     def test_two_committed_sentences_out_of_order_are_refused(self):
