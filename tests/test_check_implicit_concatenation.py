@@ -88,10 +88,7 @@ class TestTheDefectItExistsFor:
         assert len(check.findings(source, "x.py")) == 1
 
     def test_an_element_that_is_an_expression_is_reported(self):
-        """The element need not *be* the literals — a `+` chain ending in two of them is the same.
-
-        `scripts/check_title_diff.py` had this shape while the gate was green.
-        """
+        """The element need not *be* the literals — a `+` chain ending in two of them is the same."""
         source = 'lines = [\n    "start " + name\n    + "first half "\n    "second half",\n]\n'
         assert [line.split(":")[1] for line in check.findings(source, "x.py")] == ["3"]
 
@@ -131,10 +128,10 @@ class TestWhatItLeavesAlone:
         assert check.findings(source, "x.py") == []
 
     def test_a_call_that_is_itself_an_element_keeps_that_freedom(self):
-        """The nearest comma-separated container owns the run, and here it is the call.
+        """The nearest comma-separated container owns the run, and here that is the call.
 
-        44 of this repository's wrapped messages sit exactly here; reading them as elements of
-        the enclosing list is what would make the check unusable.
+        Most of this repository's wrapped messages sit here; reading them as elements of the
+        enclosing list is what would make the check unusable.
         """
         source = 'cases = [\n    case(\n        "first half "\n        "second half",\n    ),\n]\n'
         assert check.findings(source, "x.py") == []
@@ -146,6 +143,19 @@ class TestWhatItLeavesAlone:
     def test_a_literal_inside_a_replacement_field_is_not_a_second_part(self):
         source = 'lines = [\n    f"{mapping[\'key\']} was read",\n    "other",\n]\n'
         assert check.findings(source, "x.py") == []
+
+
+class TestWhatItCannotReach:
+    """The one shape no rule here can see, asserted so the boundary is checkable."""
+
+    def test_a_two_element_tuple_that_lost_its_only_comma(self):
+        """What believing the parentheses costs, and the trailing comma that gets it back.
+
+        `("left" "right")` is a parenthesized string, character for character the form that
+        says one value was meant, so no reading of the source separates the two.
+        """
+        assert check.findings('pair = ("left" "right")\n', "x.py") == []
+        assert len(check.findings('pair = ("left" "right",)\n', "x.py")) == 1
 
 
 class TestSpansOnALineHoldingNonAscii:
@@ -196,8 +206,8 @@ class TestThisRepository:
     def test_no_collection_literal_in_the_tree_hides_a_missing_comma(self):
         """The check over its own repository, so `pytest` alone reports what the gate would.
 
-        Every deliberate concatenation here is parenthesized; this is what holds the next one
-        to the same form rather than leaving it to a bot comment after the push.
+        Every deliberate concatenation here is parenthesized, and this is what holds the next
+        one to that form.
         """
         problems: list[str] = []
         for path in check.tracked_python(_ROOT):

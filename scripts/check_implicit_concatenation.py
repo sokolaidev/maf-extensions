@@ -16,6 +16,12 @@ comma-separated container is something else. An argument list is what that quali
 for, since this repository writes hundreds of messages across two lines inside a call, and a
 dict is out because a comma lost between two pairs puts a second ``:`` in one and does not
 parse.
+
+One shape is beyond any rule here: a two-element tuple whose only comma is the missing one.
+``("left" "right")`` is not a tuple, it is a parenthesized string — character for character the
+form this check asks for when one value was meant — so no reading of the source can separate
+the two. ``("left" "right",)`` keeps its trailing comma and is reported, and an annotated
+target fails pyright; an unannotated one is caught by nothing.
 """
 
 from __future__ import annotations
