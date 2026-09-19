@@ -51,8 +51,23 @@ def main() -> None:
                 _hypervisor_library = ctypes.WinDLL("WinHvPlatform.dll")
             sdk = importlib.import_module("hyperlight_sandbox")
             constructor = cast("Callable[..., _NativeSandbox]", sdk.Sandbox)
+            file_options: dict[str, object] = {}
+            if "output_dir" in request:
+                directory = request["output_dir"]
+                if not isinstance(directory, str):
+                    raise ValueError("invalid output directory")
+                file_options = {
+                    "output_dir": directory,
+                    "max_file_size": "8Mi",
+                    "max_total_size": "32Mi",
+                    "max_file_count": 64,
+                }
             sandbox = constructor(
-                backend="wasm", module="python_guest.path", heap_size="400Mi", stack_size="200Mi"
+                backend="wasm",
+                module="python_guest.path",
+                heap_size="400Mi",
+                stack_size="200Mi",
+                **file_options,
             )
             targets = request["targets"]
             if not isinstance(targets, list):

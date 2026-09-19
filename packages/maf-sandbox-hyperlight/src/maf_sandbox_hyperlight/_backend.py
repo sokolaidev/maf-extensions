@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from maf_sandbox import (
+    DEFAULT_TRANSFER_LIMITS,
     BackendDeclarations,
     Capability,
     DisposalFailure,
@@ -33,7 +34,9 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 
+from ._admission import admit, require_owner
 from ._config import HyperlightSandboxConfig
+from ._files import GUEST_ROOT, OutputDirectory
 from ._process import Worker
 from ._wire import HyperlightWorkerError
 
@@ -47,6 +50,12 @@ RUNTIME_INSTRUCTIONS = (
     "do not use future imports or assume the full desktop standard library. "
     "http_get(url) and http_post(url, body=..., content_type=...) provide HTTP where the host "
     "allowlist permits it; raw sockets are unavailable."
+)
+FILE_RUNTIME_INSTRUCTIONS = RUNTIME_INSTRUCTIONS.replace(
+    "or file-transfer channel.",
+    "or input file-transfer channel. Write output files directly under /output using flat "
+    "filenames; nested directories and link creation are unavailable. Outputs are collected "
+    "before cleanup and do not persist to another call.",
 )
 
 
@@ -129,16 +138,31 @@ class _HyperlightSandbox:
         targets: tuple[str, ...],
         contract: str | None,
         owner: str,
+        key: SandboxKey,
+        kind: str,
     ) -> None:
         self.config = config
         self.targets = targets
         self.contract = contract
         self.owner = owner
+        self.key = key
+        self.kind = kind
+        self._files_gate = threading.Lock()
         self._gate = threading.Lock()
         self._state = threading.Lock()
         self._identity = uuid.uuid4().hex
         self._retired = False
-        self.worker = Worker(config)
+        self.outputs = OutputDirectory() if config.file_outputs else None
+        try:
+            self.worker = Worker(config)
+        except BaseException:
+            if self.outputs is not None:
+                self.outputs.close()
+            raise
+
+    def _authorize(self) -> None:
+        if self.outputs is not None:
+            require_owner(self.key, self.kind)
 
     @property
     def instance_id(self) -> str:
@@ -159,7 +183,14 @@ class _HyperlightSandbox:
 
     async def stop(self) -> None:
         self.retire()
-        await _finish(asyncio.create_task(_offload(self.worker.close)))
+
+        def close() -> None:
+            self.worker.close()
+            with self._files_gate:
+                if self.outputs is not None:
+                    self.outputs.close()
+
+        await _finish(asyncio.create_task(_offload(close)))
 
     async def _exchange(self, message: dict[str, object], deadline: float) -> dict[str, object]:
         if not self.alive:
@@ -203,21 +234,42 @@ class _HyperlightSandbox:
             raise
 
     async def prepare(self, deadline: float) -> None:
+        message: dict[str, object] = {
+            "op": "init",
+            "targets": self.targets,
+            "output_limit": self.config.max_output_bytes,
+        }
+        if self.outputs is not None:
+            message["output_dir"] = str(self.outputs.path)
         response = await self._exchange(
-            {"op": "init", "targets": self.targets, "output_limit": self.config.max_output_bytes},
+            message,
             deadline,
         )
         if response != {"ok": True}:
             raise HyperlightWorkerError("worker did not confirm preparation")
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        self._authorize()
         deadline = _deadline(timeout)
         if not isinstance(cast("object", code), str):
             raise TypeError("code must be Python source text")
         if len(code.encode("utf-8")) > self.config.max_code_bytes:
             raise ValueError("code exceeds max_code_bytes")
         async with _claim(self._gate, deadline):
+            self._authorize()
+            if self.outputs is not None:
+                try:
+                    self.outputs.validate()
+                except BaseException:
+                    await self.stop()
+                    raise
             response = await self._exchange({"op": "run", "code": code}, deadline)
+            if self.outputs is not None:
+                try:
+                    self.outputs.validate()
+                except BaseException:
+                    await self.stop()
+                    raise
             stdout, stderr, status = (
                 response.get("stdout"),
                 response.get("stderr"),
@@ -239,12 +291,26 @@ class _HyperlightSandbox:
             return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
 
     async def reset(self, *, timeout: float) -> None:
+        self._authorize()
         deadline = _deadline(timeout)
         async with _claim(self._gate, deadline):
+            self._authorize()
+            if self.outputs is not None:
+                try:
+                    self.outputs.validate()
+                except BaseException:
+                    await self.stop()
+                    raise
             response = await self._exchange({"op": "reset"}, deadline)
             if response != {"ok": True}:
                 await self.stop()
                 raise HyperlightWorkerError("worker did not confirm restore")
+            if self.outputs is not None:
+                try:
+                    self.outputs.clear()
+                except BaseException:
+                    await self.stop()
+                    raise
             with self._state:
                 if self._retired:
                     raise HyperlightWorkerError("sandbox was disposed during restore")
@@ -259,10 +325,32 @@ class _HyperlightSandbox:
         raise NotImplementedError("Hyperlight file channels are not enabled")
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
-        raise NotImplementedError("Hyperlight file channels are not enabled")
+        if self.outputs is None:
+            raise NotImplementedError("Hyperlight file channels are not enabled")
+        self._authorize()
+        async with _claim(self._gate, _deadline(self.config.startup_timeout)):
+            self._authorize()
+            with self._files_gate:
+                if not self.alive:
+                    raise OSError("sandbox is retired")
+                return self.outputs.stat_file(path, working_directory)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
-        raise NotImplementedError("Hyperlight file channels are not enabled")
+        if self.outputs is None:
+            raise NotImplementedError("Hyperlight file channels are not enabled")
+        self._authorize()
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("max_bytes must be a non-negative integer")
+        async with _claim(self._gate, _deadline(self.config.startup_timeout)):
+            self._authorize()
+            with self._files_gate:
+                if not self.alive:
+                    raise OSError("sandbox is retired")
+                return self.outputs.read_file(
+                    path,
+                    working_directory,
+                    min(max_bytes, DEFAULT_TRANSFER_LIMITS.max_bytes_per_file),
+                )
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         raise NotImplementedError("Hyperlight file channels are not enabled")
@@ -286,6 +374,7 @@ class HyperlightSandboxBackend:
     declarations = BackendDeclarations(
         capabilities=frozenset({Capability.RUN_CODE, Capability.SNAPSHOT}),
         egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
+        requires_exclusive_admission=True,
     )
     _gate: ClassVar[threading.Lock] = threading.Lock()
     _sandboxes: ClassVar[dict[tuple[SandboxKey, str], _HyperlightSandbox]] = {}
@@ -293,6 +382,23 @@ class HyperlightSandboxBackend:
     def __init__(self, config: HyperlightSandboxConfig | None = None) -> None:
         self.config = config if config is not None else HyperlightSandboxConfig()
         self._owner = uuid.uuid4().hex
+        if self.config.file_outputs:
+            self.declarations = BackendDeclarations(
+                capabilities=self.declarations.capabilities | {Capability.FILES_OUT},
+                egress_modes=self.declarations.egress_modes,
+                requires_exclusive_admission=True,
+            )
+
+    @asynccontextmanager
+    async def call_admission(
+        self, key: SandboxKey, spec: SandboxSpec, *, owner: str, timeout: float
+    ) -> AsyncGenerator[None]:
+        """Hold instance ownership through execution, output delivery and cleanup.
+
+        Routers enter this automatically. Direct file-enabled users must enter it explicitly.
+        """
+        async with admit(key, spec.kind, owner=owner, timeout=timeout):
+            yield
 
     def _targets(self, spec: SandboxSpec) -> tuple[str, ...]:
         missing = spec.required_capabilities - self.declarations.capabilities
@@ -300,10 +406,12 @@ class HyperlightSandboxBackend:
             raise SandboxCapabilityNotSupported(f"Hyperlight cannot serve {sorted(missing)}")
         if spec.requires_os_family is not None or spec.host_tools is not None:
             raise ValueError("Hyperlight supplies no guest OS or host tools")
-        if spec.image is not None or spec.image_id is not None or spec.work_dir is not None:
-            raise ValueError(
-                "the packaged runtime requires image=None, image_id=None, work_dir=None"
-            )
+        if spec.image is not None or spec.image_id is not None:
+            raise ValueError("the packaged runtime requires image=None, image_id=None")
+        if spec.work_dir is not None and not (
+            self.config.file_outputs and spec.work_dir == GUEST_ROOT
+        ):
+            raise ValueError("work_dir must be None, or /output with file_outputs enabled")
         if spec.isolation_scope not in self.declarations.isolation_scopes:
             raise ValueError("Hyperlight currently supports conversation isolation only")
         if spec.egress not in self.declarations.egress_modes:
@@ -327,9 +435,13 @@ class HyperlightSandboxBackend:
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         targets = self._targets(spec)
+        if self.config.file_outputs:
+            require_owner(key, spec.kind)
         check_host()
         deadline = _deadline(self.config.startup_timeout)
         async with _claim(self._gate, deadline):
+            if self.config.file_outputs:
+                require_owner(key, spec.kind)
             index = (key, spec.kind)
             previous = self._sandboxes.get(index)
             if previous is not None:
@@ -343,7 +455,9 @@ class HyperlightSandboxBackend:
                     return previous
                 await previous.stop()
                 del self._sandboxes[index]
-            sandbox = _HyperlightSandbox(self.config, targets, spec.execution_contract, self._owner)
+            sandbox = _HyperlightSandbox(
+                self.config, targets, spec.execution_contract, self._owner, key, spec.kind
+            )
             self._sandboxes[index] = sandbox
             try:
                 await sandbox.prepare(deadline)
@@ -361,6 +475,12 @@ class HyperlightSandboxBackend:
         for index, sandbox in tuple(self._sandboxes.items()):
             if index[0] != key or (kind is not None and index[1] != kind):
                 continue
+            if sandbox.outputs is not None:
+                try:
+                    require_owner(key, index[1], allow_idle=True)
+                except RuntimeError:
+                    failures.append(DisposalFailure("unknown", "sandbox has an active file call"))
+                    continue
             if not sandbox.retire(instance_id):
                 continue
             try:

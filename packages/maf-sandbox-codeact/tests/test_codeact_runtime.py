@@ -186,6 +186,30 @@ def _run(tool, code="print(2 + 2)", **kwargs):
     return asyncio.run(_function(tool)(code=code, **kwargs))
 
 
+@pytest.mark.parametrize("outputs", [CodeactOutputs.DECLARED, CodeactOutputs.MANIFEST])
+def test_runtime_can_use_prepared_storage_base_without_makedirs(outputs):
+    landed = []
+
+    async def deliver(artifact):
+        landed.append(artifact)
+        return LandedArtifact(artifact.name, "saved " + artifact.name)
+
+    runtime = replace(_FILES_RUNTIME, use_call_directory=False)
+    tool, sandbox, backend = _make(
+        runtime=runtime, outputs=outputs, output_sink=OutputSink(deliver)
+    )
+    code = "with open(guest_call_path + '/binary', 'wb') as f:\n    f.write(bytes(range(256)))"
+    arguments = {"outputs": ["binary"]} if outputs is CodeactOutputs.DECLARED else {}
+    if outputs is CodeactOutputs.MANIFEST:
+        code += "\nwith open(guest_call_path + '/outputs.json', 'w') as f:\n    f.write('{\"outputs\": [{\"path\": \"binary\"}]}')"
+    result = _run(tool, code, **arguments)
+    assert len(landed) == 1, result
+    assert landed[0].content == bytes(range(256))
+    assert sandbox.guest_directories == []
+    assert "makedirs" not in sandbox.programs[0][0]
+    assert backend.specs[-1].exclusive_admission
+
+
 @pytest.mark.parametrize("selection", list(Selection))
 def test_plain_runtime_needs_no_file_or_exec_capability(selection):
     tool, sandbox, backend = _make(selection=selection, capabilities={Capability.RUN_CODE})

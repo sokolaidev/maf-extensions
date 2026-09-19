@@ -1,6 +1,6 @@
 # Hyperlight
 
-> The packaged Python guest on Windows WHP and Linux KVM, with a killable worker for each sandbox and no file channels.
+> The packaged Python guest on Windows WHP and Linux KVM, with a killable worker for each sandbox and optional binary output files.
 
 [`maf-sandbox-hyperlight`](../../../packages/maf-sandbox-hyperlight/) implements `SandboxBackend` directly over the Hyperlight Python SDK. The [package README](../../../packages/maf-sandbox-hyperlight/README.md) owns installation, configuration and usage. Kinds continue to use the core protocol; CodeAct opts into `CodeactRuntime` with the backend's `RUNTIME_INSTRUCTIONS`.
 
@@ -9,21 +9,24 @@
 | Axis | Contract |
 | --- | --- |
 | Isolation | `MICROVM`, only the packaged Python guest / Wasm backend on x86-64 Windows WHP or Linux KVM |
-| Capabilities | `RUN_CODE`, `SNAPSHOT` |
+| Capabilities | `RUN_CODE`, `SNAPSHOT`; `FILES_OUT` when `file_outputs=True` |
 | Egress | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443, no method or identity refinements |
 | Guest OS | No OS family declared; this is a language runtime |
 | Isolation scope | `CONVERSATION`; the complete key, including `call_id`, still identifies storage in the registry |
 | Identity and observation | No attached platform identity; no egress observation claim |
-| File capabilities | `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` withheld; protocol methods refuse |
+| File capabilities | Optional flat `/output` collection; `FILES_IN`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` withheld |
+| Admission | `requires_exclusive_admission=True`; backend ownership spans execution, collection, delivery and cleanup across routers and event loops |
 | Other channels | `EXEC`, `HOST_TOOLS`, `EGRESS_METHODS`, `ATTACHED_IDENTITY` withheld |
 
-The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest, image or guest working directory, and refuses unsupported platforms. Construction starts no worker. Windows workers retain `WinHvPlatform.dll`; Linux workers verify KVM API access and VM creation. Each uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Linux hosts exposing MSHV are refused until that family has its own validation.
+The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest or image. An explicit working directory is accepted only as `/output` with file outputs enabled. Unsupported platforms refuse. Construction starts no worker. Windows workers retain `WinHvPlatform.dll`; Linux workers verify KVM API access and VM creation. Each uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Linux hosts exposing MSHV are refused until that family has its own validation.
 
 The bundled runtime is CPython 3.14 with a reduced standard library. It supplies Python statement execution, separate stdout/stderr, persistent globals and snapshot restore. In the pinned guest, `json`, `math` and `re` are available, while `datetime`, `statistics`, `pickle` and `__future__` are not. The runtime instructions expose this limitation instead of implying desktop Python compatibility.
 
 ## Execution and cleanup
 
-A worker owns all PyO3/native objects on its main thread. Acquire starts the process, establishes Windows job or Linux cgroup containment, initializes the guest, runs its warm preparation and records the baseline snapshot. No program is admitted before that completes. The process environment excludes application credentials, and neither input nor output directories are configured in the SDK.
+A worker owns all PyO3/native objects on its main thread. Acquire starts the process, establishes Windows job or Linux cgroup containment, initializes the guest, runs its warm preparation and records the baseline snapshot. No program is admitted before that completes. The process environment excludes application credentials. Input directories are never configured; output storage is an explicit opt-in.
+
+File-enabled sandboxes own one private host directory exposed as `/output` for their lifetime. The backend collects only relative flat names beneath it, rejects traversal and link/reparse-point redirection, and returns bounded raw bytes without guest inspection code. The pinned guest supplies no directory or link creation. Core output collection enforces per-call count and aggregate limits. Both native execution and restore clear previous files; collection and delivery must finish first. Reset clears files while retaining the root, and disposal removes the root only after worker termination. Separate sandboxes can run concurrently; each sandbox admits only one call through cleanup. Direct file access requires its backend `call_admission` scope. The [package README](../../../packages/maf-sandbox-hyperlight/README.md#output-files) gives the direct and CodeAct contracts.
 
 One host process owns Hyperlight within a shared ownership namespace, enforced by a Windows machine-wide named event or a Linux lock file under `/run/lock`. All backend objects in that process share a key/kind registry. Another process refuses acquire and reports disposal as unclean, so a delete routed to the wrong process cannot claim success. The serving host must receive requests and purges; this implementation does not support multiple owners behind one logical backend. Separate Linux mount/PID/cgroup namespaces do not share this guarantee automatically.
 
@@ -65,7 +68,7 @@ An ACA application can instead be designed to call a separate Hyperlight worker 
 | Linux x86-64 KVM and WSL2 | shipped — native Linux KVM CI and separate local WSL2 KVM validation, including the kernel memory ceiling, worker death and owner death against a real guest | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (closed) by [#1298](https://github.com/sokolaidev/maf-extensions/pull/1298) (merged); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
 | AKS hosting | investigation | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
-| Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
+| Optional output collection/listing | flat `FILES_OUT` implemented; listing withheld | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
 | Optional file cleanup | open | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
 | Native host tools | open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Direct ACA hosting | investigated: measured device absence and SDK failure on Consumption/D4; no supported device-access mechanism found | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (closed) by [#1242](https://github.com/sokolaidev/maf-extensions/pull/1242) (merged) |

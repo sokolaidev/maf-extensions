@@ -506,6 +506,7 @@ class ConformancePaths:
 
     work: str
     outside: str
+    flat_files: bool = False
 
     @classmethod
     def under(cls, working_directory: str) -> ConformancePaths:
@@ -533,8 +534,8 @@ class ConformancePaths:
 
     @property
     def inside(self) -> str:
-        """A legitimate nested output: the positive control every refusal is measured against."""
-        return f"{self.work}/real/inside.txt"
+        """A legitimate output: the positive control every refusal is measured against."""
+        return f"{self.work}/inside.txt" if self.flat_files else f"{self.work}/real/inside.txt"
 
     @property
     def plain(self) -> str:
@@ -702,9 +703,8 @@ async def _refused_with(
 async def _probe_a_legitimate_read_still_works(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    entry = await subject.sandbox.stat_file(
-        "real/inside.txt", working_directory=subject.working_directory
-    )
+    relative = posixpath.relpath(paths.inside, paths.work)
+    entry = await subject.sandbox.stat_file(relative, working_directory=subject.working_directory)
     if entry is None:
         raise AssertionError("stat of the planted file returned None — the layout did not land")
     if entry.kind is not EntryKind.FILE:
@@ -712,7 +712,7 @@ async def _probe_a_legitimate_read_still_works(
     if entry.size_bytes != len(_INSIDE):
         raise AssertionError(f"the planted file stats as {entry.size_bytes} bytes")
     content = await subject.sandbox.read_file(
-        "real/inside.txt", working_directory=subject.working_directory, max_bytes=_READ_CAP
+        relative, working_directory=subject.working_directory, max_bytes=_READ_CAP
     )
     if content != _INSIDE:
         raise AssertionError(f"the planted file read back as {content!r}")
@@ -978,12 +978,16 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
 )
 
 
-async def plant_layout(subject: ConformanceSubject) -> ConformancePaths:
+async def plant_layout(
+    subject: ConformanceSubject, *, flat_files: bool = False
+) -> ConformancePaths:
     """Build the hostile layout the probes attack, and return where everything is.
 
     Public so a backend's own premise test can attack the same layout with its unconfined stat.
     """
     paths = ConformancePaths.under(subject.working_directory)
+    if flat_files:
+        paths = ConformancePaths(paths.work, paths.outside, flat_files=True)
     await subject.plant_file(paths.inside, _INSIDE)
     await subject.plant_file(paths.plain, b"not a directory\n")
     await subject.plant_file(paths.secret, _SECRET)
@@ -993,7 +997,9 @@ async def plant_layout(subject: ConformanceSubject) -> ConformancePaths:
     return paths
 
 
-async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+async def run_files_out_probes(
+    subject: ConformanceSubject, *, flat_files: bool = False
+) -> tuple[ProbeResult, ...]:
     """Plant the layout and run every probe, returning what each one did.
 
     Every probe runs even after one fails, so a backend is told everything wrong with it at
@@ -1007,17 +1013,28 @@ async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult
     than run.  Skipping is right for a capability a backend never claimed — ``FILES_LIST`` is
     the case it exists for — but skipping *everything* and returning success is a green run
     that attacked nothing, which is worse than no run at all.
+
+    ``flat_files`` places the positive control at the root for guests unable to address nested
+    files. All link and ancestor attacks still run; it establishes no nested-file support.
     """
-    return await _run_suite(subject, Capability.FILES_OUT, plant_layout, FILES_OUT_PROBES)
+
+    async def plant(subject: ConformanceSubject) -> ConformancePaths:
+        return await plant_layout(subject, flat_files=flat_files)
+
+    return await _run_suite(subject, Capability.FILES_OUT, plant, FILES_OUT_PROBES)
 
 
-async def assert_files_out_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+async def assert_files_out_conformance(
+    subject: ConformanceSubject, *, flat_files: bool = False
+) -> tuple[ProbeResult, ...]:
     """Run the probes and raise :class:`ConformanceFailure` if any failed.
 
     Returns the results on success so a caller can assert on what was *skipped*: a backend that
     silently stopped declaring ``FILES_LIST`` would otherwise go green on three fewer probes.
     """
-    return _assert_conformance(await run_files_out_probes(subject), "FILES_OUT")
+    return _assert_conformance(
+        await run_files_out_probes(subject, flat_files=flat_files), "FILES_OUT"
+    )
 
 
 # ---------------------------------------------------------------------------

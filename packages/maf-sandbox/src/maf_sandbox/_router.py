@@ -19,7 +19,7 @@ import threading
 import time
 import weakref
 from collections.abc import AsyncGenerator, Iterable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from enum import StrEnum
 from typing import cast
 
@@ -58,6 +58,7 @@ from ._protocol import (
     ISOLATION_RANK,
     ISOLATION_SCOPE_RANK,
     AttachedIdentity,
+    BackendCallAdmission,
     BackendDeclarations,
     Capability,
     Cleanup,
@@ -802,6 +803,10 @@ class SandboxRouter:
         self._min_cleanup = Cleanup(str(min_cleanup))
         # Admission closes before cleanup can remove a running sibling's sandbox.
         self._slots = ExclusiveSlots()
+        self._backend_admissions: dict[
+            tuple[SandboxKey, str, str], AbstractAsyncContextManager[None]
+        ] = {}
+        self._backend_admissions_guard = threading.Lock()
         self._adoptions = ExclusiveSlots()
         self._seen: dict[tuple[SandboxKey, str, int], set[str]] = {}
         self._execution_contracts: dict[tuple[SandboxKey, str, int], dict[str, str | None]] = {}
@@ -1935,18 +1940,28 @@ class SandboxRouter:
         Ordinary bodies overlap until cleanup starts draining the entry. Retain the admission
         for acquire and cleanup, then await finish_call or release_call. Explicit exclusive use
         excludes every sibling, and a spec asking ``exclusive_admission`` is held that way
-        whatever ``exclusive`` says. ``timeout`` bounds the wait per call ahead."""
+        whatever ``exclusive`` says, as is a backend requiring exclusive admission.
+        ``timeout`` bounds the local wait per call ahead and is passed to backend admission."""
         backend = self._refuse_unless_backend_can_serve(spec)
         await self._slots.take(
             key,
             spec.kind,
             owner=owner,
-            exclusive=exclusive or spec.exclusive_admission,
+            exclusive=(
+                exclusive
+                or spec.exclusive_admission
+                or _declarations(backend).requires_exclusive_admission
+            ),
             timeout=timeout,
         )
         try:
             self._refuse_host_denials(spec)
             self._refuse_unless_this_backend_can_serve(backend, spec)
+            if isinstance(backend, BackendCallAdmission):
+                scope = backend.call_admission(key, spec, owner=owner, timeout=timeout)
+                await scope.__aenter__()
+                with self._backend_admissions_guard:
+                    self._backend_admissions[key, spec.kind, owner] = scope
             return CallAdmission(backend, self._cleanup_on(backend, spec))
         except BaseException:
             await self.release_call(key, spec.kind, owner=owner)
@@ -1998,6 +2013,17 @@ class SandboxRouter:
         self, key: SandboxKey, kind: str, *, owner: str, interrupted: bool = False
     ) -> None:
         """Leave the call and execute pending cleanup if this was the last active owner."""
+        try:
+            await self._release_call(key, kind, owner=owner, interrupted=interrupted)
+        finally:
+            with self._backend_admissions_guard:
+                scope = self._backend_admissions.pop((key, kind, owner), None)
+            if scope is not None:
+                await scope.__aexit__(None, None, None)
+
+    async def _release_call(
+        self, key: SandboxKey, kind: str, *, owner: str, interrupted: bool
+    ) -> None:
         pending = self._slots.release(key, kind, owner=owner)
         if not pending:
             return

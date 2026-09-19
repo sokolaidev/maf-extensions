@@ -51,6 +51,8 @@ File channels additionally require `CodeactRuntime(..., guest_work_dir="/runtime
 
 Runtime host-tool registries are not supported. Calls retain exclusive admission and the host's cleanup policy. Core's `SandboxSpec.execution_contract` binds an opaque execution identity to each instance known to that router, including across reset. Switching variants or changing the runtime instructions or base requires disposal or a new sandbox key; matching file-channel wiring can share the same contract. This is host configuration compatibility, not runtime detection or a cross-router attestation.
 
+For a runtime with a prepared storage base and no directory-creation support, set `use_call_directory=False` on `CodeactRuntime`. The program receives that base as `guest_call_path` and the bootstrap does not call `makedirs`. Outputs and `outputs.json` stay relative to the base; exclusive admission and whole-sandbox cleanup still apply. This mode is part of the execution contract. Hyperlight's output profile uses `guest_work_dir="/output"` and flat filenames with this option.
+
 ## What the model gets
 
 One tool, `execute_code`. By default the program is written to a directory of its own and run as the argv `["python3", ".../program.py"]`; the runtime variant submits Python source to `run_code`. The result is stdout, stderr when present, and the exit code when nonzero. With exec host tools a launcher runs the program and merges its stderr into stdout. There is no REPL echo, so a program that computes without printing returns a sentence saying so.

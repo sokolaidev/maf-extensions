@@ -940,7 +940,7 @@ def _tool_description(
     if runtime is not None:
         if runtime.guest_work_dir is not None:
             body.append(
-                "This call's scratch directory is created for you and its absolute path is in "
+                "This call's scratch directory is prepared for you and its absolute path is in "
                 "``guest_call_path``. The current working directory is not changed. "
                 "Use ``open(guest_call_path + '/name', ...)`` for files in that directory."
             )
@@ -1172,6 +1172,8 @@ async def _execute(
     # call, derived below rather than counted.
     call_directory = session.guest_call_path()
     call_id = call_directory.rsplit("/", 1)[-1]
+    if runtime is not None and not runtime.use_call_directory:
+        call_directory = "."
     # Where the model's own files live, relative to the storage base: the call directory itself, or
     # the work subdirectory of it when the transport owns the run. Everything addressed by a
     # name a model chose is built from this — what is shared in, what the manifest is read
@@ -1179,6 +1181,8 @@ async def _execute(
     # It is longer when calling a host tool, which is why the name checks below take it rather than
     # `call_id`: five more bytes of the 255 a guest path gets, spent before the name is.
     guest_prefix = f"{call_id}/{WORK_DIRECTORY}" if host_tool_call is not None else call_id
+    if runtime is not None and not runtime.use_call_directory:
+        guest_prefix = ""
 
     names: list[str] = []
     if outputs is CodeactOutputs.DECLARED:
@@ -1690,7 +1694,7 @@ def _validated_output_names(
             f"Error: {len(names)} output files were declared and this tool saves at most "
             f"{max_files} per call."
         )
-    prefix = f"{guest_prefix}/"
+    prefix = f"{guest_prefix}/" if guest_prefix else ""
     seen: dict[str, tuple[str, str]] = {}
     # Asked of manifest names as well as of the model's own `outputs`, and that is not
     # belt-and-braces: `code` is a rewritten argument too, so a payload can reach the guest
@@ -1792,7 +1796,7 @@ async def _collect(
     # `required=False` so one forgotten name does not throw away the files that were
     # written, and no `media_type`, which this kind does not know.
     call_time = tuple(
-        DeclaredOutput(path=f"{guest_prefix}/{name}", name=name, required=False)
+        DeclaredOutput(path=posixpath.join(guest_prefix, name), name=name, required=False)
         for name in declared
     )
     try:
@@ -1847,7 +1851,7 @@ async def _read_manifest(
     would be capped by :func:`~maf_sandbox.collect_outputs`, but the manifest has to be read
     *before* there is anything to declare.
     """
-    path = f"{guest_prefix}/{_MANIFEST_FILENAME}"
+    path = posixpath.join(guest_prefix, _MANIFEST_FILENAME)
     try:
         entry = await sandbox.stat_file(path, working_directory=".")
         if entry is None:

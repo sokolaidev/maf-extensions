@@ -26,8 +26,11 @@ class HyperlightSandboxConfig:
     max_output_bytes: int = 1024 * 1024
     max_worker_memory_bytes: int = 3 * 1024**3 if sys.platform == "linux" else 1536 * 1024**2
     linux_cgroup_root: str | None = None
+    file_outputs: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.file_outputs) is not bool:
+            raise ValueError("file_outputs must be a boolean")
         if self.linux_cgroup_root is not None and (
             not isinstance(cast("object", self.linux_cgroup_root), str)
             or not posixpath.isabs(self.linux_cgroup_root)

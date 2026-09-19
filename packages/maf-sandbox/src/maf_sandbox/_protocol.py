@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import warnings
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast, runtime_checkable
@@ -53,6 +54,7 @@ __all__ = [
     "OutputDisposition",
     "Sandbox",
     "SandboxBackend",
+    "BackendCallAdmission",
     "SandboxEntry",
     "SandboxKey",
     "SandboxLimits",
@@ -1664,6 +1666,24 @@ class BackendDeclarations:
     egress_method_tokens: frozenset[str] | None = frozenset()
     #: No attachment within this policy contract; not a discovery result for deployment identity.
     attached_identity: AttachedIdentity = NO_ATTACHED_IDENTITY
+
+    #: Hold one call through delivery and cleanup, regardless of the workload's preference.
+    requires_exclusive_admission: bool = False
+
+
+@runtime_checkable
+class BackendCallAdmission(Protocol):
+    """Optional backend ownership spanning a call, its output delivery and cleanup.
+
+    The router enters before acquire and exits after cleanup, possibly from another task.
+    Implementations must bound admission and release ownership even on cancellation.
+    """
+
+    def call_admission(
+        self, key: SandboxKey, spec: SandboxSpec, *, owner: str, timeout: float
+    ) -> AbstractAsyncContextManager[None]:
+        """Reserve the shared backend instance for this call's lifetime."""
+        ...
 
 
 #: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.
