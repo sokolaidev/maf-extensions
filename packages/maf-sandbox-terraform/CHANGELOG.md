@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.2.0...maf-sandbox-terraform-v0.3.0) (2026-09-19)
+
+
+### Features
+
+* **terraform:** return formatted files through opt-in tools ([#1334](https://github.com/sokolaidev/maf-extensions/issues/1334)) ([8f9cc07](https://github.com/sokolaidev/maf-extensions/commit/8f9cc07811fe614dad1e0b9cd06371a68b728cb0))
+
 ## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.1.1...maf-sandbox-terraform-v0.2.0) (2026-09-19)
 
 
