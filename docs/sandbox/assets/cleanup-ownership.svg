@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 591" width="1180" height="591" role="img" aria-labelledby="cleanup-ownership-title cleanup-ownership-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="cleanup-ownership-title">Cleanup has three owners and three triggers</title>
+  <desc id="cleanup-ownership-desc">The tool wrapper performs policy-selected cleanup when a call ends. The host purges a conversation through every registered backend when that conversation is deleted. Operators run retention and recovery when hosts disappear or resources remain. These are independent paths. Backend deletion outcomes feed host monitoring and retry. Stopped-resource retention does not bound the authority of a still-running sandbox.</desc>
+  <defs>
+    <marker id="cleanup-ownership-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="591" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Cleanup has three owners and three triggers</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Call cleanup, conversation deletion and operator retention serve different lifetimes.</text>
+  <rect x="32" y="140" width="348" height="174" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="173" font-size="21" font-weight="600" fill="#243040">Tool wrapper</text>
+  <text x="52" y="204" font-size="16" font-weight="400" fill="#526072">Trigger: call ends</text>
+  <text x="52" y="230" font-size="16" font-weight="400" fill="#526072">Default: dispose</text>
+  <text x="52" y="256" font-size="16" font-weight="400" fill="#526072">Reuse: explicit host opt-in</text>
+  <path d="M 206 314 L 206 373" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#cleanup-ownership-arrow)"/>
+  <rect x="416" y="140" width="348" height="174" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="436" y="173" font-size="21" font-weight="600" fill="#243040">Host application</text>
+  <text x="436" y="204" font-size="16" font-weight="400" fill="#526072">Trigger: conversation deleted</text>
+  <text x="436" y="230" font-size="16" font-weight="400" fill="#526072">Purge every backend</text>
+  <text x="436" y="256" font-size="16" font-weight="400" fill="#526072">Retry reported failures</text>
+  <path d="M 590 314 L 590 373" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#cleanup-ownership-arrow)"/>
+  <rect x="800" y="140" width="348" height="174" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="820" y="173" font-size="21" font-weight="600" fill="#243040">Operator</text>
+  <text x="820" y="204" font-size="16" font-weight="400" fill="#526072">Trigger: retention / recovery</text>
+  <text x="820" y="230" font-size="16" font-weight="400" fill="#526072">Find resources after host death</text>
+  <text x="820" y="256" font-size="16" font-weight="400" fill="#526072">Apply deployment policy</text>
+  <path d="M 974 314 L 974 373" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#cleanup-ownership-arrow)"/>
+  <rect x="32" y="373" width="1116" height="110" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="406" font-size="21" font-weight="600" fill="#243040">Backend cleanup + observable outcome</text>
+  <text x="52" y="437" font-size="17" font-weight="400" fill="#526072">Success clears covered targets. Uncertainty needs monitoring and retry.</text>
+  <text x="32" y="537" font-size="19" font-weight="600" fill="#243040">A stopped-resource sweep is not a hard lifetime bound for attached authority.</text>
+</svg>

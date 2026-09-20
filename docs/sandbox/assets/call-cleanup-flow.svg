@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 769" width="1180" height="769" role="img" aria-labelledby="call-cleanup-flow-title call-cleanup-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="call-cleanup-flow-title">Dispose by default; enable reuse explicitly</title>
+  <desc id="call-cleanup-flow-desc">The effective cleanup floor is the stronger host and workload setting. The default is disposal. With explicit host reuse, a backend may support reclamation or reset. Reclaim removes only the call directory; reset and disposal wait until active siblings finish. A cleanup failure escalates to disposal of the exact instance. If that fails, the router retains the target and refuses the whole key until successful recovery. KEEP is a separate explicit failure policy and does not itself enable ordinary reuse.</desc>
+  <defs>
+    <marker id="call-cleanup-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="769" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Dispose by default; enable reuse explicitly</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The workload may raise the host&#x27;s cleanup floor. CALL scope always disposes.</text>
+  <rect x="32" y="125" width="1116" height="91" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="158" font-size="21" font-weight="600" fill="#243040">Select an available operation at or above the effective floor</text>
+  <text x="52" y="189" font-size="17" font-weight="400" fill="#526072">Default: DISPOSE • Explicit reuse: RECLAIM or RESET when the backend supports it</text>
+  <path d="M 206 216 L 206 275" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <rect x="32" y="275" width="348" height="131" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="308" font-size="21" font-weight="600" fill="#243040">RECLAIM</text>
+  <text x="52" y="339" font-size="16" font-weight="400" fill="#526072">Remove the call directory</text>
+  <text x="52" y="365" font-size="16" font-weight="400" fill="#526072">Other state may remain</text>
+  <path d="M 590 216 L 590 275" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <rect x="416" y="275" width="348" height="131" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="436" y="308" font-size="21" font-weight="600" fill="#243040">RESET</text>
+  <text x="436" y="339" font-size="16" font-weight="400" fill="#526072">Restore the pre-input baseline</text>
+  <text x="436" y="365" font-size="16" font-weight="400" fill="#526072">Wait for active siblings</text>
+  <path d="M 974 216 L 974 275" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <rect x="800" y="275" width="348" height="131" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="820" y="308" font-size="21" font-weight="600" fill="#243040">DISPOSE</text>
+  <text x="820" y="339" font-size="16" font-weight="400" fill="#526072">Delete the physical instance</text>
+  <text x="820" y="365" font-size="16" font-weight="400" fill="#526072">Wait for active siblings</text>
+  <rect x="32" y="476" width="514" height="110" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="509" font-size="21" font-weight="600" fill="#243040">Cleanup failed → dispose that instance</text>
+  <text x="52" y="540" font-size="15" font-weight="400" fill="#526072">Default failure policy; retain backend and instance identity</text>
+  <path d="M 206 406 L 206 476" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <text x="219" y="445" font-size="16" font-weight="400" fill="#526072">Failure</text>
+  <path d="M 590 406 L 590 440 L 383 440 L 383 476" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <rect x="612" y="476" width="536" height="110" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="632" y="509" font-size="21" font-weight="600" fill="#243040">Disposal failed → refuse the whole key</text>
+  <text x="632" y="540" font-size="15" font-weight="400" fill="#526072">Record unfinished targets; retry only the covered resources</text>
+  <path d="M 546 531 L 612 531" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <path d="M 974 406 L 974 476" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#call-cleanup-flow-arrow)"/>
+  <text x="987" y="445" font-size="16" font-weight="400" fill="#526072">Failure</text>
+  <rect x="32" y="639" width="1116" height="80" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="672" font-size="21" font-weight="600" fill="#243040">KEEP permits retention after failure. It is separate from permission for ordinary reuse.</text>
+  <text x="52" y="703" font-size="17" font-weight="400" fill="#526072">Successful recovery clears only the targets it covers.</text>
+</svg>

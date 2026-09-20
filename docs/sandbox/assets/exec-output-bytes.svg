@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 549" width="1180" height="549" role="img" aria-labelledby="exec-output-bytes-title exec-output-bytes-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="exec-output-bytes-title">Keep bytes for fidelity; decode text for display</title>
+  <desc id="exec-output-bytes-desc">A program emits stdout and stderr bytes. ExecResult stores those captured streams in stdout_bytes and stderr_bytes. Storage and byte counts use the byte fields. UTF-8 replacement decoding creates stdout_text and stderr_text, also exposed as stdout and stderr. Encoding a display string cannot recover invalid byte sequences lost during decoding. Capture caps and producer-owned diagnostics remain part of the result contract.</desc>
+  <defs>
+    <marker id="exec-output-bytes-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="549" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Keep bytes for fidelity; decode text for display</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">ExecResult keeps the captured streams separate from their readable views.</text>
+  <rect x="32" y="149" width="252" height="147" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="182" font-size="21" font-weight="600" fill="#243040">Captured streams</text>
+  <text x="52" y="213" font-size="16" font-weight="400" fill="#526072">stdout bytes</text>
+  <text x="52" y="239" font-size="16" font-weight="400" fill="#526072">stderr bytes</text>
+  <text x="52" y="265" font-size="16" font-weight="400" fill="#526072">NUL, CRLF, non-UTF-8</text>
+  <rect x="357" y="149" width="314" height="147" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="377" y="182" font-size="21" font-weight="600" fill="#243040">ExecResult byte fields</text>
+  <text x="377" y="213" font-size="16" font-weight="400" fill="#526072">stdout_bytes</text>
+  <text x="377" y="239" font-size="16" font-weight="400" fill="#526072">stderr_bytes</text>
+  <text x="377" y="265" font-size="16" font-weight="400" fill="#526072">Authoritative returned bytes</text>
+  <path d="M 284 222 L 357 222" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#exec-output-bytes-arrow)"/>
+  <rect x="744" y="123" width="404" height="117" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="764" y="156" font-size="21" font-weight="600" fill="#243040">Storage and byte counts</text>
+  <text x="764" y="187" font-size="16" font-weight="400" fill="#526072">Use the byte fields directly</text>
+  <text x="764" y="213" font-size="16" font-weight="400" fill="#526072">No decode / re-encode round trip</text>
+  <path d="M 671 193 L 709 193 L 709 181 L 744 181" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#exec-output-bytes-arrow)"/>
+  <rect x="744" y="295" width="404" height="141" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="764" y="328" font-size="21" font-weight="600" fill="#243040">Model and display text</text>
+  <text x="764" y="359" font-size="16" font-weight="400" fill="#526072">UTF-8 replacement decoding</text>
+  <text x="764" y="385" font-size="16" font-weight="400" fill="#526072">stdout_text / stderr_text</text>
+  <text x="764" y="411" font-size="16" font-weight="400" fill="#526072">Aliases: stdout / stderr</text>
+  <path d="M 671 261 L 709 261 L 709 365 L 744 365" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#exec-output-bytes-arrow)"/>
+  <rect x="32" y="364" width="639" height="122" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="397" font-size="21" font-weight="600" fill="#243040">Limits remain explicit</text>
+  <text x="52" y="428" font-size="16" font-weight="400" fill="#526072">Caps may limit capture; diagnostics may own stderr.</text>
+  <text x="52" y="454" font-size="16" font-weight="400" fill="#526072">A readable text view is not a byte-for-byte record.</text>
+</svg>

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 660" width="1180" height="660" role="img" aria-labelledby="host-tool-gates-title host-tool-gates-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="host-tool-gates-title">A guest-to-host call passes the host registry&#x27;s checks</title>
+  <desc id="host-tool-gates-desc">Guest code sends a tool name and arguments to the host registry. The registry resolves only registered names, applies captured declarations and identity admission, checks call and response budgets, binds arguments, and obtains user authority from the host mint when needed. Then the registered function runs in the host process. Its response returns to the guest. The guest shim is editable and is not an enforcement point. Declared identity does not reduce the body&#x27;s actual privileges.</desc>
+  <defs>
+    <marker id="host-tool-gates-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="660" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">A guest-to-host call passes the host registry&#x27;s checks</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Nested calls do not pass through the agent middleware that admitted the outer tool.</text>
+  <rect x="32" y="152" width="253" height="149" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="185" font-size="21" font-weight="600" fill="#243040">Guest request</text>
+  <text x="52" y="216" font-size="15" font-weight="400" fill="#526072">Tool name + arguments</text>
+  <text x="52" y="242" font-size="15" font-weight="400" fill="#526072">Shim can be bypassed</text>
+  <text x="52" y="268" font-size="15" font-weight="400" fill="#526072">No authority to self-approve</text>
+  <rect x="360" y="120" width="428" height="284" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="380" y="153" font-size="21" font-weight="600" fill="#243040">Host registry</text>
+  <text x="380" y="184" font-size="16" font-weight="400" fill="#526072">Registered name only</text>
+  <text x="380" y="210" font-size="16" font-weight="400" fill="#526072">Captured declaration + allowed identity</text>
+  <text x="380" y="236" font-size="16" font-weight="400" fill="#526072">Call cap + response budgets</text>
+  <text x="380" y="262" font-size="16" font-weight="400" fill="#526072">Python argument binding</text>
+  <text x="380" y="288" font-size="16" font-weight="400" fill="#526072">USER: require a host identity mint</text>
+  <text x="380" y="314" font-size="16" font-weight="400" fill="#526072">Guest cannot set user_identity</text>
+  <rect x="862" y="152" width="286" height="149" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="882" y="185" font-size="21" font-weight="600" fill="#243040">Host tool body</text>
+  <text x="882" y="216" font-size="15" font-weight="400" fill="#526072">Runs in the host process</text>
+  <text x="882" y="242" font-size="15" font-weight="400" fill="#526072">Uses host-supplied authority</text>
+  <text x="882" y="268" font-size="15" font-weight="400" fill="#526072">Validates values and effects</text>
+  <path d="M 285 225 L 360 225" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-tool-gates-arrow)"/>
+  <path d="M 788 225 L 862 225" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-tool-gates-arrow)"/>
+  <path d="M 1005 301 L 1005 451 L 158 451 L 158 301" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-tool-gates-arrow)"/>
+  <text x="465" y="438" font-size="16" font-weight="400" fill="#526072">Response to the guest</text>
+  <rect x="32" y="506" width="1116" height="102" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="539" font-size="21" font-weight="600" fill="#243040">Register only the functions and authority the guest should reach</text>
+  <text x="52" y="570" font-size="17" font-weight="400" fill="#526072">A label describes a role. It does not restrict what a host-side function can do.</text>
+</svg>
