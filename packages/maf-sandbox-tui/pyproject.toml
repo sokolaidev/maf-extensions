@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "maf-sandbox>=0.41.0,<0.42",
+    "maf-sandbox>=0.42.0,<0.43",
     "packaging>=24,<27",
     "textual>=6,<8",
 ]

@@ -16,10 +16,12 @@ from maf_sandbox_hyperlight import (
     HyperlightSandboxConfig,
     _backend,
 )
+from maf_sandbox_tui import MonitoredSandboxBackend, MonitoredSandboxRouter
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_failed_output_delivery_cleans_before_reuse(monkeypatch, cancel):
+@pytest.mark.parametrize("monitored", [False, True])
+def test_failed_output_delivery_cleans_before_reuse(monkeypatch, cancel, monitored):
     from maf_sandbox import LandedArtifact, OutputSink
     from maf_sandbox_codeact import CodeactOutputs
 
@@ -44,7 +46,11 @@ def test_failed_output_delivery_cleans_before_reuse(monkeypatch, cancel):
     monkeypatch.setattr(_backend, "Worker", FileWorker)
     monkeypatch.setattr(_backend, "check_host", lambda: None)
     backend = HyperlightSandboxBackend(HyperlightSandboxConfig(file_outputs=True))
-    router = SandboxRouter([backend], min_cleanup=Cleanup.RESET)
+    router = (
+        MonitoredSandboxRouter([MonitoredSandboxBackend(backend)], min_cleanup=Cleanup.RESET)
+        if monitored
+        else SandboxRouter([backend], min_cleanup=Cleanup.RESET)
+    )
 
     async def check():
         delivering = asyncio.Event()
@@ -148,7 +154,8 @@ def test_native_panics_are_sanitized_for_codeact(
 
 @pytest.mark.skipif(os.environ.get("MAF_HYPERLIGHT_LIVE") != "1", reason="requires live Hyperlight")
 @pytest.mark.parametrize("selection", list(Selection))
-def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection):
+@pytest.mark.parametrize("monitored", [False, True])
+def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitored):
     from maf_sandbox import LandedArtifact, OutputSink, TransferLimits
     from maf_sandbox_codeact import CodeactOutputs
 
@@ -157,7 +164,13 @@ def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection):
             file_outputs=True, linux_cgroup_root=os.environ.get("MAF_HYPERLIGHT_CGROUP_ROOT")
         )
     )
-    router = SandboxRouter([backend], selection=selection, min_cleanup=Cleanup.RESET)
+    router = (
+        MonitoredSandboxRouter(
+            [MonitoredSandboxBackend(backend)], selection=selection, min_cleanup=Cleanup.RESET
+        )
+        if monitored
+        else SandboxRouter([backend], selection=selection, min_cleanup=Cleanup.RESET)
+    )
     landed = []
 
     async def deliver(artifact):
