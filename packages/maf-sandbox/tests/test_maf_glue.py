@@ -5350,7 +5350,7 @@ class TestArgumentProvenanceMiddleware:
 
         The exact answer is read out of `original_arguments_for_messages`, which is a string
         literal inside `LabelTrackingFunctionMiddleware` rather than anything the framework
-        publishes — and this package accepts `agent-framework-core>=1.18,<1.20`. A rename turns
+        publishes — and this package accepts `agent-framework-core>=1.19,<1.20`. A rename turns
         most of this class red at once, because failing closed makes every test that expects a
         particular answer expect the wrong one, and none of them says what happened. This is
         the one that does.

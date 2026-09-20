@@ -39,9 +39,9 @@ dependencies = [
     "maf-sandbox>=0.41.0,<0.42",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
-    # Both ends measured: 1.19 made an item's embedded label restrict-only, which the result
-    # wrapper now works with rather than against. The ceiling is the minor that was measured.
-    "agent-framework-core>=1.18.0,<1.20",
+    # The floor matches the locked core the framework-contract alarms run against.
+    # Only the measured minor is admitted.
+    "agent-framework-core>=1.19.0,<1.20",
 ]
 
 [project.urls]

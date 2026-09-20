@@ -39,7 +39,7 @@ dependencies = [
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
     # application. Both ends of the range are measured: 1.19 made an item's embedded label
     # restrict-only, which the result wrapper now works with rather than against.
-    "agent-framework-core>=1.18.0,<1.20",
+    "agent-framework-core>=1.19.0,<1.20",
 ]
 
 [project.urls]

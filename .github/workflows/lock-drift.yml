@@ -12,8 +12,8 @@ name: Lockfile drift
 # caps below a minor, nothing a re-resolve can touch goes past the one under it, and the release
 # nobody adopted is announced by nothing (#1315). Clearing that red is an adoption — whatever
 # the new minor moved re-measured, the ceiling widened in every package that declares it, and a
-# release each. The *floor* is a separate decision, raised only where the code needs the
-# version: the 1.19 adoption left it at `>=1.18.0` and moved the ceiling alone.
+# release each. The *floor* is a separate decision: it matches the locked core so the
+# framework-contract alarms describe the oldest version consumers may install.
 #
 # **`.github/dependabot.yml` proposes the refresh; the first question reports whether one
 # landed.** What it asks is the lockfile's state, so a Dependabot that proposes nothing reds it
