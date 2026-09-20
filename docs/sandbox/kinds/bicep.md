@@ -1,111 +1,81 @@
-# The `bicep` kind
+# Bicep
 
-> `bicep_validate`: the first sandbox workload, and the template every later kind follows. Its contract, its egress allowlist and why those four hosts, and the pinning that makes a shell template safe. Install and wiring are [`maf-sandbox-bicep`](../../../packages/maf-sandbox-bicep/README.md)'s README; the pattern it set is [`README.md`](README.md).
+`bicep_validate` compiles and lints Bicep templates and parameter files from the agent's file store. It returns compiler diagnostics. A module restore failure means validation is incomplete.
 
-## The contract
+See the [package README](../../../packages/maf-sandbox-bicep/README.md) for installation and wiring.
 
-One tool. The model writes Bicep into the agent's file store; `bicep_validate` writes the named files into a sandbox, runs `bicep build` and `bicep lint` there, and returns the compiler's SARIF diagnostics as structured text. T2 — compiler truth — instead of T0, the model reading its own template and agreeing with itself.
+## Contract
 
-| | |
+| Setting | Value |
 |---|---|
-| Kind | `BICEP_KIND = "bicep"` — half of the sandbox's identity, so this workload never shares a sandbox with another |
-| Tool | `BICEP_VALIDATE_TOOL_NAME = "bicep_validate"` |
-| `requires` | left at the protocol default, `{EXEC, FILES_IN}`. The kind writes files in and runs a compiler; it pulls nothing back, so it asks for no pull surface and runs on every shipped backend, wslc included |
-| `egress` | one of `{UNRESTRICTED, ALLOWLIST, CLOSED}` — the set `bicep_sandbox_spec` guards at construction, refusing anything else — defaulting to `ALLOWLIST`, Bicep's designed posture. A deployment that will not use modules lowers it to `CLOSED`; one running on a backend that cannot confine at all raises it to `UNRESTRICTED`. **Only the mode is a deployment's to choose** |
-| `egress_allow` | the four hosts below, fixed in the package and carried only on an `ALLOWLIST` run — the payload of the mode, never a second dial |
-| `work_dir` | `/maf-sandbox/work`, a path nothing else owns. Not `/tmp`: a tmpfs mounted over `/tmp` would hide the `bicepconfig.json` baked into the image, and that failure looks completely healthy — SARIF still parses, diagnostics still render, against a weaker rule set than the repo asked for |
-| `min_isolation` | not raised. The host's floor governs ([`../policy-isolation.md`](../policy-isolation.md)) |
-| `confined_to_guest_call_path` | `True`: the kind attempts to keep inputs, compiled output, module cache and temporary profile under the call directory, and finish its subprocesses within the call. A host explicitly selecting `Cleanup.RECLAIM` can keep the sandbox warm on a backend declaring `RECLAIM`; the default is disposal. The cache is restored afresh on each call. The kind's Docker suite measures both rungs on a real engine: reuse through `assert_nothing_left_behind`, and the default through the daemon's own container inventory either side of the call |
-| `declarations` | **a `source_integrity="untrusted"` claim**, and no confidentiality cap. Because this kind also commits standing guidance, the attached tool declares `trusted` to the framework and carries the claim on `maf_sandbox_derived_integrity` — which is the key to read, and what every derived item is stamped with. The compiler is Microsoft's, which settles nothing: it is code the host does not run, its diagnostics are its own bytes, and it reads template content from the agent's file store. Neither source is established. Declared rather than left out: a tier-2 declaration replaces the input-label join and the host's `default_integrity` rather than flooring them, and omitting it hands the answer to both. No cap because a host's confidentiality tiers are the host's classification, and declaring one here can activate a policy leg a given host keeps dormant. `TestFidesDeclarations` pins the resulting dict |
-| result | **two items**, on every return path: the report — diagnostics, or the sentence saying why there are none — stamped untrusted by core beneath the tool's own declaration, and a standing sentence labelled `trusted` closing it. That sentence is committed at attach through `standing_guidance`, so core refuses a result departing from it rather than taking the body's word. Why it is worth having is the section below |
+| Kind and tool | `bicep`; `bicep_validate` |
+| Required capabilities | `EXEC`, `FILES_IN` |
+| Guest software | Bicep CLI and the commands required by the supplied image |
+| Network modes | `ALLOWLIST` by default; host may select `CLOSED` or `UNRESTRICTED` |
+| Work directory | `/maf-sandbox/work`, with `bicepconfig.json` at its root |
+| Isolation | The host's minimum; the kind does not raise it |
+| Cleanup | Disposal by default; explicit `Cleanup.RECLAIM` can reuse a supported sandbox |
+| Result | Untrusted report followed by trusted standing guidance |
 
-## The diagnostics are not trusted input, and saying so costs something
+The spec does not declare an OS family. The host must select an image that supports the compiler commands. A backend lacking the required capabilities or network mode is refused at attachment.
 
-The rule this section applies, and what a kind may claim in general, is [`../information-flow.md`](../information-flow.md).
+## Inputs and execution
 
-The environment alone does not establish trusted diagnostics. The compiler is Microsoft's and the default `ALLOWLIST` names only the four restore hosts; identity depends on the host's sandbox configuration. The other two postures only weaken it: `egress_allow` is `()` off an `ALLOWLIST` run, so `UNRESTRICTED` — what a deployment raises to on a backend that cannot confine at all — reaches whatever the host can, and `CLOSED` takes the registry away and leaves the template behind. None of that moves the conclusion. The diagnostics are the compiler's own bytes, and a compiler in the sandbox is code the host does not run however reputable its publisher. What it read is template content from the file store, and that reaches the rendered result in two places. The **message** still carries source-derived prose after the path display policy below is applied — `BCP057` is "The name … does not exist in the current context", where the identifier is copied out of the template the compiler read. A **file name** the caller permits showing also reaches locations and messages: `[warning] BCP035 @ main.bicep:31: …` names an argument value, and an argument can hold content the framework expanded from a hidden reference. Formatting paths and withholding known hidden names do not make the diagnostics established input.
+1. Resolve requested names against the caller's file listing.
+2. Read the original listing entries through the session.
+3. Write every selected file into a fresh call directory.
+4. Build templates with `bicep build` and parameter files with `bicep build-params`. Run lint as applicable.
+5. Format the compiler's diagnostics, then let core clean up the call.
 
-So a `"trusted"` declaration would not be a hint the framework reconciles against what it already knows. FIDES treats a declared level as an **override**: it discards the input-label join rather than flooring it, which means declaring `"trusted"` instructs a host's middleware to disregard the input side entirely. That same override is what makes an explicit `"untrusted"` worth writing: undeclared, the answer comes from the input-label join and the host's `default_integrity`, neither of which this kind can vouch for.
+All files are staged before compilation so local modules and parameter-file references resolve together. The call directory also holds compiled output, the module cache and the temporary profile.
 
-**What it costs a FIDES host, and the two costs are alternatives rather than a pair.** With `auto_hide_untrusted` — the framework's default — an untrusted item is replaced by a variable reference, and hidden items do not taint, so the conversation label is unchanged and a later tool called with arguments of the model's own runs ungated. The model then cannot read the diagnostics, which is the entire purpose of the tool. Turn hiding off and they are visible, the conversation goes untrusted, and `PolicyEnforcementFunctionMiddleware` gates every later tool that has not opted in through `allow_untrusted_tools` or an `accepts_untrusted` property. A host gets one or the other, and what the split below changes is not that choice but how much of the result it reaches.
+Paths allow `[A-Za-z0-9._/-]` and reject `..` segments. The listing's key is used for reads. Unsafe names do not cause the listing to be echoed; ordinary missing names can receive suggestions.
 
-**"Ungated" is about the conversation; the call carrying a hidden reference meets a separate gate.** Passing the hidden reference to a later tool is gated where the host also wires the policy middleware: the label-tracking middleware publishes the stored label of each reference it expanded, and the policy middleware raises `untrusted_arguments` unless the tool opted in. What that costs the call is the host's setting rather than the middleware's — refused outright under the default, withheld for an approval that then executes, or merely logged, which [`../information-flow.md`](../information-flow.md) § *The call arguments have already been rewritten* sets out. So a model that answers a hidden result by feeding it to something else meets a gate rather than a clear path, while a later call the model composed itself is unaffected — the conversation label really is unchanged. `positions_holding_hidden_content` protects the refusal a kind renders wherever the host allows the call to proceed, including hosts wiring the tracker alone.
+Shell commands are fixed templates with one validated path substitution. Build diagnostics come from stderr; lint diagnostics come from stdout. Parameter-file builds discard compiled output. The compiler finds configuration by walking up from the source file.
 
-**The result splits, and what that buys is narrow.** `bicep_validate` answers with two items: everything the call produced — the diagnostics, or the sentence saying why there are none — stamped untrusted by core beneath the tool's own declaration, and one standing sentence beside it labelled `trusted` by the wrapper from its attach-time commitment. A hiding host replaces the first and leaves the second readable. The diagnosis stays hidden, because it is what the call produced; what survives is the sentence saying a result the model cannot read is not a clean validation. That is the mistake a hidden result invites and the one this kind exists to prevent — a variable reference reads exactly like a compile that found nothing. The label rests on the sentence being a constant present on every return path, refusals included, which is why one funnel appends it rather than each `return` — and why the sentence is committed at attach, where core holds every result to it rather than taking the body's word ([`README.md`](README.md) § *Writing a kind that declares its information flow*, rule 5).
+## Network access
 
-## Four egress hosts, in two pairs
+The host chooses the mode. The package fixes the restore allowlist:
 
-The allowlist is a property of the workload and lives in the package, not in configuration: a deployment able to widen Bicep's egress could undo the containment the whole design rests on. It is the **payload of an `ALLOWLIST` run** — the mode is the deployment's choice, the hosts are the kind's — and on that run everything unlisted is denied, ARM above all, which a `ts:` reference would otherwise dial with the host's credentials.
-
-| Host | Why |
+| Destination | Purpose |
 |---|---|
-| `mcr.microsoft.com` | AVM (`br/public:`) manifests |
-| `*.data.mcr.microsoft.com` | the layer blobs. With only the first allowed, restore resolves the manifest and then 403s on the blob — BCP192 on every `br/public:` reference — so module types never load and type errors in module inputs become structurally invisible |
-| `aka.ms` | the public module *index* is fetched from a hard-coded `aka.ms` URL |
-| `live-data.bicep.azure.com` | what that URL redirects to. Both hops must be allowed: the redirector alone answers with a `Location` pointing at a host that is still denied |
+| `mcr.microsoft.com` | Public module manifests |
+| `*.data.mcr.microsoft.com` | Module layer data |
+| `aka.ms` | Public module-index redirect |
+| `live-data.bicep.azure.com` | Module-index data |
 
-The index fetch belongs to restore rather than to the analyzer — deliberately, so lint rules never download during analysis — so restore-enabled `build` and `lint` commands attempt it whatever rules are enabled. `CLOSED` passes `--no-restore`; the other modes retain restore to load module types.
+Both destinations in each pair are needed. The allowlist does not grant Azure Resource Manager access or supply credentials. Sandbox identity remains host configuration.
 
-**A blocked restore does not go quiet, it goes misleading**, which is why the tool has a banner for it. `use-recent-module-versions` reports "Could not download available module versions" once per file — a warning that reads like a finding about the source while the check it stands for never runs. An agent can, and once did, discount exactly that noise as environment trouble and certify module inputs from READMEs instead of from the compiler. So a run with any BCP190/BCP191/BCP192 returns a `MODULE RESTORE FAILED` header ahead of the diagnostics, saying type checking did not run and the validation is incomplete, rather than a diagnostic list that reads healthy. All four hosts are Microsoft-operated. Adding these restore destinations neither grants ARM access nor provisions credentials; the host still owns the identity configured on the sandbox backend.
+`CLOSED` adds `--no-restore` to build, parameter-build and lint commands. Local templates and local modules still work. Unavailable external modules produce diagnostics and a `MODULE RESTORE FAILED` banner.
 
-## Running `CLOSED`, on purpose
+The banner is returned for BCP190, BCP191 or BCP192. It tells the model that module type checking is incomplete. An empty or hidden diagnostic report is not proof of a successful validation.
 
-Every compiler phase (`build`, `build-params` and `lint`) receives `--no-restore` when the spec runs `CLOSED`. Local templates and local module references still compile; an uncached external module produces diagnostics and the incomplete-validation banner. [`samples/01_acas_bicep`](../../../samples/01_acas_bicep) selects this mode for its module-free template too.
+## Result labels and tool flow
 
-A deployment that will not use AVM modules builds the spec with `egress=Egress.CLOSED`, and the run is served at `CLOSED` on any backend that can cut the network. [`samples/05_docker_bicep`](../../../samples/05_docker_bicep) is exactly that case: a module-free template compiled on `--network none`, completing fully offline with nothing to report. The posture is **stated rather than inferred from the host list**, which is what the old model could not do: a backend that cut the network entirely confined *more* than the four hosts asked, so the run went through on a warning naming what would be unreachable, and "offline on purpose" and "offline by accident" read identically. A template that then *does* reference a module fails inside the sandbox and the banner above reports the shortfall, which is a template/posture mismatch surfaced loudly at run time rather than a router quietly serving less egress than the spec named.
+The compiler and its input files are sources of the diagnostic text. The kind therefore claims `untrusted`, including for counts and returned error reports.
 
-## Templates, and the pin that makes them safe
+![Bicep validation is a source tool. Its wrapper declares trusted integrity to the framework while retaining an untrusted workload claim. Diagnostics are untrusted content; fixed guidance is trusted content. Both retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. Later calls to file writers or other tools face the destination's integrity and confidentiality policy.](../assets/bicep-information-flow.svg)
 
-Three shell templates, module-level constants, with exactly one substitution each:
+The wrapper exposes `source_integrity="trusted"` and keeps the workload claim in `maf_sandbox_derived_integrity`. It rebuilds the fixed guidance on every normal return, including refusals.
 
-```
-bicep build       {path} --diagnostics-format sarif 2>&1 || true
-bicep build-params {path} --diagnostics-format sarif --outfile /dev/null 2>&1 || true
-bicep lint        {path} --diagnostics-format sarif || true
-```
+In a trusted conversation with automatic hiding enabled, FIDES hides the report and leaves guidance readable. The guidance says that unreadable diagnostics are not a clean validation. Hidden content still contributes confidentiality.
 
-`{path}` is reached only after `resolve_listed_path` has cleared the name twice: against the caller's file store listing, and against resolving inside the call's own directory. A name outside `[A-Za-z0-9._/-]`, or holding a `..` segment, is refused with **no listing echoed back** — echoing one would invite a retry with another spelling. A name that is merely absent from the listing gets the near misses, because that is a wiring problem rather than an attack. And the *listing's* key is what the store is then read by, not the caller's spelling: `./main.bicep` validates but would not read back from a store keyed `main.bicep`.
+The host classifies results and controls destination policy. Passing hidden diagnostics to another tool remains subject to that policy. See [information flow](../information-flow.md).
 
-The listing itself is the boundary, so **failing to enumerate is a refusal, not an empty list** — that rule lives in the session, and this kind returns its message unchanged.
+## Errors and cleanup
 
-Two orderings inside the call are load-bearing and easy to get wrong in the obvious rewrite. Every file is written before *any* is compiled, because Bicep resolves `module` and a parameter file's `using` off the filesystem at compile time — writing and compiling one at a time reports "module not found" for perfectly good templates, and for a `.bicepparam` it is wrong about half the time. And each call gets a **fresh** directory rather than a wiped one: the sandbox is reused across fix rounds, `bicepconfig.json` sits at the work-dir root, and a recursive delete would take the repo's lint rules with it. Fresh directories make staleness impossible by construction; the call owns the path and the framework reclaims it ([`../tool-call.md`](../tool-call.md)).
+Store, backend and transport failures produce short messages identifying the file or phase. Detailed provider errors go to host logs. Names expanded from hidden content are shown by argument position.
 
-## Sanitized surfaces
+Diagnostic formatting removes the call directory from locations and message paths. It applies the allowed display names and uses `an unidentified file` for ambiguous matches. This handles quoted paths, file URIs and native Windows paths.
 
-Every failure path returns a fixed sentence naming the file and the phase, and sends `error_detail(exc)` to this module's logger: a store read that raises, a listed file with no content, a `write_file` that comes back `Conflict`, an exec timeout, an exec failure, unparseable SARIF. The reason is not tidiness. A live run produced `Operation returned an invalid status 'Conflict'` for four files at once, and that sentence alone cannot tell "the directory already exists" from "the sandbox is suspending" — the difference between a bug and a retry. The log needs it; the transcript must not have it.
+Unmatched external paths and other URLs remain as reported. This path policy does not remove arbitrary compiler prose.
 
-For parsed SARIF, `format_diagnostics` removes the call directory from locations and message paths and applies the caller's filename display map to both, regardless of diagnostic rule id. Exact matches use the permitted display name; an ambiguous trailing match becomes `an unidentified file`, withholding the name without assigning a request position. Messages support quoted and bare paths, `file://` URIs, and native Windows paths. Unmatched paths outside the call directory and message URLs using other schemes remain as reported. The policy keeps path spellings stable across calls and honors hidden filenames; it does not redact arbitrary compiler prose.
-
-## The CLI behaviours live in the source
-
-Three hard-won facts about the pinned Bicep CLI are documented where they bite, in [`_tool.py`](../../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py), and that is their home rather than this page:
-
-- `bicep build` emits SARIF on **stderr** while `bicep lint` emits it on **stdout**, hence the `2>&1` on one leg and not the other. The two phases share `_run_phase` for this reason — writing them twice is how the build leg's `2>&1` came to be missing once already.
-- `.bicepparam` is a parameter file, not a template, and `build` refuses it in prose that is not SARIF; `build-params` is the counterpart, with `--outfile /dev/null` because only the diagnostics are wanted.
-- `bicepconfig.json` is found **only** by walking up from the source file — the pinned CLI has no `--config-file` on either command — which is why the config sits at the work-dir root and why a per-call subdirectory still picks it up. `TestConfigDiscovery` pins the image against that constant, and CI checks the built image actually contains the file.
-
-## No isolation raise
-
-`bicep_sandbox_spec` sets no `min_isolation`, and that is an answer rather than an omission: the workload compiles text the model wrote against Microsoft-operated endpoints, and how strong the boundary must be *here* is the host's policy. A spec may only raise the floor, never lower it, so a kind that raised one would be overriding a deployment that knows more about its own exposure than the package does.
+Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confinement effort; it does not authorize reuse by itself. The host must explicitly choose reclaim, and the backend must support it. See [call cleanup](../tool-call.md).
 
 ## Status
 
-| Decision | State | Tracking |
+| Contract | State | Details |
 |---|---|---|
-| `bicep_validate` as the first kind: fixed templates, listing-pinned paths, sanitized surfaces, zero Azure imports | shipped | — |
-| Locations and message paths share the call-directory and filename display policy; unmatched external paths remain as reported | shipped | [#1215](https://github.com/sokolaidev/maf-extensions/issues/1215) (closed) by [#1232](https://github.com/sokolaidev/maf-extensions/pull/1232) (merged) |
-| Four AVM egress hosts fixed in the spec rather than in configuration | shipped | — |
-| The factory takes an `egress` mode, guards `{UNRESTRICTED, ALLOWLIST, CLOSED}` at construction and defaults to `ALLOWLIST`; the hosts stay the kind's | shipped | [#525](https://github.com/sokolaidev/maf-extensions/issues/525) (closed), factory delivered in [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) and offline completion in [#1085](https://github.com/sokolaidev/maf-extensions/pull/1085) (merged), under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
-| `CLOSED` disables restore in every compiler phase, preserves the incomplete-validation banner for uncached external modules, and is the posture sample 01 selects | shipped | [#525](https://github.com/sokolaidev/maf-extensions/issues/525) (closed) by [#1085](https://github.com/sokolaidev/maf-extensions/pull/1085) (merged) |
-| A module-free template compiles on a `CLOSED` run, and the mismatch is reported at run time rather than resolved at attach | shipped — [`samples/05_docker_bicep`](../../../samples/05_docker_bicep) is the worked case | [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged) |
-| The `MODULE RESTORE FAILED` banner ahead of a restore-blocked diagnostic list | shipped | — |
-| A fresh call directory per call, reclaimed by the framework | shipped | [#496](https://github.com/sokolaidev/maf-extensions/pull/496), kinds wired in [#500](https://github.com/sokolaidev/maf-extensions/pull/500) |
-| A host opting into `Cleanup.RECLAIM` can keep validation's sandbox warm on a backend declaring `RECLAIM` | shipped — the cache and temporary profile are removed with each call; cancellation waits for the bounded compiler command before cleanup. The Docker probe measures successful validation, diagnostics, module restores and cancellation twice on the same instance | [#983](https://github.com/sokolaidev/maf-extensions/issues/983) (closed) by [#1068](https://github.com/sokolaidev/maf-extensions/pull/1068) (merged); cache relocation in [#1042](https://github.com/sokolaidev/maf-extensions/pull/1042) (merged) |
-| A host naming no cleanup floor gets `Cleanup.DISPOSE`: the sandbox a call ran in is deleted and the conversation's next call starts cold | shipped — measured on Docker for a clean validation, compiler diagnostics, an AVM module restore and a cancelled call. The container is read back from the daemon's own inventory rather than from the router's ledger; each round is served a different instance, whose engine diff against the image is empty on entry, so no input, module cache or temporary profile crosses a call | [#1116](https://github.com/sokolaidev/maf-extensions/issues/1116) (closed) by [#1119](https://github.com/sokolaidev/maf-extensions/pull/1119) (merged); the default arrived with [#1091](https://github.com/sokolaidev/maf-extensions/pull/1091) (merged) and the reclaim probe was opted into it by [#1112](https://github.com/sokolaidev/maf-extensions/pull/1112) (merged) |
-| `requires` left at `{EXEC, FILES_IN}`; no `min_isolation` raise | shipped | — |
-| The diagnostics carry the model's own identifiers and file names, so the tool does not declare `trusted` | shipped — and a FIDES host now either hides the diagnostics from the model or lets them taint the conversation. Per-item labels narrow that choice rather than dissolving it, and the split that takes them is the last row here. What replaced the resulting delegation with an explicit `untrusted` is the row below | [#801](https://github.com/sokolaidev/maf-extensions/issues/801) (closed), under [#774](https://github.com/sokolaidev/maf-extensions/issues/774) (closed); the labels are [#803](https://github.com/sokolaidev/maf-extensions/issues/803) (closed) by [#849](https://github.com/sokolaidev/maf-extensions/pull/849) (merged) |
-| The tool says `untrusted` outright rather than reaching it through the host's default and the shape of `files: list[str]` | **shipped** — `source_integrity="untrusted"` is passed at the `sandboxed_tool` call. A tier-2 declaration replaces the input-label join and the host's `default_integrity` rather than flooring them, so the answer no longer depends on either. The store channel this row used to defer to is unchanged and still ruled on by [`../information-flow.md`](../information-flow.md), with [`../research/file-store.md`](../research/file-store.md) as the measured chain | [#840](https://github.com/sokolaidev/maf-extensions/issues/840) (closed) by [#887](https://github.com/sokolaidev/maf-extensions/pull/887) (merged) |
-| A refusal names the position of a rejected `files` entry rather than quoting a value the framework rewrote | shipped — the framework expands a `[var_id]` reference into `files` before the body runs, so the tool asks it which entries it rewrote (`positions_holding_hidden_content`) and renders `files[i]` for those. Where no middleware is reachable a bound on shape stands in, which is weaker: an instruction can be written without spaces. Measured against a live model in [`../research/hidden-content-through-a-refusal.md`](../research/hidden-content-through-a-refusal.md) — a model does pass the reference unprompted, and with the declaration removed the refusal only reaches it once something has already tainted the conversation | [#810](https://github.com/sokolaidev/maf-extensions/issues/810) (closed) |
-| A guest-OS axis — this kind needs a `bicep` binary on the path, and nothing declares it | shipped in core, unused here — `requires_os_family` exists and this spec leaves it `None`, which asks nothing and is refused by nothing. The binary itself stays outside the axis: what an image carries is the image's property, not the guest's shape ([`../guest-platform-and-commands.md`](../guest-platform-and-commands.md)) | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged) |
-| Core owns labels and consumes the file-integrity fold | shipped — this kind returns unlabelled guidance for the wrapper to stamp. It continues declaring untrusted, so a trusted file never promotes its derived result; the wrapper can weaken a trusted declaration for other kinds when the host sets confidentiality | [#881](https://github.com/sokolaidev/maf-extensions/issues/881) (closed) by [#1054](https://github.com/sokolaidev/maf-extensions/pull/1054) (merged) |
-| The result splits: standing guidance is labelled `trusted` and stays visible, while the diagnostics and their count remain untrusted under this tool's explicit claim, stamped on every derived item by core | **shipped** — two items on every return path, refusals included, appended at one funnel so no `return` can omit the sentence, and the sentence is **committed** to `sandboxed_tool(standing_guidance=…)`, so core refuses a result that departs from it rather than believing the body. `TestTheResultSplits` walks every path and `TestWhatAFidesHostSeesOfASplitResult` drives the real middleware, including the counterfactual: the same declaration over one string hides the sentence with the diagnostics | the mechanism is [#803](https://github.com/sokolaidev/maf-extensions/issues/803) (closed) by [#849](https://github.com/sokolaidev/maf-extensions/pull/849) (merged), which scoped itself to the core surface, and the commitment is [#858](https://github.com/sokolaidev/maf-extensions/issues/858) (closed) by [#920](https://github.com/sokolaidev/maf-extensions/pull/920) (merged); this kind's adoption of both is [#852](https://github.com/sokolaidev/maf-extensions/issues/852) (closed) by [#925](https://github.com/sokolaidev/maf-extensions/pull/925) (merged) |
+| Validation, restore controls and diagnostic handling | Implemented | [Package README](../../../packages/maf-sandbox-bicep/README.md) |
+| Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
+| Four-field result contract | Open; this kind returns report and guidance items | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |

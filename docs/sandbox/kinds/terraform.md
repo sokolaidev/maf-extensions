@@ -1,49 +1,104 @@
 # Terraform and OpenTofu
 
-[`maf-sandbox-terraform`](../../../packages/maf-sandbox-terraform/README.md) adds two selectable workloads alongside Bicep. The host selects `engine="terraform"` or `engine="opentofu"` once, attaching `terraform_validate` or `opentofu_validate`. Each tool receives an explicit file manifest and root module, validates it offline, and checks formatting without modifying the store. The tool does not rewrite files, return formatted text, or run other engine commands, and says so in its description and on every result, so a model fixes formatting by editing the files.
+The host selects `engine="terraform"` or `engine="opentofu"`. The kind validates a supplied project offline and checks formatting. Optional formatting tools return changed file contents for the model to save through host file tools.
 
-With `make_terraform_tools(..., formatting=True)`, the host also attaches `terraform_format` or `opentofu_format`. These separate tool names let the host expose and approve formatting independently; the default remains validation only. Both tools use the same kind spec and a fresh disposable sandbox per call. The formatting tool accepts the same manifest and root module, runs `fmt -recursive -no-color` across the staged project, and returns a JSON mapping of store-relative paths to whole changed files. It does not initialize dependencies, validate, or write to the store. The model persists the returned files through the host's file tools and their existing approvals. A base image with no providers is sufficient.
+See the [package README](../../../packages/maf-sandbox-terraform/README.md) for wiring, and the [image usage guide](../../../images/terraform-sandbox/USAGE.md) for runnable examples.
 
-The complete formatting report must fit 128 KiB, including JSON escaping and metadata; CLI output and returned file bytes also share a 128 KiB allowance. Unchanged files are omitted. Failure or overflow returns no partial formatted text, and a smaller complete manifest is required to retry an oversized result. One changed file over the bound cannot be returned. Returned files retain untrusted integrity and are entirely withheld when argument names are hidden. The host checks every returned path against the staged manifest before rendering it.
+## Contract
 
-| Contract | Behavior |
-| --- | --- |
-| Capabilities | `EXEC`, `FILES_IN` |
-| Guest family | `POSIX`, backed initially by pinned Linux amd64 images |
-| Isolation and cleanup | At least container isolation, `CALL` scope, `DISPOSE` floor |
-| Egress | `CLOSED`, fixed filesystem provider mirror without direct fallback |
-| Dependency lock | Supplied root lock read-only; absent lock generated only in disposable guest |
-| Reports | Validation remains check-only; opt-in formatting returns whole changed files without store writes |
-| Information flow | Untrusted derived report plus fixed standing guidance; hidden names suppress guest prose |
+| Setting | Behavior |
+|---|---|
+| Kind | `terraform` or `opentofu`, selected by the host |
+| Validation tool | `terraform_validate` or `opentofu_validate` |
+| Optional formatting tool | `terraform_format` or `opentofu_format` |
+| Required capabilities | `EXEC`, `FILES_IN` |
+| Guest | POSIX; supplied images pin Linux amd64 engines and dependencies |
+| Isolation and lifetime | At least container isolation; a separate sandbox per call; mandatory disposal |
+| Network | `CLOSED`, with a filesystem provider mirror and no direct-download fallback |
+| Results | Untrusted report followed by fixed trusted guidance |
 
-All files are read through the core session with their original listing records, checked against transfer ceilings, and staged before the fixed launcher runs. The tool refuses missing files, normalized name collisions, omitted configuration siblings in selected directories, reserved paths, and roots without a recognized configuration file. Dot-prefixed configuration files are refused because the engines ignore them. Terraform mode also refuses `.tofu` files; OpenTofu retains its native `.tofu` precedence. The consolidated [research record](../research/terraform-kind.md) records the CLI evidence and design alternatives.
+This kind exposes no plan, apply or state commands. It does not write to the agent's store. Providers and expressions may access other guest paths, so there is no call-directory confinement or warm-reuse claim.
 
-Initialization uses `-backend=false` and noninteractive mode. A failed dependency initialization never becomes a valid empty report. `validate -json` requires a supported 1.x output format, boolean verdict, consistent diagnostic counts, and matching process exit status. Malformed, truncated, oversized, or inconsistent output is incomplete validation. Formatting runs independently with `fmt -check -recursive` across the staged project.
+## Inputs and validation
 
-The immutable launcher constructs an environment without inherited CLI arguments, credentials, variables, logging settings, or provider overrides. Its private data directory is outside the project tree. It supervises each CLI process group, drains both pipes under one 128 KiB output ceiling, and shares the configured deadline across CLI phases. The host waits through cancellation until execution finishes within its bound; the core then disposes the entire sandbox. This is a disposal contract: providers and expressions can access paths outside the staged module, so there is no call-directory confinement or warm-reuse claim.
+Each call supplies a file manifest and root module. All files are read through the session with their original listing records, checked against transfer limits and staged before execution.
 
-Build and runnable examples are in [the image usage guide](../../../images/terraform-sandbox/USAGE.md), and image contents and pins in [the image guide](../../../images/terraform-sandbox/README.md). The built-in/local-module and `random` provider profiles pin their engine, provider archive, and guest platform. Other providers and backends require their own qualification. No numbered sample advertises an unpublished package version.
+The tool refuses:
 
-Formatting requires the launcher's fixed `format` mode. Rebuild base images and every derived prepared image when adopting it: the prepared receipt pins the launcher as `reader_sha256`, so replacing only `runner.py` in a prepared image is insufficient.
+- Missing files, normalized name collisions and reserved paths.
+- Configuration siblings omitted from a selected directory.
+- Roots without a recognized configuration file.
+- Dot-prefixed configuration files, which the engines ignore.
+- `.tofu` files in Terraform mode. OpenTofu keeps its native precedence rules.
 
-Additional profiles use [host-controlled dependency preparation](../../../images/terraform-sandbox/README.md#approved-dependency-preparation). A host-owned manifest pins full provider identities, versions, platforms, archive digests and provenance references, with a separate complete graph for already-local module bundles and for pinned registry modules such as Azure Verified Modules; the prepared manifests are generated by [scripts/terraform_manifest.py](../../../scripts/terraform_manifest.py) from committed policy files that name the engine and only approved providers, modules and a catalog selection. An OpenTofu policy pins providers alone, against `registry.opentofu.org`, because preparation bakes registry modules for Terraform. The committed catalog bakes every Azure Verified Module the policy allows into one image, one module source at several versions where nested calls need them, and records each module it leaves out with the reason. Preparation runs as the first stage of the image build, the only step with network access. It permits fixed HTTPS requests for those artifacts, verifies their complete content, and emits an image mirror plus module text and a sanitized receipt. It runs no provider executable on the host. The validator continues using CLOSED egress; neither the agent nor the guest gains a download interface. Registry module sources and version constraints stay as authored: the launcher records the baked packages Terraform would otherwise download, and a module the image lacks leaves initialization incomplete. Other remote or dynamic module sources are refused. The consolidated [research record](../research/terraform-kind.md#dependency-preparation-and-registry-modules) explains the choice over runtime network mirrors and TLS inspection. A prepared image holds its providers unpacked, so the engine links them into every call instead of copying; the launcher refuses a call the engine served by copying and allows only the empty file OpenTofu locks beside a link, and a supplied lock whose provider hashes are `zh:`-only is no longer verified against the mirror, while `h1:` hashes still are.
+The fixed launcher runs noninteractive initialization with `-backend=false`. A supplied root lock is read-only. Without one, any generated lock exists only in the disposable guest.
 
-For platform-specific roots, the separate [OpenTofu platform image](../../../images/terraform-sandbox/README.md#azure-platform-provider-image) adds Databricks, Entra, Fabric, Azure DevOps and Power Platform providers to the small Azure image's seven. Its exact pins serve AzureRM 5.6.0 and do not change the small image. Fabric covers Power BI content; AzureRM and AzAPI cover Azure service resources. Hosts select the image explicitly. Registry modules remain Terraform-only, and validation checks configuration against baked provider schemas without authenticating to those services. The larger Docker build is opt-in on manual workflow dispatch.
+Initialization failure means incomplete validation. `validate -json` must return a supported 1.x format, a Boolean verdict, consistent diagnostic counts and a matching exit status. Malformed, truncated, oversized or inconsistent output is incomplete.
 
-Policies can repeat a provider address with different version constraints to offer several lines in one image. The generator resolves each entry separately, refuses repeated constraints or entries resolving to the same version, and retains the newest provider each catalog root can use under any approved bound. The [two-line OpenTofu example](../../../images/terraform-sandbox/USAGE.md#build-an-image-with-two-provider-lines) serves AzureRM 4.x and 5.x from the same offline mirror, including supplied `h1:` locks for either version.
+Formatting checks use `fmt -check -recursive` across the staged project. Validation returns no formatted file contents; the model edits the files through host tools.
+
+## Optional formatting
+
+Set `formatting=True` to attach a separate formatting tool. Its separate name lets the host expose or approve it independently. Validation-only is the default.
+
+The formatting tool accepts the same manifest and root. It runs `fmt -recursive -no-color` without dependency initialization or validation. A base image with no providers is sufficient.
+
+The result is a JSON mapping from store-relative paths to whole changed files. Unchanged files are omitted. Every returned path must belong to the staged manifest.
+
+| Bound | Behavior |
+|---|---|
+| Complete report | At most 128 KiB, including JSON escaping and metadata |
+| CLI output plus returned file bytes | Shared 128 KiB allowance |
+| Failure or overflow | No partial formatted text |
+| Hidden argument names | Formatted file contents are withheld |
+
+An oversized project needs a smaller complete manifest. A single changed file larger than the bound cannot be returned. Saving formatted text remains a separate host-tool call with the host's approvals.
+
+## Result labels and tool flow
+
+Provider programs and stored configuration are sources of the reports. Formatted file contents also come from that configuration. The kind claims `untrusted` for both validation and formatting output.
+
+![Terraform and OpenTofu validation or formatting tools return an untrusted report and fixed trusted guidance as separate content items. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
+
+The wrapper raises the framework-facing declaration to keep guidance readable. It stores the workload claim in `maf_sandbox_derived_integrity` and labels the report separately. Hidden names suppress guest prose in reports.
+
+A hidden report is not evidence of success. Hidden content still affects confidentiality, and forwarding its reference remains subject to host policy. The host chooses result classification. See [information flow](../information-flow.md).
+
+## Execution limits and cleanup
+
+The launcher removes inherited CLI arguments, credentials, variables, logging settings and provider overrides. Its private data directory is outside the project tree.
+
+Each CLI process group is supervised. Both output streams share one 128 KiB ceiling, and all phases share the configured deadline. Cancellation waits for bounded execution to finish before core disposes the sandbox.
+
+Disposal is required even after a successful check. Keeping only the staged directory clean would not account for provider activity elsewhere in the guest.
+
+## Images and prepared dependencies
+
+The [image guide](../../../images/terraform-sandbox/README.md) owns engine pins, provider profiles and build commands. Select an image that contains the dependencies the project needs; other profiles and backends need their own validation.
+
+Dependency preparation is a host-controlled image-build step. It downloads only approved, pinned artifacts, verifies their content and writes a provider mirror, module files and a sanitized receipt. It runs no provider executable on the host.
+
+| Dependency | Supported preparation |
+|---|---|
+| Providers | Full identity, version, platform, digest and source reference are pinned |
+| Multiple provider versions | Policy may approve several version ranges; duplicate resolved versions are refused |
+| Local module bundles | A complete graph is included in the image |
+| Registry modules, including Azure Verified Modules | Terraform only; pinned graphs and catalog selections are baked into the image |
+| OpenTofu registry modules | Not provided by preparation |
+
+Only preparation has network access. Validation stays offline and gives the model no download interface. Missing modules leave initialization incomplete; other remote or dynamic module sources are refused.
+
+Registry module sources and version constraints remain as authored. Prepared providers are unpacked and linked into each call. The launcher refuses copied providers and permits OpenTofu's empty lock beside a link. Supplied `h1:` hashes are checked; `zh:`-only locks are not checked against the unpacked mirror.
+
+Prepared receipts pin the launcher as `reader_sha256`. Rebuild both base and derived images when changing launcher modes; replacing only the launcher file does not update that receipt.
+
+The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-provider-image) adds service-specific OpenTofu providers. The [multi-version example](../../../images/terraform-sandbox/USAGE.md#build-an-image-with-two-provider-lines) shows two provider lines in one offline mirror.
 
 ## Status
 
-| Work | State | Tracker |
-| --- | --- | --- |
-| Offline Terraform/OpenTofu validation, fixed launcher, images, examples, tests, and package registration | implemented; package not yet released | [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) by [#1250](https://github.com/sokolaidev/maf-extensions/pull/1250) (merged) |
-| Dependency preparation restricted to approved artifacts and request paths | repository build tool with pinned provider mirrors and already-local module graphs; validation retains closed egress | [#1249](https://github.com/sokolaidev/maf-extensions/issues/1249) (closed) by [#1267](https://github.com/sokolaidev/maf-extensions/pull/1267) (merged) |
-| Pinned registry module graphs (Azure Verified Modules) baked into prepared images, initialized offline by the fixed launcher | implemented for Terraform; one AVM graph measured on Docker and on live ACAS with CLOSED egress | [#1270](https://github.com/sokolaidev/maf-extensions/issues/1270) (closed) by [#1279](https://github.com/sokolaidev/maf-extensions/pull/1279) (merged) |
-| The whole Azure Verified Modules catalog baked into one prepared image: several versions per module source, registry subdirectory calls, the launcher's parser in preparation, per-root provider selection, recorded exclusions, and an offline `init` probe for every root | implemented for Terraform; 160 of 165 catalog roots built and probed offline on Docker, and the AVM suite passed against that image; ACAS import and boot of the 3.4 GB image are not measured. Four roots the registry has since withdrawn are now recorded exclusions, so the committed manifest bakes 156 of the same 165 | [#1288](https://github.com/sokolaidev/maf-extensions/issues/1288) (closed) by [#1287](https://github.com/sokolaidev/maf-extensions/pull/1287) (merged); the withdrawal is [#1317](https://github.com/sokolaidev/maf-extensions/issues/1317) (closed) by [#1319](https://github.com/sokolaidev/maf-extensions/pull/1319) (merged) |
-| Prepared OpenTofu images: a generated provider manifest, and a launcher that accepts the empty lock OpenTofu holds beside a linked provider | implemented; seven providers built and probed offline on Docker, and the prepared suite passed for both engines; ACAS and WSLC are not measured | [#1289](https://github.com/sokolaidev/maf-extensions/issues/1289) (closed) by [#1297](https://github.com/sokolaidev/maf-extensions/pull/1297) (merged) |
-| A tool that returns formatted text for the files `fmt -check` flags | implemented as opt-in formatting tools; whole changed files within a 128 KiB bound, no store writes; both engines verified on Docker | [#1291](https://github.com/sokolaidev/maf-extensions/issues/1291) (closed) by [#1334](https://github.com/sokolaidev/maf-extensions/pull/1334) (merged) |
-| Separate prepared OpenTofu image for Azure platform providers | 12 pinned providers built and initialized offline; Azure, Databricks, Fabric and Azure DevOps roots passed validation and rejected schema errors on Docker and live ACAS; the 1.50 GB image imported as a 2,240 MB disk, with no test sandboxes remaining after disposal | [#1332](https://github.com/sokolaidev/maf-extensions/issues/1332) (closed) by [#1335](https://github.com/sokolaidev/maf-extensions/pull/1335) (merged) |
-| Several versions of one provider in a prepared-image policy | implemented; AzureRM 4.81.0 and 5.6.0 built into one image, both roots and matching locks validated offline on Docker, mismatched hashes refused; catalog selection covered by generator tests | [#1331](https://github.com/sokolaidev/maf-extensions/issues/1331) (closed) by [#1342](https://github.com/sokolaidev/maf-extensions/pull/1342) (merged) |
-| Plan/apply/state commands, variable-dependent initialization, optional policy tools, and warm reuse | outside the first-version scope | scope recorded in [#1246](https://github.com/sokolaidev/maf-extensions/issues/1246) (closed) |
-
-The live suite measures actual Docker adapter calls for both engines, including local modules, JSON input, schema errors, unavailable dependencies, formatting, wrong-engine images, cancellation, timeouts, and daemon-observed disposal. The launcher suite independently exercises environment construction, shared output/time bounds, inherited pipes, read-only supplied locks, and source/state nonmutation. Local execution results belong to the implementation's issue record; adding the workflow does not establish that remote CI has run. ACAS and WSLC have not been measured for the builtin and `random` profiles. The prepared suite runs for both engines, against the image each `dependencies.<engine>.json` produces, which `terraform-live.yml` builds after merge. The prepared AVM profile has its own suite, run on Docker and on live ACAS for the network graph and on Docker for the catalog; its results are in the consolidated [research record](../research/terraform-kind.md#dependency-preparation-and-registry-modules).
+| Contract | State | Details |
+|---|---|---|
+| Offline validation and optional formatting | Implemented | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
+| Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
+| Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
+| Four-field result contract | Open; tools return report and guidance items | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
