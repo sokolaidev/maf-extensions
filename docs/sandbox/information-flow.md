@@ -126,30 +126,30 @@ With automatic hiding enabled in a still-trusted conversation, the last two shap
 
 ## The result contract
 
-**Designed, not implemented.** No kind returns this shape yet; the [Status](#status) row tracks it. It generalises the split above. Guidance and derived output become two of four slots, and what a kind may claim becomes a property of the slot rather than an argument made per kind.
+**In `maf-sandbox`, opt-in, and no kind uses it yet.** A tool passes `result_contract=True` and its body answers with a `SandboxResult` instead of text. The [Status](#status) row tracks the kinds moving over. It generalises the split above: guidance and derived output become parts of one shape, and what may be claimed becomes a property of the part rather than an argument made per kind.
 
-Every kind returns the same four slots, each its own `Content` item:
+| Part | Holds | Integrity | Confidentiality |
+|---|---|---|---|
+| `completed` | whether the workload reached a definitive answer at all | the tool's declaration, which the contract raises to trusted | the call's |
+| `verdict` | one value from the set the tool fixed at attach | same | the call's |
+| `established` | text the kind can vouch for | same | the call's |
+| `derived` | everything the workload produced | **untrusted**, written by the wrapper | the host's classification, floored at `public` |
 
-| Slot | Holds | Integrity |
-|---|---|---|
-| 1. **Completed** | whether the tool reached a definitive answer at all | trusted, by the shape |
-| 2. **Verdict** | one value from a set the kind fixes at attach — bool, int or string | trusted, by the shape |
-| 3. **Established output** | free text the kind can establish | trusted, **claimed by the kind** |
-| 4. **Derived output** | everything else the workload produced | untrusted |
+**Only `derived` carries a written label.** An item with no label of its own takes the invocation's, and for a contract tool that is the raised `trusted` declaration — so the first three parts are trusted by inheriting, and writing a label on them would only risk naming a confidentiality the host never chose. Measured: under a tool classified `private`, an item written `trusted/public` comes back `trusted/private`, because the framework keeps the stricter of the two. `TestAnUnlabelledItemTakesTheToolDeclaration` is the alarm if a core stops resolving it that way.
 
-A kind picks 3 or 4 for each thing it returns. Most will use 4 alone. Slots 1 and 2 are trusted by *Selection is not authorship*. Slot 3 is the only place a kind can be wrong, so it is the only place review has to look.
+**The contract raises the declaration, exactly as committing guidance does.** A per-item label may only restrict, so the trusted parts have to sit at the tool's own level. A tool declaring no integrity is refused at attach, for the reason guidance is. A tool declaring `untrusted` to the framework may keep doing so, and then gets no contract: all four parts combine down and hide, including the one that says the workload failed. That is why `result_contract` is opt-in rather than the default for every sandbox tool.
 
-**One item per slot, never one JSON object.** Labels attach per item. Four slots in one blob is one item with one label, and the split is gone. Separate items are also what lets the framework hide slot 4 while slots 1 to 3 stay readable.
+**One item per part, never one JSON object.** Labels attach per item. Four parts in one blob is one item with one label, and the split is gone.
 
-**Slots 1 and 2 answer different questions.** Slot 1 is *did we get an answer*, slot 2 is *what the answer is*. A hidden crash and a hidden clean run are the same `[var_…]` to a model; slot 1 is the fix. It covers in-band failure only — a tool that cannot run still raises, and raised errors come back unlabelled, outside this contract.
+**`completed` and `verdict` answer different questions.** `completed` is *did we get an answer*, `verdict` is *what the answer is*. A hidden crash and a hidden clean run are the same `[var_…]` to a model; `completed` is the fix. It covers in-band failure only — a tool that cannot run still raises, and raised errors come back unlabelled, outside this shape. A run reporting `completed=False` with a verdict is refused, because a model reading both cannot tell which to believe.
 
-**Slot 2's value set is enforced, not intended.** Fix the set at attach, check the body's answer against it on return, refuse an off-list value. Unchecked, slot 2 is a free string and the selection argument does not reach it.
+**The verdict set is enforced, not intended.** It is fixed at attach and the body's answer is checked against it on return; an off-list value is refused. Unchecked, a verdict is a free string and *Selection is not authorship* does not reach it. Two checks, because they ask different things: whether a model can tell two declared verdicts apart is decided by their rendering, so `1` beside `"1"` is refused at attach — while whether a returned verdict is one that was declared is decided by type as well as rendering, because `False == 0` in Python and a kind declaring `0` must not accept a body answering `False`.
 
-**Slot 3 needs a gate, and `nothing_survives_from` is it.** That keyword is already the author's assertion that a channel contributes nothing. A kind filling slot 3 names the sources it cleared, rather than arguing it in prose a reviewer has to find.
+**`established` is trusted unconditionally, and it is the kind's claim alone.** Nothing gates it. It is the one part a kind can be wrong about, and the one part review has to look at.
 
-**No new framework mechanism.** *One result, two labels* carries it as it stands: the tool declares `trusted`, `sandboxed_tool` stamps slot 4 untrusted, slots 1 to 3 sit at the declaration. Every label written is a restriction, which is the one direction the framework still allows.
+**No new framework mechanism.** *One result, two labels* carries it: the tool declares `trusted`, the wrapper stamps `derived` untrusted, the rest inherit. Every label written is a restriction, which is the one direction the framework still allows.
 
-**Guidance stays, and shrinks.** Slots 1 and 2 say what happened. Guidance says what the untrusted half is worth, which is advice and stays. Much of today's guidance exists only because the model had no verdict to read; that part goes.
+**Guidance stays, and shrinks.** `completed` and `verdict` say what happened. Guidance says what the untrusted half is worth, which is advice and stays. Much of today's guidance exists only because the model had no verdict to read; that part goes.
 
 ## How core labels a call
 
@@ -263,4 +263,4 @@ All four claim `untrusted`, so none depends on an input-label join or host defau
 | Authorship decides nothing in either direction | shipped as doctrine, and no declaration moved. A model's output carries no label and the framework never treats it as a source, so "the model wrote it" was never a reason. All four kinds already claimed `untrusted`; each now gives a channel or a program instead | refines [#774](https://github.com/sokolaidev/maf-extensions/issues/774) (closed) |
 | The code that emits the bytes is a source, not only the channels it reads | shipped as doctrine — a compiler, a provider plugin, a layout engine and a guest program are each code the host does not run. The registry is the one source crossing the sandbox boundary a host can establish. This voids the old "first-party and deterministic, therefore trusted" argument wherever the research records still carry it | refines [#774](https://github.com/sokolaidev/maf-extensions/issues/774) (closed); the withdrawn first-party claim is [#801](https://github.com/sokolaidev/maf-extensions/issues/801) (closed) |
 | A value an unestablished source only picks from a set the author fixed may be trusted | shipped as doctrine, partially revisiting a withdrawal. Four conditions, in *Selection is not authorship*. [#807](https://github.com/sokolaidev/maf-extensions/issues/807)'s claim covered two values this rule admits and two stream sizes it refuses, because a size is not a closed set. No kind returns a picked value, so nothing shipped changes until the contract below does | [#807](https://github.com/sokolaidev/maf-extensions/issues/807) (closed) by [#816](https://github.com/sokolaidev/maf-extensions/pull/816) (merged), partially revisited here |
-| Every kind returns the same four-slot result, so what may be claimed is a property of the slot | **designed, not implemented** — *The result contract* above has the slots, the one-item-per-slot constraint, slot 2's enforcement and slot 3's gate. It rides *One result, two labels* with no new framework mechanism, and it changes every kind's result, so it lands breaking with the samples in the same pull request | untracked — not yet filed |
+| Every kind returns the same four-part result, so what may be claimed is a property of the part | **shipped in `maf-sandbox`, opt-in, and no kind uses it yet** — `SandboxResult` with `result_contract=True` renders one item per part, raises the declaration, writes a label on `derived` alone and lets the rest inherit. The verdict set is fixed at attach and checked on return. What remains is moving the four kinds, their samples and their live checks, which changes every kind's result and so lands breaking | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
