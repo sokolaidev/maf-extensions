@@ -1704,10 +1704,11 @@ class TestDegrades:
         assert "azuredevcompute" not in out
         assert "0000-1111" not in out
 
-    def test_a_configuration_error_is_surfaced_because_we_authored_it(self):
+    def test_a_configuration_error_does_not_repeat_backend_text(self):
         error = ValueError("No disk image ... was built from 'x'")
         out = _run(_tool(_backend(acquire_error=error)), "print('hi')")
-        assert "No disk image" in out
+        assert "sandbox configuration is invalid" in out
+        assert "No disk image" not in out
 
     def test_a_failed_write_is_an_answer_not_an_exception(self):
         out = _run(_tool(_backend(_WriteFailingSandbox())), "print('hi')")

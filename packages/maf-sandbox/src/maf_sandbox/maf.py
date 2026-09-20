@@ -171,17 +171,17 @@ __all__ = [
     "sandboxed_tool",
 ]
 
-# The three sentences a workload is allowed to hand the model when it could not get a
-# sandbox.  Fixed text, not a formatted exception: an SDK or transport failure's own message
-# carries endpoint, subscription and tenant ids, and a tool result is persisted into the
-# transcript, so what the model sees must say that the run degraded and nothing else.  The
-# detail goes to the log instead (see :meth:`SandboxToolSession.acquire`).
+# Acquisition failures use fixed text because provider details can carry account identifiers
+# or untrusted content. The model receives the failure category; details stay in the host log.
 #
 # "T0" is this stack's shorthand for the ungrounded tier — the model checking its own work,
 # which is exactly what a host falls back to when the sandbox is gone.
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+_SANDBOX_INVALID_CONFIGURATION = (
+    "Error: sandbox configuration is invalid — see host logs for details"
+)
 _SANDBOX_REFUSED = (
     "Error: this workload was refused before it ran — degrading to T0 (LLM self-check only). "
     "The reason is in the host log."
@@ -1604,11 +1604,16 @@ class SandboxToolSession:
         Each entry carries the label the host knows for the bytes at that name.  Read it rather
         than inferring one from the name — see :class:`~maf_sandbox.ListedFile`, and rule 9 in
         ``docs/sandbox/kinds/README.md``.
+
+        Failure details stay in the host log; the returned refusal contains no store text.
         """
         try:
             return await self._context.list_files(store)
         except Exception as exc:  # noqa: BLE001
-            return f"Error: could not list the file store: {exc}"
+            self._logger.warning(
+                f"{self._log_prefix}: could not list the file store: %s", error_detail(exc)
+            )
+            return "Error: could not list the file store"
 
     async def read_file(
         self,
@@ -1816,9 +1821,9 @@ class SandboxToolSession:
 
         Admission and backend refusals return a fixed message; their details stay in the log.
         Refusals take precedence over ValueError, including subclasses of both. Missing SDKs
-        and backends have dedicated messages; stack-authored ValueError text is returned
-        verbatim. Other provider failures are logged with error_detail and return a fixed
-        unavailable message, since tool results are persisted in the transcript.
+        and backends have dedicated messages; ValueError returns a fixed configuration
+        refusal. Exception details stay in the log, since tool results are persisted in the
+        transcript and may be labelled trusted by the kind.
 
         Raises:
             RuntimeError: the call has closed, or a call-scoped key has no matching open call.
@@ -1891,10 +1896,11 @@ class SandboxToolSession:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return _NO_BACKEND_CONFIGURED
         except ValueError as exc:
-            # Raised by image resolution: a configuration message we author, safe to
-            # surface, and actionable for whoever is enabling the feature.
-            self._logger.warning(f"{self._log_prefix}: %s", exc)
-            return f"Error: {exc}"
+            # Backends and providers may raise these too; the type does not establish the text.
+            self._logger.warning(
+                f"{self._log_prefix}: sandbox configuration is invalid: %s", error_detail(exc)
+            )
+            return _SANDBOX_INVALID_CONFIGURATION
         except SandboxUnclean as exc:
             # The router's own refusal: a sandbox a previous call could not clean and the
             # framework could not dispose of. Safe to name and actionable for the host, but

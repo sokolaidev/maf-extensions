@@ -86,6 +86,10 @@ Guest-to-host tools bypass the middleware that admitted the outer call. Nothing 
 
 A factory with no configured backend returns an empty tool list. A configured backend that cannot serve the spec raises. During a call, fixed refusal or failure messages go to the model; provider details stay in host logs. [Kind authoring](kinds/writing-a-kind.md) describes the result and error handling.
 
+Dedicated acquisition refusals retain their categories. An otherwise unclassified failure, including `ValueError`, returns unavailable: the type cannot distinguish invalid configuration from a malformed provider response. Listing failures also use a fixed refusal, because exception text must not enter a kind's trusted output.
+
+A kind converting legacy text into content items does so at one return funnel, including accessor refusals. A kind using `SandboxResult` may construct that type on each branch, with refusals in `trusted_output` and `completed=False`. Core checks the result type and renders the fields and committed guidance on every normal return.
+
 The build callback's docstring becomes the tool description. Define it at module level so nesting does not change its indentation.
 
 ## Shared helpers

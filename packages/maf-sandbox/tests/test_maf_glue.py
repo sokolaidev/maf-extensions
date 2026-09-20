@@ -665,16 +665,18 @@ class TestSessionListFiles:
         assert not isinstance(listed, str)
         assert sorted(entry.name for entry in listed) == ["a.bicep", "b/c.bicep"]
 
-    def test_a_failure_is_a_refusal_rather_than_an_empty_listing(self):
+    def test_a_failure_is_a_refusal_rather_than_an_empty_listing(self, caplog):
         """An empty list would read as "the file store is empty" and refuse for the wrong reason."""
 
         async def _boom(store):
             raise RuntimeError("store is down")
 
         session = _session(context=_context(lister=_boom))
-        assert asyncio.run(session.list_files(InMemoryStore({}))) == (
-            "Error: could not list the file store: store is down"
-        )
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert asyncio.run(session.list_files(InMemoryStore({}))) == (
+                "Error: could not list the file store"
+            )
+        assert "store is down" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -723,12 +725,15 @@ class TestSessionAcquire:
                 "Error: no sandbox backend is configured — degrading to T0"
             )
 
-    def test_a_value_error_is_surfaced_verbatim_because_this_stack_authored_it(self):
-        """Image resolution raises these, and they are the actionable half of a misconfig."""
+    def test_a_value_error_names_the_failure_but_logs_its_detail(self, caplog):
         session = _session(
             InProcessSandboxBackend(acquire_error=ValueError("No disk image for 'bicep:1'"))
         )
-        assert asyncio.run(session.acquire(_KEY)) == "Error: No disk image for 'bicep:1'"
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert asyncio.run(session.acquire(_KEY)) == (
+                "Error: sandbox configuration is invalid — see host logs for details"
+            )
+        assert "No disk image for 'bicep:1'" in caplog.text
 
     def test_the_family_is_every_refusal_the_router_defines(self):
         """Every refusal ``_router`` defines belongs to the family, less the two that answer
@@ -772,13 +777,8 @@ class TestSessionAcquire:
         assert "run_code" in caplog.text
         assert "run_code" not in answer
 
-    def test_a_refusal_that_is_also_a_value_error_is_not_surfaced_verbatim(self, caplog):
-        """These classes are public and subclassable, so the ladder's order is the boundary.
-
-        `ValueError` is surfaced verbatim — image resolution raises it — so a refusal
-        inheriting both would take that branch and carry whatever it holds into a transcript,
-        if the refusal branch did not run first.
-        """
+    def test_a_refusal_that_is_also_a_value_error_keeps_its_category(self, caplog):
+        """A public refusal subclass must not be mistaken for a configuration failure."""
 
         class BackendRefusal(SandboxCapabilityNotSupported, ValueError):
             pass
@@ -2957,7 +2957,7 @@ class TestCleanupAdmission:
         [
             (ImportError("provider diagnostic"), _maf._SDK_NOT_INSTALLED),
             (NoSandboxBackend("provider diagnostic"), _maf._NO_BACKEND_CONFIGURED),
-            (ValueError("No disk image configured"), "Error: No disk image configured"),
+            (ValueError("No disk image configured"), _maf._SANDBOX_INVALID_CONFIGURATION),
             (RuntimeError("provider diagnostic"), _maf._SANDBOX_UNAVAILABLE),
             (SandboxUnclean("provider diagnostic"), _maf._SANDBOX_UNCLEAN),
         ],
