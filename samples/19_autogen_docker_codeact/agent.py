@@ -162,13 +162,16 @@ class SandboxCodeExecutor(CodeExecutor):
     Two things this executor deliberately is not. Not a `Component` — a router is not
     serialisable config, so `dump_component()` raises `NotImplementedError`, and so does the
     tool's and an agent holding the tool. And not a call boundary — there is no `enter_call`,
-    which is what leaves the guest unadmitted; see this directory's README.
+    which is what leaves the guest unadmitted; see this directory's README. Concurrent calls are
+    serialised here rather than refused, because nothing upstream of this class can be relied on
+    to stop the model asking for two.
     """
 
     def __init__(self, router: SandboxRouter, key: SandboxKey, spec: SandboxSpec) -> None:
         self._router = router
         self._key = key
         self._spec = spec
+        self._one_at_a_time = asyncio.Lock()
 
     async def start(self) -> None:
         """Nothing to start: the router creates the sandbox on the first execution."""
@@ -194,7 +197,17 @@ class SandboxCodeExecutor(CodeExecutor):
         have run, as both of AutoGen's reference executors do. The sandbox is acquired only
         when a runnable block is reached, so a list that begins with an unsupported language
         never pays for one.
+
+        Held against `_one_at_a_time`, so a model response carrying two calls runs them one
+        after another over the single sandbox this key admits.
         """
+        async with self._one_at_a_time:
+            return await self._execute_blocks(code_blocks, cancellation_token)
+
+    async def _execute_blocks(
+        self, code_blocks: list[CodeBlock], cancellation_token: CancellationToken
+    ) -> CodeResult:
+        """`execute_code_blocks` with the lock already held."""
         sandbox: BoundedExec | None = None
         rendered: list[str] = []
         exit_code = 0
@@ -324,7 +337,6 @@ def build_model() -> tuple[ChatCompletionClient, DefaultAzureCredential | None] 
                 base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_LOCAL_BASE_URL,
                 api_key=os.environ.get("OPENAI_API_KEY") or LOCAL_API_KEY_PLACEHOLDER,
                 model_info=_model_info(ModelFamily.UNKNOWN),
-                parallel_tool_calls=False,
             ),
             None,
         )
@@ -348,7 +360,6 @@ def build_model() -> tuple[ChatCompletionClient, DefaultAzureCredential | None] 
             # Sample 06's prerequisite: the deployment is a reasoning model, and `gpt-5.4` is
             # not one of the names AutoGen knows.
             model_info=_model_info(ModelFamily.GPT_5),
-            parallel_tool_calls=False,
         ),
         credential,
     )

@@ -874,9 +874,11 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is None
         assert type(model).__name__ == "OpenAIChatCompletionClient"
-        # The flag keeps `AssistantAgent`'s concurrent tool calls off one unadmitted key; the
-        # wiring tests type-check only, so dropping the flag would leave this suite green.
-        assert model._create_args["parallel_tool_calls"] is False  # pyright: ignore[reportPrivateUsage]
+        # Absent on purpose. `reflect_on_tool_use=True` issues a summarising turn carrying no
+        # tools, and an endpoint enforcing the parameter's contract refuses a request that sends
+        # it without them (#1341). What it used to buy is now `SandboxCodeExecutor`'s lock, which
+        # `TestTheExecutorSerialisesCalls` holds to.
+        assert "parallel_tool_calls" not in model._create_args  # pyright: ignore[reportPrivateUsage]
 
     def test_the_azure_road_constructs_with_a_token_provider(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
@@ -884,7 +886,7 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is not None
         assert type(model).__name__ == "AzureOpenAIChatCompletionClient"
-        assert model._create_args["parallel_tool_calls"] is False  # pyright: ignore[reportPrivateUsage]
+        assert "parallel_tool_calls" not in model._create_args  # pyright: ignore[reportPrivateUsage]
         asyncio.run(credential.close())
 
     def test_an_endpoint_without_a_deployment_is_reported_not_run(
@@ -894,6 +896,57 @@ class TestTheModelWiring:
         monkeypatch.delenv("AZURE_OPENAI_CHAT_MODEL", raising=False)
         assert sample_19.build_model() is None
         assert "AZURE_OPENAI_CHAT_MODEL" in capsys.readouterr().err
+
+
+class TestTheExecutorSerialisesCalls:
+    """One execution at a time over an unadmitted key, whatever the model asks for.
+
+    `AssistantAgent` runs every tool call in one model response concurrently, and this executor
+    performs no `enter_call`, so two of them would share one sandbox. That used to be prevented
+    by asking the model not to — `parallel_tool_calls=False` — which an endpoint refuses on the
+    tool-free reflection turn (#1341). The lock does not depend on a request parameter.
+    """
+
+    @staticmethod
+    def _overlapping():
+        """A sandbox that records the most calls ever inside `exec_bounded` at once."""
+
+        class Overlapping(InProcessSandbox):
+            inside = 0
+            highest = 0
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                Overlapping.inside += 1
+                Overlapping.highest = max(Overlapping.highest, Overlapping.inside)
+                # A real suspension point, so a second call that is free to run will run.
+                await asyncio.sleep(0.01)
+                Overlapping.inside -= 1
+                return ExecResult(stdout="done", exit_code=0)
+
+        return Overlapping
+
+    def _run_two(self, sandbox_type, call: str) -> int:
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, _ = _router(sandbox_type())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+            run = getattr(executor, call)
+            await asyncio.gather(run(blocks, CancellationToken()), run(blocks, CancellationToken()))
+
+        asyncio.run(body())
+        return sandbox_type.highest
+
+    def test_the_window_is_real_without_the_lock(self):
+        """The negative control: `_execute_blocks` is the body with the lock already held."""
+        assert self._run_two(self._overlapping(), "_execute_blocks") == 2
+
+    def test_two_concurrent_calls_run_one_after_another(self):
+        assert self._run_two(self._overlapping(), "execute_code_blocks") == 1
 
 
 class TestTheResultReading:
