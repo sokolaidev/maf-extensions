@@ -426,6 +426,10 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
             )
         return DEFAULT_BACKEND_DECLARATIONS
     if isinstance(declared, BackendDeclarations):
+        if type(declared.requires_exclusive_admission) is not bool:
+            raise SandboxBackendNotPermitted(
+                f"sandbox backend {backend.name!r} requires_exclusive_admission must be bool"
+            )
         attachment = declared.attached_identity
         if not isinstance(cast("object", attachment), AttachedIdentity):
             raise SandboxBackendNotPermitted(

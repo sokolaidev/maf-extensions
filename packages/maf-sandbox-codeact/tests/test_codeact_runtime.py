@@ -211,6 +211,48 @@ def test_runtime_can_use_prepared_storage_base_without_makedirs(outputs):
 
 
 @pytest.mark.parametrize("selection", list(Selection))
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_prepared_base_cleans_unlisted_files_even_when_host_allows_reclaim(selection, snapshot):
+    class Backend(InProcessSandboxBackend):
+        async def dispose(self, key, *, kind=None, instance_id=None):
+            failure = await super().dispose(key, kind=kind, instance_id=instance_id)
+            self.sandbox = _PythonSandbox()
+            return failure
+
+    capabilities = {Capability.RUN_CODE, Capability.RECLAIM}
+    if snapshot:
+        capabilities.add(Capability.SNAPSHOT)
+    backend = Backend(
+        _PythonSandbox(),
+        declarations=replace(FAKE_BACKEND_DECLARATIONS, capabilities=frozenset(capabilities)),
+    )
+    router = SandboxRouter(
+        [backend],
+        min_isolation=backend.isolation,
+        min_cleanup=Cleanup.RECLAIM,
+        selection=selection,
+    )
+    runtime = replace(_FILES_RUNTIME, use_call_directory=False)
+    tool = make_codeact_tools(router, "analyst", _context(), runtime=runtime)[0]
+    first = _run(
+        tool,
+        "with open(guest_call_path + '/leftover', 'w') as f:\n    f.write('secret')\nprint('written')",
+    )
+    assert "written" in first
+    second = _run(
+        tool,
+        "try:\n    print(open(guest_call_path + '/leftover').read())\nexcept FileNotFoundError:\n    print('clean')",
+    )
+    assert "clean" in second and "secret" not in second
+    assert backend.specs[-1].min_cleanup is Cleanup.RESET
+    assert not backend.sandbox.reclaims
+    if snapshot:
+        assert backend.sandbox.resets and not backend.disposed
+    else:
+        assert backend.disposed
+
+
+@pytest.mark.parametrize("selection", list(Selection))
 def test_plain_runtime_needs_no_file_or_exec_capability(selection):
     tool, sandbox, backend = _make(selection=selection, capabilities={Capability.RUN_CODE})
     code = "from __future__ import annotations\nprint(2 + 2)"

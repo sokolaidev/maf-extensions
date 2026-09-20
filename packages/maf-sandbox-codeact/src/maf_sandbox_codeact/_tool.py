@@ -40,6 +40,7 @@ from maf_sandbox import (
     WORK_DIRECTORY,
     CallerContext,
     Capability,
+    Cleanup,
     DeclaredOutput,
     Egress,
     EgressRule,
@@ -692,6 +693,9 @@ def _codeact_spec(
         confined_to_guest_call_path=False,
         # And read whatever a sibling call put in the sandbox, so calls run one at a time.
         exclusive_admission=True,
+        min_cleanup=(
+            Cleanup.RESET if runtime is not None and not runtime.use_call_directory else None
+        ),
         requires=frozenset(requires),
         outputs_named_at_call_time=collects,
         files_in=files_in,

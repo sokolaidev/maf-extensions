@@ -21,7 +21,7 @@ class CodeactRuntime:
     is never changed. Without a base, file channels are refused.
 
     ``use_call_directory=False`` uses the prepared base directly without calling ``makedirs``.
-    Exclusive admission and whole-sandbox cleanup still protect successive calls.
+    It requires exclusive admission and at least snapshot reset, falling back to disposal.
     """
 
     instructions: str

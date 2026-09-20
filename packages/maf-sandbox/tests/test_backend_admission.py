@@ -3,11 +3,33 @@
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
-from maf_sandbox import Cleanup, SandboxKey, SandboxRouter, SandboxSpec, Selection
+from maf_sandbox import (
+    Cleanup,
+    SandboxBackendNotPermitted,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+    Selection,
+)
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
+
+
+@pytest.mark.parametrize("selection", list(Selection))
+@pytest.mark.parametrize("value", ["false", None, 0, 1])
+def test_malformed_exclusive_admission_declaration_is_refused(selection, value):
+    backend = InProcessSandboxBackend(
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS, requires_exclusive_admission=cast(Any, value)
+        )
+    )
+    with pytest.raises(SandboxBackendNotPermitted, match="requires_exclusive_admission.*bool"):
+        router = SandboxRouter([backend], min_isolation=backend.isolation, selection=selection)
+        router.ensure_can_serve(SandboxSpec(kind="test"))
+    assert not backend.keys
 
 
 @pytest.mark.parametrize("selection", list(Selection))
