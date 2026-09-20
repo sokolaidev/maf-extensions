@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 805" width="1180" height="805" role="img" aria-labelledby="codeact-data-routes-title codeact-data-routes-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="codeact-data-routes-title">CodeAct: policy checks the call; the guest uses enabled routes</title>
+  <desc id="codeact-data-routes-desc">The model calls execute_code through the host-configured agent policy. The enclosing call is checked for integrity, its outbound confidentiality limit and any required approval, using the combined declarations of the enabled routes. Inside the call, session reads stage selected file-store inputs for the guest program. The guest can exchange data with allowed network destinations under backend enforcement. In exec mode it can also call registered functions in the host process; those calls bypass ordinary agent tool middleware, while registry and transport controls still apply. Collected artifacts are delivered through OutputSink during execute_code, after file and byte checks. These actions occur inside the admitted call rather than through later model calls. The execution report remains untrusted. The run_code variant has no native host-tool channel.</desc>
+  <defs>
+    <marker id="codeact-data-routes-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1180" height="805" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">CodeAct: policy checks the call; the guest uses enabled routes</text>
+  <text x="32" y="76" font-size="17" fill="#526072">The host enables these routes before the model calls execute_code. Unconfigured routes are absent.</text>
+  <rect x="32" y="113" width="211" height="100" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="146" font-size="21" font-weight="600" fill="#243040">Model</text>
+  <text x="52" y="176" font-size="16" fill="#526072">Calls execute_code</text>
+  <rect x="303" y="113" width="512" height="100" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="323" y="146" font-size="21" font-weight="600" fill="#243040">Agent policy for the whole call</text>
+  <text x="323" y="176" font-size="17" fill="#526072">Integrity, outbound confidentiality and approvals.</text>
+  <text x="323" y="202" font-size="17" fill="#526072">Uses declarations for all enabled routes.</text>
+  <rect x="875" y="113" width="273" height="100" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="895" y="146" font-size="21" font-weight="600" fill="#243040">Admitted call</text>
+  <text x="895" y="176" font-size="17" fill="#526072">One execute_code body</text>
+  <path d="M 243 164 H 291" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#codeact-data-routes-arrow)"/>
+  <path d="M 815 164 H 863" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#codeact-data-routes-arrow)"/>
+  <rect x="32" y="269" width="1116" height="444" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="54" y="302" font-size="21" font-weight="600" fill="#243040">Inside execute_code</text>
+  <rect x="54" y="345" width="298" height="153" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="74" y="378" font-size="21" font-weight="600" fill="#243040">File-store inputs</text>
+  <text x="74" y="408" font-size="17" fill="#526072">Selected listing entries</text>
+  <text x="74" y="434" font-size="17" fill="#526072">Session read + source record</text>
+  <text x="74" y="460" font-size="17" fill="#526072">Stage within transfer limits</text>
+  <rect x="428" y="345" width="300" height="178" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="448" y="378" font-size="21" font-weight="600" fill="#243040">Guest program</text>
+  <text x="448" y="408" font-size="17" fill="#526072">exec or run_code</text>
+  <text x="448" y="434" font-size="17" fill="#526072">Uses the enabled routes.</text>
+  <text x="448" y="460" font-size="17" fill="#526072">Returned workload report</text>
+  <text x="448" y="486" font-size="17" fill="#526072">stays untrusted.</text>
+  <rect x="800" y="345" width="326" height="122" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="820" y="378" font-size="21" font-weight="600" fill="#243040">Allowed network</text>
+  <text x="820" y="408" font-size="17" fill="#526072">Backend enforces destinations</text>
+  <text x="820" y="434" font-size="17" fill="#526072">and any method limits.</text>
+  <rect x="800" y="512" width="326" height="169" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="820" y="545" font-size="21" font-weight="600" fill="#243040">Registered host functions</text>
+  <text x="820" y="575" font-size="17" fill="#526072">Exec mode; run in the host.</text>
+  <text x="820" y="601" font-size="17" fill="#526072">Bypass ordinary agent</text>
+  <text x="820" y="627" font-size="17" fill="#526072">tool middleware.</text>
+  <text x="820" y="653" font-size="17" fill="#526072">Registry controls still apply.</text>
+  <rect x="428" y="590" width="300" height="91" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="448" y="623" font-size="21" font-weight="600" fill="#243040">OutputSink</text>
+  <text x="448" y="653" font-size="16" fill="#526072">Host delivers collected artifacts.</text>
+  <path d="M 1011 213 V 242 H 578 V 333" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#codeact-data-routes-arrow)"/>
+  <path d="M 352 414 H 416" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#codeact-data-routes-arrow)"/>
+  <text x="366" y="396" font-size="14" fill="#526072">read</text>
+  <path d="M 740 405 H 788" fill="none" stroke="#7d8694" stroke-width="2" marker-start="url(#codeact-data-routes-arrow)" marker-end="url(#codeact-data-routes-arrow)"/>
+  <text x="752" y="388" font-size="14" fill="#526072">data</text>
+  <path d="M 740 489 H 764 V 570 H 788" fill="none" stroke="#7d8694" stroke-width="2" marker-start="url(#codeact-data-routes-arrow)" marker-end="url(#codeact-data-routes-arrow)"/>
+  <path d="M 578 523 V 578" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#codeact-data-routes-arrow)"/>
+  <text x="591" y="552" font-size="14" fill="#526072">collect + check limits</text>
+  <text x="32" y="749" font-size="16" fill="#526072">Guest host-tool calls do not re-enter agent tool policy. The run_code variant has no host-tool channel.</text>
+  <text x="32" y="778" font-size="16" fill="#526072">Network, host tools and artifact delivery act during execute_code; a hidden report does not undo those actions.</text>
+</svg>

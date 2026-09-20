@@ -78,6 +78,8 @@ The [image guide](../../../images/terraform-sandbox/README.md) owns engine pins,
 
 Dependency preparation is a host-controlled image-build step. It downloads only approved, pinned artifacts, verifies their content and writes a provider mirror, module files and a sanitized receipt. It runs no provider executable on the host.
 
+![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model receives an untrusted report or changed whole files, with separate fixed guidance. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
+
 | Dependency | Supported preparation |
 |---|---|
 | Providers | Full identity, version, platform, digest and source reference are pinned |

@@ -27,6 +27,8 @@ The spec does not declare an OS family. The host must select an image that suppo
 4. Build templates with `bicep build` and parameter files with `bicep build-params`. Run lint as applicable.
 5. Format the compiler's diagnostics, then let core clean up the call.
 
+![All selected files are staged before compilation. For each file, Bicep builds the template or parameter file, then lints it. The host's network mode applies to every phase: closed access disables restore; other modes permit restore within their limits. The tool formats every phase report. Restore failures, timeouts and execution or report-parsing failures leave validation incomplete. Other diagnostics report compiler errors and warnings. No diagnostics covers only what was checked; hidden or empty output does not establish success. Every normal return includes fixed guidance, and core cleans up.](../assets/bicep-validation-flow.svg)
+
 All files are staged before compilation so local modules and parameter-file references resolve together. The call directory also holds compiled output, the module cache and the temporary profile.
 
 Paths allow `[A-Za-z0-9._/-]` and reject `..` segments. The listing's key is used for reads. Unsafe names do not cause the listing to be echoed; ordinary missing names can receive suggestions.

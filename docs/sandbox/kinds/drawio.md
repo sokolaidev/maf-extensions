@@ -47,6 +47,8 @@ Omitted coordinates default to zero. Overlaps and origin coordinates do not trig
 | Flat graphs, multiple layers, disconnected nodes, cycles, self-loops and parallel edges | Automatic layout or preservation |
 | Nested groups, relative ports, edge-label vertices, collapsed cells and detached edges | Complete geometry with preservation enabled |
 
+![After parsing the XML, the converter checks each page's cells, endpoints and geometry. It keeps complete geometry when preservation is enabled. Otherwise the page must support automatic layout within the layout limits; unsupported cases are refused. Graphviz lays out accepted pages. Both routes fill missing edge geometry and check the result. Only after every page succeeds and the output fits the size limit does the tool write diagram.drawio and deliver it through OutputSink. Any invalid page, failed layout or exceeded limit stops delivery; no partial artifact is returned.](../assets/drawio-layout-flow.svg)
+
 Graphviz receives generated IDs and validated dimensions, never XML labels, links or styles. Missing dimensions default to 160 by 80 units. Supplied dimensions and rotation are retained.
 
 Automatic layout replaces connector routing and waypoints, including `sourcePort` and `targetPort`, and removes `childLayout` hints. Appearance and layer membership remain. Geometry is checked again before output is written.

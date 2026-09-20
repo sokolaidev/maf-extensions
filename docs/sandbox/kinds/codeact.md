@@ -73,6 +73,8 @@ No host function is callable until the host supplies a nonempty registry. Readin
 
 Registered functions run in the host process. Guest calls to them bypass the agent's ordinary tool middleware; policy for the enclosing `execute_code` call uses the registry's combined declarations.
 
+![The model's execute_code call passes the host's policy for integrity, outbound confidentiality and required approvals. Inside that call, session reads stage selected store files for the guest. The guest can exchange data with allowed network destinations and, in exec mode, registered host functions. Network enforcement belongs to the backend. Host functions run in the host and bypass ordinary agent tool middleware, while registry controls still apply. Artifact collection checks file and byte limits before OutputSink delivery. These routes act during execute_code, and hiding its untrusted report does not undo them. The run_code variant has no host-tool channel.](../assets/codeact-data-routes.svg)
+
 | Registry declaration | Effect on `execute_code` |
 |---|---|
 | Any `Identity.USER` tool | Require approval for the whole call |
