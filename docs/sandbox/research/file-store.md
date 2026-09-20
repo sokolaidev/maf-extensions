@@ -55,7 +55,7 @@ The current `FileStoreProvenance` record intentionally has a narrower contract:
 
 - Every observed write is recorded as untrusted; the API does not accept a caller-supplied integrity claim.
 - The record is keyed by normalized path and invalidated by `forget` on deletion.
-- A floor applies only when no recorded entry exists, so a trusted floor cannot elevate model-written content.
+- A floor applies only when no recorded entry exists, so a trusted floor cannot elevate a path the record already has an entry for.
 - A trusted floor is refused unless the host actually wires middleware that can populate the record.
 - The same provenance record must be used for file listing and session reads; otherwise the list and the read may describe different evidence.
 - A write that has not yet returned can precede its provenance event, so the host must treat the observation window as part of the guarantee.
@@ -68,7 +68,7 @@ This keeps the implementation honest without changing the framework's `AgentFile
 
 If the richer design is adopted, it should have four separate responsibilities:
 
-1. **Observe:** middleware records the label recovered at the argument boundary for each write, normalized path and call. Literal model-authored content with no FIDES reference resolves to untrusted; it must not inherit a trusted floor.
+1. **Observe:** middleware records the label recovered at the argument boundary for each write, normalized path and call. Literal content with no FIDES reference carries no label, so the write is recorded as **unestablished** rather than untrusted — a distinction this repository keeps, though a trusted claim is disqualified by either alike. Either way such a path must not inherit a trusted floor, and it does not: a recorded entry beats the floor unconditionally.
 2. **Bind:** the record stores a content hash or equivalent version alongside the label. A path rewritten by another process, sink or direct filesystem access must fall back to the conservative floor rather than retain the old label.
 3. **Deliver:** the host listing returns the label with each allowed path, and the session/read path carries it into the kind's result derivation. Recorded per-file labels override a store-wide floor; an unobserved path uses the floor; an unknown or changed version is untrusted/unknown.
 4. **Consume:** core or the kind applies the labels to derived result items, preserving host confidentiality and allowing different files in one result to retain different integrity. A kind still cannot declare a whole result trusted merely because one input file is trusted.
@@ -80,7 +80,7 @@ A future host may also choose to keep the current coarse policy: mark every file
 ## Limits and non-goals
 
 - A wrapper cannot recover a label after FIDES expansion; it can only observe writes and authorship.
-- A path name is model-authored even when its bytes came from a trusted host file. Refusals and summaries must name positions rather than echoing attacker-shaped names.
+- A path name is a separate channel from the bytes behind it, and stays unestablished even where those bytes came from a trusted host file: it arrives as an argument, and an argument can hold content expanded from a hidden reference. Refusals and summaries must name positions rather than echoing attacker-shaped names.
 - A store-wide trusted floor does not establish the bytes of files written by the model or files changed outside the observed store object.
 - The file-store channel is separate from egress, host tools and attached identity. Those sources must be included when justifying any trusted result.
 - No proposal here authorizes a kind to declare trusted. The shipped Bicep and CodeAct kinds remain explicitly untrusted.
