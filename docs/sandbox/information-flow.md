@@ -100,6 +100,8 @@ FIDES hides an untrusted item only when all these conditions hold:
 - The conversation is still trusted.
 - The tool is not `inspect_variable`.
 
+![An untrusted result is hidden only when auto-hide is enabled, the conversation is still trusted and the tool is not inspect_variable. The model then sees a variable reference and the conversation stays trusted. Otherwise the model reads the text, the conversation becomes or stays untrusted, and later untrusted output is visible too. Both hidden and visible items still contribute confidentiality.](assets/untrusted-output-visibility.svg)
+
 The model receives a reference such as `[var_…]` instead of the text. It can pass that reference to another tool, subject to the host's policy. Expanding the reference restores its stored label.
 
 Hidden content does not make the conversation's integrity untrusted. Its confidentiality still counts and can block a destination.
@@ -164,6 +166,8 @@ The wrapper can lower workload integrity after a file read. It never raises it b
 
 Empty files count as successful reads. Missing or refused reads do not. Without a session source record, only the listing's evidence is available.
 
+![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. Other reads preserve the kind's claim. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
+
 When the wrapper writes labels, and the host classifies results as `private`:
 
 | Kind's workload claim | Files read in this call | Workload-item label |
@@ -198,6 +202,8 @@ See [host file provenance](hosts.md#file-store-provenance--what-a-kind-reads-and
 ### The call arguments have already been rewritten
 
 The framework expands hidden references before the body runs. A file name argument may therefore contain hidden text. Its file-integrity label does not say whether that name may be shown.
+
+![A hidden reference expands into a tool argument with its stored label before the body runs. Host policy checks whether the call may proceed. If allowed, a file-write tool stores the expanded bytes as plain text without labels. Host middleware separately records the write as untrusted when the call exits. Later reads combine the file text with that integrity record; result confidentiality remains a separate host setting. Argument provenance middleware identifies changed positions so hidden names can be reported by position. Writes still in flight may not yet be recorded.](assets/hidden-reference-storage.svg)
 
 With `argument_provenance_middleware`, a kind can check which argument positions changed. Without it, `positions_holding_hidden_content` compares against stored payloads and can report extra matches. Ask before host code can change the hidden-content store, then use `echoed_name` to render a safe name or position.
 

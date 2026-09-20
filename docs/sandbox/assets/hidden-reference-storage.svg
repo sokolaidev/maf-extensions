@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 800" width="1100" height="800" role="img" aria-labelledby="hs-title hs-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="hs-title">Hidden reference expansion and separate tracking of stored file integrity</title>
+  <desc id="hs-desc">A hidden reference has a stored label, illustrated by untrusted/private. The framework replaces the reference with its payload before the tool body runs, and the stored label contributes to the argument label. With argument provenance middleware, the host can track which positions changed so a kind can report positions instead of hidden names. Policy checks integrity and confidentiality; the default blocks untrusted arguments. If the host allows the call, file_access_write receives the expanded text and writes it to AgentFileStore, which stores plain text without attached labels. Separately, host middleware records the write call as untrusted in FileStoreProvenance when the call exits. A later read uses both the file text and that integrity record, shared by the listing and read_file. Result confidentiality is configured separately by the host. A write still in flight may not yet have an entry in the record.</desc>
+  <defs>
+    <marker id="hs-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+    <marker id="hs-record-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b7fd4"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="800" rx="16" fill="#ffffff"/>
+  <text x="32" y="42" font-size="25" font-weight="650" fill="#243040">File text and its integrity record take separate paths.</text>
+  <text x="32" y="73" font-size="17" fill="#526072">Hidden references expand before the write tool runs.</text>
+
+  <rect x="32" y="124" width="275" height="198" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="160" font-size="21" font-weight="600" fill="#243040">Hidden reference</text>
+  <text x="52" y="207" font-size="22" font-family="ui-monospace, Consolas, monospace" fill="#243040">[var_…]</text>
+  <text x="52" y="255" font-size="17" fill="#526072">Stored label:</text>
+  <text x="52" y="286" font-size="19" fill="#243040">untrusted / private</text>
+  <path d="M 307 223 H 353" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#hs-arrow)"/>
+
+  <rect x="365" y="124" width="310" height="198" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="385" y="160" font-size="21" font-weight="600" fill="#243040">Expanded arguments</text>
+  <text x="385" y="201" font-size="17" fill="#526072">Payload replaces the reference.</text>
+  <text x="385" y="235" font-size="17" fill="#526072">Stored label contributes to</text>
+  <text x="385" y="259" font-size="17" fill="#526072">the argument label.</text>
+  <text x="385" y="299" font-size="16" fill="#243040">Track changed positions.*</text>
+  <path d="M 675 223 H 723" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#hs-arrow)"/>
+
+  <rect x="735" y="124" width="333" height="198" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="755" y="160" font-size="21" font-weight="600" fill="#243040">Host policy</text>
+  <text x="755" y="201" font-size="17" fill="#526072">Checks both label parts.</text>
+  <text x="755" y="241" font-size="17" fill="#243040">Default: block untrusted input.</text>
+  <text x="755" y="284" font-size="17" fill="#526072">Blocked calls stop here.</text>
+  <path d="M 901 322 V 413" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#hs-arrow)"/>
+  <text x="917" y="380" font-size="16" fill="#526072">If allowed</text>
+
+  <rect x="735" y="425" width="333" height="148" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="755" y="462" font-size="20" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">file_access_write</text>
+  <text x="755" y="505" font-size="17" fill="#526072">Body receives expanded text</text>
+  <text x="755" y="537" font-size="17" fill="#526072">and writes it to the store.</text>
+  <path d="M 735 499 H 687" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#hs-arrow)"/>
+
+  <rect x="365" y="425" width="310" height="148" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="385" y="462" font-size="20" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">AgentFileStore</text>
+  <text x="385" y="505" font-size="18" fill="#243040">Plain text</text>
+  <text x="385" y="537" font-size="17" fill="#526072">No attached labels</text>
+
+  <path d="M 790 425 V 373 H 169 V 413" fill="none" stroke="#8b7fd4" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#hs-record-arrow)"/>
+  <text x="365" y="358" font-size="16" fill="#526072">Host records the write call on exit</text>
+  <rect x="32" y="425" width="275" height="148" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="462" font-size="18" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">FileStoreProvenance</text>
+  <text x="52" y="505" font-size="17" fill="#526072">Observed write → untrusted</text>
+  <text x="52" y="537" font-size="17" fill="#526072">A separate integrity record</text>
+
+  <path d="M 169 573 V 671 H 353" fill="none" stroke="#8b7fd4" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#hs-record-arrow)"/>
+  <path d="M 520 573 V 610" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#hs-arrow)"/>
+  <rect x="365" y="622" width="703" height="97" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="385" y="655" font-size="21" font-weight="600" fill="#243040">Later read: text + host integrity record</text>
+  <text x="385" y="682" font-size="17" fill="#526072">The listing and read_file share the same record.</text>
+  <text x="385" y="707" font-size="16" fill="#526072">The host configures result confidentiality separately.</text>
+
+  <text x="32" y="756" font-size="15" fill="#526072">* Wire argument_provenance_middleware to track replacements. Report positions instead of hidden names.</text>
+  <text x="32" y="783" font-size="15" fill="#526072">A write still in flight may not be recorded yet: the host observes it when the call exits.</text>
+</svg>

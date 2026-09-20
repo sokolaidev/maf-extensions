@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 660" width="1100" height="660" role="img" aria-labelledby="fr-title fr-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="fr-title">How file reads affect the output labels of one call</title>
+  <desc id="fr-desc">The host lists each file with its name and integrity. SandboxToolSession.read_file combines the listing with the host's source record, checked before and after the read. A change makes integrity unknown; without a session record, the listing alone is used. Successful, accepted reads accumulate in that call's FedFromStore record. Unknown or untrusted integrity wins. When the wrapper writes output labels, no reads or only trusted reads preserve the kind's workload claim. Any unknown or untrusted read makes every workload item in the call untrusted. The host's result confidentiality is preserved. The contract's completed, verdict and trusted_output fields, and standing guidance, are unaffected. Missing and refused reads do not count; empty files do. The attached declaration and other calls are unchanged.</desc>
+  <defs>
+    <marker id="fr-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="660" rx="16" fill="#ffffff"/>
+  <text x="32" y="42" font-size="25" font-weight="650" fill="#243040">One weak read lowers every workload item in that call.</text>
+  <text x="32" y="73" font-size="17" fill="#526072">File reads can lower integrity. They never raise the kind's claim.</text>
+
+  <rect x="32" y="124" width="275" height="228" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="160" font-size="21" font-weight="600" fill="#243040">1. Host lists files</text>
+  <text x="52" y="205" font-size="18" font-family="ui-monospace, Consolas, monospace" fill="#243040">ListedFile</text>
+  <text x="52" y="239" font-size="17" fill="#526072">Name + integrity</text>
+  <text x="52" y="281" font-size="17" fill="#526072">Trusted, untrusted</text>
+  <text x="52" y="306" font-size="17" fill="#526072">or unknown</text>
+
+  <path d="M 307 237 H 350" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#fr-arrow)"/>
+  <rect x="362" y="124" width="335" height="228" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="382" y="160" font-size="21" font-weight="600" fill="#243040">2. Session reads</text>
+  <text x="382" y="205" font-size="18" font-family="ui-monospace, Consolas, monospace" fill="#243040">read_file</text>
+  <text x="382" y="239" font-size="17" fill="#526072">Compare listing + host record</text>
+  <text x="382" y="269" font-size="17" fill="#526072">Check before and after the read</text>
+  <text x="382" y="299" font-size="17" fill="#243040">Changed record → unknown</text>
+  <text x="382" y="329" font-size="16" fill="#526072">No session record → listing only</text>
+
+  <path d="M 697 237 H 738" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#fr-arrow)"/>
+  <rect x="750" y="124" width="318" height="228" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="770" y="160" font-size="21" font-weight="600" fill="#243040">3. This call's record</text>
+  <text x="770" y="205" font-size="18" font-family="ui-monospace, Consolas, monospace" fill="#243040">FedFromStore</text>
+  <text x="770" y="239" font-size="17" fill="#526072">Successful, accepted reads</text>
+  <text x="770" y="269" font-size="17" fill="#243040">Unknown or untrusted wins</text>
+  <text x="770" y="309" font-size="17" fill="#526072">New record for each call</text>
+
+  <path d="M 909 352 V 401" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#fr-arrow)"/>
+  <rect x="32" y="413" width="320" height="145" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="449" font-size="21" font-weight="600" fill="#243040">Kind's workload claim</text>
+  <text x="52" y="490" font-size="18" fill="#526072">Trusted or untrusted</text>
+  <text x="52" y="532" font-size="16" fill="#526072">The declaration stays unchanged.</text>
+  <path d="M 352 486 H 402" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#fr-arrow)"/>
+
+  <rect x="414" y="413" width="654" height="145" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="434" y="449" font-size="21" font-weight="600" fill="#243040">4. Label every returned workload item</text>
+  <text x="434" y="482" font-size="17" fill="#526072">No reads or only trusted reads → keep workload claim</text>
+  <text x="434" y="512" font-size="17" fill="#243040">Any unknown or untrusted read → untrusted</text>
+  <text x="434" y="542" font-size="16" fill="#526072">Keep the host's result confidentiality.</text>
+
+  <text x="32" y="594" font-size="16" fill="#526072">The contract's first three fields and standing guidance are unaffected.</text>
+  <text x="32" y="619" font-size="15" fill="#526072">Shown when the wrapper writes labels. Missing or refused reads do not count; empty files do.</text>
+  <text x="32" y="644" font-size="15" fill="#526072">Direct store reads, network responses and host-tool results are outside this file-read check.</text>
+</svg>

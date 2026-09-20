@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 650" width="1100" height="650" role="img" aria-labelledby="uv-title uv-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="uv-title">When an untrusted result is hidden or visible</title>
+  <desc id="uv-desc">For each returned item whose effective integrity is untrusted, FIDES checks three conditions: automatic hiding is enabled, the conversation is still trusted, and the tool is not inspect_variable. If all hold, the model sees a variable reference instead of the text, and the conversation stays trusted. If any condition fails, the model sees the text, and the conversation becomes or stays untrusted. Once the conversation is untrusted, later untrusted output is visible too. There is no automatic return to trusted integrity. Hidden and visible items both contribute confidentiality, and later tool calls remain subject to host policy.</desc>
+  <defs>
+    <marker id="uv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="650" rx="16" fill="#ffffff"/>
+  <text x="32" y="42" font-size="25" font-weight="650" fill="#243040">Hiding stops when untrusted text becomes visible.</text>
+  <text x="32" y="73" font-size="17" fill="#526072">FIDES makes this decision for each untrusted result item.</text>
+
+  <rect x="393" y="110" width="314" height="69" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="550" y="152" text-anchor="middle" font-size="21" font-weight="600" fill="#243040">Untrusted content item</text>
+  <path d="M 550 179 V 208" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#uv-arrow)"/>
+
+  <rect x="318" y="220" width="464" height="143" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="342" y="254" font-size="21" font-weight="600" fill="#243040">Do all three conditions hold?</text>
+  <text x="342" y="287" font-size="17" fill="#526072">Auto-hide is enabled.</text>
+  <text x="342" y="316" font-size="17" fill="#526072">The conversation is still trusted.</text>
+  <text x="342" y="345" font-size="17" fill="#526072">The tool is not inspect_variable.</text>
+
+  <path d="M 318 290 H 244 V 401" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#uv-arrow)"/>
+  <text x="227" y="381" text-anchor="end" font-size="17" font-weight="600" fill="#243040">Yes</text>
+  <path d="M 782 290 H 856 V 401" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#uv-arrow)"/>
+  <text x="873" y="381" font-size="17" font-weight="600" fill="#243040">No</text>
+
+  <rect x="32" y="413" width="448" height="145" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="449" font-size="22" font-weight="600" fill="#243040">Model sees [var_…]</text>
+  <text x="52" y="486" font-size="18" fill="#243040">Conversation stays trusted.</text>
+  <text x="52" y="523" font-size="17" fill="#526072">The model can forward the reference,</text>
+  <text x="52" y="545" font-size="17" fill="#526072">subject to host policy.</text>
+
+  <rect x="620" y="413" width="448" height="145" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="640" y="449" font-size="22" font-weight="600" fill="#243040">Model reads the text</text>
+  <text x="640" y="486" font-size="18" fill="#243040">Conversation becomes or stays untrusted.</text>
+  <text x="640" y="523" font-size="17" fill="#526072">Later untrusted output is visible too.</text>
+  <text x="640" y="545" font-size="17" fill="#526072">No automatic return to trusted integrity.</text>
+
+  <text x="32" y="602" font-size="17" fill="#243040">Both branches: the item's confidentiality still counts.</text>
+  <text x="32" y="631" font-size="16" fill="#526072">Later tool calls still face integrity and confidentiality checks.</text>
+</svg>
