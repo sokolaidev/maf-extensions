@@ -14,7 +14,7 @@ This guide builds a JSON syntax checker with one file input and a split result. 
 | Guest software | An image with `python3` installed | Kind documents it; host selects the image |
 | Scope and thread | Read from the current request | Host's `CallerContext` |
 | Guest path and cleanup | Use `session.guest_call_path()` and `session.acquire()` | Core |
-| Derived result integrity | Explicitly `untrusted`, including a one-word verdict — which has no slot of its own yet | Kind's source declaration |
+| Derived result integrity | Explicitly `untrusted`. A one-word verdict can be trusted instead, through the result contract | Kind's source declaration |
 | Standing guidance | One unconditional sentence that says how to interpret a hidden result | Kind commits the text; core stamps it |
 | Result confidentiality | The host's classification of this tool's results | Host |
 
@@ -151,7 +151,7 @@ If no guidance is needed, omit `standing_guidance` and return a string or a none
 
 Do not declare the JSON checker trusted: its diagnostics are the parser's own bytes over content read out of the store, and neither is established. Leaving `source_integrity` unset delegates to tier 3 or the host default, which cannot establish an out-of-band file read. Explicit `untrusted` states the kind's actual limit. Trusted file reads never promote it. A kind committing standing guidance must declare one either way: the sentence stays readable because every other item is labelled beneath the tool's declaration, and an undeclared tool has none to sit beneath.
 
-**The Boolean verdict stays untrusted for a mechanical reason, not a principled one.** A verdict drawn from a set you fixed at attach is content you wrote, and [*Selection is not authorship*](../information-flow.md#selection-is-not-authorship) allows trusting it. There is nowhere to put it: a declaration covers the whole tool, 1.19 lets a per-item label only restrict, and the one arrangement holding an item above the derived half needs committed guidance. So the verdict travels at the tool's `untrusted` declaration. [The result contract](../information-flow.md#the-result-contract) is that slot; until it ships, do not raise a verdict by hand.
+**A Boolean verdict can be trusted, through the result contract.** A verdict drawn from a set you fixed at attach is content you wrote, and [*Selection is not authorship*](../information-flow.md#selection-is-not-authorship) allows trusting it. Pass `result_contract=True` and `verdicts=(...)` to `sandboxed_tool`, and answer with a `SandboxResult`: the wrapper renders one item per part, labels `output` untrusted and lets `completed`, `verdict` and `trusted_output` inherit the tool's declaration. [The result contract](../information-flow.md#the-result-contract) has the whole shape. The worked kind below does not use it yet, and a kind answering with text keeps the behaviour described here.
 
 ## Let the host supply provenance and confidentiality
 

@@ -152,6 +152,9 @@ __all__ = [
     "EFFECTIVE_STATE_KEY",
     "ISOLATION_SCOPE_KEY",
     "SOURCE_INTEGRITY_PROPERTY",
+    "COMPLETED_TEXT",
+    "NOT_COMPLETED_TEXT",
+    "SandboxResult",
     "effective_state_middleware",
     "file_store_provenance_middleware",
     "SandboxPurger",
@@ -1254,6 +1257,44 @@ SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 #: than ``source_integrity``, which says only that the labels are the wrapper's to write.
 DERIVED_INTEGRITY_PROPERTY = "maf_sandbox_derived_integrity"
 
+#: What the wrapper renders for :attr:`SandboxResult.completed`, one fixed sentence each way.
+#:
+#: Fixed, because the model reads this to tell a hidden failure from a hidden pass, and a
+#: sentence that varies with the call is derived content rather than the answer to that.
+COMPLETED_TEXT = "The workload ran to a definitive result."
+NOT_COMPLETED_TEXT = "The workload did not reach a definitive result."
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxResult:
+    """A workload's answer in the four parts a host labels differently.
+
+    A body returning this never builds a :class:`~agent_framework.Content` itself, which is what
+    makes the labelling the wrapper's alone.  ``completed`` and ``verdict`` are trusted because
+    the kind wrote every value they can take; ``output`` is untrusted because a program the
+    host does not run chose it.  ``trusted_output`` sits at the tool's own declaration, and is
+    the one part a kind can be wrong about.
+
+    Attributes:
+        completed: Whether the workload reached a definitive answer at all.  Not whether that
+            answer is a pass — that is ``verdict``.  A tool that cannot run raises instead, and
+            the framework returns a raised error unlabelled and outside this shape.
+        verdict: One value from the set the tool declared at attach, or ``None`` where it
+            declared none.  Refused on return where it names anything else, because the trust
+            this carries rests on the kind having written every value in advance.
+        trusted_output: Text the kind vouches for. It reaches the model at the tool's declared
+            level, so it is trusted where the tool declares trusted and no higher — the name
+            says what the kind is claiming, not what the framework will conclude.
+        output: Everything the workload produced, labelled untrusted and hidden from the model
+            by a FIDES host. Named for what it is rather than for its provenance, because a
+            kind unsure whether something is established puts it here.
+    """
+
+    completed: bool
+    verdict: str | int | bool | None = None
+    trusted_output: Sequence[str] = ()
+    output: Sequence[str] = ()
+
 
 def _level(value: object) -> SourceIntegrity | None:
     """``value`` as a level, or ``None`` where it names none this package recognises."""
@@ -1298,18 +1339,22 @@ def _implemented_declarations(
     *,
     claimed: SourceIntegrity | None,
     spelled: object,
-    commits_guidance: bool,
+    raises_declaration: bool,
     tool: str,
 ) -> dict[str, Any]:
     """Move a declared integrity onto :data:`DERIVED_INTEGRITY_PROPERTY` and declare trusted.
 
-    A tool committing no guidance is left alone: it has no item to keep visible, so raising it
+    Two things ask for the raise: committing standing guidance, and declaring
+    ``result_contract``.  Both need an item to sit above the derived half, and on
+    ``agent-framework-core`` 1.19 an item can only be kept there by the tool's own declaration.
+
+    A tool asking for neither is left alone: it has no item to keep visible, so raising it
     would buy nothing and would hand an unlabelled item — a body's bare string — the raised
     declaration.
 
     Raises:
         ValueError: where declarations carry :data:`DERIVED_INTEGRITY_PROPERTY`, which is this
-            function's to write, or a tool commits guidance while declaring no integrity, or
+            function's to write, or a tool asks for the raise while declaring no integrity, or
             declares one this package cannot weaken by.
     """
     if DERIVED_INTEGRITY_PROPERTY in properties:
@@ -1321,15 +1366,16 @@ def _implemented_declarations(
             "sandboxed_tool may write. Claim an integrity with source_integrity, which is "
             "checked against what the spec opens."
         )
-    if not commits_guidance:
+    if not raises_declaration:
         return dict(properties)
     if spelled is None:
         raise ValueError(
-            f"{tool}: this tool commits standing guidance and declares no source_integrity. "
-            "The guidance stays readable because every other item is labelled weaker than the "
-            "tool's own declaration, and an undeclared tool has none — its result takes the "
-            "input-label join or the host's default_integrity, which the guidance can then "
-            "only restrict. Declare an integrity, or commit no guidance."
+            f"{tool}: this tool keeps an item above its derived half — standing guidance, a "
+            "result contract, or both — and declares no source_integrity. "
+            "Such an item stays readable because every other item is labelled weaker than the "
+            "tool's own declaration, and an undeclared tool has none — its result takes tier 3 "
+            "or the host's default_integrity, which the item above can then only restrict. "
+            "Declare an integrity, or keep nothing above the derived half."
         )
     # Refused rather than coerced here, because `sandbox_tool_declarations` coerces its own
     # argument and a `declarations=` mapping bypasses it: past this point the tool declares
@@ -1337,7 +1383,7 @@ def _implemented_declarations(
     # declaration instead of a weaker label.
     if claimed is None:
         raise ValueError(
-            f"{tool}: this tool commits standing guidance and declares "
+            f"{tool}: this tool keeps an item above its derived half and declares "
             f"source_integrity={spelled!r}, which is not a level this package recognises. "
             "Past the raise every derived item would take the tool's own trusted declaration "
             f"rather than a weaker label. Declare {str(SourceIntegrity.TRUSTED)!r} or "
@@ -2338,6 +2384,58 @@ def _committed_guidance(guidance: Iterable[str], *, tool: str, awaits: bool) -> 
     return tuple(committed)
 
 
+def _verdict_key(value: str | int | bool) -> tuple[str, str]:
+    """A verdict as the pair that decides whether two of them are the same one.
+
+    Type as well as rendering, because ``bool`` is an ``int`` in Python: a kind declaring ``0``
+    would otherwise accept a body answering ``False``, and the model would read a word the kind
+    never wrote.
+    """
+    return type(value).__name__, str(value)
+
+
+def _declared_verdicts(
+    verdicts: Iterable[str | int | bool], *, tool: str, contract: bool
+) -> tuple[str | int | bool, ...]:
+    """The verdict set a tool fixes at attach, checked for the properties its trust rests on.
+
+    A verdict is trusted because the kind wrote every value it can take, so the set has to be
+    listed here rather than discovered per call, and it has to be values a reader can tell
+    apart.
+
+    Raises:
+        ValueError: where a set is declared without the contract that reads it, where a value
+            is of any other type, or where two values render the same.
+    """
+    declared = tuple(verdicts)
+    if declared and not contract:
+        raise ValueError(
+            f"{tool}: verdicts are declared and result_contract is off, so nothing reads them. "
+            "A verdict reaches the model through SandboxResult.verdict alone."
+        )
+    # Keyed by the rendering alone, which is a different question from the membership check
+    # below: this one asks whether a model could tell two declared verdicts apart, and `1`
+    # beside `"1"` reads as one word however distinct the two values are.
+    seen: dict[str, str | int | bool] = {}
+    for value in declared:
+        if type(value) not in (str, int, bool):
+            raise ValueError(
+                f"{tool}: verdicts contains {value!r}, a {type(value).__name__}. A verdict is "
+                "rendered as text and compared as itself, so it must be a str, an int or a bool."
+            )
+        if isinstance(value, str) and not value.strip():
+            raise ValueError(f"{tool}: verdicts contains an empty value, which names nothing.")
+        key = str(value)
+        if key in seen:
+            raise ValueError(
+                f"{tool}: verdicts holds {value!r} and {seen[key]!r}, which a model reads as "
+                f"the same {str(value)!r}. Two values it cannot tell apart are one verdict "
+                "with two spellings."
+            )
+        seen[key] = value
+    return declared
+
+
 def _needs_call_id(committed: tuple[str, ...]) -> bool:
     """Whether any committed sentence asks for this call's id.
 
@@ -2384,6 +2482,66 @@ def _result_label(
     return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
 
 
+def _contract_items(
+    answer: SandboxResult,
+    *,
+    tool: str,
+    declarations: Mapping[str, Any],
+    fed: FedFromStore | None,
+    verdicts: tuple[str | int | bool, ...],
+) -> list[Content]:
+    """Render a :class:`SandboxResult` into one item per part, labelling only the derived ones.
+
+    Slots 1 to 3 are left unlabelled on purpose.  An item carrying no label of its own takes the
+    invocation's, which for a contract tool is the raised ``trusted`` declaration — so
+    inheriting *is* the trusted claim, and writing one would only risk naming a confidentiality
+    the host did not choose.  ``TestAnUnlabelledItemTakesTheToolDeclaration`` is what says so
+    for the core the lock pins.
+
+    Raises:
+        ValueError: where a verdict is not one the tool declared, or an incomplete run carries
+            one anyway.
+    """
+    from agent_framework import Content
+
+    if answer.verdict is not None and _verdict_key(answer.verdict) not in {
+        _verdict_key(value) for value in verdicts
+    }:
+        # The value is named because the kind wrote every value this may take; nothing here
+        # came from the guest.
+        raise ValueError(
+            f"{tool}: the body answered with verdict={answer.verdict!r}, which this tool did "
+            f"not declare. Declared: {list(verdicts)!r}. A verdict is trusted because the kind "
+            "fixed the whole set at attach, so one that arrives from anywhere else is refused."
+        )
+    if answer.verdict is not None and not answer.completed:
+        raise ValueError(
+            f"{tool}: the body answered with completed=False and verdict="
+            f"{answer.verdict!r}. A run that reached no definitive result has no verdict to "
+            "report, and a model reading both cannot tell which to believe."
+        )
+    for part, values in (("trusted_output", answer.trusted_output), ("output", answer.output)):
+        # Cast because the annotation is a promise, not a guarantee: a kind is free to hand this
+        # anything, and the check below is what a body's stray Content meets instead of a label.
+        for position, text in enumerate(cast("Sequence[object]", values)):
+            if not isinstance(text, str):
+                raise ValueError(
+                    f"{tool}: {part}[{position}] is a {type(text).__name__}. Every part of a "
+                    "SandboxResult is text the wrapper labels; build no Content in a body."
+                )
+    items = [Content.from_text(COMPLETED_TEXT if answer.completed else NOT_COMPLETED_TEXT)]
+    if answer.verdict is not None:
+        items.append(Content.from_text(f"Result: {answer.verdict}"))
+    items.extend(Content.from_text(text) for text in answer.trusted_output)
+    label = _result_label(declarations, fed)
+    for text in answer.output:
+        item = Content.from_text(text)
+        if label is not None:
+            item.additional_properties = {"security_label": dict(label)}
+        items.append(item)
+    return items
+
+
 def _label_tool_result(
     result: object,
     *,
@@ -2392,6 +2550,8 @@ def _label_tool_result(
     call_id: str | None,
     declarations: Mapping[str, Any],
     fed: FedFromStore | None,
+    contract: bool = False,
+    verdicts: tuple[str | int | bool, ...] = (),
 ) -> str | list[Content]:
     """Stamp committed guidance and weaken derived items without accepting a body's labels.
 
@@ -2400,6 +2560,30 @@ def _label_tool_result(
     from agent_framework import Content
     from agent_framework.security import ContentLabel
 
+    if contract:
+        if not isinstance(result, SandboxResult):
+            raise ValueError(
+                f"{tool}: this tool declares result_contract and its body answered with a "
+                f"{type(result).__name__}. Answer with a SandboxResult on every path."
+            )
+        labelled = _contract_items(
+            result, tool=tool, declarations=declarations, fed=fed, verdicts=verdicts
+        )
+        substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
+        labelled.extend(
+            Content.from_text(
+                sentence.format(**substitution),
+                additional_properties={"security_label": ContentLabel().to_dict()},
+            )
+            for sentence in committed
+        )
+        return labelled
+    if isinstance(result, SandboxResult):
+        raise ValueError(
+            f"{tool}: the body answered with a SandboxResult and this tool does not declare "
+            "result_contract. Pass result_contract=True to sandboxed_tool, which is what "
+            "raises the declaration the trusted parts sit at."
+        )
     if isinstance(result, str):
         if committed:
             raise ValueError(
@@ -2480,6 +2664,8 @@ def sandboxed_tool(
     also_carries_out: bool = False,
     nothing_survives_from: Iterable[SourceChannel] = (),
     standing_guidance: Iterable[str] = (),
+    result_contract: bool = False,
+    verdicts: Iterable[str | int | bool] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
     admission_timeout: float | None = None,
@@ -2617,6 +2803,18 @@ def sandboxed_tool(
             cleared by a keyword. The channels this workload opens and derives nothing from —
             read that function before reaching for it, since declaring ``"untrusted"`` costs
             the model's sight of the result and nothing else.
+        result_contract: Whether the body answers with a :class:`SandboxResult` rather than
+            text. The wrapper then renders one item per part and owns every label: a fixed
+            sentence for ``completed``, the ``verdict``, each ``trusted_output`` string, then
+            each ``output`` string stamped untrusted. The first three carry no label of their own
+            and so take the tool's declaration, which this keyword raises to ``trusted`` the
+            same way committing guidance does — so it needs an integrity declaration for the
+            same reason. Returning a ``SandboxResult`` without it, or anything else with it, is
+            refused.
+        verdicts: Every value ``SandboxResult.verdict`` may take, fixed here so the kind has
+            written all of them before the call runs. That is what a trusted verdict rests on,
+            so a value arriving from anywhere else is refused on return. Declaring a set
+            without ``result_contract`` is refused, since nothing would read it.
         standing_guidance: Sentences the wrapper stamps ``trusted/public``. Return them as
             unlabelled text items at the end, in this order, after at least one derived item.
             A missing or changed sentence, a bare string, or a body-supplied label is refused.
@@ -2788,7 +2986,7 @@ def sandboxed_tool(
         if supplied is not None
         else claimed_source_integrity(derived, tool=name),
         spelled=supplied_spelling if supplied is not None else derived.get("source_integrity"),
-        commits_guidance=bool(promised),
+        raises_declaration=bool(promised) or result_contract,
         tool=name,
     )
 
@@ -2805,6 +3003,7 @@ def sandboxed_tool(
     # Validated here rather than at first use: a sentence that cannot render is a wiring
     # mistake in a kind, and finding it at attach costs a reviewer nothing.
     committed = _committed_guidance(promised, tool=name, awaits=_awaits(body))
+    declared_verdicts = _declared_verdicts(verdicts, tool=name, contract=result_contract)
     if not _awaits(body):
         # Keep the wrapper synchronous so MAF runs the body and result labelling off
         # the event loop, as it does for other synchronous tools.
@@ -2830,6 +3029,8 @@ def sandboxed_tool(
                     call_id=None,
                     declarations=attached.additional_properties or {},
                     fed=recording.fed,
+                    contract=result_contract,
+                    verdicts=declared_verdicts,
                 )
             finally:
                 recording.closed = True
@@ -2908,6 +3109,8 @@ def sandboxed_tool(
                 call_id=_call_name(call) if _needs_call_id(committed) else None,
                 declarations=attached.additional_properties or {},
                 fed=recording.fed,
+                contract=result_contract,
+                verdicts=declared_verdicts,
             )
         finally:
             _CALL.reset(token)

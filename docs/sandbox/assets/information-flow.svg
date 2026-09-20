@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 650" width="1100" height="650" role="img" aria-labelledby="if-title if-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="if-title">How labels connect source tools, content, the model and destination tools</title>
+  <desc id="if-desc">Read left to right across the top, then down and left. Source tools declare source_integrity and result confidentiality. Returned content items have individual effective labels, illustrated by trusted/private and untrusted/private. FIDES can hide untrusted text behind a variable reference before the model sees it. The conversation tracks integrity from visible content and confidentiality from both visible and hidden content. The model's next call goes through a framework policy check using the conversation and argument labels. If allowed, the call reaches a destination tool, which declares accepts_untrusted and max_allowed_confidentiality. Accepting untrusted content does not waive confidentiality checks. The model's own output has no source label; a hidden reference retains its stored label when expanded. Hiding requires automatic hiding and a still-trusted conversation, and does not apply to inspect_variable.</desc>
+  <defs>
+    <marker id="if-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="650" rx="16" fill="#ffffff"/>
+  <text x="32" y="42" font-size="25" font-weight="650" fill="#243040">Tools label results. Policy checks destinations.</text>
+  <text x="32" y="73" font-size="17" fill="#526072">A tool can be a source, a destination, or both.</text>
+
+  <rect x="32" y="118" width="275" height="230" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="151" font-size="22" font-weight="600" fill="#243040">Source tools</text>
+  <text x="52" y="183" font-size="17" fill="#526072">Return data to the agent</text>
+  <text x="52" y="229" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">source_integrity</text>
+  <text x="52" y="254" font-size="16" fill="#526072">Integrity of the result</text>
+  <text x="52" y="293" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">confidentiality</text>
+  <text x="52" y="318" font-size="16" fill="#526072">Host's result classification</text>
+
+  <path d="M 307 235 H 353" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#if-arrow)"/>
+  <rect x="365" y="118" width="310" height="230" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="385" y="151" font-size="22" font-weight="600" fill="#243040">Content items</text>
+  <text x="385" y="183" font-size="17" fill="#526072">One effective label per item</text>
+  <rect x="385" y="204" width="270" height="48" rx="7" fill="#eeebfa" stroke="#8b7fd4"/>
+  <text x="402" y="234" font-size="18" fill="#243040">trusted / private</text>
+  <rect x="385" y="265" width="270" height="48" rx="7" fill="#e7f5f3" stroke="#2fa8a0"/>
+  <text x="402" y="295" font-size="18" fill="#243040">untrusted / private</text>
+  <text x="385" y="336" font-size="14" fill="#526072">Example labels: integrity / confidentiality</text>
+
+  <path d="M 675 235 H 723" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#if-arrow)"/>
+  <text x="700" y="217" text-anchor="middle" font-size="14" fill="#526072">FIDES</text>
+  <rect x="735" y="118" width="333" height="230" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="755" y="151" font-size="22" font-weight="600" fill="#243040">Model</text>
+  <text x="755" y="183" font-size="17" fill="#526072">Sees text or a hidden [var_…]</text>
+  <path d="M 755 206 H 1048" stroke="#d7d0ef"/>
+  <text x="755" y="239" font-size="19" font-weight="600" fill="#243040">Conversation label</text>
+  <text x="755" y="272" font-size="16" fill="#526072">Visible content affects integrity.</text>
+  <text x="755" y="300" font-size="16" fill="#526072">Hidden content still contributes</text>
+  <text x="755" y="322" font-size="16" fill="#526072">confidentiality.</text>
+
+  <path d="M 901 348 V 399" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#if-arrow)"/>
+  <text x="886" y="380" text-anchor="end" font-size="16" fill="#526072">Next tool call: text or a reference</text>
+
+  <rect x="595" y="411" width="473" height="157" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="617" y="446" font-size="22" font-weight="600" fill="#243040">Framework policy</text>
+  <text x="617" y="478" font-size="17" fill="#526072">Checks conversation and argument labels</text>
+  <text x="617" y="509" font-size="17" fill="#526072">against the destination's declarations.</text>
+  <text x="617" y="547" font-size="16" fill="#243040">Integrity opt-in does not waive confidentiality.</text>
+
+  <path d="M 595 494 H 502" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#if-arrow)"/>
+  <text x="548" y="473" text-anchor="middle" font-size="15" fill="#526072">If allowed</text>
+  <rect x="32" y="411" width="458" height="157" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="446" font-size="22" font-weight="600" fill="#243040">Destination tools</text>
+  <text x="52" y="476" font-size="17" fill="#526072">Write files, send data, or call services</text>
+  <text x="52" y="511" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">accepts_untrusted</text>
+  <text x="52" y="545" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">max_allowed_confidentiality</text>
+
+  <text x="32" y="607" font-size="16" fill="#526072">The model's own output has no source label. An expanded reference keeps its stored label.</text>
+  <text x="32" y="632" font-size="15" fill="#526072">Hiding requires auto-hide and a still-trusted conversation; inspect_variable is excluded.</text>
+</svg>

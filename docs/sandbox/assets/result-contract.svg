@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 650" width="1100" height="650" role="img" aria-labelledby="rc-title rc-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="rc-title">Four result fields separate a readable outcome from workload text</title>
+  <desc id="rc-desc">A kind supplies SandboxResult to sandboxed_tool. The wrapper builds Content items and raises the tool's framework integrity to trusted. Completed says whether the workload reached an answer. Verdict says which declared answer it reached. Trusted output is text the kind author vouches for. These three fields inherit trusted integrity and the call's confidentiality, so the model can read them to choose its next step. Output holds diagnostics and other workload text, explicitly labelled with the kind's untrusted claim and the host's confidentiality. FIDES hides this text behind a variable reference, which the model may forward subject to policy. The example assumes source_integrity untrusted, automatic hiding enabled and a still-trusted conversation. Completed always has one item, verdict is optional, and each string in either output field becomes a separate item. Committed standing guidance, if any, follows these items.</desc>
+  <defs>
+    <marker id="rc-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+    <marker id="rc-output-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2fa8a0"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="650" rx="16" fill="#ffffff"/>
+  <text x="32" y="42" font-size="25" font-weight="650" fill="#243040">Know the outcome without exposing workload text.</text>
+  <text x="32" y="73" font-size="17" fill="#526072">Four fields, with a separate Content item for each returned value.</text>
+
+  <rect x="32" y="133" width="236" height="99" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="169" font-size="21" font-weight="600" fill="#243040">Kind result</text>
+  <text x="52" y="205" font-size="18" font-family="ui-monospace, Consolas, monospace" fill="#243040">SandboxResult</text>
+  <path d="M 150 232 V 272" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#rc-arrow)"/>
+  <rect x="32" y="284" width="236" height="198" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="319" font-size="18" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">sandboxed_tool</text>
+  <text x="52" y="357" font-size="17" fill="#526072">Builds content items</text>
+  <text x="52" y="391" font-size="17" fill="#526072">Raises tool integrity</text>
+  <text x="52" y="415" font-size="17" fill="#526072">to trusted</text>
+  <text x="52" y="455" font-size="17" fill="#526072">Labels workload output</text>
+
+  <path d="M 268 383 H 296 M 296 157 V 493" fill="none" stroke="#7d8694" stroke-width="2"/>
+  <path d="M 296 157 H 324" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#rc-arrow)"/>
+  <path d="M 296 269 H 324" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#rc-arrow)"/>
+  <path d="M 296 381 H 324" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#rc-arrow)"/>
+  <path d="M 296 493 H 324" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#rc-arrow)"/>
+
+  <rect x="336" y="112" width="407" height="91" rx="10" fill="#eeebfa" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="356" y="140" font-size="20" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">completed</text>
+  <text x="356" y="167" font-size="17" fill="#243040">Did it reach an answer?</text>
+  <text x="356" y="190" font-size="15" fill="#526072">Inherits trusted + call confidentiality</text>
+
+  <rect x="336" y="224" width="407" height="91" rx="10" fill="#eeebfa" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="356" y="252" font-size="20" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">verdict</text>
+  <text x="356" y="279" font-size="17" fill="#243040">Which declared answer?</text>
+  <text x="356" y="302" font-size="15" fill="#526072">Inherits trusted + call confidentiality</text>
+
+  <rect x="336" y="336" width="407" height="91" rx="10" fill="#eeebfa" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="356" y="364" font-size="20" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">trusted_output</text>
+  <text x="356" y="391" font-size="17" fill="#243040">Text the kind vouches for</text>
+  <text x="356" y="414" font-size="15" fill="#526072">Inherits trusted + call confidentiality</text>
+
+  <rect x="336" y="448" width="407" height="91" rx="10" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="356" y="476" font-size="20" font-family="ui-monospace, Consolas, monospace" font-weight="600" fill="#243040">output</text>
+  <text x="356" y="503" font-size="17" fill="#243040">Diagnostics and other workload text</text>
+  <text x="356" y="526" font-size="15" fill="#526072">Stamped untrusted + host confidentiality*</text>
+
+  <path d="M 743 157 H 771 V 381 H 743 M 743 269 H 804" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#rc-arrow)"/>
+  <rect x="816" y="181" width="252" height="177" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="836" y="217" font-size="21" font-weight="600" fill="#243040">Model reads</text>
+  <text x="836" y="251" font-size="17" fill="#526072">Completion, verdict</text>
+  <text x="836" y="276" font-size="17" fill="#526072">and trusted text</text>
+  <text x="836" y="312" font-size="17" fill="#243040">Enough to choose</text>
+  <text x="836" y="336" font-size="17" fill="#243040">the next step</text>
+
+  <path d="M 743 493 H 804" fill="none" stroke="#2fa8a0" stroke-width="2" marker-end="url(#rc-output-arrow)"/>
+  <text x="779" y="475" text-anchor="middle" font-size="14" fill="#526072">FIDES</text>
+  <rect x="816" y="448" width="252" height="91" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="836" y="480" font-size="21" font-weight="600" fill="#243040">Model gets [var_…]</text>
+  <text x="836" y="508" font-size="16" fill="#526072">Can forward it to a tool,</text>
+  <text x="836" y="529" font-size="16" fill="#526072">subject to host policy</text>
+
+  <text x="32" y="580" font-size="16" fill="#526072">Verdict is optional. Text lists may be empty or contain several items. Guidance, if any, comes last.</text>
+  <text x="32" y="608" font-size="15" fill="#526072">Shown: an untrusted workload, auto-hide enabled and a still-trusted conversation.</text>
+  <text x="32" y="631" font-size="15" fill="#526072">* Public if no valid host classification is set. The call's stricter confidentiality still applies.</text>
+</svg>
