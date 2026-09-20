@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 565" width="1180" height="565" role="img" aria-labelledby="backend-authoring-flow-title backend-authoring-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="backend-authoring-flow-title">Build the contract, then verify it on the provider</title>
+  <desc id="backend-authoring-flow-desc">Choose isolation, capabilities, network, file and lifecycle boundaries. Implement every protocol member, with explicit refusals for unsupported operations. Offline checks validate signatures, routing and failure handling. Real-provider conformance and backend-specific probes establish actual execution, files, network and cleanup behavior. Then declare and document the verified contract with its limits. Missing utilities, unsupported observations and skipped required probes are not passing evidence.</desc>
+  <defs>
+    <marker id="backend-authoring-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="565" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Build the contract, then verify it on the provider</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">A capability declaration is a promise about behavior the backend can enforce.</text>
+  <rect x="32" y="143" width="234" height="141" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="176" font-size="21" font-weight="600" fill="#243040">Choose the contract</text>
+  <text x="52" y="207" font-size="15" font-weight="400" fill="#526072">Isolation and capabilities</text>
+  <text x="52" y="233" font-size="15" font-weight="400" fill="#526072">Files, network, lifecycle</text>
+  <rect x="326" y="143" width="234" height="141" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="346" y="176" font-size="21" font-weight="600" fill="#243040">Implement methods</text>
+  <text x="346" y="207" font-size="15" font-weight="400" fill="#526072">Shared protocol + helpers</text>
+  <text x="346" y="233" font-size="15" font-weight="400" fill="#526072">Explicit unsupported refusals</text>
+  <rect x="620" y="143" width="234" height="141" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="640" y="176" font-size="21" font-weight="600" fill="#243040">Offline checks</text>
+  <text x="640" y="207" font-size="15" font-weight="400" fill="#526072">Signatures and routing</text>
+  <text x="640" y="233" font-size="15" font-weight="400" fill="#526072">Failures and ownership</text>
+  <rect x="914" y="143" width="234" height="141" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="934" y="176" font-size="21" font-weight="600" fill="#243040">Provider checks</text>
+  <text x="934" y="207" font-size="15" font-weight="400" fill="#526072">Real conformance probes</text>
+  <text x="934" y="233" font-size="15" font-weight="400" fill="#526072">Backend-specific boundaries</text>
+  <path d="M 266 214 L 326 214" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-authoring-flow-arrow)"/>
+  <path d="M 560 214 L 620 214" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-authoring-flow-arrow)"/>
+  <path d="M 854 214 L 914 214" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-authoring-flow-arrow)"/>
+  <rect x="32" y="365" width="662" height="150" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="398" font-size="21" font-weight="600" fill="#243040">Evidence must exercise the promised behavior</text>
+  <text x="52" y="429" font-size="17" font-weight="400" fill="#526072">A fake service only tests what the adapter believes.</text>
+  <text x="52" y="455" font-size="17" font-weight="400" fill="#526072">Missing utilities and skipped required probes need explanation.</text>
+  <text x="52" y="481" font-size="17" font-weight="400" fill="#526072">A path ownership result does not prove atomic path resolution.</text>
+  <rect x="766" y="365" width="382" height="150" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="786" y="398" font-size="21" font-weight="600" fill="#243040">Declare + document</text>
+  <text x="786" y="429" font-size="16" font-weight="400" fill="#526072">Supported behavior and limits</text>
+  <text x="786" y="455" font-size="16" font-weight="400" fill="#526072">Installation and operator duties</text>
+  <text x="786" y="481" font-size="16" font-weight="400" fill="#526072">Keep unsupported capabilities absent</text>
+  <path d="M 1031 284 L 1031 365" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-authoring-flow-arrow)"/>
+</svg>

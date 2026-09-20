@@ -852,5 +852,5 @@ class TestThisRepository:
             for path in check.tracked(_ROOT, *check._PROSE_GLOBS)
             for reference in check.line_references(check.document_text(path))
         ]
-        assert len(read) == 10
+        assert len(read) == 1
         assert all(reference.symbol for reference in read)

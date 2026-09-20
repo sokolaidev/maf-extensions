@@ -1,88 +1,93 @@
-# Backends
+# Sandbox backends
 
-> What each shipped backend declares to the router, what it does with a sandbox's life, and where it is honestly quirky.
+A backend creates sandboxes, runs work, transfers files and cleans up. Kinds call the shared `Sandbox` protocol. They do not import a backend.
 
-## The boundary these pages keep
+The host chooses a backend and sets policy. The router checks that the backend can meet each kind's requirements. Unsupported requests are refused.
 
-A backend has two audiences and they want different documents. These pages own the **architecture-facing contract**: the declarations the router reads, lifecycle behaviour, conformance status, and the quirks a kind author is entitled to know before choosing where a workload runs. Each package's own README owns **installation, configuration fields and usage**, and is linked from its page here rather than copied into it — a sentence that lives in both places is a sentence that will drift, and the copy nobody edits is the one somebody reads.
+## Where a backend fits
+
+![The model calls a sandbox tool through host policy. The tool wrapper and kind use the router, which selects a backend. The backend runs the guest and returns execution bytes and files. The kind and wrapper turn those results into labelled content items for the model. Destination tools receive later model calls through host policy; their accepted integrity and confidentiality are separate from the backend's isolation and capabilities.](../assets/backend-boundary.svg)
+
+Backend isolation protects the host from guest execution. It does not make guest output trusted. The kind and tool wrapper decide which returned content items they can vouch for. Source tools and destination tools keep their own label declarations.
+
+See [information flow](../information-flow.md) for the source-tool, content-item and destination-tool rules, and [the four result fields](../information-flow.md#the-result-contract) for the returned content contract.
+
+## Choose a backend
+
+| Backend | Isolation | Execution | File support | Cleanup |
+|---|---|---|---|---|
+| [ACAS](acas.md) | `MICROVM` | Commands; host-tool transport | Upload, read, list, delete; image checks apply | Dispose |
+| [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload, read, delete in the container root filesystem | Dispose by default; optional reclaim |
+| [WSLC](wslc.md) | `CONTAINER` | Commands | Upload | Dispose |
+| [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output files | Reset; dispose on failure |
+| [In-process](in-process.md) | `NONE` | Scripted test results | In-memory test store | Test implementations |
+
+The router's default minimum is `MICROVM`. Docker and WSLC require an explicit host floor of `CONTAINER`. The fake requires `NONE` and belongs only in tests.
+
+| Backend | Network policy | Guest OS declaration | Sharing |
+|---|---|---|---|
+| ACAS | `CLOSED`, host `ALLOWLIST` | POSIX | Conversation or call |
+| Docker | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX when the async factory confirms a Linux daemon | Conversation or call |
+| WSLC | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX | Conversation or call |
+| Hyperlight | `CLOSED`, exact-host HTTP/HTTPS `ALLOWLIST` | None; language runtime | Conversation, one owning host process |
+| In-process | Declarations for policy tests; no network enforcement | None by default | One shared fake; separate key/kind stores are opt-in |
+
+Docker and WSLC report attributable proxy decisions when a proxy image is configured. ACAS and Hyperlight make no egress observation claim. An absent event is not proof that nothing was attempted.
+
+## File boundaries
+
+| Backend | Important limit |
+|---|---|
+| ACAS | Workload writes and deletes run as the guest. Native reads, stat and listing retain races between path checks and file access. |
+| Docker | Pauses the guest during path checks and archive transfers. The file view covers the root filesystem, not guest mounts such as tmpfs. |
+| WSLC | Uploads use root authority. A guest can replace a checked parent before extraction and redirect the write. |
+| Hyperlight | Optional output collection accepts flat names under `/output`; no input upload or listing. |
+| In-process | Exercises protocol behavior, not operating-system confinement. |
+
+ACAS permits 32 MiB per file, 128 MiB total and 128 files in each direction. Docker permits 64 MiB per file, 256 MiB total and 256 files.
+
+WSLC, Hyperlight and the fake use `DEFAULT_SANDBOX_LIMITS`: 8 MiB per file, 32 MiB total and 64 files in each direction. These ceilings do not grant an otherwise absent capability.
 
 <a id="the-six-declarations"></a>
 
 ## Backend declarations
 
-The router reads a backend's required isolation declaration and nine optional fields. **`isolation`** is a rung on an ordered ladder, checked against the stricter of the host's floor and the spec's; below it, construction raises rather than degrading — or, where the router selects per spec, construction raises only when *nothing* registered clears the floor and an individual backend below it is kept, warned about, and never routed to. It is a required member of the `SandboxBackend` protocol. The nine optional declarations are **fields of one `BackendDeclarations`**, read off the backend with a single `getattr`, so a backend that declares neither the object nor any of the four attributes it replaced keeps loading — and each field's *default* is its own silence rule, which is why they still differ. A backend still carrying one of those attributes is refused instead, as below. **`capabilities`** is a frozenset matched against the spec's `required_capabilities`, and silence is read charitably as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what `Sandbox` already obligates. **`egress_modes`** is the set of `Egress` modes the backend can *enforce*; a spec runs in exactly one mode, and the router serves it only when that mode is in the set and refuses otherwise — never substituting a more open one (which would silently widen what the workload reaches) or a more isolated one (which would hand it a posture it was not built for). Silence there is the empty set: a backend that declares nothing enforces nothing, so every ask is refused. **`limits`** declares transfer ceilings per direction and follows the egress rule rather than the capability one — a cap is a safety claim, so silence resolves to `DEFAULT_SANDBOX_LIMITS`, never to "no ceiling". **`os_families`** names the guest shapes the backend hands out, matched against a spec's `requires_os_family`; its silence is neither charitable nor conservative but the **absence of an answer** — `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. The checks themselves, and who owns each, are in [`../policy-isolation.md`](../policy-isolation.md); the egress model is [`../network.md`](../network.md).
+`SandboxBackend.isolation` is required. The remaining declarations are fields of one `BackendDeclarations` object, available before acquisition.
 
-**`isolation_scopes`** is how much of a conversation the backend can serve from one sandbox — `conversation`, the get-or-create every backend does, or `call`, one created for a tool call and deleted when it returns. Its silence is the only one that is a *claim* rather than the absence of an answer: the field defaults to `{conversation}`, so a backend written before the axis serves exactly what it served, and a per-call workload is refused rather than answered by sharing. Declare `call` once the backend folds `SandboxKey.call_id` into whatever names a sandbox — a container name, a label set, its own registry — and hold it to `maf_sandbox.conformance.assert_call_scope_conformance`, which acquires a second sandbox itself so it can plant before that one exists.
+| Field | Default | Meaning |
+|---|---|---|
+| `capabilities` | `EXEC`, `FILES_IN` | Supported operations |
+| `limits` | `DEFAULT_SANDBOX_LIMITS` | Transfer ceilings |
+| `egress_modes` | Empty | Network modes enforced; empty refuses every spec |
+| `os_families` | Empty | Guest OS families; empty refuses a spec that requires one |
+| `isolation_scopes` | `CONVERSATION` | Supported sharing boundaries |
+| `observes_egress` | `False` | Whether attributable network decisions can be reported |
+| `egress_method_tokens` | Empty | Methods enforced with `EGRESS_METHODS`; `None` means any token |
+| `attached_identity` | `NO_ATTACHED_IDENTITY` | Identity promised within the core policy contract |
+| `requires_exclusive_admission` | `False` | Whether one call must retain ownership through delivery and cleanup |
 
-**`observes_egress`** defaults to `False`: observing egress is opt-in and independent of enforcing an egress mode. **`egress_method_tokens`** names the uppercase HTTP methods a backend declaring `EGRESS_METHODS` can enforce; an empty set promises none, and `None` promises every token a rule may name. The [method policy](../network.md#method-scoped-allow-entries) describes the matching and conformance requirements.
+No real backend advertises the core `ATTACHED_IDENTITY` contract. ACAS separately supports [group-configured identity](acas.md#sandbox-group-identity). The host owns that configuration; the router does not discover or constrain it through these declarations.
 
-**`requires_exclusive_admission`** defaults to `False`. A backend setting it to `True` requires calls on a shared key/kind to serialize through collection, delivery and cleanup, irrespective of the workload's preference. An optional `BackendCallAdmission` hook can extend that ownership across routers; [tool-call lifetime](../tool-call.md) defines the hook and Hyperlight's shared-process implementation.
+A backend declaring attached identity must name its authority channels and enforced retention bound. Its declaration must agree with `ATTACHED_IDENTITY` and fit host and workload policy. See [identity](../hosts.md#identity--whose-authority-sandbox-work-carries).
 
-A backend states the object once — `declarations` — rather than four attributes, and one that still carries any of the four it replaced is refused when the router reads it, with the field named: for the one backend it resolves where selection is fixed, and for every registered backend at construction where it selects per spec. That refusal is not belt-and-braces: none of the four was ever a Protocol member, so `isinstance` holds either way and nothing else in the type system marks a backend half-moved.
+## Lifecycle rules
 
-`attached_identity` defaults to `NO_ATTACHED_IDENTITY`, claiming no attachment within the core policy contract. A nonempty declaration lists its sharing, platform-enforced retention bound and every authority channel; it must agree with `ATTACHED_IDENTITY` in `capabilities`. The host provisions the declared configuration, and a declaring backend must honor it on cold and warm acquisition and correctly apply settings it owns. Configuration trust does not replace enforcement of advertised bounds. No real backend advertises this core contract; ACAS separately supports [host-configured group identity](acas.md#sandbox-group-identity), which the router does not discover or constrain through these fields. The fake defaults to none; overriding its declaration tests router admission and provides no token or platform enforcement. [`../hosts.md`](../hosts.md#identity--whose-authority-sandbox-work-carries) owns these obligations.
+Each real sandbox belongs to `(SandboxKey, kind)`. Warm acquisition reuses that sandbox when its policy and storage base still match. Calls sharing a key but using different kinds have separate sandboxes.
 
-## The shipped backends
+Container and service backends write ownership labels at creation and discover resources through their provider when disposing them. Long label values are hashed, not truncated. Hyperlight instead uses its owning process's shared registry; requests and purges must reach that owner.
 
-| | [`acas`](acas.md) | [`docker`](docker.md) | [`wslc`](wslc.md) | [`hyperlight`](hyperlight.md) | [`in-process`](in-process.md) |
-|---|---|---|---|---|---|
-| **`isolation`** | `microvm` — a hardware-isolated micro-VM, a property of the Azure service rather than of this code; meets the router's default floor with nothing configured | `container` — a constant no configuration raises; a host opts the floor down explicitly | `container` — the same opt-down, for the same reason | `microvm` — packaged Python on x86-64 Windows WHP or Linux KVM; other families refused | `none` — and it runs nothing in a boundary at all |
-| **`isolation_scopes`** | `{conversation, call}` — the key's `call_id` reaches the registry entry and the service label a disposal selects on | `{conversation, call}` — the key's `call_id` reaches the container name, the registry entry and the label a disposal selects on | `{conversation, call}` — the key's `call_id` reaches the container name, the registry entry and the label a disposal selects on | `{conversation}` | not declared by default; `sandbox_per_key=True` plus an override serves one, which is what the conformance tests wire |
-| **`capabilities`** | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` — the only backend that can enumerate, which is the capability split's own test applied to itself | `EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS` — never `FILES_LIST` | `EXEC, FILES_IN` | `RUN_CODE, SNAPSHOT`; opt-in flat `FILES_OUT`, no host-tool channel | `DEFAULT_CAPABILITIES`, though the sandbox implements more than it declares |
-| **`egress_modes`** | `{allowlist, closed}` — one Deny-default policy at two settings: the hosts the spec names, or nothing. Never `unrestricted` | `{closed}`; `{closed, allowlist}` when an egress proxy image is configured | the same two shapes, by the same topology | `{closed, allowlist}` — exact hosts over HTTP 80 / HTTPS 443 | `{allowlist, closed}` by default, constructor-overridable |
-| **`limits`** | declared — 32 MiB per file, 128 MiB total, 128 files, each direction | declared — 64 MiB per file, 256 MiB total, 256 files, each direction | **not declared** — silence resolves to `DEFAULT_SANDBOX_LIMITS` | optional outputs: 8 MiB per file, 32 MiB total, 64 files; separate source/stdout/worker-memory budgets | `DEFAULT_SANDBOX_LIMITS` |
-| **`os_families`** | `{posix}`, a constant — every sandbox the service boots is a Linux microVM | `{posix}` when its daemon reports `linux`, `frozenset()` for every other answer — read by the `create` factory, and **not declared** by the plain constructor | `{posix}`, a constant — `wslc` runs Linux containers and has no other guest to hand out | `frozenset()` — a language runtime | `frozenset()` by default, constructor-overridable |
-| **Identity** | host control-plane credential stays in the host; group-attached identity is trusted deployment configuration, outside the current core identity declarations — see [group identity](acas.md#sandbox-group-identity) | none attached | none attached | none attached; application environment not forwarded to the guest | the host's own process, with the host's authority — which is what `none` says |
-| **Reuse & purge** | warm resume over cold create; labels at create, purge by label from the service; get-or-create serialised per key | reuse, restart, adopt-on-name-conflict; labels at create, purge by label from the engine | sub-second creates; egress scaffolding re-ensured on every acquire; labels and label purge | warm snapshot reset; one machine owner, shared process registry, workers killed on owner exit | records every key, spec, dispose and purge; `acquire_error` for a kind's degrade path |
-| **Where it runs** | anywhere with the service reachable | macOS, Linux, Windows with WSL 2, and CI runners | Windows with WSL only | x86-64 Windows WHP or Linux KVM with delegated cgroups, including WSL2; one owner per shared lock namespace | this process |
+`dispose(key)` covers all kinds for that key. A kind filter narrows it. `dispose_scope` covers the selected scope and conversation. Deletion failures are reported and retained for retry. Exact-instance cleanup must not delete a replacement.
 
-**Hyperlight declares `RUN_CODE` and `SNAPSHOT` for its pinned Python guest.** ACAS, Docker and WSLC implement `run_code` as a refusal; the fake supplies scripted output. Hyperlight declares no guest OS family and serves runtime workloads, with `/output` as the optional file-enabled storage base. Its [backend page](hyperlight.md) records the validated family and deployment constraints.
+Backend cleanup and operator retention are separate. The backend supplies discovery and deletion helpers; the operator owns credentials, coordination and scheduling. See [operations](../operations.md).
 
-The four rows below `isolation` are fields of that backend's `declarations`. Every cell is read from each backend's `_backend.py`, which is the source of record; the router's own view of the same rows is [`../policy-isolation.md`](../policy-isolation.md) § "The map", and what each capability obligates is [`../capabilities.md`](../capabilities.md).
-
-## What every backend is held to
-
-**Post-crash retention is operated by the deployment.** Service-based purge survives lost process memory, but a caller still has to request it. ACAS can enforce an installed lifecycle policy; Docker and WSLC supply no equivalent automatic deletion timer. Hyperlight workers use Windows jobs or Linux cgroups with independent lifetime watchers to terminate on host exit. A backend-specific cleanup helper or a provider API supplies the mechanism, and an independent operator program supplies the target and policy. Neither scheduling nor a general retention API is a `SandboxBackend` obligation. [`../operations.md`](../operations.md) owns that contract and the ACAS example.
-
-**Declare honestly or not at all.** There is no router-side emulation of a capability a backend lacks, and there must not be: the whole value of the match is that a refusal at attach means the workload would genuinely not have run. A mechanism can exist and stay undeclared — the in-process fake implements `run_code` for real, scripting the program rather than evaluating it, and still defaults to `DEFAULT_CAPABILITIES`, which carries no `RUN_CODE` — and that asymmetry is the safe direction.
-
-**A protocol method a backend cannot serve raises, and says why.** `Sandbox` is `runtime_checkable`, so a member it omitted would stop it being a `Sandbox` at all — which is why an unservable method refuses rather than being left out. `run_code` is the newest of them: acas, docker and wslc each raise `NotImplementedError` naming the backend and the reason — *which* runtime an image carries is a property of the image, and none of the three parses the reference it was handed, so declaring `RUN_CODE` would be a claim about someone else's artefact. The router refuses a spec requiring the capability before any caller arrives, so the raise is the honest floor under a caller that skipped the check, exactly as it is for `remove` and `list_dir`.
-
-**`reclaim` is a required method, and safe reclamation is a declared capability.** A backend that cannot establish safe reclamation implements the method as a refusal and withholds `RECLAIM`. The router resolves cleanup to an established stronger rung: snapshot when declared, otherwise disposal. Docker removes through `_removal`, as root when its acquire-time reach check permits it and otherwise as the image's user, and the in-process fake through its store; a mechanism alone does not establish its declaration. [ACAS](acas.md) and [WSLC](wslc.md) refuse reclamation and dispose each kind after its call. A framework-chosen directory does not prevent the guest from swapping its ancestors, and guest-answered path checks cannot license root-powered deletion. The RECLAIM conformance suite refuses an undeclared capability before planting or running probes.
-
-**Purge consults the service, never process memory.** A conversation delete lands on whichever replica serves it, which is usually not the replica that created the sandbox, so a backend that sweeps its own dictionary leaks billable compute on every multi-replica host. Labels are written **at create**, so a sandbox is reachable by the identity a later purge will select on even if everything after the create fails. Label values are **hashed rather than truncated** when they will not pass through intact: two scopes sharing a prefix would land on the same label, and one conversation's purge would then delete another's sandboxes. The mapping has to be identical on write and on query, or the purge quietly selects nothing — which looks exactly like a clean tenant.
-
-**The acquire race is real and invisible on one machine.** The function calls in a single assistant message execute concurrently, so two acquires for one key can be in flight at once. A backend either serialises its get-or-create or derives a name the provider rejects duplicates of; an unguarded read-then-create hands out two sandboxes and remembers one. The shipped backends do both where they can — a per-key lock, plus an adopt-on-name-conflict path for the race that lives in another process and no lock can see.
-
-**base64-over-exec is opt-in convenience, never the contract.** It depends on `base64` and a shell existing in the image, which the native copy paths do not. If it ever ships it is one reviewed implementation in `maf_sandbox`, never a parse per backend, and it carries its own lower maxima.
-
-**A backend claiming `microvm` *and* `FILES_OUT` owes an extra clause.** The declared channel is reads confined to the working directory with non-regular entries refused — the micro-VM standard's fourth leg applied to the out-door. See [`../policy-isolation.md`](../policy-isolation.md) § "The micro-VM standard".
-
-**`maf_sandbox.testing` grows every protocol surface, or no kind can be tested.** The in-process fake is not an optional convenience: a kind is written against the protocol and nothing else, so a protocol member the fake does not implement is a member no kind's test suite can exercise offline. It implements stat, read, list, remove and reclaim today and declares capabilities configurably — see [`in-process.md`](in-process.md).
-
-## What a new backend owes
-
-The ordered path through this — declarations first, then each `Sandbox` method with what it owes, what to reach for, what never to do, and the probes that prove it — is [`writing-a-backend.md`](writing-a-backend.md), which this comparison feeds but does not replace. The shape it walks, summarised: there is no shared backend base class and no conformance suite a backend inherits by subclassing — `maf_sandbox.testing` is a set of fakes, not a harness, and backends do not import it; each fakes its own provider seam, and is held to the protocol and the suites rather than to a parent class.
-
-## Where to read next
-
-- [`writing-a-backend.md`](writing-a-backend.md) — the ordered path for a new backend author, built on the rules these pages carry.
-- [`../capabilities.md`](../capabilities.md) — what each capability obligates, and the caps and confinement rules the pull surface enforces.
-- [`../network.md`](../network.md) — the egress axis, the allowlist, and the proxy topology two of these backends share.
-- [`../hosts.md`](../hosts.md) — what a host wires, and what identity each declaration implies.
-- [`../kinds/README.md`](../kinds/README.md) — the workloads that run on all of this.
-- [`../research/sandbox-architecture.md`](../research/sandbox-architecture.md), [`../research/files-out.md`](../research/files-out.md), [`../research/docker-backend.md`](../research/docker-backend.md) — the records these pages are distilled from.
+For implementation, use [writing a backend](writing-a-backend.md). For ACAS authentication, use [host-selected credentials](acas-credentials.md). Package READMEs own installation and configuration examples.
 
 ## Status
 
-| Decision | State | Tracking |
+| Area | State | Reference |
 |---|---|---|
-| Five backends declaring against one protocol | implemented | per-backend state on [acas](acas.md), [docker](docker.md), [wslc](wslc.md), [hyperlight](hyperlight.md), [in-process](in-process.md) |
-| `egress_modes` replaces the single `egress` property: a backend declares the set it can enforce, and the router serves the spec's mode or refuses it | shipped, and the single property is gone: every backend declares a set, and a mode outside it is refused rather than substituted in either direction | [`../network.md`](../network.md) § Status, row "Egress is resolved, not matched", which carries the umbrella, the backend-declaration issue and the merged PRs |
-| `run_code` is a `Sandbox` method every backend answers | implemented — Hyperlight evaluates packaged Python; ACAS, Docker and WSLC refuse; the in-process fake scripts results. The protocol method was released in core 0.20.0 | [`../capabilities.md`](../capabilities.md) § Status records the method release and Hyperlight delivery |
-| `os_families`, matched against a spec's `requires_os_family` | shipped in core — `docker` reads its daemon's `OSType` through its `create` factory, while `acas` and `wslc` state `posix`. Hyperlight's language runtime declares no OS family; the in-process fake declares none unless a test states one | [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md) § Status records the axis and container declarations; [Hyperlight](hyperlight.md) records its runtime contract |
-| The router selects a backend **per spec** (floor ∧ capabilities ∧ egress) rather than one at construction | shipped as an opt-in — `SandboxRouter(selection=Selection.PER_SPEC)` tries each registered backend in registration order and serves the first that can. The default is unchanged, so a host that wired two backends and asked for nothing still never gets the second tried | [`../capabilities.md`](../capabilities.md) § "A match by default, and a search when a host asks for one" and its Status row, both of which carry the issue |
-| Shared egress probes — an enforcement claim measured wherever a backend's e2e runs | shipped in `maf-sandbox` 0.20.0: `run_egress_probes` and `assert_egress_conformance` are in `maf_sandbox.conformance` and all three backend e2e suites call them. **Two** backends are seen enforcing by a job in this repository — docker after merge, daily, and on demand, ACAS against the real service nightly and after a release — while wslc's leg runs on a developer's Windows/WSL host | [`../network.md`](../network.md) § Status, row "Shared egress conformance probes", which carries the closed issue and merged delivery PRs, and § "A portable probe checks this now" for what each leg measures |
-| `reclaim` remains a required method; its declaration gates reclamation and its conformance suite | shipped — core dispatches admitted reclamation and refuses an undeclared conformance run before planting; ACAS and WSLC refuse direct reclamation and use disposal | [`../capabilities.md`](../capabilities.md) § Status; per-backend mechanism on [acas](acas.md), [docker](docker.md), [wslc](wslc.md), [in-process](in-process.md) |
-| base64-over-exec as one reviewed implementation in `maf_sandbox` | open — convenience only, never the contract | untracked |
-| The four `getattr`-read declarations collapse into one declarations object | shipped — `BackendDeclarations`, one `getattr`, silence rules kept as field defaults | [`../policy-isolation.md`](../policy-isolation.md), which owns the decision |
+| Backend selection and declarations | Implemented | [Policy and isolation](../policy-isolation.md), [capabilities](../capabilities.md) |
+| Service and container backends | Implemented with the limits above | [ACAS](acas.md), [Docker](docker.md), [WSLC](wslc.md) |
+| Packaged Python runtime | Implemented for the supported host family | [Hyperlight](hyperlight.md) |
+| Test backend | Implemented; no security boundary | [In-process](in-process.md) |
+| Credential ownership and retention | Defined per backend and deployment | [ACAS credentials](acas-credentials.md), [operations](../operations.md) |
