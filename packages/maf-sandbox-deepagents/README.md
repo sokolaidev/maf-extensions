@@ -2,19 +2,23 @@
 
 [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-deepagents)](https://pypi.org/project/maf-sandbox-deepagents/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-deepagents)](https://pypi.org/project/maf-sandbox-deepagents/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/LICENSE)
 
-> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxDeepagentsExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_deepagents.MafSandboxDeepagentsExperimentalWarning)` once you've read the notice.
+> **Experimental.** The API may change without notice. Importing the package emits `MafSandboxDeepagentsExperimentalWarning`.
 
-This package is not affiliated with, endorsed by, or a product of LangChain, Inc. or Microsoft — it is a third-party bridge between [Deep Agents](https://docs.langchain.com/oss/python/deepagents/sandboxes) and the `maf-sandbox` suite.
+Use a `SandboxRouter` as a Deep Agents sandbox. `MafSandbox` connects Deep Agents' command and file tools to a backend such as Docker or ACAS. The router enforces the host's isolation floor and the spec's capabilities and network policy.
+
+This is a third-party integration, not a product of or endorsed by LangChain, Inc. or Microsoft.
 
 ```
 deepagents  ->  maf_sandbox_deepagents  ->  maf_sandbox (router)  ->  a backend  ->  the sandbox
 ```
 
-A `maf-sandbox` router as a Deep Agents sandbox. Deep Agents gives an agent one `execute` tool over a sandbox object the host constructs, and derives its file tools from that; the cloud providers it ships with (LangSmith, Daytona, E2B, Modal, Runloop, Vercel) each wrap a vendor client. `MafSandbox` is that object over a `SandboxRouter` instead — so a LangChain or LangGraph agent runs its shell in a Docker container or an Azure Container Apps sandbox, and the host keeps the router's decisions: a backend below the isolation floor is refused at construction, egress is closed unless the spec names hosts, and the sandbox is keyed from the request context and purged with the conversation.
-
-It is the suite in the other direction. The packaged kinds (`bicep_validate`, `execute_code`) attach to a Microsoft Agent Framework agent as tools; this package attaches a *backend* to a Deep Agents agent and lets the agent write its own commands. What that gives up is said below.
+![The model calls Deep Agents command and file tools. MafSandbox maps those operations to the router and backend, which execute the model's shell commands in a guest. Text and downloaded bytes return through Deep Agents' result types. This route does not attach MAF content labels, hide untrusted output, run packaged kinds or provide their declared-output and host-tool channels. Other tools and their information-flow policy belong to the host's Deep Agents integration.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/deepagents-boundary.svg)
 
 ## Quickstart
+
+```bash
+pip install maf-sandbox-deepagents maf-sandbox-docker
+```
 
 ```python
 from deepagents import create_deep_agent
@@ -25,43 +29,82 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 router = SandboxRouter([DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER)
 spec = deepagents_spec("python:3.12-alpine")
 
-# One sandbox per agent in a conversation: scope, thread and agent identity come from the host's request context.
+# Derive these identifiers from trusted host request context.
 sandbox = MafSandbox(router, SandboxKey(scope="tenant-a", thread_id="thread-1", agent_id="coder"), spec)
 
-agent = create_deep_agent(model=..., backend=sandbox, system_prompt="...")
+agent = create_deep_agent(model=..., backend=sandbox, system_prompt=f"Work under {spec.work_dir}.")
 ```
 
-`deepagents_spec` builds the spec Deep Agents needs — `EXEC`, `FILES_IN` and `FILES_OUT` — with the protocol's default base, and derives egress: `egress_allow=("pypi.org",)` runs the sandbox `ALLOWLIST` with that host, and no hosts runs it `CLOSED`. There is no open posture to ask for, because the agent writes the commands, and a spec built another way that asks for `UNRESTRICTED` is refused. `MafSandbox` refuses that, a spec that lacks a required capability, a router with no backend, and a spec that leaves the base to the backend, and asks the router at construction whether the backend can serve it, so a misconfigured host fails before an agent is built.
+Use a host-derived key per agent and conversation. The adapter requires conversation scope and an empty `key.call_id`. Its default kind is `deepagents`, separate from packaged kinds using the same conversation.
 
-**Paths are guest paths**, as they are for every sandbox Deep Agents ships: the agent's `read_file`, `write_file` and the rest name them absolutely, and `execute` runs in the base. The adapter's own upload and download take an absolute path anywhere in the guest, or a relative one under the base. Inside `spec.work_dir` they go through the backend's file plane, which refuses a path through a link as `invalid_path`; outside it — Deep Agents keeps its offloaded history under `/conversation_history/` and its large-edit temporaries under `/tmp/` — they go through the same shell the agent already has, in base64 chunks, under the same caps, so the file plane's confinement widens nothing that `execute` had not already opened. Put `spec.work_dir` in the system prompt so the model knows where its own files are; the example does. A backend-allocated base (`work_dir=None`) is refused at construction, because nothing could then tell the model where it is.
+`deepagents_spec` requires `EXEC`, `FILES_IN` and `FILES_OUT`. An empty `egress_allow` selects `CLOSED`; named hosts select `ALLOWLIST`. `UNRESTRICTED` is refused, including on a manually constructed spec.
 
-The sandbox is acquired on the first operation, a command or a file transfer, and reused warm after that. It lives until the host disposes it: `await sandbox.aclose()`, or the router's `dispose_scope(scope, thread_id)` on the host's own conversation-delete path — the backstop every sandbox in the suite answers to, and the one to wire, because LangGraph fires nothing when a thread is deleted. [`samples/17_deepagents_docker_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/17_deepagents_docker_bicep) runs the whole thing end to end, against a Docker container and a real model, and `verify-live.yml` runs it again after every release of this package.
+The working directory must be an explicit absolute POSIX path. `work_dir=None` is refused because the host must tell the model where its files live. Construction checks the spec and router; the first operation acquires the actual sandbox.
 
-## What the adapter maps
+`sandbox.id` identifies the adapter using the key, kind, backend and network policy. It is not the physical instance ID used by the operator console.
 
-| Deep Agents | `maf_sandbox` |
+## Commands
+
+| Setting | Contract |
 |---|---|
-| `execute(command, timeout)` | `BoundedExec.exec_bounded(command, working_directory=".", timeout=..., max_output_bytes=...)` — run in the sandbox's storage base, a shell string the backend runs as `sh -c`, under one deadline that a cold acquire spends part of and cannot outlive, and under `max_output_bytes` (1 MiB by default), which the backend enforces before it buffers anything: output past it is dropped whole and the result says so with `truncated=True`; a timeout, an overflow, the caller's cancellation or any failure that kept the result from coming back also condemns the sandbox, because nothing establishes that the process stopped when the host stopped waiting: every call is admitted through the router's call lifecycle, which every call over the key shares whichever adapter made it, the delete runs when the last call in flight leaves, so a parallel tool call is never cut off underneath, that release goes to the process's own loop after an unfinished command, so the delete neither extends the caller's wait nor dies with the caller's loop, and a later call is admitted once it is done, so the next command starts cold; `stdout` and `stderr` come back as one stream with `[stderr]` on the second, the way Deep Agents' own backends render it, and that stream is held to the same budget once rendered, since the prefixes grow it |
-| `upload_files([(path, bytes)])` | `Sandbox.write_file` under the base, one call per file, and the core's `write_file_over_exec` outside it, which stages the chunks in a sibling named for the call and moves it into place once the last landed, so a reader or a second writer sees a whole file and never two interleaved, under `spec.files_in`: a batch over `max_files` is refused whole, a file over `max_bytes_per_file` or past `max_total_bytes` is refused alone; a path through a link under the base is refused as `invalid_path` and an unsearchable ancestor as `permission_denied`, what either road refuses comes back as Deep Agents' code for the core's `FileRefusal`, and a write the plane did not refuse and did not finish condemns the sandbox and fails the batch, since the plane does not promise a whole file or none; a shell write that does not finish, on a timeout, an output overflow, the caller's cancellation or any other failure, condemns the sandbox and fails the whole batch, because what it had put there goes with it |
-| `download_files([path])` | `Sandbox.stat_file` then `Sandbox.read_file` under the base, and the core's `read_file_over_exec` outside it, a probe that tells a file behind an unsearchable ancestor from an absent one and a base64 read under the cap, under `spec.files_out`: a batch over `max_files` is refused whole, and each file is read under the smaller of `max_bytes_per_file` and what `max_total_bytes` has left, refusing rather than truncating; a missing file is `file_not_found`, a directory `is_directory`, a link under the base or a parent that is a file `invalid_path`, an unreadable file `permission_denied`; a plane stat or read that times out fails that file alone and the sandbox stays, since a read changes nothing in it and the bound is the backend's own refusal of an entry it cannot serve; a shell read that does not finish, on a timeout, an overflow, the caller's cancellation or any other failure, condemns the sandbox and fails the rest of the batch |
-| `id` | An opaque hash of what names the sandbox — the key, the kind, the serving backend instance and the egress posture — because Deep Agents may render it to the model and a scope is often a tenant; two adapters over one router and key share it, since they reach one sandbox, and two backends of one name reaching two engines do not |
-| `aclose()` | `SandboxRouter.enter_call` exclusively, so every call over the key has left and a delete one of them queued has run, then `dispose_kind` for the one instance this adapter acquired, so a packaged kind serving the same conversation, or another adapter over the same key with a different backend or egress, keeps its own; before any acquire, or once a queued delete took the instance, there is nothing of this adapter's to delete |
+| Execution | Model-supplied shell string through `BoundedExec.exec_bounded` |
+| Working directory | `"."`, resolved by the backend to the configured base |
+| Default deadline | 120 seconds, including admission and cold acquisition |
+| Default output cap | 1 MiB combined stdout/stderr, enforced by the backend before buffering |
+| Result | Text with guest stderr prefixed by `[stderr]`, or producer-owned stderr by `[note]`; rendering that exceeds the cap is dropped |
+| Overflow | Drop the output and return `truncated=True`; never return a partial successful result |
 
-Both surfaces are served: the `a*` methods are native, and the synchronous ones, which a sync tool on a LangGraph worker thread calls, run the same coroutine on the core's `SyncRunner`, one loop on a thread of its own, shared by every adapter in the process and started by the first sync call, so a backend that caches a client per loop holds one, not one per adapter or per call; a forked child starts its own on its first sync call, since a fork carries the loop but not its thread.
+A backend without `BoundedExec` runs no command. Provider details stay in host logs; failures returned to the model use fixed messages. A timeout means the wait ended, not that guest execution is known to have stopped.
 
-## What it costs, honestly
+The model controls the shell. Backend isolation and network policy apply, but the packaged kinds' fixed-command behavior does not. Keep credentials out of the image.
 
-**The agent writes the shell.** The packaged kinds run a fixed argv and never a shell; here the model's command string is what runs, which is Deep Agents' model and what its `BaseSandbox` documents. The container boundary and the egress policy are the controls, and nothing above them is. Do not put a credential in the image.
+## Files and paths
 
-**Cleanup is disposal.** A kind can claim confinement to its own call directory and earn warm reuse through `RECLAIM`; an arbitrary shell cannot, so the router cleans this sandbox by deleting it. It stays warm across the turns of one conversation and goes when the host disposes it.
+Deep Agents' file tools use absolute guest paths. Adapter uploads and downloads also accept relative paths beneath the configured base.
 
-**Deep Agents' derived file tools need `python3` in the guest.** `ls`, `read_file`, `edit_file`, `glob` and `grep` are shell-and-Python snippets Deep Agents runs through `execute`, and `write_file` runs one too, a preflight that creates the parent directory, before it hands the bytes to `upload_files`. On an image without an interpreter — [`images/bicep-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/images/bicep-sandbox) is one — only `execute`, `delete` (a `test` and an `rm -rf` through `execute`) and this package's own `upload_files` and `download_files` work. The image is the host's to choose, and the sample says so in its prompt.
+![An upload or download path is checked against the configured guest base. A path inside the base uses the backend's file methods and their confinement checks. A path outside the base uses bounded guest shell commands with base64 transfers, under the guest's existing authority and the same file caps. Both routes return Deep Agents file responses. The base is a transfer-routing boundary, not a restriction on the shell's whole filesystem access.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/deepagents-file-routes.svg)
 
-**No labels and no declared outputs.** MAF's information-flow declarations, the per-call guest path, declared outputs with a landing sink, and host tools called from inside the guest are the kinds' contract with the framework, and Deep Agents has no place to put them. A host that needs them attaches a kind to a MAF agent; this package is for a host that already has a Deep Agents agent.
+| Path | Upload | Download |
+|---|---|---|
+| Inside the base | `write_file` | `stat_file`, then `read_file` |
+| Outside the base | `write_file_over_exec` | `read_file_over_exec` |
 
-## Requirements
+The outside-base route supports paths such as `/conversation_history/` and `/tmp/`. It uses the same guest authority already available to `execute`. Uploads stage chunks in a sibling file, then move the completed file into place.
 
-- Python 3.12 or newer.
-- `deepagents` 0.7.x. Its backend protocol has changed between 0.x minors, so one minor is admitted at a time.
-- An image with `sh`, `mkdir`, `mv`, `rm`, `base64` and `wc` (the core's `SHELL_UTILITIES`), which the shell road runs for an upload or download outside the base (`test`, `printf` and `echo` are the shell's own in busybox, dash and bash). Docker's exec probe checks only `sh`, so an image without `base64` or `wc` constructs fine and fails on the first transfer outside the base; `python:3.12-alpine` and the bicep image have all six.
-- A `maf-sandbox` backend that implements `BoundedExec` (the adapter runs nothing through a sandbox that cannot bound its output), and declares `EXEC`, `FILES_IN` and `FILES_OUT` — [`maf-sandbox-docker`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-docker) and [`maf-sandbox-acas`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-acas) do; `maf-sandbox-wslc` does not declare `FILES_OUT`, so the router refuses it here.
+Both routes enforce `spec.files_in` or `spec.files_out`. A batch above `max_files` is refused whole. A file above its per-file cap or remaining total budget is refused individually. Downloads refuse oversize results rather than truncate them.
+
+| File condition | Response |
+|---|---|
+| Missing file | `file_not_found` |
+| Directory requested as a file | `is_directory` |
+| Link under the base, invalid traversal or non-directory parent | `invalid_path` |
+| Unsearchable parent or unreadable file | `permission_denied` |
+
+A native stat/read timeout fails that file alone and leaves the sandbox available. An unfinished write or shell transfer requires disposal. An unfinished upload invalidates the batch; an unfinished shell download stops the remaining downloads.
+
+## Lifetime and cleanup
+
+![Operations enter the router's shared call lifecycle, then acquire or reuse the conversation sandbox. Successful operations release admission and leave it warm. An unfinished command or transfer queues exact-instance disposal. Already admitted sibling calls finish before the queued delete runs; later calls wait for cleanup before starting cold. Explicit close takes exclusive admission and disposes the instance this adapter acquired. Conversation purge is the host's recovery path.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/deepagents-lifetime.svg)
+
+Successful operations keep the sandbox warm across conversation turns. Timeout, backend output overflow, cancellation or a missing command result queues disposal because guest completion is uncertain. Overflow caused only by formatting a completed result drops that result without requiring disposal.
+
+The router coordinates overlapping calls. Adapter-queued deletion waits for the last call already allowed to run, and later calls wait for cleanup. A backend can independently invalidate the whole sandbox on failure; its own timeout and cancellation contract still applies.
+
+After unfinished work, release and cleanup run on the process-owned `SyncRunner` loop. They can outlive the caller's loop and do not extend its response wait. Failed cleanup is not permission to reuse the instance.
+
+`await sandbox.aclose()` takes exclusive admission, then disposes the exact instance this adapter acquired. It returns `False` when closure cannot be confirmed. Before acquisition, there is nothing to delete. Other kinds and replacements remain separate.
+
+Wire `router.dispose_scope(scope, thread_id)` into the host's conversation-delete path. LangGraph thread deletion does not call it automatically. The adapter uses disposal, not per-operation reclamation or reset.
+
+Async methods are native. Synchronous methods run the same coroutines through one shared `SyncRunner` thread and event loop per process. A forked child starts its own runner.
+
+## Requirements and limits
+
+- Python 3.12–3.14 and Deep Agents 0.7.x.
+- A backend declaring `EXEC`, `FILES_IN` and `FILES_OUT`, with bounded execution. Docker and ACAS provide this; WSLC lacks output reads.
+- Guest commands `sh`, `mkdir`, `mv`, `rm`, `base64` and `wc` for outside-base transfers. Missing commands can fail at transfer time.
+- `python3` for Deep Agents' derived `ls`, `read_file`, `write_file`, `edit_file`, `glob` and `grep` tools. Without it, direct execution, shell deletion and adapter uploads/downloads remain available.
+
+This adapter does not supply MAF information-flow labels, automatic hiding, per-call guest directories, declared outputs with a landing sink, or guest-to-host tool calls. Those are the [packaged kinds' contracts](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/README.md).
+
+The [Docker Bicep sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/17_deepagents_docker_bicep) shows the complete integration with a model.

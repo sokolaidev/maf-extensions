@@ -2,27 +2,29 @@
 
 [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-tui)](https://pypi.org/project/maf-sandbox-tui/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-tui)](https://pypi.org/project/maf-sandbox-tui/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-tui/LICENSE)
 
-> **Experimental.** This package warns on import with `MafSandboxTuiExperimentalWarning`. Its prototype protocol, discovery files and UI may change without notice.
+> **Experimental.** The control protocol, discovery files and UI may change without notice. Importing the package emits `MafSandboxTuiExperimentalWarning`.
 
-MST is a keyboard-first operator console for sandboxes owned by opted-in MAF applications. It lists physical instances, shows their trusted MAF key and lifecycle signal, and asks the owning router to dispose one exact generation. It does not scan for arbitrary Hyperlight VMs and never kills a worker process directly.
+MST is a local operator console for sandboxes owned by applications that enable it. It lists physical instances, shows their MAF keys and asks the owning application to delete an exact instance.
 
-## Try the complete local flow
+![The operator's TUI or CLI discovers a loopback endpoint published by the application. That endpoint calls the application's control adapter, which uses the same monitored router and backend that serve agent work. The host scheduler stops new work and drains active calls before deletion. Inventory comes from admitted acquisitions and observed worker state. MST does not scan arbitrary VMs or kill worker processes directly. The unauthenticated loopback endpoint is reachable by local processes while enabled.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/tui-control-boundary.svg)
 
-The demo starts a loopback control endpoint, connects the TUI to it, and supplies three representative Hyperlight records. Press `r` to refresh, select a row with the arrow keys, press `d` to review an exact-instance disposal, and `q` to quit.
+## Try it
+
+The demo provides three sample Hyperlight records through a local control server. It does not create real sandboxes.
 
 ```powershell
 uv run mst --demo
 ```
 
-For a non-interactive protocol check:
+Use the arrows to select, `r` to refresh, `d` to review deletion and `q` to quit. For a non-interactive check:
 
 ```powershell
 uv run mst --demo --json
 ```
 
-## Use MST from scripts
+## Commands
 
-Running `mst` without a command opens the TUI. Subcommands print plain tables or records; `--json` selects stable JSON and `watch --jsonl` writes one compact snapshot per line. Connection options may appear before or after the command.
+Run `mst` without a command to open the TUI. Subcommands print tables or records. `--json` selects JSON; `watch --jsonl` emits one snapshot per line. Connection options work before or after a command.
 
 ```console
 mst version [--json]
@@ -37,21 +39,29 @@ mst delete INSTANCE_ID [--timeout 10] [--yes] [--json]
 mst purge-thread --scope SCOPE --thread ID [--timeout 10] [--yes] [--json]
 ```
 
-`--older-than` compares the age of the last lifecycle signal observed by MST. It is not an execution-idle guarantee: an execution that starts and finishes between inventory snapshots may not change that timestamp.
+`--older-than` measures time since the last observed lifecycle signal. It does not prove the sandbox has been idle between snapshots.
 
-Version checks are explicit and read the fixed HTTPS PyPI project endpoint; MST never checks in the background. An update is delegated only when the running executable belongs to an isolated `uv tool` or pipx environment. `mst update --to VERSION` also permits an explicit rollback and verifies the installed version after the manager finishes. In a project or manually managed virtual environment, MST refuses to rewrite its own dependencies and names the pinned requirement for that environment's package manager and lock file. `--prerelease` includes non-yanked prereleases when choosing the newest version, and `--timeout` bounds each manager probe, version lookup, package-manager process and post-update verification.
+| Operation | Scope and confirmation |
+|---|---|
+| `delete` | One physical instance; a replacement has a different ID |
+| `purge-thread` | The conversation on every responsive local host; unavailable hosts make the result partial |
+| Either deletion command | Prompts in a terminal; scripts and JSON mode require `--yes` |
+| `--timeout` | Can shorten the operation; the host's configured limit is the upper bound |
 
-Exact-version self-update through pipx requires pipx 1.16 or newer, whose `install --upgrade` accepts both upgrades and rollbacks. For an older pipx owner, MST reports `self_updatable=false` and asks to upgrade pipx instead of using `--force` to replace executables.
+| Exit code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Endpoint failure or incomplete operation |
+| `2` | Invalid input or missing confirmation |
+| `3` | Physical instance absent |
+| `4` | Operator declined |
+| `130` | Watch interrupted |
 
-`delete` resolves the current record and still sends the physical `instance_id`, so a concurrent replacement is protected. `purge-thread` deliberately has a larger blast radius: it asks every responsive local host to purge the conversation and reports a partial result if any discovered host is unavailable. Destructive commands prompt on an interactive terminal and require `--yes` in scripts or JSON mode. `--timeout` may shorten an operation, but the application host's configured disposal timeout remains the upper bound.
+## Host a Hyperlight backend
 
-Composite exact delete and conversation purge bound cancellation settlement when an endpoint catches cancellation and delays settling. Exact delete does not start owner disposal after its shared deadline expires, even if ownership probes or event-loop scheduling consume the remaining time. A timed-out command reports an unconfirmed result and retains late tasks for completion callbacks; a later physical outcome is never retroactively reported as success for that command.
+Use `MonitoredSandboxBackend` and `MonitoredSandboxRouter` together. Pass the same router to agent work and the control adapter. Only acquisitions admitted through this pair enter the live inventory.
 
-Successful commands exit zero. Endpoint or incomplete-operation failures use `1`, invalid or missing confirmation uses `2`, an absent physical instance uses `3`, and an operator declining confirmation uses `4`. An interrupted watch uses `130`.
-
-## Host a real Hyperlight backend
-
-The MAF application remains the sandbox authority. Merely importing or constructing `SandboxControlServer` opens nothing. A host configuration that defaults off must opt in before the application starts the server on its event loop, passing the same backend and router that serve CodeAct calls.
+The server opens nothing until `start()` runs. Enable it through host configuration that defaults off.
 
 ```python
 from maf_sandbox import Cleanup, SandboxKey
@@ -89,16 +99,46 @@ finally:
     await backend.aclose()
 ```
 
-When enabled, the server binds an ephemeral port on the literal loopback address `127.0.0.1` and publishes the address in a per-user discovery file. `mst` discovers responsive local endpoints automatically. On POSIX hosts, MST atomically creates the discovery directory and refuses one that is not owned by the current user or is accessible to another user. There are deliberately no keys in this local prototype. Loopback is machine-local, not user-private: any local process that can reach the listener can use it while the host has it enabled. Windows discovery still needs an explicit user ACL or a named-pipe transport before production use. Do not proxy, forward or expose the listener outside the host; remote control requires a separately designed authenticated transport.
+`application_lifecycle`, `settings` and `run_application` are host-supplied. The lifecycle callbacks must stop new work and drain active calls for the conversation. Every start path, on every application replica, must use that coordination. If the host cannot provide a callback's guarantee, omit it; MST refuses that operation.
 
-`application_lifecycle.quiesce` represents the host's conversation scheduler; it is not supplied by MST. Every path that starts work for that conversation, on every application replica, must participate in the same boundary. `quiesce_instance` must fence new work and drain active calls for the key before exact disposal, and MST rechecks the generation inside that boundary. Omit either callback if the host cannot provide its guarantee; MST will refuse that disposal operation without calling the router.
+The wrapper forwards backend admission and requires observed worker exit to confirm physical disposal. A backend without that signal stays visible with an unconfirmed outcome.
 
-## Control protocol
+The generic monitor reports `ready` when the worker is observed running and `failed` when it has exited or cannot be checked. It does not infer active execution from private backend locks. Backend-specific inventory can report richer states. OpenTelemetry provides the separate history and audit records.
 
-Version one exposes `GET /v1/health`, `GET /v1/sandboxes`, `GET /v1/sandboxes/{instance_id}`, `DELETE /v1/sandboxes/{instance_id}`, and `DELETE /v1/scopes/{scope}/threads/{thread_id}`. Exact delete calls `SandboxRouter.dispose_kind` only inside host-provided quiescence and verifies that the physical instance disappeared. Conversation purge invokes the host-provided quiesced purge under a shared timeout and aggregates outcomes across responsive hosts. A reset or replacement rotates the identifier, so a stale screen cannot remove the newer sandbox at the same logical MAF key.
+## Exact-instance deletion
 
-If one host reports the same physical ID for multiple keys or kinds, its show and exact-delete routes refuse that ID. A cancelled backend disposal with uncertain physical outcome withholds affected generations from the public inventory; the monitor still counts them when deciding whether a later conversation purge is complete.
+![Deletion starts with the selected physical instance ID. The owning host stops new work and drains active calls, then checks that the same ID, key and kind still match. It asks the router to dispose that exact instance and verifies the backend's disposal receipt and observed worker exit. Confirmed removal returns disposed; a missing or replaced instance returns not_found; timeout or uncertain removal returns failed and unconfirmed. A later outcome does not change the timed-out command's result.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/tui-disposal-flow.svg)
 
-Server shutdown withdraws discovery, closes clients and waits briefly for canceled control operations. If a host operation delays cancellation, server shutdown can finish while that operation remains registered until it settles; restarting the same server object is refused until prior operations and teardown settle. The host must coordinate its own router/backend teardown with any still-running work rather than treat server closure as disposal confirmation.
+A reset or replacement changes `instance_id`. The host checks it again after draining work, so a stale screen cannot delete a replacement. An ID reported for multiple keys or kinds is refused.
 
-Live inventory comes from acquisitions admitted by `MonitoredSandboxRouter` through `MonitoredSandboxBackend`; applications must use both instead of registering the wrapped backend directly. The wrapper forwards optional backend admission unchanged, preserving Hyperlight ownership through output delivery and cleanup without serializing ordinary backends. The wrapper requires an observed worker process exit before confirming physical disposal; a backend without that signal remains visible and is reported as unconfirmed. It depends only on `maf-sandbox` and leaves backend packages unchanged. It reports a tracked acquisition as `ready` while its worker is observed running and as `failed` when the worker has exited or its liveness cannot be checked; it does not infer active execution from backend-private locks. A backend-specific inventory may provide richer lifecycle states. `maf-sandbox-otel` remains the complementary history and audit surface.
+All discovery and deletion steps share the operation deadline. Exact deletion cannot begin after that deadline. A timed-out operation is unconfirmed, even if a delayed task later completes.
+
+After uncertain cancellation, affected instances are withheld from public inventory. The monitor still counts them when checking whether a later conversation purge is complete.
+
+## Local control and shutdown
+
+The server binds `127.0.0.1` on an ephemeral port and publishes a per-user discovery file. On POSIX, the discovery directory must belong to the current user and be inaccessible to others.
+
+The prototype has no authentication. Any local process that can reach the listener can use it. Windows discovery needs a user ACL or named-pipe transport before production use. Keep the listener local; remote control requires a separate authenticated transport.
+
+| Method | Version-one route |
+|---|---|
+| `GET` | `/v1/health`, `/v1/sandboxes`, `/v1/sandboxes/{instance_id}` |
+| `DELETE` | `/v1/sandboxes/{instance_id}` |
+| `DELETE` | `/v1/scopes/{scope}/threads/{thread_id}` |
+
+`server.close()` withdraws discovery, closes clients and waits briefly for cancelled operations. Host work that delays cancellation can outlive it. The host must wait for that work before tearing down its router and backend. Restarting the same server object is refused until prior operations and teardown settle.
+
+## Updates
+
+Version checks run only when requested and use the fixed HTTPS PyPI endpoint.
+
+| Environment | Update behavior |
+|---|---|
+| Isolated `uv tool` or pipx install | Delegates to that package manager |
+| Project or manually managed environment | Refuses self-update and prints the pinned requirement |
+| `--to VERSION` | Supports upgrades and rollbacks; verifies the installed version |
+| `--prerelease` | Includes non-yanked prereleases when choosing the newest version |
+| `--timeout` | Bounds each probe, lookup, package-manager process and verification |
+
+Pipx self-update requires pipx 1.16 or newer. Older owners report `self_updatable=false` and require a pipx upgrade.

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 565" width="1180" height="565" role="img" aria-labelledby="process-observation-flow-title process-observation-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="process-observation-flow-title">Four snapshots around a host-tool run</title>
+  <desc id="process-observation-flow-desc">The host-tools runtime observes processes before launch, after launch, before cleanup and after cleanup. Cleanup actions also emit ProcessCleanup records naming reach and outcome. Each snapshot is bounded to 256 processes, one MiB of transport output and three seconds. Unavailable or incomplete observations enter the cleanup-failure policy. Earlier incomplete observations prevent reuse even if the final scan succeeds. An empty final snapshot cannot prove no process was hidden or missed.</desc>
+  <defs>
+    <marker id="process-observation-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="565" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Four snapshots around a host-tool run</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Each snapshot is a bounded view from inside the guest.</text>
+  <rect x="32" y="170" width="222" height="122" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="203" font-size="21" font-weight="600" fill="#243040">Before launch</text>
+  <text x="52" y="234" font-size="16" font-weight="400" fill="#526072">before_launch</text>
+  <text x="52" y="260" font-size="16" font-weight="400" fill="#526072">ProcessesObserved</text>
+  <rect x="330" y="170" width="222" height="122" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="350" y="203" font-size="21" font-weight="600" fill="#243040">After launch</text>
+  <text x="350" y="234" font-size="16" font-weight="400" fill="#526072">after_launch</text>
+  <text x="350" y="260" font-size="16" font-weight="400" fill="#526072">ProcessesObserved</text>
+  <rect x="628" y="170" width="222" height="122" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="648" y="203" font-size="21" font-weight="600" fill="#243040">Before cleanup</text>
+  <text x="648" y="234" font-size="16" font-weight="400" fill="#526072">before_cleanup</text>
+  <text x="648" y="260" font-size="16" font-weight="400" fill="#526072">ProcessesObserved</text>
+  <rect x="926" y="170" width="222" height="122" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="946" y="203" font-size="21" font-weight="600" fill="#243040">After cleanup</text>
+  <text x="946" y="234" font-size="16" font-weight="400" fill="#526072">after_cleanup</text>
+  <text x="946" y="260" font-size="16" font-weight="400" fill="#526072">ProcessesObserved</text>
+  <path d="M 254 231 L 330 231" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#process-observation-flow-arrow)"/>
+  <text x="263" y="217" font-size="16" font-weight="400" fill="#526072">Launch</text>
+  <path d="M 552 231 L 628 231" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#process-observation-flow-arrow)"/>
+  <text x="556" y="217" font-size="16" font-weight="400" fill="#526072">Program</text>
+  <path d="M 850 231 L 926 231" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#process-observation-flow-arrow)"/>
+  <text x="857" y="217" font-size="16" font-weight="400" fill="#526072">Cleanup</text>
+  <rect x="628" y="355" width="520" height="105" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="648" y="388" font-size="21" font-weight="600" fill="#243040">Cleanup action records</text>
+  <text x="648" y="419" font-size="16" font-weight="400" fill="#526072">ProcessCleanup: target identity, reach and outcome</text>
+  <path d="M 888 240 L 888 355" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#process-observation-flow-arrow)"/>
+  <rect x="32" y="355" width="520" height="105" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="388" font-size="21" font-weight="600" fill="#243040">Per snapshot</text>
+  <text x="52" y="419" font-size="16" font-weight="400" fill="#526072">256 processes • 1 MiB • 3 seconds • bounded fields</text>
+  <rect x="32" y="490" width="1116" height="52" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="523" font-size="21" font-weight="600" fill="#243040">An empty final snapshot is not proof of complete cleanup. Incomplete observations block reuse.</text>
+</svg>

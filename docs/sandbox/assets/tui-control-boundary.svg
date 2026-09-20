@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 733" width="1180" height="733" role="img" aria-labelledby="tui-control-boundary-title tui-control-boundary-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="tui-control-boundary-title">MST asks the owning application to control its sandboxes</title>
+  <desc id="tui-control-boundary-desc">The local operator uses the TUI or CLI to discover an application control endpoint from a per-user discovery file. The application explicitly starts an unauthenticated listener on 127.0.0.1 with an ephemeral port. Its control adapter uses the same MonitoredSandboxRouter and MonitoredSandboxBackend that serve agent work. The host scheduler stops new work and drains active calls before deletion. Inventory comes from admitted acquisitions and observed worker state, not arbitrary VM scanning. The backend owns worker lifecycle. MST does not kill workers directly. Local processes can reach the listener while enabled.</desc>
+  <defs>
+    <marker id="tui-control-boundary-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="733" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">MST asks the owning application to control its sandboxes</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Live inventory comes from the application. Deletion uses its router and lifecycle coordination.</text>
+  <rect x="32" y="132" width="242" height="127" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="165" font-size="21" font-weight="600" fill="#243040">Operator</text>
+  <text x="52" y="196" font-size="16" font-weight="400" fill="#526072">mst TUI or CLI</text>
+  <text x="52" y="222" font-size="16" font-weight="400" fill="#526072">Discover local endpoints</text>
+  <rect x="373" y="132" width="350" height="127" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="393" y="165" font-size="21" font-weight="600" fill="#243040">Local control server</text>
+  <text x="393" y="196" font-size="16" font-weight="400" fill="#526072">127.0.0.1 : ephemeral port</text>
+  <text x="393" y="222" font-size="16" font-weight="400" fill="#526072">Address in per-user discovery file</text>
+  <rect x="822" y="132" width="326" height="127" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="842" y="165" font-size="21" font-weight="600" fill="#243040">Control adapter</text>
+  <text x="842" y="196" font-size="16" font-weight="400" fill="#526072">List / show / delete</text>
+  <text x="842" y="222" font-size="16" font-weight="400" fill="#526072">Inside the owning application</text>
+  <path d="M 274 195 L 373 195" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-control-boundary-arrow)"/>
+  <text x="301" y="180" font-size="16" font-weight="400" fill="#526072">HTTP</text>
+  <path d="M 723 195 L 822 195" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-control-boundary-arrow)"/>
+  <rect x="822" y="346" width="326" height="121" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="842" y="379" font-size="21" font-weight="600" fill="#243040">Host scheduler</text>
+  <text x="842" y="410" font-size="16" font-weight="400" fill="#526072">Stop new work</text>
+  <text x="842" y="436" font-size="16" font-weight="400" fill="#526072">Drain active conversation calls</text>
+  <path d="M 985 259 L 985 346" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-control-boundary-arrow)"/>
+  <text x="1000" y="307" font-size="16" font-weight="400" fill="#526072">Before deletion</text>
+  <rect x="373" y="346" width="350" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="393" y="379" font-size="21" font-weight="600" fill="#243040">Monitored router + backend</text>
+  <text x="393" y="410" font-size="16" font-weight="400" fill="#526072">Same pair used by agent calls</text>
+  <text x="393" y="436" font-size="16" font-weight="400" fill="#526072">Inventory + observed worker state</text>
+  <rect x="32" y="346" width="242" height="121" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="379" font-size="21" font-weight="600" fill="#243040">Hyperlight worker</text>
+  <text x="52" y="410" font-size="16" font-weight="400" fill="#526072">Backend owns lifecycle</text>
+  <text x="52" y="436" font-size="16" font-weight="400" fill="#526072">No direct kill from MST</text>
+  <path d="M 822 407 L 723 407" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-control-boundary-arrow)"/>
+  <path d="M 373 407 L 274 407" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-control-boundary-arrow)"/>
+  <text x="373" y="517" font-size="17" font-weight="400" fill="#526072">Monitor both admission and the backend; wrapping only one is insufficient.</text>
+  <rect x="32" y="573" width="1116" height="125" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="606" font-size="21" font-weight="600" fill="#243040">Local prototype: host opt-in, no authentication</text>
+  <text x="52" y="637" font-size="17" font-weight="400" fill="#526072">Import and construction open nothing. The host must start the listener explicitly.</text>
+  <text x="52" y="663" font-size="17" font-weight="400" fill="#526072">Loopback is machine-local, not user-private. Local processes can use it while enabled.</text>
+</svg>
