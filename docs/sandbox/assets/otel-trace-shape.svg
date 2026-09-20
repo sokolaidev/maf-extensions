@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 600" width="1180" height="600" role="img" aria-labelledby="otel-trace-shape-title otel-trace-shape-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="otel-trace-shape-title">One call: sibling spans joined by a call ID</title>
+  <desc id="otel-trace-shape-desc">When an application span is current, sandbox acquisition, file transfers, host-tool calls and the final sandbox.call span share that parent. Their call ID identifies the tool call; a conversation key can be shared by concurrent calls. The final call span covers the reported full duration. Egress is detached from the current trace and has no tool-call ID because its proxy window can cover multiple calls.</desc>
+  <defs>
+    <marker id="otel-trace-shape-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="600" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">One call: sibling spans joined by a call ID</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Spans are emitted after the reported work. The final call record is not their parent.</text>
+  <rect x="32" y="122" width="780" height="90" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="155" font-size="21" font-weight="600" fill="#243040">Current application span</text>
+  <text x="52" y="186" font-size="16" font-weight="400" fill="#526072">When present; for example, the framework&#x27;s tool-call span</text>
+  <path d="M 422 212 L 422 245" fill="none" stroke="#7d8694" stroke-width="2"/>
+  <path d="M 122 245 L 722 245" fill="none" stroke="#7d8694" stroke-width="2"/>
+  <rect x="32" y="280" width="180" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="313" font-size="21" font-weight="600" fill="#243040">Acquire</text>
+  <text x="52" y="344" font-size="15" font-weight="400" fill="#526072">sandbox.acquire</text>
+  <path d="M 122 245 L 122 280" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#otel-trace-shape-arrow)"/>
+  <rect x="232" y="280" width="180" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="252" y="313" font-size="21" font-weight="600" fill="#243040">Read input</text>
+  <text x="252" y="344" font-size="15" font-weight="400" fill="#526072">sandbox.files_in</text>
+  <text x="252" y="370" font-size="15" font-weight="400" fill="#526072">Instant span</text>
+  <path d="M 322 245 L 322 280" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#otel-trace-shape-arrow)"/>
+  <rect x="432" y="280" width="180" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="452" y="313" font-size="21" font-weight="600" fill="#243040">Host tool</text>
+  <text x="452" y="344" font-size="15" font-weight="400" fill="#526072">sandbox.</text>
+  <text x="452" y="370" font-size="15" font-weight="400" fill="#526072">host_tool_call</text>
+  <path d="M 522 245 L 522 280" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#otel-trace-shape-arrow)"/>
+  <rect x="632" y="280" width="180" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="652" y="313" font-size="21" font-weight="600" fill="#243040">Land output</text>
+  <text x="652" y="344" font-size="15" font-weight="400" fill="#526072">sandbox.files_out</text>
+  <path d="M 722 245 L 722 280" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#otel-trace-shape-arrow)"/>
+  <rect x="32" y="445" width="780" height="95" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="478" font-size="21" font-weight="600" fill="#243040">sandbox.call</text>
+  <text x="52" y="509" font-size="16" font-weight="400" fill="#526072">Full call duration • emitted last • same parent • joined by maf_sandbox.call.id</text>
+  <path d="M 812 167 L 843 167 L 843 492 L 812 492" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#otel-trace-shape-arrow)"/>
+  <rect x="884" y="122" width="264" height="418" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="904" y="155" font-size="21" font-weight="600" fill="#243040">Egress window</text>
+  <text x="904" y="186" font-size="16" font-weight="400" fill="#526072">sandbox.egress</text>
+  <text x="904" y="212" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="904" y="238" font-size="16" font-weight="400" fill="#526072">Fresh trace context</text>
+  <text x="904" y="264" font-size="16" font-weight="400" fill="#526072">No tool-call ID</text>
+  <text x="904" y="290" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="904" y="316" font-size="16" font-weight="400" fill="#526072">Joins by sandbox key</text>
+  <text x="904" y="342" font-size="16" font-weight="400" fill="#526072">or conversation</text>
+  <text x="904" y="368" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="904" y="394" font-size="16" font-weight="400" fill="#526072">May cover many calls</text>
+  <text x="32" y="578" font-size="17" font-weight="400" fill="#526072">A conversation-scoped key does not identify one call. Use the call ID for that join.</text>
+</svg>

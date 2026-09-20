@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 735" width="1180" height="735" role="img" aria-labelledby="tui-disposal-flow-title tui-disposal-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="tui-disposal-flow-title">Delete the instance the operator selected</title>
+  <desc id="tui-disposal-flow-desc">After the operator confirms deletion of a physical instance ID, MST finds the owner within the operation deadline. The host stops new work and drains active calls, then checks that instance ID, key and kind still match. It invokes router.dispose_kind with that exact instance ID. Confirmed removal needs the backend disposal receipt and observed worker exit. An absent or replaced instance returns not_found. Uncertain removal, missing evidence or timeout returns failed and unconfirmed. No deletion starts after the deadline, and later completion does not revise that command&#x27;s outcome. Conversation purge deliberately has wider scope.</desc>
+  <defs>
+    <marker id="tui-disposal-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="735" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Delete the instance the operator selected</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">A reset or replacement has a different physical ID, even when its logical MAF key stays the same.</text>
+  <rect x="32" y="134" width="288" height="120" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="167" font-size="21" font-weight="600" fill="#243040">Select and confirm</text>
+  <text x="52" y="198" font-size="16" font-weight="400" fill="#526072">Physical instance_id</text>
+  <text x="52" y="224" font-size="16" font-weight="400" fill="#526072">Find owner within deadline</text>
+  <rect x="431" y="134" width="288" height="120" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="451" y="167" font-size="21" font-weight="600" fill="#243040">Host stops and drains</text>
+  <text x="451" y="198" font-size="16" font-weight="400" fill="#526072">Block new conversation work</text>
+  <text x="451" y="224" font-size="16" font-weight="400" fill="#526072">Wait for admitted work</text>
+  <rect x="830" y="134" width="318" height="120" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="850" y="167" font-size="21" font-weight="600" fill="#243040">Recheck ownership</text>
+  <text x="850" y="198" font-size="16" font-weight="400" fill="#526072">Same ID, key and kind</text>
+  <text x="850" y="224" font-size="16" font-weight="400" fill="#526072">Refuse missing or ambiguous ID</text>
+  <path d="M 320 194 L 431 194" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-disposal-flow-arrow)"/>
+  <path d="M 719 194 L 830 194" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-disposal-flow-arrow)"/>
+  <rect x="830" y="347" width="318" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="850" y="380" font-size="21" font-weight="600" fill="#243040">Dispose exact instance</text>
+  <text x="850" y="411" font-size="16" font-weight="400" fill="#526072">router.dispose_kind</text>
+  <text x="850" y="437" font-size="16" font-weight="400" fill="#526072">with instance_id</text>
+  <path d="M 989 254 L 989 347" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-disposal-flow-arrow)"/>
+  <rect x="431" y="347" width="288" height="121" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="451" y="380" font-size="21" font-weight="600" fill="#243040">Verify removal</text>
+  <text x="451" y="411" font-size="16" font-weight="400" fill="#526072">Backend disposal receipt</text>
+  <text x="451" y="437" font-size="16" font-weight="400" fill="#526072">Observed worker exit</text>
+  <path d="M 830 407 L 719 407" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-disposal-flow-arrow)"/>
+  <rect x="32" y="347" width="288" height="121" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="380" font-size="21" font-weight="600" fill="#243040">Report outcome</text>
+  <text x="52" y="411" font-size="16" font-weight="400" fill="#526072">disposed / not_found</text>
+  <text x="52" y="437" font-size="16" font-weight="400" fill="#526072">failed (unconfirmed)</text>
+  <path d="M 431 407 L 320 407" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#tui-disposal-flow-arrow)"/>
+  <rect x="32" y="533" width="1116" height="76" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="566" font-size="21" font-weight="600" fill="#243040">Deadline covers the whole operation</text>
+  <text x="52" y="597" font-size="17" font-weight="400" fill="#526072">No late start of deletion. Later completion does not turn a timed-out command into success.</text>
+  <rect x="32" y="638" width="1116" height="65" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="671" font-size="21" font-weight="600" fill="#243040">purge-thread is broader: the whole conversation on every responsive local host.</text>
+</svg>

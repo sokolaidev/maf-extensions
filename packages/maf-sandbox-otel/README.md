@@ -2,23 +2,19 @@
 
 [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/LICENSE)
 
-> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxOtelExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_otel.MafSandboxOtelExperimentalWarning)` once you've read the notice.
+> **Experimental.** The API may change without notice. Importing the package emits `MafSandboxOtelExperimentalWarning`.
 
-**OpenTelemetry records of what a sandbox did** — which conversation was served what posture, which host tools a guest called and under whose authority, what crossed the boundary and with what integrity label, and what became of each sandbox on its way out — the delete addressed to one key, and the purge that clears a whole conversation. See [the limits](#two-limits-worth-knowing-before-you-rely-on-it) below for what it still does not see.
+Record sandbox activity with OpenTelemetry logs, spans and metrics. The observer reports acquisition, host-tool calls, file transfers, process observations, network decisions and cleanup.
 
-`maf-sandbox` reports these as events on an observer seam and records nothing itself. This package is one observer: it turns each event into a **log record** and a **span**, and the countable ones into a **metric**. A store read has no duration of its own, so its span is a single instant. Every signal goes through the providers you give the constructor, so records you route to a security pipeline do not also land on the application's trace. It depends on `maf-sandbox` and the OpenTelemetry **API**, and on nothing else — no backend, no agent framework, no SDK.
+The package depends on `maf-sandbox` and the OpenTelemetry API. The application configures the SDK, exporters and retention. Without an SDK provider, the API uses its no-op implementation.
 
 ```bash
 pip install maf-sandbox-otel
 ```
 
-## Process audit logs
-
-The registry observer receives bounded process snapshots around supervised runs and every process cleanup attempt. This package exports `sandbox.process.snapshot`, `sandbox.process.observed` and `sandbox.process.cleanup` logs even when traces are sampled out. Per-process logs include PID, user IDs, ancestry, start ticks, state, resource usage and attribution. Enable `record_sensitive_data=True` on the audit observer to include commands, argv, usernames and paths; the default redacts those fields. Collection failures and truncation are explicit. Snapshots are guest-observed evidence and cannot establish that a sandbox is completely clean.
-
 ## Wiring
 
-There are two registration points because there are two host-policy objects, and a host that wires one records only that half.
+Register the observer on both the router and host-tool registry. Each registration covers a different set of events.
 
 ```python
 from maf_sandbox import HostToolRegistry, SandboxRouter
@@ -30,9 +26,11 @@ router = SandboxRouter([backend], observer=observer)
 registry = HostToolRegistry(observer=observer)
 ```
 
-`collect_outputs` is neither — it is a function a kind calls per collection, so a kind that reports its file landings passes the observer and the key as arguments.
+Kinds using `collect_outputs` pass `observer=` and `key=` to that function. The observer records existing events; it does not change tool policy or the labels on returned content.
 
-Each provider argument defaults to the global one, so with nothing else configured these records land beside the application's own traces:
+![The router, sandboxed tool wrapper, host-tool registry, output collector and observing backends send events to a host observer. The OpenTelemetry observer selects attributes and sends logs, spans and metrics through independently configured providers. The host chooses exporters and retention. Tool and content labels remain part of agent policy; recording them does not enforce that policy.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/observability-channels.svg)
+
+Provider arguments default to the application's global providers. Supply a separate provider to route a signal elsewhere:
 
 ```python
 observer = OpenTelemetrySandboxObserver(
@@ -41,45 +39,65 @@ observer = OpenTelemetrySandboxObserver(
 )
 ```
 
-Splitting them is usually what a security record wants. A SIEM does not want the application's trace sampling applied to it, and an application's trace store does not want a year of egress records. The three providers are independent, so a deployment can move the logs and leave the spans where they were.
+`logger_provider`, `tracer_provider` and `meter_provider` are independent. A separate audit logger can retain records even when the application samples out traces. Log export still depends on that provider's own configuration and delivery.
 
-## What is recorded
+## Recorded signals
 
-| Event | Span | Metric |
+Each row emits a log and a span. Store reads use an instant span. Process snapshots also emit one `sandbox.process.observed` log per process, without a per-process span or metric label.
+
+| Activity | Log / span name | Metric under `maf_sandbox.` |
 |---|---|---|
-| A sandbox was served, or refused | `sandbox.acquire` | `maf_sandbox.sandbox.acquires` |
-| A guest called back into the host | `sandbox.host_tool_call` | `maf_sandbox.host_tool.calls`, `.response_bytes` |
-| A call read a file out of the host's store | `sandbox.files_in` *(one instant, no duration)* | `maf_sandbox.store.file_reads` |
-| A collection landed artifacts in a sink | `sandbox.files_out` | `maf_sandbox.outputs.landed_files`, `.landed_bytes` |
-| One backend answered one disposal | `sandbox.dispose` | `maf_sandbox.sandbox.disposals` |
-| One backend answered one conversation's purge | `sandbox.purge` | `maf_sandbox.scope.purges`, `.purged_sandboxes` |
-| A backend reported what its egress enforcement decided | `sandbox.egress` | `maf_sandbox.egress.decisions` |
-| A sandboxed tool call ended | `sandbox.call` | `maf_sandbox.call.duration` |
+| Acquire or refuse | `sandbox.acquire` | `sandbox.acquires` |
+| Guest calls a host tool | `sandbox.host_tool_call` | `host_tool.calls`, `host_tool.response_bytes` |
+| Read a host-store file | `sandbox.files_in` | `store.file_reads` |
+| Collect output files | `sandbox.files_out` | `outputs.landed_files`, `outputs.landed_bytes` |
+| Dispose a key | `sandbox.dispose` | `sandbox.disposals` |
+| Purge a conversation | `sandbox.purge` | `scope.purges`, `scope.purged_sandboxes` |
+| Observe network decisions | `sandbox.egress` | `egress.decisions` |
+| End a sandboxed tool call | `sandbox.call` | `call.duration` |
+| Observe processes | `sandbox.process.snapshot` | `process.snapshots` |
+| Attempt process cleanup | `sandbox.process.cleanup` | `process.cleanups` |
 
-Every event also emits a log record, and that is the one a security pipeline should keep: it does not depend on anything else being instrumented, and it survives a trace sampler that discarded the span. Attributes are under `maf_sandbox.*`, so they select cleanly out of a pipeline carrying everyone else's.
+Attributes use the `maf_sandbox.*` namespace, with `process.*` fields for process details. The [event guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) describes each event and its limits.
 
-## What crosses, and what does not
+## Sensitive data
 
-**Shape and policy always; content only when asked.** A sandbox's posture — the egress mode and its allowlist, the isolation rung, the capabilities, the sealed host-tool surface and the authority it carries, the integrity label, the counts, the sizes, the outcome — is what a security question is asked in, and a guest chooses none of it. Names and sentences are the other half: an artifact name is written by the model, a host-tool refusal quotes a bounded copy of what the guest asked for, and a store file name is the host's own vocabulary about its own data. Those cross only under `record_sensitive_data=True`, which mirrors the agent framework's switch of the same name and is off by default.
+`record_sensitive_data=False` is the default. Configuration, counts, sizes, outcomes and integrity labels are recorded. Model- or guest-chosen text and identifying host strings are omitted.
 
-A `SandboxKey` is the column almost every record joins on, so it cannot simply be dropped. It is **hashed** by default — stable across processes, so grouping still works, and not reversible by reading. It is not a secret: an id drawn from a small space can be recovered by hashing the candidates, and a deployment that needs the key withheld from a pipeline should not send it rather than trust this.
+| Data | Default behavior |
+|---|---|
+| Sandbox key and conversation | Stable hashes for correlation |
+| Scope, thread and agent IDs | Omitted; included with sensitive-data opt-in |
+| Framework call IDs | Recorded in clear |
+| Artifact names, store filenames and observed network targets | Omitted; included with opt-in |
+| Process commands, argv, usernames and paths | Omitted; included with opt-in |
+| Process IDs, numeric user IDs, ancestry, state and resource usage | Recorded when available |
+| Detailed refusal, disposal and collection-error text | Sensitive fields require opt-in |
 
-`sandbox.purge` is the one record with no key on it, because core's event has none: a backend answers a purge with a count rather than with the sandboxes it removed. It carries `maf_sandbox.sandbox.conversation` — the same hash of `(scope, thread_id)` every keyed record carries beside its key — so the record that says a conversation was cleaned up groups with that conversation's own.
+Hashes are not secrets. Small identifier spaces can be recovered by hashing candidates. The host must choose a telemetry destination and retention policy suitable for the data it permits.
 
-The **call id** is the one part of a key recorded in the clear. The framework generates it per call, it is drawn from nobody's vocabulary, and it is what names the folder a `per_call` sink lands that call's artifacts in — so hashing it would cost the correlation a landing record exists for and protect nothing.
+The exported attributes are a selection from each event. They do not include every `SandboxSpec` field or `ToolCallEnded.fed`. A custom observer can read those fields directly.
 
-**Two attributes carry a call id, and they are not the same column.** `maf_sandbox.sandbox.call_id` is the key's own, and a key carries one only where the workload runs a sandbox per call. `maf_sandbox.call.id` is which tool call the record came from, and it is on every record that has one — so it, and not the key, is what separates two calls in flight on one conversation. They hold the same string at `IsolationScope.CALL` and only there. `sandbox.call` always carries it, because that is the record the others join to; `sandbox.egress` never does, because a drain covers a window between two removals and the decisions in it span whatever calls happened meanwhile.
+## Correlation and trace shape
 
-## Two limits worth knowing before you rely on it
+![Events for one tool call are emitted after their work and become sibling spans under the current application span. The final sandbox.call span records the full call duration; it is not the parent of earlier sandbox spans. The call ID joins them. A sandbox.egress span is detached from the current trace because its proxy window can span several calls; it has no tool-call ID.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/otel-trace-shape.svg)
 
-**Egress is recorded by the backends that enforce it themselves, and by no others.** `sandbox.acquire` carries the mode and the allowlist a sandbox was *served* under; `sandbox.egress` carries what its enforcer then decided, which is a different question and the one an incident is asked in. The docker and wslc backends answer it — they run the proxy, so they read its `ALLOW`/`DENY` lines back before the container holding them goes. ACAS does not: it enforces in the service, and the deny reason never leaves the guest. **Do not read an absence of `sandbox.egress` as an absence of traffic.** The acquire record carries `maf_sandbox.backend.observes_egress` for exactly this, and it is the attribute that separates a sandbox nobody watched from a sandbox that reached nothing.
+Use `maf_sandbox.call.id` to join events from one tool call. A conversation-scoped sandbox key can be shared by several concurrent calls.
 
-**The events of one call are siblings, not children of `sandbox.call`.** Every event arrives after the work it describes, and the call's own event arrives last, so there is no moment at which this package could open a parent for the others to nest under. Each is parented to whatever span is current where it arrives instead — the agent framework's `execute_tool` span — and `sandbox.call` carries the total the caller waited for. Buffering them into a real tree would need per-call state that a cancellation could leak. That holds for a tool body that awaits nothing too, even though its record arrives on a worker thread: the framework dispatches with `asyncio.to_thread` from inside the span, and that copies the context the current span lives in, so the span crosses with the body. A test reproduces that dispatch rather than describing it.
+`maf_sandbox.sandbox.call_id` normally comes from a call-scoped key. On an output-collection record, it carries the collector's artifact call ID instead. Use `maf_sandbox.call.id` to identify the call that performed that collection.
 
-## Cost
+Purge records join through `maf_sandbox.sandbox.conversation`, since they describe a conversation and a backend's count, not individual keys. A tool-call record touching several keys uses aligned lists for their attributes.
 
-An observer is called synchronously inside the call it records — on the event loop's task, or on the worker thread a synchronous tool body runs on — so this package does no I/O: it hands each record to the OpenTelemetry API and returns. It keeps no per-call state, so two calls reaching one observer at once share nothing to race over; the OpenTelemetry tracer, meter and logger it holds are thread-safe by that API's own contract. With no SDK installed at all, the API's no-op implementations answer and the cost is a few attribute dictionaries per call.
+## Observation limits
 
-**Whether export blocks the call is your SDK configuration, not this package.** A `BatchSpanProcessor` and a `BatchLogRecordProcessor` hand off to their own thread, which is what keeps a slow collector away from a sandbox call. The `Simple*` processors call the exporter **synchronously**, inside `span.end()` and `logger.emit()` — so configured that way, a network exporter blocks the call for as long as the export takes. Use the batch processors where call latency matters; the simple ones are for tests, which is what this package's own suite uses them for.
+Docker and WSLC report attributable proxy windows after removal confirms the proxy is gone. ACAS and Hyperlight report no egress decisions. Even an observing backend can have missing, unreadable, truncated or undrained windows. No egress record does not mean no traffic.
 
-A failure here never reaches the call — `maf-sandbox` contains whatever an observer does and logs it. With two deliberate exceptions: `SystemExit` and `KeyboardInterrupt` are the host's own control flow rather than a recorder failing, so core lets them through, including when one arrives as a leaf of an exception group. Nothing in this package raises them, but an exporter or a provider you configure can, and if it does the call goes down with it.
+Process snapshots are bounded observations made inside the guest. Collection errors and truncation are explicit. They do not prove complete cleanup. See [process observations](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md#process-observations).
+
+## Cost and failures
+
+Callbacks run synchronously on the caller's event loop or worker thread. The observer keeps no per-call state and hands records to the OpenTelemetry API. Blocking export can still delay the sandbox call.
+
+Use batch span and log processors when latency matters. Simple processors invoke exporters synchronously. Each signal is attempted independently, so an ordinary span-export failure does not prevent log or metric attempts.
+
+Core contains and logs ordinary observer failures, including observer cancellation. `SystemExit` and `KeyboardInterrupt` remain host control flow and escape. The observer's return value cannot change the tool result.

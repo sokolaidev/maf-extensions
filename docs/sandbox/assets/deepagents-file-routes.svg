@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 657" width="1180" height="657" role="img" aria-labelledby="deepagents-file-routes-title deepagents-file-routes-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="deepagents-file-routes-title">A file path selects one of two transfer routes</title>
+  <desc id="deepagents-file-routes-desc">Deep Agents uploads and downloads accept absolute guest paths; adapter methods also accept paths relative to the configured base. Paths inside the base use native backend write, stat and read methods with the backend&#x27;s confinement checks. Paths outside the base use bounded guest shell execution and base64 transfers under existing guest authority. Uploads stage a sibling file before moving it into place. Both routes enforce the configured file count, per-file and total byte limits, and return Deep Agents file responses.</desc>
+  <defs>
+    <marker id="deepagents-file-routes-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="657" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">A file path selects one of two transfer routes</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The configured base chooses the route; it does not restrict the shell&#x27;s whole filesystem access.</text>
+  <rect x="32" y="134" width="285" height="123" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="167" font-size="21" font-weight="600" fill="#243040">Guest path</text>
+  <text x="52" y="198" font-size="16" font-weight="400" fill="#526072">Absolute, or relative</text>
+  <text x="52" y="224" font-size="16" font-weight="400" fill="#526072">to the configured base</text>
+  <rect x="386" y="134" width="315" height="123" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="406" y="167" font-size="21" font-weight="600" fill="#243040">Inside the base?</text>
+  <text x="406" y="198" font-size="17" font-weight="400" fill="#526072">Choose the transfer route</text>
+  <path d="M 317 195 L 386 195" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-file-routes-arrow)"/>
+  <rect x="32" y="352" width="499" height="145" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="385" font-size="21" font-weight="600" fill="#243040">Backend file methods</text>
+  <text x="52" y="416" font-size="17" font-weight="400" fill="#526072">Upload: write_file</text>
+  <text x="52" y="442" font-size="17" font-weight="400" fill="#526072">Download: stat_file + read_file</text>
+  <text x="52" y="468" font-size="17" font-weight="400" fill="#526072">Backend confinement checks apply</text>
+  <rect x="649" y="352" width="499" height="145" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="669" y="385" font-size="21" font-weight="600" fill="#243040">Bounded guest shell</text>
+  <text x="669" y="416" font-size="17" font-weight="400" fill="#526072">Base64 transfers with guest authority</text>
+  <text x="669" y="442" font-size="17" font-weight="400" fill="#526072">Upload: stage sibling file, then move</text>
+  <text x="669" y="468" font-size="17" font-weight="400" fill="#526072">Same shell authority as execute</text>
+  <path d="M 464 257 L 464 304 L 282 304 L 282 352" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-file-routes-arrow)"/>
+  <text x="373" y="292" font-size="16" font-weight="400" fill="#526072">Yes</text>
+  <path d="M 625 257 L 625 304 L 899 304 L 899 352" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-file-routes-arrow)"/>
+  <text x="751" y="292" font-size="16" font-weight="400" fill="#526072">No</text>
+  <rect x="800" y="134" width="348" height="123" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="820" y="167" font-size="21" font-weight="600" fill="#243040">Limits on both routes</text>
+  <text x="820" y="198" font-size="16" font-weight="400" fill="#526072">File count, per-file bytes</text>
+  <text x="820" y="224" font-size="16" font-weight="400" fill="#526072">and remaining total bytes</text>
+  <rect x="32" y="555" width="1116" height="70" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="588" font-size="21" font-weight="600" fill="#243040">Deep Agents file responses: accepted bytes, or a file-level refusal with a stable error code</text>
+  <path d="M 282 497 L 282 555" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-file-routes-arrow)"/>
+  <path d="M 899 497 L 899 555" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-file-routes-arrow)"/>
+</svg>

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 710" width="1180" height="710" role="img" aria-labelledby="observability-channels-title observability-channels-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="observability-channels-title">Observe activity; keep policy with the host</title>
+  <desc id="observability-channels-desc">Source tools declare result labels. Content items carry their own labels to the model. Host policy checks model calls against destination tools&#x27; accepted labels. Separately, the router, sandboxed tool wrapper, host-tool registry, output collector and observing backends emit events to SandboxObserver. The OpenTelemetry observer selects and redacts fields, then sends logs, spans and metrics through independent providers. The host configures export and retention. Recording an event does not label content or authorize a tool call.</desc>
+  <defs>
+    <marker id="observability-channels-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="710" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Observe activity; keep policy with the host</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Tool policy controls information flow. Telemetry records selected facts about sandbox work.</text>
+  <rect x="32" y="125" width="235" height="142" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="158" font-size="21" font-weight="600" fill="#243040">Source tools</text>
+  <text x="52" y="189" font-size="16" font-weight="400" fill="#526072">Declare result integrity</text>
+  <text x="52" y="215" font-size="16" font-weight="400" fill="#526072">and confidentiality</text>
+  <rect x="313" y="125" width="235" height="142" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="333" y="158" font-size="21" font-weight="600" fill="#243040">Content items</text>
+  <text x="333" y="189" font-size="16" font-weight="400" fill="#526072">Each has its own label</text>
+  <text x="333" y="215" font-size="16" font-weight="400" fill="#526072">Text or hidden reference</text>
+  <rect x="594" y="125" width="220" height="142" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="614" y="158" font-size="21" font-weight="600" fill="#243040">Model</text>
+  <text x="614" y="189" font-size="16" font-weight="400" fill="#526072">Reads visible content</text>
+  <text x="614" y="215" font-size="16" font-weight="400" fill="#526072">Makes tool calls</text>
+  <rect x="904" y="125" width="244" height="142" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="924" y="158" font-size="21" font-weight="600" fill="#243040">Destination tools</text>
+  <text x="924" y="189" font-size="16" font-weight="400" fill="#526072">Declare accepted integrity</text>
+  <text x="924" y="215" font-size="16" font-weight="400" fill="#526072">and confidentiality</text>
+  <path d="M 267 196 L 313 196" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#observability-channels-arrow)"/>
+  <path d="M 548 196 L 594 196" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#observability-channels-arrow)"/>
+  <path d="M 814 196 L 904 196" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#observability-channels-arrow)"/>
+  <text x="834" y="183" font-size="16" font-weight="400" fill="#526072">Policy</text>
+  <text x="32" y="316" font-size="17" font-weight="600" fill="#243040">OBSERVATION: separate from the policy checks above</text>
+  <rect x="32" y="348" width="310" height="231" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="381" font-size="21" font-weight="600" fill="#243040">Event sources</text>
+  <text x="52" y="412" font-size="16" font-weight="400" fill="#526072">Router + tool wrapper</text>
+  <text x="52" y="438" font-size="16" font-weight="400" fill="#526072">Host-tool registry</text>
+  <text x="52" y="464" font-size="16" font-weight="400" fill="#526072">Output collector</text>
+  <text x="52" y="490" font-size="16" font-weight="400" fill="#526072">Backends that observe egress</text>
+  <rect x="409" y="348" width="288" height="231" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="429" y="381" font-size="21" font-weight="600" fill="#243040">SandboxObserver</text>
+  <text x="429" y="412" font-size="16" font-weight="400" fill="#526072">Core event callbacks</text>
+  <text x="429" y="438" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="429" y="464" font-size="16" font-weight="400" fill="#526072">OpenTelemetry observer:</text>
+  <text x="429" y="490" font-size="16" font-weight="400" fill="#526072">select and redact fields</text>
+  <rect x="764" y="348" width="384" height="231" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="784" y="381" font-size="21" font-weight="600" fill="#243040">Independent providers</text>
+  <text x="784" y="412" font-size="16" font-weight="400" fill="#526072">Logs: event and process records</text>
+  <text x="784" y="438" font-size="16" font-weight="400" fill="#526072">Spans: timed or instant work</text>
+  <text x="784" y="464" font-size="16" font-weight="400" fill="#526072">Metrics: counts and durations</text>
+  <text x="784" y="490" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="784" y="516" font-size="16" font-weight="400" fill="#526072">The host configures each provider</text>
+  <path d="M 342 455 L 409 455" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#observability-channels-arrow)"/>
+  <path d="M 697 455 L 764 455" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#observability-channels-arrow)"/>
+  <rect x="32" y="621" width="1116" height="60" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="654" font-size="21" font-weight="600" fill="#243040">The host chooses exporters and retention. Events are observations, not a complete transcript.</text>
+</svg>
