@@ -1,160 +1,117 @@
 # Policy and isolation
 
-> The router's policy surface — the isolation ladder, the micro-VM standard, the floor, and the seven checks every sandbox request passes. Source of record: [`research/two-axis-sandbox-policy.md`](research/two-axis-sandbox-policy.md).
+The host sets the minimum acceptable isolation and limits sandbox sharing. A workload's `SandboxSpec` states the capabilities, guest platform and network policy it needs. The router checks the backend's declarations before serving it.
 
-## Three questions, kept apart
+These are separate checks. Strong isolation does not supply a missing capability, and a capability does not establish isolation.
 
-A sandbox request asks three independent things, and the policy answers them separately: **how strong must the boundary be in this environment** and **how much of a conversation may one sandbox serve**, which are the host's questions, and **what must the sandbox be able to do for this workload**, which is the spec's. The first two are ordered ladders with a floor a spec may raise and never lower; the third is a set match. Merging them would be a design error — a capability list cannot say "a micro-VM is enough for dev", a boundary strength cannot say "this kind needs a language runtime, not a shell", and neither can say whether the last call's files are still in the filesystem this one is handed.
+## Isolation levels
 
-The policy that preceded this was one boolean, `deployed=True`, crossed with one frozenset that required `Isolation.VM`. It collapsed the boundary's strength and the workload's capabilities — the first and the third — into a binary, and it was removed rather than deprecated when the ladder landed. The scope is newer than any of it.
+`Isolation` has seven levels, ordered by `ISOLATION_RANK`. `meets_floor` compares a backend's level with the required floor.
 
-## Axis 1 — isolation, as an ordered ladder
-
-`Isolation` is a `StrEnum` of seven rungs, declared by the backend because that is who knows the truth about itself, and read by the router.
-
-| Rung | Value | What it means |
+| Level | Value | Boundary |
 |---|---|---|
-| `NONE` | `none` | No boundary at all: the workload runs in the host process, with the host's authority. Tests and local fakes. |
-| `RUNTIME` | `runtime` | A software boundary inside the host process — a restricted interpreter, a WASM runtime's fault isolation with capability-gated imports. |
-| `PROCESS` | `os_process` | A separate OS process: a kernel-enforced address space, sharing the host's kernel and filesystem, with no namespaces. |
-| `CONTAINER` | `container` | Shared-kernel namespaces and cgroups — the host kernel is in the attack surface. |
-| `HARDENED_CONTAINER` | `hardened_container` | Syscall interception in a userspace kernel (gVisor-class), between namespaces and hardware. |
-| `MICROVM` | `microvm` | A hypervisor boundary with a minimal or absent guest OS, and only identity explicitly provisioned for its workloads. |
-| `VM` | `vm` | A dedicated, full VM provisioned for this workload on remote infrastructure. |
+| `NONE` | `none` | Host process and host authority; useful for test fakes |
+| `RUNTIME` | `runtime` | Restricted interpreter or software runtime inside the host process |
+| `PROCESS` | `os_process` | Separate address space; shared host kernel and filesystem, without namespaces |
+| `CONTAINER` | `container` | Shared-kernel namespaces and resource controls |
+| `HARDENED_CONTAINER` | `hardened_container` | Additional syscall isolation, such as a userspace kernel |
+| `MICROVM` | `microvm` | Hardware virtualization with a minimal or absent guest OS |
+| `VM` | `vm` | Dedicated full VM on remote infrastructure |
 
-**The order lives in `ISOLATION_RANK` and nowhere else** — a `Mapping[Isolation, int]` built by enumerating the rungs weakest-first, pinned by an exhaustiveness test that asserts every member is ranked, with `meets_floor(declared, floor)` the one comparison. Orderings are data in this package; nothing ranks two rungs by reading them.
+The order describes where the boundary is enforced. It does not rank every implementation's security. Capabilities, exposed authority and deployment configuration still matter.
 
-**`runtime` sits below `container` because it ranks trust bases, not implementations.** A restricted interpreter's boundary is real — OS access rejected by construction, linear-memory confinement — but it is enforced by software in the host process's own address space, so an escape lands *inside* the host process, beside its memory and credentials, with no second privilege domain in the way. A container's enforcement lives in the kernel, an independent domain. This is not a claim that every kernel beats every verified SFI runtime; the capability axis carries the rest of the honesty, and a runtime backend declaring no filesystem and no network at all says something the ladder never could.
-
-**`os_process` exists with no backend behind it, deliberately.** Without the rung, a backend running untrusted code in a subprocess would have to understate itself as `runtime` or overstate itself as `container`, and the ladder's whole value is that neither is available. It is above `runtime` because enforcement moves into the kernel; below `container` because a container is this plus namespaces and cgroups.
-
-**The bottom rung was renamed, and the old string was not reused.** `NONE` was spelled `PROCESS` until 0.14, where it read as a real boundary and meant the absence of one. The *name* `PROCESS` has since been taken back for the genuine rung two ranks above; the *string* `"process"` has not and never will be, and `Isolation("process")` raises `ValueError` in every release from the rename onward. A name is resolved where the code is written, so reusing it is a decision someone makes; a string is resolved at run time out of configuration nobody re-reads, so reusing it would have been a silent two-rung promotion.
-
-**`vm` stays above `microvm`** as a dedicated, full VM on remote infrastructure — a guest provisioned per workload or per tenant, where an escape lands on machinery that exists only for that purpose. Keeping it distinct is what keeps the ladder a *total* order, which the `max` of two floors needs, and it preserves a stricter posture for hosts that want one. ACA Sandboxes declare `microvm`, not `vm`: they are hardware-isolated micro-VMs, and the `vm` they declared before the ladder was an artifact of a three-rung scale where `vm` was the only hypervisor rung.
-
-**A local hypervisor is where both hypervisor rungs become reachable from one package**, and how it declares them without a rung that varies — one guest template family per backend *instance*, so `isolation` stays the constant this ladder needs and a deployment serving both registers two instances — is settled as Decision 5 of [`guest-platform-and-commands.md`](guest-platform-and-commands.md).
-
-**Unknown values refuse rather than rank.** Backends declare `-> Isolation`, and every deserialization boundary crosses through `Isolation(raw)`, whose `ValueError` *is* the refusal — the router turns it into `SandboxBackendNotPermitted` naming the ladder, because nothing here can tell whether an unrecognised boundary is stronger or weaker than the floor. The same discipline governs the whole policy surface: every value it accepts or emits is a `StrEnum` member or a named constant defined in exactly one place, bare strings exist only at serialization boundaries, and orderings are data with exhaustiveness tests. Nothing numeric appears inline.
-
-## The micro-VM standard
-
-Production's floor is only as strong as the weakest backend allowed to claim the rung, so `microvm` is a conformance bar rather than a self-assigned label. A backend claims it, or above, only if **all four** hold:
-
-1. **A hardware virtualization boundary.** The guest executes behind a hypervisor — not shared-kernel namespaces, not userspace-kernel syscall interception. The host kernel is out of the attack surface.
-2. **Only identity intended for the sandbox workload.** The host provisions the identities and grants its workloads may use; the backend does not expose the host's control-plane credential to the guest. Core attached-authority declarations, where implemented, require workload opt-in and bounded channels. [ACAS group identity](backends/acas.md#sandbox-group-identity) is explicitly trusted host configuration outside those declarations: the host routes workloads to a group with the intended authority. The isolation floor alone does not certify an identity-free group or enforce identity-channel bounds.
-3. **Confinable egress**: the backend's `egress_modes` holds `Egress.ALLOWLIST` or `Egress.CLOSED`, and not merely `Egress.UNRESTRICTED`. A backend that can enforce nothing tighter than open is capped below `microvm` outright. Which mode a given workload then runs in is resolved separately, and never downgraded to fit the backend — that is [`network.md`](network.md).
-4. **An explicit guest↔host surface.** The only channels are the declared ones — files in, results out, declared host tools. No host filesystem mounts beyond declared ones, no host socket passthrough, no shared writable state beyond the backend's own transport.
-
-Consequences follow mechanically. gVisor-class backends cap at `hardened_container` by definition — that is the standard working, not a gap. A runtime-sandboxed interpreter stays a local-floor backend however honest its no-I/O construction. Kata qualifies **only as configured** (a per-pod VM runtime class plus the metadata and link-local block), so conformance is a property of a backend *package*, never of a technology in the abstract. ACA Sandboxes are the reference backend at `microvm`: the service supplies the hardware boundary, the backend supplies deny-default allowlist egress and the declared surface, and the host supplies the group identity configuration intended for its workloads. The host control-plane credential remains outside the guest. Conformance relies on that configuration; a router isolation match does not inspect it.
-
-**Enforcement is layered.** The standard is normative text; the declarations (`isolation`, `capabilities`, `egress_modes`, `os_families`) are the machine-readable claims the router checks. A capability-side conformance slice exists and is shipped: `maf_sandbox.conformance` is the attacks any backend serving `FILES_OUT` must survive, planted through the backend's own public surface and run against a real instance ([`research/files-out.md`](research/files-out.md)). It was taken out of the park early because the premise — that a standard enforced by normative text alone is enforced by each author's reading of it — stopped being hypothetical when two backends independently shipped the same escape. It is not the isolation suite and does not become one: these probes run *outside* a sandbox and attack a capability's contract. The **in-sandbox** suite — attempting exactly what the standard forbids, from inside the boundary — is designed and **parked**; when picked up, its teeth are a release gate on packages claiming `microvm` and a host-runnable entry point for deploy-time verification. What the shipped slice establishes is the shape it can adopt rather than reinvent: a probe carries the reason it exists, a failure names every probe that failed, and a probe requiring an undeclared capability is skipped rather than passed.
+Unknown isolation values are refused. Use `os_process` for the process level; `"process"` is not a valid serialized value.
 
 ## The floor
 
+The default host floor is `Isolation.MICROVM`. `SandboxSpec.min_isolation` can raise it but cannot lower it.
+
 ```python
-router = SandboxRouter(backends)                                  # default floor: MICROVM — the production posture
-router = SandboxRouter(backends, min_isolation=Isolation.VM)      # stricter: dedicated full-VM infrastructure only
-router = SandboxRouter(backends, min_isolation=Isolation.NONE)    # local machine, opted all the way down
+router = SandboxRouter(backends)  # Default: MICROVM.
+router = SandboxRouter(backends, min_isolation=Isolation.VM)
+router = SandboxRouter(backends, min_isolation=Isolation.CONTAINER)
 ```
 
-- **The default is `MICROVM`.** A host that configures nothing gets the production posture; a developer machine *opts down explicitly*; there is nothing to forget.
-- **A spec may raise the floor, never lower it.** `SandboxSpec.min_isolation` defaults to `None` — no opinion — and the effective floor is the stricter of the host's and the spec's. The two owners stay separate: how strong the boundary must be *here* is the host's policy; "this kind refuses to run below `microvm` anywhere" is a workload property.
-- **Refusal is at construction and at attach**, with `SandboxBackendNotPermitted`. A misconfigured deployment cannot start with the feature apparently enabled and quietly unsafe. Under `Selection.PER_SPEC` the construction-time half is judged across the whole registration rather than against one backend: it refuses a deployment where *nothing* registered clears the floor, since a single backend below it is one no spec is ever routed to. That one is named twice over, and by different means depending on what happens: a warning at construction says it will never be routed to, and the per-spec refusal names it with its rung whenever no candidate at all can serve — a successful route discards the refusals it passed over, so the warning is what covers that case. It stays registered either way, because disposal reaches every registered backend and a host that changed which one serves relies on exactly that.
+![The seven isolation levels run from none through runtime, OS process, container, hardened container, micro-VM and full VM. The effective floor is the stronger of the host floor and the spec's optional floor. In the example the default micro-VM floor refuses every lower level and admits micro-VM or VM to the remaining checks. Meeting the floor alone does not satisfy capability, guest, network or authority requirements.](assets/isolation-floor.svg)
 
-Registering a `container` backend on a router that configures nothing raises at construction, before any tool attaches — `container` is two rungs below the default floor, and the fix is one explicit keyword rather than a silent promotion.
+With fixed selection, a selected backend below the host floor is refused at router construction. With per-spec selection, construction refuses when no registered backend clears the floor. Weaker backends remain registered for disposal and produce a warning, but never serve work below the floor.
+
+## The micro-VM standard
+
+A backend declaring `MICROVM` or stronger must provide all four:
+
+1. A hardware virtualization boundary around guest execution.
+2. Only identity and grants intended for that workload, without the host's control-plane credential in the guest.
+3. Enforcement of `CLOSED` or `ALLOWLIST` egress, not only unrestricted access.
+4. Explicit guest-to-host channels, without undeclared mounts, socket passthrough or shared writable state.
+
+The router checks declarations. It does not inspect or certify the deployment behind them. For example, [ACAS group identity](backends/acas.md#sandbox-group-identity) is trusted host configuration outside the core attachment declarations.
+
+Shared capability and egress conformance checks exercise parts of this contract. They are not a complete isolation audit. The broader in-sandbox isolation probe suite remains unimplemented; backend guides describe their evidence and remaining limits.
+
+## Admission checks
 
 <a id="the-six-checks"></a>
+<a id="the-seven-checks"></a>
 
-## The seven checks
+`ensure_can_serve(spec)` checks configuration before tool attachment. Acquisition uses the same policy. With no backend, `ensure_can_serve` returns without attaching anything; a direct `acquire` raises `NoSandboxBackend`.
 
-`ensure_can_serve(spec)` is the whole of a host's wiring test — one line in its own suite — and `acquire` runs exactly the same checks, in the same order, before ever reaching the backend, so a caller who skipped the wiring test is refused all the same. They are the same code path: `_refuse_unless_backend_can_serve` is the whole of the policy, and every outcome it has is a refusal or silence. Nothing is logged and nothing is warned about, which is what makes running it on every iteration of a warm fix-round loop free. The router's one warning is not here: it fires from construction, once, when `Selection.PER_SPEC` is given a backend below the floor. With no backend configured the two differ, and a direct caller of the router needs the difference: `ensure_can_serve` returns — nothing runs, so nothing reaches anything, and a host attaches its tools or does not — while `acquire` raises `NoSandboxBackend`, because a caller that reached it is asking for a sandbox rather than asking whether one is possible.
+Host denials apply to every candidate. Requiring a denied capability raises `SandboxCapabilityDenied`; declaring a denied identity raises `SandboxIdentityDenied`.
 
-**Three of the seven are additions rather than splits: guest shape, isolation scope and attached authority.** The guest-shape match sits beside the capability match rather than among the safety refusals, because it asks the same kind of question — can this backend serve this workload at all — about a different property. The isolation scope sits at the other end, with egress: both are postures a workload runs in and a backend either delivers or does not. For the core attached-authority contract, admission checks explicit workload opt-in, complete channel declarations and sharing and retention bounds; host permission alone does not bypass those declaration checks. ACAS group configuration remains the separate host responsibility described above.
-
-Two host denials run first. `denied_capabilities` and `denied_identities` on the router are statements about this host's posture rather than about what a backend could do, so no backend property softens them; they raise `SandboxCapabilityDenied` and `SandboxIdentityDenied`. They are a hard stop rather than a missing feature — whatever backend is registered, the posture refuses.
-
-**1. The minimum-isolation floor.** A backend below the effective floor — or declaring a rung this package does not recognise — is refused with `SandboxBackendNotPermitted`. Under `Selection.FIXED` it refuses rather than degrades, because both alternatives are worse: falling back to a stronger backend would hide the misconfiguration, and proceeding with the weaker one would break the posture claims a deployment makes about every execution surface. Under `Selection.PER_SPEC` a host has asked for that fallback and gets it — the refusal is this check doing its job on one candidate, and routing moves to the next — so the *weaker* half still holds exactly (nothing below the floor ever serves) while the misconfiguration half moves to a warning at construction.
-
-**2. The capability match.** A backend declares `capabilities`, a spec declares `requires`, and a missing member raises `SandboxCapabilityNotSupported`. Unlike isolation, silence is read charitably: an undeclared `capabilities` defaults to `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what the `Sandbox` protocol already obligates — so no backend written before the vocabulary existed had to start lying. It is a functionality mismatch, not a safety one, which is why it gets its own exception: the fix is its own, register a backend that implements the capability or ask for less. The members and their semantics live in [`capabilities.md`](capabilities.md).
-
-**3. The guest-shape match.** A spec may state `requires_os_family` — the shape its commands, its scripts and the paths it composes are written for — and a backend declares `os_families`, the shapes it hands out. A spec asking for one the backend does not serve raises `SandboxOsFamilyNotSupported`. It runs here, after the capability match and before the ceilings, because it asks the capability match's question about a different property, and a workload refused for the wrong guest shape was never going to reach a transfer. Silence is neither of the two readings the other checks use: an undeclared `os_families` is `frozenset()`, which is *absence of an answer* rather than a default — a backend serving a language runtime has no operating system to name, and one written before the axis existed never considered the question. It refuses a spec that asks and leaves every spec that does not exactly as it was, which is what makes the axis additive. A declaration of the wrong shape is read as empty rather than refused, uniquely here, and for a reason: unlike a mis-shaped `limits`, it cannot widen anything — the worst it does is refuse a workload that would have been served, loudly, with the declaration named. The axis is [`guest-platform-and-commands.md`](guest-platform-and-commands.md).
-
-**4. The transfer-limit match.** A spec carries `TransferLimits` per direction; a backend may declare its own ceilings as `limits`, and a spec asking above them raises `SandboxTransferLimitsNotPermitted` — refused rather than clamped, because a workload served a smaller cap than it declared fails part-way through a collection, and a partial artifact set is worse than none. Silence follows the safety rule rather than the `Capability` one: a limit is a safety claim, so an undeclared `limits` resolves to the conservative default rather than to "no ceiling". Caps and their enforcement are in [`capabilities.md`](capabilities.md).
-
-**5. The egress resolution.** Egress is one axis — `UNRESTRICTED < ALLOWLIST < CLOSED`, default `CLOSED` — and it is **resolved rather than matched**. A workload declares the one mode it runs in (`SandboxSpec.egress`); a backend declares the set it can *enforce* (`egress_modes`); the router serves iff the mode is in the set and raises `SandboxEgressNotEnforced` otherwise. **Refuse, never degrade**: no substitution in either direction — not a more open mode, which silently widens what the workload reaches, and not a more isolated one, which hands it a posture it was not built for and calls a half-run a success. The confines-more-with-a-warning path that stood here is gone with the rule it belonged to. Silence is the empty set: a backend that declares no `egress_modes` enforces nothing and is refused every ask, `CLOSED` included — which keeps `UNDEFINED`'s instinct (a backend's silence is not a claim) without needing a member for it. The model, and the worked contrast between what each kind will accept, is [`network.md`](network.md).
-
-**6. The isolation scope.** How much of a conversation one sandbox serves — `CONVERSATION`, the get-or-create every backend has always done, or `CALL`, one sandbox created for a tool call and deleted when it returns. Resolved rather than matched, like egress: the effective scope is the stricter of the host's `min_isolation_scope` and the spec's `isolation_scope`, and a backend whose `isolation_scopes` does not hold it raises `SandboxScopeNotEnforced` rather than answering a per-call workload by sharing — which would succeed on every call with the separation absent. Silence here is a sharing *claim*: an unstated set means `{CONVERSATION}`, so a backend written before the axis serves exactly what it served. `CALL` costs a cold start per call, and what it buys is that a failed reclaim, a program that would not stop, and anything a call left behind sit where no later call can address them. [`tool-call.md`](tool-call.md) owns the lifetimes underneath it.
-
-**7. Attached authority.** For a backend advertising this core contract, the host and workload bound sharing independently, the workload opts in explicitly and bounds retention, and every declared authority channel must fit its rules. Declared attachment without opt-in or exceeded bounds raises `SandboxAttachedIdentityNotPermitted`; a capability/declaration mismatch is a backend misconfiguration. Cold and warm acquisition and per-spec routing share these checks. They inspect supplied declarations, not deployment state: ACAS group-configured identity is outside the current declaration mapping. [`hosts.md`](hosts.md#identity--whose-authority-sandbox-work-carries) owns the contract and the responsibilities of hosts and declaring backends.
-
-**A separate cleanup resolution, which refuses nothing.** The cleanup rung — how much of a sandbox is cleaned when a call ends, `RECLAIM < RESET < DISPOSE` — is resolved exactly as egress and the scope are, from the stricter of `SandboxRouter(min_cleanup=…)` and `SandboxSpec.min_cleanup`, and a host reads the answer from `effective_cleanup(spec)` beside `effective_isolation_scope`. It is listed apart from the admission checks because no wiring is ever refused for it: `DISPOSE` is established by construction on every backend, so the resolution always terminates in a rung something can serve, and a host that distrusts a kind's confinement claim raises its own floor rather than being told no. It belongs beside check 6 all the same, since a host configures both in the same breath and they answer adjacent questions — the scope says which calls may share a sandbox, the rung says what a call leaves for the next. [`tool-call.md`](tool-call.md) owns it.
-
-Each refusal is its own exception, because each has its own fix:
-
-| Refusal | Raised when | The fix |
+| Backend check | Required behavior | Refusal |
 |---|---|---|
-| `SandboxCapabilityDenied` | the spec requires a capability this host denies outright | narrow the workload, or serve it on a host that permits it |
-| `SandboxIdentityDenied` | the spec's `identities` carry one this host denies | drop the tools declaring that identity from the registry |
-| `SandboxAttachedIdentityNotPermitted` | attached authority is ambient or exceeds sharing, retention or channel bounds | use a backend whose complete exposure fits the explicitly opted-in workload and host |
-| `SandboxBackendNotPermitted` | the backend is below the effective floor, or declares a rung nobody ranked | register a stronger backend, or lower the floor explicitly |
-| `SandboxCapabilityNotSupported` | the backend cannot do what the spec requires | register a backend that implements it, or require less |
-| `SandboxOsFamilyNotSupported` | the backend hands out no guest of the shape the spec is written for | register a backend serving that family, or attach a workload written for the one this backend has |
-| `SandboxTransferLimitsNotPermitted` | the spec's caps exceed the backend's ceilings, or `limits` is the wrong shape | lower the spec's caps, or declare nothing and take the defaults |
-| `SandboxScopeNotEnforced` | the backend cannot serve the workload at the isolation scope the host and the spec resolve to | declare the scope on a backend that folds `SandboxKey.call_id`, or let the workload share the conversation's sandbox |
-| `SandboxEgressNotEnforced` | the backend cannot enforce the one egress mode the workload runs in — including when it declares nothing and so enforces nothing | give the backend that mechanism, register a backend that has it, or run the mode this one can actually deliver and say so in the spec |
+| Isolation | Meet the stronger host/spec floor | `SandboxBackendNotPermitted` |
+| Capabilities | Include every required capability | `SandboxCapabilityNotSupported` |
+| Guest family | Include the spec's requested family, when set | `SandboxOsFamilyNotSupported` |
+| Transfer limits | Permit the spec's file and byte budgets | `SandboxTransferLimitsNotPermitted` |
+| Egress mode | Enforce the spec's exact mode | `SandboxEgressNotEnforced` |
+| Isolation scope | Serve the stricter host/spec scope | `SandboxScopeNotEnforced` |
+| Attached authority | Fit explicit opt-in, channel, sharing and retention bounds | `SandboxAttachedIdentityNotPermitted` |
 
-**The eight optional backend declarations arrive as one `BackendDeclarations`, read off the backend with a single `getattr`**, so a backend that declares neither the object nor any of the four legacy attributes it replaced keeps loading and is read as `DEFAULT_BACKEND_DECLARATIONS`. Each field has its own default:
+Per-spec routing tries the next candidate after a declaration check refuses one. Fixed routing does not switch backends to hide a mismatch. Method restrictions also require capability and token support. Capability/declaration inconsistencies are configuration errors.
 
-| Field | Default and meaning |
+Cleanup is resolved separately: `RECLAIM < RESET < DISPOSE`. The host defaults to `DISPOSE`; reuse requires explicit opt-in. The spec can raise that floor. Missing cleanup support selects a stronger operation. Call-scoped work always disposes. See [call cleanup](tool-call.md).
+
+## Backend declarations
+
+`BackendDeclarations` groups the optional claims. Each field has its own default; leaving one unspecified does not imply support.
+
+| Field | Default |
 |---|---|
-| `capabilities` | `DEFAULT_CAPABILITIES` — the functionality the protocol already obligates |
-| `limits` | `DEFAULT_SANDBOX_LIMITS` — conservative transfer ceilings |
-| `egress_modes` | `frozenset()` — no mode enforced, so every workload is refused |
-| `os_families` | `frozenset()` — no guest shape claimed, so only a workload asking for one is refused |
-| `isolation_scopes` | `{CONVERSATION}` — a claim of conversation sharing; the router also reads an explicitly empty set as `{CONVERSATION}` |
-| `observes_egress` | `False` — no egress observation claimed |
-| `egress_method_tokens` | `frozenset()` — no method tokens enforced; consulted only with `EGRESS_METHODS` |
-| `attached_identity` | `NO_ATTACHED_IDENTITY` — no attachment within this policy contract; not a discovery result for ACAS group configuration |
+| `capabilities` | `DEFAULT_CAPABILITIES`: `EXEC` and `FILES_IN` |
+| `limits` | `DEFAULT_SANDBOX_LIMITS` |
+| `egress_modes` | Empty: every requested mode is refused |
+| `os_families` | Empty: specs requiring a family are refused |
+| `isolation_scopes` | `{CONVERSATION}`; an explicitly empty set is also read as conversation scope |
+| `observes_egress` | `False` |
+| `egress_method_tokens` | Empty; consulted with `EGRESS_METHODS` |
+| `attached_identity` | `NO_ATTACHED_IDENTITY`; not a discovery result for ACAS group configuration |
+| `requires_exclusive_admission` | `False`; an optional backend admission hook also requires exclusive calls |
 
-Only `isolation` is a `SandboxBackend` protocol member read directly, because a backend with no rung cannot be placed against a floor. A backend still carrying one of the four legacy attributes is refused rather than read as silent, as below.
+`isolation` remains a required backend property. The separate legacy declaration attributes are refused; backend authors must use `BackendDeclarations`.
 
-The object replaced four separate `getattr` reads, which this document named as the pattern to stop at — three was where it stopped, and `os_families` was the fourth that fired the signal. **A backend still carrying any of the four attributes is refused when the router reads it**, with the field named — which under `Selection.FIXED` is the one backend it resolves, and under `Selection.PER_SPEC` is every registered backend, at construction. Nothing else can catch that migration: none of the four was ever a Protocol member, so `isinstance(backend, SandboxBackend)` holds either way and no type checker sees a backend half-moved — while an unnoticed `egress_modes` would be read as silence, which enforces nothing and refuses every workload.
+## Backend choices
 
-**These checks answer to different owners**, and that is why they are seven checks rather than one list. How strong the boundary must be *here* is the **host's** policy, read from `min_isolation`, and a spec may raise it and never lower it. What a sandbox may reach, what shape of guest it needs, and what it must be able to do are properties of the **workload**, stated in its spec. Who registers a callable host function, and whose authority it carries, is the host's again — see [`hosts.md`](hosts.md).
+| Backend | Declared isolation | Main constraint |
+|---|---|---|
+| [ACAS](backends/acas.md) | `MICROVM` | Service-backed POSIX guest; host owns group configuration |
+| [Hyperlight](backends/hyperlight.md) | `MICROVM` | Packaged Python runtime; supported host platform required |
+| [Docker](backends/docker.md) | `CONTAINER` | Explicitly lower the default host floor |
+| [WSLC](backends/wslc.md) | `CONTAINER` | Explicitly lower the floor; narrower file and command support |
+| [In-process fake](backends/in-process.md) | `NONE` | Tests; its declarations do not establish containment |
 
-## The map — where known systems sit
-
-Shipped rows are the declarations in the code; the rest is orientation. The egress column is a backend's **enforceable set** and a kind's **accepted set** — not the mode any one run uses, which is a per-deployment choice inside those bounds. The three filesystem backends declare `os_families` — `docker` off its daemon, `acas` and `wslc` as the constant each of them is — so the guest-shape axis refuses a spec naming a shape they do not hand out. Silence remains an absence of an answer rather than a claim, and inventing one for a backend would be a claim it never made.
-
-| System | Fits as | Isolation | Capabilities | Egress |
-|---|---|---|---|---|
-| ACA Sandboxes (`maf-sandbox-acas`) | backend, shipped | `microvm` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` | `{ALLOWLIST, CLOSED}` — the group's policy denies by default and cannot be told to allow everything |
-| Docker (`maf-sandbox-docker`) | backend, shipped | `container` | `EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS` | `{CLOSED}`; `{ALLOWLIST, CLOSED}` when an egress proxy image is configured |
-| `wslc` (`maf-sandbox-wslc`) | backend, shipped | `container` | `EXEC, FILES_IN` | `{CLOSED}`; `{ALLOWLIST, CLOSED}` when an egress proxy image is configured |
-| `InProcessSandboxBackend` (`maf_sandbox.testing`) | backend, shipped | `none` | `DEFAULT_CAPABILITIES` — the fake implements `run_code` for real but does not declare `RUN_CODE` unless a test asks | `{ALLOWLIST, CLOSED}` — and every declaration is constructor-overridable, which is what makes it a policy test fixture |
-| The no-isolation backend ([`samples/09_inprocess_bicep`](../../samples/09_inprocess_bicep)) | backend, sample | `none` | `DEFAULT_CAPABILITIES` | `{UNRESTRICTED}` — it runs the CLI on the host, so open is the one mode it can honestly enforce |
-| `bicep_validate` (`maf-sandbox-bicep`) | kind, shipped | no raise | `EXEC, FILES_IN` | accepts `{UNRESTRICTED, ALLOWLIST, CLOSED}`, default `ALLOWLIST`; the four AVM-restore hosts are the kind's, not the deployment's |
-| CodeAct (`maf-sandbox-codeact`) | kind, shipped | no raise | default `EXEC, FILES_IN`; explicit `CodeactRuntime` starts with `RUN_CODE` alone. Wired inputs add `FILES_IN`, outputs add `FILES_OUT`, and the exec-backed host-tool channel adds `HOST_TOOLS` and `FILES_OUT` | accepts `{ALLOWLIST, CLOSED}` and derives which: hosts named runs `ALLOWLIST`, none runs `CLOSED`. Never `UNRESTRICTED` — it runs model-written code |
-| Monty-class restricted interpreters | backend | `runtime` | `RUN_CODE, HOST_TOOLS` — no `EXEC`, no I/O by construction | `{CLOSED}` |
-| Wasmtime-class WASM runtimes | backend | `runtime` | `RUN_CODE` + capability-gated imports | `{CLOSED}` (WASI capabilities are opt-in) |
-| [Hyperlight](backends/hyperlight.md) (`maf-sandbox-hyperlight`) | backend, packaged Python on x86-64 Windows WHP or Linux KVM | `microvm`, pinned 0.7.0 family with Windows WHP and WSL2 KVM measurements | `RUN_CODE, SNAPSHOT`; opt-in flat `FILES_OUT`, no host-tool channel | `{CLOSED, ALLOWLIST}` — exact-host HTTP permissions, no method refinements |
-| [mxc](https://github.com/microsoft/mxc) | backend *family* | per containment | per containment | per containment |
-| Docker Sandbox (the micro-VM product) | backend, dev machine | `microvm` | `EXEC, FILES_IN, FILES_OUT` | `ALLOWLIST` (deny-all proxy) |
-| Kata on AKS | backend | `microvm` **only as configured** per the standard | `EXEC, FILES_IN` + image contents | per NetworkPolicy |
-
-What the shipped rows enforce backend-side is in [`backends/README.md`](backends/README.md); the identity that each declaration implies is in [`hosts.md`](hosts.md); the surface all of them implement is in [`architecture.md`](architecture.md).
+The [backend comparison](backends/README.md) owns capability and network support. [Guest platform](guest-platform-and-commands.md) explains how backend instances declare a fixed guest family and isolation level.
 
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
-| The isolation ladder, `ISOLATION_RANK`, the floor, and `deployed`'s removal | shipped | [#96](https://github.com/sokolaidev/maf-extensions/pull/96) (merged, `maf-sandbox` 0.5.0); bottom-rung rename [#331](https://github.com/sokolaidev/maf-extensions/pull/331) (merged, 0.14.0); the `os_process` rung [#347](https://github.com/sokolaidev/maf-extensions/pull/347) (merged, 0.16.0) |
-| The capability axis — declaration, `DEFAULT_CAPABILITIES`, the match | shipped | [#96](https://github.com/sokolaidev/maf-extensions/pull/96) (merged); per-capability state in [`capabilities.md`](capabilities.md) |
-| Egress is **resolved, not matched** — one mode on the spec, an enforceable set on the backend, served exactly or refused | shipped — core and both kinds in `maf-sandbox` 0.19.0; the transition shim's removal, with it `Capability.NETWORK` and `Egress.UNDEFINED`, is on `main` and unreleased | umbrella [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed); [#528](https://github.com/sokolaidev/maf-extensions/pull/528), [#530](https://github.com/sokolaidev/maf-extensions/pull/530), [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (all merged); the model is [`network.md`](network.md) |
-| Egress honesty refuses an undeclared backend **as undeclared** (`Egress.UNDEFINED`) | superseded one release after it shipped — a backend's silence is now the empty enforceable set, refused for every ask including `CLOSED`, and the member is gone. The instinct survives; the vocabulary for it did not need to | [#521](https://github.com/sokolaidev/maf-extensions/pull/521) (merged, 0.19.0), closing [#264](https://github.com/sokolaidev/maf-extensions/issues/264) (closed); superseded by [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged) |
-| `HOST_TOOLS` contract, transport and kind integration; `denied_capabilities` / `denied_identities` | shipped | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (open as the tracking issue; parts A–C landed) |
-| Identity axis — core attachment admission and remaining backend/credential plumbing | partial — core admission is implemented; backend and credential plumbing remain open | [`hosts.md`](hosts.md) § Status, rows "Core attached authority admission" and "Identity remainder" |
-| The in-sandbox isolation conformance probe suite | parked — the shared egress pair is shipped; the broader isolation probes remain untracked, with their remaining scope recorded per backend | untracked — see [`backends/acas.md`](backends/acas.md) § Status for the remaining probes and [`network.md`](network.md) § Status for the completed egress work |
-| A guest-platform axis a kind can declare and match | shipped — `OsFamily`, `SandboxSpec.requires_os_family`, a backend's `os_families` and the check that refuses a mismatch, released in `maf-sandbox` 0.20.0. ACAS, Docker and WSLC declare a guest family; Hyperlight declares none for its language runtime and refuses specs that require one | [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged), closing [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed); the axis is [`guest-platform-and-commands.md`](guest-platform-and-commands.md) |
-| Selection is per spec when a host asks for it, and one backend at construction when it does not | shipped as an opt-in — `Selection.PER_SPEC` against the same chain this page's seven checks describe, with the default unchanged; on `main` and unreleased. Recorded on the page that owns selection rather than tracked twice | [`capabilities.md`](capabilities.md) § Status, row "The router selects a backend per spec (floor ∧ capabilities ∧ egress)" |
-| The four `getattr`-read backend declarations collapse into one optional declarations object | shipped — `BackendDeclarations`, one `getattr`, each silence rule kept as that field's default, and a backend still declaring one of the four refused by name. This page owns the decision; [`capabilities.md`](capabilities.md) and [`backends/README.md`](backends/README.md) point here | [#591](https://github.com/sokolaidev/maf-extensions/issues/591) (closed) |
+| Seven isolation levels and a raise-only floor | Implemented | [#96](https://github.com/sokolaidev/maf-extensions/pull/96) (merged); [#331](https://github.com/sokolaidev/maf-extensions/pull/331) (merged); [#347](https://github.com/sokolaidev/maf-extensions/pull/347) (merged) |
+| Required capabilities matched to declarations | Implemented | [#96](https://github.com/sokolaidev/maf-extensions/pull/96) (merged); [`capabilities.md`](capabilities.md) |
+| Exact egress mode or refusal | Implemented | [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed); [network.md](network.md) |
+| Host-tool capability and identity denials | Implemented | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (closed); [hosts.md](hosts.md) |
+| Core attached-authority admission | Implemented; backend and credential integration remain partial | [`hosts.md`](hosts.md) |
+| Broad in-sandbox isolation probes | Unimplemented; shared capability and egress probes are separate | untracked; [`backends/acas.md`](backends/acas.md); [`network.md`](network.md) |
+| Guest-family matching | Implemented | [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed); [`guest-platform-and-commands.md`](guest-platform-and-commands.md) |
+| Fixed or per-spec backend selection | Implemented | [capabilities.md](capabilities.md#backend-selection) |
+| One optional backend declarations object | Implemented | [#591](https://github.com/sokolaidev/maf-extensions/issues/591) (closed) |

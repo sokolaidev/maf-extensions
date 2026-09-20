@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 629" width="1180" height="629" role="img" aria-labelledby="file-transfer-boundary-title file-transfer-boundary-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="file-transfer-boundary-title">One output declaration, two purposes</title>
+  <desc id="file-transfer-boundary-desc">Each declared output is a literal relative guest path. Core checks confinement, entry type, known size and transfer limits. Missing required files and unsafe or oversized files are refused. A CONSUME output is read by the kind through its own bounded read and informs result integrity. A LAND output is read by collect_outputs, included in the checked batch, and delivered through the host sink as an outbound artifact.</desc>
+  <defs>
+    <marker id="file-transfer-boundary-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="629" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">One output declaration, two purposes</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Both roles are checked. Only LAND outputs are read by collect_outputs.</text>
+  <rect x="32" y="147" width="272" height="155" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="180" font-size="21" font-weight="600" fill="#243040">Declared output</text>
+  <text x="52" y="211" font-size="17" font-weight="400" fill="#526072">Literal relative path</text>
+  <text x="52" y="237" font-size="17" font-weight="400" fill="#526072">Required or optional</text>
+  <text x="52" y="263" font-size="17" font-weight="400" fill="#526072">CONSUME or LAND</text>
+  <rect x="367" y="147" width="372" height="155" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="387" y="180" font-size="21" font-weight="600" fill="#243040">Check before reading</text>
+  <text x="387" y="211" font-size="17" font-weight="400" fill="#526072">Confined, regular file</text>
+  <text x="387" y="237" font-size="17" font-weight="400" fill="#526072">Known size within limits</text>
+  <text x="387" y="263" font-size="17" font-weight="400" fill="#526072">Both roles count against caps</text>
+  <path d="M 304 224 L 367 224" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#file-transfer-boundary-arrow)"/>
+  <rect x="802" y="147" width="346" height="155" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="822" y="180" font-size="21" font-weight="600" fill="#243040">Refuse unsafe output</text>
+  <text x="822" y="211" font-size="16" font-weight="400" fill="#526072">Required file missing</text>
+  <text x="822" y="237" font-size="16" font-weight="400" fill="#526072">Unsafe path or entry type</text>
+  <text x="822" y="263" font-size="16" font-weight="400" fill="#526072">Unknown size or exceeded cap</text>
+  <path d="M 739 224 L 802 224" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#file-transfer-boundary-arrow)"/>
+  <rect x="32" y="408" width="514" height="149" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="441" font-size="21" font-weight="600" fill="#243040">CONSUME → kind</text>
+  <text x="52" y="472" font-size="17" font-weight="400" fill="#526072">Kind performs a bounded read.</text>
+  <text x="52" y="498" font-size="17" font-weight="400" fill="#526072">Use diagnostics or other intermediate data.</text>
+  <text x="52" y="524" font-size="17" font-weight="400" fill="#526072">Account for consumed source integrity.</text>
+  <rect x="602" y="408" width="546" height="149" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="622" y="441" font-size="21" font-weight="600" fill="#243040">LAND → host sink</text>
+  <text x="622" y="472" font-size="17" font-weight="400" fill="#526072">Collector reads bytes and checks actual size.</text>
+  <text x="622" y="498" font-size="17" font-weight="400" fill="#526072">Complete the batch before first delivery.</text>
+  <text x="622" y="524" font-size="17" font-weight="400" fill="#526072">Apply outbound destination policy.</text>
+  <path d="M 464 302 L 464 352 L 289 352 L 289 408" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#file-transfer-boundary-arrow)"/>
+  <path d="M 638 302 L 638 352 L 875 352 L 875 408" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#file-transfer-boundary-arrow)"/>
+</svg>

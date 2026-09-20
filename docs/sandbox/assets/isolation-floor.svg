@@ -1,36 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 236" width="1000" height="236" role="img" aria-labelledby="floor-title floor-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
-  <title id="floor-title">The minimum isolation floor</title>
-  <desc id="floor-desc">Four backends ordered by increasing isolation, drawn with increasing border thickness: in-process fake, local container, container, cloud micro-VM. A vertical line marks the host's minimum isolation floor. The two weaker backends sit below it and are refused; the two stronger ones are admitted.</desc>
-
-  <!-- ── below the floor: refused ──────────────────────────────────────── -->
-  <rect x="40" y="70" width="170" height="64" rx="8" fill="#9aa1ac" fill-opacity="0.10" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
-  <text x="125" y="97" text-anchor="middle" font-size="13" fill="#9aa1ac">in-process</text>
-  <text x="125" y="114" text-anchor="middle" font-size="13" fill="#9aa1ac">fake</text>
-  <path d="M 117 46 l 16 16 M 133 46 l -16 16" stroke="#cf5a52" stroke-width="2.6" stroke-linecap="round"/>
-
-  <rect x="230" y="70" width="170" height="64" rx="8" fill="#9aa1ac" fill-opacity="0.10" stroke="#9aa1ac" stroke-width="1.4"/>
-  <text x="315" y="97" text-anchor="middle" font-size="13" fill="#9aa1ac">local</text>
-  <text x="315" y="114" text-anchor="middle" font-size="13" fill="#9aa1ac">container</text>
-  <path d="M 307 46 l 16 16 M 323 46 l -16 16" stroke="#cf5a52" stroke-width="2.6" stroke-linecap="round"/>
-
-  <text x="220" y="158" text-anchor="middle" font-size="11.5" fill="#9aa1ac">below the floor — refused</text>
-
-  <!-- ── the floor itself ─────────────────────────────────────────────── -->
-  <text x="460" y="26" text-anchor="middle" font-size="12.5" fill="#7d8694">minimum isolation floor</text>
-  <line x1="460" y1="38" x2="460" y2="168" stroke="#7d8694" stroke-width="4" stroke-linecap="round"/>
-
-  <!-- ── above the floor: admitted ─────────────────────────────────────── -->
-  <rect x="520" y="70" width="170" height="64" rx="8" fill="#2fa8a0" fill-opacity="0.12" stroke="#2fa8a0" stroke-width="2"/>
-  <rect x="526" y="76" width="158" height="52" rx="5" fill="none" stroke="#2fa8a0" stroke-width="1"/>
-  <text x="605" y="107" text-anchor="middle" font-size="13" fill="#7d8694">container</text>
-
-  <rect x="710" y="70" width="170" height="64" rx="8" fill="#2fa8a0" fill-opacity="0.12" stroke="#2fa8a0" stroke-width="4"/>
-  <text x="795" y="97" text-anchor="middle" font-size="13" fill="#7d8694">cloud</text>
-  <text x="795" y="114" text-anchor="middle" font-size="13" fill="#7d8694">micro-vm</text>
-
-  <text x="700" y="158" text-anchor="middle" font-size="11.5" fill="#2fa8a0">admitted</text>
-
-  <!-- ── the whole range ──────────────────────────────────────────────── -->
-  <path d="M 40 198 v 8 h 840 v -8" fill="none" stroke="#7d8694" stroke-width="1.2"/>
-  <text x="460" y="226" text-anchor="middle" font-size="12" fill="#7d8694">any backend</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 700" width="1180" height="700" role="img" aria-labelledby="isolation-floor-title isolation-floor-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="isolation-floor-title">A floor filters isolation levels; other checks still apply</title>
+  <desc id="isolation-floor-desc">Seven levels are ordered from none to runtime, OS process, container, hardened container, micro-VM and full VM. The default host floor is micro-VM. In that example the first five levels are refused; micro-VM and full VM pass this check only. Capabilities, guest family, limits, network, sharing and authority still require separate matching. A workload can raise the host floor but cannot lower it.</desc>
+  <defs>
+    <marker id="isolation-floor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="700" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">A floor filters isolation levels; other checks still apply</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The effective floor is the stronger of the host setting and the workload requirement.</text>
+  <rect x="32" y="124" width="1116" height="97" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="157" font-size="21" font-weight="600" fill="#243040">effective floor = max(host floor, workload floor)</text>
+  <text x="52" y="188" font-size="17" font-weight="400" fill="#526072">Host default: MICROVM • A workload can require stronger isolation, never weaker.</text>
+<rect x="32" y="284" width="150" height="144" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="44" y="316" font-size="15" font-weight="600" fill="#243040">NONE</text>
+  <text x="44" y="347" font-size="13" font-weight="400" fill="#526072">Host process</text>
+  <text x="44" y="393" font-size="14" font-weight="600" fill="#243040">REFUSE</text>
+<rect x="193" y="284" width="150" height="144" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="205" y="316" font-size="15" font-weight="600" fill="#243040">RUNTIME</text>
+  <text x="205" y="347" font-size="13" font-weight="400" fill="#526072">Software boundary</text>
+  <text x="205" y="393" font-size="14" font-weight="600" fill="#243040">REFUSE</text>
+<rect x="354" y="284" width="150" height="144" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="366" y="316" font-size="15" font-weight="600" fill="#243040">OS PROCESS</text>
+  <text x="366" y="347" font-size="13" font-weight="400" fill="#526072">Address space</text>
+  <text x="366" y="393" font-size="14" font-weight="600" fill="#243040">REFUSE</text>
+<rect x="515" y="284" width="150" height="144" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="527" y="316" font-size="15" font-weight="600" fill="#243040">CONTAINER</text>
+  <text x="527" y="347" font-size="13" font-weight="400" fill="#526072">Shared kernel</text>
+  <text x="527" y="393" font-size="14" font-weight="600" fill="#243040">REFUSE</text>
+<rect x="676" y="284" width="150" height="144" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="688" y="316" font-size="15" font-weight="600" fill="#243040">HARDENED</text>
+  <text x="688" y="347" font-size="13" font-weight="400" fill="#526072">Syscall isolation</text>
+  <text x="688" y="393" font-size="14" font-weight="600" fill="#243040">REFUSE</text>
+<rect x="837" y="284" width="150" height="144" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="849" y="316" font-size="15" font-weight="600" fill="#243040">MICROVM</text>
+  <text x="849" y="347" font-size="13" font-weight="400" fill="#526072">Hardware boundary</text>
+  <text x="849" y="393" font-size="14" font-weight="600" fill="#243040">CHECK MORE</text>
+<rect x="998" y="284" width="150" height="144" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="1010" y="316" font-size="15" font-weight="600" fill="#243040">VM</text>
+  <text x="1010" y="347" font-size="13" font-weight="400" fill="#526072">Dedicated full VM</text>
+  <text x="1010" y="393" font-size="14" font-weight="600" fill="#243040">CHECK MORE</text>
+  <text x="32" y="258" font-size="17" font-weight="600" fill="#243040">DEFAULT FLOOR EXAMPLE</text>
+  <rect x="32" y="474" width="725" height="140" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="507" font-size="21" font-weight="600" fill="#243040">A stronger boundary does not supply missing behavior</text>
+  <text x="52" y="538" font-size="17" font-weight="400" fill="#526072">Check capabilities, guest family, transfer limits and exact egress.</text>
+  <text x="52" y="564" font-size="17" font-weight="400" fill="#526072">Also check sharing scope and attached authority.</text>
+  <rect x="799" y="474" width="349" height="140" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="819" y="507" font-size="21" font-weight="600" fill="#243040">Declarations need evidence</text>
+  <text x="819" y="538" font-size="16" font-weight="400" fill="#526072">The router checks claims.</text>
+  <text x="819" y="564" font-size="16" font-weight="400" fill="#526072">Backend tests and deployment</text>
+  <text x="819" y="590" font-size="16" font-weight="400" fill="#526072">configuration establish them.</text>
+  <text x="32" y="664" font-size="18" font-weight="600" fill="#243040">Isolation level describes the boundary. It is not a complete security rating.</text>
 </svg>

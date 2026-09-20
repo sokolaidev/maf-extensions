@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 618" width="1180" height="618" role="img" aria-labelledby="guest-probe-flow-title guest-probe-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="guest-probe-flow-title">Match declarations first; check image requirements at acquire</title>
+  <desc id="guest-probe-flow-desc">The router checks the spec against static backend declarations at tool attachment. A fixed guest or runtime has its advertised behavior verified in conformance tests. A backend receiving an image per spec checks image-dependent requirements on the actual sandbox at acquisition. Successful command checks are cached per physical instance; newly required checks and replacement instances need fresh checks. Failed checks refuse the workload. A compatibility check grants no additional authority.</desc>
+  <defs>
+    <marker id="guest-probe-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="618" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Match declarations first; check image requirements at acquire</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">OsFamily chooses path and command grammar. It does not list installed tools.</text>
+  <rect x="32" y="138" width="330" height="176" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="171" font-size="21" font-weight="600" fill="#243040">Attach the tool</text>
+  <text x="52" y="202" font-size="16" font-weight="400" fill="#526072">Match the static declarations</text>
+  <text x="52" y="228" font-size="16" font-weight="400" fill="#526072">Capabilities and guest family</text>
+  <text x="52" y="254" font-size="16" font-weight="400" fill="#526072">Plus all other policy checks</text>
+  <rect x="425" y="115" width="723" height="108" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="445" y="148" font-size="21" font-weight="600" fill="#243040">Fixed guest or runtime</text>
+  <text x="445" y="179" font-size="17" font-weight="400" fill="#526072">Verify advertised behavior with its real conformance suite.</text>
+  <rect x="425" y="278" width="723" height="156" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="445" y="311" font-size="21" font-weight="600" fill="#243040">Image supplied per spec</text>
+  <text x="445" y="342" font-size="16" font-weight="400" fill="#526072">Acquire the actual sandbox and check required commands or file access.</text>
+  <text x="445" y="368" font-size="16" font-weight="400" fill="#526072">Refuse incompatible requirements before running the workload.</text>
+  <text x="445" y="394" font-size="16" font-weight="400" fill="#526072">Cache successful command checks for this physical instance.</text>
+  <path d="M 362 189 L 393 189 L 393 169 L 425 169" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#guest-probe-flow-arrow)"/>
+  <path d="M 362 263 L 393 263 L 393 356 L 425 356" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#guest-probe-flow-arrow)"/>
+  <rect x="32" y="491" width="1116" height="82" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="524" font-size="21" font-weight="600" fill="#243040">A probe establishes compatibility; it never authorizes a more privileged operation.</text>
+  <text x="52" y="555" font-size="17" font-weight="400" fill="#526072">Commands can change after the check. Confinement and operation-level checks still apply.</text>
+</svg>
