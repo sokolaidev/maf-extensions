@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 888" width="1180" height="888" role="img" aria-labelledby="terraform-offline-flow-title terraform-offline-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="terraform-offline-flow-title">Terraform and OpenTofu: prepare online, check offline, save separately</title>
+  <desc id="terraform-offline-flow-desc">The host prepares an image before tool calls. Preparation downloads approved pinned dependencies, verifies their content and writes a provider mirror, module files and a receipt without running provider executables on the host. The selected image supplies a disposable sandbox with networking closed for each tool call. Session reads stage the project manifest. A validation call initializes with backend access disabled, validates and checks formatting; missing dependencies leave validation incomplete, with no download fallback. A formatting call only runs fmt and needs the base engine, not prepared providers. Each tool returns an untrusted report or changed whole-file text plus fixed guidance to the model. Saving formatted files requires a later host file-tool call under integrity, confidentiality and approval policy. Validation and formatting do not write the agent file store. Core disposes the sandbox after the call.</desc>
+  <defs>
+    <marker id="terraform-offline-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1180" height="888" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Terraform and OpenTofu: prepare online, check offline, save separately</text>
+  <text x="32" y="76" font-size="17" fill="#526072">Image preparation belongs to the host. The model can choose only the tools the host exposes.</text>
+  <rect x="32" y="111" width="1116" height="184" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="147" font-size="21" font-weight="600" fill="#243040">1  Host prepares the image — network allowed</text>
+  <rect x="52" y="170" width="285" height="101" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="72" y="203" font-size="21" font-weight="600" fill="#243040">Approved pins</text>
+  <text x="72" y="233" font-size="16" fill="#526072">Provider and module sources</text>
+  <text x="72" y="259" font-size="16" fill="#526072">Versions and content hashes</text>
+  <rect x="407" y="170" width="353" height="101" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="427" y="203" font-size="21" font-weight="600" fill="#243040">Download and verify</text>
+  <text x="427" y="233" font-size="16" fill="#526072">No provider executable runs</text>
+  <text x="427" y="259" font-size="16" fill="#526072">on the host during preparation.</text>
+  <rect x="830" y="170" width="298" height="101" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="850" y="203" font-size="21" font-weight="600" fill="#243040">Prepared image</text>
+  <text x="850" y="233" font-size="16" fill="#526072">Mirror, modules and receipt</text>
+  <path d="M 337 221 H 395" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <path d="M 760 221 H 818" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <rect x="32" y="340" width="1116" height="267" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="52" y="377" font-size="21" font-weight="600" fill="#243040">2  One tool call — network CLOSED, disposable sandbox</text>
+  <path d="M 979 295 V 328" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <rect x="52" y="414" width="243" height="154" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="72" y="447" font-size="21" font-weight="600" fill="#243040">Stage the project</text>
+  <text x="72" y="477" font-size="17" fill="#526072">Read the file manifest</text>
+  <text x="72" y="503" font-size="17" fill="#526072">through the session.</text>
+  <text x="72" y="529" font-size="17" fill="#526072">Choose one tool.</text>
+  <rect x="375" y="400" width="425" height="112" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="395" y="433" font-size="21" font-weight="600" fill="#243040">Validate</text>
+  <text x="395" y="463" font-size="16" fill="#526072">init -backend=false; validate; fmt -check</text>
+  <text x="395" y="489" font-size="16" fill="#526072">Missing dependencies → incomplete</text>
+  <rect x="375" y="535" width="425" height="56" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="395" y="568" font-size="21" font-weight="600" fill="#243040">Format only: fmt; no init or validation</text>
+  <rect x="870" y="416" width="258" height="164" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="890" y="449" font-size="21" font-weight="600" fill="#243040">Result to the model</text>
+  <text x="890" y="479" font-size="16" fill="#526072">Report or changed files</text>
+  <text x="890" y="505" font-size="16" fill="#526072">stay untrusted.</text>
+  <text x="890" y="531" font-size="16" fill="#526072">Fixed guidance is</text>
+  <text x="890" y="557" font-size="16" fill="#526072">returned separately.</text>
+  <path d="M 295 478 H 335 V 456 H 363" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <path d="M 335 478 V 563 H 363" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <path d="M 800 456 H 834 V 498 H 858" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <path d="M 800 563 H 834 V 498" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <rect x="32" y="647" width="1116" height="205" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="685" font-size="21" font-weight="600" fill="#243040">3  Optional saving — a later model-called file tool</text>
+  <rect x="655" y="725" width="473" height="101" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="675" y="758" font-size="21" font-weight="600" fill="#243040">Host file-tool policy</text>
+  <text x="675" y="788" font-size="17" fill="#526072">Integrity, confidentiality and required approvals</text>
+  <rect x="52" y="725" width="495" height="101" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="72" y="758" font-size="21" font-weight="600" fill="#243040">Write returned whole files</text>
+  <text x="72" y="788" font-size="17" fill="#526072">Only the host file tool changes the agent's store.</text>
+  <path d="M 999 580 V 713" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <text x="1013" y="631" font-size="14" fill="#526072">Formatted files</text>
+  <path d="M 655 776 H 559" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-offline-flow-arrow)"/>
+  <text x="566" y="757" font-size="15" fill="#526072">If allowed</text>
+  <text x="32" y="879" font-size="16" fill="#526072">Formatting needs only a base engine image. Neither sandbox tool writes the host store; core disposes each call.</text>
+</svg>

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 770" width="1180" height="770" role="img" aria-labelledby="bicep-validation-flow-title bicep-validation-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="bicep-validation-flow-title">Bicep: stage the inputs, then build and lint each file</title>
+  <desc id="bicep-validation-flow-desc">Read the selected files through the session and stage all of them before compilation. For each file, use bicep build for a template or bicep build-params for a parameter file, then run bicep lint. The host-selected network mode applies to every command: CLOSED adds --no-restore, while ALLOWLIST and UNRESTRICTED permit normal restore under that mode. Format the reports from both phases and repeat for each file. Restore codes BCP190, BCP191 and BCP192 mark validation incomplete because module types were not loaded. A timeout, execution failure or unreadable diagnostic report also leaves the check incomplete. Ordinary compiler diagnostics report errors and warnings to review. A report with no diagnostics covers only what the compiler checked; hidden or empty output does not establish success. Every normal return appends fixed guidance, and core cleans up the call.</desc>
+  <defs>
+    <marker id="bicep-validation-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1180" height="770" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Bicep: stage the inputs, then build and lint each file</text>
+  <text x="32" y="76" font-size="17" fill="#526072">A compiler error and an incomplete check mean different things.</text>
+  <rect x="32" y="125" width="320" height="125" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="158" font-size="21" font-weight="600" fill="#243040">Stage all selected files</text>
+  <text x="52" y="188" font-size="16" fill="#526072">Resolve names and read files.</text>
+  <text x="52" y="214" font-size="16" fill="#526072">Write them into one call directory.</text>
+  <text x="52" y="240" font-size="16" fill="#526072">Local references resolve together.</text>
+  <rect x="412" y="125" width="340" height="125" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="432" y="158" font-size="21" font-weight="600" fill="#243040">Build each file</text>
+  <text x="432" y="188" font-size="16" fill="#526072">.bicep → bicep build</text>
+  <text x="432" y="214" font-size="16" fill="#526072">.bicepparam → bicep build-params</text>
+  <rect x="812" y="125" width="336" height="125" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="832" y="158" font-size="21" font-weight="600" fill="#243040">Lint the same file</text>
+  <text x="832" y="188" font-size="16" fill="#526072">bicep lint</text>
+  <text x="832" y="214" font-size="16" fill="#526072">Keep the reports from both phases.</text>
+  <path d="M 352 187 H 400" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <path d="M 752 187 H 800" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <rect x="32" y="313" width="320" height="205" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="346" font-size="21" font-weight="600" fill="#243040">Host network mode</text>
+  <text x="52" y="376" font-size="16" fill="#526072">CLOSED</text>
+  <text x="52" y="402" font-size="16" fill="#526072">Add --no-restore to every phase.</text>
+  <text x="52" y="428" font-size="16" fill="#526072">ALLOWLIST / UNRESTRICTED</text>
+  <text x="52" y="454" font-size="16" fill="#526072">Allow restore within that mode.</text>
+  <path d="M 192 313 V 283 H 582 V 262" fill="none" stroke="#7d8694" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <text x="275" y="277" font-size="15" fill="#526072">Applies to all commands</text>
+  <rect x="412" y="340" width="736" height="153" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="432" y="373" font-size="21" font-weight="600" fill="#243040">Format every phase report</text>
+  <text x="432" y="403" font-size="17" fill="#526072">Repeat build and lint for each staged file.</text>
+  <text x="432" y="429" font-size="17" fill="#526072">Keep restore failures visible alongside the compiler diagnostics.</text>
+  <text x="432" y="455" font-size="17" fill="#526072">The cases below explain how to read a report.</text>
+  <path d="M 980 250 V 328" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <path d="M 780 493 V 537 H 205 V 563" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <path d="M 780 493 V 537 H 590 V 563" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <path d="M 780 493 V 537 H 978 V 563" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#bicep-validation-flow-arrow)"/>
+  <rect x="32" y="575" width="346" height="126" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="608" font-size="21" font-weight="600" fill="#243040">Incomplete check</text>
+  <text x="52" y="638" font-size="15" fill="#526072">Restore: BCP190 / 191 / 192.</text>
+  <text x="52" y="664" font-size="15" fill="#526072">Or timeout, exec or parse failure.</text>
+  <text x="52" y="690" font-size="15" fill="#526072">Missing checks cannot count as a pass.</text>
+  <rect x="416" y="575" width="348" height="126" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="436" y="608" font-size="21" font-weight="600" fill="#243040">Other diagnostics</text>
+  <text x="436" y="638" font-size="16" fill="#526072">Review the errors and warnings.</text>
+  <text x="436" y="664" font-size="16" fill="#526072">Errors identify rejected input.</text>
+  <text x="436" y="690" font-size="16" fill="#526072">Use the reported severity.</text>
+  <rect x="802" y="575" width="346" height="126" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="822" y="608" font-size="21" font-weight="600" fill="#243040">No diagnostics reported</text>
+  <text x="822" y="638" font-size="16" fill="#526072">Covers what the compiler checked.</text>
+  <text x="822" y="664" font-size="16" fill="#526072">Hidden or empty output alone</text>
+  <text x="822" y="690" font-size="16" fill="#526072">does not establish success.</text>
+  <text x="32" y="744" font-size="16" fill="#526072">Every normal return includes fixed guidance. Core cleans up the call after the body finishes.</text>
+</svg>

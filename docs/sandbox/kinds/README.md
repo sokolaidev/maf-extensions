@@ -1,95 +1,87 @@
 # Kinds
 
-> What a *kind* is: a workload written against the sandbox protocol and nothing else, the pattern the first one set, and how a spec grows from what the kind declares. Sources of record: [`../research/sandbox-architecture.md`](../research/sandbox-architecture.md) and [`../research/files-out.md`](../research/files-out.md).
+A **kind** is a workload exposed as one or more tools. It defines the inputs, required sandbox features, commands and results. The host selects the backend, identity and policy.
 
-**These pages own the architecture-facing contract of each kind — the spec it declares and why, its security pattern, its portability story. Each package's own README owns install and usage, and is linked rather than duplicated.** Someone deciding whether a kind fits a deployment reads here; someone wiring it up reads there. Where the two would say the same thing, the package README is the one that gets to say it, because it ships with the code.
+These pages describe each kind's contract. Package READMEs cover installation and wiring. Start with [writing a kind](writing-a-kind.md) to build your own.
 
-Start with [writing a kind](writing-a-kind.md) to build one. It contains a complete JSON-checking tool, host wiring, the result-label contract, and a verification checklist. This index describes the common architectural rules; [information flow](../information-flow.md#how-core-labels-a-call) explains why the label design has this shape.
+## Choose a kind
 
-## A kind is a workload, never a vendor and never a backend
+| Kind | Tools | Purpose | Network access |
+|---|---|---|---|
+| [Bicep](bicep.md) | `bicep_validate` | Compile and lint templates and parameter files | Fixed restore allowlist by default; host can choose closed or unrestricted |
+| [CodeAct](codeact.md) | `execute_code` | Run Python, with optional files, artifacts and host tools | Closed by default; host can add allowed destinations |
+| [draw.io](drawio.md) | `create_drawio` | Validate and lay out editable diagrams | Closed |
+| [Terraform / OpenTofu](terraform.md) | Validation and optional formatting tools | Check configuration offline; optionally return formatted files | Closed |
 
-A kind is one thing: a tool factory that asks a `SandboxRouter` for a sandbox and gets back `write_file`, `exec` and the pull surface. It names no backend, imports no provider SDK, and contains no lifecycle code — acquiring, keying, disposing and confining egress are all [`../architecture.md`](../architecture.md)'s, and reclaiming a call's files is [`../tool-call.md`](../tool-call.md)'s, written once. What is left over is what is genuinely workload-specific: the command templates, the accepted inputs, the parsing of what comes back, and the hosts this particular work needs to reach.
+## Responsibilities
 
-That division is a portability claim, and it is test-enforced rather than asserted:
+| Owner | Supplies |
+|---|---|
+| Kind | Tool schema, sandbox requirements, workload logic and justified result-integrity claim |
+| Host | Backend, image, caller identity, file source records, output destination and confidentiality policy |
+| Core | Backend selection, call directories, transfer limits, cleanup and result labels |
+| Framework | Label propagation, result hiding and tool-call policy |
 
-| Test | Where it lives | What it pins |
-|---|---|---|
-| `TestZeroDependencies` | `packages/maf-sandbox/tests/test_sandbox_router.py` | the protocol modules import nothing outside the standard library. Scoped to `_PROTOCOL_MODULES`, not the whole distribution, because the dist does declare `agent-framework-core` for `maf_sandbox.maf` — a scan that kept claiming "nothing here imports anything" would have had to be deleted rather than narrowed |
-| `TestNoDirectAzureImport` | each kind's own suite | no `import azure` anywhere under the package. Strictly redundant with the row below, and kept anyway: its failure message names the property that actually broke — the workload reaching around `maf_sandbox` for a provider — where "undeclared dependency" would not |
-| `TestOnlyDeclaredDependencies` | every package | every import is one the package's own `pyproject.toml` declares. This is the defect class that otherwise first reproduces on a clean install, where the workspace is no longer there to satisfy it |
+Kinds and backends use the core protocol. They do not import each other. Repository tests check this boundary and each package's declared dependencies.
 
-The direction of the boundary matters as much as its existence: **kinds and backends never import each other**, in either direction. A kind that reached for a provider would stop being portable; core reaching for a kind would make the protocol a registry of workloads. Both talk only to the router in the middle.
+A kind runs only on a backend that meets its requirements. An unconfigured router attaches no tool. A configured backend that cannot serve the spec causes an attachment error.
 
-The payoff is one sentence per kind: the same tool runs unchanged on ACA Sandboxes, a Docker container, a WSL container or an in-process fake ([`../backends/README.md`](../backends/README.md)) — and a backend that cannot serve it is refused at attach, not at first call.
+## Tools, content and labels
 
-## The pattern the first kind set
+A kind is a source tool when it returns a result. It can also send data through network access, a registered host tool or an artifact destination. The host must account for each enabled route.
 
-`bicep_validate` was written first, against real infrastructure code an agent wrote, and the shape it settled on is what every later kind follows.
+![Source tools declare result integrity and confidentiality. Returned content items have individual effective labels. The framework shows text or a hidden reference to the model and tracks the conversation label. The model's next call is checked against the destination tool's integrity opt-in and confidentiality limit. Hidden items still contribute confidentiality, and an integrity opt-in does not bypass that limit.](../assets/information-flow.svg)
 
-- **Fixed command templates, with nothing but a validated path interpolated.** No agent-authored text reaches a command line. Where a kind can use an argv sequence it does, and the backend quotes it; where it genuinely needs a shell line — `|| true`, a redirection — the template is a module-level constant and the one `{path}` in it has already been through validation.
-- **The caller's file listing is the injection pin, and now also the label channel.** Only a name present in `CallerContext.list_files` is ever substituted, so a name the model invented, or read out of a poisoned file, has nowhere to go. A failure to enumerate is a *refusal*, never an empty listing: empty would look like "the store has no files" and refuse every name individually with the wrong reason.
-- **Sanitized error surfaces.** Provider and transport text can carry endpoint, subscription and tenant ids, and a tool result is persisted into a transcript. That detail goes to the log; the model gets a fixed sentence. What this stack authored itself is safe to surface verbatim, and is.
-- **One egress mode, chosen inside the set the kind accepts.** A spec carries a single `Egress` mode — `CLOSED` by default, so a kind that says nothing about the network gets none — and `egress_allow` is the payload of an `ALLOWLIST` run rather than a field with a life of its own; naming hosts in any other mode is refused where it is written. Each kind guards the set of modes it will accept **at construction**, so the posture a deployment may choose is bounded by the kind rather than by the backend it happens to have wired. What the *kind itself* needs to function stays fixed in the package — bicep's four hosts are the kind's, not a deployment's — because a deployment able to widen that could undo the containment the design rests on; where a kind lets a deployment add hosts of its own (codeact does), they are added to the kind's half and never in place of it. The router then serves that exact mode on a backend that enforces it, or refuses at attach — never a more open substitute, which would silently widen what the workload reaches, and never a more isolated one, which would hand it a posture it was not built for. See [`../network.md`](../network.md).
-- **T2, not T0 — and a degrade that says so.** The point of running the work is that a compiler, an interpreter or a test runner answers instead of the model checking its own output; a model that reads its own work and agrees with itself has added no information. Every degrade path therefore returns the run to T0 *visibly*: an unconfigured host attaches no tool at all (the agent keeps the ungrounded behaviour it already had, and is never shown a capability it lacks), while a host whose backend cannot honour the spec **raises** — nothing-configured is a choice, can't-confine is a misconfiguration, and quietly shipping the workload without its containment is the one outcome not on offer.
+All four kinds claim `untrusted` for workload output. Compiler diagnostics, guest programs, provider reports and layout output can carry content the host has not established as trusted.
 
-## The spec is where the posture questions are answered
+Bicep, Terraform and CodeAct's withholding mode also return fixed guidance. The wrapper keeps that guidance trusted and labels workload output separately. draw.io and CodeAct's showing mode have no guidance item.
 
-Everything a host needs to decide about a kind is in its `SandboxSpec`, which is why each page below leads with one. `kind` names the workload and is half of a sandbox's identity; `egress` says which of three network postures it runs in and `egress_allow` names the hosts when that posture is `ALLOWLIST`; `requires` says what it cannot run without; `requires_os_family` says what shape of guest its commands are written for, which `maf-sandbox-terraform` and `maf-sandbox-drawio` name as POSIX and the others leave `None`, which asks nothing and is refused by nothing; `min_isolation` says whether it raises the host's floor, and most kinds should not ([`../policy-isolation.md`](../policy-isolation.md)); `declared_outputs`, `files_in` and `files_out` say what moves and how much.
+The [information-flow guide](../information-flow.md) explains label resolution, hiding and the four-field result contract. Each kind page shows its own result flow.
 
-**`requires` grows from what the kind declares, in both directions.** A spec that declares any output — of either disposition — is *refused* without `FILES_OUT`, because the capability match is the only thing standing between that spec and a backend with no pull surface, and it only ever runs on what `requires` names. A spec that declares no outputs should not require `FILES_OUT` at all: every capability a kind asks for is a backend it can no longer run on, and asking for one it does not use is portability given away for nothing. The vocabulary and the match are [`../capabilities.md`](../capabilities.md).
+## Define the sandbox requirements
+
+| `SandboxSpec` field | What it controls |
+|---|---|
+| `kind` | Workload identity; one kind may expose several tools |
+| `requires` | Backend operations the workload uses |
+| `requires_os_family` | Guest path and command conventions; this does not prove a program is installed |
+| `egress`, `egress_allow` | One network mode and its allowed destinations |
+| `min_isolation`, `min_cleanup`, `isolation_scope` | Required isolation, cleanup and sharing boundaries |
+| `files_in`, `files_out`, `declared_outputs` | Transfer limits and expected artifacts |
+
+Ask only for capabilities the workload needs. Declared outputs require `FILES_OUT`. The router must serve the exact network mode; it does not substitute a more open or closed one.
+
+See [capabilities](../capabilities.md), [network access](../network.md) and [isolation policy](../policy-isolation.md) for the common rules.
 
 ## Writing a kind that collects artifacts
 
-The six rules, from [`../research/files-out.md`](../research/files-out.md) § *Writing a kind that collects artifacts*:
+1. Declare each output's relative path, media type and whether it is required.
+2. Tell the model where the program must write it.
+3. Use `collect_outputs` and the host's `OutputSink`. Return delivery references rather than artifact bytes.
+4. For names chosen per call, set `outputs_named_at_call_time` and pass the names to `collect_outputs(outputs=...)`.
+5. Require `FILES_LIST` only when the workload must enumerate files. Known paths do not need it.
+6. Let core derive outward-flow declarations from the sink and spec. Do not combine an output sink with an explicit `declarations=` mapping.
 
-1. **Declare your outputs** — literal relative paths, each with a disposition, a media type, and `required` set honestly.
-2. **Tell the model where to write.** The output path has to appear in the tool's description; a program that saves its PNG somewhere else produces nothing collectable and no error.
-3. **Do not put bytes in the result.** Return the references `deliver` gave you.
-4. **Require `FILES_LIST` only if you truly cannot name your outputs.** It is refused on Docker and wslc, so a kind that requires it without needing it has made itself ACAS-only. "The model decides at run time" is *not* that case — set `outputs_named_at_call_time` and pass the names to `collect_outputs(outputs=...)`.
-5. **Grow `requires` from what you declare** — the rule above, applied.
-6. **Do not combine a sink with an explicit `declarations=`.** It is refused, because the two disagree about what the tool's information flow is.
-
-The same document carries a worked example — a `render_diagram` kind, the smallest workload that exercises every rule above — and its spec is the shortest statement of the whole pattern: `egress_allow=()` because rendering is computation, no `FILES_LIST` because the kind names its own output, `max_files=1` because one call renders one graph, and `required=False` because a renderer failing on malformed input is a diagnostic the model should act on rather than a transport error.
+The [diagram sample](../../../samples/07_docker_diagram/README.md) shows a complete artifact-producing tool.
 
 ## Writing a kind that declares its information flow
 
-Use the [worked kind-authoring guide](writing-a-kind.md) for a complete factory, body, host configuration, and verification checklist. [Information flow](../information-flow.md) owns the design and the label decision table. These rules summarize what the author must establish:
+- Declare `untrusted` when any program or input affecting the result is untrusted or unknown. Formatting the text does not change its source.
+- Justify every source before claiming trusted output. Include file reads, network responses and host-tool results.
+- Resolve file names against `session.list_files` and pass the original `ListedFile` to `session.read_file`. Direct store reads bypass call-level tracking.
+- Let the wrapper write result labels. Bodies return unlabelled content, or opt into `SandboxResult`.
+- Keep standing guidance fixed and present on every normal return. Use a declared verdict for a trusted choice that varies by result.
+- Treat file integrity, hidden names and result confidentiality separately. A file's integrity does not permit echoing its name.
 
-1. **Choose the declaration from the result's sources.** If code the host does not run emitted the bytes, or unestablished files or channels can affect the result, declare `source_integrity=SourceIntegrity.UNTRUSTED`. Leaving it unset delegates to tier 3 or the host default; either may answer trusted without knowing about those sources.
-2. **Justify every channel before declaring trusted.** Include file-store reads, network responses, and host-tool results. Core refuses an explicit trusted declaration over channels the spec opens but cannot establish as trusted. `nothing_survives_from=(...)` is the author's assertion that a named channel contributes nothing, including presence bits; it is not a proof. A weak file read still demotes the call when the host enables the runtime stamp.
-3. **Authorship is not integrity, in either direction.** Package-authored formatting does not make a diagnostic trusted. A model writing the input does not make it untrusted — its output carries no label and the framework never treats it as a source. Give the reason as the code that emitted the bytes and the channels it read, never as who typed the input. One exception, within its four conditions: a value the source only picks from a set you fixed at attach is trusted, because you wrote every byte it can be ([information flow](../information-flow.md#selection-is-not-authorship)).
-4. **A source declaration replaces the input-label join.** It does not merely limit or supplement the join. The declaration must account for the sources the framework would otherwise see as well as the ones it cannot see.
-5. **Return unlabelled derived items, then committed guidance.** Commit fixed sentences with `standing_guidance=(...)`, which requires declaring a `source_integrity` for them to sit above, and return them last, in order, on every normal return, including refusals and error sentences. Their text and presence must be independent of input. Counts, exit statuses, sizes, and conditional advice stay derived. Only `{call_id}` may interpolate. Core requires at least one derived item, validates and rebuilds the suffix, and stamps guidance trusted/public. It refuses every body-written `security_label`, even without a guidance commitment, and never quotes rejected content in its error.
-6. **Account for host tools when you serve them.** `HostToolAggregate.result_integrity` folds the registered tools' source integrity, with unstamped tools treated as untrusted. It establishes that channel only; a trusted aggregate does not establish files or network responses. The file-read fold does not track host-tool result dataflow.
-7. **Read files through the session.** Resolve a name against `session.list_files(store)` and pass its `ListedFile` entry to `session.read_file`. The visible argument is a name; the bytes behind it reach the body out of band. The session records successful reads per call, including empty files. A direct `store.read` bypasses that record. Unknown integrity wins over established values; missing and refused reads contribute nothing.
-8. **Keep sink derivation consistent.** Do not combine `output_sink` with an explicit `declarations=` mapping. Core derives the tool's outward flow from the sink and spec together; a mapping would replace that derivation. The host's outbound confidentiality cap is separate from its result classification.
-9. **Keep file integrity, hidden names, and result confidentiality separate.** A listing's integrity describes the bytes; it never licenses echoing the name. When names must be shown, call `positions_holding_hidden_content` before calling host code that can change the hidden-content store and pass each position's verdict to `echoed_name`. The host supplies the same provenance record to the listing and session. It supplies result confidentiality separately on the attached tool. Core stamps all derived items with the weaker of source integrity and the call's file fold, copying host confidentiality. A kind committing `standing_guidance` is stamped whatever the host declared, flooring an absent or invalid classification at `public`; one committing none is stamped only with both valid declarations, and otherwise left to framework resolution. Trusted reads never promote an untrusted declaration, and no call changes a shared declaration.
+A `nothing_survives_from` assertion needs the author's justification. It does not bypass file-read checks. A trusted host-tool registry establishes that source only; it says nothing about files or network responses.
 
-Record the source argument in your kind's design page and package README. A reviewer should be able to see why the declaration holds without reconstructing it from the body. Every shipped kind claims untrusted. `maf-sandbox-bicep`, `maf-sandbox-codeact` and `maf-sandbox-terraform` commit standing guidance and leave the wrapper to label it; `maf-sandbox-drawio` commits none, so it declares its claim directly and gains no trusted item.
-
-## The shipped kinds
-
-| Kind | Tool | `requires` | Egress modes it accepts, and what it runs by default | Package |
-|---|---|---|---|---|
-| [`bicep`](bicep.md) | `bicep_validate` | `{EXEC, FILES_IN}` — the protocol default, left unaltered | `{UNRESTRICTED, ALLOWLIST, CLOSED}`, defaulting to `ALLOWLIST` with the four AVM hosts fixed in the package | [`maf-sandbox-bicep`](../../../packages/maf-sandbox-bicep/README.md) |
-| [`codeact`](codeact.md) | `execute_code` | `{EXEC, FILES_IN}`, grown by `FILES_OUT` and `HOST_TOOLS` as the host wires channels | `{CLOSED, ALLOWLIST}`, derived rather than passed: hosts named runs `ALLOWLIST`, none runs `CLOSED`, and `UNRESTRICTED` is not expressible | [`maf-sandbox-codeact`](../../../packages/maf-sandbox-codeact/README.md) |
-| [`drawio`](drawio.md) | `create_drawio` | `{EXEC, FILES_IN, FILES_OUT}` | `{CLOSED}`; validates XML with Python and computes missing or replacement layout with Graphviz | [`maf-sandbox-drawio`](../../../packages/maf-sandbox-drawio/README.md) |
-| [`terraform` / `opentofu`](terraform.md) | `terraform_validate` / `opentofu_validate`; opt-in `terraform_format` / `opentofu_format` | `{EXEC, FILES_IN}` | `CLOSED`, with validation dependencies in an immutable image mirror | [`maf-sandbox-terraform`](../../../packages/maf-sandbox-terraform/README.md) |
-
-Draw.io delivers an editable file. Bicep, CodeAct and draw.io leave the isolation floor to the host. Terraform and OpenTofu require at least container isolation, POSIX guests, call scope, and disposal because provider validation executes native code.
+The [authoring guide](writing-a-kind.md) contains a working example, host setup and checks.
 
 ## Status
 
-| Decision | State | Tracking |
+| Contract | State | Details |
 |---|---|---|
-| Editable draw.io files with kind-configured layout | implemented; not yet released | [`drawio.md`](drawio.md) |
-| A kind is protocol-only, and three tests enforce it rather than prose | shipped | — |
-| Fixed templates, listing-pinned paths, sanitized surfaces, one chosen egress mode, visible degrades | shipped — the pattern holds in both kinds | — |
-| A kind guards the egress modes it accepts at construction, and the spec carries one resolved mode | shipped — bicep takes the mode as an argument, codeact derives it from its host list. The per-kind record is still open even though the change it records is delivered | the per-kind rows on [`bicep.md`](bicep.md) and [`codeact.md`](codeact.md), which carry the open record, the merged PR that delivered it and the closed umbrella; the model itself is [`../network.md`](../network.md) |
-| `requires` grows from what the spec declares; a declared output without `FILES_OUT` is refused | shipped — the refusal is at attach, in `sandboxed_tool`, and the `FILES_OUT` rollout it belongs to is still open on its remaining items | [`../capabilities.md`](../capabilities.md) § Status, row "`FILES_OUT` rollout", which carries the open umbrella |
-| Per-kind contracts: [`bicep.md`](bicep.md), [`codeact.md`](codeact.md) | see each page | — |
-| A kind may expose more than one tool name | open — `sandboxed_tool` documents the once-per-tool-and-concatenate pattern, unused by shipped kinds, and `Tool` above still assumes one. Siblings can share with the same effective key, selected backend and compatible instance configuration: image, work dir and egress. `CALL` scope separates calls; warm reuse needs an explicit compatible cleanup policy. Storage-base changes are refused on reuse and egress changes partition or refuse, but image consistency is unchecked | [`../research/many-tools-one-kind.md`](../research/many-tools-one-kind.md) |
-| A guest-OS axis a kind can declare and a backend match | shipped in core, half used — ACAS, Docker and WSLC declare guest families; Hyperlight declares none for its language runtime. Neither kind sets `requires_os_family`, so the refusal fires only on a spec that asks. CodeAct's exec variant relies on the host to verify `python3`; its runtime variant uses the host's explicit Python profile | [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md) § Status, first row, which carries the closed issue and the merged PR, with the per-kind reading on [`bicep.md`](bicep.md) and [`codeact.md`](codeact.md) |
-| CodeAct selects `run_code` through an explicit Python runtime profile | implemented — `CodeactRuntime` selects a separate capability set through the existing subset matcher; Hyperlight serves packaged Python with opt-in flat outputs; native host tools remain unavailable | [`codeact.md`](codeact.md) § Status records the runtime variant and Hyperlight delivery |
-| `egress_allow` distinguishes "this kind needs no network" from "nobody asked", so a deployment default has somewhere to live | open — narrowed rather than closed by the mode: a spec now says `CLOSED` outright, but an empty host list still cannot tell the two apart | [`../network.md`](../network.md) § Status, row "A deployment-wide default allowlist a kind inherits", which carries the open issue; the kind-side half is [`codeact.md`](codeact.md)'s two-halved `egress_allow` row |
-| What a kind may declare about the result it hands back, and the rules above that follow from it | shipped — core validates and labels committed guidance, and can weaken derived results from the per-call file fold when the host declares confidentiality. The worked guide covers the complete authoring pattern | [`../information-flow.md`](../information-flow.md), which owns the design and issue trail; [`writing-a-kind.md`](writing-a-kind.md), which applies it |
+| Four kinds, including optional Terraform/OpenTofu formatting | Implemented | [Bicep](bicep.md), [CodeAct](codeact.md), [draw.io](drawio.md), [Terraform](terraform.md) |
+| Wrapper-owned labels and file-read checks | Implemented | [Information flow](../information-flow.md) |
+| Four-field result contract | Available in core; adoption by the four kinds is open | [Information flow status](../information-flow.md#status) |
+| CodeAct native runtime host tools and inherited network defaults | Open | [CodeAct status](codeact.md#status) |

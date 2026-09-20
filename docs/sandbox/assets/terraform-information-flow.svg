@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 750" width="1180" height="750" role="img" aria-labelledby="terraform-title terraform-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="terraform-title">Terraform and OpenTofu: reports do not write host files</title>
+  <desc id="terraform-desc">Terraform or OpenTofu validation and formatting are source tools. The wrapper declares trusted source_integrity while the workload claim remains untrusted. A report or formatted-file mapping has effective label untrusted/C; fixed guidance has trusted/C. C includes host classification and any stricter argument confidentiality. FIDES shows text or a hidden reference to the model. Later host file tools persist formatted files only after conversation and argument labels pass their integrity and confidentiality limits and host approval policy. The source tools operate in a disposable guest and do not write the host file store.</desc>
+  <defs>
+    <marker id="terraform-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+  </defs>
+  <rect width="1180" height="750" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Terraform and OpenTofu: reports do not write host files</text>
+  <text x="32" y="76" font-size="17" fill="#526072">Validation reports and formatted text share the same label rules. Saving changes is a later tool call.</text>
+  <rect x="32" y="112" width="340" height="300" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="148" font-size="22" font-weight="600" fill="#243040">Source tool</text>
+  <text x="52" y="180" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">terraform_* / opentofu_*</text>
+  <text x="52" y="205" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">validate or format</text>
+  <text x="52" y="244" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">source_integrity</text>
+  <text x="52" y="270" font-size="17" fill="#243040">trusted (wrapper declaration)</text>
+  <text x="52" y="328" font-size="17" fill="#526072">Workload claim: untrusted</text>
+  <text x="52" y="368" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">confidentiality</text>
+  <text x="52" y="394" font-size="17" fill="#526072">Host's result classification</text>
+  <path d="M 372 260 H 410" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-arrow)"/>
+  <rect x="422" y="112" width="334" height="300" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="442" y="148" font-size="22" font-weight="600" fill="#243040">Content items</text>
+  <text x="442" y="176" font-size="16" fill="#526072">Effective labels shown below</text>
+  <rect x="442" y="195" width="294" height="93" rx="8" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="459" y="222" font-size="18" font-weight="600" fill="#243040">Report or formatted text</text>
+  <text x="459" y="249" font-size="15" fill="#526072">Status, diagnostics or changed files</text>
+  <text x="459" y="276" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">untrusted / C</text>
+  <rect x="442" y="302" width="294" height="93" rx="8" fill="#eeebfa" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="459" y="329" font-size="18" font-weight="600" fill="#243040">Fixed guidance</text>
+  <text x="459" y="356" font-size="15" fill="#526072">How to interpret or use the result</text>
+  <text x="459" y="383" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">trusted / C</text>
+  <path d="M 756 260 H 794" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-arrow)"/>
+  <text x="754" y="241" font-size="14" fill="#526072">FIDES</text>
+  <rect x="806" y="112" width="342" height="300" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="826" y="148" font-size="22" font-weight="600" fill="#243040">Model</text>
+  <text x="826" y="180" font-size="17" fill="#243040">Reads text or a hidden [var_…]</text>
+  <text x="826" y="233" font-size="19" font-weight="600" fill="#243040">Conversation label</text>
+  <text x="826" y="268" font-size="17" fill="#526072">Visible text affects integrity.</text>
+  <text x="826" y="306" font-size="17" fill="#526072">Hidden content still counts</text>
+  <text x="826" y="331" font-size="17" fill="#526072">toward confidentiality.</text>
+  <text x="826" y="378" font-size="16" fill="#526072">References retain stored labels.</text>
+  <path d="M 977 412 V 462" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-arrow)"/>
+  <text x="631" y="445" font-size="16" fill="#526072">Next model-called tool: text or a reference</text>
+  <rect x="608" y="474" width="540" height="168" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="630" y="511" font-size="22" font-weight="600" fill="#243040">Framework policy</text>
+  <text x="630" y="544" font-size="17" fill="#526072">Check conversation and argument labels.</text>
+  <text x="630" y="574" font-size="17" fill="#526072">Apply the destination's limits and host approvals.</text>
+  <text x="630" y="613" font-size="17" fill="#243040">Integrity opt-in does not waive confidentiality.</text>
+  <path d="M 608 559 H 524" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-arrow)"/>
+  <text x="529" y="540" font-size="15" fill="#526072">If allowed</text>
+  <rect x="32" y="474" width="480" height="168" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="511" font-size="22" font-weight="600" fill="#243040">Destination: host file tools</text>
+  <text x="52" y="541" font-size="17" fill="#526072">Persist formatted files after policy checks</text>
+  <text x="52" y="580" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">accepts_untrusted</text>
+  <text x="52" y="613" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">max_allowed_confidentiality</text>
+  <text x="32" y="679" font-size="16" fill="#526072">C = call confidentiality: the host classification plus any stricter argument confidentiality.</text>
+  <text x="32" y="706" font-size="16" fill="#526072">Hiding needs auto-hide and a trusted conversation. It does not apply to inspect_variable.</text>
+  <text x="32" y="733" font-size="16" fill="#526072">Validation and formatting operate in a disposable guest. Neither tool writes the host file store.</text>
+</svg>

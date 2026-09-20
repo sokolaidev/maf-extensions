@@ -1,28 +1,26 @@
 # Writing a kind
 
-A kind turns a workload into a tool: choose the inputs, describe the sandbox it needs, run the workload through the protocol, and return its result. Core attaches the tool, checks backend suitability, owns the call's lifetime, and labels the returned items. The host supplies conversation identity, file provenance, and confidentiality policy.
+A kind exposes a workload as one or more tools. It declares sandbox requirements, runs the workload through the core protocol and returns unlabelled content. Core owns attachment, call lifetime and result labels. The host supplies identity, file provenance and confidentiality policy.
 
-This guide builds a JSON syntax checker with one file input and a split result. It requires the wrapper-owned result contract described in [information flow](../information-flow.md#how-core-labels-a-call), introduced for core 0.37. For a complete application that also collects artifacts, see the [diagram sample](../../../samples/07_docker_diagram/README.md).
+This guide builds a JSON syntax checker. It uses a report followed by fixed guidance. The [result contract](../information-flow.md#the-result-contract) also supports separate completion, verdict and output items. The [diagram sample](../../../samples/07_docker_diagram/README.md) shows artifact collection.
 
-## Decide the contract before writing the body
+## Define the contract
 
-| Decision | JSON checker | Who owns it |
-|---|---|---|
-| Model input | One name from the caller's file listing | Kind |
-| Guest operations | Write one input, execute a fixed Python program | Kind, through `Sandbox` |
-| Sandbox requirements | `EXEC`, `FILES_IN`, POSIX paths, closed egress | Kind's `SandboxSpec`; router matches a backend |
-| Guest software | An image with `python3` installed | Kind documents it; host selects the image |
-| Scope and thread | Read from the current request | Host's `CallerContext` |
-| Guest path and cleanup | Use `session.guest_call_path()` and `session.acquire()` | Core |
-| Derived result integrity | Explicitly `untrusted`. A one-word verdict can be trusted instead, through the result contract | Kind's source declaration |
-| Standing guidance | One unconditional sentence that says how to interpret a hidden result | Kind commits the text; core stamps it |
-| Result confidentiality | The host's classification of this tool's results | Host |
+| Part | JSON checker |
+|---|---|
+| Model input | One name from the caller's file listing |
+| Guest work | Write one file; run a fixed Python program |
+| Capabilities | `EXEC`, `FILES_IN` |
+| Environment | POSIX paths, closed network, image with `python3` |
+| Host inputs | Router, store, caller context, image and result classification |
+| Result | Untrusted parse report, then fixed trusted guidance |
+| Cleanup | Core's default disposal |
 
-Keep backend packages and SDKs out of the kind. A kind imports the core protocol and its own workload dependencies; the application imports the backend and constructs the router. `requires_os_family=OsFamily.POSIX` describes path and command grammar. It does not establish that Python is installed.
+Import the core protocol and workload dependencies in the kind. Keep backend imports in the application. An OS-family requirement describes paths and commands; it does not prove that Python is installed.
 
 ## Build one tool
 
-The factory below is complete. Supply a router, a file store, and a caller context from the host. Every normal return passes through `check_json`, so missing context, absent files, timeouts, and successful checks all include the same guidance. The result reports whether Python parsed the file; it makes no claim about schema validation or the meaning of the JSON.
+The factory below is complete. Every normal return includes the same guidance. The check reports JSON syntax only; it does not validate a schema or the meaning of the data.
 
 ```python
 from collections.abc import Awaitable, Callable
@@ -125,39 +123,58 @@ def _build_json_tool(
     return check_json
 ```
 
-`SandboxSpec` supplies `EXEC` and `FILES_IN` by default. The factory returns `[]` when no router or backend is configured. A configured backend that cannot satisfy the spec raises at attach; the host must correct the configuration. Do not catch that refusal and advertise the tool anyway.
+`SandboxSpec` supplies `EXEC` and `FILES_IN` by default. No router or backend means an empty tool list. An incompatible configured backend raises during attachment; fix the host configuration before exposing the tool.
 
-The builder is defined at module level because the returned function's docstring becomes the model-facing tool description. The model supplies only `file`; scope, thread, image, and agent identity remain host configuration. Keep those out of the tool signature.
+The function's docstring becomes the model's tool description. Only `file` appears in its schema. Identity, image and other host choices stay outside the tool signature.
 
-## Keep file reads and guest work inside the call
+## Read files through the session
 
-Resolve the model's file argument against `session.list_files(store)` and pass the resulting `ListedFile` to `session.read_file`. Constructing a replacement entry from the name loses the host's integrity evidence. Calling `store.read` directly bypasses the per-call file fold.
+Resolve names with `session.list_files`, then pass the original `ListedFile` to `session.read_file`. Rebuilding an entry loses the listing's integrity evidence. Reading the store directly bypasses call-level tracking.
 
-The returned `Content` carries source-integrity metadata for the bytes read. It is not a complete FIDES result label and must not be copied into a `security_label`. Core records successful reads itself, including an empty file; the kind needs no accumulator. A refused or absent read contributes nothing.
+Core records successful reads, including empty files. Missing or refused reads contribute nothing. The kind needs no separate accumulator and must not copy a read's metadata into a result label.
 
-The example never echoes a file name, so a name expanded from hidden content cannot leak through its errors. If the tool needs to display names, ask `positions_holding_hidden_content` before calling host code that can change the hidden-content store, then pass the position and verdict to `echoed_name`. A file's integrity label says nothing about whether its name may be shown; see [rewritten arguments](../information-flow.md#the-call-arguments-have-already-been-rewritten).
+The example never echoes the input name. If a kind displays names, call `positions_holding_hidden_content` before host code can change the hidden-content store. Use `echoed_name` to show a safe name or argument position. See [rewritten arguments](../information-flow.md#the-call-arguments-have-already-been-rewritten).
 
-Use a fixed guest basename and a sequence of command arguments. The model's file name never becomes a guest path or a shell fragment. The byte check bounds transfer into the guest; `AgentFileStore.read` has already loaded the text, so a host needing a bound on that read must enforce it in its store. Production kinds should also log sanitized failure details through `error_detail`, while returning fixed messages to the model.
+Use fixed guest basenames and argument lists. Keep model values out of shell commands. The example's byte check bounds transfer into the guest; the store must enforce any limit on loading the file into host memory.
 
-Set `work_dir=None` unless an image requires a fixed native base. Address the base with `working_directory="."`; `guest_call_path()` is a relative child. Pass filenames relative to the requested working directory, including inside argv. Obtain the sandbox through `session.acquire` and keep owned files beneath `session.guest_call_path`. Core applies cleanup when the body returns or raises. Do not dispose the sandbox yourself or start work that outlives the call. Set `confined_to_guest_call_path=True` only when the kind attempts to confine its changes to that directory, and test the claim with real-backend filesystem and process probes. This metadata does not prove complete cleanup or authorize reuse; the host must explicitly lower its default disposal floor. [Tool-call lifetime](../tool-call.md) owns the full cleanup contract. Set `exclusive_admission=True` when the kind's program can read what a sibling call put in the sandbox, and pass the body's bound as `sandboxed_tool(admission_timeout=...)`: calls then run one at a time, and under the default cleanup each pays a disposal.
+## Keep work inside the call
 
-## Return derived content first and guidance last
+Use `session.acquire` and `session.guest_call_path()`. Set `work_dir=None` unless the image needs a fixed base. `working_directory="."` addresses that base; the call path is a relative child. Pass file names relative to the selected working directory.
 
-The body returns unlabelled `Content` items. Put every call-dependent answer before the committed guidance: success or failure, diagnostics, counts, sizes, file lists, and conditional advice are all derived. A fixed string such as `"JSON check failed."` remains derived because the file determines which string is returned.
+Core cleans up after the body returns or raises. Do not dispose the sandbox in the body or start work that outlives the call. Return fixed error messages and log sanitized details with `error_detail`.
 
-Guidance must be public, true on every return path, and independent of input in both text and presence. Keep private host configuration out of the commitment. Core matches the exact trailing sequence, rebuilds it from the commitment as plain text, and stamps it trusted/public. It rejects missing or reordered guidance, a guidance-only result, a bare string when guidance was committed, a commitment from a tool declaring no `source_integrity`, and any body-supplied `security_label`. Matching text earlier in the result remains derived.
+Set `confined_to_guest_call_path=True` only when the kind confines its changes to that directory. Test that claim against real filesystem and process behavior. It does not prove cleanup or authorize reuse; the host must explicitly lower the disposal floor.
 
-If no guidance is needed, omit `standing_guidance` and return a string or a nonempty list of unlabelled items. For a route that names the call, a committed sentence may contain `{call_id}`; render the same value in the body's trailing text using the async call's id from `session.guest_call_path().rsplit("/", 1)[-1]`. No other substitution is allowed. Keep guest output, argument values, and file names out of that sentence.
+Use `exclusive_admission=True` when a program can read another call's files. Give `sandboxed_tool` a bounded `admission_timeout`. See [call lifetime](../tool-call.md) for admission and cleanup rules.
 
-Do not declare the JSON checker trusted: its diagnostics are the parser's own bytes over content read out of the store, and neither is established. Leaving `source_integrity` unset delegates to tier 3 or the host default, which cannot establish an out-of-band file read. Explicit `untrusted` states the kind's actual limit. Trusted file reads never promote it. A kind committing standing guidance must declare one either way: the sentence stays readable because every other item is labelled beneath the tool's declaration, and an undeclared tool has none to sit beneath.
+## Return content with separate purposes
 
-**A Boolean verdict can be trusted, through the result contract.** A verdict drawn from a set you fixed at attach is content you wrote, and [*Selection is not authorship*](../information-flow.md#selection-is-not-authorship) allows trusting it. Pass `result_contract=True` and `verdicts=(...)` to `sandboxed_tool`, and answer with a `SandboxResult`: the wrapper renders one item per part, labels `output` untrusted and lets `completed`, `verdict` and `trusted_output` inherit the tool's declaration. [The result contract](../information-flow.md#the-result-contract) has the whole shape. The worked kind below does not use it yet, and a kind answering with text keeps the behaviour described here.
+Bodies do not write `security_label`. The wrapper owns those labels.
+
+For a text-item result, put all call-dependent content before the exact committed guidance. Reports, counts, file lists and conditional advice are workload output. Even a fixed sentence selected by the input belongs there.
+
+Guidance must be public and true on every normal return. Both its text and its presence must be independent of input. Core checks the trailing sequence, rebuilds it and stamps it `trusted/public`. The framework preserves any stricter confidentiality from the call.
+
+Core refuses missing or reordered guidance, guidance-only results and body-written labels. Matching text earlier in the result remains workload output. Only the host-generated `{call_id}` may vary in a commitment; see [standing guidance](../information-flow.md#one-result-two-labels).
+
+Without guidance, return a string or a nonempty list of unlabelled items. With the four-field contract, return `SandboxResult`; core appends committed guidance itself.
+
+| `SandboxResult` field | Purpose |
+|---|---|
+| `completed` | Say whether the workload reached an answer |
+| `verdict` | Select an answer from values fixed at attachment |
+| `trusted_output` | Return text whose sources the kind can vouch for |
+| `output` | Return workload text, such as diagnostics |
+
+Opt in with `result_contract=True` and declare `verdicts=(...)`. Keep the workload claim `untrusted` for guest text. The wrapper lets the first three fields inherit trusted integrity while labelling workload output separately.
+
+A trusted verdict selects the kind's own constant; it does not repeat guest text. Do not mark an entire parser or compiler report trusted to make a verdict readable. The [result-contract diagram](../information-flow.md#the-result-contract) shows the separation.
 
 ## Let the host supply provenance and confidentiality
 
-These are separate inputs. File provenance says what is known about source integrity. A tool's `confidentiality` declaration classifies its derived results. For a kind committing no guidance, core uses both declarations only when `source_integrity` and `confidentiality` are valid framework values; one committing guidance stamps regardless and floors an unreadable classification at `public`. The full [decision table](../information-flow.md#how-core-labels-a-call) describes both.
+File provenance records source integrity. Result confidentiality classifies who may receive the answer. They are separate settings.
 
-For this factory, the host wires one record into the listing and the session, and adds the observer middleware to the actual agent chain. Its scope and thread getters must read the current request, rather than return shared placeholders:
+Use one provenance record for listing, session reads and write observation. Add the observer to the actual agent middleware chain. Caller-context getters must read the current request.
 
 ```python
 from functools import partial
@@ -185,15 +202,19 @@ for tool in tools:
     tool.additional_properties["confidentiality"] = "private"
 ```
 
-Pass `tools` and `middleware` to the host's agent configuration. This host example classifies results as `private`; choose the classification that fits the application. Configure declarations before calls begin. `default_confidentiality` on middleware and `max_allowed_confidentiality` on a tool do not enable core's per-call result stamp: the former is a fallback, and the latter limits an outbound sink. Neither supplies the tool's explicit result classification.
+Pass these tools and middleware to the agent. The example classifies results as `private`; choose the application's own value before calls begin. Configure destination policy separately.
 
-The default provenance floor is unknown. A host may assert a trusted floor only for initial and otherwise unrecorded files it can establish as trusted, and must observe writes; [host wiring and its limits](../hosts.md#file-store-provenance--what-a-kind-reads-and-what-it-is-worth) explain the race and record-lifetime requirements. The JSON checker remains untrusted with either floor. Guidance stays trusted/public, while its derived result carries the host's classification.
+With guidance or the result contract, core always labels workload items. Without them, it does so only when both integrity and result confidentiality are valid. A middleware default or `max_allowed_confidentiality` does not supply that explicit result classification.
 
-## Verify the kind's contract
+The default provenance floor is unknown. Assert a trusted floor only for files the host can establish as trusted, and observe writes. [Host wiring](../hosts.md#file-store-provenance--what-a-kind-reads-and-what-it-is-worth) describes record lifetime and concurrent-write limits.
 
-Use `InProcessSandboxBackend` to check command arguments, input placement, attach refusals, and every normal result branch. It returns programmed results and does not run Python or establish real isolation. Run the checker against a real backend and the intended image to verify the executable, timeout, egress, and cleanup behavior.
+Trusted files never promote this checker's untrusted workload claim. The report remains untrusted. Guidance stays trusted, with the call's effective confidentiality.
 
-The checker requires POSIX, so its fake must declare that family too. The fake has no OS-family declaration by default. This test router admits the fake's `NONE` isolation explicitly; a production host chooses its own floor:
+## Verify the contract
+
+`InProcessSandboxBackend` checks attachment, arguments, input placement and result branches with programmed responses. It does not run Python or establish isolation.
+
+The checker requires POSIX, so the fake must declare it. The test router also admits the fake's `NONE` isolation explicitly:
 
 ```python
 from dataclasses import replace
@@ -209,20 +230,15 @@ backend = InProcessSandboxBackend(
 router = SandboxRouter([backend], min_isolation=Isolation.NONE)
 ```
 
-Exercise the public attached tool, so core's wrapper runs. Check successful parsing, a nonzero exit, missing context, a missing or unreadable file, an input over the limit, a timeout, and a backend failure. On every returned result, assert that derived items precede the same guidance. Through `LabelTrackingFunctionMiddleware`, check that a private derived result stays private and that guidance remains visible in a trusted conversation with automatic hiding enabled.
+Exercise the attached tool so core's wrapper runs. Cover successful parsing, a nonzero exit, missing context, unreadable files, input limits, timeout and backend failure. Check that each normal result keeps the report and guidance separate.
 
-Core owns label-fold tests; a kind's tests should establish its own sources and return shapes. Add concurrent-call and mixed-file cases when the kind reads several files or shares state. A trusted declaration needs a derivation argument for every source, not merely a green example with a trusted file.
+Through label-tracking middleware, check that private results stay private and guidance remains readable under automatic hiding. Add concurrent-call cases when calls share state. Verify the executable, network, timeout and cleanup against a real backend and the intended image.
 
-If the kind produces artifacts, extend its spec with `DeclaredOutput`, require `FILES_OUT`, and use the host's `OutputSink` for landing. Return references, not embedded artifact bytes. See [artifact rules](README.md#writing-a-kind-that-collects-artifacts) and the [diagram sample](../../../samples/07_docker_diagram/README.md) before adding that channel.
-
-## Migrate an existing kind
-
-Replace `labelled_result_item(text, SourceIntegrity.TRUSTED)` with `Content.from_text(text)`, and commit eligible guidance in `sandboxed_tool(standing_guidance=(...))`. Remove all body-written `security_label` properties, including labels on derived content. Route every normal return through the same suffix construction. Keep the justified source declaration; changing to wrapper-owned labels does not make a workload trusted.
-
-Expose `file_store_provenance` if the host needs reads checked against the current record, and forward it to `sandboxed_tool`. Leave result confidentiality to host wiring. A package adopting this contract needs core 0.37 or later; move both ends of its bounded dependency range, for example `maf-sandbox>=0.37.0,<0.38` for the 0.37 line.
+For artifacts, declare outputs, require `FILES_OUT` and collect through the host's `OutputSink`. Return delivery references. Follow the [artifact rules](README.md#writing-a-kind-that-collects-artifacts).
 
 ## Status
 
-| Decision | State | Tracking |
+| Contract | State | Details |
 |---|---|---|
-| Kinds return unlabelled derived items and committed guidance; core owns the stamps and the per-call file fold | shipped; this guide describes the 0.37 contract | [#881](https://github.com/sokolaidev/maf-extensions/issues/881) (closed) by [#1054](https://github.com/sokolaidev/maf-extensions/pull/1054) (merged) |
+| Session file reads, wrapper labels and standing guidance | Implemented; used by this example | [Information flow](../information-flow.md) |
+| Four-field `SandboxResult` | Available through explicit opt-in | [Result contract](../information-flow.md#the-result-contract) |

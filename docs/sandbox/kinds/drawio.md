@@ -1,35 +1,87 @@
-# The draw.io kind
+# draw.io
 
-`maf-sandbox-drawio` attaches `create_drawio(xml: str)` to a MAF agent. The model supplies native uncompressed draw.io XML. A fixed guest program validates the graph, applies the host's layout policy and writes one editable `diagram.drawio` file. The host's `OutputSink` receives its bytes; the model receives its display reference after delivery.
+`create_drawio(xml: str)` turns native draw.io XML into one editable `diagram.drawio` file. A guest program checks the graph and applies the host's layout settings. The host's `OutputSink` receives the file; the model receives a delivery reference.
+
+See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wiring and an input example.
+
+## Contract
+
+| Setting | Value |
+|---|---|
+| Kind and tool | `drawio`; `create_drawio` |
+| Required capabilities | `EXEC`, `FILES_IN`, `FILES_OUT` |
+| Guest | POSIX, with Python 3 and Graphviz `dot` |
+| Network | `CLOSED` |
+| Output | One `diagram.drawio` file, `application/xml` |
+| Cleanup | Disposal by default; no call-directory confinement claim |
+| Result integrity | `untrusted`; no standing guidance |
+
+Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide an equivalent one. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment.
 
 ## Host configuration
 
-The factory `make_drawio_tools(router, agent_id, context, sink, *, image=None, preserve_layout=True, direction="TB", exec_timeout_seconds=60)` follows the ordinary kind attachment pattern. The [package README](../../../packages/maf-sandbox-drawio/README.md) gives the wiring and model input example. Build [the supplied image](../../../images/drawio-sandbox/Dockerfile) with Python 3 and Graphviz, or provide an equivalent image through the backend.
+The model supplies only `xml`. The host selects the sink, image, timeout and layout:
 
-Layout belongs to the kind configuration. The model-facing schema contains only `xml`; the host chooses the layout policy, image, timeout and sink. `preserve_layout=True` retains existing geometry on each complete page. Pages with missing vertex geometry always receive automatic layout. `False` applies automatic layout to every page. `direction="TB"` and `"LR"` select top-to-bottom and left-to-right placement.
+| Option | Behavior |
+|---|---|
+| `preserve_layout=True` | Keep complete geometry; lay out pages with missing vertex geometry |
+| `preserve_layout=False` | Lay out every page |
+| `direction="TB"` | Top-to-bottom layout |
+| `direction="LR"` | Left-to-right layout |
+| `exec_timeout_seconds` | Default 60; must be finite, greater than zero and at most 300 |
 
-## XML and layout contract
+## XML and layout
 
-The input is an `mxfile` with one to eight uncompressed `diagram` pages, or a bare `mxGraphModel` that the converter wraps in one page. Cell IDs, labels, styles, object metadata, parents and edge endpoint relationships remain native XML. Structural cells `0` and `1` are required on every page. A matching ID repeated on an object wrapper's inner cell is retained on the wrapper only. Validation rejects other duplicate XML IDs within a page, missing or cyclic parents, invalid endpoints and invalid supplied geometry in both layout modes. Geometry attributes are restricted to positions, dimensions and their supported `as`/`relative` fields; waypoint arrays contain unnamed points and cannot declare a length. Numbers use ASCII decimal or scientific notation. DTDs, entity declarations, compressed pages and unsupported cell/geometry elements are errors. Geometry is validated again after layout and every page must succeed before output is written.
+Accept an `mxfile` with one to eight uncompressed pages, or a bare `mxGraphModel` wrapped into one page. Each page needs structural cells `0` and `1`.
 
-A page has layout when every vertex has geometry and positive width and height. Coordinates omitted from otherwise complete geometry default to zero. Origin coordinates and overlaps do not imply missing layout. Relative edge-label vertices need their relative geometry; connector waypoints are optional. An attached edge missing its geometry receives standard relative geometry without repositioning its vertices.
+Native IDs, labels, styles, object metadata, parents and edge relationships are retained. A matching ID on an object wrapper's inner cell stays on the wrapper only. Other duplicate IDs, missing or cyclic parents, invalid endpoints and invalid geometry are refused.
 
-Automatic mode supports flat flowcharts and component graphs, with multiple layers, disconnected nodes, cycles, self-loops and parallel edges. Graphviz computes placement and polyline connector points over all page vertices while their layer membership remains unchanged. Placement reserves each vertex's rotated bounds when its style sets `rotation`. Only generated identifiers and validated dimensions enter DOT: XML IDs, labels, styles and links are never passed to Graphviz. Missing dimensions default to 160 by 80 units; supplied dimensions and rotation remain. Routing attributes, including `sourcePort` and `targetPort`, and waypoints are replaced, and `childLayout` hints are removed from automatically laid-out pages. Appearance attributes such as colors and arrowheads remain.
+DTDs, entity declarations, compressed pages and unsupported elements are refused. Geometry allows supported position, dimension, `as` and `relative` fields. Waypoint arrays contain unnamed points without a declared length. Numbers use ASCII decimal or scientific notation.
 
-Nested groups, relative ports, edge-label vertices, collapsed cells and detached edges require complete geometry with preservation enabled. Automatic layout refuses these structures instead of flattening them. Diagram-specific semantics such as sequence-message order are the model's responsibility. Layout does not automatically fit arbitrary labels or guarantee text never overlaps. The converter does not render or fetch referenced images, fonts or links; references remain in the file, so structural validation does not sanitize content for an eventual viewer.
+A complete layout gives each ordinary vertex a positive width and height. Edge-label vertices need relative geometry instead. Detached edges need explicit endpoint points.
+
+Omitted coordinates default to zero. Overlaps and origin coordinates do not trigger layout. Missing edge geometry receives standard relative geometry.
+
+| Structure | Layout support |
+|---|---|
+| Flat graphs, multiple layers, disconnected nodes, cycles, self-loops and parallel edges | Automatic layout or preservation |
+| Nested groups, relative ports, edge-label vertices, collapsed cells and detached edges | Complete geometry with preservation enabled |
+
+![After parsing the XML, the converter checks each page's cells, endpoints and geometry. It keeps complete geometry when preservation is enabled. Otherwise the page must support automatic layout within the layout limits; unsupported cases are refused. Graphviz lays out accepted pages. Both routes fill missing edge geometry and check the result. Only after every page succeeds and the output fits the size limit does the tool write diagram.drawio and deliver it through OutputSink. Any invalid page, failed layout or exceeded limit stops delivery; no partial artifact is returned.](../assets/drawio-layout-flow.svg)
+
+Graphviz receives generated IDs and validated dimensions, never XML labels, links or styles. Missing dimensions default to 160 by 80 units. Supplied dimensions and rotation are retained.
+
+Automatic layout replaces connector routing and waypoints, including `sourcePort` and `targetPort`, and removes `childLayout` hints. Appearance and layer membership remain. Geometry is checked again before output is written.
+
+The model owns diagram meaning, such as sequence-message order. Layout does not guarantee that text fits or never overlaps. Image, font and link references stay in the file; the converter neither fetches them nor sanitizes them for a viewer.
+
+## Result labels and tool flow
+
+![The draw.io tool is a source tool declaring untrusted integrity. Its delivery reference or diagnostic is one untrusted content result with host-controlled confidentiality. It has no trusted guidance item. FIDES shows the text or a hidden reference to the model. The model's next call to a reader, writer or other tool is checked against that destination's integrity and confidentiality policy. Artifact delivery occurs separately during create_drawio.](../assets/drawio-information-flow.svg)
+
+The XML argument can contain expanded hidden content. Diagnostics can quote it, and Graphviz is a separate program producing layout output. The result therefore claims `SourceIntegrity.UNTRUSTED` explicitly.
+
+The artifact goes to the configured sink during the call. The diagram shows the text result and later model-called tools. The host supplies result confidentiality and any outward confidentiality limit; [information flow](../information-flow.md) explains the distinction.
 
 ## Execution and delivery
 
-The kind requires a POSIX guest with `EXEC`, `FILES_IN` and `FILES_OUT`, closed egress and one output. The router refuses attachment when the backend does not declare POSIX. Docker hosts construct their backend with `await DockerSandboxBackend.create(config)` to discover the daemon's guest family. The converter and input are written under `SandboxToolSession.guest_call_path()` and executed with fixed argv. No model value becomes a command argument. Confinement is undeclared; the default cleanup policy disposes the sandbox. No backend or core protocol changes are required.
+Input and converter files are written beneath `session.guest_call_path()`. Execution uses fixed arguments. Model values do not become command arguments.
 
-Limits are 1 MiB of input, eight pages, 1000 cells per page, and 2 MiB of output. Automatic layout accepts at most 200 vertices and 600 edges per page. Parsing bounds nesting and element count. Graphviz has bounded retained stdout/stderr and one layout deadline shared across pages, inside the sandbox exec timeout. Diagnostics are limited to 2048 characters. The host may set the timeout from greater than zero up to 300 seconds; its default is 60 seconds.
+| Limit | Maximum |
+|---|---|
+| Input / output | 1 MiB / 2 MiB |
+| Pages / cells per page | 8 / 1000 |
+| Automatic layout per page | 200 vertices, 600 edges |
+| Returned diagnostics | 2048 characters |
 
-Only successful conversion reaches `collect_outputs`, using the literal call-relative path and landing name `diagram.drawio`, media type `application/xml`. A missing file or failed sink delivery is an error. Repeated names need a host-selected replacement policy or a sink with `per_call=True`. Private storage handles and transport diagnostics stay with the host. `SourceIntegrity.UNTRUSTED` is explicit because artifact content and validation diagnostics derive from model input.
+Parsing also bounds nesting and element count. Graphviz has bounded retained output and one layout deadline shared across pages, within the execution timeout.
+
+Every page must succeed before collection. Missing output or failed delivery is an error. Repeated file names need a host-selected replacement policy or `per_call=True`. Private storage handles and transport details stay with the host.
 
 ## Status
 
-| Decision | State | Tracking |
-| --- | --- | --- |
-| Model XML produces one editable draw.io artifact through the sandbox output pipeline | implemented; not yet released | [#1251](https://github.com/sokolaidev/maf-extensions/issues/1251) (closed) by [#1253](https://github.com/sokolaidev/maf-extensions/pull/1253) (merged) |
-| Preserve supplied layout by default, automatically lay out missing geometry on each page, and expose a host override | implemented for the flat-graph automatic subset described above | [#1251](https://github.com/sokolaidev/maf-extensions/issues/1251) (closed) by [#1253](https://github.com/sokolaidev/maf-extensions/pull/1253) (merged) |
-| Specialized automatic layouts and previews | outside this implementation | untracked |
+| Contract | State | Details |
+|---|---|---|
+| Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
+| Specialized automatic layouts and previews | Outside the supported contract | untracked |
+| Four-field result contract | Open; this kind returns text | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
