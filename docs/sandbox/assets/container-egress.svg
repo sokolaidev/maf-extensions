@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 670" width="1180" height="670" role="img" aria-labelledby="container-egress-title container-egress-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="container-egress-title">Container egress: the proxy is the outbound route</title>
+  <desc id="container-egress-desc">CLOSED and empty allowlists use no workload network. A nonempty ALLOWLIST puts the workload on an internal network with a CONNECT proxy. The proxy also joins an outbound network and checks allowed hosts and destination addresses. Direct workload outbound traffic has no route. Attributable proxy ALLOW and DENY logs are drained before removal. Docker additionally verifies an unaddressed internal bridge. Egress enforcement is separate from tool and content labels.</desc>
+  <defs>
+    <marker id="container-egress-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="670" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Container egress: the proxy is the outbound route</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Shared Docker / WSLC layout. The engine creates the network boundary.</text>
+  <rect x="32" y="110" width="1116" height="90" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="143" font-size="21" font-weight="600" fill="#243040">CLOSED or empty allowlist</text>
+  <text x="52" y="174" font-size="17" font-weight="400" fill="#526072">Workload has no network.</text>
+  <text x="32" y="245" font-size="21" font-weight="600" fill="#243040">Nonempty ALLOWLIST</text>
+  <rect x="32" y="280" width="300" height="158" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="313" font-size="21" font-weight="600" fill="#243040">Workload container</text>
+  <text x="52" y="344" font-size="17" font-weight="400" fill="#526072">Internal network only</text>
+  <text x="52" y="370" font-size="17" font-weight="400" fill="#526072">No direct outbound route</text>
+  <rect x="441" y="280" width="316" height="158" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="461" y="313" font-size="21" font-weight="600" fill="#243040">CONNECT proxy</text>
+  <text x="461" y="344" font-size="17" font-weight="400" fill="#526072">Checks hosts and addresses</text>
+  <text x="461" y="370" font-size="17" font-weight="400" fill="#526072">Also joins outbound network</text>
+  <text x="461" y="396" font-size="17" font-weight="400" fill="#526072">No TLS decryption</text>
+  <rect x="870" y="280" width="278" height="158" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="890" y="313" font-size="21" font-weight="600" fill="#243040">Allowed destination</text>
+  <text x="890" y="344" font-size="17" font-weight="400" fill="#526072">HTTP / HTTPS endpoint</text>
+  <text x="890" y="370" font-size="17" font-weight="400" fill="#526072">Denied requests stop</text>
+  <text x="890" y="396" font-size="17" font-weight="400" fill="#526072">at the proxy</text>
+  <path d="M 332 355 L 441 355" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#container-egress-arrow)"/>
+  <path d="M 757 355 L 870 355" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#container-egress-arrow)"/>
+  <text x="349" y="337" font-size="16" font-weight="400" fill="#526072">Internal</text>
+  <text x="770" y="337" font-size="16" font-weight="400" fill="#526072">Outbound</text>
+  <rect x="441" y="492" width="316" height="105" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="461" y="525" font-size="21" font-weight="600" fill="#243040">Host observer</text>
+  <text x="461" y="556" font-size="16" font-weight="400" fill="#526072">Attributed ALLOW / DENY logs</text>
+  <text x="461" y="582" font-size="16" font-weight="400" fill="#526072">Read before proxy removal</text>
+  <path d="M 599 438 L 599 492" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#container-egress-arrow)"/>
+  <text x="32" y="523" font-size="17" font-weight="400" fill="#526072">Docker: bridge must have</text>
+  <text x="32" y="549" font-size="17" font-weight="400" fill="#526072">no host address. WSLC uses</text>
+  <text x="32" y="575" font-size="17" font-weight="400" fill="#526072">its own engine network rules.</text>
+  <text x="822" y="523" font-size="17" font-weight="400" fill="#526072">No event does not prove</text>
+  <text x="822" y="549" font-size="17" font-weight="400" fill="#526072">that no request was attempted.</text>
+  <text x="32" y="640" font-size="17" font-weight="400" fill="#526072">Tool labels are checked by host policy separately from this network route.</text>
+</svg>

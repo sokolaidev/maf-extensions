@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 850" width="1180" height="850" role="img" aria-labelledby="backend-boundary-title backend-boundary-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="backend-boundary-title">Backends run work; the host labels content</title>
+  <desc id="backend-boundary-desc">Source tools declare result integrity and confidentiality. Returned content items carry individual labels and reach the model as visible text or hidden references. Later model calls pass host policy before destination tools, which declare accepted integrity and confidentiality. A sandbox tool is both a model-call target and a result source. Its kind and wrapper use the router and backend to run a guest, then turn execution bytes and files into labelled result items. A backend&#x27;s isolation does not make guest output trusted.</desc>
+  <defs>
+    <marker id="backend-boundary-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="850" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Backends run work; the host labels content</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Tool and content labels govern information flow. Backend declarations govern execution.</text>
+  <rect x="32" y="123" width="245" height="160" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="156" font-size="21" font-weight="600" fill="#243040">Source tools</text>
+  <text x="52" y="187" font-size="17" font-weight="400" fill="#526072">Result declarations:</text>
+  <text x="52" y="213" font-size="17" font-weight="400" fill="#526072">integrity and</text>
+  <text x="52" y="239" font-size="17" font-weight="400" fill="#526072">confidentiality</text>
+  <rect x="323" y="123" width="275" height="160" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="343" y="156" font-size="21" font-weight="600" fill="#243040">Content items</text>
+  <text x="343" y="187" font-size="17" font-weight="400" fill="#526072">Integrity + confidentiality</text>
+  <text x="343" y="213" font-size="17" font-weight="400" fill="#526072">Visible text or</text>
+  <text x="343" y="239" font-size="17" font-weight="400" fill="#526072">a hidden reference</text>
+  <rect x="650" y="123" width="210" height="160" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="670" y="156" font-size="21" font-weight="600" fill="#243040">Model</text>
+  <text x="670" y="187" font-size="16" font-weight="400" fill="#526072">Reads visible content</text>
+  <text x="670" y="213" font-size="16" font-weight="400" fill="#526072">Makes tool calls</text>
+  <rect x="918" y="123" width="230" height="160" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="938" y="156" font-size="21" font-weight="600" fill="#243040">Destination tools</text>
+  <text x="938" y="187" font-size="17" font-weight="400" fill="#526072">Declare accepted</text>
+  <text x="938" y="213" font-size="17" font-weight="400" fill="#526072">integrity and</text>
+  <text x="938" y="239" font-size="17" font-weight="400" fill="#526072">confidentiality</text>
+  <path d="M 277 200 L 323 200" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <path d="M 598 200 L 650 200" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <path d="M 860 200 L 918 200" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <text x="865" y="155" font-size="16" font-weight="400" fill="#526072">Policy</text>
+  <rect x="650" y="340" width="300" height="105" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="670" y="373" font-size="21" font-weight="600" fill="#243040">Host policy</text>
+  <text x="670" y="404" font-size="17" font-weight="400" fill="#526072">Checks the sandbox tool call</text>
+  <path d="M 755 283 L 755 340" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <rect x="650" y="500" width="300" height="105" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="670" y="533" font-size="21" font-weight="600" fill="#243040">Kind + tool wrapper</text>
+  <text x="670" y="564" font-size="17" font-weight="400" fill="#526072">Build labelled result items</text>
+  <path d="M 800 445 L 800 500" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <path d="M 650 550 L 460 550 L 460 283" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <text x="472" y="390" font-size="16" font-weight="400" fill="#526072">Result items</text>
+  <rect x="650" y="665" width="300" height="100" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="670" y="698" font-size="21" font-weight="600" fill="#243040">Router + backend</text>
+  <text x="670" y="729" font-size="16" font-weight="400" fill="#526072">Check support; manage sandbox</text>
+  <path d="M 835 605 L 835 665" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <text x="855" y="640" font-size="16" font-weight="400" fill="#526072">Sandbox protocol</text>
+  <path d="M 700 665 L 700 605" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <rect x="32" y="650" width="345" height="115" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="683" font-size="21" font-weight="600" fill="#243040">Guest</text>
+  <text x="52" y="714" font-size="17" font-weight="400" fill="#526072">Runs programs</text>
+  <text x="52" y="740" font-size="17" font-weight="400" fill="#526072">Produces bytes and files</text>
+  <path d="M 650 692 L 377 692" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <text x="428" y="680" font-size="16" font-weight="400" fill="#526072">Execute / transfer</text>
+  <path d="M 377 737 L 650 737" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#backend-boundary-arrow)"/>
+  <text x="456" y="727" font-size="16" font-weight="400" fill="#526072">Raw results</text>
+  <rect x="32" y="792" width="1116" height="42" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="825" font-size="21" font-weight="600" fill="#243040">Guest output stays untrusted unless the kind can vouch for specific content.</text>
+</svg>

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 548" width="1180" height="548" role="img" aria-labelledby="in-process-test-flow-title in-process-test-flow-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="in-process-test-flow-title">In-process: test behavior without running a guest</title>
+  <desc id="in-process-test-flow-desc">A kind and router call the in-process fake. Test setup supplies declarations, scripted results and seeded in-memory files. The fake records acquisition, execution and cleanup and returns results for assertions. It does not execute guest commands or Python code. Its declared network and isolation properties are test inputs, not enforcement. Real provider tests are required for security claims.</desc>
+  <defs>
+    <marker id="in-process-test-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="548" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">In-process: test behavior without running a guest</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The normal protocols remain in use; execution results and files come from the fake.</text>
+  <rect x="32" y="128" width="310" height="133" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="161" font-size="21" font-weight="600" fill="#243040">Kind + router</text>
+  <text x="52" y="192" font-size="16" font-weight="400" fill="#526072">Call the normal protocols</text>
+  <text x="52" y="218" font-size="16" font-weight="400" fill="#526072">Check policy and result handling</text>
+  <rect x="32" y="316" width="310" height="133" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="349" font-size="21" font-weight="600" fill="#243040">Test setup</text>
+  <text x="52" y="380" font-size="16" font-weight="400" fill="#526072">Declarations and outputs</text>
+  <text x="52" y="406" font-size="16" font-weight="400" fill="#526072">Seeded files and failure cases</text>
+  <rect x="438" y="128" width="310" height="321" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="458" y="161" font-size="21" font-weight="600" fill="#243040">Fake sandbox</text>
+  <text x="458" y="192" font-size="16" font-weight="400" fill="#526072">Scripted exec / run_code</text>
+  <text x="458" y="218" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="458" y="244" font-size="16" font-weight="400" fill="#526072">In-memory file operations</text>
+  <text x="458" y="270" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="458" y="296" font-size="16" font-weight="400" fill="#526072">Acquisition, command, program</text>
+  <text x="458" y="322" font-size="16" font-weight="400" fill="#526072">and cleanup records</text>
+  <text x="458" y="348" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="458" y="374" font-size="16" font-weight="400" fill="#526072">No guest program executes</text>
+  <rect x="838" y="128" width="310" height="321" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="858" y="161" font-size="21" font-weight="600" fill="#243040">Assertions</text>
+  <text x="858" y="192" font-size="17" font-weight="400" fill="#526072">Accepted / refused requests</text>
+  <text x="858" y="218" font-size="17" font-weight="400" fill="#526072"></text>
+  <text x="858" y="244" font-size="17" font-weight="400" fill="#526072">Returned content</text>
+  <text x="858" y="270" font-size="17" font-weight="400" fill="#526072"></text>
+  <text x="858" y="296" font-size="17" font-weight="400" fill="#526072">File-store changes</text>
+  <text x="858" y="322" font-size="17" font-weight="400" fill="#526072"></text>
+  <text x="858" y="348" font-size="17" font-weight="400" fill="#526072">Cleanup calls and failures</text>
+  <path d="M 342 194 L 438 194" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#in-process-test-flow-arrow)"/>
+  <path d="M 342 383 L 438 383" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#in-process-test-flow-arrow)"/>
+  <path d="M 748 288 L 838 288" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#in-process-test-flow-arrow)"/>
+  <rect x="32" y="478" width="1116" height="48" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="511" font-size="21" font-weight="600" fill="#243040">Passing fake tests does not prove OS confinement, process cleanup or network enforcement.</text>
+</svg>

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 545" width="1180" height="545" role="img" aria-labelledby="docker-file-freeze-title docker-file-freeze-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="docker-file-freeze-title">Docker: hold the guest still during file transfers</title>
+  <desc id="docker-file-freeze-desc">Docker claims ownership for the endpoint and container, pauses the guest, checks path components using engine metadata, transfers the archive and resumes the guest. Pause and resume ownership is coordinated across event loops in the host process. After pause is issued, cleanup attempts resume on timeout or cancellation unless pause was positively refused. A failed resume is retained for recovery and blocks unsafe reuse. Removal commands run separately with checked authority.</desc>
+  <defs>
+    <marker id="docker-file-freeze-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="545" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Docker: hold the guest still during file transfers</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Applies to working-directory preparation, writes, reads and stat when they use the engine.</text>
+  <rect x="32" y="140" width="180" height="150" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="173" font-size="21" font-weight="600" fill="#243040">1. Own</text>
+  <text x="52" y="204" font-size="16" font-weight="400" fill="#526072">Endpoint +</text>
+  <text x="52" y="230" font-size="16" font-weight="400" fill="#526072">container</text>
+  <rect x="258" y="140" width="180" height="150" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="278" y="173" font-size="21" font-weight="600" fill="#243040">2. Pause</text>
+  <text x="278" y="204" font-size="16" font-weight="400" fill="#526072">Guest processes</text>
+  <text x="278" y="230" font-size="16" font-weight="400" fill="#526072">cannot swap paths</text>
+  <rect x="484" y="140" width="200" height="150" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="504" y="173" font-size="21" font-weight="600" fill="#243040">3. Check</text>
+  <text x="504" y="204" font-size="16" font-weight="400" fill="#526072">No-follow engine</text>
+  <text x="504" y="230" font-size="16" font-weight="400" fill="#526072">path metadata</text>
+  <rect x="730" y="140" width="190" height="150" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="750" y="173" font-size="21" font-weight="600" fill="#243040">4. Transfer</text>
+  <text x="750" y="204" font-size="16" font-weight="400" fill="#526072">Archive read</text>
+  <text x="750" y="230" font-size="16" font-weight="400" fill="#526072">or write</text>
+  <rect x="966" y="140" width="182" height="150" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="986" y="173" font-size="21" font-weight="600" fill="#243040">5. Resume</text>
+  <text x="986" y="204" font-size="16" font-weight="400" fill="#526072">Then release</text>
+  <text x="986" y="230" font-size="16" font-weight="400" fill="#526072">ownership</text>
+  <path d="M 212 212 L 258 212" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#docker-file-freeze-arrow)"/>
+  <path d="M 438 212 L 484 212" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#docker-file-freeze-arrow)"/>
+  <path d="M 684 212 L 730 212" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#docker-file-freeze-arrow)"/>
+  <path d="M 920 212 L 966 212" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#docker-file-freeze-arrow)"/>
+  <rect x="32" y="355" width="350" height="151" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="388" font-size="21" font-weight="600" fill="#243040">Timeout or cancellation</text>
+  <text x="52" y="419" font-size="17" font-weight="400" fill="#526072">Once pause is issued, cleanup</text>
+  <text x="52" y="445" font-size="17" font-weight="400" fill="#526072">attempts resume. Cancellation</text>
+  <text x="52" y="471" font-size="17" font-weight="400" fill="#526072">waits for that attempt.</text>
+  <rect x="415" y="355" width="350" height="151" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="435" y="388" font-size="21" font-weight="600" fill="#243040">Failed resume</text>
+  <text x="435" y="419" font-size="17" font-weight="400" fill="#526072">Retain recovery ownership.</text>
+  <text x="435" y="445" font-size="17" font-weight="400" fill="#526072">Refuse reuse if the backend</text>
+  <text x="435" y="471" font-size="17" font-weight="400" fill="#526072">cannot recover the container.</text>
+  <rect x="798" y="355" width="350" height="151" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="818" y="388" font-size="21" font-weight="600" fill="#243040">Boundary</text>
+  <text x="818" y="419" font-size="17" font-weight="400" fill="#526072">Closes guest path replacement.</text>
+  <text x="818" y="445" font-size="17" font-weight="400" fill="#526072">Does not cover host mutation</text>
+  <text x="818" y="471" font-size="17" font-weight="400" fill="#526072">or unfrozen removal commands.</text>
+</svg>

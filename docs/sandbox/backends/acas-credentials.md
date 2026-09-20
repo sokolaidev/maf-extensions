@@ -1,34 +1,40 @@
 # Host-selected ACAS credentials
 
-ACAS control-plane credentials authenticate the host's SDK operations. They remain outside the guest and are independent of host-tool user credentials, guest-provisioned tokens and platform-attached managed identity. `AcasSandboxConfig.credential_resolver` selects this authority; omitting it retains `DefaultAzureCredential`.
+`AcasSandboxConfig.credential_resolver` chooses the credential for the host's ACAS SDK operations. Without a resolver, the backend uses `DefaultAzureCredential`.
 
-ACAS supports managed identity configured on the sandbox group. The host owns that configuration; the adapter does not inspect its assignment on acquisition or require management-read permission. Guest token acquisition was measured for M1's tested API, image and group configuration, as [sandbox group identity](acas.md#sandbox-group-identity) records. The host credential selected below is independent of that configured guest authority.
+This credential stays in the host. It is separate from [sandbox group identity](acas.md#sandbox-group-identity), guest-provisioned tokens and host-tool user credentials.
 
-## Request and cleanup authority
+![Active requests supply a captured authority binding through trusted host context. Later cleanup resolves a binding from durable host policy using the target scope, thread and key. Both paths use a credential factory and an SDK client pool partitioned by event loop, authority and generation. An acquired sandbox wrapper retains its binding for later operations. SDK credentials authenticate calls to ACAS and never become guest credentials; group identity is configured separately.](../assets/acas-credential-flow.svg)
 
-The async resolver receives an `AcasCredentialRequest` with `scope`, `thread_id`, `operation`, and an optional `key`. The backend supplies these values from the host's `SandboxKey` or disposal target; guest arguments never select an authority. The resolver returns `AcasCredentialBinding(authority, generation, create_credential)`. `authority` and `generation` are nonempty, non-secret host references. The factory returns a fresh Azure `AsyncTokenCredential`, directly or through an awaitable, on the loop that will use it.
+## Select authority
 
-| Operation | Resolver input | Required host policy |
-| --- | --- | --- |
-| `acquire` | Captured key, scope and thread | Resolve the current request's grant from trusted host context. Two callers in one scope can return different bindings. |
-| `dispose` | Target key, scope and thread | Resolve an authorized cleanup grant without requiring the original request context. This also covers retained per-key deletion retries before acquire. |
-| `dispose_scope` | Target scope and thread, `key=None` | Resolve authority for discovering and deleting that conversation's sandboxes across replicas. Retained scope-wide retries use this operation too. |
+The async resolver receives `AcasCredentialRequest(scope, thread_id, operation, key)`. These values come from host keys and cleanup targets, never guest arguments.
 
-An acquired wrapper captures its binding. Subsequent exec, streaming and file operations use that binding even if the host's ambient request context changes. Immediate deletion after failed execution and cleanup of a refused cold acquire use the captured acquire authority; a later explicit disposal or retained retry resolves cleanup authority anew. A failed custom resolver, credential factory or permission check never selects the default credential as a fallback. Authentication failures and HTTP 401/403 on warm resume propagate without replacement creation. Those failures during lifecycle configuration refuse acquisition and attempt deletion, retaining failed deletion for recovery.
+It returns `AcasCredentialBinding(authority, generation, create_credential)`. Authority and generation are nonempty, non-secret references. The factory creates a fresh `AsyncTokenCredential`, directly or through an awaitable, on the loop that uses it.
 
-Capture the grant when resolving the binding: `create_credential` must reconstruct that captured authority after eviction or on another event loop, rather than read whichever request context is current when it eventually runs. Each returned credential belongs to its cache entry. Returning a shared credential singleton is unsupported; the backend closes each owned client and credential. An async factory owns and cleans any resources it allocates until it successfully returns its credential. Resolver and factory code must not block the event-loop thread.
+| Operation | Host responsibility |
+|---|---|
+| `acquire` | Capture the active request's grant from trusted context. |
+| `dispose` | Recover an authorized cleanup grant for the target key without the original request. |
+| `dispose_scope` | Recover a grant for the target scope and thread; `key` is `None`. |
 
-## Replica-independent recovery
+An acquired wrapper keeps its binding for exec, files and streaming, even when ambient request context changes. Immediate cleanup of a failed execution or refused cold acquire uses that captured binding. Later explicit cleanup and retained retries resolve authority again.
 
-Every replica needs the same trusted authority-selection policy and access to the host's durable cleanup mapping or explicitly configured cleanup principal. A cleanup principal may differ from the request principal only by that explicit policy, with permissions restricted to the intended targets. A host requiring the original caller's authority must make its grant recoverable; expired assertions and scope labels alone cannot recreate it. When recovery is unavailable, disposal reports failure and retains local retry ownership. Another replica can rediscover surviving resources through service labels.
+A failed custom resolver, factory or permission check never falls back to the default credential. Authentication failures and 401/403 responses on warm resume propagate without creating a replacement. During lifecycle configuration, they refuse acquisition and attempt deletion.
 
-The backend does not persist bearer tokens or authority references in resource labels. Disposal resolves from scope/thread/key, not a creator's process-local credential object. A host needing per-creator recovery must maintain the corresponding durable mapping itself. Long scope labels can be irreversible digests; a group-wide operator sweep needs a trusted target registry or independently configured operator authority. Deleting a sandbox on another replica does not require sticky request routing or a surviving creator cache.
+The factory must recreate the captured grant after eviction or on another loop. It must not read whichever request happens to be current then. Each returned credential belongs to one pool entry; shared credential singletons are unsupported. Factories clean their partial resources until ownership is returned. Resolver and factory code must not block the event loop.
 
-The credential pool supplies local client ownership, not distributed sandbox locking or exactly-once deletion. The host must still stop new work across replicas before conversation purge and follow the [tool-call concurrency contract](../tool-call.md). Repeated discovery/deletion of an already absent sandbox remains safe. No guarantee is made that an expired or revoked caller grant can delete its former resources.
+## Recover cleanup across replicas
+
+All replicas need the same trusted cleanup policy and durable mapping, or an explicit cleanup principal. A different cleanup principal is allowed only through that policy, with permissions limited to intended targets.
+
+Resource labels do not store tokens or authority references. Scope labels may be irreversible hashes. Expired assertions and labels cannot recreate a caller's grant, so operators need their own target registry or authority policy.
+
+Failed recovery reports incomplete cleanup and retains local retries. Another replica can rediscover surviving sandboxes through service labels. The client pool supplies no distributed lock or exactly-once deletion guarantee; the host must stop new work across replicas before purging a conversation.
 
 ## Host wiring
 
-This example receives the request binding through a host-owned context variable and delegates cleanup to a host service that must work independently on every replica. The context variable is only for active requests; `recover_cleanup` must use durable host state or an explicit cleanup identity.
+Use a context variable for active requests and a separate cleanup resolver backed by durable state or explicit operator authority.
 
 ```python
 from collections.abc import Awaitable, Callable
@@ -58,27 +64,36 @@ def build_backend(
     ))
 ```
 
-The host obtains a binding from its authentication layer before running the workload and resets its context variable afterwards. The factory on that binding creates a new credential for the captured grant; it never returns the host's shared SDK credential. The backend's subscription, resource group and sandbox group settings still identify the service target. Supplying an `AsyncTokenCredential` does not establish that ACAS accepts a particular delegated token, audience or RBAC grant; validate that deployment separately.
+Set the binding before running work and reset the context variable afterwards. Its factory creates a fresh credential for the captured grant. Validate the deployment's token audience, delegated-token support and RBAC separately; accepting an SDK credential object does not prove the service accepts that grant.
 
-## Capacity, rotation and shutdown
+## Client pool and rotation
 
-**Shutdown migration:** `aclose()` now raises `AcasClientCloseError` when SDK cleanup is incomplete; earlier versions logged and suppressed close failures. Hosts must handle this exception in their shutdown policy, keep owner loops running until closure completes, and retry retained resources where possible. Closing is terminal: construct a new backend if more work must be admitted afterwards. This contract change is released as a breaking change.
+Each backend fixes its service target. Clients are partitioned by `(event loop, authority, generation)`. Equal authority/generation values promise interchangeable grants, including across scopes. The factory itself is not part of the cache key.
 
-Each backend instance fixes its service target and partitions its SDK pipelines by `(event loop, authority, generation)`. Equal authority/generation values assert that the grants are interchangeable, including across scopes. The factory is not part of cache identity. Select a new generation when the grant or factory configuration changes. New bindings get separate authentication-policy state; existing wrappers keep their captured generation, so rotation does not promise immediate revocation of already admitted work or cached tokens. Old idle entries remain eligible for eviction.
+Use a new generation when grants or factory configuration change. Existing wrappers keep their captured generation, so rotation does not immediately revoke admitted work or cached tokens.
 
-`max_clients_per_loop` defaults to 32 and counts active, constructing and closing entries. The least recently used idle entry is closed on its owning loop before replacement. An operation lease lasts through SDK polling, response consumption and streaming cleanup; nested wrapper helpers share that lease. Wrappers retain resource IDs and authority bindings rather than SDK transports and rebuild after eviction. Cancellation of one construction waiter does not cancel another's lease; when the last waiter leaves unfinished construction, cancellation is requested and owned partial resources remain tracked through cleanup. New callers wait for that construction to finish, then share a successful result or start fresh after cleanup.
+| Setting | Default | Scope |
+|---|---|---|
+| `max_clients_per_loop` | 32 | Active, constructing and closing entries per owner loop |
+| `client_wait_seconds` | 30 | Resolver completion and client acquisition, each bounded separately |
+| `client_close_seconds` | 30 | Client closure and shutdown |
 
-`client_wait_seconds` defaults to 30 and independently bounds resolver completion and client acquisition, including capacity waits and construction. It does not replace operation-specific exec/read deadlines. `client_close_seconds` defaults to 30 and bounds shutdown/closure. Capacity is per loop, not global: R replicas with L active owner loops each can hold up to R × L × capacity entries. A host needing a global credential-minting limit must enforce it separately.
+An idle entry is closed on its owner loop before replacement. Leases cover polling, response reading and stream cleanup; nested helpers share a lease. Operation-specific exec/read deadlines still apply. Across R replicas with L loops, capacity can reach R × L × the configured limit.
 
-Eager task factories are supported: construction and retirement suspend before resource work so ownership is registered before they can finish. Capacity and shutdown waiters share one notification bridge per loop and change signal; timeout or cancellation releases a waiter's request context without cancelling that shared signal or waiting for an unrelated active lease to return.
+One cancelled construction waiter does not cancel other waiters. When the last leaves, unfinished construction is cancelled and partial resources remain tracked until cleanup. Eager task factories are supported. Waiting tasks release request context when cancelled or timed out.
 
-Call `await backend.aclose()` before stopping its owner event loops. It permanently refuses new leases, drains admitted operations, and dispatches resource closure to every still-running owner loop. It does not dispose sandboxes. `AcasClientCloseError` reports timeout, a stopped owner loop or failed resource closure; retained resources permit a later close attempt. Resume a stopped owner loop before retrying closure there. A cancelled close caller does not revoke already admitted work. Successfully closed resources are not closed again. `AcasCredentialError` reports resolver/construction/capacity failures without including potentially sensitive provider error text; disposal translates these into its existing incomplete-cleanup report.
+## Shutdown
 
-The [research record](../research/acas-backend.md) contains the baseline findings and the implementation disposition. Tests exercise fake service replicas and the installed SDK authentication policy; live delegated-token acceptance and distributed deployment performance remain unverified.
+Call `await backend.aclose()` before stopping owner event loops. It permanently refuses new leases, drains admitted operations and closes clients and credentials on their owner loops. It does not dispose sandboxes.
+
+`AcasClientCloseError` reports incomplete closure, including timeout or a stopped loop. Retained resources can be retried; restart a stopped owner loop before retrying there. Successfully closed resources are not closed again. Cancelling the close caller does not revoke admitted operations.
+
+`AcasCredentialError` reports resolution, construction and capacity failures without sensitive provider text. Disposal translates it into the normal incomplete-cleanup report.
 
 ## Status
 
-| Item | Status | Tracked by |
-| --- | --- | --- |
-| Host-selected authority across sandbox operations, bounded client ownership and replica-independent cleanup | implemented; release pending | [#1169](https://github.com/sokolaidev/maf-extensions/issues/1169) (closed) by [#1225](https://github.com/sokolaidev/maf-extensions/pull/1225) (merged) |
-| Eager task progress and completed capacity-waiter reclamation | implemented; release pending | [#1233](https://github.com/sokolaidev/maf-extensions/issues/1233) (closed), [#1234](https://github.com/sokolaidev/maf-extensions/issues/1234) (closed) by [#1235](https://github.com/sokolaidev/maf-extensions/pull/1235) (merged) |
+| Area | State | Reference |
+|---|---|---|
+| Authority selection, bounded clients and shutdown | Implemented | [Package README](../../../packages/maf-sandbox-acas/README.md) |
+| Cross-replica cleanup policy | Host responsibility; tested with fake replicas | [Operations](../operations.md) |
+| Live delegated-token acceptance and distributed performance | Deployment validation required | [ACAS evidence](../research/acas-backend.md) |

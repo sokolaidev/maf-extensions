@@ -1,75 +1,91 @@
 # Hyperlight
 
-> The packaged Python guest on Windows WHP and Linux KVM, with a killable worker for each sandbox and optional binary output files.
+Hyperlight runs the packaged Python guest inside a microVM. Each sandbox has a killable worker process, a warm reset baseline and optional output files.
 
-[`maf-sandbox-hyperlight`](../../../packages/maf-sandbox-hyperlight/) implements `SandboxBackend` directly over the Hyperlight Python SDK. The [package README](../../../packages/maf-sandbox-hyperlight/README.md) owns installation, configuration and usage. Kinds continue to use the core protocol; CodeAct opts into `CodeactRuntime` with the backend's `RUNTIME_INSTRUCTIONS`.
+Use the [package README](../../../packages/maf-sandbox-hyperlight/README.md) for installation and configuration. CodeAct selects `CodeactRuntime` and the backend's `RUNTIME_INSTRUCTIONS`.
 
-## Declarations and supported family
+## Supported contract
 
-| Axis | Contract |
-| --- | --- |
-| Isolation | `MICROVM`, only the packaged Python guest / Wasm backend on x86-64 Windows WHP or Linux KVM |
+| Setting | Value |
+|---|---|
+| Host | x86-64 Windows with WHP, or x86-64 Linux with KVM, including suitable WSL2 hosts |
+| Isolation | `MICROVM` |
+| Runtime | SDK, Wasm backend and Python guest pinned together at 0.7.0 |
 | Capabilities | `RUN_CODE`, `SNAPSHOT`; `FILES_OUT` when `file_outputs=True` |
-| Egress | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443, no method or identity refinements |
-| Guest OS | No OS family declared; this is a language runtime |
-| Isolation scope | `CONVERSATION`; the complete key, including `call_id`, still identifies storage in the registry |
-| Identity and observation | No attached platform identity; no egress observation claim |
-| File capabilities | Optional flat `/output` collection; `FILES_IN`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` withheld |
-| Admission | `requires_exclusive_admission=True`; backend ownership spans execution, collection, delivery and cleanup across routers and event loops |
-| Other channels | `EXEC`, `HOST_TOOLS`, `EGRESS_METHODS`, `ATTACHED_IDENTITY` withheld |
+| Network | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443 |
+| Guest OS | None declared; this is a language runtime |
+| Sharing | `CONVERSATION`; one owning host process |
+| Admission | One call per sandbox through execution, delivery and cleanup |
+| Cleanup | Restore the original baseline; dispose on failure |
 
-The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest or image. An explicit working directory is accepted only as `/output` with file outputs enabled. Unsupported platforms refuse. Construction starts no worker. Windows workers retain `WinHvPlatform.dll`; Linux workers verify KVM API access and VM creation. Each uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Linux hosts exposing MSHV are refused until that family has its own validation.
+Custom guests, custom images, ARM64 and Linux MSHV are refused. The adapter declares no `EXEC`, `FILES_IN`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `HOST_TOOLS`, `EGRESS_METHODS` or `ATTACHED_IDENTITY`. It makes no egress observation claim.
 
-The bundled runtime is CPython 3.14 with a reduced standard library. It supplies Python statement execution, separate stdout/stderr, persistent globals and snapshot restore. In the pinned guest, `json`, `math` and `re` are available, while `datetime`, `statistics`, `pickle` and `__future__` are not. The runtime instructions expose this limitation instead of implying desktop Python compatibility.
+The guest is CPython 3.14 with a reduced standard library. It supports statements, persistent globals and separate stdout/stderr. `json`, `math` and `re` are available; `datetime`, `statistics`, `pickle` and `__future__` are absent. This is not the full desktop Python environment.
 
-## Execution and cleanup
+## Worker ownership and cleanup
 
-A worker owns all PyO3/native objects on its main thread. Acquire starts the process, establishes Windows job or Linux cgroup containment, initializes the guest, runs its warm preparation and records the baseline snapshot. No program is admitted before that completes. The process environment excludes application credentials. Input directories are never configured; output storage is an explicit opt-in.
+![One host process owns the shared Hyperlight registry. Acquisition creates a worker inside a Windows job or delegated Linux cgroup, prepares the Python guest and records a baseline. An admitted call holds ownership through execution, output collection, delivery and reset. Queue expiry before submission preserves the worker. Timeout or cancellation after submission, and native faults, terminate and reap it. A successful reset restores the baseline for reuse.](../assets/hyperlight-worker-lifecycle.svg)
 
-File-enabled sandboxes own one private host directory exposed as `/output` for their lifetime. The backend collects only relative flat names beneath it, rejects traversal and link/reparse-point redirection, and returns bounded raw bytes without guest inspection code. The pinned guest supplies no directory or link creation. Core output collection enforces per-call count and aggregate limits. Both native execution and restore clear previous files; collection and delivery must finish first. Reset clears files while retaining the root, and disposal removes the root only after worker termination. Separate sandboxes can run concurrently; each sandbox admits only one call through cleanup. Direct file access requires its backend `call_admission` scope. The [package README](../../../packages/maf-sandbox-hyperlight/README.md#output-files) gives the direct and CodeAct contracts.
+Construction starts no worker. Acquisition checks hypervisor access, starts containment, initializes the guest and records its warmed baseline. All native objects belong to the worker's main thread. The worker environment excludes application credentials.
 
-One host process owns Hyperlight within a shared ownership namespace, enforced by a Windows machine-wide named event or a Linux lock file under `/run/lock`. All backend objects in that process share a key/kind registry. Another process refuses acquire and reports disposal as unclean, so a delete routed to the wrong process cannot claim success. The serving host must receive requests and purges; this implementation does not support multiple owners behind one logical backend. Separate Linux mount/PID/cgroup namespaces do not share this guarantee automatically.
+All backend objects in one process share a key/kind registry. A Windows machine-wide named event or Linux lock under `/run/lock` permits one owner within the shared namespace. Another process refuses acquisition and reports disposal as unclean.
 
-A Windows job kills each worker tree on host exit. Linux requires an operator-delegated cgroup v2 root. A trusted supervisor starts in a separate process session and inherits the owner lock before creating a cgroup or worker. It sets `memory.max`, `memory.swap.max=0` and `memory.oom.group=1`; a bootstrap joins containment before executing the worker command. The supervisor monitors host and worker pidfds outside that memory group, kills the worker and its entire group on exit or close, waits for the group to empty and removes it. It also cleans up when the host exits during startup, including while the bootstrap is outside containment. Ownership remains held until cleanup completes, so a new process cannot report a clean purge while the old tree is still being terminated. The operator keeps that supervisor running and owns the lifetime of the delegated subtree. Acquisition refuses unavailable controls instead of weakening containment.
+Requests and purges must reach the owner. Separate Linux mount, PID or cgroup namespaces do not automatically share that ownership guarantee. Multiple owners behind one logical backend are unsupported.
 
-Admission uses locks independent of an asyncio event loop. A sandbox serializes run and reset; the backend serializes acquire and disposal. `run_code` includes queue time in its deadline. Expiry before submission is `SandboxQueuedTimeout` and preserves the running worker. Expiry after submission terminates it and raises `TimeoutError`; cancellation likewise terminates and reaps it before propagating. Cleanup has a separate bounded allowance and uses its own thread so it cannot queue behind blocked pipe readers. Native result buffering is bounded by Windows committed-memory or Linux cgroup-accounted memory limits, with a second byte limit on returned stdout/stderr and a separate 64 KiB retained diagnostic limit. The defaults are 1.5 GiB on Windows and 3 GiB on Linux; Linux disables swap and rounds the ceiling down to a whole page.
+| Host | Worker containment |
+|---|---|
+| Windows | A job limits committed memory and kills the worker tree when the host exits. |
+| Linux | An operator-delegated cgroup v2 subtree limits memory, disables swap and groups OOM cleanup. A separate trusted supervisor watches host and worker pidfds, kills the group, waits for it to empty and removes it. |
 
-Reset restores the original warmed baseline and changes `instance_id` only after success. An ordinary guest exception returns a failed `ExecResult` and permits reuse; a transport/native failure retires the worker. Policy changes require disposal instead of reusing a VM under a different allowlist or execution contract. Exact-instance disposal ignores stale IDs, preserves other kinds and agents, and retains failed targets for retry. `dispose_scope` reaches every matching target in the owner's shared registry. Cancellation waits for the active worker's bounded cleanup attempt, then propagates without starting another target; unreported targets remain registered for retry. CodeAct's exclusive admission covers execution and cleanup, and `Cleanup.RESET` selects warm reset between its calls.
+The Linux supervisor inherits the owner lock before creating resources. The worker joins containment before execution. The supervisor stays outside the worker's memory group and retains ownership until cleanup finishes. Acquisition refuses unavailable controls.
 
-## Egress boundary
+The default memory ceiling is 1.5 GiB on Windows and 3 GiB on Linux. Linux rounds down to whole pages and sets `memory.swap.max=0`. Returned stdout/stderr have a separate byte limit; retained diagnostics have a 64 KiB limit.
 
-Hyperlight's native [network policy](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/6ae78065617d5603c1dd5fdbb63d62d8201ac68c/src/hyperlight_sandbox/src/network.rs) checks each request's scheme, host, port and path. The adapter translates each exact core hostname into HTTP and HTTPS root permissions. Wildcards, non-default ports and narrowed method/authority requests are unsupported. The pinned native implementation always blocks CONNECT and TRACE. It exposes HTTP helpers, not raw guest sockets.
+## Execution outcomes
 
-HTTP runs on the host network; allowing an internal name or loopback grants access there. Hostname policy does not filter resolved IP addresses. No credentials or proxy settings are forwarded from the application environment, and the adapter attaches no identity. The host remains responsible for which destinations it authorizes.
+Queue time counts toward `run_code`'s deadline. Separate sandboxes can run concurrently, but a sandbox serializes execution and reset. Backend admission also covers output delivery and cleanup across routers and event loops.
 
-## Evidence
+| Outcome | Result |
+|---|---|
+| Deadline expires before submission | `SandboxQueuedTimeout`; preserve the worker. |
+| Guest code raises an ordinary exception | Failed `ExecResult`; worker can be reused. |
+| Deadline expires after submission | Terminate and reap the worker; raise `TimeoutError`. |
+| Active execution is cancelled | Terminate and reap before propagating cancellation. |
+| Native or transport failure | Retire the worker. |
+| Reset succeeds | Restore the original warmed state and change `instance_id`. |
 
-On 2026-09-13, Windows 11 AMD64 / WHP / host CPython 3.13 and the exact 0.7.0 trio ran the new adapter's guest suite. It covered stream separation, ordinary exceptions and warm state, reset of globals and builtins, absent host environment values, refused guest writes, infinite-loop timeout/cancellation with worker reaping, queue exhaustion without submission, output limits, CLOSED/exact-host HTTP enforcement before and after reset, selective instance disposal, scope purge and CodeAct with both fixed and per-spec routing. On 2026-09-18 that host re-ran the suite with an added abrupt worker-death scenario: eleven passed and the two Linux-only scenarios were skipped. Separate Windows subprocess tests exercise committed-memory limits and abrupt owner exit. Portable tests cover failure retention/retry and blocked stdin/stdout/stderr pipes. These are local WHP results; CI's ordinary suite does not validate a hypervisor.
+Cleanup has a separate bounded allowance. It uses its own thread so blocked pipe readers cannot prevent worker termination.
 
-The consolidated [research record](../research/hyperlight-backend.md) preserves the historical investigation. Its proposed file capabilities are not declarations of this adapter. Optional file work must establish its own conformance and cleanup before any file capability is enabled.
+Changing the allowlist or execution contract requires disposal or a new key. Exact-instance disposal ignores stale IDs and retains failed targets for retry. Scope purge uses the owner's registry. Cancellation finishes the active target's bounded cleanup attempt, then leaves remaining targets registered.
 
-The Linux validation used Ubuntu 24.04.4 under WSL2, kernel `6.18.40.1-microsoft-standard-WSL2`, CPython 3.12.3 and the same exact 0.7.0 trio. Real KVM VM creation and all thirteen guest scenarios passed on 2026-09-18: twelve as an unprivileged host, with the HTTP-policy scenario given permission to bind port 80. Three of them hold the kernel to a real guest. A 128 MiB ceiling is enforced by the group OOM killer during preparation, and acquisition fails with no cgroup left behind. An abruptly killed worker is refused rather than reused, and a fresh acquire replaces it. An owner killed while its guest loops inside a native call leaves no worker, no cgroup and no ownership claim, which is the case a worker cannot end by noticing its own closed input. Restoring an unlimited `memory.max`, or removing the supervisor's owner watch, fails the first and the third. Kernel tests exercised cgroup OOM, descendants in separate sessions, abrupt owner exit and lock retention through cleanup. These are WSL2 measurements; the native Linux record is separate below. MSHV and AKS require their own environment records; the ACA measurements are recorded below. CI separately runs the Linux kernel lifecycle checks and the real KVM guest suite, recording the native Linux environment and failing if KVM or guest execution is unavailable.
+## Optional output files
 
-Native Linux [CI on commit `0d250564`](https://github.com/sokolaidev/maf-extensions/actions/runs/35330572586/job/105553773894) used Ubuntu 24.04.5 LTS, kernel `6.17.0-1022-azure`, x86-64, CPython 3.13.15 and the exact 0.7.0 SDK/Wasm/Python guest trio. All thirteen real KVM guest scenarios passed in 19.17 seconds as an unprivileged host, including the kernel memory ceiling, worker and owner death, CLOSED/exact-host HTTP enforcement and both CodeAct selection modes. The same runner passed 135 package/kernel tests with 15 platform or opt-in skips. The test operator delegated a temporary cgroup subtree, granted KVM group access and allowed the HTTP fixture to bind port 80; no kernel identity or backend admission was mocked.
+With `file_outputs=True`, each sandbox has a private host directory exposed as `/output`. The only accepted explicit working directory is `/output`. Input directories are never configured.
 
-## Azure Container Apps
+Collection accepts flat relative names and bounded raw bytes. It rejects traversal, links and Windows reparse points. The pinned guest cannot create directories or links. Core collection also enforces file-count and total-byte limits.
 
-Direct execution inside a standard managed ACA Linux application container has no supported deployment path in the published platform contract inspected on 2026-09-14. Consumption, Dedicated and the inspected preview offerings expose no documented mechanism to inject a KVM/MSHV device. The [Hyperlight research record](../research/hyperlight-backend.md#azure-container-apps) pins the current API-source audit, separates that conclusion from unmeasured runtime behavior, and assesses memory, cache, shutdown and owner routing. A Linux adapter alone does not supply the missing platform access.
+Execution and restore clear previous outputs. Collection and delivery must finish before either operation. Reset keeps the directory root; disposal removes it only after the worker stops. Direct file access requires the backend's `call_admission` scope. See the [output examples](../../../packages/maf-sandbox-hyperlight/README.md#output-files).
 
-The live ACA probe summarized in the [Hyperlight research record](../research/hyperlight-backend.md#azure-container-apps) tested standard Consumption and Dedicated D4 application containers in Sweden Central on the same date. For both root and UID 65534, `/dev/kvm` and `/dev/mshv` were absent and the pinned 0.7.0 SDK's first run failed with no hypervisor found. Imports and writable guest caches succeeded. Dedicated exposed the CPU `svm` flag, so hardware capability alone did not grant the required device access. Other regions and profiles remain unmeasured; no Hyperlight guest or adapter conformance passed on ACA.
+## Network boundary
 
-An ACA application can instead be designed to call a separate Hyperlight worker service on a suitable host. This requires a remote integration with authentication, owner identity, cancellation and purge semantics; it is not support for this local backend inside ACA.
+Native HTTP helpers enforce scheme, exact host, port and path. The adapter grants HTTP port 80 and HTTPS port 443 for each allowed hostname. Wildcards, other ports and narrower method or authority requirements are unsupported. CONNECT and TRACE are blocked by the pinned runtime.
+
+HTTP uses the host network. An allowed internal or loopback hostname grants access there; hostname policy does not filter resolved IP addresses. Application credentials and proxy settings are not forwarded. The host must choose destinations accordingly.
+
+## Validation and deployment limits
+
+The real-guest tests cover WHP and KVM execution, reset, queue deadlines, cancellation, worker reaping, output bounds and network policy. Linux tests also cover process-tree containment. The [research record](../research/hyperlight-backend.md) carries environments and measurements.
+
+AKS hosting remains under investigation. Device access alone does not establish cgroup delegation, worker cleanup or ownership across pods. Standard Azure Container Apps does not provide the required local hypervisor device in the evaluated hosting setup. The backend has no remote-worker mode.
 
 ## Status
 
-| Item | State | Tracking |
-| --- | --- | --- |
-| Initial runtime and reset backend | implemented with Windows WHP validation; umbrella remains open for the independent channels | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged) |
-| Linux x86-64 KVM and WSL2 | shipped — native Linux KVM CI and separate local WSL2 KVM validation, including the kernel memory ceiling, worker death and owner death against a real guest | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (closed) by [#1298](https://github.com/sokolaidev/maf-extensions/pull/1298) (merged); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
-| AKS hosting | investigation | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
-| Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
-| Optional output collection/listing | flat `FILES_OUT` implemented; listing withheld | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
-| Optional file cleanup | open | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
-| Native host tools | open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
-| Direct ACA hosting | investigated: measured device absence and SDK failure on Consumption/D4; no supported device-access mechanism found | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (closed) by [#1242](https://github.com/sokolaidev/maf-extensions/pull/1242) (merged) |
-| Separate remote worker for an ACA application | not planned: authenticated single-owner prototype proposal closed without implementation | [#1236](https://github.com/sokolaidev/maf-extensions/issues/1236) (closed) |
+| Area | State | Tracking |
+|---|---|---|
+| Packaged runtime, reset and worker containment | Implemented on the supported WHP/KVM family | [Package README](../../../packages/maf-sandbox-hyperlight/README.md) |
+| Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
+| AKS hosting | Investigation | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
+| Writable inputs | Not implemented | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
+| Output collection and listing | Flat `FILES_OUT` implemented; listing withheld | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
+| File cleanup | Not implemented | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
+| Native host tools | Not implemented | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |

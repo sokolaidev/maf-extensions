@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 760" width="1180" height="760" role="img" aria-labelledby="hyperlight-worker-lifecycle-title hyperlight-worker-lifecycle-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="hyperlight-worker-lifecycle-title">Hyperlight: one owner, bounded workers, warm reset</title>
+  <desc id="hyperlight-worker-lifecycle-desc">One host process owns the shared registry and directs acquisition and purge. Each sandbox worker starts inside a Windows job or delegated Linux cgroup before guest preparation and baseline capture. A call is admitted, executes, collects and delivers outputs, then resets to the baseline for reuse. Deadline expiry before submission preserves the worker. Timeout or cancellation after submission and native faults terminate and reap it. Failed cleanup remains owned for retry.</desc>
+  <defs>
+    <marker id="hyperlight-worker-lifecycle-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="760" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Hyperlight: one owner, bounded workers, warm reset</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">A call owns its sandbox through execution, output delivery and cleanup.</text>
+  <rect x="32" y="118" width="330" height="150" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="151" font-size="21" font-weight="600" fill="#243040">One host owner</text>
+  <text x="52" y="182" font-size="16" font-weight="400" fill="#526072">Shared key/kind registry</text>
+  <text x="52" y="208" font-size="16" font-weight="400" fill="#526072">Requests and purges arrive here</text>
+  <text x="52" y="234" font-size="16" font-weight="400" fill="#526072">Other owners are refused</text>
+  <rect x="433" y="118" width="715" height="150" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="453" y="151" font-size="21" font-weight="600" fill="#243040">One contained worker per sandbox</text>
+  <text x="453" y="182" font-size="17" font-weight="400" fill="#526072">Windows: job with memory and process-tree controls</text>
+  <text x="453" y="208" font-size="17" font-weight="400" fill="#526072">Linux: delegated cgroup v2 + independent supervisor</text>
+  <text x="453" y="234" font-size="17" font-weight="400" fill="#526072">Contain first → prepare guest → capture warm baseline</text>
+  <path d="M 362 194 L 433 194" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <rect x="32" y="359" width="230" height="138" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="392" font-size="21" font-weight="600" fill="#243040">Admit call</text>
+  <text x="52" y="423" font-size="17" font-weight="400" fill="#526072">Queue time counts</text>
+  <text x="52" y="449" font-size="17" font-weight="400" fill="#526072">toward the deadline</text>
+  <rect x="328" y="359" width="230" height="138" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="348" y="392" font-size="21" font-weight="600" fill="#243040">Execute</text>
+  <text x="348" y="423" font-size="17" font-weight="400" fill="#526072">Persistent globals</text>
+  <text x="348" y="449" font-size="17" font-weight="400" fill="#526072">Bounded output</text>
+  <rect x="624" y="359" width="230" height="138" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="644" y="392" font-size="21" font-weight="600" fill="#243040">Collect + deliver</text>
+  <text x="644" y="423" font-size="16" font-weight="400" fill="#526072">Optional flat outputs</text>
+  <text x="644" y="449" font-size="16" font-weight="400" fill="#526072">Retain call ownership</text>
+  <rect x="920" y="359" width="228" height="138" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="940" y="392" font-size="21" font-weight="600" fill="#243040">Reset</text>
+  <text x="940" y="423" font-size="16" font-weight="400" fill="#526072">Restore baseline</text>
+  <text x="940" y="449" font-size="16" font-weight="400" fill="#526072">New instance identity</text>
+  <path d="M 197 268 L 197 312 L 147 312 L 147 359" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <path d="M 790 268 L 790 312 L 443 312 L 443 359" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <text x="591" y="303" font-size="16" font-weight="400" fill="#526072">Acquire / reuse</text>
+  <path d="M 262 427 L 328 427" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <path d="M 558 427 L 624 427" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <path d="M 854 427 L 920 427" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <path d="M 1034 497 L 1034 551 L 147 551 L 147 497" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#hyperlight-worker-lifecycle-arrow)"/>
+  <text x="473" y="540" font-size="16" font-weight="400" fill="#526072">Ready for another call</text>
+  <rect x="32" y="607" width="382" height="117" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="640" font-size="21" font-weight="600" fill="#243040">Expiry before submission</text>
+  <text x="52" y="671" font-size="17" font-weight="400" fill="#526072">SandboxQueuedTimeout</text>
+  <text x="52" y="697" font-size="17" font-weight="400" fill="#526072">Worker stays available</text>
+  <rect x="453" y="607" width="695" height="117" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="473" y="640" font-size="21" font-weight="600" fill="#243040">Timeout / cancellation after submission, or native fault</text>
+  <text x="473" y="671" font-size="17" font-weight="400" fill="#526072">Terminate and reap the worker within the cleanup allowance.</text>
+  <text x="473" y="697" font-size="17" font-weight="400" fill="#526072">Retain failed cleanup for retry; do not claim successful reset.</text>
+</svg>
