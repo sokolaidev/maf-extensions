@@ -1,18 +1,14 @@
-# What a sandbox reports about itself
+# Observability
 
-> The seam a host records through: one observer it registers, one frozen event per thing that happened, and the key that joins them — plus the snapshot of what held, for the reader who has the conversation and not the trace. What the seam does not see is at the end, because a record with an unstated blind spot is worse than none.
+The host can observe sandbox activity through `SandboxObserver`. Events describe the configuration served, work attempted and cleanup outcomes. They use core types and require no telemetry SDK.
 
-## The problem
+The observer records activity. It does not authorize tools, change content labels or prove that guest output is trustworthy. Those rules belong to [information flow](information-flow.md).
 
-Every security-relevant thing this suite does, it already does. What it does not do is write any of it down in a form a deployment can query.
+![Source tools declare result labels; returned content items carry their own labels to the model. Host policy checks later calls to destination tools against those tools' accepted labels. Separately, the sandbox's router, tool wrapper, host-tool registry, output collector and observing backends emit events. A host observer receives them. The OpenTelemetry observer selects and redacts attributes before sending logs, spans and metrics to host-configured providers and exporters. Observation records selected facts and does not enforce information-flow policy.](assets/observability-channels.svg)
 
-Ask which conversations reached `example.com` this week, how much they sent, which host tools ran and under whose authority, which files crossed and with what label — and there is no single place that answers. The facts exist as side effects in four places that share no key: this package's `logging` records, almost all of them at `warning`; the egress proxy's own container stdout, which dies with a container rebuilt on every acquire; the sandbox service's control plane, for a backend that enforces egress there; and a per-run ledger nothing emits. A **served** call that did nothing wrong leaves at most one `info` line, and no record at all.
+## Register an observer
 
-MAF's own OpenTelemetry sees the whole thing as one `execute_tool` span plus a duration. That is the aggregate the boundary is designed to show the middleware — [`hosts.md`](hosts.md) says a host-tool call bypasses the middleware chain, so it bypasses the span too.
-
-## The seam
-
-A host subclasses `SandboxObserver` and registers it. Every method does nothing by default, so a host overrides only what it wants:
+Subclass `SandboxObserver` and override the callbacks you need. Other callbacks are no-ops. Register it on both `SandboxRouter` and `HostToolRegistry`; pass it to `collect_outputs(observer=..., key=...)` for output records.
 
 ```python
 from maf_sandbox import (
@@ -35,69 +31,70 @@ class Records(SandboxObserver):
 
 
 def emit(name: str, **attributes: object) -> None:
-    """Wherever this host's records go — a queue, an exporter, a SIEM."""
+    """Send these fields to the host's chosen recorder."""
 
 
 records = Records()
-# One recorder, both registration points: the router would record no host-tool call, and the
-# registry no acquire. `min_isolation` is lowered only because the in-process fake declares
-# `Isolation.NONE`, which the default `microvm` floor refuses at construction — a deployment
-# wiring a real backend leaves the floor alone.
+# The fake backend requires Isolation.NONE. Keep the deployment's real isolation floor.
 router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE, observer=records)
 registry = HostToolRegistry(observer=records)
 ```
 
-**It is a class to inherit from rather than a `Protocol`.** This seam gains events as the suite learns to see more, and a structural implementer would stop satisfying a protocol the moment one arrived. Inheriting means a new event is a new no-op a host already has. Both registration points refuse anything that is not a `SandboxObserver`, and refuse an `async def` override — nothing awaits an observer, so a coroutine one would lose every event it saw.
+Callbacks are synchronous and can run on an event loop or worker thread. An `async def` callback is refused at registration. Keep callbacks short and make shared state thread-safe. Use a thread-safe queue or `loop.call_soon_threadsafe` to hand work to an exporter.
 
-**There are two registration points, because there are two host-policy objects.** `SandboxRouter(observer=…)` owns the sandbox lifecycle and is what `sandboxed_tool` reads for a call's own events. `HostToolRegistry(observer=…)` owns what a guest may call back into — the same split as every other host-tool policy, which lives on the registry because it is a statement about what the *host* will execute. A host may wire either alone. `collect_outputs` is neither: it is a function a kind calls per collection, so it takes `observer=` and `key=` as arguments, and a kind passes `session.observer` beside the key it already took for its acquire. That stays a call-site pattern rather than a `SandboxToolSession.collect_outputs` filling both in, because a kind collecting under caps of its own passes a spec the session does not hold — codeact charges its manifest against the budget before the artifacts are read — so a wrapper would take back as arguments most of what it saved, and leave two ways to do one thing.
+Ordinary exceptions, `CancelledError` and `GeneratorExit` are logged and contained. `SystemExit` and `KeyboardInterrupt` escape, including inside exception groups. An observer's return value does not change the tool result.
 
-## What is recorded
+When no observer is registered, no observer event is built. The effective-state collector can still record configuration independently.
 
-| Event | Emitted at | What it answers |
-|---|---|---|
-| `SandboxAcquired` | `SandboxRouter.acquire`, served or refused | Which key ran under which spec, on which backend, at which isolation rung and scope — or the class name of the refusal that stopped it |
-| `SandboxDisposed` | Every disposal of a **key**, once per backend asked | What became of the delete — `gone`, `may_remain` or `unknown` — and the `DisposalCode` and detail behind it. Three values rather than a flag because `dispose` returns `None` both for a verified delete and for one a backend cannot check, and an interrupted disposal never answered at all |
-| `ScopeDisposed` | Every purge of a **conversation**, once per backend asked | How many sandboxes that backend removed for `(scope, thread_id)`, under the same three-value `outcome` — so the routine cleanup a thread deletion runs is recorded beside the per-key delete rather than only inferable from its absence |
-| `EgressObserved` | A backend implementing `ObservesEgress`; Docker and WSLC read before removal and publish after it confirms the proxy is gone — **except one it cannot attribute**, since a scope purge is addressed by a conversation and this event needs a key | Every `CONNECT` the guest **attempted** and how the enforcer answered it: one `EgressDecision` each — `ALLOW`, `DENY`, `DENY-NONGLOBAL` or `UNREACHABLE`, with the host and port it asked for. Only `ALLOW` opened a tunnel, so a reader counting what was *reached* filters on the verb. The read is bounded in lines and in bytes, so `truncated` says the window **may** be short of it rather than that a decision was certainly dropped, and `unreadable` names a window the backend could not account for |
-| `ProcessesObserved` | Four boundaries of `host_tool_calls_over_exec` | Which processes were visible, their rich metadata and observed lineage, and whether that snapshot was complete or unavailable |
-| `ProcessCleanup` | Each process cleanup decision | Which retained process or group was considered, any recorded signal attempt, its outcome and duration |
-| `HostToolCalled` | `HostToolRun.call` | Which tool a guest program called, under which declaration, how it ended, and how many bytes came back |
-| `StoreFileRead` | `SandboxToolSession.read_file` | Which file a call read out of the host's store, the integrity label the read folded, and whether text actually crossed — `read`, `absent` or `refused`, since an empty file and a missing one are otherwise the same record |
-| `OutputsCollected` | `collect_outputs` | What a spec declared, what a sink took, under which `TransferLimits`, and — for a `per_call` sink — the folder they landed in |
-| `ToolCallEnded` | `sandboxed_tool`'s wrapper | One sandboxed tool call: its own id, every key it touched, served or refused, what it cost, what the **body** raised, what it left unclean, and what the store fed it — the weakest level across the reads that carried text, folded into one answer |
+## Events
 
-Every event is a frozen dataclass in this package's own vocabulary — a `SandboxKey`, a `SandboxSpec`, a `SourceIntegrity`. Nothing here imports a telemetry library; core's protocol modules are standard library only, and a package that turns these into spans, log records and counters sits above this seam rather than inside it.
+The ten frozen event types describe one operation or observation each.
 
-`SandboxAcquired` carries the whole `SandboxSpec` rather than a projection of it, deliberately: which fields a record needs is the recorder's question, and a field added to the spec later reaches an existing recorder with no change here. It is also the "what held" half, and the section below is where that answer goes when a trace is not where somebody will look for it.
+| Event | Records |
+|---|---|
+| `SandboxAcquired` | Served or refused acquisition, full spec, backend declarations, resolved isolation scope and timing |
+| `SandboxDisposed` | One backend's key disposal and physical outcome |
+| `ScopeDisposed` | One backend's conversation purge, count and physical outcome |
+| `EgressObserved` | A bounded proxy window of network decisions, with unreadable and truncated indicators |
+| `HostToolCalled` | A guest-to-host tool call, tool declaration, sizes, timing and refusal |
+| `StoreFileRead` | Host-store read outcome and the integrity label of accepted text |
+| `OutputsCollected` | Declared and landed files, byte counts, transfer limits and collection errors |
+| `ToolCallEnded` | Call duration, failure class, touched keys, cleanup state and input-integrity summary |
+| `ProcessesObserved` | A bounded process snapshot at a run boundary |
+| `ProcessCleanup` | A cleanup action, target identity, reach and outcome |
 
-**The key is what joins them, and the ten do not all carry one the same way.** Four shapes, because four things are true:
+Disposal outcomes distinguish `gone`, `may_remain` and `unknown`. A count or successful API response alone does not prove physical removal. Purge records give backend counts, not an inventory of removed keys or reopened refusals.
 
-- `SandboxAcquired`, `SandboxDisposed` and `EgressObserved` are *addressed* by a key, so `key: SandboxKey` and it is always there.
-- `HostToolCalled`, `ProcessesObserved`, `ProcessCleanup`, `StoreFileRead` and `OutputsCollected` type it `SandboxKey | None`, and each is `None` for its own reason: a `HostToolRun` built without one for the host-tool and process events, a store read whose key could not be *derived* — no conversation bound to the request context, or a call-scoped workload asked outside a call — and a collection a kind did not pass one for. Note the middle case is about the context, not about acquisition: a session that never acquired still keys its reads from the scope and thread it was built with.
-- `ScopeDisposed` carries no key at all, and this is the one place that is not a gap: a backend answers a purge with a *count* rather than with the sandboxes it removed, so it holds `scope` and `thread_id` and joins to the rest on the conversation. Reading it as a per-key record — one delete, or one per sandbox — is the mistake to avoid; it is one record per **backend asked**, and `disposed` is that backend's own number.
-- `ToolCallEnded` carries `keys: tuple[SandboxKey, ...]` — every key the call **touched**, in order, since one call may reach two sandboxes, and an empty tuple rather than `None` for a call that touched none. Touched rather than acquired, because both of the other cases are ordinary: a refused acquire is named so its own `SandboxAcquired` has a call to join to, and so is a key the call only read the store under — `execute_code` reads its listed files before it acquires and returns early when one is refused. A recorder wanting only what was served reads the acquire records, where the refusal is stated.
+Core events are **not redacted**. They can contain the full spec and identifying or guest-chosen strings. A custom recorder must choose what to export. The [OpenTelemetry observer](../../packages/maf-sandbox-otel/README.md) omits sensitive strings by default.
 
-So a host joining records treats the optional-key events as joinable when the key is present, joins `ToolCallEnded` through its tuple rather than looking for a `key` field it does not have, and joins `ScopeDisposed` on the conversation. `collect_outputs` has no key of its own, so a kind that wants its collections joined passes one; the `call_id` it already stamps on each artifact is recorded beside it, which is what reaches the folder a `per_call` sink landed them in. `HostToolRun(key=…)` is the same for a transport: without it a host-tool record says which run called and nothing about whose conversation.
+## Join records to work
 
-**`call` is the second join column, and it is the one the key cannot be.** A key names a sandbox and a conversation; at the default `conversation` scope it names no call, so two calls in flight on one thread are one key and their records interleave. Every event carries `call` — the id of the tool call it came from — and `ToolCallEnded` is the one event where it is never `None`, because that record is where a call's other events join. `EgressObserved` is the other end of that: its `call` is **always** `None`, because a drain covers a window between removals and the decisions in it span whatever calls happened meanwhile — naming the call that collected them would file one call's traffic under another's. On the remaining eight it is absent for what genuinely happened outside a call: an acquire a direct consumer of the router asked for, a disposal from a framework reclaim, a scope purge — which a thread deletion and a closing `scope` block both run from outside any call — a collection a kind ran outside a tool body — and anything a task the body left running does *after* the call, since a child task starts from a copy of the context and the call's record is the only part of it the two share.
+Use `event.call` to join activity from the same tool call. It is always present on `ToolCallEnded`. Events outside a call can have no call ID. `EgressObserved.call` is always `None`, since a proxy window can cover several calls.
 
-It is the same id the call's own guest path is named by, and — at `IsolationScope.CALL` — its key's `call_id` too, so a recorder holds one string for a call rather than two, and can find the folder that call's files are under. Note that `OutputsCollected` carries both `call` and `call_id`, and they answer different questions: `call_id` is what a kind asked the sink to stamp on each artifact, read from the argument, while `call` is which call collected, read from the seam. A kind passing its own call's id spells them the same; a kind passing none, or a meaning of its own, still gets a record that joins.
+| Identity | Events |
+|---|---|
+| Required sandbox key | Acquire, key disposal and egress |
+| Optional sandbox key | Host-tool calls, process observations, process cleanup, store reads and output collection |
+| `(scope, thread_id)` | Conversation purge |
+| Tuple of touched keys | Tool-call end, including refused acquisitions and store-only work |
 
-`HostToolCalled` gets its `call` where the `HostToolRun` was built rather than per call, because a guest's callback is served on a task of the transport's own whose context is a copy rather than the body's. A transport therefore builds its run **inside** the tool call it supervises — the shipped `execute_code` one does — and a run built elsewhere records no call.
+A conversation key can be shared by concurrent calls. Its `call_id` is empty, so it cannot identify the call that performed an operation. `OutputsCollected.call_id` names the artifact collection; `event.call` identifies the actual tool call.
 
-**What a call was fed is folded once, and its absence is an answer.** `ToolCallEnded.fed` is the fold across every read of the call that carried text — `weakest_integrity` over their labels, with how many reads it folds — so a recorder asking *was this call fed anything the host did not establish* reads one field instead of re-deriving the ordering and the empty case from the per-read records. **It covers reads those records do not.** The fold belongs to the call rather than to the session that read, so a read through a second `SandboxToolSession` whose own router carries no observer feeds it and emits no `StoreFileRead` at all: `reads` is a count of what fed the call, and it can exceed the per-read records this observer holds. A call that read nothing carries no fold at all rather than the `trusted` an empty listing folds to: that answer is honest about a result deriving from no file and would read here as a call fed trusted content. And it describes the call's **inputs**, never its result — a kind that reads a file and answers a fixed sentence is fed exactly what one quoting the bytes back is, so what a result derives from stays the kind's declaration.
+`ToolCallEnded.fed` summarizes accepted host-store reads: their count and weakest integrity label. Absent and refused reads contribute nothing. No accepted reads gives `None`, not `trusted`. The summary describes inputs, not result integrity, and can include reads from sessions without their own observer.
 
-**Every way out of an instrumented site is recorded, not only the successful one.** An acquire that was refused, a host-tool call that a cap exhausted, a collection that a cap refused part-way, a tool call taken by a cancel — each of those is the record an operator goes looking for, and none is emitted beside a `return`. Where a site can wrap its whole body the record comes from a `finally`; where it cannot, the cancellation carries its own catch, because `CancelledError` is not an `Exception` and an `except Exception` that looks exhaustive would drop exactly the disposal a timeout took. **How a refusal is recorded differs by event, and a recorder has to know which it is holding.** `SandboxAcquired.refusal`, `OutputsCollected.refusal` and `ToolCallEnded.failure` are the exception's **class name** and never its message, because a message is what carries a backend's endpoint or an SDK's response body and these records are handed over whole. `HostToolCalled.refusal` is the other kind: it is the sanitized sentence the *guest* was answered with, which is safe for a transcript and so safe for a record — but it is not purely host vocabulary, since the two refusals that fire before a name resolves quote a bounded copy of what the guest asked for. Treat that one field as guest-influenced when deciding what may leave the process.
+## OpenTelemetry
 
-## What held, written where the conversation lives
+`maf-sandbox-otel` converts each event into a log and span, plus metrics where useful. Store reads use instant spans. Process snapshots add per-process logs. The application supplies SDK providers, exporters and retention.
 
-The records above answer *what happened*. The adjacent question — **what was live for this call** — has a second destination, because the two survive different things: a span survives with the trace and whatever sampled it, and somebody reading a conversation back a month later has the transcript and no trace at all.
+![Within an application span, acquisition, file, host-tool and call-end records are sibling spans. They are emitted after their operations, and the call-end span uses the full reported call duration. The call ID joins them. Egress records use a fresh trace context with no tool-call ID because the observation window belongs to the sandbox, not one call.](assets/otel-trace-shape.svg)
 
-`EffectiveState` is one served acquire as a value rather than an event: the backend that answered, the isolation rung it declared, the scope the host and the spec resolved to, the egress mode and its allowlist, the capabilities the workload required beside the ones the backend declared, the image, the guest working directory, the execution contract, the declared outputs, the transfer caps per direction — and **every tool the sealed host-tool registry was carrying**. That last one is the half no event answered before: a spec's `host_tools` carries the registry's *folds* — its result integrity, its identities, its ceilings — because those are what the router matches on, so which tools were actually callable existed only as the code that registered them.
+The recorder selects fields from the core event. It does not export every spec field, every host-tool declaration field or `ToolCallEnded.fed`. Logs, spans and metrics use independent providers. Logs can survive trace sampling, but delivery still depends on the configured log pipeline.
 
-`execution_contract` preserves the spec's opaque reuse configuration, including `None` (JSON `null`). Different contracts remain distinct snapshots even when their capabilities and guest working directory match. CodeAct records the exec identifier or a digest of the runtime profile; the runtime instructions themselves are not copied into the snapshot.
+See the [package guide](../../packages/maf-sandbox-otel/README.md) for wiring, signal names, redaction and correlation attributes.
 
-`effective_state_middleware()` is what writes it. Add it to the agent's middleware and every served call leaves its snapshot in `session.state["maf_sandbox.served"]`, keyed by the tool the model called:
+## Served configuration in the session
+
+`effective_state_middleware()` writes JSON-serializable `EffectiveState` records to `AgentSession.state["maf_sandbox.served"]`.
 
 ```python
 from agent_framework import Agent
@@ -107,68 +104,72 @@ from maf_sandbox.maf import effective_state_middleware
 agent = Agent(..., middleware=[effective_state_middleware()])
 ```
 
-**The served answer, not the ask.** A refused call writes nothing: it already has an exception, a log line and a `SandboxAcquired` carrying the refusal's class name, and there is no posture to describe. A call that acquired nothing writes nothing either, which leaves the tool's previous entry standing — *the last posture this tool was served under* stays true across a call that got no sandbox.
+The state has one entry per tool. A served call replaces that tool's entry with its distinct served configurations. Refused calls and calls that acquire nothing keep the last served entry.
 
-**One entry per tool, overwritten each call.** Session state is persisted and lives as long as the conversation, so a per-call history here would grow without bound — and per-call is what the events above already answer. What survives here is the current answer, which is the question this destination is good at.
+| Included | Omitted |
+|---|---|
+| Backend, isolation, scope and network policy | Raw `SandboxKey` and `SandboxSpec.labels` |
+| Required and declared capabilities | Model code, prompts and result payloads |
+| Image, work directory and execution contract | File contents and artifact bytes |
+| Output declarations and transfer limits | CodeAct runtime instructions; only its profile digest is retained |
+| Sealed host-tool names and tool call ID | Model-chosen tool arguments |
 
-**One identifier, and it is the one every record already carries.** The snapshot names the `call` it was served to, so it joins to that call's acquire, its host-tool calls and its collections — and to the folder a `per_call` sink landed its artifacts in. The framework generates it and it names nobody on its own, which is what separates it from the two things below.
+`execution_contract` is an opaque identifier or JSON `null`. Session state records what served the tool; it is not a complete telemetry history.
 
-**Posture, never payload — and the spec's `labels` are not in it.** Every field is host configuration, a backend's own declaration, or that id: no artifact name, no file name, no code, no result text. Labels are the one that is a decision rather than an obvious omission. They are host deployment vocabulary — a tenant, a cost centre, a subscription — and this record is persisted beside a transcript a deployment may classify differently, so the seam above is where a recorder that wants them reads them, with the host choosing the destination. The `SandboxKey` is out for the same reason and one more: the session **is** that conversation, so a scope and a thread id in its own state answer nothing they do not already — which is not true of the call id, and is why that one is in.
+## Network observations
 
-**And OpenTelemetry sees the same acquire from the other side.** `maf-sandbox-otel` turns each `SandboxAcquired` into a span, a log record and a counter, which is what makes the posture queryable *across* conversations rather than only inside one — the kind, the backend, the image, the isolation rung and scope, the egress mode with its allowlist and count, and both sides of the capability match. Both destinations are built from the one event, so they cannot disagree about what held; what differs is only what each survives. The sealed registry's names are on both.
+Docker and WSLC read their proxy logs before removal and publish the window only after removal confirms the proxy is gone. Failed or cancelled removal publishes nothing. A sequential retry reads the surviving proxy again and publishes on confirmed removal.
 
-**Nothing is built when nobody is listening.** The acquire path checks for an observer and for an open collection before it composes either, so a host that wired neither pays for neither — the same promise the seam above makes, and pinned the same way.
+This is not an exactly-once log. Overlapping removals can duplicate a window. Host exit between removal and publication can lose one. A live or undrained proxy has no final record.
 
-## An observer cannot fail a call, and cannot slow one down safely
+| Decision | Meaning |
+|---|---|
+| `ALLOW` | Proxy opened a CONNECT tunnel; does not prove application-level success |
+| `DENY` | Destination refused by policy |
+| `DENY-NONGLOBAL` | Resolved address refused by address policy |
+| `UNREACHABLE` | Proxy could not connect |
 
-An observer runs wherever the call it records is served — on the event-loop task for a tool body that awaits, and for a body that does not, on the worker thread the framework runs it on. Its failure is contained — logged as a warning, and the call runs on — with the same narrow catch the host-tools bracket already uses: an `Exception`, a `CancelledError`, a `GeneratorExit` from an observer's own generator are contained, while `SystemExit` and `KeyboardInterrupt` are the host's control flow and escape. An observer's return value is never read, so none of them can change what a call answers.
+Windows are bounded in lines and bytes. `truncated` means the window may be incomplete. Unreadable logs are reported as such. Target strings are guest-chosen and require the OpenTelemetry sensitive-data opt-in, including allowed targets.
 
-What is *not* contained is time. Blocking in an observer blocks the call, so an observer's job is to hand the event on — to a queue, or to an exporter batching on a thread of its own — and never to do the I/O itself. **The handoff has to be thread-safe.** Two calls in flight reach one observer at once, and a synchronous tool body's `ToolCallEnded` arrives from a worker thread rather than from the loop, so it wants a `queue.Queue` or `loop.call_soon_threadsafe`; an `asyncio.Queue` is neither safe to fill from another thread nor woken by it.
+`observes_egress=False` means the backend reports no decisions. `True` means it can report attributable windows; it does not promise complete traffic coverage. ACAS and Hyperlight emit no egress decisions. Absence of an event does not mean absence of traffic.
 
-**A host that registers nothing pays nothing.** No observer means no event is built: each site checks first and takes the uninstrumented path, which is what the tests pin rather than what the code merely implies.
-
-## What reaches a wire is the recorder's decision
-
-Nothing here redacts, and that is a position rather than an omission. An observer runs in the host's own process, sees no more than the host's log already could, and is the only party that knows what its exporter's retention and audience are.
-
-What a recorder should know is which of these values a *guest* chose. Hostnames come from the spec and backend names from configuration, so both are the host's. Artifact names are model-chosen — the exfiltration audit measures a 255-byte-per-file channel through them ([`research/exfiltration-audit.md`](research/exfiltration-audit.md)) — and a `HostToolCalled.refusal` is a sanitized sentence safe for a transcript, but the two refusals that fire before a name resolves quote a bounded copy of what the guest asked for. The transcript rule applies to an exporter too: nothing a guest chose should leave the host unless the host asked for it.
-
-## What this seam does not see
-
-**Egress, on a backend that does not enforce it itself.** `SandboxAcquired` records the mode and the allowlist a sandbox was **served** under — what its spec asked for — and `EgressObserved` records what its enforcer then decided. The second only exists where the backend runs the enforcer: `docker` and `wslc` own the proxy, so they read its `ALLOW`, `DENY`, `DENY-NONGLOBAL` and `UNREACHABLE` lines back before the container holding them goes. `acas` enforces in the service, and the one signal the documentation names — the `x-deny-reason` header — is visible only inside the guest, so it reports nothing.
-
-**Docker and WSLC publish a drained window only after removal succeeds or confirms the proxy is already absent.** A refused, interrupted or cancelled removal publishes no event, including any read failure or truncation in that attempt. A later retry reads the surviving proxy again, so sequential removal retries do not count the same decisions twice. The pending read belongs only to the removal attempt: if no retry succeeds, or the process exits between removal and publication, that window is not reported. This is not a durable exactly-once delivery guarantee; overlapping cleanup operations can still read the same proxy.
-
-That difference is why silence is not a reading. A key with no `EgressObserved` record was either watched and quiet or never watched at all, and the two are the opposite conclusions; `BackendDeclarations.observes_egress` rides on the acquire record so a reader can tell which. `False` is the certain half — nothing was watched. `True` is narrower than it looks: a backend reports the windows it can *attribute*. Docker and WSLC recover keys from persistent proxy labels, including after a restart or across replicas; proxies whose encoded key exceeds the 4,096-byte attribution budget and legacy proxies whose identity labels were hashed remain unattributable without a caller-supplied key. Oversized keys still acquire normally, with a warning and an empty attribution label. Missing attribution and a live proxy whose window has not yet been drained both leave gaps. [`network.md`](network.md) carries why a host two conversations share is worth seeing at all.
-
-**How many refused keys a purge reopened.** A purge every backend answered cleanly clears the conversation's entries from the unclean ledger, so keys that `acquire` was refusing become servable again. *Whether* that happened is on the records already — it is the same condition they carry, every one of the purge's `ScopeDisposed` events reading `gone` — but the number of keys is not, because the clear happens once for the whole purge while the event is per backend, and a router with no backend registered clears the ledger while emitting nothing at all. The resource facts a purge is audited for — what went, what may still be there, and on which backend — are recorded in full.
-
-**An exporter.** Turning these events into OpenTelemetry spans, log records and counters — under the app's providers or a security pipeline's own — is a package above this seam, so that a host wanting the events and not the dependency pays for neither. That package is `maf-sandbox-otel`, and core still cannot host it: its protocol modules are standard library only.
+Docker and WSLC store the full key in ownership labels for recovery after a host restart. The encoded labels have a 4096-byte budget. An oversized key still acquires, but logs a warning and omits attribution labels. Legacy hashed labels alone cannot recover a key; a caller-supplied key needs a proven owner match.
 
 ## Process observations
 
-The host-tools registry observer receives `ProcessesObserved` at `before_launch`, `after_launch`, `before_cleanup` and `after_cleanup`, plus `ProcessCleanup` for cleanup decisions. Cancellation during a snapshot records that phase as unavailable and incomplete before propagating; a run cancelled before the launcher starts has only its before-launch record. Cleanup records include `signal` only when an attempt was recorded: a missing value also covers an unavailable descendant-helper result and does not prove that no signal ran. Each snapshot carries the sandbox instance, run, call and snapshot IDs, timestamp, duration, source (`guest_proc`), completeness and collection failure. Records retain PID, PPID, PGID, SID, start ticks, real/effective UID and GID, supplementary groups, username, argv, command, executable, cwd, process state/name, threads, CPU ticks and memory usage where available. Missing fields and truncation remain explicit. No environment variables are collected.
+Host-tool runs take snapshots at four boundaries. Register the observer on `HostToolRegistry` to receive them.
 
-Snapshots are bounded to 256 processes and 1 MiB, with a three-second backend bound per collection and bounded individual fields. Both snapshot and descendant helpers use `BoundedExec.exec_bounded`: the backend enforces the combined stdout/stderr transport cap before decoding, and ACAS counts its encoded response framing too. A backend without that optional surface does not execute the probe; an unavailable or over-budget observation enters the cleanup-failure policy. They classify the program, observed descendants, group members, preexisting processes and new unattributed processes. The latter are diagnostic evidence only and never a blanket kill list. Zombies are reported without counting as running survivors. A separate engine conformance fingerprint has stronger provenance; these portable runtime observations execute in the guest and cannot prove the absence of hidden or missed processes.
+![A host-tool run takes process snapshots before launch, after launch, before cleanup and after cleanup. Cleanup actions emit separate records between the last two snapshots. Every snapshot has a three-second backend bound, at most 256 processes and at most one MiB of transport output. Guest-observed records can be incomplete or unavailable. Earlier incomplete observations prevent safe reuse even if the final scan succeeds. An empty final snapshot cannot prove that no process was hidden or missed.](assets/process-observation-flow.svg)
 
-Standard logs carry IDs, counts and cleanup outcomes without commands. `maf-sandbox-otel` exports `sandbox.process.snapshot` summaries, `sandbox.process.observed` per-process logs and `sandbox.process.cleanup` action logs through the configured logger provider, with trace context and independent of trace sampling. It also records summary spans and counters with bounded phase/outcome attributes; no PID or command becomes a metric label. Configure the same observer on `HostToolRegistry` to receive these run events. For an audit sink that requires commands, set `record_sensitive_data=True`; otherwise commands, usernames and paths follow the existing redaction policy. Observer and exporter failures are contained independently of cleanup.
+Snapshots retain available process identity, ancestry, user IDs, command, arguments, paths, state and resource usage. They do not collect environment variables. Attribution distinguishes the program, descendants, group members, preexisting processes and new unattributed processes. The last group is diagnostic evidence, not a kill list. Zombies do not count as running survivors.
 
-`ProcessCleanup.outcome` uses the exported `ProcessCleanupOutcome`: `sent` means a signal request succeeded, `absent` means the target was observed absent, `refused` means an action was refused or failed, `replaced` records a signal skipped because the retained identity no longer matched, `unrecorded` means no launcher identity was retained, and `unknown` means the result could not be established. `ProcessCleanup.reach` uses `ProcessCleanupReach`: `group`, `program`, or `nothing`. The replacement decision is retained even if later snapshots no longer show that PID. Neither field proves complete process cleanup.
+Each collection is limited to 256 processes, 1 MiB and three seconds, with separate field bounds. Probes use `BoundedExec.exec_bounded`; a backend without it runs no probe. Unavailable, incomplete or over-budget observations enter the cleanup-failure policy. An earlier incomplete snapshot prevents reuse even if the final scan succeeds.
+
+Cancellation records an unavailable, incomplete snapshot before propagating. Cancellation before launch can leave only the first boundary recorded.
+
+| Cleanup outcome | Meaning |
+|---|---|
+| `sent` | Signal request succeeded; does not prove the process stopped |
+| `absent` | Target observed absent |
+| `refused` | Action refused or failed |
+| `replaced` | Saved process identity no longer matched; signal skipped |
+| `unrecorded` | No launcher identity retained |
+| `unknown` | Outcome could not be established |
+
+Cleanup reach is `group`, `program` or `nothing`. These fields do not prove full cleanup. Snapshots run inside the guest and can miss hidden processes or activity between boundaries. Separate checks by the sandbox engine provide stronger evidence.
+
+Ordinary logs carry IDs, counts and outcomes. OpenTelemetry adds summary spans and counters, plus per-process logs. Commands, usernames and paths require `record_sensitive_data=True`. Process IDs and commands are never metric labels.
 
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
-| Process observations and cleanup actions reach the audit observer and OpenTelemetry logs | shipped — four bounded snapshots retain process identity, user IDs and commands; ordinary logs carry IDs, and OTel commands require the sensitive-data opt-in. Earlier incomplete snapshots prevent reuse even when the final scan succeeds | [#463](https://github.com/sokolaidev/maf-extensions/issues/463) (closed) by [#1091](https://github.com/sokolaidev/maf-extensions/pull/1091) (merged) |
-| A `SandboxObserver` a host registers, and frozen events in core's own vocabulary | shipped — ten events, registered on `SandboxRouter` and `HostToolRegistry`, passed to `collect_outputs`, and reported by a backend that watches its own egress; refusals, cancellations and served calls alike | [#906](https://github.com/sokolaidev/maf-extensions/pull/906) (merged), under [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged) |
-| An observer's failure never reaches the call, and no observer builds no event | shipped — `Exception`, `CancelledError` and `GeneratorExit` contained and logged; `SystemExit` and `KeyboardInterrupt` escape | [#906](https://github.com/sokolaidev/maf-extensions/pull/906) (merged), under [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged) |
-| The served configuration is recorded per acquire, as the whole spec — the sealed host-tool registry's names with it | shipped — `SandboxAcquired.spec`, beside the resolved isolation scope, which the spec alone does not answer; `HostToolAggregate.names` is what makes *which tools were callable* answerable from the spec that served rather than only from the code that registered them | [#380](https://github.com/sokolaidev/maf-extensions/issues/380) (closed) by [#953](https://github.com/sokolaidev/maf-extensions/pull/953) (merged) |
-| What held reaches the conversation, not only the trace | shipped — `EffectiveState`, one JSON-serializable snapshot per distinct posture a call was served, written into `AgentSession.state` by `effective_state_middleware()`: one entry per tool, overwritten each call, and posture only — no model-chosen text, no `SandboxSpec.labels`, no `SandboxKey` | [#380](https://github.com/sokolaidev/maf-extensions/issues/380) (closed) by [#953](https://github.com/sokolaidev/maf-extensions/pull/953) (merged) |
-| An OpenTelemetry recorder, under the app's providers or a security pipeline's own | shipped — `maf-sandbox-otel` implements it: it registers on the router and the host-tool registry and turns each event into a log record, a span — a zero-duration point span for the one event with no duration of its own, a `StoreFileRead` — and a metric where it counts, under the app's providers or a pipeline's own. Core still cannot host it, since its protocol modules are standard library only. All ten event types are rendered, and the two fields this row last named as missing now cross: the sealed registry's names as `maf_sandbox.surface.names`, and the call id as `maf_sandbox.call.id`. What does not cross is the fold of what a call was fed, in the last row: reading a field this core release adds needs a floor on it, so it is its own change. What crosses of each event is a **projection**, not every field — `SandboxAcquired` carries the whole `SandboxSpec` and the record takes the posture out of it, so `labels`, `work_dir` and the declared-output fields have no attribute, and neither do the sealed surface's `outbound_caps`, `requires_approval` and `response_limits`. A consumer wanting one of those reads the event at the seam, where it is | [#907](https://github.com/sokolaidev/maf-extensions/pull/907) (merged) and [#975](https://github.com/sokolaidev/maf-extensions/issues/975) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged), under [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged) |
-| A record says which **call** it came from, not only which sandbox and conversation | shipped — every event carries `call`, never `None` on `ToolCallEnded` and absent only on what happened outside a call. It is the id the guest path and a call-scoped key are already named by, so a recorder holds one string for a call rather than two. `maf-sandbox-otel` exports it as `maf_sandbox.call.id`, which is a separate attribute from the key's own `maf_sandbox.sandbox.call_id`: the two coincide at `IsolationScope.CALL` and nowhere else | [#922](https://github.com/sokolaidev/maf-extensions/issues/922) (closed) by [#952](https://github.com/sokolaidev/maf-extensions/pull/952) (merged), rendered under [#975](https://github.com/sokolaidev/maf-extensions/issues/975) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged) |
-| A scope purge is recorded, so thread deletion is not the one disposal nobody can see | shipped — `ScopeDisposed`, one per backend asked, keyed on `(scope, thread_id)` because a backend answers a purge with a count and not with the keys it removed; a purge a cancel took is recorded too. What is not on it is how many refused keys the purge reopened | [#917](https://github.com/sokolaidev/maf-extensions/issues/917) (closed) by [#947](https://github.com/sokolaidev/maf-extensions/pull/947) (merged) |
-| The proxy's `ALLOW`/`DENY` lines reach a record, keyed to the sandbox that caused them | shipped — `EgressObserved`, drained by `docker` and `wslc` before every removal that would take the lines with it, which is once per acquire rather than once per sandbox. Bounded in lines and in bytes, and `truncated` says the window may be short of that rather than that a decision was certainly dropped. A service-enforced backend still reports nothing, and `observes_egress` on the acquire record is what stops that reading as a quiet sandbox | [#948](https://github.com/sokolaidev/maf-extensions/issues/948) (closed) by [#963](https://github.com/sokolaidev/maf-extensions/pull/963) (merged) |
-| Retrying a failed proxy removal does not count its decisions twice | shipped — Docker and WSLC publish the drained event only after removal confirms the proxy is gone. Failed and cancelled attempts publish nothing; a retry reads the surviving proxy again. Without a successful retry, the window remains unreported | [#970](https://github.com/sokolaidev/maf-extensions/issues/970) (closed) by [#1070](https://github.com/sokolaidev/maf-extensions/pull/1070) (merged) |
-| A host-tool record carries the key of the sandbox its run belongs to | shipped — `HostToolRun(key=…)` accepts one and every record carries it, and `execute_code` passes the key it took for its own acquire, so a host-tool call joins to the conversation that made it rather than to its `run_id` alone | [#949](https://github.com/sokolaidev/maf-extensions/issues/949) (closed) by [#959](https://github.com/sokolaidev/maf-extensions/pull/959) (merged) |
-| A collection's record is joined to the conversation that produced it | shipped — `collect_outputs(observer=…, key=…)` takes both and codeact passes both, `session.observer` beside that same key, so every collection the one kind that lands anything runs emits an `OutputsCollected` — refused part-way included | [#949](https://github.com/sokolaidev/maf-extensions/issues/949) (closed) by [#959](https://github.com/sokolaidev/maf-extensions/pull/959) (merged) |
-| What a call was fed out of the host's store is one answer on its own record, rather than a join across its reads | shipped — `ToolCallEnded.fed` folds `weakest_integrity` over the reads that carried text and says how many it folded. A read that answered `absent` or `refused` is not in it, since it fed nothing; a call that read nothing carries no fold at all rather than the `trusted` an empty listing folds to. It is the call's inputs and not its result, so it neither states nor checks what a kind declares. `maf-sandbox-otel` does not export it yet: reading a field this release adds needs a floor on this release, so that is its own change | [#987](https://github.com/sokolaidev/maf-extensions/issues/987) (closed) by [#993](https://github.com/sokolaidev/maf-extensions/pull/993) (merged) |
+| Core observer, event types and failure handling | Shipped | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged); [#906](https://github.com/sokolaidev/maf-extensions/pull/906) (merged) |
+| Full served spec and session effective state | Shipped | [#380](https://github.com/sokolaidev/maf-extensions/issues/380) (closed) by [#953](https://github.com/sokolaidev/maf-extensions/pull/953) (merged) |
+| OpenTelemetry logs, spans and metrics | Shipped; exports selected fields | [#907](https://github.com/sokolaidev/maf-extensions/pull/907) (merged); [#975](https://github.com/sokolaidev/maf-extensions/issues/975) (closed) by [#988](https://github.com/sokolaidev/maf-extensions/pull/988) (merged) |
+| Call IDs on events | Shipped | [#922](https://github.com/sokolaidev/maf-extensions/issues/922) (closed) by [#952](https://github.com/sokolaidev/maf-extensions/pull/952) (merged) |
+| Conversation purge records | Shipped | [#917](https://github.com/sokolaidev/maf-extensions/issues/917) (closed) by [#947](https://github.com/sokolaidev/maf-extensions/pull/947) (merged) |
+| Proxy decisions and publication after confirmed removal | Shipped on Docker and WSLC | [#948](https://github.com/sokolaidev/maf-extensions/issues/948) (closed) by [#963](https://github.com/sokolaidev/maf-extensions/pull/963) (merged); [#970](https://github.com/sokolaidev/maf-extensions/issues/970) (closed) by [#1070](https://github.com/sokolaidev/maf-extensions/pull/1070) (merged) |
+| Keys on host-tool and output-collection records | Shipped | [#949](https://github.com/sokolaidev/maf-extensions/issues/949) (closed) by [#959](https://github.com/sokolaidev/maf-extensions/pull/959) (merged) |
+| Input-integrity summary on the call-end event | Shipped; not exported by OpenTelemetry | [#987](https://github.com/sokolaidev/maf-extensions/issues/987) (closed) by [#993](https://github.com/sokolaidev/maf-extensions/pull/993) (merged) |
+| Process snapshots and cleanup action records | Shipped | [#463](https://github.com/sokolaidev/maf-extensions/issues/463) (closed) by [#1091](https://github.com/sokolaidev/maf-extensions/pull/1091) (merged) |
