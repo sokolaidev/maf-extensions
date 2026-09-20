@@ -874,9 +874,10 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is None
         assert type(model).__name__ == "OpenAIChatCompletionClient"
-        # The flag keeps `AssistantAgent`'s concurrent tool calls off one unadmitted key; the
-        # wiring tests type-check only, so dropping the flag would leave this suite green.
-        assert model._create_args["parallel_tool_calls"] is False  # pyright: ignore[reportPrivateUsage]
+        # Absent on purpose: `reflect_on_tool_use=True` issues a summarising turn carrying no
+        # tools, and an endpoint enforcing the parameter's contract refuses a request that sends
+        # it without them. `TestTheExecutorSerialisesCalls` holds the concurrency guarantee.
+        assert "parallel_tool_calls" not in model._create_args  # pyright: ignore[reportPrivateUsage]
 
     def test_the_azure_road_constructs_with_a_token_provider(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
@@ -884,7 +885,7 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is not None
         assert type(model).__name__ == "AzureOpenAIChatCompletionClient"
-        assert model._create_args["parallel_tool_calls"] is False  # pyright: ignore[reportPrivateUsage]
+        assert "parallel_tool_calls" not in model._create_args  # pyright: ignore[reportPrivateUsage]
         asyncio.run(credential.close())
 
     def test_an_endpoint_without_a_deployment_is_reported_not_run(
@@ -894,6 +895,172 @@ class TestTheModelWiring:
         monkeypatch.delenv("AZURE_OPENAI_CHAT_MODEL", raising=False)
         assert sample_19.build_model() is None
         assert "AZURE_OPENAI_CHAT_MODEL" in capsys.readouterr().err
+
+
+class TestTheExecutorSerialisesCalls:
+    """One execution at a time over an unadmitted key, whatever the model asks for.
+
+    `AssistantAgent` runs every tool call in one model response concurrently, and this executor
+    performs no `enter_call`, so two of them would share one sandbox. The lock holds that on this
+    side of the call, where a request parameter holds it only where a provider honours one.
+    """
+
+    @staticmethod
+    def _overlapping():
+        """A sandbox that records the most calls ever inside `exec_bounded` at once."""
+
+        class Overlapping(InProcessSandbox):
+            inside = 0
+            highest = 0
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                Overlapping.inside += 1
+                Overlapping.highest = max(Overlapping.highest, Overlapping.inside)
+                # A real suspension point, so a second call that is free to run will run.
+                await asyncio.sleep(0.01)
+                Overlapping.inside -= 1
+                return ExecResult(stdout="done", exit_code=0)
+
+        return Overlapping
+
+    def _run_two(self, sandbox_type, call: str) -> int:
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, _ = _router(sandbox_type())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+            run = getattr(executor, call)
+            await asyncio.gather(run(blocks, CancellationToken()), run(blocks, CancellationToken()))
+
+        asyncio.run(body())
+        return sandbox_type.highest
+
+    def test_the_window_is_real_without_the_lock(self):
+        """The negative control: `_execute_blocks` is the body with the lock already held."""
+        assert self._run_two(self._overlapping(), "_execute_blocks") == 2
+
+    def test_two_concurrent_calls_run_one_after_another(self):
+        assert self._run_two(self._overlapping(), "execute_code_blocks") == 1
+
+    @staticmethod
+    def _hand_the_lock_over(executor):
+        """Release the lock and return once the queued call has taken it, not before.
+
+        The handoff is the window this class is about: between the acquisition completing and
+        the call resuming, a cancellation has a finished future to land on. `locked()` turning
+        back on is what says the waiter took it, so the tests below reach that window without
+        racing for it.
+        """
+
+        async def hand_over():
+            executor._one_at_a_time.release()
+            while not executor._one_at_a_time.locked():
+                await asyncio.sleep(0)
+
+        return hand_over()
+
+    def test_a_token_cancelled_as_the_lock_changes_hands_does_not_run(self):
+        """A cancel landing on a finished acquisition: the token is the only thing left to ask."""
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, backend = _router(InProcessSandbox())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+
+            await executor._one_at_a_time.acquire()
+            token = CancellationToken()
+            queued = asyncio.ensure_future(executor.execute_code_blocks(blocks, token))
+            await asyncio.sleep(0)
+
+            await self._hand_the_lock_over(executor)
+            token.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+            return backend.keys, executor._one_at_a_time.locked()
+
+        keys, still_locked = asyncio.run(body())
+        assert keys == [], "a call cancelled at the handoff still acquired a sandbox"
+        assert not still_locked, "the lock was stranded"
+
+    def test_an_outer_cancellation_at_the_handoff_does_not_strand_the_lock(self):
+        """Cancelling the task itself, rather than its token, at the same window."""
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, _ = _router(InProcessSandbox())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+
+            await executor._one_at_a_time.acquire()
+            queued = asyncio.ensure_future(
+                executor.execute_code_blocks(blocks, CancellationToken())
+            )
+            await asyncio.sleep(0)
+
+            await self._hand_the_lock_over(executor)
+            queued.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+            return executor._one_at_a_time.locked()
+
+        assert asyncio.run(body()) is False, "the lock was stranded"
+
+    def test_a_call_cancelled_while_queued_does_not_wait_for_the_lock(self):
+        """Cancelling a queued call ends it where it waits, not when the call ahead finishes."""
+
+        class Blocking(InProcessSandbox):
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                Blocking.entered.set()
+                await Blocking.release.wait()
+                return ExecResult(stdout="done", exit_code=0)
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, _ = _router(Blocking())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+
+            holding = asyncio.ensure_future(
+                executor.execute_code_blocks(blocks, CancellationToken())
+            )
+            await Blocking.entered.wait()
+
+            token = CancellationToken()
+            queued = asyncio.ensure_future(executor.execute_code_blocks(blocks, token))
+            # One turn of the loop is enough to reach the lock and wait on it.
+            await asyncio.sleep(0)
+            token.cancel()
+
+            # Generous against a slow machine, and still far short of the call ahead, which
+            # only ends when this body sets `release` below.
+            done, pending = await asyncio.wait({queued}, timeout=5.0)
+            ended_where_it_waited = queued in done and queued.cancelled()
+
+            Blocking.release.set()
+            await holding
+            for task in pending:
+                task.cancel()
+            return ended_where_it_waited
+
+        assert asyncio.run(body()) is True
 
 
 class TestTheResultReading:
