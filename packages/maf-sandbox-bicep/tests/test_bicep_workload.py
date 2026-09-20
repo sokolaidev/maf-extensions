@@ -25,7 +25,11 @@ from typing import Any
 
 import pytest
 from maf_sandbox import CallerContext, Cleanup, Egress, SandboxRouter
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
+from maf_sandbox.maf import (
+    COMPLETED_TEXT,
+    DERIVED_INTEGRITY_PROPERTY,
+    NOT_COMPLETED_TEXT,
+)
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 import maf_sandbox_bicep._tool as _tool_module
@@ -223,13 +227,32 @@ def _callable(tool):
 
 
 def _items(tool, files: list[str]):
-    """Whatever the body answered with, unflattened — for the tests about the split itself."""
+    """Whatever the wrapper rendered, unflattened — for the tests about the split itself."""
     return asyncio.run(_callable(tool)(files=files))
 
 
 def _run(tool, files: list[str]) -> str:
-    """The call-derived half of the answer, which is everything but the standing sentence."""
-    return str(_items(tool, files)[0].text)
+    """What the call said about the files, between the completion line and the guidance.
+
+    The wrapper always renders a fixed completion sentence first and the committed sentence
+    last, so these tests read what sits between them: the verdict, anything this tool says
+    about its own refusal, and the compiler's output.
+    """
+    texts = [str(item.text) for item in _items(tool, files)]
+    return chr(10).join(texts[1:-1])
+
+
+def _completed(tool, files: list[str]) -> bool:
+    """Whether the call reported a definitive result, read from the field that says so."""
+    return str(_items(tool, files)[0].text) == COMPLETED_TEXT
+
+
+def _verdict(tool, files: list[str]) -> str | None:
+    """The verdict line's value, or ``None`` where the call reported no verdict."""
+    for text in (str(item.text) for item in _items(tool, files)):
+        if text.startswith("Result: "):
+            return text.removeprefix("Result: ")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +689,7 @@ class TestConcurrentRounds:
         async def run():
             return await asyncio.gather(fn(files=first), fn(files=second))
 
-        return [str(answer[0].text) for answer in asyncio.run(run())]
+        return [chr(10).join(str(item.text) for item in answer) for answer in asyncio.run(run())]
 
     def test_each_call_compiles_only_its_own_files(self):
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
@@ -1385,12 +1408,13 @@ class TestTheResultSplits:
         tool = _tool(store or InMemoryStore({"main.bicep": "x"}), backend or _fake_backend(), **kw)
         return _items(tool, ["main.bicep"] if files is None else files)
 
-    def test_an_answer_is_the_report_and_the_standing_sentence(self):
-        answer = self._answer()
+    def test_an_answer_is_the_parts_in_order_then_the_standing_sentence(self):
+        texts = [str(item.text) for item in self._answer()]
 
-        assert len(answer) == 2
-        assert "build(main.bicep)" in str(answer[0].text)
-        assert str(answer[1].text) == _UNREAD_IS_NOT_A_PASS
+        assert texts[0] == COMPLETED_TEXT
+        assert texts[1] == "Result: valid"
+        assert any("build(main.bicep)" in text for text in texts)
+        assert texts[-1] == _UNREAD_IS_NOT_A_PASS
 
     def test_the_standing_sentence_is_labelled_trusted(self):
         assert self._label(self._answer()[-1]) == {
@@ -1398,14 +1422,21 @@ class TestTheResultSplits:
             "confidentiality": "public",
         }
 
-    def test_the_call_derived_half_is_labelled_untrusted(self):
-        """What the tool declares to the framework is trusted, so this half says otherwise for
+    def test_the_compilers_own_text_is_labelled_untrusted(self):
+        """What the tool declares to the framework is trusted, so this part says otherwise for
         itself. Its `public` is a floor and not a classification: the framework keeps the
         stricter of it and the call's own, which is the host's to set."""
-        assert self._label(self._answer()[0]) == {
-            "integrity": "untrusted",
-            "confidentiality": "public",
-        }
+        compiler = next(i for i in self._answer() if "build(main.bicep)" in str(i.text))
+
+        assert self._label(compiler) == {"integrity": "untrusted", "confidentiality": "public"}
+
+    def test_the_parts_the_model_reads_carry_no_label_of_their_own(self):
+        """They inherit the tool's raised declaration. Writing one would name a
+        confidentiality the host never chose, and could only be the same or stricter."""
+        answer = self._answer()
+
+        assert self._label(answer[0]) is None
+        assert self._label(answer[1]) is None
 
     def test_the_sentence_says_nothing_a_call_could_vary(self):
         """Same sentence whatever ran: it is what the label rests on."""
@@ -1467,56 +1498,120 @@ class TestTheResultSplits:
         }
 
         for path, (answer, derived) in answers.items():
-            assert derived in str(answer[0].text), path
+            texts = [str(item.text) for item in answer]
+            assert any(derived in text for text in texts), path
             assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS, path
-            assert self._label(answer[0]) == {
-                "integrity": "untrusted",
-                "confidentiality": "public",
-            }, path
             assert self._label(answer[-1]) == {
                 "integrity": "trusted",
                 "confidentiality": "public",
             }, path
+            # Whatever a path renders, nothing between the completion line and the sentence
+            # is ever labelled anything but untrusted: a part this tool vouches for carries
+            # no label and inherits the declaration, and the rest is stamped.
+            for item in answer[1:-1]:
+                assert self._label(item) in (
+                    None,
+                    {"integrity": "untrusted", "confidentiality": "public"},
+                ), path
 
     def test_a_blob_the_parser_could_not_read_carries_it_too(self):
         """Valid JSON that is not SARIF reaches the model as a parse failure, which is a
         return — so the sentence closes it the way it closes every other."""
         answer = self._answer(backend=_fake_backend(_KeepsWhatItWrote(default_stdout="[]")))
 
-        assert "could not parse SARIF output" in str(answer[0].text)
+        assert any("could not parse SARIF output" in str(i.text) for i in answer)
+        assert str(answer[0].text) == NOT_COMPLETED_TEXT
         assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS
 
     def test_the_sentence_tells_the_model_what_an_unread_result_is_worth(self):
-        """This sentence is the whole of what a hiding host leaves the model, so its content
-        is the deliverable rather than an implementation detail.
+        """The sentence is no longer the whole of what a hiding host leaves the model — the
+        completion line and the verdict are readable too — so what it must still do is say
+        what the hidden half is and where the answer actually is.
 
-        By clause rather than whole, the way `TestToolDescription` reads the description: what
-        must survive an edit is that it names the condition, the verdict and the action.
+        By clause rather than whole, the way `TestToolDescription` reads the description.
         """
         sentence = _UNREAD_IS_NOT_A_PASS.lower()
 
-        assert "compiler" in sentence, "the sentence must say whose text the rest of it is"
-        assert "reason there is none" in sentence, (
-            "and it must allow for there being no compiler text at all — that clause is what "
+        assert "compiler" in sentence, "the sentence must say whose text the hidden half is"
+        assert "or nothing at all" in sentence, (
+            "and it must allow for there being no hidden text at all — that clause is what "
             "keeps the sentence true on the paths that refuse before anything compiles, which "
             "is what licenses the label"
         )
         assert "cannot read" in sentence, "it must name the condition the model is in"
+        assert "verdict" in sentence, (
+            "it must point at the field that now carries the answer, or the model is left "
+            "reading the hidden half it cannot see"
+        )
         assert "unvalidated" in sentence, (
-            "it must name the action — reporting the files as unvalidated is the whole point, "
-            "and a sentence that only describes the result leaves the model to guess"
+            "it must name the action for the case with no verdict — a sentence that only "
+            "describes the result leaves the model to guess"
         )
 
     def test_the_sentence_is_committed_and_not_merely_written(self, monkeypatch):
-        """`make_bicep_tools` passes it to `standing_guidance`, so core holds every result to
-        it — a body that emitted anything else would be refused rather than believed."""
+        """`make_bicep_tools` passes it to `standing_guidance`, so the wrapper appends the
+        sentence it was given at attach — the body never emits one and so cannot diverge from
+        it. Rewriting the module constant afterwards changes nothing about an attached tool."""
         # Attached first, so the commitment is the real sentence and only what the body appends
         # moves — which is the divergence the wrapper exists to catch.
         tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
+        committed = _UNREAD_IS_NOT_A_PASS
         monkeypatch.setattr(_tool_module, "_UNREAD_IS_NOT_A_PASS", "Something else entirely.")
 
-        with pytest.raises(ValueError, match="committed"):
-            _items(tool, ["main.bicep"])
+        assert str(_items(tool, ["main.bicep"])[-1].text) == committed
+        assert "Something else entirely." not in [
+            str(item.text) for item in _items(tool, ["main.bicep"])
+        ]
+
+
+class TestTheVerdict:
+    """The one part of the result a model may act on without reading the compiler."""
+
+    def test_a_clean_compile_is_valid(self):
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
+
+        assert _completed(tool, ["main.bicep"])
+        assert _verdict(tool, ["main.bicep"]) == "valid"
+
+    def test_an_error_level_diagnostic_is_invalid(self):
+        sandbox = _KeepsWhatItWrote(
+            outputs={"bicep build": _sarif(rule="BCP035", message="Missing 'properties'.")},
+            default_stdout=_EMPTY_SARIF,
+        )
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox=sandbox))
+
+        assert _completed(tool, ["main.bicep"])
+        assert _verdict(tool, ["main.bicep"]) == "invalid"
+
+    def test_a_refused_name_reaches_no_verdict_at_all(self):
+        """`completed=False` rather than `invalid`: the files were never compiled, and
+        reporting them as failing would be as wrong as reporting them as passing."""
+        tool = _tool(InMemoryStore({"main.tf": "x"}), _fake_backend())
+
+        assert not _completed(tool, ["main.tf"])
+        assert _verdict(tool, ["main.tf"]) is None
+
+    def test_the_refusal_itself_is_readable(self):
+        """It is this package's own sentence naming a position, so it is not the guest's to
+        hide — before the contract it was labelled untrusted with the compiler output."""
+        tool = _tool(InMemoryStore({"main.tf": "x"}), _fake_backend())
+        refusal = next(
+            item for item in _items(tool, ["main.tf"]) if "only accepts .bicep" in str(item.text)
+        )
+
+        assert (refusal.additional_properties or {}).get("security_label") is None
+
+    def test_a_listing_hint_stays_with_the_hidden_half(self):
+        """The sentence is this package's, the names it suggests are the store's — and a name
+        in the store was not established, so it is labelled with the compiler output."""
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
+        items = _items(tool, ["other.bicep"])
+        hint = next(item for item in items if "Files visible here" in str(item.text))
+
+        assert (hint.additional_properties or {}).get("security_label") == {
+            "integrity": "untrusted",
+            "confidentiality": "public",
+        }
 
 
 class TestWhatAFidesHostSeesOfASplitResult:
@@ -1557,7 +1652,15 @@ class TestWhatAFidesHostSeesOfASplitResult:
 
         seen, _, _ = self._processed(tool, ["main.bicep"])
 
-        assert seen == ["hidden", _UNREAD_IS_NOT_A_PASS]
+        # The parts the model may act on stay readable; only the compiler's own text hides,
+        # one item per phase.
+        assert seen == [
+            COMPLETED_TEXT,
+            "Result: valid",
+            "hidden",
+            "hidden",
+            _UNREAD_IS_NOT_A_PASS,
+        ]
 
     def test_one_string_would_have_hidden_the_sentence_with_it(self):
         """The counterfactual: the same host, the same declaration, one item."""
@@ -1670,10 +1773,14 @@ class TestRestoreFailureBanner:
             outputs={"bicep build": _sarif(rule=rule, message="Unable to restore …: 403")},
             default_stdout=_EMPTY_SARIF,
         )
-        out = _run(_tool(store, _fake_backend(sandbox=sandbox), egress=egress), ["main.bicep"])
+        tool = _tool(store, _fake_backend(sandbox=sandbox), egress=egress)
+        out = _run(tool, ["main.bicep"])
 
         assert "MODULE RESTORE FAILED" in out
-        assert "INCOMPLETE" in out
+        # The claim the banner used to make in prose is a field now, which is the point: a
+        # model cannot read past it the way it once read past the sentence.
+        assert not _completed(tool, ["main.bicep"])
+        assert _verdict(tool, ["main.bicep"]) is None
         # The underlying diagnostics still follow the banner — evidence, not replacement.
         assert rule in out
 

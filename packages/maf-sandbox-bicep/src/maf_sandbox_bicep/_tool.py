@@ -18,10 +18,10 @@ import asyncio
 import logging
 import posixpath
 from collections.abc import Mapping
+from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
-from agent_framework import Content
 from maf_sandbox import (
     CallerContext,
     Egress,
@@ -33,6 +33,7 @@ from maf_sandbox import (
     error_detail,
 )
 from maf_sandbox.maf import (
+    SandboxResult,
     SandboxToolSession,
     positions_holding_hidden_content,
     sandboxed_tool,
@@ -180,10 +181,17 @@ _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
 #: sentence says what the rest of the result is and what an unread one is worth. The label holds
 #: only while nothing a call produced reaches the sentence and it stays on every return path,
 #: refusals included.
+#: Every answer `bicep_validate` may reach about the files it was given.
+#:
+#: Fixed here so the whole set is written before any call runs, which is what lets the
+#: wrapper hand the model a verdict it may read while the diagnostics stay hidden.
+BICEP_VERDICTS = ("valid", "invalid")
+
 _UNREAD_IS_NOT_A_PASS = (
-    "The rest of this result is the compiler's own text, or the reason there is none. A result "
-    "you cannot read is not a clean validation — report the files you named as unvalidated "
-    "rather than as passing."
+    "Anything you cannot read here is the compiler's own text, or the file listing a name "
+    "did not match, or nothing at all. The completion line and any verdict above it are this "
+    "tool's own answer: read those, and report the files as unvalidated where there is no "
+    "verdict."
 )
 
 
@@ -276,12 +284,15 @@ def make_bicep_tools(
         spec=bicep_sandbox_spec(image, image_id, egress=egress),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
-        # What the compiler is deterministic *about* is a template the model wrote, so the
-        # result does not derive from wholly trusted input. Declared rather than omitted
-        # because a declaration replaces the other two tiers, and neither is this kind's to
-        # answer for — `information-flow.md` carries why.
+        # The diagnostics are the compiler's own bytes, over template content read from
+        # the file store, and neither is established. Declared rather than omitted because a
+        # declaration replaces the other two tiers, and neither is this kind's to answer for
+        # — `information-flow.md` carries why.
         source_integrity=SourceIntegrity.UNTRUSTED,
-        # The wrapper validates this suffix on every return and owns its trusted label.
+        # The verdict and the completion bit are what the guidance used to have to say in
+        # prose, so the sentence that remains is only about the half still hidden.
+        result_contract=True,
+        verdicts=BICEP_VERDICTS,
         standing_guidance=(_UNREAD_IS_NOT_A_PASS,),
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
         # classification, and declaring one here can activate a policy leg a given host keeps
@@ -294,7 +305,7 @@ def _bicep_validate_tool(
     session: SandboxToolSession,
     store: AgentFileStore,
     timeout: int,
-) -> Callable[..., Awaitable[list[Content]]]:
+) -> Callable[..., Awaitable[SandboxResult]]:
     """Build the ``bicep_validate`` body for one attached tool.
 
     Defined at module level rather than nested inside :func:`make_bicep_tools`, and that is
@@ -303,7 +314,7 @@ def _bicep_validate_tool(
     deeper would re-indent every line of what the model reads at call time.
     """
 
-    async def report(files: list[str]) -> str:
+    async def report(files: list[str]) -> SandboxResult:
         """The call-derived half of the answer: the diagnostics, or why there are none."""
         # Scope and thread come from the host's request context — never from model input:
         # a model-supplied scope would let one conversation address another's sandbox.
@@ -311,7 +322,7 @@ def _bicep_validate_tool(
         # when no conversation is bound.
         key = session.key()
         if isinstance(key, str):
-            return key
+            return SandboxResult(completed=False, trusted_output=(key,))
 
         # Asked once for the whole list: the middleware may have rewritten a variable
         # reference into any of these, and its answer is what a refusal renders instead of the
@@ -321,15 +332,20 @@ def _bicep_validate_tool(
         for position, name in enumerate(files):
             if not name.endswith(_ACCEPTED_SUFFIXES):
                 named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
-                return (
-                    f"Error: bicep_validate only accepts .bicep and .bicepparam files; "
-                    f"rejected: {named}"
+                return SandboxResult(
+                    completed=False,
+                    trusted_output=(
+                        (
+                            "Error: bicep_validate only accepts .bicep and .bicepparam "
+                            f"files; rejected: {named}"
+                        ),
+                    ),
                 )
 
         # Enumerate the file store so paths can be validated and content read.
         listing = await session.list_files(store)
         if isinstance(listing, str):
-            return listing
+            return SandboxResult(completed=False, trusted_output=(listing,))
         # Names for the path checks below, which are about spelling; the entries themselves are
         # kept so the read that follows carries each file's label rather than losing it.
         listed_names = [entry.name for entry in listing]
@@ -349,9 +365,14 @@ def _bicep_validate_tool(
             named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
-                return (
-                    f"Error: {named} cannot be validated — file names may contain only "
-                    f"[A-Za-z0-9._/-] and no '..' segments."
+                return SandboxResult(
+                    completed=False,
+                    trusted_output=(
+                        (
+                            f"Error: {named} cannot be validated — file names may contain "
+                            "only [A-Za-z0-9._/-] and no '..' segments."
+                        ),
+                    ),
                 )
             if rejection == "missing" or sandbox_path is None:
                 # Logged so hosts can count listing misses.
@@ -361,10 +382,20 @@ def _bicep_validate_tool(
                     name,
                     len(listed_names),
                 )
-                return (
-                    f"Error: {named} is not in this tool's file listing, so it was not "
-                    f"validated. This listing can be narrower than the files you can read "
-                    f"elsewhere. {_listing_hint(name, listed_names)}"
+                # Split, because the hint names files from the store and those names were
+                # not established: the sentence is this module's and may be read, the listing
+                # it suggests is store content and is labelled with everything else.
+                return SandboxResult(
+                    completed=False,
+                    trusted_output=(
+                        (
+                            f"Error: {named} is not in this tool's file listing, so it was "
+                            "not validated. This listing can be narrower than the files you "
+                            "can read elsewhere. The names it does hold are in this result's "
+                            "hidden half."
+                        ),
+                    ),
+                    output=(_listing_hint(name, listed_names),),
                 )
             # The listing's key, not the caller's spelling: "./main.bicep" validates but
             # would not read back from a store keyed "main.bicep".
@@ -375,7 +406,7 @@ def _bicep_validate_tool(
         # through this module's logger so those records keep this workload's logger name.
         sandbox = await session.acquire(key)
         if isinstance(sandbox, str):
-            return sandbox
+            return SandboxResult(completed=False, trusted_output=(sandbox,))
 
         # Two passes, and the order is load-bearing: every file is written before ANY of them
         # is compiled.
@@ -402,7 +433,8 @@ def _bicep_validate_tool(
             if position in rewritten:
                 hidden_at.setdefault(sandbox_path, position)
 
-        results: list[str] = []
+        notes: list[str] = []
+        phases: list[_PhaseOutcome] = []
         # `(store path, the spelling that may be shown, sandbox path)`. The first two differ
         # where the framework expanded hidden content into the name; matching the listing does
         # not make such a name safe to render.
@@ -418,19 +450,19 @@ def _bicep_validate_tool(
             item = await session.read_file(store, listed, at=at, hidden=hidden, named=named)
             if isinstance(item, str):
                 # The session logged the detail; this is the sentence the model may see.
-                results.append(item)
+                notes.append(item)
                 continue
             if item is None:
                 # A store read can miss without raising (the file was listed, then removed).
                 # Writing `None` through would put the string "None" into the sandbox and
                 # report a syntax error against a file the agent never wrote.
                 logger.warning("bicep_validate: a listed file has no content")
-                results.append(f"Error: {named} is listed in the file store but has no content")
+                notes.append(f"Error: {named} is listed in the file store but has no content")
                 continue
             content = item.text
             if content is None:
                 logger.warning("bicep_validate: a listed file read back with no text")
-                results.append(f"Error: {named} is listed in the file store but has no content")
+                notes.append(f"Error: {named} is listed in the file store but has no content")
                 continue
 
             try:
@@ -447,7 +479,7 @@ def _bicep_validate_tool(
                 logger.warning(
                     "bicep_validate: could not write %r to sandbox: %s", name, error_detail(exc)
                 )
-                results.append(f"Error: could not write {named} to sandbox")
+                notes.append(f"Error: could not write {named} to sandbox")
                 continue
             written.append((name, name if not hidden else named, sandbox_path))
 
@@ -483,7 +515,7 @@ def _bicep_validate_tool(
             ):
                 if session.spec.egress is Egress.CLOSED:
                     template = template.replace("{path}", "{path} --no-restore")
-                results.append(
+                phases.append(
                     await _run_phase(
                         sandbox,
                         phase,
@@ -497,11 +529,26 @@ def _bicep_validate_tool(
                     )
                 )
 
-        return "\n".join(results) if results else "No files validated."
+        if not phases:
+            # Nothing ran: every named file was refused or could not be staged, and the
+            # notes are the whole answer.
+            return SandboxResult(
+                completed=False,
+                trusted_output=tuple(notes) or ("No files validated.",),
+            )
+        ran = all(outcome.ran for outcome in phases) and not notes
+        return SandboxResult(
+            completed=ran,
+            # A verdict only where the compiler answered for every file it was given: a
+            # run missing one is not a pass for the rest, and completed=False says so.
+            verdict=("valid" if all(o.clean for o in phases) else "invalid") if ran else None,
+            trusted_output=tuple(notes),
+            output=tuple(outcome.text for outcome in phases),
+        )
 
     async def bicep_validate(
         files: list[str],
-    ) -> list[Content]:
+    ) -> SandboxResult:
         """Run ``bicep build`` and ``bicep lint`` on Bicep files inside a sandboxed VM.
 
         Validates that the named files pass the Bicep compiler and linter under the repo
@@ -529,19 +576,32 @@ def _bicep_validate_tool(
                 extensions are accepted.
 
         Returns:
-            A structured diagnostics report (build + lint output parsed from SARIF).
-            Zero diagnostics means the files are T2-clean.  If the sandbox is unavailable
-            the tool returns an error message so the run degrades to T0 rather than
-            blocking.
+            A :class:`~maf_sandbox.SandboxResult`.  ``verdict`` is ``valid`` or ``invalid``
+            where the compiler answered for every file, ``completed`` is false where it did
+            not — a refused name, a file that could not be staged, a timeout, or a module
+            restore failure that leaves input type checking undone.  The diagnostics are
+            ``output``; anything this tool says about its own refusal is ``trusted_output``.
         """
         # At the funnel rather than at each `return` in `report`: the sentence's label is
         # honest only where it is on every path, refusals included.
-        return [
-            Content.from_text(await report(files)),
-            Content.from_text(_UNREAD_IS_NOT_A_PASS),
-        ]
+        return await report(files)
 
     return bicep_validate
+
+
+@dataclass(frozen=True, slots=True)
+class _PhaseOutcome:
+    """One compiler phase's text, and what it says about the call as a whole.
+
+    ``ran`` is whether the compiler produced an answer that can be believed at all — false for
+    a timeout, a failed exec, unparseable SARIF, and a restore failure, which leaves module
+    input type checking undone.  ``clean`` is whether it found nothing at error level.  Both
+    are values this module writes, never the compiler's own text.
+    """
+
+    text: str
+    ran: bool
+    clean: bool
 
 
 async def _run_phase(
@@ -554,7 +614,7 @@ async def _run_phase(
     working_directory: str,
     timeout: int,
     renames: Mapping[str, str] | None = None,
-) -> str:
+) -> _PhaseOutcome:
     """Run one compiler phase and render its SARIF, or an error line.
 
     Both phases behave identically, so they share this rather than being written twice —
@@ -596,10 +656,10 @@ async def _run_phase(
         raise
     except TimeoutError:
         logger.warning("bicep_validate: %s exec timed out for %r after %ss", phase, name, timeout)
-        return f"{phase}({label}): Error: timed out after {timeout}s"
+        return _PhaseOutcome(f"{phase}({label}): Error: timed out after {timeout}s", False, False)
     except Exception as exc:  # noqa: BLE001
         logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, error_detail(exc))
-        return f"{phase}({label}): Error: exec failed"
+        return _PhaseOutcome(f"{phase}({label}): Error: exec failed", False, False)
     elapsed_ms = int((perf_counter() - started) * 1000)
 
     diagnostics = parse_sarif(result.stdout_text or "")
@@ -609,7 +669,7 @@ async def _run_phase(
             name,
             result.stdout_text or "",
         )
-        return f"{phase}({label}): Error: could not parse SARIF output"
+        return _PhaseOutcome(f"{phase}({label}): Error: could not parse SARIF output", False, False)
     # The one record that says the compiler actually ran. Everything else about a healthy
     # call is silent: the tool's return value looks the same whether Bicep found nothing
     # wrong or never executed, and "0 diagnostics" is the answer in both cases.
@@ -635,12 +695,16 @@ async def _run_phase(
             name,
             failed_restores,
         )
-        return (
+        # `ran=False` is the structural form of the warning this used to carry in prose: a
+        # restore failure leaves module input type checking undone, so the run is not an
+        # answer about the files at all. The sentence stays, shorter, for a host reading
+        # the text rather than the field.
+        return _PhaseOutcome(
             f"{phase}({label}): MODULE RESTORE FAILED for {failed_restores} module "
             "reference(s) (BCP190/BCP191/BCP192). Module types were NOT loaded, so type "
-            "checking of module inputs DID NOT RUN — this validation is INCOMPLETE. Treat "
-            "it as a broken validation run, not as evidence the files are healthy: do not "
-            "report the files as clean, and a reviewer must not base a PASS on it.\n"
-            f"{report}"
+            "checking of module inputs DID NOT RUN.\n"
+            f"{report}",
+            False,
+            False,
         )
-    return report
+    return _PhaseOutcome(report, True, not any(d.get("level") == "error" for d in diagnostics))
