@@ -1,62 +1,51 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" width="1000" height="320" role="img" aria-labelledby="hg-title hg-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
-  <title id="hg-title">The hourglass: many kinds, one contract, any sandbox</title>
-  <desc id="hg-desc">An hourglass, read left to right. On the left three chips are the kinds — a unit of work, written once: bicep_validate, execute_code, and an open dashed one for a kind you write; a phrase further left says each is reached as an ordinary tool call. They narrow into one slate box in the middle, the contract, which holds a spec for what the work needs and a router for what the host accepts. From there the shape widens again into the backends: ACA Sandboxes at micro-VM, Docker at container, wslc at container, an in-process fake for tests, and an open dashed chip for any sandbox, each named beside the boundary it declares. Amber arrows carry the flow left to centre to right, and one line under the shape states what the arrangement buys: when the backend changes, nothing else in the picture does.</desc>
-
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 670" width="1180" height="670" role="img" aria-labelledby="suite-shape-title suite-shape-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="suite-shape-title">One contract connects kinds to compatible backends</title>
+  <desc id="suite-shape-desc">Bicep, CodeAct, draw.io and Terraform or OpenTofu kinds use the shared SandboxSpec and router contract. ACAS, Docker, WSLC, Hyperlight and the in-process test fake implement backend contracts. Kinds and backends do not import one another. A backend serves a kind only when its declarations and acquired environment satisfy the workload. Shell and language-runtime paths have different requirements.</desc>
   <defs>
-    <marker id="hg-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c98a2e"/>
-    </marker>
+    <marker id="suite-shape-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
   </defs>
-
-  <!-- ── where the work is reached from ────────────────────────────────── -->
-  <text x="24" y="144" font-size="12" fill="#7d8694">reached as an</text>
-  <text x="24" y="160" font-size="12" fill="#7d8694">ordinary tool call</text>
-  <line x1="120" y1="150" x2="162" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#hg-amber)"/>
-
-  <!-- ── the kinds: written once, against the contract alone ───────────── -->
-  <rect x="170" y="49" width="160" height="46" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
-  <text x="250" y="76" text-anchor="middle" font-size="13" fill="#7d8694">bicep_validate</text>
-
-  <rect x="170" y="127" width="160" height="46" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
-  <text x="250" y="154" text-anchor="middle" font-size="13" fill="#7d8694">execute_code</text>
-
-  <rect x="170" y="205" width="160" height="46" rx="8" fill="#9aa1ac" fill-opacity="0.06" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
-  <text x="250" y="232" text-anchor="middle" font-size="13" fill="#9aa1ac">your kind</text>
-
-  <text x="250" y="273" text-anchor="middle" font-size="12" fill="#7d8694">kinds — a unit of work, written once</text>
-
-  <line x1="338" y1="150" x2="390" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#hg-amber)"/>
-
-  <!-- ── the waist: the one thing both sides are written against ───────── -->
-  <rect x="396" y="107" width="224" height="86" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#7d8694" stroke-width="2"/>
-  <text x="508" y="134" text-anchor="middle" font-size="14" fill="#7d8694">one contract</text>
-  <text x="508" y="156" text-anchor="middle" font-size="12" fill="#9aa1ac">a spec: what the work needs</text>
-  <text x="508" y="174" text-anchor="middle" font-size="12" fill="#9aa1ac">a router: what the host accepts</text>
-
-  <line x1="628" y1="150" x2="682" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#hg-amber)"/>
-
-  <!-- ── the backends: interchangeable, each declaring what it is ──────── -->
-  <rect x="690" y="49" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
-  <text x="706" y="70" font-size="12.5" fill="#7d8694">ACA Sandboxes</text>
-  <text x="944" y="70" text-anchor="end" font-size="12" fill="#9aa1ac">micro-VM</text>
-
-  <rect x="690" y="91" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
-  <text x="706" y="112" font-size="12.5" fill="#7d8694">Docker</text>
-  <text x="944" y="112" text-anchor="end" font-size="12" fill="#9aa1ac">container</text>
-
-  <rect x="690" y="133" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
-  <text x="706" y="154" font-size="12.5" fill="#7d8694">wslc</text>
-  <text x="944" y="154" text-anchor="end" font-size="12" fill="#9aa1ac">container</text>
-
-  <rect x="690" y="175" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
-  <text x="706" y="196" font-size="12.5" fill="#7d8694">in-process fake</text>
-  <text x="944" y="196" text-anchor="end" font-size="12" fill="#9aa1ac">tests</text>
-
-  <rect x="690" y="217" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.06" stroke="#2fa8a0" stroke-width="1" stroke-dasharray="5 4"/>
-  <text x="706" y="238" font-size="12.5" fill="#9aa1ac">any sandbox</text>
-
-  <text x="825" y="273" text-anchor="middle" font-size="12" fill="#7d8694">backends — any sandbox, declared honestly</text>
-
-  <!-- ── the claim the shape exists to make ────────────────────────────── -->
-  <text x="500" y="300" text-anchor="middle" font-size="13" fill="#7d8694">when the backend changes, nothing else in the picture does</text>
+  <rect width="1180" height="670" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">One contract connects kinds to compatible backends</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Kinds describe the workload. Backends provide execution and enforce their declared limits.</text>
+  <rect x="32" y="126" width="252" height="106" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="159" font-size="21" font-weight="600" fill="#243040">Bicep</text>
+  <text x="52" y="190" font-size="16" font-weight="400" fill="#526072">Compile templates</text>
+  <path d="M 158 232 L 158 291" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="320" y="126" width="252" height="106" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="340" y="159" font-size="21" font-weight="600" fill="#243040">CodeAct</text>
+  <text x="340" y="190" font-size="16" font-weight="400" fill="#526072">Run model-written code</text>
+  <path d="M 446 232 L 446 291" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="608" y="126" width="252" height="106" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="628" y="159" font-size="21" font-weight="600" fill="#243040">draw.io</text>
+  <text x="628" y="190" font-size="16" font-weight="400" fill="#526072">Export diagrams</text>
+  <path d="M 734 232 L 734 291" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="896" y="126" width="252" height="106" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="916" y="159" font-size="21" font-weight="600" fill="#243040">Terraform / OpenTofu</text>
+  <text x="916" y="190" font-size="16" font-weight="400" fill="#526072">Validate configuration</text>
+  <path d="M 1022 232 L 1022 291" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="32" y="291" width="1116" height="127" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="324" font-size="21" font-weight="600" fill="#243040">SandboxSpec + router</text>
+  <text x="52" y="355" font-size="17" font-weight="400" fill="#526072">Match isolation, operations, guest family, limits, network, sharing and authority.</text>
+  <text x="52" y="381" font-size="17" font-weight="400" fill="#526072">Kinds and backends depend on core; they do not import one another.</text>
+  <path d="M 136 418 L 136 477" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="32" y="477" width="208" height="106" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="510" font-size="21" font-weight="600" fill="#243040">ACAS</text>
+  <text x="52" y="541" font-size="16" font-weight="400" fill="#526072">Service micro-VM</text>
+  <path d="M 363 418 L 363 477" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="259" y="477" width="208" height="106" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="279" y="510" font-size="21" font-weight="600" fill="#243040">Docker</text>
+  <text x="279" y="541" font-size="16" font-weight="400" fill="#526072">Container</text>
+  <path d="M 590 418 L 590 477" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="486" y="477" width="208" height="106" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="506" y="510" font-size="21" font-weight="600" fill="#243040">WSLC</text>
+  <text x="506" y="541" font-size="16" font-weight="400" fill="#526072">Linux container</text>
+  <path d="M 817 418 L 817 477" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="713" y="477" width="208" height="106" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="733" y="510" font-size="21" font-weight="600" fill="#243040">Hyperlight</text>
+  <text x="733" y="541" font-size="16" font-weight="400" fill="#526072">Python micro-VM</text>
+  <path d="M 1044 418 L 1044 477" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#suite-shape-arrow)"/>
+  <rect x="940" y="477" width="208" height="106" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="960" y="510" font-size="21" font-weight="600" fill="#243040">In-process</text>
+  <text x="960" y="541" font-size="16" font-weight="400" fill="#526072">Test fake</text>
+  <text x="32" y="634" font-size="18" font-weight="600" fill="#243040">Compatibility is checked. A shell workload cannot use a runtime-only backend unchanged.</text>
 </svg>

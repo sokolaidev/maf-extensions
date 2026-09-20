@@ -1,8 +1,18 @@
-# Exec output: bytes and text
+# Execution output
 
-`ExecResult.stdout_bytes` and `stderr_bytes` are the authoritative returned streams. They preserve NUL, CRLF, every non-UTF-8 byte, valid multibyte text, and genuine U+FFFD. Producers construct results with those byte fields before decoding. Encoding an SDK's already-repaired text cannot recover program output; a backend must capture before that boundary or refuse the operation. The same rule applies to future `RUN_CODE` producers; Docker, WSLC and ACAS currently refuse that capability.
+`ExecResult` keeps returned stdout and stderr as bytes. Its text properties provide safe display views. Use bytes for storage and byte counts; use text for messages to the model.
 
-`stdout_text` and `stderr_text` are UTF-8 display views using replacement decoding. The existing `stdout` and `stderr` properties are aliases for these safe text views. Codeact and Bicep consume the explicit text views, which can pass through strict UTF-8 JSON transport without lone surrogates. Storing an artifact or counting returned bytes uses the byte fields, never a re-encoding of a text view.
+![A program produces stdout and stderr bytes. ExecResult stores the captured bytes unchanged in stdout_bytes and stderr_bytes. UTF-8 replacement decoding produces stdout_text and stderr_text for display, with stdout and stderr as aliases. Binary storage uses the byte fields directly. Decoding can lose information, so encoding a display view cannot recover the original bytes. Caps and producer diagnostics remain explicit.](assets/exec-output-bytes.svg)
+
+## Bytes and display text
+
+| Field | Contract |
+|---|---|
+| `stdout_bytes`, `stderr_bytes` | Authoritative returned streams, including NUL, CRLF and non-UTF-8 bytes |
+| `stdout_text`, `stderr_text` | UTF-8 views with replacement characters for invalid sequences |
+| `stdout`, `stderr` | Aliases for the text views |
+| `exit_code` | Program exit status, when available |
+| `producer_owns_stderr` | Whether stderr contains producer diagnostics instead of program stderr |
 
 ```python
 from maf_sandbox import ExecResult
@@ -13,41 +23,52 @@ assert len(result.stdout_bytes) == 4
 assert result.stdout_text == "ok\ufffd\ufffd"
 ```
 
-Text-only producers and existing test fixtures can still use `ExecResult("text", "diagnostic", 7, False)`; those inputs are encoded as strict UTF-8. Do not supply text and bytes for the same stream. The dataclass stores byte fields, so `dataclasses.asdict(result)` contains bytes and is not a JSON-ready text payload. Serialize explicit text properties for display or explicitly encode the byte fields, such as with base64, when transporting binary output. `dataclasses.replace` changes `stdout_bytes`/`stderr_bytes` rather than the display properties.
+Construct results from byte fields before decoding. A backend must capture before any lossy SDK conversion or refuse the operation. The same rule applies to `RUN_CODE` results.
+
+Text-only producers can use `ExecResult("text", "diagnostic", 7, False)`. These strings are encoded as strict UTF-8. Do not supply text and bytes for the same stream.
+
+`dataclasses.asdict(result)` contains bytes. For JSON, serialize explicit text views or encode binary data, for example with base64. `dataclasses.replace` changes the byte fields, not the display properties.
 
 ## Ownership, caps and timeouts
 
-`producer_owns_stderr` retains its meaning: false assigns each stream to the corresponding program stream; true reserves stderr for producer diagnostics and moves the program's stderr into stdout alongside its standard output. Byte fidelity applies to what was returned, not to bytes omitted under a documented cap. A producer returning reduced output must make the omission readable without mislabelling its diagnostic as program text. An implementation can instead refuse an oversized capture without returning an `ExecResult`.
+When `producer_owns_stderr=False`, each field belongs to the matching program stream. When it is `True`, stderr belongs to the producer and program stderr is carried in stdout alongside program stdout. A kind must keep producer notes separate from guest text when labelling its result.
 
-The host-tool transport preserves the bytes it reads on completion and exposes timeout partial output through `SandboxProgramTimeout.output_bytes`; `output` and the timeout message remain safe display text. Its existing output cap and timeout diagnostic excerpt still limit how much is returned. Request and control-message decoding remains strict UTF-8: malformed host-tool arguments are refused, never repaired into a different request.
+Byte fidelity covers the bytes returned. A documented cap can omit output, but the result must report that omission without presenting a producer note as program text. A backend can also refuse an oversized capture without returning an `ExecResult`.
 
-The command timeout covers execution, output retrieval and the scratch-cleanup attempt. Stopping remote work after failure can require a separately documented bounded cleanup allowance. `PosixGuestSubject.exec_cleanup_timeout` lets conformance account for that declared allowance, up to 30 seconds; the default remains zero.
+`BoundedExec.exec_bounded` limits combined stdout/stderr before buffering. Docker and WSLC bound subprocess pipes. ACAS bounds program capture and encoded response frames; framing can exhaust its budget even when program output fits.
+
+The host-tool transport exposes timeout partial output as `SandboxProgramTimeout.output_bytes`. Its `output` property and exception message are display text. Existing output and diagnostic-excerpt caps still apply. Host-tool request decoding stays strict UTF-8; malformed requests are refused.
+
+The command deadline includes execution, output retrieval and the scratch-cleanup attempt. A backend may declare a separate bounded allowance to stop failed work. Conformance reads this through `PosixGuestSubject.exec_cleanup_timeout`, defaulting to zero and capped at 30 seconds.
 
 ## ACAS capture
 
-The byte contract also applies to `BoundedExec.exec_bounded`. Docker and WSLC bound the combined subprocess pipes before constructing results from raw bytes. ACAS uses guest capture for this surface too: it checks the combined program-output size before retrieval and streams each encoded control response under `max_output_bytes` before parsing it. Encoding and framing can exhaust that response budget before program bytes reach the limit; a budget too small for framing refuses even an empty program result. The configured ACAS per-stream capture limit still applies. Budget overflow raises `SandboxExecOutputLimitExceeded`, and failed bounded capture has the same invalidation and disposal behavior as ordinary exec.
+ACAS captures program bytes inside the guest before the service converts them to JSON text.
 
-ACAS captures before the service's lossy JSON response. Two FIFO readers retain at most `exec_output_limit_bytes + 1` bytes each while draining inherited writers to EOF, so delayed background output is observed. The extra byte detects overflow. The default limit is 1 MiB per stream; configure `AcasSandboxConfig.exec_output_limit_bytes` to change it. A command can continue writing after that bound, but the capture files do not continue growing. The caller's deadline still bounds the drain.
+| Step | Behavior |
+|---|---|
+| Capture | Two FIFO readers drain inherited writers to EOF, retaining at most the per-stream limit plus one overflow-detection byte |
+| Limit | `AcasSandboxConfig.exec_output_limit_bytes`, default 1 MiB per stream |
+| Retrieve | Guest `dd` and base64 in 48 KiB chunks; check framing and decoded lengths before joining bytes |
+| Clean scratch | Remove the private guest directory using guest authority |
 
-Retrieval runs `dd` and base64 as the guest in 48 KiB chunks. The adapter checks framing and exact decoded lengths before joining the bytes. This avoids both the measured service ceiling for a single large base64 response and privileged file-plane reads through guest-controlled scratch paths. The SDK still buffers each text response; an oversized or malformed response is refused before decoding it into a stream. A guest can alter its own output or command helpers; capture is not an authenticity boundary against that guest.
+Acquisition for `EXEC` or `HOST_TOOLS` checks the required helpers and writable `/tmp`. See [ACAS](backends/acas.md) for the command list and configuration. The guest can alter its helpers or output, so capture does not make the bytes trustworthy.
 
-EXEC and HOST_TOOLS acquisition requires a compatible `sh`, `mkdir`, `mkfifo`, `head -c`, `cat`, `wc -c`, `dd`, `base64`, `rm` and `rmdir`, plus writable `/tmp`. The compatibility probe creates and removes guest-owned scratch. A missing helper or unwritable scratch refuses acquisition, including for an exec-only caller. The program inherits its original umask. Each call uses a private randomly named directory; all accesses and cleanup execute as the image user.
+Timeout, cancellation, overflow, malformed capture or a cleanup exception invalidates the whole sandbox. The backend attempts deletion, and reacquisition must finish any pending deletion before creating a replacement. Concurrent commands can lose that shared instance.
 
-Timeout, cancellation, overflow, failed readers, malformed framing, interrupted retrieval or an exception during cleanup invalidates and attempts to delete the entire sandbox, including concurrent commands and its filesystem state. A deadline reached while the Azure SDK sleeps on an HTTP 429 `Retry-After` is the narrow exception: the throttled request answered and no retry started, so the sandbox stays reusable. Another retryable status remains ambiguous and still disposes the sandbox. Direct cancellation during the 429 sleep also invalidates. The result check and invalidation are ordered under one lock. A result is accepted only if the instance is still usable at that check; a later invalidation can still dispose the instance. Deletion has an additional allowance of `min(30, read_timeout_seconds)` seconds. If deletion fails, the original exception carries a note, the backend retains the invalidated entry for disposal, and reacquisition must successfully retry deletion before creating a replacement, including under a changed egress policy. If invalidation precedes acquire's final guarded check after work-directory preparation, acquire fails and the caller can retry; later invalidation can still dispose an accepted instance. These failures do not return partial `ExecResult` streams.
+A deadline reached during an observed HTTP 429 `Retry-After` sleep is the narrow exception: no retry started, so the sandbox stays reusable. Other retryable responses and direct cancellation remain uncertain and invalidate it.
 
-After complete output retrieval, a scratch-removal response with a nonzero exit code or unexpected output logs a warning naming the guest directory instead of replacing the program result. This includes a command that removes its own shell. The sandbox remains available under its existing capability checks, and the captured bytes and exit code are returned unchanged. Scratch may remain until sandbox disposal; cleanup never falls back to the privileged file plane. A timeout, cancellation or exception while attempting scratch removal still follows the invalidation path above.
+After complete retrieval, a reported scratch-removal failure logs a warning and preserves the result. An exception or timeout during that removal still invalidates. Removal never falls back to privileged file access. The [backend guide](backends/acas.md) owns disposal allowances and recovery rules.
 
-Pending ACAS disposals must complete before acquisition for the affected kind. A key-wide discovery without a known kind blocks every kind for that key. An instance discovered only by a scope purge blocks acquisition across that scope and thread until its deletion succeeds; other scopes and threads remain available. Discovered IDs are retained even when a later listing fails or is cancelled. Acquisition retries those known IDs without requiring another successful listing.
+<a id="sample-09-and-release-migration"></a>
 
-## Sample 09 and release migration
+## Local sample
 
-Sample 09 captures subprocess pipes as bytes, then deliberately translates host-root path spellings back to its guest work directory. With the new core it preserves all bytes outside those substitutions. It is a path-translating demonstration, so its result is not a byte-identical copy of a process stream containing one of those host paths. Its published older-core compatibility branch returns UTF-8 display text until the automated samples floor update follows the dependent releases.
-
-This is a breaking release because the result's dataclass representation changes and ACAS adds image prerequisites, an output limit, and disposal on capture failure. The adapting backends and text consumers require the prepared core 0.38 line (`>=0.38.0,<0.39`). Publish core before its dependents; merge the automated samples floor update after the dependents publish. Package versions and changelogs remain owned by release-please.
+[Sample 09](../../samples/09_inprocess_bicep/) translates host-root path spellings back to guest paths in captured output. Bytes outside those substitutions are preserved. Output containing a substituted path is intentionally not a byte-identical copy of the original stream.
 
 ## Status
 
-| Item | Status | Tracking |
-| --- | --- | --- |
-| Returned-byte fidelity and safe display views | shipped — core, host-tool transport, Docker, WSLC, bounded ACAS capture and text consumers | [#465](https://github.com/sokolaidev/maf-extensions/issues/465) (closed) by [#1100](https://github.com/sokolaidev/maf-extensions/pull/1100) (merged) |
-| ACAS complete results survive reported scratch-removal failures | shipped — warning and possible scratch retention until disposal; exceptions still invalidate | [#1153](https://github.com/sokolaidev/maf-extensions/issues/1153) (closed) by [#1155](https://github.com/sokolaidev/maf-extensions/pull/1155) (merged) |
+| Decision | State | Tracking |
+|---|---|---|
+| Returned bytes and safe display views | Implemented | [#465](https://github.com/sokolaidev/maf-extensions/issues/465) (closed); [#1100](https://github.com/sokolaidev/maf-extensions/pull/1100) (merged) |
+| Complete ACAS results survive reported scratch-removal failure | Implemented; exceptions still invalidate | [#1153](https://github.com/sokolaidev/maf-extensions/issues/1153) (closed); [#1155](https://github.com/sokolaidev/maf-extensions/pull/1155) (merged) |

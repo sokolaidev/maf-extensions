@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 636" width="1180" height="636" role="img" aria-labelledby="router-selection-title router-selection-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="router-selection-title">Fixed selection or the first compatible backend</title>
+  <desc id="router-selection-desc">Fixed selection chooses the named backend or the first registered backend and checks it against the spec. Per-spec selection checks candidates in registration order and picks the first that satisfies host and workload requirements. No match is a refusal. Both routes acquire one selected backend. Acquisition or image-check failure does not start another selection. All registered backends remain available for disposal.</desc>
+  <defs>
+    <marker id="router-selection-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="636" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Fixed selection or the first compatible backend</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Routing reads declarations. The acquired image can still fail its own checks.</text>
+  <rect x="32" y="133" width="514" height="150" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="166" font-size="21" font-weight="600" fill="#243040">FIXED — default</text>
+  <text x="52" y="197" font-size="17" font-weight="400" fill="#526072">Use selected, or the first registered backend.</text>
+  <text x="52" y="223" font-size="17" font-weight="400" fill="#526072">Check that backend against the spec.</text>
+  <text x="52" y="249" font-size="17" font-weight="400" fill="#526072">Refuse if it cannot serve the workload.</text>
+  <rect x="602" y="133" width="546" height="150" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="622" y="166" font-size="21" font-weight="600" fill="#243040">PER_SPEC — host opt-in</text>
+  <text x="622" y="197" font-size="17" font-weight="400" fill="#526072">Check declarations in registration order.</text>
+  <text x="622" y="223" font-size="17" font-weight="400" fill="#526072">Choose the first candidate that matches.</text>
+  <text x="622" y="249" font-size="17" font-weight="400" fill="#526072">Refuse if none can serve the workload.</text>
+  <path d="M 289 283 L 289 341" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#router-selection-arrow)"/>
+  <path d="M 875 283 L 875 341" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#router-selection-arrow)"/>
+  <rect x="32" y="341" width="1116" height="111" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="374" font-size="21" font-weight="600" fill="#243040">Acquire the selected backend</text>
+  <text x="52" y="405" font-size="17" font-weight="400" fill="#526072">Check image-dependent requirements on the actual sandbox before running the workload.</text>
+  <rect x="32" y="499" width="1116" height="89" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="532" font-size="21" font-weight="600" fill="#243040">No health, price or latency routing; no fallback after acquisition failure</text>
+  <text x="52" y="563" font-size="17" font-weight="400" fill="#526072">Disposal can still reach every registered backend.</text>
+</svg>

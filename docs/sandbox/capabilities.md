@@ -1,282 +1,134 @@
-# Capabilities
+# Capabilities and file transfer
 
-> What a sandbox can *do*: the vocabulary, how it is declared and matched, and the full semantics of the file surface. Sources of record: [`research/files-out.md`](research/files-out.md) and [`research/two-axis-sandbox-policy.md`](research/two-axis-sandbox-policy.md).
+A kind states what its workload needs in `SandboxSpec`. A backend states what it can provide in `BackendDeclarations`. The router checks the match before exposing a tool and again before acquisition.
 
-## The vocabulary
+Capabilities describe operations. [Isolation](policy-isolation.md), [network policy](network.md), [guest family](guest-platform-and-commands.md), limits and identity have their own checks.
 
-`Capability` is a `StrEnum` with eleven members. It is the second of the two axes — [`policy-isolation.md`](policy-isolation.md) holds the first — and it answers a different question: not *how strong is the boundary*, but *what is behind it*. Where the axis sits in the stack is [`architecture.md`](architecture.md); what a kind does with it is [`kinds/README.md`](kinds/README.md); how each backend implements it is [`backends/README.md`](backends/README.md).
+## Capability vocabulary
 
-| Member | What it gates | Declared today by |
+| Capability | Meaning | Real backend support |
 |---|---|---|
-| `EXEC` | Run a command line or argv — `Sandbox.exec` | docker, acas, wslc |
-| `RUN_CODE` | Evaluate code in a language runtime, without going through a shell — `Sandbox.run_code` | [hyperlight](backends/hyperlight.md) |
-| `HOST_TOOLS` | Call host-registered functions from inside the sandbox | docker, acas |
-| `FILES_IN` | Write files in before execution — `Sandbox.write_file` | docker, acas, wslc |
-| `FILES_OUT` | Stat and read back the paths a spec declared — `stat_file`, `read_file` | docker, acas |
-| `FILES_LIST` | Enumerate a directory — `list_dir` | acas |
-| `FILES_DELETE` | Delete a path and everything under it — `remove` | docker, acas |
-| `SNAPSHOT` | Snapshot and restore a sandbox for reuse, which also establishes the `RESET` cleanup rung — `Sandbox.reset` | [hyperlight](backends/hyperlight.md) |
-| `RECLAIM` | Take a directory this stack created, which is what the `RECLAIM` cleanup rung runs — `Sandbox.reclaim`, which stays mandatory whether or not this is declared | docker |
-| `ATTACHED_IDENTITY` | Explicitly opted-in platform authority, with sharing, retention and channel bounds matched by core; see [`hosts.md`](hosts.md#identity--whose-authority-sandbox-work-carries) | no real backend; fake defaults to none |
-| `EGRESS_METHODS` | Enforce the HTTP methods an allowlist entry names, within `egress_method_tokens` — [network policy](network.md#method-scoped-allow-entries) | nobody |
+| `EXEC` | Run a shell command or argv | ACAS, Docker, WSLC |
+| `RUN_CODE` | Run code through a language runtime | Hyperlight |
+| `HOST_TOOLS` | Support calls from a guest program into registered host functions | ACAS, Docker |
+| `FILES_IN` | Write files into the sandbox | ACAS, Docker, WSLC |
+| `FILES_OUT` | Inspect and read declared output files | ACAS, Docker; Hyperlight with flat outputs enabled |
+| `FILES_LIST` | Discover directory entries | ACAS |
+| `FILES_DELETE` | Remove workload-selected paths | ACAS, Docker |
+| `SNAPSHOT` | Reset to a baseline taken before input | Hyperlight |
+| `RECLAIM` | Safely remove the framework's call directory | Docker |
+| `ATTACHED_IDENTITY` | Enforce the core attached-authority contract | None |
+| `EGRESS_METHODS` | Enforce HTTP method restrictions | None |
 
-`InProcessSandboxBackend` defaults to `DEFAULT_CAPABILITIES | {Capability.RECLAIM}`; tests can override its declarations. The router’s default for an unstated capability set remains:
+This table shows supported configurations. Image checks and backend options can narrow them. Each [backend guide](backends/README.md) states its limits. The in-process fake declares test behavior; it provides no real containment.
 
-```python
-DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})
-```
+`DEFAULT_CAPABILITIES` contains `EXEC` and `FILES_IN`. An omitted capability declaration uses that default. It does not imply support for other operations.
 
-That is what every `Sandbox` already obligates, which is why silence resolves to it rather than to nothing.
+`spec.requires` contains explicit workload requirements. `spec.required_capabilities` also includes requirements derived from policy, such as `EGRESS_METHODS` for a method-limited rule. `RECLAIM` is a cleanup declaration and cannot be a workload requirement.
 
-**The admission test for a new member: name the backend that lacks it.** If none does, it is a comment, not a capability. Three times it has been asked, and once the answer was no:
+<a id="backend-selection"></a>
 
-- **`FILES_LIST` is split out of `FILES_OUT`** because a backend can pull named files without offering directory enumeration. Docker's `docker cp <name>:<path> -` works without a shell and supplies the tar metadata for a *named* path. A directory archive also carries names, but reaching them requires streaming the whole subtree's file contents; the Docker backend [withholds listing on cost grounds](backends/docker.md#files_list-is-withheld-because-a-listing-transfers-the-subtree). Guest-controlled `ls`/`find` cannot replace an engine observation. ACA Sandboxes offer directory listing. Two real backends differ, so there are two capabilities. One consequence decides the API shape: **globs require enumeration**, so a declared output is a literal path and patterns belong only to a kind that also requires `FILES_LIST`.
-- **`FILES_DELETE` is split out of `FILES_IN`** because writing and removing are different powers, and a backend can honestly offer one without the other — docker and acas declare it, wslc the `FILES_IN` half alone.
-- **Widening `write_file` to `str | bytes` gets no capability**, because no backend lacks it: the ACAS SDK signature is already `content: str | bytes`, and docker and wslc both transport via tar, which is binary-native.
+## Selecting a backend
 
-The two file-read capabilities side by side, since a kind chooses between them and the choice decides its portability:
+`Selection.FIXED` is the default. The router uses `selected`, or the first registered backend when no name is supplied. It checks each workload against that backend.
 
-| | `FILES_OUT` | `FILES_LIST` |
+`Selection.PER_SPEC` tries backend declarations in registration order. It chooses the first candidate that satisfies the workload and host policy. It cannot be combined with `selected`.
+
+![Fixed selection chooses the named or first backend, then checks the workload against it. Per-spec selection checks registered backends in order and chooses the first that meets the isolation floor, capabilities, limits, guest family, network, sharing and identity rules. No match produces a refusal. Both paths acquire the chosen backend; an image probe can still refuse there.](assets/router-selection.svg)
+
+Selection uses declarations, not health, cost or latency. An acquisition failure does not trigger a second selection. If no candidate matches, the refusal includes the candidates' reasons and keeps the first candidate's exception type.
+
+Host denials apply in both modes. A workload cannot restore a denied capability or identity. All registered backends remain available for disposal, including candidates that cannot serve new work.
+
+With no backend configured, `sandboxed_tool` attaches no tools. Direct acquisition raises `NoSandboxBackend`. See [router policy](policy-isolation.md) for the complete checks and declaration defaults.
+
+## File operations
+
+Paths belong to the guest. A relative `working_directory` resolves under the sandbox's bound storage base; `"."` selects that base. File paths resolve under the selected working directory. Commands and argv remain unchanged.
+
+Relative names use `/`, independent of the host OS. They cannot escape their working directory. Explicit absolute paths follow the guest-native contract. Do not use host filesystem functions to interpret guest paths.
+
+| Operation | Contract |
+|---|---|
+| `write_file` | Accept `str` or `bytes`; encode text as UTF-8 without newline rewriting; create needed parents |
+| `stat_file` | Describe the final entry without following it; refuse traversal through a linked ancestor |
+| `read_file` | Read a regular file only, within the requested byte bound |
+| `list_dir` | Enumerate a directory only with `FILES_LIST`; report links without traversing them |
+| `remove` | Remove a workload-selected path only with `FILES_DELETE` |
+| `reclaim` | Remove a framework-owned call directory only where safe cleanup is supported |
+
+`EntryKind` distinguishes `FILE`, `DIRECTORY`, `SYMLINK` and `OTHER`. Junctions and reparse points count as links. Devices, sockets and FIFOs are not regular files. An unknown or negative size cannot authorize a read.
+
+`stat_file` may describe a final link. Listing through that link is refused. A delete may unlink the final link, but must not follow it or a linked parent.
+
+## Declaring outputs
+
+`DeclaredOutput` names one literal relative path. It does not accept globs. Its default role is `LAND`, its default `required` value is `True`, and its default public name is the path. `media_type` is optional and supplied by the kind; core does not infer it from bytes.
+
+| Role | Purpose | Who reads the bytes? |
 |---|---|---|
-| Surface | `stat_file`, `read_file` | `list_dir` |
-| What a kind must know | The names of its outputs, in advance | Nothing |
-| ACAS | Native (`stat_file`, `read_file`) | Native (`list_files`) |
-| Docker | Native — stat from the first tar header of `docker cp`, read from the same stream | Not without an in-image shell |
-| wslc | Not served — `cp` has no container-to-stdout form, so there is no tar to read a header from | Not without an in-image shell |
-| Who needs it | Every artifact-producing kind | A kind that must **discover** names nothing told it — which the CodeAct shape is not |
+| `CONSUME` | Feed an output back into the kind, such as compiler diagnostics | The kind, with its own bounded read |
+| `LAND` | Deliver an artifact to host-owned storage | `collect_outputs`, then the host sink |
 
-## Declared, required, matched
+Both roles count against file limits and undergo path, type and size checks. `collect_outputs` does not read `CONSUME` bytes. Consumed content affects the kind's source-integrity reasoning; landed content uses an outbound destination.
 
-`FILES_OUT` does not promise access to every filesystem mounted inside a guest. On [Docker](backends/docker.md#the-pull-surface-one-tar-read-twice), keep the work directory and declared outputs on the rootfs: tmpfs and other unsupported mounts can contain a readable guest file while `docker cp` reports it absent. `collect_outputs` then reports no output. A kind or host choosing mounted output storage must first establish that the backend's pull surface supports it; capability matching does not check mount visibility.
+![A declared output path is checked for confinement, regular-file type, known size and transfer limits. A consume output then goes to a bounded read owned by the kind. A land output is read by collect_outputs and included in the fully checked batch before any host sink receives bytes. Missing required files and unsafe or oversized files are refused.](assets/file-transfer-boundary.svg)
 
-A backend declares `declarations.capabilities: frozenset[Capability]`; a spec declares `requires: frozenset[Capability]`; `SandboxRouter.ensure_can_serve` refuses `spec.requires - declarations.capabilities` with `SandboxCapabilityNotSupported`. The same check runs inside `acquire`, so a caller who skipped `ensure_can_serve` is refused too rather than served behind a capability set the spec never agreed to.
+Declare `outputs_named_at_call_time=True` when the tool supplies outputs through `collect_outputs(outputs=...)`. Without it, that override is refused. Both fixed and call-time outputs need `FILES_OUT`; landing also needs an `OutputSink`.
 
-**Silence is read charitably here, and that is a claim about which kind of claim it is.** `capabilities` is a field of `BackendDeclarations` defaulting to `DEFAULT_CAPABILITIES`: a backend that never heard of the vocabulary still honestly does what `Sandbox` obligates, so the default is a *functionality* claim and costs nothing. `egress_modes` silence and `limits` silence are *safety* claims and resolve the other way — a backend declaring no mode enforces none and is refused whatever the workload runs in ([`network.md`](network.md)), and an undeclared ceiling is the default ceiling with a bigger ask refused. A third silence is neither: an undeclared `os_families` is the **absence of an answer**, read as `frozenset()`, which refuses a spec that asks for a guest shape and leaves every spec that does not exactly as it was. A fourth is a *claim*, and the only one: an undeclared `isolation_scopes` reads as `{conversation}`, because get-or-create is what `acquire` has always obliged — so a backend written before that axis serves exactly what it served, and only a per-call workload meets a refusal.
+Known filenames do not require `FILES_LIST`. A model-provided literal name or a known manifest can identify outputs directly. Listing is required only when the kind must discover unknown names.
 
-**A match by default, and a search when a host asks for one.** Under `Selection.FIXED`, the default and what this package has always done, `SandboxRouter._resolve` runs once at construction: it takes the backend named by `selected`, or the first registered one, and checks the isolation floor. Nothing else participates in choosing, and a host with two backends does not get the second one tried. The host's outright denials, the effective floor, the capability match, the guest-shape match, the transfer ceilings, the egress rule and the scope then run **per spec**, in that order, and every one of them **raises**. So a host whose only backend lacks `FILES_OUT` gets an exception out of its agent factory rather than a quietly-unattached tool.
+## Transfer limits
 
-`SandboxRouter(backends, selection=Selection.PER_SPEC)` is the generalization the two-axis proposal argued for, and it is the same chain run against each registered backend in turn until one passes — so one router can hold an in-process backend beside a remote one and let the spec decide. Four things about it are load-bearing. It is **opt-in**, and the reason is a bill rather than a scruple: routing can only ever *serve* a spec that is refused today, because a router with no pin routes to the first registered backend exactly as it resolves to it — so nothing that runs today moves, and what changes is that a refusal becomes a running sandbox, which on a remote backend has a price. That claim is about an **unpinned** router, and a host migrating off a pin is where it stops holding: since `selected=` and `PER_SPEC` are refused together, dropping the pin makes routing start at the first registered backend rather than the pinned one, so the list has to be reordered to keep an already-served workload where it was. **Registration order is the preference**, which `SandboxRouter`'s own signature has always called it. **The route is a pure function** of the spec and what the backends declare — never of load, health, latency or cost — because `acquire` is get-or-create and a route that moved between calls would pay a cold start every iteration and orphan a billable sandbox on the backend it left, and because a host's replicas share no memory for anything else to be read from. And the **two host denials are not routed past**: no backend property softens `denied_capabilities` or `denied_identities`, so there is no next backend to try. `selected=` stays a pin and is refused together with `PER_SPEC`; when nothing can serve, the refusal raised is the most preferred backend's own, with every backend passed over named in it. [#328](https://github.com/sokolaidev/maf-extensions/issues/328).
+`SandboxLimits` has separate inbound and outbound `TransferLimits`. Each direction defaults to 8 MiB per file, 32 MiB total and 64 files. The workload cannot request any limit above the backend's ceiling.
 
-`denied_capabilities` is the posture counterpart, and it is not the same refusal: `SandboxCapabilityDenied` says *this host will not*, whatever a backend declares, and no backend property softens it. See [`hosts.md`](hosts.md) for what a host denies and why.
+Output collection checks declared sizes before reading. It checks actual returned bytes again before delivery. Missing required files, unsafe paths, non-files and exceeded limits raise `SandboxOutputError` subclasses. Files are refused, not truncated.
 
-## The file surface
+The complete set is checked and read before the first sink callback. A callback can still fail after earlier artifacts were delivered; there is no batch rollback. [Host output handling](hosts.md#where-artifacts-land) owns that contract.
 
-### Two flows, not one
+These limits bound accepted transfers. They do not promise a peak-memory bound when an SDK buffers a response before returning it. A backend that needs a hard memory bound must enforce it while reading.
 
-A single capability creates two information flows that answer to different legs of a host's policy, and the spec keeps them apart rather than leaving it to convention:
+## Confinement and deletion
 
-- **Reading bytes the kind itself consumes** — a SARIF file parsed into diagnostics, a JSON result summarised into the tool result — is a **source**, and the question is *integrity*.
-- **Landing an artifact in host state** is a **sink**, and the question is *confidentiality*: may a conversation this sensitive cause bytes to be written where they are going?
+Confinement covers the selected directory, its ancestors and the final operation. A lexical path check alone cannot stop the guest from replacing a parent after it was checked.
 
-The source leg is already answered by the tool's own integrity declaration, and a kind whose result is emitted by code the host does not run answers it by declaring `untrusted` — the default would answer it too, but through the host's `default_integrity` rather than through anything the kind said. Nothing answered the sink leg before this capability existed.
+Backends establish safe reach through their own mechanisms. Docker uses engine metadata and guest freezing for relevant file operations. ACAS and WSLC document remaining check-then-use windows. Their [backend guides](backends/README.md) define the exact guarantees.
 
-`OutputDisposition.CONSUME` and `OutputDisposition.LAND` are that distinction, declared. It is a *routing* distinction and nothing more — a `CONSUME` output is stat-ed, capped and counted exactly like a landing one. What follows from the sink leg — where artifacts land, name validation, the outbound confidentiality cap — is [`hosts.md`](hosts.md)'s.
+Guest-supplied answers are weaker than engine metadata. For example, ACAS file metadata cannot establish every regular-file property; a non-directory, non-link entry may still be a FIFO. Bounded reads limit the wait but do not make that metadata more precise.
 
-**Two things `FILES_OUT` is not.** It is **not `HOST_TOOLS`**: nothing inside the sandbox calls the landing callback, the kind calls it host-side after the run, and the no-host-tool-call property a CodeAct-class kind rests on survives intact — a host wanting a hard stop denies `FILES_OUT`. And it is **not a second write path into the file store**: a kind landing artifacts where the agent's own file tools write has handed model-written code an unapproved write, and one that can overwrite has given it a way to influence a *different* kind on the next call.
+`remove` treats a missing path as success. Directories require `recursive=True`, including empty ones. Recursive removal unlinks interior links without following them. It refuses the working directory itself, outside paths and linked parents.
 
-### Unpredictable output names do not need enumeration
+An invalid path raises `ValueError`; an operation failure raises `OSError`; an unsupported operation raises `NotImplementedError`. Output collection translates path and access failures into its output-error family while retaining their causes.
 
-The CodeAct shape looks like `FILES_LIST`'s constituency — a kind running model-written code cannot know what that code will write — and it is not. **A name unknown when the tool is *built* can still be known before the collection *runs*.** Two channels supply one, neither a directory listing: the model names its files in the tool call, or the program writes a manifest the kind reads at a path it chose itself. Both end in literal paths, which is all `FILES_OUT` needs. `FILES_LIST` is for a kind that must discover a name **nothing told it**, and a kind requiring it without needing it has made itself ACAS-only in the worst direction — refused at attach on a developer's Docker machine, attached in production.
+`reclaim` has a different caller and purpose. The framework supplies an unguessable call path, but that name does not prove safe ancestry after the guest runs. Core refuses the working directory itself and paths fewer than two components from root. The backend must establish safe removal reach or refuse.
 
-The declaring channel also closes a trade the fixed-slot shape has to document: a program writing an artifact somewhere other than a declared path produces nothing collectable *and no error*, while a name declared before the run and absent after it is a diagnostic the kind hands back verbatim.
+## Cleanup and runtimes
 
-Two fields pay for it. `SandboxSpec.outputs_named_at_call_time` says *this workload lands artifacts it cannot name here*, and it is what keeps such a workload honest at attach: every attach-time question — is a sink required, does the outbound cap apply, must the backend serve `FILES_OUT` — is answered from the declarations, and a workload landing artifacts while declaring none would answer all three wrongly. `collect_outputs(outputs=...)` is refused without it. `DeclaredOutput.name` exists because `acquire` is get-or-create: a kind whose outputs would otherwise persist into the next round needs a per-call directory, and the guest path then carries a run id the host has no use for. `path` is what the backend reads; `name` is what the sink receives.
+The router defaults to `Cleanup.DISPOSE`. Reuse requires an explicit host setting. `RECLAIM` permits call-directory removal; `SNAPSHOT` permits reset; disposal is always available. The router selects an available operation at or above the host and workload floors.
 
-### The protocol
+`confined_to_guest_call_path` describes the kind's behavior. It neither proves complete cleanup nor enables reuse. [Tool-call lifetime](tool-call.md#cleanup-as-a-consequence) covers cleanup, concurrency and failure handling.
 
-```python
-class Sandbox(Protocol):
-    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None: ...
-    async def exec(self, command: str | Sequence[str], *, working_directory: str, timeout: float) -> ExecResult: ...
-    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None: ...
-    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes: ...
-    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None: ...
-    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]: ...
+`RUN_CODE` has no working-directory argument. The backend owns runtime state and imports. Its wall timeout includes waiting for execution; `SandboxQueuedTimeout` distinguishes a job that never started.
 
-    # Required method; RECLAIM admits its use for cleanup
-    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None: ...
-```
+CodeAct selects an explicit `CodeactRuntime`; its default path uses `EXEC`. A runtime path requests `RUN_CODE` and only the file capabilities it uses. The [CodeAct guide](kinds/codeact.md) defines that integration.
 
-**`working_directory` selects the operation's location and the file methods' confinement boundary.** Each acquired sandbox is bound to a storage base: `spec.work_dir=None` delegates allocation to the backend, while an explicit value selects that exact guest-native base. A relative `working_directory` resolves beneath the bound base, with `"."` denoting the base itself; an escape is refused. Legacy absolute working directories remain guest-native. File `path` arguments are POSIX-shaped and relative to the resolved working directory; one resolving outside that directory is refused.
+## Verify a backend
 
-`stat_file` is **`lstat`-like**: the final component is described rather than refused, since `EntryKind.SYMLINK` is how a caller learns it is a link, and its ancestors are still checked because a stat through one reports a type and a size from outside the working directory even though no byte crosses. `list_dir` checks one component deeper than the others, because an enumeration passes through a link as readily as a read does, and a listed link is reported as `SYMLINK` rather than hidden — a name handed back with its type erased is a name read without the warning.
+`maf_sandbox.conformance` provides reusable probes without importing pytest. Run them against the backend's real execution and file mechanisms. An undeclared capability is skipped, which is not a passing proof of support.
 
-```python
-@dataclass(frozen=True)
-class DeclaredOutput:
-    path: str                                            # literal, relative to storage base; no globs
-    disposition: OutputDisposition = OutputDisposition.LAND
-    media_type: str | None = None                        # declared by the kind, never sniffed
-    required: bool = True                                # missing required is an error
-    name: str | None = None                              # the landing name; defaults to `path`
-```
-
-Each field earns itself. `path` is **literal** because a glob would have to be resolved by enumerating a directory, the one primitive Docker lacks. `media_type` is **declared, not sniffed**, because sniffing lets guest-produced content decide how the host handles it, and a kind knows what it renders. `required=False` **separates transport failure from workload failure**: a renderer exiting non-zero and producing no PNG is the normal path a model recovers from, and collection raising on top of it hands the model a transfer error where a diagnostic belongs. The spec field is `declared_outputs`, not `outputs`, because `InProcessSandbox.__init__` already takes `outputs=` meaning marker-keyed scripted stdout and the two would meet in one expression in every kind's tests; `outputs_named_at_call_time` is appended last on `SandboxSpec` rather than grouped where it reads better, because the dataclass is public and not keyword-only, so inserting a field would silently rebind a caller's positional `files_in` to a boolean.
-
-```python
-class EntryKind(StrEnum):
-    FILE = "file"           # a regular file, the only kind read_file serves
-    DIRECTORY = "directory"
-    SYMLINK = "symlink"     # a link, junction or reparse point — never read, never traversed
-    OTHER = "other"         # device, socket, fifo — or a link a backend cannot recognise
-
-@dataclass(frozen=True)
-class SandboxEntry:
-    path: str               # relative to the working directory
-    kind: EntryKind
-    size_bytes: int | None  # None fails closed
-```
-
-`kind` is a **typed field, not a mode string to parse**: ACAS carries `is_directory` and nothing else about type, Docker's stat reads a tar header carrying the entry's real type flag and, for a link, the target name, and one vocabulary covers both. **`SYMLINK` is split out of `OTHER` because the filesystem path check needs a four-way answer** — regular file, directory (keep checking), link (an escape), anything else non-regular (an ordinary `ENOTDIR`). Both are refusals either way, so what the split buys is the *reason*, and the reason is what made the check shareable: while the signal lived in a private per-backend flag the check could only be written once per backend, which is exactly how two copies of it shipped. A Windows junction or reparse point maps to `SYMLINK`, not `OTHER` — for confinement it is an escape like any other link, and leaving it in `OTHER` would reintroduce the bug on a non-POSIX guest while looking correct. Two rejected shapes: `link_target` invites a reader to reason about where the link *goes*, a judgement made with the guest's filesystem in view; `is_symlink: bool = False` is a defaulted boolean that can simply not be read, and makes `kind=FILE, is_symlink=True` representable. The header-to-entry classification now lives once, in core, as `maf_sandbox.paths.sandbox_entry_from_tar_header` beside `tar_header_from_block`, so the backends that read a container `cp` stream classify it through that rather than each carrying the mapping.
-
-**`size_bytes: None` fails closed.** ACAS's stat payload reports size as an optional integer, and coercing unknown to `0` would make a size cap read that file as free, while passing on a negative would clear the pre-read check and then *reduce* the collection's running total. An entry whose size cannot be determined is refused rather than read. A link's size is `None` for a second reason: what a stat reports for one is the length of the target *string*, not of anything readable.
-
-### Adding to `Sandbox` is a breaking change, and that is the choice
-
-`Sandbox` is `@runtime_checkable`, which enforces member *presence* — the reason a backend's declarations are read off it with `getattr` rather than declared as Protocol members. Four members went onto `Sandbox` anyway, and it is safe here for a stated reason: **no production path in this repository calls `isinstance(x, Sandbox)`**; three tests do, deliberately, and the only other protocol `isinstance` checks are against `SandboxBackend`. The members belong on the Protocol because a sandbox's file surface is what the type exists to describe, and hiding them behind `getattr` would make every kind feature-detect. It is nonetheless **breaking for out-of-tree implementers** — an existing `Sandbox` stops satisfying the protocol the day it lands — so it ships as `feat!` at 0.x, and "no backend declares the new capabilities yet, so nothing changes behaviourally" is true of the router's match and false of the protocol.
-
-`run_code` made it five, on the same reasoning and at the same price: a method cannot take the `getattr` escape a declaration can, so the migration is one method — a third-party sandbox adds `run_code` raising `NotImplementedError` unless it declares the capability, exactly as `remove` and `list_dir` are already refused by individual backends.
-
-`reclaim` makes it six. The method remains mandatory, but a backend that cannot establish safe reclamation implements it as a refusal and withholds `Capability.RECLAIM`. The router then resolves cleanup to a stronger established rung. [WSLC](backends/wslc.md) withholds both `RECLAIM` and `SNAPSHOT`, so its calls are cleaned by disposal; a framework-chosen call directory does not establish that its ancestors are beyond the guest's reach.
-
-## Caps
-
-```python
-@dataclass(frozen=True)
-class TransferLimits:
-    max_bytes_per_file: int
-    max_total_bytes: int
-    max_files: int
-
-    def within(self, ceiling: TransferLimits) -> bool: ...   # every field at or below
-
-DEFAULT_TRANSFER_LIMITS = TransferLimits(max_bytes_per_file=8 * MiB, max_total_bytes=32 * MiB, max_files=64)
-```
-
-**All three fields are load-bearing**: a byte ceiling alone does not bound a collection, since ten thousand files one byte under the per-file cap cost exactly what the cap was written to prevent. A spec carries one `TransferLimits` per direction (`files_in`, `files_out`); a backend declares a `SandboxLimits`, which is the pair.
-
-**The invariant that keeps the axis inert: the spec-side default and the backend-side silent default are the same constant.** `within()` is then satisfied by equality and nothing already written starts being refused. Get it wrong in the other direction — a spec default above what a silent backend is assumed to allow — and *every* spec fails at attach, including the published-wheel smoke test's. A test asserts `DEFAULT_TRANSFER_LIMITS.within(DEFAULT_TRANSFER_LIMITS)` so the two cannot drift apart. A `limits` this package cannot read at all is refused rather than guessed at, with the adjacent mistake named in the message: `TransferLimits` is one direction and `SandboxLimits` is the pair, and the wrong one used to surface as a bare `AttributeError` out of a host's agent factory.
-
-**Enforcement is stat-then-read, with stream counting as the fallback rather than the rule.** The ACAS SDK's read does `await response.read()` internally — fully buffered, no incremental hook — so stat is the only enforcement available there; Docker's first tar header returns a size before any content byte moves and can also count tar bytes on the way out as a second line. So: **stat, refuse if over cap or unknown, then read**; a backend that can additionally abort mid-transfer should, and none is required to. `read_file` takes `max_bytes`, and the caller passes the stat-ed size clamped by what the collection has left. It is a **refusal, never a truncation** — half a PNG returned as success is an artifact the host cannot tell from a whole one.
-
-**The caps are re-applied to the bytes that actually arrived, not only to the stat-ed sizes.** A stat is a promise about a file the guest can still rewrite before the read reaches it, and the guest is the thing the sandbox exists to contain; checking once would make the whole cap advisory against exactly the adversary it is written for. A breach **fails the whole collection with no partial delivery**, because a partial artifact set reported as success is worse than none — the model cannot tell what it did not get.
-
-**`files_out` bounds the collection the spec *declared*, not the subset that lands.** A `CONSUME` output is counted against all three fields: same guest, same filesystem, same bytes leaving the sandbox, and exempting them would make every cap opt-out, since a spec declaring everything `CONSUME` would be uncapped. What collection does *not* do for one is read it — a kind reading its own `CONSUME` output passes `max_bytes` itself and owns that read's bound.
-
-**Backend maxima follow the safety-claim silence rule**, not the capability one: an unstated `limits` resolves to `DEFAULT_SANDBOX_LIMITS` and a bigger ask is refused with `SandboxTransferLimitsNotPermitted`. `limits` is one of the five fields of `BackendDeclarations`, beside `capabilities`, `egress_modes`, `os_families` and `isolation_scopes`; they were four separate `getattr` reads until the count named as the trigger was reached, and the collapse kept each silence rule as that field's default — [`policy-isolation.md`](policy-isolation.md) owns the decision.
-
-## `write_file` widens; no capability for it
-
-`write_file` takes `(path: str, content: str | bytes, *, working_directory: str)`, with `str` continuing to mean UTF-8 whatever the host's locale says. The in-door otherwise cannot carry a PNG or a spreadsheet. It gets no capability by the admission test above. It uses the same POSIX grammar and `working_directory` confinement as the read surface, including refusal of lexical escapes, symlinked parents, and a link at the leaf; parent directories are created as needed, and a missing component ends the filesystem path check, so nothing this call creates can be a link. That check and the write are not atomic on any shipped backend: a guest that turns a checked component into a link in between wins. The file name check cannot race — it is text arithmetic — so the window belongs to the other half alone.
-
-## `FILES_DELETE`
-
-`Sandbox.remove(path, *, working_directory, recursive=False)` deletes `path` and, when `recursive`, everything under it. Three rules a caller depends on, and the confinement duty of the pull surface:
-
-- **A path that is not there is success.** Cleanup runs in a `finally` and must not report a second failure over the first.
-- **A link is removed, never followed.** Resolving one would unlink a target outside the boundary, and no byte has to come back for the damage to be done.
-- **A directory is refused without `recursive`, empty or not.** `recursive` is a word the caller has to say, because the alternative is an irreversible operation that reads like a single-file delete at the call site — and the empty case is not carved out, because a backend with no enumeration primitive cannot tell an empty directory from a full one.
-- `ValueError` for a path outside `working_directory`, one reached through a link, or the working directory itself; `OSError` for a directory without `recursive` or a removal the guest refused; `NotImplementedError` when the backend does not declare the capability — **require it rather than catching it**.
-
-`conformance.FILES_DELETE_PROBES` is the de facto spec, and what it obligates is legible from what it attacks. Ten probes: a removal removes (the positive control — a backend that removed nothing would pass every refusal probe) *and* leaves a bystander file standing; a missing path is success, run as the two-call shape a `finally` cleanup actually produces; a link is removed and not followed, on both flag values because `recursive` may select a different operation entirely; a path through a linked parent is refused, the same check the pull surface keeps; a directory needs `recursive`, and **an empty directory needs it too**, stated as its own probe because it is the case a backend could quietly carve out as an implicit `rmdir`; recursive removes the tree; **a link *inside* a recursive removal is unlinked, not followed**, which is the escape the tree probe cannot see — a service-side tree delete that resolves an interior link deletes a file outside the working directory; the working directory itself is refused, with a file in it asserted still present afterwards, because a backend that removed it and *then* raised would pass a bare refusal check having taken the next run's ground with it; and a path outside is refused, the boundary needing no link to be crossed.
-
-Who declares it: **docker and acas; wslc no.** Both declaring backends execute removal as the guest. ACAS checks paths through the file plane, runs guest `rm`, and verifies absence through the file plane; its compatibility probe cannot authorize a host-plane delete. Its live suite runs `assert_files_delete_conformance` against the declared capability. The earlier service-side `delete_file` measurements from [#589](https://github.com/sokolaidev/maf-extensions/issues/589) describe why host-plane reclamation needs trusted ancestry: final and interior links are unlinked, while parent links are resolved. ACAS refuses `reclaim` because it cannot establish that ancestry. `conformance.measure_files_delete_probes` remains available to measure a mechanism before declaring the capability.
-
-**No shipped kind requires `FILES_DELETE`,** and framework cleanup does not call `remove`. When the cleanup ladder admits reclamation, `maf_sandbox._reclaim.reclaim_guest_path` dispatches to `Sandbox.reclaim` and keeps the placement policy in core: the working directory itself is refused, as is any path with fewer than two components. It passes the spec's `working_directory` to describe where the directory sits, not where the removal must run from. Docker removes from `/` through `_removal`, as root when its acquire-time reach check permits it and otherwise as the image's user; ACAS and WSLC refuse direct reclamation and use disposal. The method must exist on every backend; the `RECLAIM` declaration establishes whether router-managed cleanup may select it.
-
-**The two have different inputs, and both owe the reach rule.** `remove` takes a **model-supplied** path and owes the filesystem path check. `reclaim` takes a **core-supplied** directory under `working_directory`, so it does not inherit that model-input confinement duty. The guest can still replace the directory or an ancestor: an unguessable name licenses neither an absent safety check nor raised authority. The backend owns the mechanism and any checks needed to establish safe reach, and refuses when it cannot establish it. A backend that cannot offer safe reclamation withholds `RECLAIM`; router-managed cleanup selects a stronger rung. For a removal it can safely attempt, an absent directory is success and other failures raise so the caller can escalate. The lifetimes this serves are [`tool-call.md`](tool-call.md)'s.
-
-## Confinement
-
-Reads are confined to the working directory, and the confinement that matters is not the one on the argument string:
-
-```python
-os.symlink("/", "/maf-sandbox/work/out/root")           # inside the guest, one line of the program
-```
-
-A reader that follows that link reads whatever *it* can see — on a backend streaming from inside the guest, the guest's filesystem; on a sync-mount backend, the **host's**. So **only regular files are ever read, and a symlink is refused whether or not its target would have resolved somewhere legitimate**: there is no case where a kind needs to follow a link a plain file would not serve, and "the target is inside the working directory" is a judgement made with the wrong filesystem in view.
-
-| Backend | Mechanism | Strength |
-|---|---|---|
-| Docker | The first tar header of `docker cp` carries the entry's real type flag **and**, for a link, the target name; `docker cp` without `-L` then tars the link *entry* rather than the target's bytes | Strongest — two independent signals read from the same tar stream, both verified against a live engine |
-| ACAS | The data plane's stat payload carries `isSymlink` and `symlinkTarget`; the SDK's typed `FileInfo` drops both, so the backend reads the raw payload | Middling — one explicit flag, from an undocumented preview shape, and the read follows links |
-| wslc | **None available.** `cp` reports success and writes a **0-byte file** for a symlink — neither preserved, followed, nor refused, and indistinguishable from a legitimately empty artifact | Cannot meet the rule; the backend does not serve `FILES_OUT` |
-
-A payload omitting either flag is refused rather than assumed regular. That the reference backend's defence rests on an undocumented shape it reads past its own SDK to reach is acceptable only stated plainly, and it is filed upstream — see the status table.
-
-**Classifying the last component is not enough on any of them.** A symlinked *parent* is invisible in the final entry's stat: with `out -> /etc`, `out/hostname` is a regular 12-byte file. That rule failed twice as prose — two backends independently shipped the same escape — so it is a function: **`maf_sandbox.paths.refuse_symlinked_ancestors` is the check itself**, taking a backend's own **unconfined, no-follow** stat — those two properties are the trap, since a confined stat cannot reach the work dir's ancestors and a following one describes the target instead of the link. It checks from the filesystem root down, above the working directory rather than at it, because a nested work dir has ancestors the guest can replace. Only a link is a confinement failure; any other non-directory is an ordinary `ENOTDIR`. Neither API offers a no-follow read, so nothing in the check itself keeps a classified component from being a link by the time it is read: docker closes that by freezing the guest across both calls ([#1130](https://github.com/sokolaidev/maf-extensions/issues/1130)), and on the surfaces with no such primitive the residual is stated rather than closed.
-
-### Refusing a symlink is not the same as proving a regular file
-
-A backend that identifies links and directories has narrowed an entry to *not one of those* — FIFOs, sockets and device nodes are none of the three. Docker can prove regularity: the tar header carries the real type, so a FIFO is `OTHER` and refused. **ACAS cannot.** Its payload has `isDir` and `isSymlink` and nothing else, and `mode` is permission bits with the type bits stripped, so a FIFO is reported *identically* to an empty regular file and is classified `FILE`. Verified live, that is not merely a mislabelling: `read_file` on a FIFO **never returns**, so a guest putting one where a declared output belongs would hold the caller's turn open indefinitely. Nothing available closes it — `exec` with `test -f` would reintroduce the in-image shell dependency the `FILES_LIST` split exists to avoid, on exactly the minimal images where the file API is most useful — so that backend **bounds the read**, turning an indefinite hang into a refusal in the output-error family. Stated plainly because a kind author is entitled to know it: **on ACAS, `EntryKind.FILE` means "not a directory and not a symlink"**, and a read of one can fail on a timeout no cap or size predicted.
-
-### `maf_sandbox.conformance` is the executable spec
-
-The rule above is also a suite. The probes plant a hostile layout through a backend's own public surface — a link to a sibling of the working directory, a link as a final component, a regular file standing where a directory was expected — and attack it at `stat_file`, `read_file` and `list_dir`, since the duty lives at all three. **Every probe carries the reason it exists**; a failure names every probe that failed rather than the first; and a probe requiring a capability the backend never declared is **skipped rather than failed**. Planting is a subject method, because creating a link is the guest's move and a sandbox offering one would hand the attacker the tool. It imports no test framework: the module ships in the wheel.
-
-Two things it deliberately does not do. It does not prove the **premise** — that the provider really resolves through a link, so the refusals are refusing something reachable — because establishing that means looking under a backend's own public surface, and only that backend can; each keeps that test at home. And it **grades nothing**: a backend that cannot recognise a link still refuses every path attacked and fails only the two probes about *naming* what it refused. That is a gap, not a tier.
-
-Where each backend answers, stated because the legs are not equal:
-
-| Leg | Where it runs | What a green means |
-|---|---|---|
-| docker | Against a **real engine**, in `docker-live.yml`, after merge to `main`, daily, and on manual dispatch | The provider's real behaviour, on the backend a contributor can also run locally |
-| acas | Against the **real service**, in `verify-live.yml`'s ACAS job — on demand and after a release — and nightly in `conformance-live.yml`, which runs the same suite on a schedule; never on a pull request, since every sandbox is a billable resource, and a fake answers there instead | The only place the four `FILES_LIST` probes have ever met a real provider; the suite asserts none of them skipped, because a run that skipped them reports the same success as one that ran them |
-| in-process fake | The core suite | **Shape, not safety.** It runs the shared check and refuses a seeded link standing where a directory was expected, but a seeded link has no target and nothing reads through one |
-
-## Cross-platform rules
-
-The filesystem backends run Linux guests; [Hyperlight](backends/hyperlight.md) supplies a Python runtime and declares no guest OS. Filesystem backends resolve relative `working_directory` values against their bound storage base and apply file-path confinement within that directory. Commands and argv remain opaque: kinds pass relative filenames to guest programs and select the call directory through `working_directory`. An argv sequence protects quoting; it does not ask a backend to find or rewrite paths embedded in arguments.
-
-- **An explicit `work_dir` is guest-native and preserved.** It can select an image's pre-populated base; `None` lets the backend allocate one. `/maf-sandbox/work` remains the default explicit override. Kinds address the bound base with relative paths rather than deriving absolute paths from this optional field.
-- **Declared output paths and artifact names are POSIX-shaped**, and a backslash in one is refused — not because the guest is Linux, but because these are the paths the library itself resolves and it has one grammar. Nothing builds a guest path with `os.path` or `pathlib`; `posixpath` only.
-- **UTF-8 is the interchange form for names.** Linux filenames are byte strings and can be invalid UTF-8; such a name is refused rather than round-tripped. This only arises on the `FILES_LIST` road, since declared paths are authored by the kind.
-- **`str` content means UTF-8, always**, independent of host locale. Any path reaching a platform default encoding is a mojibake bug waiting for a Windows host.
-- **No newline translation, in either direction, ever.** A host writes artifact content in binary mode: `open(path, "w")` on Windows turns `\n` into `\r\n` and corrupts a PNG that was byte-exact when it left the sandbox.
-
-**The axis that declares and matches a guest's *shape* ships.** A backend states `os_families: frozenset[OsFamily]`, a spec states `requires_os_family`, and `ensure_can_serve` refuses the mismatch with `SandboxOsFamilyNotSupported` — beside the capability match, because it asks the same question the capability match asks and a workload refused for the wrong guest shape was never going to reach a transfer. `OsFamily` has two members, `POSIX` and `WINDOWS`, since nothing here branches on Linux against macOS. The change stayed additive: a spec that asks nothing is refused by nothing, and `TestWorkDirStaysGuestNative` pins a drive-rooted `work_dir` against a POSIX-only backend as **served** — the path was never the ask.
-
-**The three filesystem backends declare a family**: `docker` reads its daemon's `OSType` and states `posix` for a `linux` daemon, while `acas` and `wslc` state `posix` as the constant each of them is — the service boots Linux microVMs and `wslc` runs Linux containers, so neither has an engine to ask ([#588](https://github.com/sokolaidev/maf-extensions/issues/588) (closed) by [#946](https://github.com/sokolaidev/maf-extensions/pull/946) (merged)). Silence is still `frozenset()`, the absence of an answer rather than a default, which is what a plain `DockerSandboxBackend(...)` and the in-process fake keep. And the other half of the question is untouched — what is *installed* in a guest is declared by nobody and matched by nothing, and the static ceiling and the acquire-time probe that would answer it are settled and unbuilt in [`guest-platform-and-commands.md`](guest-platform-and-commands.md).
-
-## The rest of the vocabulary
-
-**`RUN_CODE`** — evaluate code in a language runtime without going through a shell, the CodeAct verb, and it now gates a method: `Sandbox.run_code(code: str, *, timeout: float) -> ExecResult`, standing to `RUN_CODE` exactly as `exec` stands to `EXEC`. Three things its contract fixes. There is **no `working_directory`**, because this surface takes a program rather than a path and a backend offering it may have no filesystem to resolve one against. **`timeout` is wall-clock from the call, not from the moment the program starts** — a backend that serialises calls on one sandbox spends part of the budget queued, and bounding only the running half leaves the waiting half unbounded, which is the failure a timeout exists to prevent; `SandboxQueuedTimeout` is a type rather than a message so a caller can tell *never started* from *overran*, since the next move differs and a kind reporting the wrong one sends a model to rewrite working code. And **what the runtime promises a program is the backend's to state** in its own documentation — whether the last expression's value comes back or only what was printed, and what is importable — because it differs and the protocol cannot make it uniform.
-
-**Every shipped backend answers the method, and every one answers no.** acas, docker and wslc each implement `run_code` as a refusal carrying its reason: not for want of an interpreter, since the image may well carry one, but because *which* runtime an image carries is a property of the image, and all three are handed image references they do not parse — declaring the capability would be a claim about someone else's artefact. A workload that wants a runtime by name invokes it through `exec` and owns that assumption itself. `InProcessSandbox` is the exception and serves it, recording the program into `programs` and matching `outputs` against the code as a substring exactly as it does against a command line, because a fake that refused would make every kind written against `run_code` untestable without a real backend. Serving the method is not declaring the capability: the fake's backend still declares `DEFAULT_CAPABILITIES` unless a test says otherwise, which is why the column above reads `nobody`.
-
-CodeAct selects this surface explicitly with `CodeactRuntime`: the runtime spec requires `RUN_CODE`, adds `FILES_IN` only for a file store and `FILES_OUT` for output channels. Exec remains the default. Both variants retain the flat subset matcher and `kind="codeact"`; the host supplies a verified Python contract and an explicit storage base for file channels. Execution contracts prevent incompatible reuse of an instance known to the router. See [the CodeAct runtime contract](kinds/codeact.md#the-explicit-python-runtime-variant).
-
-**`NETWORK` was removed.** It was declared by no backend and required by no spec, and the reason it never acquired either is that it asked a question no kind can answer: whether a workload needs the network is not a fixed property of the kind but the mode the deployment runs it in, so the ask belongs to `Egress` and not beside it — [`research/egress.md`](research/egress.md) carries the argument, and [`network.md`](network.md) holds the axis that does the work.
-
-**`SNAPSHOT`** — snapshot and restore for reuse. A backend that declares it and implements `Sandbox.reset` establishes the `RESET` rung in [`tool-call.md`](tool-call.md)'s cleanup ladder, returning the sandbox to its pre-input state between calls. [Hyperlight](backends/hyperlight.md) restores a warmed Python baseline for healthy workers; native failures retire the worker and require a fresh acquire.
-
-**`RECLAIM`** — take a directory this stack created. This is backend cleanup evidence; `SandboxSpec` rejects it in `requires`, so its absence selects a stronger cleanup rung instead of refusing the workload. `Sandbox.reclaim` remains a required method on every backend: the member implements either reclamation or an explicit refusal. The declaration establishes whether the framework may *resolve to* that cleanup rung, and the conformance suite refuses an undeclared capability before planting. Absent from `DEFAULT_CAPABILITIES` for the same reason silence resolves to `Cleanup.DISPOSE`: a backend that has not said it can take the directory is cleaned by the rung it certainly has. Docker declares it over its acquire-time reach check and guest-authority fallback. ACAS and WSLC do not declare it, so their workloads resolve above reclaim. A Docker workload still needs its own confinement claim to use the rung; the [Docker subject](backends/docker.md#measuring-a-confinement-claim) measures that claim.
-
-**`ATTACHED_IDENTITY`** — core implements explicit opt-in, scope/retention/channel admission, authority-rule preservation and effective-state serialization. Real-backend verification and enforcement remain open; no real backend declares support. See [`hosts.md`](hosts.md) for the contract and the remaining backend obligations.
-
-## Error taxonomy
-
-Named exceptions under **one base**, `SandboxOutputError`, so backends do not diverge and a kind can map failures to messages. A kind that only needs to tell the model "the artifacts did not come back" catches the base; one that wants to name what went wrong catches a member.
-
-**The base class is a promise about coverage, not a family resemblance.** A backend answers in its own vocabulary — a bare `ValueError` for a path it would not resolve, a bare `FileNotFoundError` for a file the guest deleted between the stat and the read — and a kind told to catch one base class would never see either. So the collection **translates** what the pull surface raises into the family, keeping the original as `__cause__`: a `ValueError` becomes `SandboxOutputNotConfined`, an `OSError` becomes `SandboxOutputUnreachable`. That is what makes the family exhaustive rather than merely typical. **The code states no count** — enumerating the members anywhere is how the list drifts.
+The in-process fake tests protocol handling and refusal paths. It cannot establish a real backend's containment, command behavior or process cleanup.
 
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
-| Nine-member `Capability`; `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` | shipped and released in 0.20.0 — `NETWORK` removed, the nine that remain and the default unchanged | [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged) |
-| `FILES_OUT` rollout: protocol, glue, docker, acas, `samples/07_docker_diagram`, codeact file store | shipped (items 1–5b) | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open |
-| wslc serves `FILES_OUT` | deferred — no container-to-stdout form to read a tar header from | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) open; upstream [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309), [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310), both open |
-| Selection is name-or-position + floor; the capability match raises | shipped | — |
-| The router selects a backend per spec (floor ∧ capabilities ∧ egress) | shipped as an **opt-in** — `Selection.PER_SPEC`, registration order as the preference, a route that is a pure function of the spec, and a refusal naming every backend passed over. The default `Selection.FIXED` is unchanged in every respect, so a host that passes nothing sees exactly what it saw. On `main` and unreleased | [#328](https://github.com/sokolaidev/maf-extensions/issues/328) (closed) by [#872](https://github.com/sokolaidev/maf-extensions/pull/872) (merged) |
-| `FILES_DELETE` vocabulary, `remove` contract, and the ten probes | shipped | — |
-| A mandatory `Sandbox.reclaim`; core dispatches the removal rather than spelling it | shipped — all in-tree backends implement the member; wslc refuses it and withholds `RECLAIM`, so its calls resolve to disposal | [#477](https://github.com/sokolaidev/maf-extensions/issues/477) |
-| One backend's answers on this surface — ACAS's `FILES_DELETE`, its raw stat payload, what `EntryKind.FILE` means there | recorded on the backend's own page rather than restated here | [`backends/acas.md`](backends/acas.md) § Status |
-| What `reclaim` promises about a link at the directory it is handed | decided — no mechanism is promised. Reach stays the rule; confinement — nothing outside the call directory gone, nothing the call planted left — is a best practice, and the mechanism with whatever check it needs is the backend's. A backend that cannot establish safety raises, and one that never can declares no `RECLAIM` and is cleaned by disposal ([#754](https://github.com/sokolaidev/maf-extensions/issues/754), which carries the docstring). Docker unlinks the named path via `rm -rf`; ACAS and WSLC refuse reclamation and dispose instead; each mechanism stays its backend's argument rather than a term of the contract | [#584](https://github.com/sokolaidev/maf-extensions/issues/584) (closed) |
-| `RUN_CODE` gates a method | shipped — `Sandbox.run_code(code, *, timeout)` and `SandboxQueuedTimeout` released in 0.20.0; ACAS, Docker and WSLC retain reasoned refusals, while Hyperlight serves the capability as tracked below | [#381](https://github.com/sokolaidev/maf-extensions/issues/381) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged); the refusals [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
-| CodeAct on a `RUN_CODE`-only backend through an explicit Python runtime profile | shipped | [#425](https://github.com/sokolaidev/maf-extensions/issues/425) (closed) by [#1199](https://github.com/sokolaidev/maf-extensions/pull/1199) (merged) |
-| A backend serving `RUN_CODE` and `SNAPSHOT` | implemented by [Hyperlight](backends/hyperlight.md) for packaged Python on Windows WHP and Linux KVM; flat output collection is opt-in; inputs and native host tools remain independent follow-ups | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged); Linux validation completed in [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (closed) by [#1298](https://github.com/sokolaidev/maf-extensions/pull/1298) (merged) |
-| `NETWORK` is removed rather than made matchable; egress is one mode a workload runs in, resolved against the set a backend enforces | shipped — the member is gone and no spec or backend lost anything, since neither ever used it; released in 0.20.0 | [#406](https://github.com/sokolaidev/maf-extensions/issues/406) (closed), umbrella [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) by [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged) |
-| `ATTACHED_IDENTITY` admission and backend enforcement | partial — core bounds sharing, retention and authority channels; real backend verification and adoption remain open | [`hosts.md`](hosts.md) § Status, rows "Core attached authority admission" and "Identity remainder" |
-| A guest-OS axis, declared and matched | shipped — `OsFamily`, `os_families`, `requires_os_family`, `SandboxOsFamilyNotSupported`, checked at attach and again in `acquire`; released in 0.20.0. Docker reads its daemon's `OSType`; ACAS and WSLC state `posix`. Hyperlight declares none for its language runtime. What an arbitrary guest image has *installed* is still declared by nobody | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged); the remainder is [`guest-platform-and-commands.md`](guest-platform-and-commands.md)'s table |
-| Error taxonomy members as types under one base | shipped — settled in code, not by role | untracked |
+| Capability and transfer vocabulary | Implemented | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged) |
+| Backend selection per spec | Implemented; host opt-in | [#328](https://github.com/sokolaidev/maf-extensions/issues/328) (closed); [#872](https://github.com/sokolaidev/maf-extensions/pull/872) (merged) |
+| File output support | ACAS and Docker implemented; WSLC output transport remains blocked | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) (open); [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open) |
+| Call-time output names | Implemented | [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged) |
+| File confinement and backend-owned reclamation | Implemented with backend-specific limits | [#488](https://github.com/sokolaidev/maf-extensions/pull/488) (merged); [#477](https://github.com/sokolaidev/maf-extensions/issues/477) (closed) |
+| Backend-owned storage base | Implemented | [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |
+| Cleanup selection | Implemented; disposal by default | [Tool-call lifetime](tool-call.md#status) |
+| Runtime code execution and Hyperlight | Runtime path implemented; broader backend work tracked separately | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
+| Method-limited egress and attached authority | Core admission implemented; no real backend advertises either capability | [Network](network.md#status); [hosts](hosts.md#status) |
+| Atomic batch delivery | Unimplemented; delivery remains per artifact | untracked; [host contract](hosts.md#where-artifacts-land) |

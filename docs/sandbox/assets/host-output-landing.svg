@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 619" width="1180" height="619" role="img" aria-labelledby="host-output-landing-title host-output-landing-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="host-output-landing-title">Finish the checks before delivering the first artifact</title>
+  <desc id="host-output-landing-desc">Collection validates output declarations, normalized names and collisions, sink presence and any required call ID. It checks every file&#x27;s path, type and size, then reads all LAND outputs and checks actual bytes. Any failure in these stages leaves the sink untouched. The host sink is called sequentially after the full batch is ready. A callback failure can leave earlier artifacts delivered; there is no rollback.</desc>
+  <defs>
+    <marker id="host-output-landing-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="619" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Finish the checks before delivering the first artifact</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The collector validates the set. The host callback stores each artifact.</text>
+  <rect x="32" y="157" width="249" height="145" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="190" font-size="21" font-weight="600" fill="#243040">1. Validate names</text>
+  <text x="52" y="221" font-size="15" font-weight="400" fill="#526072">Declarations and collisions</text>
+  <text x="52" y="247" font-size="15" font-weight="400" fill="#526072">Sink and call ID present</text>
+  <path d="M 281 229 L 321 229" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-output-landing-arrow)"/>
+  <rect x="321" y="157" width="249" height="145" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="341" y="190" font-size="21" font-weight="600" fill="#243040">2. Inspect all files</text>
+  <text x="341" y="221" font-size="15" font-weight="400" fill="#526072">Confinement, type, size</text>
+  <text x="341" y="247" font-size="15" font-weight="400" fill="#526072">Counts and byte limits</text>
+  <path d="M 570 229 L 610 229" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-output-landing-arrow)"/>
+  <rect x="610" y="157" width="249" height="145" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="630" y="190" font-size="21" font-weight="600" fill="#243040">3. Read LAND bytes</text>
+  <text x="630" y="221" font-size="15" font-weight="400" fill="#526072">Recheck actual sizes</text>
+  <text x="630" y="247" font-size="15" font-weight="400" fill="#526072">Keep complete set in hand</text>
+  <path d="M 859 229 L 899 229" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-output-landing-arrow)"/>
+  <rect x="899" y="157" width="249" height="145" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="919" y="190" font-size="21" font-weight="600" fill="#243040">4. Deliver</text>
+  <text x="919" y="221" font-size="15" font-weight="400" fill="#526072">Host sink callbacks</text>
+  <text x="919" y="247" font-size="15" font-weight="400" fill="#526072">One artifact at a time</text>
+  <rect x="32" y="376" width="827" height="151" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="409" font-size="21" font-weight="600" fill="#243040">A failure in steps 1–3 delivers nothing</text>
+  <text x="52" y="440" font-size="17" font-weight="400" fill="#526072">All required files must pass before the first callback.</text>
+  <text x="52" y="466" font-size="17" font-weight="400" fill="#526072">Transfer limits do not bound an SDK&#x27;s internal buffering.</text>
+  <rect x="899" y="376" width="249" height="151" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="919" y="409" font-size="21" font-weight="600" fill="#243040">Partial delivery</text>
+  <text x="919" y="440" font-size="16" font-weight="400" fill="#526072">Step 4 can fail after</text>
+  <text x="919" y="466" font-size="16" font-weight="400" fill="#526072">earlier callbacks finish.</text>
+  <text x="919" y="492" font-size="16" font-weight="400" fill="#526072">No batch rollback.</text>
+  <path d="M 1023 302 L 1023 376" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#host-output-landing-arrow)"/>
+  <text x="32" y="583" font-size="18" font-weight="600" fill="#243040">The host owns destination access, safe display text and cross-conversation partitioning.</text>
+</svg>

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 689" width="1180" height="689" role="img" aria-labelledby="attached-authority-title attached-authority-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="attached-authority-title">Keep the three authority paths separate</title>
+  <desc id="attached-authority-desc">Control-plane credentials stay in the host and authorize backend acquire and cleanup operations. Host-tool authority also stays in the host: APP uses application authority, while USER requires explicit permission and a per-run host mint. Core attached authority is exercised through declared platform channels from the sandbox and requires workload opt-in plus sharing, destination, audience and lifetime limits. No real backend currently advertises that core contract. ACAS group identity is configured separately and is not discovered by core declarations.</desc>
+  <defs>
+    <marker id="attached-authority-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="689" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Keep the three authority paths separate</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Where a credential is used determines which contract must bound it.</text>
+  <rect x="32" y="129" width="348" height="238" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="162" font-size="21" font-weight="600" fill="#243040">Control plane</text>
+  <text x="52" y="193" font-size="16" font-weight="400" fill="#526072">Credential stays in the host</text>
+  <text x="52" y="219" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="52" y="245" font-size="16" font-weight="400" fill="#526072">Acquire and cleanup grants</text>
+  <text x="52" y="271" font-size="16" font-weight="400" fill="#526072">Trusted target context</text>
+  <text x="52" y="297" font-size="16" font-weight="400" fill="#526072">Backend credential lifecycle</text>
+  <rect x="416" y="129" width="348" height="238" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="436" y="162" font-size="21" font-weight="600" fill="#243040">Host tools</text>
+  <text x="436" y="193" font-size="16" font-weight="400" fill="#526072">Credential stays in the host</text>
+  <text x="436" y="219" font-size="16" font-weight="400" fill="#526072"></text>
+  <text x="436" y="245" font-size="16" font-weight="400" fill="#526072">APP: application authority</text>
+  <text x="436" y="271" font-size="16" font-weight="400" fill="#526072">USER: permitted + host-minted</text>
+  <text x="436" y="297" font-size="16" font-weight="400" fill="#526072">One usable mint per run</text>
+  <rect x="800" y="129" width="348" height="238" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="820" y="162" font-size="21" font-weight="600" fill="#243040">Core attached authority</text>
+  <text x="820" y="193" font-size="15" font-weight="400" fill="#526072">Sandbox uses a platform channel</text>
+  <text x="820" y="219" font-size="15" font-weight="400" fill="#526072"></text>
+  <text x="820" y="245" font-size="15" font-weight="400" fill="#526072">Explicit workload opt-in</text>
+  <text x="820" y="271" font-size="15" font-weight="400" fill="#526072">Scope and retention limits</text>
+  <text x="820" y="297" font-size="15" font-weight="400" fill="#526072">Exact destination and audience</text>
+  <path d="M 206 367 L 206 424" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#attached-authority-arrow)"/>
+  <path d="M 590 367 L 590 424" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#attached-authority-arrow)"/>
+  <path d="M 974 367 L 974 424" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#attached-authority-arrow)"/>
+  <rect x="32" y="424" width="348" height="97" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="457" font-size="21" font-weight="600" fill="#243040">Backend service</text>
+  <text x="52" y="488" font-size="16" font-weight="400" fill="#526072">Management operations</text>
+  <rect x="416" y="424" width="348" height="97" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="436" y="457" font-size="21" font-weight="600" fill="#243040">Registered function</text>
+  <text x="436" y="488" font-size="16" font-weight="400" fill="#526072">Host owns privileges and effects</text>
+  <rect x="800" y="424" width="348" height="97" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="820" y="457" font-size="21" font-weight="600" fill="#243040">Declared service channel</text>
+  <text x="820" y="488" font-size="15" font-weight="400" fill="#526072">No real backend advertises it yet</text>
+  <rect x="32" y="564" width="1116" height="78" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="597" font-size="21" font-weight="600" fill="#243040">ACAS group identity is separate host configuration; core declarations do not discover or constrain it.</text>
+</svg>
