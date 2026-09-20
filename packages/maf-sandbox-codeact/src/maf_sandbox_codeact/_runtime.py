@@ -16,8 +16,9 @@ class CodeactRuntime:
     The host verifies Python statement execution, stdout/stderr results and no expression echo;
     ``instructions`` describes the available facilities. File channels require ``guest_work_dir``:
     a normalized absolute POSIX storage base other than ``/``, honored by the backend and writable
-    by Python's ``os.makedirs`` and ``open``. Programs receive ``guest_call_path`` beneath it;
-    the working directory is never changed. Without a base, file channels are refused.
+    by Python's ``open``. The default ``use_call_directory=True`` also requires ``os.makedirs``
+    and supplies a fresh directory beneath the base as ``guest_call_path``. The working directory
+    is never changed. Without a base, file channels are refused.
 
     ``use_call_directory=False`` uses the prepared base directly without calling ``makedirs``.
     Exclusive admission and whole-sandbox cleanup still protect successive calls.

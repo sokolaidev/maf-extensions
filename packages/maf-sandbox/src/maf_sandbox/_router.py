@@ -1949,7 +1949,8 @@ class SandboxRouter:
         Ordinary bodies overlap until cleanup starts draining the entry. Retain the admission
         for acquire and cleanup, then await finish_call or release_call. Explicit exclusive use
         excludes every sibling, and a spec asking ``exclusive_admission`` is held that way
-        whatever ``exclusive`` says, as is a backend requiring exclusive admission.
+        whatever ``exclusive`` says, as is a backend requiring exclusive admission or
+        implementing ``BackendCallAdmission``.
         ``timeout`` bounds the local wait per call ahead and is passed to backend admission."""
         backend = self._refuse_unless_backend_can_serve(spec)
         await self._slots.take(
@@ -1960,6 +1961,7 @@ class SandboxRouter:
                 exclusive
                 or spec.exclusive_admission
                 or _declarations(backend).requires_exclusive_admission
+                or isinstance(backend, BackendCallAdmission)
             ),
             timeout=timeout,
         )

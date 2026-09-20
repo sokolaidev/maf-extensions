@@ -1675,6 +1675,7 @@ class BackendDeclarations:
 class BackendCallAdmission(Protocol):
     """Optional backend ownership spanning a call, its output delivery and cleanup.
 
+    Implementing this hook implies exclusive router admission for the key and kind.
     The router enters before acquire and exits after cleanup, possibly from another task.
     The yielded synchronous context grants that task cleanup authority for this lease only.
     Implementations must bound admission and release ownership even on cancellation.
