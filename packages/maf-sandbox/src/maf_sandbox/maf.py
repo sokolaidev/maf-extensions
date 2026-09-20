@@ -1271,9 +1271,9 @@ class SandboxResult:
 
     A body returning this never builds a :class:`~agent_framework.Content` itself, which is what
     makes the labelling the wrapper's alone.  ``completed`` and ``verdict`` are trusted because
-    the kind wrote every value they can take; ``derived`` is untrusted because a program the
-    host does not run chose it.  ``established`` sits at the tool's own declaration, and is the
-    one part a kind can be wrong about.
+    the kind wrote every value they can take; ``output`` is untrusted because a program the
+    host does not run chose it.  ``trusted_output`` sits at the tool's own declaration, and is
+    the one part a kind can be wrong about.
 
     Attributes:
         completed: Whether the workload reached a definitive answer at all.  Not whether that
@@ -1282,15 +1282,18 @@ class SandboxResult:
         verdict: One value from the set the tool declared at attach, or ``None`` where it
             declared none.  Refused on return where it names anything else, because the trust
             this carries rests on the kind having written every value in advance.
-        established: Text the kind can vouch for, at the tool's declared level.
-        derived: Everything the workload produced, labelled untrusted and hidden from the model
-            by a FIDES host.
+        trusted_output: Text the kind vouches for. It reaches the model at the tool's declared
+            level, so it is trusted where the tool declares trusted and no higher — the name
+            says what the kind is claiming, not what the framework will conclude.
+        output: Everything the workload produced, labelled untrusted and hidden from the model
+            by a FIDES host. Named for what it is rather than for its provenance, because a
+            kind unsure whether something is established puts it here.
     """
 
     completed: bool
     verdict: str | int | bool | None = None
-    established: Sequence[str] = ()
-    derived: Sequence[str] = ()
+    trusted_output: Sequence[str] = ()
+    output: Sequence[str] = ()
 
 
 def _level(value: object) -> SourceIntegrity | None:
@@ -2517,7 +2520,7 @@ def _contract_items(
             f"{answer.verdict!r}. A run that reached no definitive result has no verdict to "
             "report, and a model reading both cannot tell which to believe."
         )
-    for part, values in (("established", answer.established), ("derived", answer.derived)):
+    for part, values in (("trusted_output", answer.trusted_output), ("output", answer.output)):
         # Cast because the annotation is a promise, not a guarantee: a kind is free to hand this
         # anything, and the check below is what a body's stray Content meets instead of a label.
         for position, text in enumerate(cast("Sequence[object]", values)):
@@ -2529,9 +2532,9 @@ def _contract_items(
     items = [Content.from_text(COMPLETED_TEXT if answer.completed else NOT_COMPLETED_TEXT)]
     if answer.verdict is not None:
         items.append(Content.from_text(f"Result: {answer.verdict}"))
-    items.extend(Content.from_text(text) for text in answer.established)
+    items.extend(Content.from_text(text) for text in answer.trusted_output)
     label = _result_label(declarations, fed)
-    for text in answer.derived:
+    for text in answer.output:
         item = Content.from_text(text)
         if label is not None:
             item.additional_properties = {"security_label": dict(label)}
@@ -2802,8 +2805,8 @@ def sandboxed_tool(
             the model's sight of the result and nothing else.
         result_contract: Whether the body answers with a :class:`SandboxResult` rather than
             text. The wrapper then renders one item per part and owns every label: a fixed
-            sentence for ``completed``, the ``verdict``, each ``established`` string, then each
-            ``derived`` string stamped untrusted. The first three carry no label of their own
+            sentence for ``completed``, the ``verdict``, each ``trusted_output`` string, then
+            each ``output`` string stamped untrusted. The first three carry no label of their own
             and so take the tool's declaration, which this keyword raises to ``trusted`` the
             same way committing guidance does — so it needs an integrity declaration for the
             same reason. Returning a ``SandboxResult`` without it, or anything else with it, is

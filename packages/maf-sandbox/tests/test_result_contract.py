@@ -78,14 +78,14 @@ def _label(item):
 
 
 class TestWhatTheWrapperRenders:
-    """One item per part, in order, and a label on the derived part alone."""
+    """One item per part, in order, and a label on the untrusted part alone."""
 
     def test_every_part_becomes_its_own_item_in_order(self):
         answer = SandboxResult(
             completed=True,
             verdict="invalid",
-            established=("ran against the pinned image",),
-            derived=("line one", "line two"),
+            trusted_output=("ran against the pinned image",),
+            output=("line one", "line two"),
         )
         items = _call(_attach(answer))
         assert _texts(items) == [
@@ -96,16 +96,18 @@ class TestWhatTheWrapperRenders:
             "line two",
         ]
 
-    def test_only_the_derived_items_carry_a_label(self):
-        answer = SandboxResult(completed=True, verdict="valid", established=("e",), derived=("d",))
-        completed, verdict, established, derived = _call(_attach(answer))
+    def test_only_the_output_items_carry_a_label(self):
+        answer = SandboxResult(
+            completed=True, verdict="valid", trusted_output=("e",), output=("d",)
+        )
+        completed, verdict, trusted, untrusted = _call(_attach(answer))
         assert _label(completed) is None
         assert _label(verdict) is None
-        assert _label(established) is None
-        assert _label(derived) == {"integrity": "untrusted", "confidentiality": "public"}
+        assert _label(trusted) is None
+        assert _label(untrusted) == {"integrity": "untrusted", "confidentiality": "public"}
 
     def test_an_incomplete_run_says_so_and_needs_no_verdict(self):
-        items = _call(_attach(SandboxResult(completed=False, derived=("timed out",))))
+        items = _call(_attach(SandboxResult(completed=False, output=("timed out",))))
         assert _texts(items) == [NOT_COMPLETED_TEXT, "timed out"]
 
     def test_the_kind_s_own_claim_stays_readable_on_the_attached_tool(self):
@@ -114,7 +116,7 @@ class TestWhatTheWrapperRenders:
         assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
 
     def test_committed_guidance_still_comes_last(self):
-        answer = SandboxResult(completed=True, verdict="valid", derived=("d",))
+        answer = SandboxResult(completed=True, verdict="valid", output=("d",))
         items = _call(_attach(answer, guidance=(_GUIDANCE,)))
         assert _texts(items) == [COMPLETED_TEXT, "Result: valid", "d", _GUIDANCE]
         assert _label(items[-1]) == {"integrity": "trusted", "confidentiality": "public"}
@@ -128,9 +130,9 @@ class TestWhatTheWrapperRenders:
             ((None,), True),
         ],
     )
-    def test_a_weak_read_still_weakens_the_derived_part(self, levels, weak):
+    def test_a_weak_read_still_weakens_the_output_part(self, levels, weak):
         """The per-call fold reaches the contract exactly as it reaches a text result."""
-        answer = SandboxResult(completed=True, derived=("d",))
+        answer = SandboxResult(completed=True, output=("d",))
         items = _call(_attach(answer, source="trusted", reads=levels))
         label = _label(items[-1])
         assert label is not None
@@ -156,9 +158,9 @@ class TestAnUnlabelledItemTakesTheToolDeclaration:
         asyncio.run(middleware.process(context, call_next))
         return context.result, middleware
 
-    def test_the_verdict_stays_readable_while_the_derived_half_is_hidden(self):
+    def test_the_verdict_stays_readable_while_the_output_is_hidden(self):
         answer = SandboxResult(
-            completed=True, verdict="invalid", established=("e",), derived=("SECRET GUEST TEXT",)
+            completed=True, verdict="invalid", trusted_output=("e",), output=("SECRET GUEST TEXT",)
         )
         items, middleware = self._through_middleware(answer)
         visible = [item.text for item in items if not self._hidden(item)]
@@ -188,8 +190,8 @@ class TestWhatIsRefused:
             _call(tool)
 
     def test_a_part_that_is_not_text(self):
-        tool = _attach(SandboxResult(completed=True, derived=(Content.from_text("x"),)))
-        with pytest.raises(ValueError, match=r"derived\[0\] is a "):
+        tool = _attach(SandboxResult(completed=True, output=(Content.from_text("x"),)))
+        with pytest.raises(ValueError, match=r"output\[0\] is a "):
             _call(tool)
 
     def test_text_from_a_body_that_declared_the_contract(self):
