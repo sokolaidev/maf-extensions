@@ -206,8 +206,23 @@ class SandboxCodeExecutor(CodeExecutor):
         # `_execute_one` links the execution, which a queued call has not started: without this
         # a cancelled call stays queued until the call ahead of it finishes.
         cancellation_token.link_future(waiting)
-        await waiting
         try:
+            await waiting
+        except BaseException:
+            # Leaving while the lock changes hands must not strand it: an acquisition that
+            # already completed is not undone by cancelling the future it completed on.
+            waiting.cancel()
+            if waiting.done() and not waiting.cancelled() and waiting.exception() is None:
+                self._one_at_a_time.release()
+            raise
+        try:
+            # `CancellationToken.cancel()` cancels the futures linked to it, and cancelling a
+            # *finished* future does nothing — so a token cancelled between the acquisition
+            # completing and this line resuming leaves the await above with nothing to report.
+            # Ask the token instead of trusting it, or a cancelled call runs, and condemns the
+            # sandbox it shares with the call that is still using it.
+            if cancellation_token.is_cancelled():
+                raise asyncio.CancelledError
             return await self._execute_blocks(code_blocks, cancellation_token)
         finally:
             self._one_at_a_time.release()

@@ -946,6 +946,76 @@ class TestTheExecutorSerialisesCalls:
     def test_two_concurrent_calls_run_one_after_another(self):
         assert self._run_two(self._overlapping(), "execute_code_blocks") == 1
 
+    @staticmethod
+    def _hand_the_lock_over(executor):
+        """Release the lock and return once the queued call has taken it, not before.
+
+        The handoff is the window this class is about: between the acquisition completing and
+        the call resuming, a cancellation has a finished future to land on. `locked()` turning
+        back on is what says the waiter took it, so the tests below reach that window without
+        racing for it.
+        """
+
+        async def hand_over():
+            executor._one_at_a_time.release()
+            while not executor._one_at_a_time.locked():
+                await asyncio.sleep(0)
+
+        return hand_over()
+
+    def test_a_token_cancelled_as_the_lock_changes_hands_does_not_run(self):
+        """A cancel landing on a finished acquisition: the token is the only thing left to ask."""
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, backend = _router(InProcessSandbox())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+
+            await executor._one_at_a_time.acquire()
+            token = CancellationToken()
+            queued = asyncio.ensure_future(executor.execute_code_blocks(blocks, token))
+            await asyncio.sleep(0)
+
+            await self._hand_the_lock_over(executor)
+            token.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+            return backend.keys, executor._one_at_a_time.locked()
+
+        keys, still_locked = asyncio.run(body())
+        assert keys == [], "a call cancelled at the handoff still acquired a sandbox"
+        assert not still_locked, "the lock was stranded"
+
+    def test_an_outer_cancellation_at_the_handoff_does_not_strand_the_lock(self):
+        """Cancelling the task itself, rather than its token, at the same window."""
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, _ = _router(InProcessSandbox())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+
+            await executor._one_at_a_time.acquire()
+            queued = asyncio.ensure_future(
+                executor.execute_code_blocks(blocks, CancellationToken())
+            )
+            await asyncio.sleep(0)
+
+            await self._hand_the_lock_over(executor)
+            queued.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+            return executor._one_at_a_time.locked()
+
+        assert asyncio.run(body()) is False, "the lock was stranded"
+
     def test_a_call_cancelled_while_queued_does_not_wait_for_the_lock(self):
         """Cancelling a queued call ends it where it waits, not when the call ahead finishes."""
 
