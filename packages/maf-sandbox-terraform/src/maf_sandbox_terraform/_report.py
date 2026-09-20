@@ -2,12 +2,28 @@
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, cast
 
 from ._spec import TerraformEngine
 
 MAX_REPORT_BYTES = 1024 * 1024
 MAX_FORMAT_BYTES = 128 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ReportOutcome:
+    """A rendered report, and what it says about the run as a whole.
+
+    ``ran`` is whether the engine reached a verdict at all: false where the launcher could not
+    finish and where initialization failed, which leaves nothing validated.  ``valid`` is the
+    engine's own verdict and is meaningless unless ``ran``.  Both are values this module
+    writes, never the engine's text.
+    """
+
+    text: str
+    ran: bool
+    valid: bool
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -66,14 +82,29 @@ def _envelope(raw: bytes, engine: TerraformEngine, limit: int) -> dict[str, Any]
 def render_format_report(
     raw: bytes, engine: TerraformEngine, staged: dict[str, str], *, hidden: bool = False
 ) -> str:
-    """Return only complete changed files from the manifest; hidden names suppress all prose."""
+    """The rendered formatting report alone, for a caller that does not separate the parts."""
+    return format_outcome(raw, engine, staged, hidden=hidden).text
+
+
+def format_outcome(
+    raw: bytes, engine: TerraformEngine, staged: dict[str, str], *, hidden: bool = False
+) -> ReportOutcome:
+    """Return only complete changed files from the manifest; hidden names suppress all prose.
+
+    ``valid`` carries "the formatter changed something" here: the run reached an answer, and
+    that answer is whether any file differs.
+    """
     envelope = _envelope(raw, engine, MAX_FORMAT_BYTES)
     if envelope.get("mode") != "format":
         raise ValueError("wrong launcher mode")
     if envelope["error"] is not None:
-        return (
-            "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. "
-            "No formatted files returned; try a smaller complete manifest."
+        return ReportOutcome(
+            (
+                "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. "
+                "No formatted files returned; try a smaller complete manifest."
+            ),
+            False,
+            False,
         )
     phases = _mapping(envelope.get("phases"))
     if set(phases) != {"fmt"}:
@@ -81,7 +112,11 @@ def render_format_report(
     fmt = _phase(phases["fmt"])
     if fmt["exit_code"] != 0 or fmt["stderr"]:
         detail = "" if hidden else f"\n{fmt['stdout']}\n{fmt['stderr']}"
-        return "Formatting INCOMPLETE: formatter failed; no formatted files returned." + detail
+        return ReportOutcome(
+            "Formatting INCOMPLETE: formatter failed; no formatted files returned." + detail,
+            False,
+            False,
+        )
     files = _mapping(envelope.get("formatted_files"))
     for path, content in files.items():
         if (
@@ -93,14 +128,25 @@ def render_format_report(
             raise ValueError("invalid formatted file")
         content.encode("utf-8", errors="strict")
     if hidden:
-        return "Formatting complete; text and locations withheld because argument names are hidden."
-    return (
+        return ReportOutcome(
+            ("Formatting complete; text and locations withheld because argument names are hidden."),
+            True,
+            bool(files),
+        )
+    return ReportOutcome(
         f"{engine} {envelope['version']}: formatting complete; {len(files)} changed files.\n"
-        "Formatted files (JSON path-to-text mapping):\n" + json.dumps(files, ensure_ascii=True)
+        "Formatted files (JSON path-to-text mapping):\n" + json.dumps(files, ensure_ascii=True),
+        True,
+        bool(files),
     )
 
 
 def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) -> str:
+    """The rendered report alone, for a caller that does not separate the parts."""
+    return report_outcome(raw, engine, hidden=hidden).text
+
+
+def report_outcome(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) -> ReportOutcome:
     """Validate the launcher envelope and CLI counts before rendering a verdict.
 
     With hidden argument names, suppress all guest prose and locations. Diagnostics can repeat
@@ -109,15 +155,21 @@ def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) 
     envelope = _envelope(raw, engine, MAX_REPORT_BYTES)
     if envelope["error"] is not None:
         # Never render arbitrary launcher error text as a host-authored instruction.
-        return "Validation INCOMPLETE: the guest launcher could not complete its bounded execution."
+        return ReportOutcome(
+            "Validation INCOMPLETE: the guest launcher could not complete its bounded execution.",
+            False,
+            False,
+        )
     phases = _mapping(envelope.get("phases"))
     init = _phase(phases.get("init"))
     if init["exit_code"] != 0:
         if set(phases) != {"init"}:
             raise ValueError("phases continued after failed initialization")
         detail = "" if hidden else f"\n{init['stdout']}\n{init['stderr']}"
-        return (
-            "Validation INCOMPLETE: initialization failed; dependencies were not loaded." + detail
+        return ReportOutcome(
+            "Validation INCOMPLETE: initialization failed; dependencies were not loaded." + detail,
+            False,
+            False,
         )
     if set(phases) != {"init", "validate", "fmt"}:
         raise ValueError("incomplete phase set")
@@ -174,4 +226,4 @@ def render_report(raw: bytes, engine: TerraformEngine, *, hidden: bool = False) 
         lines.append(
             "Guest diagnostic text and locations withheld because argument names are hidden."
         )
-    return "\n".join(lines)
+    return ReportOutcome(chr(10).join(lines), True, valid)

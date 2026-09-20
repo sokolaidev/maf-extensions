@@ -17,7 +17,11 @@ from maf_sandbox import (
     SandboxRouter,
     SourceIntegrity,
 )
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
+from maf_sandbox.maf import (
+    COMPLETED_TEXT,
+    DERIVED_INTEGRITY_PROPERTY,
+    NOT_COMPLETED_TEXT,
+)
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -29,6 +33,16 @@ import maf_sandbox_terraform._tool as workload
 from maf_sandbox_terraform import TERRAFORM_TOOL_NAMES, make_terraform_tools, terraform_sandbox_spec
 from maf_sandbox_terraform._paths import resolve_manifest
 from maf_sandbox_terraform._report import render_format_report, render_report
+
+
+def _body(result) -> str:
+    """What the call said about the configuration, between completion line and guidance.
+
+    The wrapper renders a fixed completion sentence first, an optional verdict, then this
+    tool's own text and the engine's, and the committed sentence last. These tests are about
+    what the text says, so they read the middle whole.
+    """
+    return chr(10).join(str(item.text) for item in result[1:-1])
 
 
 def envelope(engine="terraform", *, valid=True, fmt=0):
@@ -113,10 +127,10 @@ def test_formatting_is_opt_in_returns_whole_files_and_does_not_write_store(engin
     tool, backend, store = attach(data, sandbox=sandbox, engine=engine, formatting=True)
     assert tool.name in TERRAFORM_TOOL_NAMES
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert json.loads(result[0].text.split("mapping):\n")[1]) == files
-    assert result[1].text == workload.FORMAT_GUIDANCE
-    assert result[0].additional_properties["security_label"]["integrity"] == "untrusted"
-    assert result[1].additional_properties["security_label"]["integrity"] == "trusted"
+    assert json.loads(_body(result).split("mapping):\n")[1]) == files
+    assert str(result[-1].text) == workload.FORMAT_GUIDANCE
+    assert result[-2].additional_properties["security_label"]["integrity"] == "untrusted"
+    assert result[-1].additional_properties["security_label"]["integrity"] == "trusted"
     assert store.files == data
     assert len(backend.disposed) == 1
     assert sandbox.commands[0][0].endswith(" format")
@@ -132,8 +146,8 @@ def test_hidden_formatting_withholds_all_returned_file_text(argument, monkeypatc
         lambda *a, **kw: frozenset({0}) if kw["argument"] == argument else frozenset(),
     )
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert "withheld" in result[0].text
-    assert "main.tf" not in result[0].text and "locals" not in result[0].text
+    assert "withheld" in _body(result)
+    assert "main.tf" not in _body(result) and "locals" not in _body(result)
 
 
 @pytest.mark.parametrize(
@@ -166,8 +180,8 @@ def test_failed_formatting_never_returns_partially_changed_files(failure):
         sandbox=RecordingSandbox(default_stdout=json.dumps(data)), formatting=True
     )
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert "Formatting INCOMPLETE" in result[0].text
-    assert "locals" not in result[0].text and "private error" not in result[0].text
+    assert "Formatting INCOMPLETE" in _body(result)
+    assert "locals" not in _body(result) and "private error" not in _body(result)
     assert len(backend.disposed) == 1
 
 
@@ -184,8 +198,8 @@ def test_missing_launcher_error_status_is_incomplete(engine, formatting):
     original = store.files.copy()
     result = asyncio.run(tool.func(files=["main.tf"]))
     operation = "Formatting" if formatting else "Validation"
-    assert result[0].text.startswith(f"{operation} INCOMPLETE:")
-    assert "locals" not in result[0].text and "PASS" not in result[0].text
+    assert _body(result).startswith(f"{operation} INCOMPLETE:")
+    assert "locals" not in _body(result) and "PASS" not in _body(result)
     assert store.files == original
     assert len(backend.disposed) == 1
 
@@ -204,8 +218,8 @@ def test_engine_contract_and_call_disposal(engine):
     async def scenario():
         for _ in range(2):
             result = await tool.func(files=["main.tf"])
-            assert "validation PASS" in result[0].text
-            assert result[1].text == workload.STANDING_GUIDANCE
+            assert "validation PASS" in _body(result)
+            assert str(result[-1].text) == workload.STANDING_GUIDANCE
         assert len(backend.disposed) == 2
         assert backend.keys[0].call_id != backend.keys[1].call_id
 
@@ -251,7 +265,7 @@ def test_nested_modules_json_and_ancillary_assets_preserve_layout():
     data = {"root/main.tf.json": "{}", "modules/child/main.tf": "", "modules/child/data.txt": "x"}
     tool, backend, store = attach(data)
     result = asyncio.run(tool.func(files=list(data), root_module="./root"))
-    assert "validation PASS" in result[0].text
+    assert "validation PASS" in _body(result)
     assert isinstance(backend.sandbox, RecordingSandbox)
     assert [x[0] for x in backend.sandbox.uploads] == ["project/" + x for x in data]
     assert store.files == data
@@ -278,7 +292,7 @@ def test_transfer_failures_prevent_exec(failure, formatting, monkeypatch):
 
         monkeypatch.setattr(store, "read", read)
     result = asyncio.run(tool.func(files=["main.tf", "other.tf"]))
-    assert "PASS" not in result[0].text and "private-detail" not in result[0].text
+    assert "PASS" not in _body(result) and "private-detail" not in _body(result)
     assert not backend.sandbox.commands
     if failure == "write":
         assert len(backend.disposed) == 1
@@ -299,11 +313,11 @@ def test_a_formatting_verdict_says_the_tool_neither_rewrites_nor_returns_files(e
     sandbox = RecordingSandbox(default_stdout=json.dumps(envelope(engine, fmt=3)))
     tool, _, store = attach(data, sandbox=sandbox, engine=engine)
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert "formatting CHANGES REQUIRED" in result[0].text
+    assert "formatting CHANGES REQUIRED" in _body(result)
     description = " ".join(tool.description.split())
-    for told in (description, result[1].text):
+    for told in (description, str(result[-1].text)):
         assert "does not rewrite" in told and "formatted text" in told, told
-    assert "fix formatting by editing the files" in result[1].text
+    assert "fix formatting by editing the files" in str(result[-1].text)
     assert store.files == data
 
 
@@ -365,8 +379,8 @@ def test_hidden_argument_suppresses_diagnostic_text(monkeypatch):
         workload, "positions_holding_hidden_content", lambda *a, **k: frozenset({0})
     )
     result = asyncio.run(tool.func(files=["hidden.tf"]))
-    assert "validation FAIL" in result[0].text
-    assert "hidden.tf" not in result[0].text and '"summary"' not in result[0].text
+    assert "validation FAIL" in _body(result)
+    assert "hidden.tf" not in _body(result) and '"summary"' not in _body(result)
 
 
 @pytest.mark.parametrize("formatting", [False, True])
@@ -412,11 +426,11 @@ def test_result_integrity_does_not_promote_compiler_output():
         "sandbox_isolation_scope": "call",
     }
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert result[0].additional_properties["security_label"] == {
+    assert result[-2].additional_properties["security_label"] == {
         "integrity": "untrusted",
         "confidentiality": "public",
     }
-    assert result[1].additional_properties["security_label"] == {
+    assert result[-1].additional_properties["security_label"] == {
         "integrity": "trusted",
         "confidentiality": "public",
     }
@@ -426,7 +440,7 @@ def test_result_integrity_does_not_promote_compiler_output():
 def test_file_count_bound_precedes_store_reads(count):
     tool, backend, _ = attach()
     result = asyncio.run(tool.func(files=[f"{i}.tf" for i in range(count)]))
-    assert "file-count" in result[0].text
+    assert "file-count" in _body(result)
     assert not backend.keys
 
 
@@ -434,14 +448,14 @@ def test_combined_input_bytes_are_bounded():
     data = {f"{i}.tf": "x" * (8 * 1024 * 1024) for i in range(5)}
     tool, backend, _ = attach(data)
     result = asyncio.run(tool.func(files=list(data)))
-    assert "transfer byte limits" in result[0].text
+    assert "transfer byte limits" in _body(result)
     assert not backend.keys
 
 
 def test_non_utf8_text_is_refused_before_acquire():
     tool, backend, _ = attach({"main.tf": "\ud800"})
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert "INCOMPLETE" in result[0].text
+    assert "INCOMPLETE" in _body(result)
     assert not backend.keys
 
 
@@ -460,8 +474,48 @@ def test_incomplete_guest_reports_never_pass(case):
         data["unused"] = float("nan")
     tool, backend, _ = attach(sandbox=RecordingSandbox(default_stdout=json.dumps(data)))
     result = asyncio.run(tool.func(files=["main.tf"]))
-    assert "INCOMPLETE" in result[0].text and "PASS" not in result[0].text
+    assert "INCOMPLETE" in _body(result) and "PASS" not in _body(result)
     assert len(backend.disposed) == 1
+
+
+def _verdict(result) -> str | None:
+    """The verdict line's value, or ``None`` where the call reported none."""
+    for text in (str(item.text) for item in result):
+        if text.startswith("Result: "):
+            return text.removeprefix("Result: ")
+    return None
+
+
+class TestTheVerdict:
+    """The part of the result a model may act on without reading the engine's report."""
+
+    def test_a_passing_configuration_is_valid(self):
+        tool, _, _ = attach()
+
+        result = asyncio.run(tool.func(files=["main.tf"]))
+
+        assert str(result[0].text) == COMPLETED_TEXT
+        assert _verdict(result) == "valid"
+
+    def test_a_manifest_that_never_reached_the_engine_has_no_verdict(self):
+        """`completed=False` rather than `invalid`: nothing was validated, and reporting the
+        configuration as failing would be as wrong as reporting it as passing."""
+        tool, _, _ = attach()
+
+        result = asyncio.run(tool.func(files=[]))
+
+        assert str(result[0].text) == NOT_COMPLETED_TEXT
+        assert _verdict(result) is None
+        assert "INCOMPLETE" in _body(result)
+
+    def test_the_reason_it_stopped_is_readable(self):
+        """This module's own sentence about a manifest it could not use — before the contract
+        it was labelled untrusted and hidden with the engine's report."""
+        tool, _, _ = attach()
+
+        refusal = asyncio.run(tool.func(files=[]))[1]
+
+        assert (refusal.additional_properties or {}).get("security_label") is None
 
 
 class TestWhatAFidesHostSeesOfASplitResult:
@@ -502,7 +556,13 @@ class TestWhatAFidesHostSeesOfASplitResult:
 
         seen, _, _ = self._processed(tool, ["main.tf"])
 
-        assert seen == ["hidden", workload.STANDING_GUIDANCE]
+        # The parts the model may act on stay readable; only the engine's own report hides.
+        assert seen == [
+            COMPLETED_TEXT,
+            "Result: valid",
+            "hidden",
+            workload.STANDING_GUIDANCE,
+        ]
 
     def test_one_string_would_have_hidden_the_sentence_with_it(self):
         """The counterfactual: the same host, the same claim, one item."""

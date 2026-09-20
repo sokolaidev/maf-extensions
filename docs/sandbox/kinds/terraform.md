@@ -15,7 +15,7 @@ See the [package README](../../../packages/maf-sandbox-terraform/README.md) for 
 | Guest | POSIX; supplied images pin Linux amd64 engines and dependencies |
 | Isolation and lifetime | At least container isolation; a separate sandbox per call; mandatory disposal |
 | Network | `CLOSED`, with a filesystem provider mirror and no direct-download fallback |
-| Results | Untrusted report followed by fixed trusted guidance |
+| Results | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, the reason it stopped where it did, the engine's report, then fixed guidance. Validation answers `valid` or `invalid`; formatting answers `changed` or `unchanged` |
 
 This kind exposes no plan, apply or state commands. It does not write to the agent's store. Providers and expressions may access other guest paths, so there is no call-directory confinement or warm-reuse claim.
 

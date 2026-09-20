@@ -77,6 +77,16 @@ async def containers(scope: str) -> set[str]:
         "timeout",
     ],
 )
+def _body(result) -> str:
+    """What the call said about the configuration, between completion line and guidance.
+
+    The wrapper renders a fixed completion sentence first, an optional verdict, then this
+    tool's own text and the engine's, and the committed sentence last. These tests are about
+    what the text says, so they read the middle whole.
+    """
+    return chr(10).join(str(item.text) for item in result[1:-1])
+
+
 def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
     async def scenario():
         scope = "terraform-1246-" + uuid.uuid4().hex
@@ -161,7 +171,7 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
                         await pending
                 else:
                     result = await tool.func(files=list(data), root_module=root)
-                    report = result[0].text
+                    report = _body(result)
                     if case in {"syntax", "missing-dependency", "wrong-engine", "timeout"} or (
                         case == "tofu-precedence" and engine == "terraform"
                     ):
@@ -248,7 +258,7 @@ def test_format_returns_complete_files_without_store_writes(engine, case, monkey
         monkeypatch.setattr(backend, "acquire", acquire)
         try:
             result = await tools[1].func(files=list(data), root_module="root")
-            report = result[0].text
+            report = _body(result)
             assert store.files == data
             if case in {"oversized", "escaped", "syntax"}:
                 assert "Formatting INCOMPLETE" in report, report

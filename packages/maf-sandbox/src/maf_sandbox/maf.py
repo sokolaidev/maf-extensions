@@ -2648,7 +2648,9 @@ def _label_tool_result(
 
 
 def sandboxed_tool(
-    build: Callable[[SandboxToolSession], Callable[..., Awaitable[str | list[Content]]]],
+    build: Callable[
+        [SandboxToolSession], Callable[..., Awaitable[str | list[Content] | SandboxResult]]
+    ],
     *,
     router: SandboxRouter | None,
     context: CallerContext,
