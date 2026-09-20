@@ -127,6 +127,8 @@ def test_formatting_is_opt_in_returns_whole_files_and_does_not_write_store(engin
     tool, backend, store = attach(data, sandbox=sandbox, engine=engine, formatting=True)
     assert tool.name in TERRAFORM_TOOL_NAMES
     result = asyncio.run(tool.func(files=["main.tf"]))
+    assert str(result[0].text) == COMPLETED_TEXT
+    assert _verdict(result) == ("changed" if changed else "unchanged")
     assert json.loads(_body(result).split("mapping):\n")[1]) == files
     assert str(result[-1].text) == workload.FORMAT_GUIDANCE
     assert result[-2].additional_properties["security_label"]["integrity"] == "untrusted"
@@ -180,6 +182,8 @@ def test_failed_formatting_never_returns_partially_changed_files(failure):
         sandbox=RecordingSandbox(default_stdout=json.dumps(data)), formatting=True
     )
     result = asyncio.run(tool.func(files=["main.tf"]))
+    assert str(result[0].text) == NOT_COMPLETED_TEXT
+    assert _verdict(result) is None
     assert "Formatting INCOMPLETE" in _body(result)
     assert "locals" not in _body(result) and "private error" not in _body(result)
     assert len(backend.disposed) == 1
@@ -489,13 +493,16 @@ def _verdict(result) -> str | None:
 class TestTheVerdict:
     """The part of the result a model may act on without reading the engine's report."""
 
-    def test_a_passing_configuration_is_valid(self):
-        tool, _, _ = attach()
+    @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+    @pytest.mark.parametrize("valid", [False, True])
+    def test_validation_verdict(self, engine, valid):
+        sandbox = RecordingSandbox(default_stdout=json.dumps(envelope(engine, valid=valid)))
+        tool, _, _ = attach(sandbox=sandbox, engine=engine)
 
         result = asyncio.run(tool.func(files=["main.tf"]))
 
         assert str(result[0].text) == COMPLETED_TEXT
-        assert _verdict(result) == "valid"
+        assert _verdict(result) == ("valid" if valid else "invalid")
 
     def test_a_manifest_that_never_reached_the_engine_has_no_verdict(self):
         """`completed=False` rather than `invalid`: nothing was validated, and reporting the
@@ -563,6 +570,53 @@ class TestWhatAFidesHostSeesOfASplitResult:
             "hidden",
             workload.STANDING_GUIDANCE,
         ]
+
+    @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+    @pytest.mark.parametrize("hidden", [False, True])
+    @pytest.mark.parametrize("failure", ["validate-launcher", "init", "format-launcher", "fmt"])
+    def test_engine_failure_reason_is_readable(self, engine, hidden, failure, monkeypatch):
+        formatting = failure in {"format-launcher", "fmt"}
+        data = format_envelope(engine) if formatting else envelope(engine)
+        if failure.endswith("launcher"):
+            data["error"] = "private launcher detail"
+        else:
+            data["phases"] = {
+                failure: {"exit_code": 1, "stdout": "private stdout", "stderr": "private stderr"}
+            }
+        reason = {
+            "validate-launcher": "Validation INCOMPLETE: the guest launcher could not complete its bounded execution.",
+            "init": "Validation INCOMPLETE: initialization failed; dependencies were not loaded.",
+            "format-launcher": "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. No formatted files returned; try a smaller complete manifest.",
+            "fmt": "Formatting INCOMPLETE: formatter failed; no formatted files returned.",
+        }[failure]
+        monkeypatch.setattr(
+            workload,
+            "positions_holding_hidden_content",
+            lambda *a, **kw: frozenset({0}) if hidden else frozenset(),
+        )
+        tool, _, _ = attach(
+            sandbox=RecordingSandbox(default_stdout=json.dumps(data)),
+            engine=engine,
+            formatting=formatting,
+        )
+
+        seen, _, conversation = self._processed(tool, ["main.tf"])
+
+        has_detail = failure in {"init", "fmt"} and not hidden
+        assert seen == [
+            NOT_COMPLETED_TEXT,
+            reason,
+            *(["hidden"] if has_detail else []),
+            workload.FORMAT_GUIDANCE if formatting else workload.STANDING_GUIDANCE,
+        ]
+        assert str(conversation.integrity) == "trusted"
+        raw = json.dumps(data).encode()
+        legacy = (
+            render_format_report(raw, engine, {"main.tf": "original"}, hidden=hidden)
+            if formatting
+            else render_report(raw, engine, hidden=hidden)
+        )
+        assert legacy == reason + ("\nprivate stdout\nprivate stderr" if has_detail else "")
 
     @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
     @pytest.mark.parametrize("formatting", [False, True])

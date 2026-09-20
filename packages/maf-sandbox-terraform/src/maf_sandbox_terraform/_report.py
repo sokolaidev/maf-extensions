@@ -21,9 +21,15 @@ class ReportOutcome:
     writes, never the engine's text.
     """
 
-    text: str
+    output: str
     ran: bool
     valid: bool
+    reason: str = ""
+
+    @property
+    def text(self) -> str:
+        """The legacy report, combining the fixed reason with untrusted engine output."""
+        return self.reason + self.output
 
 
 def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -99,12 +105,13 @@ def format_outcome(
         raise ValueError("wrong launcher mode")
     if envelope["error"] is not None:
         return ReportOutcome(
-            (
+            "",
+            False,
+            False,
+            reason=(
                 "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. "
                 "No formatted files returned; try a smaller complete manifest."
             ),
-            False,
-            False,
         )
     phases = _mapping(envelope.get("phases"))
     if set(phases) != {"fmt"}:
@@ -113,9 +120,10 @@ def format_outcome(
     if fmt["exit_code"] != 0 or fmt["stderr"]:
         detail = "" if hidden else f"\n{fmt['stdout']}\n{fmt['stderr']}"
         return ReportOutcome(
-            "Formatting INCOMPLETE: formatter failed; no formatted files returned." + detail,
+            detail,
             False,
             False,
+            reason="Formatting INCOMPLETE: formatter failed; no formatted files returned.",
         )
     files = _mapping(envelope.get("formatted_files"))
     for path, content in files.items():
@@ -156,9 +164,13 @@ def report_outcome(raw: bytes, engine: TerraformEngine, *, hidden: bool = False)
     if envelope["error"] is not None:
         # Never render arbitrary launcher error text as a host-authored instruction.
         return ReportOutcome(
-            "Validation INCOMPLETE: the guest launcher could not complete its bounded execution.",
+            "",
             False,
             False,
+            reason=(
+                "Validation INCOMPLETE: the guest launcher could not complete "
+                "its bounded execution."
+            ),
         )
     phases = _mapping(envelope.get("phases"))
     init = _phase(phases.get("init"))
@@ -167,9 +179,10 @@ def report_outcome(raw: bytes, engine: TerraformEngine, *, hidden: bool = False)
             raise ValueError("phases continued after failed initialization")
         detail = "" if hidden else f"\n{init['stdout']}\n{init['stderr']}"
         return ReportOutcome(
-            "Validation INCOMPLETE: initialization failed; dependencies were not loaded." + detail,
+            detail,
             False,
             False,
+            reason="Validation INCOMPLETE: initialization failed; dependencies were not loaded.",
         )
     if set(phases) != {"init", "validate", "fmt"}:
         raise ValueError("incomplete phase set")

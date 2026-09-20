@@ -265,7 +265,7 @@ def test_format_returns_complete_files_without_store_writes(engine, case, monkey
                     # A host file tool can persist the returned whole text for check-only validation.
                     store.files.update(files)
                     checked = await tools[0].func(files=list(data), root_module="root")
-                    assert "formatting PASS" in checked[0].text, checked[0].text
+                    assert "formatting PASS" in _body(checked), _body(checked)
                     store.files.update(data)
             assert store.files == data
             assert observed and not await containers(scope)
