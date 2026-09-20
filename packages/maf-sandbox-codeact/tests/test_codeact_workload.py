@@ -1707,7 +1707,7 @@ class TestDegrades:
     def test_a_configuration_error_does_not_repeat_backend_text(self):
         error = ValueError("No disk image ... was built from 'x'")
         out = _run(_tool(_backend(acquire_error=error)), "print('hi')")
-        assert "sandbox configuration is invalid" in out
+        assert "sandbox unavailable" in out
         assert "No disk image" not in out
 
     def test_a_failed_write_is_an_answer_not_an_exception(self):

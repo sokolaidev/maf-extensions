@@ -668,7 +668,7 @@ def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed, cap
     )
     with caplog.at_level("WARNING", logger="maf_sandbox_codeact._tool"):
         answer = _run(different)
-    assert answer == "Error: sandbox configuration is invalid — see host logs for details"
+    assert answer == "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
     assert refusal in caplog.text
     assert len(sandbox.programs) == 1 and not sandbox.writes
     assert "4" in _run(original)

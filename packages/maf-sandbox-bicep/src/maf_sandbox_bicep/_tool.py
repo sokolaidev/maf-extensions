@@ -120,7 +120,7 @@ _MODULE_INDEX_REDIRECT_HOST = "aka.ms"
 _MODULE_INDEX_HOST = "live-data.bicep.azure.com"
 
 #: The AVM module-registry hosts, and the only hosts Bicep ever names. They are the payload of
-#: an `ALLOWLIST` run and are fixed here: a deployment chooses the *mode* Bicep runs in, but
+#: an `ALLOWLIST` call and are fixed here: a deployment chooses the *mode* Bicep runs in, but
 #: never the hosts, so it can lower to `CLOSED` or (on a backend that cannot confine) raise to
 #: `UNRESTRICTED`, but cannot widen the allowlist to somewhere Bicep has no business reaching.
 _MODULE_HOSTS = (_MCR_HOST, _MCR_DATA_HOST, _MODULE_INDEX_REDIRECT_HOST, _MODULE_INDEX_HOST)
@@ -176,17 +176,15 @@ _LINT_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep lint {path} --diagnostics-format sa
 _PARAM_SUFFIX = ".bicepparam"
 _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
 
-#: Closes every result, as an item of its own labelled trusted. A host that hides the
-#: diagnostics leaves the model a variable reference that reads exactly like a clean run, so the
-#: sentence says what the rest of the result is and what an unread one is worth. The label holds
-#: only while nothing a call produced reaches the sentence and it stays on every return path,
-#: refusals included.
 #: Every answer `bicep_validate` may reach about the files it was given.
 #:
 #: Fixed here so the whole set is written before any call runs, which is what lets the
 #: wrapper hand the model a verdict it may read while the diagnostics stay hidden.
 BICEP_VERDICTS = ("valid", "invalid")
 
+#: Closes every result as a trusted item. It directs the model to the readable completion
+#: and verdict fields when diagnostics are hidden. Core renders this committed sentence on
+#: every normal return, including refusals, without incorporating call-produced text.
 _UNREAD_IS_NOT_A_PASS = (
     "Anything you cannot read here is the compiler's own text, or the file listing a name "
     "did not match, or nothing at all. The completion line and any verdict above it are this "
@@ -289,8 +287,7 @@ def make_bicep_tools(
         # declaration replaces the other two tiers, and neither is this kind's to answer for
         # — `information-flow.md` carries why.
         source_integrity=SourceIntegrity.UNTRUSTED,
-        # The verdict and the completion bit are what the guidance used to have to say in
-        # prose, so the sentence that remains is only about the half still hidden.
+        # Completion and verdict remain readable when the compiler's text is hidden.
         result_contract=True,
         verdicts=BICEP_VERDICTS,
         standing_guidance=(_UNREAD_IS_NOT_A_PASS,),
@@ -472,10 +469,8 @@ def _bicep_validate_tool(
                     working_directory=call_directory,
                 )
             except Exception as exc:  # noqa: BLE001
-                # Detail, not just str(): a live run produced `Operation returned an invalid
-                # status 'Conflict'` for four files at once, and that sentence alone cannot
-                # distinguish "the directory already exists" from "the sandbox is suspending"
-                # — which is the difference between a bug and a retry.
+                # Provider details distinguish staging failures for the host without
+                # exposing provider text in a trusted refusal.
                 logger.warning(
                     "bicep_validate: could not write %r to sandbox: %s", name, error_detail(exc)
                 )
@@ -540,7 +535,7 @@ def _bicep_validate_tool(
         return SandboxResult(
             completed=ran,
             # A verdict only where the compiler answered for every file it was given: a
-            # run missing one is not a pass for the rest, and completed=False says so.
+            # call missing one is not a pass for the rest, and completed=False says so.
             verdict=("valid" if all(o.clean for o in phases) else "invalid") if ran else None,
             trusted_output=tuple(notes),
             output=tuple(outcome.text for outcome in phases),
@@ -582,8 +577,6 @@ def _bicep_validate_tool(
             restore failure that leaves input type checking undone.  The diagnostics are
             ``output``; anything this tool says about its own refusal is ``trusted_output``.
         """
-        # At the funnel rather than at each `return` in `report`: the sentence's label is
-        # honest only where it is on every path, refusals included.
         return await report(files)
 
     return bicep_validate
@@ -685,9 +678,7 @@ async def _run_phase(
     )
     failed_restores = count_restore_failures(diagnostics)
     if failed_restores:
-        # Without this banner a restore-failed run reads as an ordinary diagnostic list, and
-        # an agent can (and once did) discount it as environment noise and certify the
-        # module inputs from documentation instead of from the compiler.
+        # Restore failures prevent the compiler from checking module input types.
         logger.warning(
             "bicep_validate: %s file=%r module restore FAILED for %d reference(s) — "
             "type checking of module inputs did not run",
@@ -695,10 +686,8 @@ async def _run_phase(
             name,
             failed_restores,
         )
-        # `ran=False` is the structural form of the warning this used to carry in prose: a
-        # restore failure leaves module input type checking undone, so the run is not an
-        # answer about the files at all. The sentence stays, shorter, for a host reading
-        # the text rather than the field.
+        # Incomplete module type checking prevents a verdict for the call. The banner also
+        # explains the failure to callers reading the diagnostic text.
         return _PhaseOutcome(
             f"{phase}({label}): MODULE RESTORE FAILED for {failed_restores} module "
             "reference(s) (BCP190/BCP191/BCP192). Module types were NOT loaded, so type "

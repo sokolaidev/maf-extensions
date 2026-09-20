@@ -725,15 +725,22 @@ class TestSessionAcquire:
                 "Error: no sandbox backend is configured — degrading to T0"
             )
 
-    def test_a_value_error_names_the_failure_but_logs_its_detail(self, caplog):
-        session = _session(
-            InProcessSandboxBackend(acquire_error=ValueError("No disk image for 'bicep:1'"))
-        )
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "No disk image for 'bicep:1'",
+            "wslc did not return an inspected sandbox object",
+            "wslc did not return the sandbox instance ID",
+        ],
+    )
+    def test_a_value_error_is_unavailable_without_guessing_its_cause(self, detail, caplog):
+        """Provider response failures and configuration errors share this exception type."""
+        session = _session(InProcessSandboxBackend(acquire_error=ValueError(detail)))
         with caplog.at_level(logging.WARNING, logger="test_workload"):
             assert asyncio.run(session.acquire(_KEY)) == (
-                "Error: sandbox configuration is invalid — see host logs for details"
+                "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
             )
-        assert "No disk image for 'bicep:1'" in caplog.text
+        assert detail in caplog.text
 
     def test_the_family_is_every_refusal_the_router_defines(self):
         """Every refusal ``_router`` defines belongs to the family, less the two that answer
@@ -2957,7 +2964,7 @@ class TestCleanupAdmission:
         [
             (ImportError("provider diagnostic"), _maf._SDK_NOT_INSTALLED),
             (NoSandboxBackend("provider diagnostic"), _maf._NO_BACKEND_CONFIGURED),
-            (ValueError("No disk image configured"), _maf._SANDBOX_INVALID_CONFIGURATION),
+            (ValueError("No disk image configured"), _maf._SANDBOX_UNAVAILABLE),
             (RuntimeError("provider diagnostic"), _maf._SANDBOX_UNAVAILABLE),
             (SandboxUnclean("provider diagnostic"), _maf._SANDBOX_UNCLEAN),
         ],

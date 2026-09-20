@@ -56,9 +56,9 @@ The banner is returned for BCP190, BCP191 or BCP192. It tells the model that mod
 
 The compiler and its input files are sources of the diagnostic text. The kind therefore claims `untrusted` for that text, including counts.
 
-The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `valid` or `invalid`, and only where the compiler answered for every file it was given. `completed` is false where it did not: a refused name, a file that could not be staged, a timeout, unreadable SARIF, or a module restore failure, which leaves module input type checking undone. A run that did not complete carries no verdict.
+The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `valid` or `invalid`, and only where the compiler answered for every file it was given. `completed` is false where it did not: a refused name, a file that could not be staged, a timeout, unreadable SARIF, or a module restore failure, which leaves module input type checking undone. A call that did not complete carries no verdict.
 
-What this tool says about its own refusal goes in `trusted_output`. That text is written here, names argument positions rather than quoting them, and is the same on every call that hits the same branch. One exception: a "did you mean" hint lists names from the file store, and a name in the store was not established, so the hint goes in `output` with the compiler's text while the sentence introducing it stays readable.
+What this tool says about its own refusal goes in `trusted_output`. The kind writes the refusal templates and may echo short, printable names the model supplied visibly; hidden or unsafe names are identified by argument position. A "did you mean" hint lists names from the file store, whose integrity is not established, so the hint goes in `output` with the compiler's text while the sentence introducing it stays readable.
 
 ![Bicep validation is a source tool. Its wrapper declares trusted integrity to the framework while retaining an untrusted workload claim. Diagnostics are untrusted content; fixed guidance is trusted content. Both retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. Later calls to file writers or other tools face the destination's integrity and confidentiality policy.](../assets/bicep-information-flow.svg)
 
@@ -84,4 +84,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 |---|---|---|
 | Validation, restore controls and diagnostic handling | Implemented | [Package README](../../../packages/maf-sandbox-bicep/README.md) |
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
-| Four-field result contract | Open; this kind returns report and guidance items | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) |

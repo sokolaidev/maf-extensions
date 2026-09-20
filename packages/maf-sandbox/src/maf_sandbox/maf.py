@@ -179,9 +179,6 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
-_SANDBOX_INVALID_CONFIGURATION = (
-    "Error: sandbox configuration is invalid — see host logs for details"
-)
 _SANDBOX_REFUSED = (
     "Error: this workload was refused before it ran — degrading to T0 (LLM self-check only). "
     "The reason is in the host log."
@@ -1428,12 +1425,11 @@ class SandboxToolSession:
         if isinstance(sandbox, str):
             return sandbox
 
-    A workload whose tool answers with something other than a plain ``str`` converts that
-    message into its own result shape at **one** place — the funnel its body returns through —
-    never at each accessor.  Three of them answer this way, :meth:`list_files` included, and a
-    body has its own returns besides, so a per-call-site conversion is a claim about every
-    return path that is one branch from being false.  Nothing else about the contract changes;
-    ``docs/sandbox/architecture.md`` carries the rule.
+    A workload converting legacy text into content items does so at one return funnel,
+    including accessor refusals. A tool using :class:`SandboxResult` may instead construct
+    that type on each branch, with refusals in ``trusted_output`` and ``completed=False``.
+    Its wrapper checks the result type and renders the fields and committed guidance on
+    every normal return; ``docs/sandbox/architecture.md`` carries the rule.
 
     **A wiring mistake in the kind raises**, and that is the line the two shapes are split on: a
     model can cause a refusal and cannot cause a body that asks for a call's key outside a call,
@@ -1821,9 +1817,9 @@ class SandboxToolSession:
 
         Admission and backend refusals return a fixed message; their details stay in the log.
         Refusals take precedence over ValueError, including subclasses of both. Missing SDKs
-        and backends have dedicated messages; ValueError returns a fixed configuration
-        refusal. Exception details stay in the log, since tool results are persisted in the
-        transcript and may be labelled trusted by the kind.
+        and backends have dedicated messages; an otherwise unclassified failure, including
+        ValueError, returns unavailable. Exception details stay in the log, since results
+        persist in the transcript and may be labelled trusted by the kind.
 
         Raises:
             RuntimeError: the call has closed, or a call-scoped key has no matching open call.
@@ -1895,12 +1891,6 @@ class SandboxToolSession:
         except NoSandboxBackend as exc:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return _NO_BACKEND_CONFIGURED
-        except ValueError as exc:
-            # Backends and providers may raise these too; the type does not establish the text.
-            self._logger.warning(
-                f"{self._log_prefix}: sandbox configuration is invalid: %s", error_detail(exc)
-            )
-            return _SANDBOX_INVALID_CONFIGURATION
         except SandboxUnclean as exc:
             # The router's own refusal: a sandbox a previous call could not clean and the
             # framework could not dispose of. Safe to name and actionable for the host, but

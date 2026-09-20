@@ -988,7 +988,7 @@ class TestEndToEndRefusals:
         backend = _fake_backend(acquire_error=ValueError("No disk image ... was built from 'x'"))
         out = _run(_tool(store, backend), ["main.bicep"])
 
-        assert "sandbox configuration is invalid" in out
+        assert "sandbox unavailable" in out
         assert "No disk image" not in out
 
 
@@ -1525,9 +1525,8 @@ class TestTheResultSplits:
         assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS
 
     def test_the_sentence_tells_the_model_what_an_unread_result_is_worth(self):
-        """The sentence is no longer the whole of what a hiding host leaves the model — the
-        completion line and the verdict are readable too — so what it must still do is say
-        what the hidden half is and where the answer actually is.
+        """Guidance identifies the hidden text and points to the readable completion and
+        verdict fields that carry the tool's answer.
 
         By clause rather than whole, the way `TestToolDescription` reads the description.
         """
@@ -1541,7 +1540,7 @@ class TestTheResultSplits:
         )
         assert "cannot read" in sentence, "it must name the condition the model is in"
         assert "verdict" in sentence, (
-            "it must point at the field that now carries the answer, or the model is left "
+            "it must point at the field that carries the answer, or the model is left "
             "reading the hidden half it cannot see"
         )
         assert "unvalidated" in sentence, (
@@ -1676,7 +1675,7 @@ class TestWhatAFidesHostSeesOfASplitResult:
             expected = "Error: could not list the file store"
         else:
             backend = _fake_backend(acquire_error=ValueError(detail))
-            expected = "Error: sandbox configuration is invalid — see host logs for details"
+            expected = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
         tool = _tool(InMemoryStore({"main.bicep": "x"}), backend)
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_bicep._tool"):
@@ -1802,8 +1801,7 @@ class TestRestoreFailureBanner:
         out = _run(tool, ["main.bicep"])
 
         assert "MODULE RESTORE FAILED" in out
-        # The claim the banner used to make in prose is a field now, which is the point: a
-        # model cannot read past it the way it once read past the sentence.
+        # Failed restore leaves the call incomplete, with no verdict about the files.
         assert not _completed(tool, ["main.bicep"])
         assert _verdict(tool, ["main.bicep"]) is None
         # The underlying diagnostics still follow the banner — evidence, not replacement.

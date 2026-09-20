@@ -59,13 +59,15 @@ The allowlist grants no Azure Resource Manager access and supplies no credential
 
 ## Results and cleanup
 
-The result contains two text items: the untrusted diagnostic report and trusted fixed guidance. The host supplies result confidentiality. With automatic hiding active in a trusted conversation, the report can be hidden while guidance remains readable.
+This version requires `maf-sandbox>=0.42.0,<0.43`. `bicep_validate` returns `SandboxResult`, which the attached tool renders as a `list[Content]`: completion, an optional `valid` or `invalid` verdict, any trusted refusals, any untrusted diagnostics or file-listing hints, then fixed guidance. The item count varies. Incomplete calls have no verdict, and either output sequence may be empty.
+
+Completion, verdict and refusals carry trusted integrity. Diagnostics retain untrusted integrity even with trusted inputs. The host supplies result confidentiality; fixed guidance remains trusted/public. When middleware hides diagnostics, the model reads the verdict or reports the files as unvalidated if there is none. Refused names, staging failures, timeouts, unreadable SARIF and failed module restores leave the call incomplete.
 
 A restore failure reports `MODULE RESTORE FAILED`. Hidden, empty or unreadable diagnostics do not establish a successful validation. Forwarding hidden diagnostics to a file writer remains subject to that tool's policy.
 
 Diagnostic formatting removes call-directory paths and applies permitted display names. It does not remove arbitrary compiler prose or every external URL.
 
-Direct `invoke(..., skip_parsing=True)` callers receive a list of `Content` items. Preserve those items and labels; do not turn the list into a Python string representation.
+Direct `invoke(..., skip_parsing=True)` callers must read each item's `.text` without assuming fixed indexes. Preserve the items and labels; do not turn the list into a Python string representation. Framework function-result content exposes `.items` and joins their text in `.result`.
 
 Core disposes after each call by default. Explicit host opt-in can permit reclaim on a supporting backend. The kind's confinement declaration describes its file placement; it does not certify that a reused sandbox is clean.
 
