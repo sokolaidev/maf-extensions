@@ -199,10 +199,18 @@ class SandboxCodeExecutor(CodeExecutor):
         never pays for one.
 
         Held against `_one_at_a_time`, so a model response carrying two calls runs them one
-        after another over the single sandbox this key admits.
+        after another over the single sandbox this key admits.  Waiting for that lock is part of
+        the call, so `cancellation_token` reaches the wait as well as the execution under it.
         """
-        async with self._one_at_a_time:
+        waiting = asyncio.ensure_future(self._one_at_a_time.acquire())
+        # `_execute_one` links the execution, which a queued call has not started: without this
+        # a cancelled call stays queued until the call ahead of it finishes.
+        cancellation_token.link_future(waiting)
+        await waiting
+        try:
             return await self._execute_blocks(code_blocks, cancellation_token)
+        finally:
+            self._one_at_a_time.release()
 
     async def _execute_blocks(
         self, code_blocks: list[CodeBlock], cancellation_token: CancellationToken

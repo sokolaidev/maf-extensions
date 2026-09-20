@@ -874,10 +874,9 @@ class TestTheModelWiring:
         model, credential = sample_19.build_model()
         assert credential is None
         assert type(model).__name__ == "OpenAIChatCompletionClient"
-        # Absent on purpose. `reflect_on_tool_use=True` issues a summarising turn carrying no
+        # Absent on purpose: `reflect_on_tool_use=True` issues a summarising turn carrying no
         # tools, and an endpoint enforcing the parameter's contract refuses a request that sends
-        # it without them (#1341). What it used to buy is now `SandboxCodeExecutor`'s lock, which
-        # `TestTheExecutorSerialisesCalls` holds to.
+        # it without them. `TestTheExecutorSerialisesCalls` holds the concurrency guarantee.
         assert "parallel_tool_calls" not in model._create_args  # pyright: ignore[reportPrivateUsage]
 
     def test_the_azure_road_constructs_with_a_token_provider(self, monkeypatch: pytest.MonkeyPatch):
@@ -902,9 +901,8 @@ class TestTheExecutorSerialisesCalls:
     """One execution at a time over an unadmitted key, whatever the model asks for.
 
     `AssistantAgent` runs every tool call in one model response concurrently, and this executor
-    performs no `enter_call`, so two of them would share one sandbox. That used to be prevented
-    by asking the model not to — `parallel_tool_calls=False` — which an endpoint refuses on the
-    tool-free reflection turn (#1341). The lock does not depend on a request parameter.
+    performs no `enter_call`, so two of them would share one sandbox. The lock holds that on this
+    side of the call, where a request parameter holds it only where a provider honours one.
     """
 
     @staticmethod
@@ -947,6 +945,52 @@ class TestTheExecutorSerialisesCalls:
 
     def test_two_concurrent_calls_run_one_after_another(self):
         assert self._run_two(self._overlapping(), "execute_code_blocks") == 1
+
+    def test_a_call_cancelled_while_queued_does_not_wait_for_the_lock(self):
+        """Cancelling a queued call ends it where it waits, not when the call ahead finishes."""
+
+        class Blocking(InProcessSandbox):
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
+                from maf_sandbox import ExecResult
+
+                Blocking.entered.set()
+                await Blocking.release.wait()
+                return ExecResult(stdout="done", exit_code=0)
+
+        async def body():
+            from autogen_core import CancellationToken
+            from autogen_core.code_executor import CodeBlock
+
+            router, _ = _router(Blocking())
+            executor = sample_19.SandboxCodeExecutor(router, _key(), _spec())
+            blocks = [CodeBlock(code="print('x')", language="python")]
+
+            holding = asyncio.ensure_future(
+                executor.execute_code_blocks(blocks, CancellationToken())
+            )
+            await Blocking.entered.wait()
+
+            token = CancellationToken()
+            queued = asyncio.ensure_future(executor.execute_code_blocks(blocks, token))
+            # One turn of the loop is enough to reach the lock and wait on it.
+            await asyncio.sleep(0)
+            token.cancel()
+
+            # Generous against a slow machine, and still far short of the call ahead, which
+            # only ends when this body sets `release` below.
+            done, pending = await asyncio.wait({queued}, timeout=5.0)
+            ended_where_it_waited = queued in done and queued.cancelled()
+
+            Blocking.release.set()
+            await holding
+            for task in pending:
+                task.cancel()
+            return ended_where_it_waited
+
+        assert asyncio.run(body()) is True
 
 
 class TestTheResultReading:
