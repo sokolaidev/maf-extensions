@@ -131,6 +131,113 @@ def test_hardlinks_are_refused(output, tmp_path):
         output.validate()
 
 
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_file_replaced_by_link_after_validation_is_never_read(output, tmp_path, monkeypatch, kind):
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"outside")
+    link = output.path / "replacement"
+    if kind == "symlink":
+        _symlink(link, secret)
+    else:
+        os.link(secret, link)
+    target = output.path / "result"
+    target.write_bytes(b"inside")
+    original = output.stat_file
+
+    def replace_after_validation(path, working_directory):
+        resolved = original(path, working_directory)
+        target.unlink()
+        link.rename(target)
+        return resolved
+
+    monkeypatch.setattr(output, "stat_file", replace_after_validation)
+    with pytest.raises(OSError):
+        output.read_file("result", ".", 100)
+
+
+def test_root_replaced_after_path_validation_cannot_redirect_read(output, tmp_path, monkeypatch):
+    (output.path / "result").write_bytes(b"inside")
+    (tmp_path / "result").write_bytes(b"outside")
+    moved = output.path.with_name(output.path.name + "-original")
+    original = output._path
+    calls = 0
+
+    def racing_path(path, working_directory):
+        nonlocal calls
+        resolved = original(path, working_directory)
+        calls += 1
+        if calls == 2:
+            output.path.rename(moved)
+            if os.name == "nt":
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(output.path), str(tmp_path)], check=True
+                )
+            else:
+                output.path.symlink_to(tmp_path, target_is_directory=True)
+        return resolved
+
+    monkeypatch.setattr(output, "_path", racing_path)
+    try:
+        with pytest.raises((OSError, ValueError)):
+            output.read_file("result", ".", 100)
+    finally:
+        if moved.exists():
+            if output.path.is_junction():
+                output.path.rmdir()
+            elif output.path.is_symlink():
+                output.path.unlink()
+            moved.rename(output.path)
+    assert (tmp_path / "result").read_bytes() == b"outside"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing guarantees")
+def test_windows_reader_pins_root_and_file_until_closed(output):
+    target = output.path / "result"
+    target.write_bytes(b"inside")
+    moved = output.path.with_name(output.path.name + "-moved")
+    with output._reader(target) as stream:
+        with pytest.raises(OSError):
+            output.path.rename(moved)
+        with pytest.raises(OSError):
+            target.write_bytes(b"changed")
+        with pytest.raises(OSError):
+            target.unlink()
+        assert stream.read() == b"inside"
+    target.write_bytes(b"changed")
+    output.path.rename(moved)
+    moved.rename(output.path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle ownership")
+@pytest.mark.parametrize("failure", ["descriptor", "stream"])
+def test_windows_reader_setup_failure_closes_handles(output, monkeypatch, failure):
+    if sys.platform != "win32":
+        pytest.skip("Windows handle ownership")
+    import msvcrt
+
+    from maf_sandbox_hyperlight._windows_files import open_no_follow
+
+    target = output.path / "result"
+    target.write_bytes(b"inside")
+
+    def refuse(*args, **kwargs):
+        raise OSError("descriptor allocation failed")
+
+    if failure == "descriptor":
+        monkeypatch.setattr(msvcrt, "open_osfhandle", refuse)
+    else:
+        monkeypatch.setattr(os, "fdopen", refuse)
+    with pytest.raises(OSError, match="allocation"):
+        if failure == "descriptor":
+            open_no_follow(target)
+        else:
+            output.read_file("result", ".", 100)
+    target.unlink()
+    moved = output.path.with_name(output.path.name + "-moved")
+    output.path.rename(moved)
+    moved.rename(output.path)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction fixture")
 def test_junctions_cannot_redirect_collection_or_cleanup(output, tmp_path):
     secret = tmp_path / "secret"

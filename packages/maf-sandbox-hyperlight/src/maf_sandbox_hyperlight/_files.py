@@ -6,11 +6,17 @@ import os
 import posixpath
 import shutil
 import stat
+import sys
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import BinaryIO
 
 from maf_sandbox import EntryKind, SandboxEntry, SandboxTransferCapExceeded
 from maf_sandbox.paths import confine_resolve_guest_path, resolve_guest_working_directory
+
+from ._windows_files import open_no_follow
 
 GUEST_ROOT = "/output"
 
@@ -28,6 +34,30 @@ class OutputDirectory:
         self.path = Path(tempfile.mkdtemp(prefix="maf-hyperlight-")).resolve()
         info = self.path.lstat()
         self._identity = (info.st_dev, info.st_ino)
+
+    @contextmanager
+    def _reader(self, target: Path) -> Generator[BinaryIO]:
+        if sys.platform == "win32":
+            root = open_no_follow(self.path, directory=True)
+        else:
+            root = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(root)
+            if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != self._identity:
+                raise ValueError("the output directory was replaced")
+            if sys.platform == "win32":
+                descriptor = open_no_follow(target)
+            else:
+                descriptor = os.open(
+                    target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root
+                )
+            try:
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    yield stream
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(root)
 
     def _root(self) -> None:
         info = self.path.lstat()
@@ -102,16 +132,9 @@ class OutputDirectory:
         if entry.size_bytes is None or entry.size_bytes > max_bytes:
             raise SandboxTransferCapExceeded("output exceeds max_bytes")
         target, _ = self._path(path, working_directory)
-        descriptor = os.open(
-            target,
-            os.O_RDONLY
-            | getattr(os, "O_BINARY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0),
-        )
-        with os.fdopen(descriptor, "rb") as stream:
+        with self._reader(target) as stream:
             info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            if _is_link(info) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise OSError("output is not a regular unlinked file")
             if info.st_size > max_bytes:
                 raise SandboxTransferCapExceeded("output exceeds max_bytes")
