@@ -4,6 +4,23 @@ Every dependent declares a range on `maf-sandbox` — `>=0.22.0,<0.24` today —
 
 The suite's design question is not "does the code work together" — the ordinary test suite answers that on every pull request. It is **"does the code work together in the shapes people actually install"**, which is a different pairing and, until recently, a much less examined one.
 
+## The framework range
+
+The compatibility gates below vary `maf-sandbox`, not `agent-framework-core`. The framework's own range is a separate promise. Its floor is `>=1.19.0`, matching the locked core exercised by the offline suite; 1.18 consumers must upgrade the framework or keep an older suite release. The earlier measurements on 1.18 remain evidence about that source revision, not continuing coverage of an admitted floor. Revisit the floor whenever the framework lock moves: retaining an older floor needs an explicit run on that version, and retaining another minor needs assertions and CI coverage for both contracts.
+
+**Retain `<1.20`.** This is the ceiling decision from [#1343](https://github.com/sokolaidev/maf-extensions/issues/1343), separate from raising the floor. Framework 1.19 changed per-item label precedence: committed guidance became hidden until the wrapper expressed its labels as restrictions ([#1316](https://github.com/sokolaidev/maf-extensions/pull/1316)). A resolution refusal before adoption is preferable to a consumer silently losing the guidance its tool promised. The ceiling holds the next minor out until that boundary has been measured.
+
+[#1321](https://github.com/sokolaidev/maf-extensions/pull/1321) removes the discovery gap: [`check_framework_ceiling.py`](../scripts/check_framework_ceiling.py), run by [`lock-drift.yml`](../.github/workflows/lock-drift.yml), announces a published release above the ceiling even while the lock refresh stays inside it. That announcement proves availability, not compatibility. Removing the ceiling would let consumers install the new minor before either the scheduled announcement or an adoption measurement; the ordinary locked suite would still exercise the old core.
+
+The cost is deliberate: each adoption changes five direct framework declarations and requires their package releases, with the remaining packages receiving the framework transitively through `maf-sandbox`. Those releases take maintainer time and may delay consumers who need a newer framework. Widen only after an adoption records:
+
+- The exact installed framework and adapter versions, verified from the running environment rather than inferred from an overlay command or matching test totals.
+- The framework changes at the label and argument-provenance boundaries, and the real-middleware alarms and kind suites that establish guidance remains readable, derived items remain restricted, confidentiality is not lowered, and rewritten arguments remain identified or refused.
+- The complete offline-suite result on the candidate, adaptations and regression coverage for changed behavior, the chosen floor, and any retained floor's separate measurement. Record skipped and unverified paths explicitly.
+- A lockfile update and consistent declarations in every package naming the framework, followed by the ordinary wheel and release gates.
+
+A scheduled drift failure starts that work; it does not justify widening on its own. This policy does not prove every future 1.19 patch compatible: the range still admits patches newer than the lock, and the within-range drift check reports those separately. Reconsider the ceiling if the label and provenance contracts become stable public APIs, with evidence that automatic admission preserves them. Until then, the release cost buys a measured adoption boundary.
+
 ## The four pairings
 
 A release involves two moving parts, each of which exists as source in this repository and as an artifact on PyPI. That gives four combinations, and they are not equally covered.

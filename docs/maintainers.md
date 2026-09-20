@@ -236,6 +236,8 @@ The question above re-resolves *inside* the declared ranges, so **a ceiling belo
 
 **Clearing it is an adoption, not a command.** Widening a ceiling costs a release in every package that declares it, and whatever the new minor moved has to be re-measured first — the ceilings are there because a measurement put them there. The last one is the worked example: `agent-framework-core` 1.19.0 made an item's embedded label restrict-only, `<1.19` held it out while that was measured ([#1304](https://github.com/sokolaidev/maf-extensions/issues/1304), [#1305](https://github.com/sokolaidev/maf-extensions/issues/1305)), and adopting it took a wrapper change and a release in every package ([#1306](https://github.com/sokolaidev/maf-extensions/issues/1306)). That release was found by somebody running the suite for another reason, which is the luck this check replaces. The run's tracking issue is where the next one starts; [`information-flow.md`](sandbox/information-flow.md) carries what each measurement found.
 
+The [framework range policy](release-compatibility.md#the-framework-range) retains the ceiling and lists the evidence an adoption must record. The announcement starts that measurement; it does not justify widening the range by itself.
+
 ## Adding a package to this repository
 
 1. Create `packages/<name>/` with its own `pyproject.toml` declaring version `0.0.0`, `README.md`, `LICENSE`, and a `py.typed` beside the module.
