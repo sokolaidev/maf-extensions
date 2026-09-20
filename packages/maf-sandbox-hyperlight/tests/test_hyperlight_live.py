@@ -99,6 +99,43 @@ def test_no_environment_or_filesystem_channel(live_backend, monkeypatch: pytest.
     asyncio.run(check())
 
 
+def test_real_flat_outputs_are_binary_and_reset_before_reuse():
+    from maf_sandbox import SandboxTransferCapExceeded
+
+    backend = HyperlightSandboxBackend(
+        HyperlightSandboxConfig(
+            file_outputs=True, linux_cgroup_root=os.environ.get("MAF_HYPERLIGHT_CGROUP_ROOT")
+        )
+    )
+    spec = replace(SPEC, work_dir="/output", requires=SPEC.requires | {Capability.FILES_OUT})
+
+    async def check():
+        try:
+            async with backend.call_admission(KEY, spec, owner="files", timeout=30):
+                sandbox = await backend.acquire(KEY, spec)
+                result = await sandbox.run_code(
+                    "import os\nfor operation in (lambda: os.symlink('/output/result.bin', '/output/link'), lambda: os.mkdir('/output/nested')):\n    try:\n        operation()\n    except (OSError, AttributeError):\n        pass\n    else:\n        raise RuntimeError('unexpected guest link/directory creation')\nwith open('/output/result.bin', 'wb') as f:\n    f.write(bytes(range(256)))",
+                    timeout=5,
+                )
+                assert result.exit_code == 0, result.stderr
+                assert (
+                    await sandbox.stat_file("result.bin", working_directory=".")
+                ).size_bytes == 256
+                with pytest.raises(SandboxTransferCapExceeded):
+                    await sandbox.read_file("result.bin", working_directory=".", max_bytes=255)
+                assert await sandbox.read_file(
+                    "result.bin", working_directory=".", max_bytes=256
+                ) == bytes(range(256))
+                await sandbox.reset(timeout=5)
+                assert await sandbox.stat_file("result.bin", working_directory=".") is None
+                result = await sandbox.run_code("print('next')", timeout=5)
+                assert result.stdout == "next\n"
+        finally:
+            await backend.aclose()
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 def test_infinite_guest_program_is_reaped_and_queue_does_not_enter(live_backend, cancel):
     async def check():

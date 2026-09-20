@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "maf-sandbox>=0.41.0,<0.42",
+    "maf-sandbox>=0.42.0,<0.43",
     "hyperlight-sandbox==0.7.0",
     "hyperlight-sandbox-backend-wasm==0.7.0; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and platform_machine == 'x86_64')",
     "hyperlight-sandbox-python-guest==0.7.0; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and platform_machine == 'x86_64')",

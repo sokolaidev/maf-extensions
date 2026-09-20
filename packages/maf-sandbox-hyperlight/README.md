@@ -4,13 +4,13 @@
 
 > **Experimental.** This package warns on import with `MafSandboxHyperlightExperimentalWarning`. Releases before 1.0 may change or remove APIs without notice.
 
-Run Python statements in Hyperlight microVMs through the `maf-sandbox` protocol. This backend supports `RUN_CODE` and `SNAPSHOT`, including CodeAct without file channels. It is experimental and has not yet been released.
+Run Python statements in Hyperlight microVMs through the `maf-sandbox` protocol. This backend supports `RUN_CODE` and `SNAPSHOT`, with opt-in `FILES_OUT` for binary artifacts and CodeAct outputs.
 
 ## Requirements
 
-Windows x86-64 with Windows Hypervisor Platform, or Linux x86-64 with glibc 2.28 or newer, KVM and a delegated cgroup v2 subtree. Host CPython versions 3.12 through 3.14 are supported by the pinned wheels. The measured configurations are Windows 11 / WHP / host CPython 3.13, Ubuntu 24.04 under WSL2 / KVM / host CPython 3.12, and native Ubuntu 24.04 / KVM / host CPython 3.13, using the exact matched `hyperlight-sandbox`, `hyperlight-sandbox-backend-wasm` and `hyperlight-sandbox-python-guest` 0.7.0 wheels. The guest is CPython 3.14 compiled to WebAssembly. Other operating systems, architectures, hypervisors, custom guests, images and guest working directories are refused. Linux hosts exposing `/dev/mshv` are refused until that family is validated.
+Windows x86-64 with Windows Hypervisor Platform, or Linux x86-64 with glibc 2.28 or newer, KVM and a delegated cgroup v2 subtree. Host CPython versions 3.12 through 3.14 are supported by the pinned wheels. The measured configurations are Windows 11 / WHP / host CPython 3.13, Ubuntu 24.04 under WSL2 / KVM / host CPython 3.12, and native Ubuntu 24.04 / KVM / host CPython 3.13, using the exact matched `hyperlight-sandbox`, `hyperlight-sandbox-backend-wasm` and `hyperlight-sandbox-python-guest` 0.7.0 wheels. The guest is CPython 3.14 compiled to WebAssembly. Other operating systems, architectures, hypervisors, custom guests and images are refused. The only explicit guest working directory is `/output`, available with file outputs enabled. Linux hosts exposing `/dev/mshv` are refused until that family is validated.
 
-Each sandbox has a dedicated worker process. The adapter sets `HYPERLIGHT_MAX_SURROGATES=0` inside that process, initializes the platform, warms the packaged guest and takes its initial snapshot during acquire. Windows retains the WHP library handle and uses a job to bound committed memory and terminate the worker tree. Linux verifies KVM VM creation and uses cgroup memory enforcement with an independent lifetime watcher. Linux forwards only the exact environment names `PATH`, `HOME`, `XDG_CACHE_HOME`, `TMPDIR`, `LANG` and `LC_ALL`; Windows matches its system/runtime environment names case-insensitively. The SDK materializes the packaged guest in its ordinary local application cache; no host directory is exposed to guest code.
+Each sandbox has a dedicated worker process. The adapter sets `HYPERLIGHT_MAX_SURROGATES=0` inside that process, initializes the platform, warms the packaged guest and takes its initial snapshot during acquire. Windows retains the WHP library handle and uses a job to bound committed memory and terminate the worker tree. Linux verifies KVM VM creation and uses cgroup memory enforcement with an independent lifetime watcher. Linux forwards only the exact environment names `PATH`, `HOME`, `XDG_CACHE_HOME`, `TMPDIR`, `LANG` and `LC_ALL`; Windows matches its system/runtime environment names case-insensitively. The SDK materializes the packaged guest in its ordinary local application cache. File outputs expose only an adapter-owned directory through the guest's `/output` preopen; the default exposes no host directory.
 
 One host process owns this backend within its ownership namespace. Windows uses a machine-wide named event; Linux holds `/run/lock/maf-sandbox-hyperlight.lock` open with an exclusive lock. New lock files are empty, readable by every host user and have no write permissions, regardless of the creating process's umask. The final path is published atomically only after those permissions are ready, without replacing an existing lock. Ordinary Python fork children release their inherited owner descriptor; ownership remains with the original host and its lifetime watchers. Route acquire, execution and purge requests to that process. A second process refuses acquire and returns an unclean disposal result. Ownership lasts until the host exits, including after `aclose()`; Linux watchers retain the lock until old worker trees are gone. Backend objects within the owner share the same key/kind registry. Do not unlink the lock file or use separate mount/PID/cgroup namespaces to route one logical backend across owners. Replicated containers and cross-machine routing require additional deployment work.
 
@@ -93,7 +93,30 @@ def tools_for(context: CallerContext):
 
 The host supplies `CallerContext` from trusted request state and calls `backend.aclose()` at shutdown. `Cleanup.RESET` permits warm reuse while removing state after each tool call; the router's stronger default disposal policy also works. CodeAct uses exclusive admission so the next call waits for the previous call's cleanup.
 
-The guest has a reduced standard library: `json`, `math` and `re` are available; `datetime`, `statistics`, `pickle` and `__future__` are absent. Future imports fail. Programs execute statements and must print results; a final expression is not echoed. `RUNTIME_INSTRUCTIONS` describes this profile for the model. There is no shell, package installation, writable host filesystem, file-transfer channel or host-tool registration.
+The guest has a reduced standard library: `json`, `math` and `re` are available; `datetime`, `statistics`, `pickle` and `__future__` are absent. Future imports fail. Programs execute statements and must print results; a final expression is not echoed. `RUNTIME_INSTRUCTIONS` describes this profile for the model. There is no shell, package installation, input transfer or host-tool registration.
+
+## Output files
+
+Set `HyperlightSandboxConfig(file_outputs=True)` to declare `FILES_OUT`. Each sandbox gets one private output directory for its lifetime, exposed as `/output`. `SandboxSpec.work_dir` can be `None` or `/output`. Programs write flat files with `open('/output/result.bin', 'wb')`; collect them as relative names such as `result.bin`, with `working_directory="."`. Absolute names, `..` components, Windows path aliases, nested paths, links and special files are refused. The pinned guest cannot create directories or links. The backend checks for symlinks, redirecting reparse points and hardlinks before execution and restore and after execution, and reads files through host operations without running inspection code in the guest. `FILES_LIST`, writable inputs and selective deletion remain unavailable.
+
+The native write budget is 8 MiB per file, 32 MiB total and 64 files. `read_file(max_bytes=...)` applies the smaller of its requested limit and the backend's per-file limit, and raises `SandboxTransferCapExceeded` on overflow instead of returning a prefix. Core collection also enforces the caller's total-byte and file-count limits.
+
+Hyperlight declares `requires_exclusive_admission=True`: a router holds each call through execution, collection, sink delivery and cleanup. Backend admission also serializes the same key/kind across router objects and event loops in the owning process. Different sandbox instances can run concurrently. All admissions held by a task remain authorized, and the router transfers the target lease's authority when cleanup runs in another task or event loop. Direct callers of a file-enabled backend must wrap acquire, execution, reads and reset/disposal in `async with backend.call_admission(key, spec, owner=unique_call_id, timeout=30):`; access outside the active scope refuses. Reads pin the owned output root and validate the opened file before consuming bytes: Windows uses non-following handles with read-only sharing, and Linux opens relative to a verified directory descriptor with `O_NOFOLLOW`. Collect files before the next `run_code` or `reset`, since both clear previous native outputs. Reset retains the directory and clears its files; disposal deletes it only after worker termination. Failed termination retains storage for cleanup retry. Administrative disposal during another call refuses. Abrupt host exit can leave private temporary output directories; deployment retention cleanup must cover them.
+
+For CodeAct, pass the file-enabled backend to the router and select this profile:
+
+```python
+from maf_sandbox_codeact import CodeactRuntime
+from maf_sandbox_hyperlight import FILE_RUNTIME_INSTRUCTIONS
+
+runtime = CodeactRuntime(
+    FILE_RUNTIME_INSTRUCTIONS,
+    guest_work_dir="/output",
+    use_call_directory=False,
+)
+```
+
+Pass `runtime`, an `output_sink` and `outputs=CodeactOutputs.DECLARED` or `CodeactOutputs.MANIFEST` to `make_codeact_tools`. Programs use `guest_call_path + '/name'`. The prepared base replaces CodeAct's usual per-call subdirectory because the pinned guest cannot create directories. Whole-sandbox cleanup still applies after every call, including failed delivery and cancellation; `Cleanup.RESET` permits warm reuse.
 
 ## Network policy
 
@@ -113,6 +136,7 @@ HTTP originates in the worker on the host's network. The host must choose destin
 | `max_output_bytes` | 1 MiB | Combined UTF-8 stdout/stderr, at most 16 MiB |
 | `max_worker_memory_bytes` | Windows: 1.5 GiB; Linux: 3 GiB | Per-worker-tree Windows committed-memory or Linux cgroup-accounted memory ceiling, at most 16 GiB; Linux rounds down to a whole page and disables swap |
 | `linux_cgroup_root` | `None` | Linux uses `/sys/fs/cgroup/maf-sandbox-hyperlight` unless an absolute delegated path is supplied; unused on Windows |
+| `file_outputs` | `False` | Enable the private `/output` directory and `FILES_OUT` |
 
 The fixed guest heap and stack are 400 MiB and 200 MiB. `run_code(timeout=...)` and `reset(timeout=...)` include their queue time. `SandboxQueuedTimeout` means no operation was submitted and the current guest remains usable. A started operation exceeding its deadline raises `TimeoutError`; cancellation propagates after terminating the worker. Cleanup may add `cleanup_timeout` to the operation budget. Oversized native results raise `HyperlightOutputLimitExceeded`. Protocol errors and worker crashes raise `HyperlightWorkerError`. These failures retire the sandbox; a later acquire prepares a new worker and identity.
 

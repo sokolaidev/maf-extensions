@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from maf_sandbox import (
     DEFAULT_BACKEND_DECLARATIONS,
+    BackendCallAdmission,
     BackendDeclarations,
     DisposalFailure,
     EgressReporter,
@@ -154,6 +155,9 @@ class MonitoredSandboxBackend:
 
     def __init__(self, backend: SandboxBackend) -> None:
         self._backend = backend
+        # Exposing the optional hook itself requires exclusive router admission.
+        if isinstance(backend, BackendCallAdmission):
+            self.call_admission = backend.call_admission
         self._tracked: dict[tuple[SandboxKey, str], _TrackedSandbox] = {}
         self._pending: dict[tuple[SandboxKey, str], _TrackedSandbox] = {}
         self._state_lock = threading.Lock()

@@ -16,14 +16,23 @@ class CodeactRuntime:
     The host verifies Python statement execution, stdout/stderr results and no expression echo;
     ``instructions`` describes the available facilities. File channels require ``guest_work_dir``:
     a normalized absolute POSIX storage base other than ``/``, honored by the backend and writable
-    by Python's ``os.makedirs`` and ``open``. Programs receive ``guest_call_path`` beneath it;
-    the working directory is never changed. Without a base, file channels are refused.
+    by Python's ``open``. The default ``use_call_directory=True`` also requires ``os.makedirs``
+    and supplies a fresh directory beneath the base as ``guest_call_path``. The working directory
+    is never changed. Without a base, file channels are refused.
+
+    ``use_call_directory=False`` uses the prepared base directly without calling ``makedirs``.
+    It requires exclusive admission and at least snapshot reset, falling back to disposal.
     """
 
     instructions: str
     guest_work_dir: str | None = None
+    use_call_directory: bool = True
 
     def __post_init__(self) -> None:
+        if type(self.use_call_directory) is not bool:
+            raise ValueError("use_call_directory must be a boolean")
+        if not self.use_call_directory and self.guest_work_dir is None:
+            raise ValueError("using the storage base directly requires guest_work_dir")
         if not isinstance(cast(object, self.instructions), str) or not self.instructions.strip():
             raise ValueError("runtime instructions must describe the verified Python environment")
         guest_base = self.guest_work_dir
@@ -45,7 +54,10 @@ def runtime_contract(runtime: CodeactRuntime | None) -> str:
     """An opaque identity for the execution configuration, independent of file-channel wiring."""
     if runtime is None:
         return "codeact:exec:python3"
-    encoded = json.dumps((runtime.instructions, runtime.guest_work_dir), ensure_ascii=True).encode()
+    encoded = json.dumps(
+        (runtime.instructions, runtime.guest_work_dir, runtime.use_call_directory),
+        ensure_ascii=True,
+    ).encode()
     return "codeact:run_code:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -53,10 +65,15 @@ def runtime_program(runtime: CodeactRuntime, code: str, guest_call_path: str) ->
     """Prepare the declared file environment without changing Python source semantics."""
     if runtime.guest_work_dir is None:
         return code
-    guest_path = posixpath.join(runtime.guest_work_dir, guest_call_path)
-    # Compile the user's source separately so future imports and module docstrings still work.
-    return (
-        f"__import__('os').makedirs({guest_path!r}, exist_ok=True)\n"
-        f"globals()['guest_call_path'] = {guest_path!r}\n"
-        f"exec({code!r}, globals())\n"
+    guest_path = (
+        posixpath.join(runtime.guest_work_dir, guest_call_path)
+        if runtime.use_call_directory
+        else runtime.guest_work_dir
     )
+    # Compile the user's source separately so future imports and module docstrings still work.
+    prepare = (
+        f"__import__('os').makedirs({guest_path!r}, exist_ok=True)\n"
+        if runtime.use_call_directory
+        else ""
+    )
+    return prepare + f"globals()['guest_call_path'] = {guest_path!r}\nexec({code!r}, globals())\n"

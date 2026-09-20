@@ -1,6 +1,6 @@
 # Hyperlight research
 
-> Consolidated research record, 2026-08-16 through 2026-09-14. It combines the Hyperlight backend design, source exploration, filesystem prerequisite, Azure Container Apps feasibility audit and live ACA probe. The runtime backend is implemented for its validated family; optional file channels and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
+> Consolidated research record, 2026-08-16 through 2026-09-20. It combines the Hyperlight backend design, source exploration, filesystem prerequisite, Azure Container Apps feasibility audit and live ACA probe. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
 
 ## Decision and scope
 
@@ -81,6 +81,10 @@ The released Wasm `run_impl` calls `CapFs.prepare_for_run`, which clears output 
 The three file follow-ups are distinct: writable inputs and persistence ([#1218](https://github.com/sokolaidev/maf-extensions/issues/1218)), output collection/listing ([#1219](https://github.com/sokolaidev/maf-extensions/issues/1219)) and file cleanup ([#1220](https://github.com/sokolaidev/maf-extensions/issues/1220)). Copying inputs through a hidden prelude or using a private patched native wheel was rejected because each adds an unverified filesystem lifecycle or abandons an installable dependency set.
 
 ## Conformance and environment evidence
+
+The September 2026 output implementation uses one adapter-owned directory per sandbox and the pinned guest's flat `/output` preopen. Backend-required admission spans execution, host collection, delivery and cleanup across routers and event loops. CodeAct explicitly uses the prepared base without `makedirs`; nested outputs remain unavailable. No guest inspection code is used. Host checks reject traversal, symlinks, hardlinks, special entries and redirecting Windows reparse points, and snapshot reset clears files before reuse. This implements opt-in `FILES_OUT`; listing and writable inputs remain withheld.
+
+Local output validation on 2026-09-20 (UTC+02:00 calendar date) passed binary round-trip, size refusal and reset cleanup against the exact 0.7.0 trio on Windows WHP and WSL2 KVM. CodeAct's real WHP and WSL2 KVM output tests passed under both router selection modes, including per-file, aggregate-byte and file-count refusal. The exec-free Linux fixture passed the core flat-output and storage-base suites; listing and writable-input/deletion reach probes were explicitly skipped because those capabilities are withheld. Windows tested a real directory junction, and Linux tested symlinks and a FIFO. The flat positive control establishes no nested-file reach. These results add output-specific evidence to the earlier runtime measurements below.
 
 The pull-surface conformance probes do not exercise `EXEC`, so they can be reused against a runtime backend if their fixture plants files and symlinks directly on the host side of the output directory. The standard subject shells `ln` through `exec` and therefore cannot be used unchanged by Hyperlight. Six runtime probes are required: timeout enforcement, nonzero exit versus refusal, stdout/stderr separation, oversized source refusal without truncation, no shell reachability and queue-time refusal distinct from program timeout.
 

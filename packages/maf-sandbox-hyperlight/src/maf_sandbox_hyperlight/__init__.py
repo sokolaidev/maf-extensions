@@ -1,14 +1,20 @@
-"""Hyperlight's packaged Python guest as a runtime-only maf-sandbox backend."""
+"""Hyperlight's packaged Python guest with snapshot reset and optional output files."""
 
 import warnings as _warnings
 
-from ._backend import BACKEND_NAME, RUNTIME_INSTRUCTIONS, HyperlightSandboxBackend
+from ._backend import (
+    BACKEND_NAME,
+    FILE_RUNTIME_INSTRUCTIONS,
+    RUNTIME_INSTRUCTIONS,
+    HyperlightSandboxBackend,
+)
 from ._config import HyperlightSandboxConfig
 from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError
 
 __all__ = [
     "BACKEND_NAME",
     "RUNTIME_INSTRUCTIONS",
+    "FILE_RUNTIME_INSTRUCTIONS",
     "HyperlightSandboxBackend",
     "HyperlightSandboxConfig",
     "HyperlightOutputLimitExceeded",
