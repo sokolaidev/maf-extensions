@@ -59,6 +59,11 @@ async def containers(scope: str) -> set[str]:
     return set(stdout.decode().split())
 
 
+def _body(result) -> str:
+    """Read the tool's text between the completion line and standing guidance."""
+    return chr(10).join(str(item.text) for item in result[1:-1])
+
+
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
 @pytest.mark.parametrize(
     "case",
@@ -77,16 +82,6 @@ async def containers(scope: str) -> set[str]:
         "timeout",
     ],
 )
-def _body(result) -> str:
-    """What the call said about the configuration, between completion line and guidance.
-
-    The wrapper renders a fixed completion sentence first, an optional verdict, then this
-    tool's own text and the engine's, and the committed sentence last. These tests are about
-    what the text says, so they read the middle whole.
-    """
-    return chr(10).join(str(item.text) for item in result[1:-1])
-
-
 def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
     async def scenario():
         scope = "terraform-1246-" + uuid.uuid4().hex

@@ -113,13 +113,13 @@ def _build_tool(
 ) -> Callable[..., Awaitable[SandboxResult]]:
     operation = "Formatting" if formatting else "Validation"
 
-    def _incomplete(sentence: str) -> SandboxResult:
-        """A run that reached no verdict, and this module's own sentence saying why.
-
-        Readable by the model: every caller below passes a sentence written here or by the
-        session, naming an argument position rather than quoting what was at it.
-        """
-        return SandboxResult(completed=False, trusted_output=(sentence,))
+    def _incomplete(sentence: str, *, detail: str | None = None) -> SandboxResult:
+        """Keep fixed refusal text readable and session exception details untrusted."""
+        return SandboxResult(
+            completed=False,
+            trusted_output=(sentence,),
+            output=(detail,) if detail is not None else (),
+        )
 
     async def report(files: list[str], root_module: str) -> SandboxResult:
         key = session.key()
@@ -134,7 +134,9 @@ def _build_tool(
             )
         listing = await session.list_files(store)
         if isinstance(listing, str):
-            return _incomplete(listing)
+            return _incomplete(
+                f"{operation} INCOMPLETE: the file store could not be listed.", detail=listing
+            )
         try:
             root, selected = resolve_manifest(files, root_module, listing, engine)
         except ValueError as exc:
@@ -169,7 +171,9 @@ def _build_tool(
             staged.append((path, item.text))
         sandbox = await session.acquire(key)
         if isinstance(sandbox, str):
-            return _incomplete(sandbox)
+            return _incomplete(
+                f"{operation} INCOMPLETE: the sandbox could not be acquired.", detail=sandbox
+            )
         guest_call_path = session.guest_call_path()
         try:
             for path, content in staged:
