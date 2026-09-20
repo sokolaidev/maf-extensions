@@ -19,6 +19,13 @@ from maf_sandbox_hyperlight import (
 from maf_sandbox_tui import MonitoredSandboxBackend, MonitoredSandboxRouter
 
 
+def _said(answer) -> str:
+    """One call's text, whichever parts the result contract rendered it into."""
+    if isinstance(answer, str):
+        return answer
+    return chr(10).join(str(item.text) for item in answer)
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 @pytest.mark.parametrize("monitored", [False, True])
 def test_failed_output_delivery_cleans_before_reuse(monkeypatch, cancel, monitored):
@@ -89,12 +96,12 @@ def test_failed_output_delivery_cleans_before_reuse(monkeypatch, cancel, monitor
                 with pytest.raises(asyncio.CancelledError):
                     await task
             else:
-                assert "could not be saved" in await task
+                assert "could not be saved" in _said(await task)
             assert all(
                 not directory.exists() or not list(directory.iterdir()) for directory in directories
             )
             fail = False
-            assert "saved" in await function(code="write", outputs=["result.bin"])
+            assert "saved" in _said(await function(code="write", outputs=["result.bin"]))
         finally:
             await backend.aclose()
         assert all(not directory.exists() for directory in directories)
@@ -145,7 +152,7 @@ def test_native_panics_are_sanitized_for_codeact(
     function = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
     try:
         result = asyncio.run(function(code="print('hello')"))
-        assert result == "Error: could not run the program in the sandbox"
+        assert "Error: could not run the program in the sandbox" in _said(result)
         assert workers and all(not worker.alive for worker in workers)
     finally:
         asyncio.run(backend.aclose())
@@ -202,7 +209,7 @@ def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitor
                 code="with open(guest_call_path + '/result.bin', 'wb') as f:\n    f.write(bytes(range(256)))",
                 outputs=["result.bin"],
             )
-            assert "saved" in result, result
+            assert "saved" in _said(result), result
             assert len(landed) == 1 and landed[0].content == bytes(range(256))
             result = await function(code="print('next')", outputs=["result.bin"])
             assert len(landed) == 1, result

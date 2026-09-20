@@ -336,8 +336,14 @@ def _smoke_maf_sandbox_codeact() -> str:
         )
     )
 
-    out = asyncio.run(body(code="print(3 + 4)"))
-    if out != "stdout:\n7":
+    answer = asyncio.run(body(code="print(3 + 4)"))
+    out = _rendered(answer)
+    # Under the result contract the parts are separate items: a completion line the model
+    # can read, a verdict from the tool's declared set, then the program's own text.
+    integrities = _integrities(answer)
+    if integrities[:2] != [None, None] or integrities[-1] != "untrusted":
+        raise SystemExit(f"FAIL: the parts are not unlabelled then untrusted: {integrities}")
+    if "Result: ok" not in out or not out.endswith("stdout:\n7"):
         raise SystemExit(f"FAIL: the tool rendered {out!r}")
     # Each call gets a directory of its own under the work dir, so the path is not fixed.
     landed_program = list(written.items())

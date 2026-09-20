@@ -183,7 +183,15 @@ def _function(tool):
 
 
 def _run(tool, code="print(2 + 2)", **kwargs):
-    return asyncio.run(_function(tool)(code=code, **kwargs))
+    """One call's text, whichever parts the wrapper rendered it into.
+
+    These tests are about what the run said, not about which part carries which label, so
+    they read the items joined. `test_codeact_workload.py` owns the split itself.
+    """
+    answer = asyncio.run(_function(tool)(code=code, **kwargs))
+    if isinstance(answer, str):
+        return answer
+    return chr(10).join(str(item.text) for item in answer)
 
 
 @pytest.mark.parametrize("outputs", [CodeactOutputs.DECLARED, CodeactOutputs.MANIFEST])
@@ -503,10 +511,10 @@ def test_withholding_collects_after_guest_failure_without_returning_streams():
         "with open(guest_call_path + '/answer.txt', 'w') as f:\n    f.write('secret')\nprint('secret')\nraise ValueError('secret')",
         outputs=["answer.txt"],
     )
-    assert not isinstance(result, str)
-    assert "secret" not in str(result) and "must not be rendered" not in str(result)
-    assert "non-zero" in result[0].text
-    assert "declared output" in result[-1].text
+    assert "secret" not in result and "must not be rendered" not in result
+    assert "Result: failed" in result
+    assert "non-zero" in result
+    assert "declared output" in result
     assert landed[0].content == b"secret"
     # Withholding commits standing guidance, so the tool declares trusted and the wrapper
     # labels every item; its own claim about the derived half moves to this key.
@@ -739,7 +747,11 @@ def test_runtime_calls_wait_for_exclusive_admission():
         assert len(backend.specs) == acquires and not second.done()
         release.set()
         answers = await asyncio.gather(first, second)
-        assert "first" in answers[0] and "second" in answers[1]
+        rendered = [
+            answer if isinstance(answer, str) else chr(10).join(str(i.text) for i in answer)
+            for answer in answers
+        ]
+        assert "first" in rendered[0] and "second" in rendered[1]
         assert len(sandbox.programs) == 2
 
     asyncio.run(scenario())

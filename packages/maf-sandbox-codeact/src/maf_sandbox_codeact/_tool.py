@@ -33,7 +33,6 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
-from agent_framework import Content
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
     SHIM_MODULE,
@@ -66,6 +65,7 @@ from maf_sandbox import (
     validate_artifact_name,
 )
 from maf_sandbox.maf import (
+    SandboxResult,
     SandboxToolSession,
     hidden_content_candidates,
     positions_holding_hidden_content,
@@ -145,6 +145,12 @@ _NO_OUTPUT = (
 #: it names the route without promising a reader, which is the host's wiring rather than this
 #: kind's to claim. The label holds only while nothing a call produced reaches it and it stays
 #: on every return path, refusals included.
+#: Every answer `execute_code` may reach about the program it ran.
+#:
+#: Fixed here so the whole set is written before any call runs. The exit status is eight bits
+#: the program chooses, and this is the one bit of it a model can act on without the text.
+CODEACT_VERDICTS = ("ok", "failed")
+
 _WITHHELD_ROUTE = (
     "What the program printed is not read back as text. To surface a value, write it into a "
     "declared output rather than printing it."
@@ -558,6 +564,8 @@ def make_codeact_tools(
         source_integrity=SourceIntegrity.UNTRUSTED,
         # The wrapper validates and stamps this suffix so the body cannot choose which
         # returned items become trusted.
+        result_contract=True,
+        verdicts=CODEACT_VERDICTS,
         standing_guidance=_standing_guidance(
             withhold=withhold_guest_output,
             lands_per_call=output_sink is not None and output_sink.per_call,
@@ -1050,7 +1058,7 @@ def _execute_code_tool(
     *,
     withhold: bool,
     runtime: CodeactRuntime | None = None,
-) -> Callable[..., Awaitable[str | list[Content]]]:
+) -> Callable[..., Awaitable[SandboxResult]]:
     """Build the ``execute_code`` body for one attached tool.
 
     Four signatures over one implementation, because MAF derives the tool's schema from the
@@ -1058,9 +1066,7 @@ def _execute_code_tool(
     """
     lands_per_call = session.output_sink is not None and session.output_sink.per_call
 
-    async def run(
-        code: str, files: list[str] | None, declared: list[str] | None
-    ) -> str | list[Content]:
+    async def run(code: str, files: list[str] | None, declared: list[str] | None) -> SandboxResult:
         answer = await _execute(
             session,
             store,
@@ -1073,34 +1079,30 @@ def _execute_code_tool(
             withhold=withhold,
             runtime=runtime,
         )
-        if not withhold:
-            return answer
-        # At the funnel rather than at each `return` inside `_execute`: the trusted label is
-        # honest only where the sentence is on every path, refusals included.
-        # Rendered from the commitment itself rather than composed again here: the two
-        # would otherwise be two spellings of one sentence, and only a test would notice them
-        # parting. `_WITHHELD_ROUTE` carries no placeholder, so formatting it is a no-op.
-        folder = session.guest_call_path().rsplit("/", 1)[-1] if lands_per_call else ""
-        route = _standing_guidance(withhold=True, lands_per_call=lands_per_call)[0].format(
-            call_id=folder
+        # A run that never started has no verdict: the model must not read "failed" for a
+        # sandbox that was never given the program.
+        return SandboxResult(
+            completed=answer.ran,
+            verdict=("ok" if answer.exited_clean else "failed") if answer.ran else None,
+            # Where the run stopped early the sentence is this module's own, naming a position
+            # rather than quoting what was at it, so the model may read it. Where it ran, the
+            # text is the program's and the guest harness's.
+            trusted_output=() if answer.ran else (answer.text,),
+            output=(answer.text,) if answer.ran else (),
         )
-        return [
-            Content.from_text(answer),
-            Content.from_text(route),
-        ]
 
     async def with_files_and_outputs(
         code: str, files: list[str] | None = None, outputs: list[str] | None = None
-    ) -> str | list[Content]:
+    ) -> SandboxResult:
         return await run(code, files, outputs)
 
-    async def with_files(code: str, files: list[str] | None = None) -> str | list[Content]:
+    async def with_files(code: str, files: list[str] | None = None) -> SandboxResult:
         return await run(code, files, None)
 
-    async def with_outputs(code: str, outputs: list[str] | None = None) -> str | list[Content]:
+    async def with_outputs(code: str, outputs: list[str] | None = None) -> SandboxResult:
         return await run(code, None, outputs)
 
-    async def plain(code: str) -> str | list[Content]:
+    async def plain(code: str) -> SandboxResult:
         return await run(code, None, None)
 
     takes_files = store is not None
@@ -1131,6 +1133,31 @@ def _execute_code_tool(
     return body
 
 
+@dataclass(frozen=True, slots=True)
+class _RunOutcome:
+    """One call's text, and what it says about the run as a whole.
+
+    ``ran`` is whether the program executed and left an exit status behind: false for every
+    path that stopped before it, refusals and transport failures alike.  ``exited_clean`` is
+    that status as one bit and is meaningless unless ``ran``.  Both are values this module
+    writes, never the program's.
+    """
+
+    text: str
+    ran: bool
+    exited_clean: bool
+
+
+def _stopped(sentence: str) -> _RunOutcome:
+    """A run that never reached an exit status, and this module's own sentence saying why."""
+    return _RunOutcome(sentence, False, False)
+
+
+def _ran(text: str, result: Any) -> _RunOutcome:
+    """A run that finished, carrying its exit status as one bit."""
+    return _RunOutcome(text, True, result.exit_code == 0)
+
+
 async def _execute(
     session: SandboxToolSession,
     store: AgentFileStore | None,
@@ -1143,7 +1170,7 @@ async def _execute(
     *,
     withhold: bool,
     runtime: CodeactRuntime | None = None,
-) -> str:
+) -> _RunOutcome:
     """One ``execute_code`` call: share, run, and collect."""
     # Keep one view of hidden content through the run, even if the host clears the store
     # before the manifest is checked.
@@ -1151,7 +1178,7 @@ async def _execute(
     # Scope and thread come from the host's request context, never from model input.
     key = session.key()
     if isinstance(key, str):
-        return key
+        return _stopped(key)
 
     # The names this run spends on something other than the model's own files, so neither an
     # input nor an output may claim one. The manifest is reserved only where it means
@@ -1201,7 +1228,7 @@ async def _execute(
             candidates=rewritten,
         )
         if isinstance(checked, str):
-            return checked
+            return _stopped(checked)
         names = checked
 
     # Cap before acquiring anything, and cap *as we go*: a bound that answers only once
@@ -1218,7 +1245,7 @@ async def _execute(
     if runtime is not None:
         refusal = _InboundTally(limits).add("", code, named="the program", program=True)
         if refusal is not None:
-            return refusal
+            return _stopped(refusal)
         program = runtime_program(runtime, code, call_directory)
     over_cap = _over_file_count(
         inbound,
@@ -1234,22 +1261,22 @@ async def _execute(
     if over_cap is None and host_tool_call is not None:
         over_cap = tally.add(SHIM_MODULE, host_tool_call.shim)
     if over_cap is not None:
-        return over_cap
+        return _stopped(over_cap)
     if store is not None:
         resolution = await _resolve_listed_files(
             session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
         if isinstance(resolution, str):
-            return resolution
+            return _stopped(resolution)
         resolved, resolved_hidden = resolution
         read = await _read_listed_files(session, store, resolved, tally, rewritten=resolved_hidden)
         if isinstance(read, str):
-            return read
+            return _stopped(read)
         shared = read
 
     sandbox = await session.acquire(key)
     if isinstance(sandbox, str):
-        return sandbox
+        return _stopped(sandbox)
 
     # The session owns this path, and `sandboxed_tool` cleans the sandbox when the call returns.
     # Built before anything is written, because it decides where everything goes. A call that
@@ -1269,7 +1296,7 @@ async def _execute(
             sandbox, name, named, name, content, working_directory=shared_dir
         )
         if refusal is not None:
-            return refusal
+            return _stopped(refusal)
 
     program_path = layout.program if layout is not None else f"{call_directory}/{_PROGRAM_FILENAME}"
     try:
@@ -1285,7 +1312,7 @@ async def _execute(
         logger.warning(
             "execute_code: could not write the program into the sandbox: %s", error_detail(exc)
         )
-        return "Error: could not write the program into the sandbox"
+        return _stopped("Error: could not write the program into the sandbox")
 
     try:
         # The two are built together above and are never one without the other; both are named
@@ -1313,7 +1340,7 @@ async def _execute(
             )
     except SandboxQueuedTimeout:
         logger.warning("execute_code: the deadline expired before the queued program started")
-        return (
+        return _stopped(
             "Error: the deadline expired while queued; the program never started. Retry unchanged."
         )
     except SandboxProgramTimeout as expired:
@@ -1346,23 +1373,23 @@ async def _execute(
             # The host's own words for why it read no output, surfaced whole like the note on
             # the success path: it is the half of the message the guest did not write.
             reason = f" {expired.output_reason}." if expired.output_reason else ""
-            return f"Error: {what_happened}.{reason}"
-        return f"Error: {expired}"
+            return _stopped(f"Error: {what_happened}.{reason}")
+        return _stopped(f"Error: {expired}")
     except TimeoutError as unfinished:
         if host_tool_call is None:
             # One `exec`, one bound: a timeout here is that bound and nothing else, so unlike
             # the branch above this one may name it.
             logger.warning("execute_code: the program timed out after %ss", timeout)
-            return f"Error: the program timed out after {timeout}s"
+            return _stopped(f"Error: the program timed out after {timeout}s")
         # A backend bounding one of its own control-plane calls, which the transport re-raises
         # untranslated. Blaming the program would be a guess about code the model is about to
         # rewrite — and the wrong one, since the run may have had most of its time left.
         logger.warning("execute_code: a transport call timed out: %s", error_detail(unfinished))
-        return "Error: could not run the program in the sandbox"
+        return _stopped("Error: could not run the program in the sandbox")
     except Exception as exc:  # noqa: BLE001
         # Provider/transport detail can carry account ids — must not reach the transcript.
         logger.warning("execute_code: execution failed: %s", error_detail(exc))
-        return "Error: could not run the program in the sandbox"
+        return _stopped("Error: could not run the program in the sandbox")
 
     logger.info("execute_code: ran exit_code=%d shared=%d", result.exit_code, len(shared))
     report = _format_withheld(result) if withhold else _format_result(result)
@@ -1374,7 +1401,7 @@ async def _execute(
         # report stacked on a traceback buries the thing the model has to fix. Withheld there is
         # no traceback to bury, and the declared output is the only channel left — including for
         # a program that caught its own error and wrote the diagnosis into one.
-        return report
+        return _ran(report, result)
     collected = await _collect(
         session,
         sandbox,
@@ -1387,7 +1414,7 @@ async def _execute(
         withhold=withhold,
         candidates=rewritten,
     )
-    return f"{report}\n\n{collected}" if collected else report
+    return _ran(f"{report}\n\n{collected}" if collected else report, result)
 
 
 # --- Files in ------------------------------------------------------------------------------
