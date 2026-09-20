@@ -14,7 +14,7 @@ This guide builds a JSON syntax checker with one file input and a split result. 
 | Guest software | An image with `python3` installed | Kind documents it; host selects the image |
 | Scope and thread | Read from the current request | Host's `CallerContext` |
 | Guest path and cleanup | Use `session.guest_call_path()` and `session.acquire()` | Core |
-| Derived result integrity | Explicitly `untrusted`, including a one-word verdict | Kind's source declaration |
+| Derived result integrity | Explicitly `untrusted`, including a one-word verdict — which has no slot of its own yet | Kind's source declaration |
 | Standing guidance | One unconditional sentence that says how to interpret a hidden result | Kind commits the text; core stamps it |
 | Result confidentiality | The host's classification of this tool's results | Host |
 
@@ -149,7 +149,9 @@ Guidance must be public, true on every return path, and independent of input in 
 
 If no guidance is needed, omit `standing_guidance` and return a string or a nonempty list of unlabelled items. For a route that names the call, a committed sentence may contain `{call_id}`; render the same value in the body's trailing text using the async call's id from `session.guest_call_path().rsplit("/", 1)[-1]`. No other substitution is allowed. Keep guest output, argument values, and file names out of that sentence.
 
-Do not declare the JSON checker trusted: even its Boolean verdict depends on file content. Leaving `source_integrity` unset delegates to the framework's input-label join or host default, which cannot establish an out-of-band file read. Explicit `untrusted` states the kind's actual limit. Trusted file reads never promote it. A kind committing standing guidance must declare one either way: the sentence stays readable because every other item is labelled beneath the tool's declaration, and an undeclared tool has none to sit beneath.
+Do not declare the JSON checker trusted: its diagnostics are the parser's own bytes over content read out of the store, and neither is established. Leaving `source_integrity` unset delegates to tier 3 or the host default, which cannot establish an out-of-band file read. Explicit `untrusted` states the kind's actual limit. Trusted file reads never promote it. A kind committing standing guidance must declare one either way: the sentence stays readable because every other item is labelled beneath the tool's declaration, and an undeclared tool has none to sit beneath.
+
+**The Boolean verdict is the interesting case, and it stays untrusted for a mechanical reason rather than a principled one.** A verdict drawn from a set you fixed at attach is content you wrote, and [*Selection is not authorship*](../information-flow.md#selection-is-not-authorship) says it may be trusted. What is missing is somewhere to put it: a declaration covers the whole tool, `agent-framework-core` 1.19 lets a per-item label only restrict, and the one arrangement that keeps an item above the derived half is gated on committing standing guidance. So today the verdict travels at the tool's `untrusted` declaration like everything else. [The result contract](../information-flow.md#the-result-contract) is the slot it is waiting for; until that ships, do not try to raise a verdict by hand.
 
 ## Let the host supply provenance and confidentiality
 
