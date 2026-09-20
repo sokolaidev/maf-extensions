@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 715" width="1180" height="715" role="img" aria-labelledby="deepagents-boundary-title deepagents-boundary-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="deepagents-boundary-title">Deep Agents uses the sandbox&#x27;s command and file interface</title>
+  <desc id="deepagents-boundary-desc">The model calls Deep Agents shell and file tools. MafSandbox adapts those operations to SandboxRouter and a backend, which run commands and file operations in a guest. Text and file bytes return through Deep Agents result types. This adapter does not add MAF ContentLabels or hidden references and does not run packaged kinds or their host-tool and declared-output channels. Other source and destination tools, their declarations and result-label policy belong to the host&#x27;s agent integration.</desc>
+  <defs>
+    <marker id="deepagents-boundary-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="715" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Deep Agents uses the sandbox&#x27;s command and file interface</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The adapter handles execution and transfer. The host owns information-flow policy for the agent.</text>
+  <rect x="32" y="132" width="230" height="122" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="52" y="165" font-size="21" font-weight="600" fill="#243040">Model</text>
+  <text x="52" y="196" font-size="16" font-weight="400" fill="#526072">Chooses shell commands</text>
+  <text x="52" y="222" font-size="16" font-weight="400" fill="#526072">and file operations</text>
+  <rect x="353" y="132" width="330" height="122" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="373" y="165" font-size="21" font-weight="600" fill="#243040">Deep Agents tools</text>
+  <text x="373" y="196" font-size="16" font-weight="400" fill="#526072">Shell and file tools</text>
+  <text x="373" y="222" font-size="16" font-weight="400" fill="#526072">Other tools belong to the host</text>
+  <rect x="774" y="132" width="374" height="122" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="794" y="165" font-size="21" font-weight="600" fill="#243040">MafSandbox</text>
+  <text x="794" y="196" font-size="16" font-weight="400" fill="#526072">Bounded commands</text>
+  <text x="794" y="222" font-size="16" font-weight="400" fill="#526072">Capped uploads and downloads</text>
+  <path d="M 262 170 L 353 170" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <text x="291" y="156" font-size="16" font-weight="400" fill="#526072">Call</text>
+  <path d="M 353 225 L 262 225" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <text x="285" y="214" font-size="16" font-weight="400" fill="#526072">Result</text>
+  <path d="M 683 170 L 774 170" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <path d="M 774 225 L 683 225" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <rect x="774" y="352" width="374" height="144" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="794" y="385" font-size="21" font-weight="600" fill="#243040">Router + backend</text>
+  <text x="794" y="416" font-size="16" font-weight="400" fill="#526072">Required capabilities</text>
+  <text x="794" y="442" font-size="16" font-weight="400" fill="#526072">Host isolation floor</text>
+  <text x="794" y="468" font-size="16" font-weight="400" fill="#526072">CLOSED or ALLOWLIST network</text>
+  <rect x="32" y="352" width="300" height="144" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="385" font-size="21" font-weight="600" fill="#243040">Guest</text>
+  <text x="52" y="416" font-size="16" font-weight="400" fill="#526072">Model-supplied shell</text>
+  <text x="52" y="442" font-size="16" font-weight="400" fill="#526072">Guest filesystem</text>
+  <text x="52" y="468" font-size="16" font-weight="400" fill="#526072">Text and file bytes</text>
+  <path d="M 1020 254 L 1020 352" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <text x="930" y="307" font-size="16" font-weight="400" fill="#526072">Operate</text>
+  <path d="M 900 352 L 900 254" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <path d="M 774 390 L 332 390" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <text x="449" y="377" font-size="16" font-weight="400" fill="#526072">Commands and transfers</text>
+  <path d="M 332 463 L 774 463" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-boundary-arrow)"/>
+  <text x="447" y="450" font-size="16" font-weight="400" fill="#526072">Raw output and file bytes</text>
+  <rect x="32" y="555" width="1116" height="125" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="52" y="588" font-size="21" font-weight="600" fill="#243040">Labels belong to the host integration</text>
+  <text x="52" y="619" font-size="17" font-weight="400" fill="#526072">This adapter adds no MAF ContentLabels or hidden references to source results.</text>
+  <text x="52" y="645" font-size="17" font-weight="400" fill="#526072">The host sets the policy for those results, the model and later calls to destination tools.</text>
+</svg>

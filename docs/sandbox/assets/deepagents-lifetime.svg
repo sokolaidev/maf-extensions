@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 745" width="1180" height="745" role="img" aria-labelledby="deepagents-lifetime-title deepagents-lifetime-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="deepagents-lifetime-title">Keep completed work warm; dispose unfinished work</title>
+  <desc id="deepagents-lifetime-desc">An operation enters shared router admission and acquires or reuses the conversation sandbox. Success releases admission and leaves the sandbox warm. Timeout, backend overflow, cancellation or a missing command result queues disposal of the acquired instance. Existing admitted calls finish before adapter-queued deletion; later calls wait for cleanup. Release and cleanup use a process-owned SyncRunner loop, so unfinished cleanup need not extend the caller&#x27;s response wait. A backend can invalidate a sandbox independently on failure. Explicit close uses exclusive admission and the exact acquired instance ID; conversation purge is the host recovery path.</desc>
+  <defs>
+    <marker id="deepagents-lifetime-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
+  </defs>
+  <rect width="1180" height="745" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">Keep completed work warm; dispose unfinished work</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">Router admission coordinates adapter operations that share a sandbox.</text>
+  <rect x="32" y="129" width="280" height="123" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="162" font-size="21" font-weight="600" fill="#243040">Admit operation</text>
+  <text x="52" y="193" font-size="16" font-weight="400" fill="#526072">Shared router admission</text>
+  <text x="52" y="219" font-size="16" font-weight="400" fill="#526072">Acquire or reuse instance</text>
+  <rect x="409" y="129" width="300" height="123" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="429" y="162" font-size="21" font-weight="600" fill="#243040">Command / transfer</text>
+  <text x="429" y="193" font-size="16" font-weight="400" fill="#526072">Deadline and byte limits</text>
+  <text x="429" y="219" font-size="16" font-weight="400" fill="#526072">Keep the acquired instance ID</text>
+  <rect x="815" y="129" width="333" height="123" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="835" y="162" font-size="21" font-weight="600" fill="#243040">Completed</text>
+  <text x="835" y="193" font-size="17" font-weight="400" fill="#526072">Release admission</text>
+  <text x="835" y="219" font-size="17" font-weight="400" fill="#526072">Leave sandbox warm</text>
+  <path d="M 312 190 L 409 190" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-lifetime-arrow)"/>
+  <path d="M 709 190 L 815 190" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-lifetime-arrow)"/>
+  <text x="724" y="176" font-size="16" font-weight="400" fill="#526072">Success</text>
+  <rect x="409" y="340" width="300" height="140" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="429" y="373" font-size="21" font-weight="600" fill="#243040">Unfinished work</text>
+  <text x="429" y="404" font-size="16" font-weight="400" fill="#526072">Queue instance disposal</text>
+  <text x="429" y="430" font-size="16" font-weight="400" fill="#526072">Response need not wait</text>
+  <text x="429" y="456" font-size="16" font-weight="400" fill="#526072">for background cleanup</text>
+  <path d="M 559 252 L 559 340" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-lifetime-arrow)"/>
+  <rect x="32" y="538" width="344" height="104" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="571" font-size="21" font-weight="600" fill="#243040">Drain admitted calls</text>
+  <text x="52" y="602" font-size="17" font-weight="400" fill="#526072">Adapter-queued delete waits</text>
+  <rect x="424" y="538" width="330" height="104" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="444" y="571" font-size="21" font-weight="600" fill="#243040">Dispose exact instance</text>
+  <text x="444" y="602" font-size="16" font-weight="400" fill="#526072">Release + cleanup: SyncRunner</text>
+  <rect x="802" y="538" width="346" height="104" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="822" y="571" font-size="21" font-weight="600" fill="#243040">Later calls wait</text>
+  <text x="822" y="602" font-size="16" font-weight="400" fill="#526072">Confirmed cleanup → start cold</text>
+  <path d="M 409 410 L 204 410 L 204 538" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-lifetime-arrow)"/>
+  <path d="M 376 590 L 424 590" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-lifetime-arrow)"/>
+  <path d="M 754 590 L 802 590" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#deepagents-lifetime-arrow)"/>
+  <text x="32" y="695" font-size="17" font-weight="400" fill="#526072">aclose(): exclusive admission + exact ID. Host recovery: router.dispose_scope(scope, thread_id).</text>
+  <text x="32" y="725" font-size="16" font-weight="400" fill="#526072">A backend may invalidate the sandbox earlier on failure; its own timeout and cancellation rules still apply.</text>
+</svg>
