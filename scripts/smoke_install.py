@@ -226,16 +226,20 @@ def _smoke_maf_sandbox_bicep() -> str:
     out = _rendered(answer)
     if "BCP035" not in out:
         raise SystemExit(f"FAIL: diagnostics missing from tool output: {out!r}")
-    # The split a FIDES host reads: the standing sentence is the one trusted item and every
-    # derived item says untrusted for itself, so hiding leaves the sentence readable.
+    # The split a FIDES host reads, under the result contract: the parts the model may act
+    # on carry no label of their own and inherit the tool's raised declaration, the compiler's
+    # own text says untrusted for itself, and the standing sentence closes it as trusted. So
+    # hiding leaves the completion line, the verdict and the sentence readable.
     integrities = _integrities(answer)
     if (
-        len(integrities) < 2
+        len(integrities) < 3
+        or integrities[0] is not None
         or integrities[-1] != "trusted"
-        or set(integrities[:-1]) != {"untrusted"}
+        or "untrusted" not in integrities
+        or set(integrities[1:-1]) - {None, "untrusted"}
     ):
         raise SystemExit(
-            f"FAIL: the result is not untrusted items closed by one trusted sentence: "
+            f"FAIL: the result is not unlabelled parts, untrusted output, one trusted sentence: "
             f"{integrities!r}"
         )
     if not any(path.endswith("/main.bicep") for path in written):
