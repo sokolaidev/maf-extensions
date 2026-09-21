@@ -735,18 +735,15 @@ def test_cli_deadline_kills_worker_and_publishes_nothing(tmp_path, monkeypatch, 
     source = tmp_path / "manifest.json"
     source.write_text(json.dumps(manifest()))
     worker = tmp_path / "worker.py"
-    worker.write_text(
-        "import pathlib, time\n"
-        "def _worker(output, progress):\n"
-        "    pathlib.Path(progress).write_text('artifact 0\\n', newline='\\n')\n"
-        "    time.sleep(30)\n"
-    )
+    worker.write_text("import time\ndef _worker(output, progress):\n    time.sleep(30)\n")
     timeouts = []
     run = subprocess.run
 
-    def run_worker(*args, **kwargs):
+    def run_worker(command, *args, **kwargs):
+        # The worker's note, written before the deadline starts, so a slow start cannot lose it.
+        Path(command[-1]).write_text("artifact 0\n", encoding="ascii", newline="\n")
         try:
-            return run(*args, **kwargs)
+            return run(command, *args, **kwargs)
         except subprocess.TimeoutExpired:
             timeouts.append(kwargs["timeout"])
             raise

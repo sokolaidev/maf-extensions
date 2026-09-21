@@ -19,14 +19,23 @@ import terraform_manifest as generator  # noqa: E402
 AZAPI_REVISION = "b" * 40
 NETWORK_REVISION = "c" * 40
 INTERFACES_REVISION = "d" * 40
+ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 def archive_bytes(files: dict[str, str]) -> bytes:
+    """Build a zip that is the same bytes on every call, as a registry download is."""
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as bundle:
         for name, content in files.items():
-            bundle.writestr(name, content)
+            member = zipfile.ZipInfo(name, date_time=ARCHIVE_TIME)
+            member.external_attr = 0o600 << 16
+            bundle.writestr(member, content)
     return output.getvalue()
+
+
+def test_archive_bytes_ignores_the_clock():
+    with zipfile.ZipFile(io.BytesIO(archive_bytes({"x/main.tf": "terraform {}\n"}))) as bundle:
+        assert [member.date_time for member in bundle.infolist()] == [ARCHIVE_TIME]
 
 
 def sums(filename: str, digest: str) -> bytes:
