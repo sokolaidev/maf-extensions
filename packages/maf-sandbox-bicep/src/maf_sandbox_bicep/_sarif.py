@@ -39,6 +39,7 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
 
     Requires version 2.1.0, at least one analysis with a named tool driver, and explicit
     results arrays. Failed invocations and error notifications leave analysis incomplete.
+    Driver defaults and invocation overrides are checked even when results are empty.
     Severity follows explicit results, invocation overrides, then driver rule defaults.
     Returns ``None`` for an incomplete or malformed report, never zero diagnostics.
     """
@@ -85,20 +86,66 @@ def _index(value: object, size: int) -> int:
     return value
 
 
-def _invocations(run: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    invocations = [_object(entry) for entry in _array(run.get("invocations", []))]
-    for invocation in invocations:
+def _configuration_level(value: object) -> str | None:
+    configuration = _object(value)
+    return _level(configuration["level"]) if "level" in configuration else None
+
+
+def _descriptors(driver: Mapping[str, Any], field: str) -> list[Mapping[str, Any]]:
+    descriptors: list[Mapping[str, Any]] = []
+    ids: set[str] = set()
+    for entry in _array(driver.get(field, [])):
+        descriptor = _object(entry)
+        descriptor_id = descriptor.get("id")
+        if not isinstance(descriptor_id, str) or not descriptor_id or descriptor_id in ids:
+            raise ValueError("expected unique nonempty driver descriptor IDs")
+        _configuration_level(descriptor.get("defaultConfiguration", {}))
+        ids.add(descriptor_id)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def _overrides(
+    invocation: Mapping[str, Any], field: str, descriptors: list[Mapping[str, Any]]
+) -> dict[str, str]:
+    levels: dict[str, str] = {}
+    overridden: set[str] = set()
+    for entry in _array(invocation.get(field, [])):
+        override = _object(entry)
+        _, target = _rule({"rule": _object(override.get("descriptor"))}, descriptors)
+        if not target or target["id"] in overridden:
+            raise ValueError("expected one override per driver descriptor")
+        overridden.add(target["id"])
+        level = _configuration_level(override.get("configuration"))
+        if level is not None:
+            levels[target["id"]] = level
+    return levels
+
+
+def _invocation_overrides(
+    run: Mapping[str, Any],
+    rules: list[Mapping[str, Any]],
+    notifications: list[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    overrides: list[dict[str, str]] = []
+    for entry in _array(run.get("invocations", [])):
+        invocation = _object(entry)
         if invocation.get("executionSuccessful") is not True:
             raise ValueError("analysis did not succeed")
+        overrides.append(_overrides(invocation, "ruleConfigurationOverrides", rules))
+        notification_levels = _overrides(
+            invocation, "notificationConfigurationOverrides", notifications
+        )
         # SARIF 2.1.0 Appendix I: either notification channel can report incomplete analysis.
         for field in ("toolExecutionNotifications", "toolConfigurationNotifications"):
-            for entry in _array(invocation.get(field, [])):
-                notification = _object(entry)
+            for notification_entry in _array(invocation.get(field, [])):
+                notification = _object(notification_entry)
                 if not isinstance(_object(notification.get("message")).get("text"), str):
                     raise TypeError("expected notification message text")
-                if _level(notification.get("level", "warning")) == "error":
+                _, descriptor = _rule({"rule": notification.get("descriptor", {})}, notifications)
+                if _effective_level(notification, descriptor, notification_levels) == "error":
                     raise ValueError("analysis reported an error notification")
-    return invocations
+    return overrides
 
 
 def _rule(
@@ -130,29 +177,24 @@ def _rule(
     return rule_id, {}
 
 
-def _result_level(
-    result: Mapping[str, Any],
-    rule: Mapping[str, Any],
-    rules: list[Mapping[str, Any]],
-    invocations: list[Mapping[str, Any]],
+def _effective_level(
+    item: Mapping[str, Any], descriptor: Mapping[str, Any], overrides: Mapping[str, str]
 ) -> str:
-    if "level" in result:
-        return _level(result["level"])
-    level = _object(rule.get("defaultConfiguration", {})).get("level", "warning")
+    if "level" in item:
+        return _level(item["level"])
+    return (
+        overrides.get(descriptor.get("id", ""))
+        or _configuration_level(descriptor.get("defaultConfiguration", {}))
+        or "warning"
+    )
+
+
+def _result_level(
+    result: Mapping[str, Any], rule: Mapping[str, Any], invocations: list[dict[str, str]]
+) -> str:
     provenance = _object(result.get("provenance", {}))
     index = _index(provenance.get("invocationIndex", -1), len(invocations))
-    if index >= 0:
-        overridden: set[str] = set()
-        for entry in _array(invocations[index].get("ruleConfigurationOverrides", [])):
-            override = _object(entry)
-            _, target = _rule({"rule": _object(override.get("descriptor"))}, rules)
-            if not target or target["id"] in overridden:
-                raise ValueError("expected one override per driver rule")
-            overridden.add(target["id"])
-            configuration = _object(override.get("configuration"))
-            if target is rule:
-                level = configuration.get("level", level)
-    return _level(level)
+    return _effective_level(result, rule, invocations[index] if index >= 0 else {})
 
 
 def _diagnostics(data: Any) -> list[dict[str, Any]]:
@@ -169,16 +211,9 @@ def _diagnostics(data: Any) -> list[dict[str, Any]]:
         driver = _object(_object(run.get("tool")).get("driver"))
         if not isinstance(driver.get("name"), str) or not driver["name"]:
             raise ValueError("expected a named tool driver")
-        invocations = _invocations(run)
-        rules: list[Mapping[str, Any]] = []
-        rule_ids: set[str] = set()
-        for rule_entry in _array(driver.get("rules", [])):
-            rule = _object(rule_entry)
-            rule_id = rule.get("id")
-            if not isinstance(rule_id, str) or not rule_id or rule_id in rule_ids:
-                raise ValueError("expected unique nonempty driver rule IDs")
-            rule_ids.add(rule_id)
-            rules.append(rule)
+        rules = _descriptors(driver, "rules")
+        notifications = _descriptors(driver, "notifications")
+        invocations = _invocation_overrides(run, rules, notifications)
 
         # SARIF 2.1.0 section 3.14.23: missing/null results mean analysis did not begin.
         for result_entry in _array(run.get("results")):
@@ -187,7 +222,7 @@ def _diagnostics(data: Any) -> list[dict[str, Any]]:
             message = _object(result.get("message")).get("text")
             if not isinstance(message, str):
                 raise TypeError("expected diagnostic message text")
-            level = _result_level(result, rule, rules, invocations)
+            level = _result_level(result, rule, invocations)
             locs: list[dict[str, Any]] = []
             for loc_entry in _array(result.get("locations", [])):
                 physical = _object(_object(loc_entry).get("physicalLocation", {}))

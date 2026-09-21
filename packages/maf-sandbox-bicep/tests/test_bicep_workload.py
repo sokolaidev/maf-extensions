@@ -1695,14 +1695,25 @@ class TestTheVerdict:
         self._assert_report_level(phase, document, expected)
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize("use", ["inherited", "empty", "explicit", "unreferenced"])
+    @pytest.mark.parametrize("field", ["rules", "notifications"])
     @pytest.mark.parametrize(
         "default", [None, [], {"level": None}, {"level": 1}, {"level": "fatal"}]
     )
-    def test_malformed_rule_defaults_have_no_verdict(self, phase, default):
+    def test_malformed_driver_defaults_have_no_verdict(self, phase, use, field, default):
         document = json.loads(_sarif())
         run = document["runs"][0]
-        run["tool"]["driver"]["rules"][0]["defaultConfiguration"] = default
+        driver = run["tool"]["driver"]
+        if field == "notifications":
+            driver[field] = [{"id": "notification"}]
+        if use == "unreferenced":
+            driver[field].append({"id": "unused"})
+        driver[field][-1]["defaultConfiguration"] = default
         del run["results"][0]["level"]
+        if use == "empty":
+            run["results"] = []
+        elif use == "explicit":
+            run["results"][0]["level"] = "warning"
         self._assert_report_incomplete(phase, document)
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
@@ -1753,6 +1764,12 @@ class TestTheVerdict:
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
     @pytest.mark.parametrize(
+        "use", ["inherited", "empty", "explicit", "unreferenced", "other-rule"]
+    )
+    @pytest.mark.parametrize(
+        "field", ["ruleConfigurationOverrides", "notificationConfigurationOverrides"]
+    )
+    @pytest.mark.parametrize(
         "overrides",
         [
             [{"descriptor": {"id": "unknown"}, "configuration": {"level": "error"}}],
@@ -1765,16 +1782,100 @@ class TestTheVerdict:
             None,
         ],
     )
-    def test_malformed_invocation_overrides_have_no_verdict(self, phase, overrides):
+    def test_malformed_invocation_overrides_have_no_verdict(self, phase, use, field, overrides):
         document = json.loads(_sarif(rule="BCP035"))
         run = document["runs"][0]
-        run["invocations"] = [
-            {"executionSuccessful": True, "ruleConfigurationOverrides": overrides}
-        ]
+        run["tool"]["driver"]["notifications"] = [{"id": "BCP035"}]
+        run["invocations"] = [{"executionSuccessful": True, field: overrides}]
         result = run["results"][0]
         result["provenance"] = {"invocationIndex": 0}
         del result["level"]
+        if use == "empty":
+            run["results"] = []
+        elif use == "explicit":
+            result["level"] = "warning"
+        elif use == "unreferenced":
+            run["invocations"].insert(0, {"executionSuccessful": True})
+        elif use == "other-rule":
+            run["tool"]["driver"]["rules"].append({"id": "other"})
+            result["ruleId"] = "other"
         self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "provenance",
+        [
+            None,
+            [],
+            {"invocationIndex": True},
+            {"invocationIndex": "0"},
+            {"invocationIndex": 1},
+            {"invocationIndex": -2},
+        ],
+    )
+    def test_explicit_result_levels_do_not_bypass_provenance_validation(self, phase, provenance):
+        document = json.loads(_sarif())
+        run = document["runs"][0]
+        run["invocations"] = [{"executionSuccessful": True}]
+        run["results"][0]["provenance"] = provenance
+        self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "field", ["toolExecutionNotifications", "toolConfigurationNotifications"]
+    )
+    @pytest.mark.parametrize("source", ["default", "override"])
+    @pytest.mark.parametrize("level", ["error", "warning"])
+    def test_notification_severity_uses_its_driver_metadata(self, phase, field, source, level):
+        document = json.loads(_EMPTY_SARIF)
+        run = document["runs"][0]
+        descriptor = {"id": "analysis-condition", "defaultConfiguration": {"level": level}}
+        run["tool"]["driver"]["notifications"] = [descriptor]
+        invocation = {
+            "executionSuccessful": True,
+            field: [{"descriptor": {"index": 0}, "message": {"text": "Analysis condition."}}],
+        }
+        if source == "override":
+            descriptor["defaultConfiguration"] = {"level": "warning"}
+            invocation["notificationConfigurationOverrides"] = [
+                {"descriptor": {"id": "analysis-condition"}, "configuration": {"level": level}}
+            ]
+        run["invocations"] = [invocation]
+        if level == "error":
+            self._assert_report_incomplete(phase, document)
+        else:
+            self._assert_report_empty(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize("level", [None, "error"])
+    def test_valid_unused_driver_metadata_allows_empty_results(self, phase, level):
+        document = json.loads(_EMPTY_SARIF)
+        run = document["runs"][0]
+        config = {} if level is None else {"level": level}
+        driver = run["tool"]["driver"]
+        driver["rules"] = [{"id": "BCP035", "defaultConfiguration": config}]
+        driver["notifications"] = [{"id": "analysis-condition", "defaultConfiguration": config}]
+        run["invocations"] = [
+            {
+                "executionSuccessful": True,
+                "ruleConfigurationOverrides": [
+                    {"descriptor": {"id": "BCP035"}, "configuration": config}
+                ],
+                "notificationConfigurationOverrides": [
+                    {"descriptor": {"id": "analysis-condition"}, "configuration": config}
+                ],
+            }
+        ]
+        self._assert_report_empty(phase, document)
+
+    def _assert_report_empty(self, phase, document):
+        blob = json.dumps(document)
+        sandbox = _KeepsWhatItWrote(outputs={f"bicep {phase}": blob}, default_stdout=_EMPTY_SARIF)
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+        texts = [str(item.text) for item in _items(tool, ["main.bicep"])]
+
+        assert texts[:2] == [COMPLETED_TEXT, "Result: valid"]
+        assert parse_sarif(blob) == []
 
     def _assert_report_incomplete(self, phase, document):
         blob = json.dumps(document)
