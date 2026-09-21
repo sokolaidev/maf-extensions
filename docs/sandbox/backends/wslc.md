@@ -17,7 +17,7 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 
 The default Windows Proactor event loop supports the required subprocesses. A selector event loop does not.
 
-Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `test` command, including true and false exit statuses under the root principal used for path checks. A shell builtin does not satisfy that check. Successful checks are cached per physical container; failed checks are retried.
+Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr/bin/test` command, including true and false exit statuses under the root principal used for path checks. A shell builtin or a `test` elsewhere on `PATH` does not satisfy that check. Successful checks are cached per physical container; failed checks are retried.
 
 ## Writes and path checks
 
@@ -26,6 +26,8 @@ Uploads use an archive extracted by the engine. Numeric guest IDs come from cont
 Files and missing directories at or below the working directory receive the guest uid/gid. Existing directories retain their metadata. This lets a non-root guest edit inputs and create files beside them. It does not reduce the engine's authority while placing those files.
 
 Path checks use the engine's copy behavior to identify missing paths and directories. For other accepted copy sources, a guest probe supplies the remaining type. A guest claim that such a source is a directory contradicts the engine and is rejected. The probe is still an image-dependent limitation.
+
+The root probe invokes `/usr/bin/test` directly with separate arguments. A guest-writable directory earlier in `PATH` cannot supply its executable. The image must protect that executable, its dependencies and ancestor directories from the runtime user; pinning its path does not establish trust in an arbitrary image.
 
 Each stat copies into a private host temporary directory, removed after the subprocess exits. Guest file sizes determine temporary disk use and I/O; upload and stdout limits do not bound those bytes. Host termination or failed cleanup can leave data behind. The operator must bound the host temporary filesystem.
 

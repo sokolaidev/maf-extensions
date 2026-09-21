@@ -73,7 +73,7 @@ from maf_sandbox.paths import (
 )
 
 from ._config import WslcSandboxConfig
-from ._probes import probe_commands
+from ._probes import TEST_COMMAND, probe_commands
 from ._proxy import build_context
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
@@ -751,7 +751,8 @@ class _WslcSandbox:
             "--user",
             "0",
             self._name,
-            *argv,
+            TEST_COMMAND,
+            *argv[1:],
             timeout=self._command_timeout,
         )
         return probe.returncode

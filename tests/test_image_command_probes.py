@@ -109,7 +109,7 @@ def test_docker_file_only_work_needs_no_guest_command_and_delete_needs_no_shell(
 
 
 @pytest.mark.parametrize("negative_status", [0, 1, 127])
-def test_wslc_tests_the_external_binary_with_true_and_false_cases(negative_status):
+def test_wslc_tests_the_pinned_external_binary_with_true_and_false_cases(negative_status):
     from maf_sandbox_wslc._probes import probe_commands
 
     async def scenario():
@@ -123,13 +123,13 @@ def test_wslc_tests_the_external_binary_with_true_and_false_cases(negative_statu
         spec = SandboxSpec(kind="write", requires=frozenset({Capability.FILES_IN}))
         if negative_status == 1:
             await probe_commands(spec, verified, run)
-            assert verified == {"test"}
+            assert verified == {"/usr/bin/test"}
         else:
             with pytest.raises(SandboxCapabilityNotSupported, match="files_in.*test"):
                 await probe_commands(spec, verified, run)
             assert not verified
-        assert seen[0] == (("test", "-d", "/"), True)
-        assert seen[1][0][:2] == ("test", "-e")
+        assert seen[0] == (("/usr/bin/test", "-d", "/"), True)
+        assert seen[1][0][:2] == ("/usr/bin/test", "-e")
         assert seen[1][1] is True
 
     asyncio.run(scenario())

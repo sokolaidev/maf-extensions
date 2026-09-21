@@ -44,7 +44,7 @@ See the [Bicep sample](https://github.com/sokolaidev/maf-extensions/tree/main/sa
 
 Output reads, directory listing, file deletion, runtime `run_code` and host-tool calls are unavailable. A kind requiring one is refused before attachment.
 
-Acquisition checks `sh` for commands. Input transfer also needs the external `test` command and a resolved image user. Failed prerequisite checks are retryable.
+Acquisition checks `sh` for commands. Input transfer also needs the external `/usr/bin/test` command and a resolved image user. Both acquisition and root path probes invoke that absolute executable, without searching the guest's `PATH`. Failed prerequisite checks are retryable; another `test` on `PATH` is not a fallback. The image must protect `/usr/bin/test`, its dependencies and ancestor directories from the runtime user.
 
 ## Input files and their limits
 
