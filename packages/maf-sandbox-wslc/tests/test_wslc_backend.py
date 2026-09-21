@@ -459,10 +459,14 @@ class TestImageCommandProbes:
             with pytest.raises(SandboxCapabilityNotSupported, match="/usr/bin/test"):
                 asyncio.run(backend.acquire(_KEY, spec))
         probes = [call.args for call in fake.calls if call.read_limit == 1024]
-        assert len(probes) == 2
-        assert probes[0] == (*prefix, "-d", "/")
-        assert probes[1][:-1] == (*prefix, "-e")
-        assert probes[1][-1].startswith("/.maf-command-probe-")
+        # The pinned command is checked first, both statuses, before the write utilities and
+        # the root setup prerequisites a FILES_IN acquire also needs.
+        pinned = [probe for probe in probes if probe[: len(prefix)] == prefix]
+        assert len(pinned) == 2
+        assert pinned[0] == (*prefix, "-d", "/")
+        assert pinned[1][:-1] == (*prefix, "-e")
+        assert pinned[1][-1].startswith("/.maf-command-probe-")
+        assert probes[:2] == pinned
 
     @pytest.mark.parametrize(
         "capability,argv,privilege,named",
