@@ -516,8 +516,7 @@ class TestTheVerdict:
         assert "INCOMPLETE" in _body(result)
 
     def test_the_reason_it_stopped_is_readable(self):
-        """This module's own sentence about a manifest it could not use — before the contract
-        it was labelled untrusted and hidden with the engine's report."""
+        """A fixed refusal inherits the tool's trusted declaration and remains readable."""
         tool, _, _ = attach()
 
         refusal = asyncio.run(tool.func(files=[]))[1]

@@ -15,10 +15,10 @@ MAX_FORMAT_BYTES = 128 * 1024
 class ReportOutcome:
     """A rendered report, and what it says about the run as a whole.
 
-    ``ran`` is whether the engine reached a verdict at all: false where the launcher could not
-    finish and where initialization failed, which leaves nothing validated.  ``valid`` is the
-    engine's own verdict and is meaningless unless ``ran``.  Both are values this module
-    writes, never the engine's text.
+    ``ran`` says whether the operation reached a verdict. When it did, ``valid`` means the
+    configuration passed validation, or the formatter changed at least one file. It is
+    meaningless unless ``ran``. Fixed refusal text lives in ``reason``; engine detail stays
+    in ``output``.
     """
 
     output: str
