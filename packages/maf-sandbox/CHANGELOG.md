@@ -2,6 +2,31 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.42.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.41.0...maf-sandbox-v0.42.0) (2026-09-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* expose structured Bicep verdicts and sanitize core sandbox refusals ([#1363](https://github.com/sokolaidev/maf-extensions/issues/1363))
+* **terraform:** answer with a verdict the model can read while the report stays hidden ([#1367](https://github.com/sokolaidev/maf-extensions/issues/1367))
+
+### Features
+
+* **core,hyperlight,codeact,tui:** collect isolated Hyperlight output files ([#1344](https://github.com/sokolaidev/maf-extensions/issues/1344)) ([8a2ea67](https://github.com/sokolaidev/maf-extensions/commit/8a2ea67c2da513c1e5dd4efcf3b6d62efef99bfb))
+* expose structured Bicep verdicts and sanitize core sandbox refusals ([#1363](https://github.com/sokolaidev/maf-extensions/issues/1363)) ([c4816da](https://github.com/sokolaidev/maf-extensions/commit/c4816dacf6bd20908e8ccab300dc5a7cfe93d6d5))
+* **sandbox:** let a kind answer in the four parts a host labels differently ([#1358](https://github.com/sokolaidev/maf-extensions/issues/1358)) ([23e8c78](https://github.com/sokolaidev/maf-extensions/commit/23e8c78358e32490bc4f703a29f9249c3f5c18a3))
+* **terraform:** answer with a verdict the model can read while the report stays hidden ([#1367](https://github.com/sokolaidev/maf-extensions/issues/1367)) ([1c4d8bc](https://github.com/sokolaidev/maf-extensions/commit/1c4d8bce3cb2445a9cb0f2aad0f3abae777400e2))
+
+
+### Fixes
+
+* require the tested agent-framework-core 1.19 floor ([#1346](https://github.com/sokolaidev/maf-extensions/issues/1346)) ([cbbbec5](https://github.com/sokolaidev/maf-extensions/commit/cbbbec501d436cbb6098d6f184a2f60b6c444435))
+
+
+### Documentation
+
+* clarify package setup, usage and limits ([#1370](https://github.com/sokolaidev/maf-extensions/issues/1370)) ([b0dd379](https://github.com/sokolaidev/maf-extensions/commit/b0dd3791cb18fab0b7c565e327ee872b4620c6f7))
+
 ## [0.41.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.40.2...maf-sandbox-v0.41.0) (2026-09-19)
 
 
