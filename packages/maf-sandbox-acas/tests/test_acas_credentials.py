@@ -680,7 +680,7 @@ def test_background_invalidation_uses_the_wrappers_captured_grant():
         )
         caller.set("b")
         calls.clear()
-        await sandbox._invalidate_after_exec(RuntimeError("capture failed"))
+        await sandbox.invalidate(RuntimeError("capture failed"))
         assert calls == [("a1", "begin_delete")]
         await subject.aclose()
 

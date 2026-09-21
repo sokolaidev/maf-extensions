@@ -26,7 +26,7 @@ Write ownership labels at creation. Hash long values rather than truncating them
 
 Bind each sandbox to a private storage base. `spec.work_dir=None` delegates allocation; an explicit value requires that exact base. Preserve existing contents and permissions. Refuse obstructed ancestry or a different base on warm reuse.
 
-For filesystem backends, `ensure_guest_work_dir` prepares the base for `EXEC` and file capabilities on cold and warm acquire. Supply a native resolver, no-follow stat and directory creation. POSIX implementations can use `posix_work_dir_ancestors` and `resolve_guest_working_directory`. Runtime-only specs need no directory.
+For filesystem backends, `ensure_guest_work_dir` prepares the base for `EXEC` and file capabilities on cold and warm acquire. Supply a native resolver, no-follow stat and directory creation. POSIX implementations can use `posix_work_dir_ancestors` and `resolve_guest_working_directory`. Runtime-only specs need no directory. The creation you supply carries the same authority obligation as a write: the ancestry check and the creation are separate calls, so bound creation to what the guest could make itself, or refuse when a missing directory cannot be created within that authority — a host-authority creation a swapped parent can redirect exceeds the guest's reach.
 
 Relative working directories resolve against the base; `"."` names it. Keep command text and argv unchanged. Relative reclaim targets must resolve to a child of the working directory, then pass the backend's native placement checks.
 

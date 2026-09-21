@@ -63,6 +63,7 @@ from maf_sandbox.file_transfer import (
     SandboxFileRefused,
     SandboxShellTransferFailed,
     SandboxShellTransferUnfinished,
+    shell_refusal,
     write_file_over_exec,
 )
 from maf_sandbox.paths import (
@@ -249,6 +250,11 @@ _PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | _NEEDS_OBSERVED_REMOVAL | {Capab
 #: handed it fails to start where the data plane only did path arithmetic with it. Every path
 #: these commands touch is absolute and already confined, so the cwd decides nothing.
 _GUEST_COMMAND_WORKING_DIRECTORY = "/"
+
+#: Guest control commands run under the C locale so their diagnostics are libc's own words,
+#: which :func:`~maf_sandbox.file_transfer.shell_refusal` classifies. The write road sets this
+#: inside ``write_file_over_exec``; the directory-preparation command sets it here.
+_C_LOCALE = "export LC_ALL=C; "
 
 #: One bound for preparation, exec and observation; cleanup has its own equal bound.
 _PROBE_TIMEOUT_S = 30.0
@@ -632,20 +638,65 @@ class _AcasSandbox:
 
     @_with_client
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base through the data plane."""
+        """Establish the spec's base, creating any missing directories as the guest.
+
+        Existing directories are preserved without checking whether the guest could create
+        them. Missing directories must be creatable with the guest's own authority.
+        """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        deadline = asyncio.get_running_loop().time() + self._read_timeout
+
+        async def stat(path: str) -> SandboxEntry | None:
+            async with asyncio.timeout_at(deadline):
+                return await self._unconfined_stat(path)
+
+        async def create(directories: tuple[str, ...]) -> None:
+            await self._create_directories(
+                directories, timeout=max(0.0, deadline - asyncio.get_running_loop().time())
+            )
+
         await ensure_guest_work_dir(
             spec,
-            self._unconfined_stat,
-            self._create_directories,
+            stat,
+            create,
             resolve=posix_work_dir_ancestors,
             base=self._work_dir,
         )
 
-    async def _create_directories(self, directories: tuple[str, ...]) -> None:
-        """Create each missing parent through the data plane."""
-        for directory in directories:
-            await self._sc.mkdir(directory)
+    async def _create_directories(
+        self, directories: tuple[str, ...], *, timeout: float | None = None
+    ) -> None:
+        """Create the missing base as the guest; the file plane's ``mkdir`` is never used.
+
+        Guest permissions bound creation even if a parent changes after the ancestry check.
+        ``directories`` is the missing suffix, deepest last; ``mkdir -p`` creates it in one
+        command and tolerates directories created concurrently.
+        """
+        base = directories[-1]
+        with retry_observation():
+            try:
+                result = await self._exec_text(
+                    f"{_C_LOCALE}mkdir -p -- {shlex.quote(base)}",
+                    working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
+                    timeout=self._read_timeout if timeout is None else timeout,
+                )
+            except BaseException as failure:
+                if not (isinstance(failure, TimeoutError) and retry_after_interrupted()):
+                    await self.invalidate(failure)
+                raise
+        if result.exit_code == 0:
+            return
+        detail = result.stderr.strip()
+        # A path echoed in stderr must not inject diagnostic lines.
+        refusal = None if "\r" in base or "\n" in base else shell_refusal(detail)
+        error = _REFUSAL_ERRORS.get(refusal, OSError) if refusal is not None else OSError
+        raise error(
+            f"could not prepare the working directory {base!r} as the guest: "
+            f"{detail or f'mkdir exited {result.exit_code}'}. The data plane's directory "
+            "creation is host-authority and is not used, so a non-root guest needs a base it "
+            "can create — bake a guest-writable directory into the image or place work_dir "
+            "under one."
+        )
 
     @_with_client
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
@@ -757,10 +808,11 @@ class _AcasSandbox:
                         return result
             except BaseException as failure:
                 if not (isinstance(failure, TimeoutError) and retry_after_interrupted()):
-                    await self._invalidate_after_exec(failure)
+                    await self.invalidate(failure)
                 raise
 
-    async def _invalidate_after_exec(self, failure: BaseException) -> None:
+    async def invalidate(self, failure: BaseException) -> None:
+        """Refuse reuse and attempt disposal, retaining failed cleanup for retry."""
         with self._held.invalidation_guard:
             completion = self._held.invalidation
             owns_cleanup = completion is None
@@ -822,10 +874,10 @@ class _AcasSandbox:
             result = await self._exec_text(command, working_directory="/", timeout=timeout)
         except BaseException as failure:
             if owns_capture:
-                await self._invalidate_after_exec(failure)
+                await self.invalidate(failure)
             raise
         if owns_capture and result.exit_code:
-            await self._invalidate_after_exec(SandboxOutputError("exec capture probe failed"))
+            await self.invalidate(SandboxOutputError("exec capture probe failed"))
         return result.exit_code
 
     @_with_client
@@ -835,9 +887,9 @@ class _AcasSandbox:
         """Run backend control commands; these never supply program-output bytes."""
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         cmd = command if isinstance(command, str) else shlex.join(command)
-        result = await asyncio.wait_for(
-            self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
-        )
+        # Retry observations must reach the task that owns the deadline.
+        async with asyncio.timeout(timeout):
+            result = await self._sc.exec(cmd, working_directory=working_directory)
         return _control_result(
             stdout=getattr(result, "stdout", ""),
             stderr=getattr(result, "stderr", ""),
@@ -1320,10 +1372,16 @@ class AcasSandboxBackend:
                 self._client_lease(request) as (client, binding),
                 AsyncExitStack() as acquisition,
             ):
-                sandbox = await self._get_or_create(key, spec, client, binding, acquisition)
-                async with asyncio.timeout(self._config.read_timeout_seconds):
+                sandbox, freshly_created = await self._get_or_create(
+                    key, spec, client, binding, acquisition
+                )
+                try:
                     await sandbox.prepare_work_dir(spec)
-                sandbox.check_usable()
+                    sandbox.check_usable()
+                except BaseException as failure:
+                    if freshly_created:
+                        await sandbox.invalidate(failure)
+                    raise
                 return sandbox
 
     @asynccontextmanager
@@ -1434,8 +1492,8 @@ class AcasSandboxBackend:
         gc: Any,
         binding: AcasCredentialBinding,
         acquisition: AsyncExitStack,
-    ) -> _AcasSandbox:
-        """:meth:`acquire`'s body, run under that key's lock."""
+    ) -> tuple[_AcasSandbox, bool]:
+        """Return the sandbox and whether this acquire created it, under that key's lock."""
         egress = _egress_key(spec)
         registry_key = (*_key_prefix(key), spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
@@ -1481,7 +1539,7 @@ class AcasSandboxBackend:
                     key.thread_id,
                     key.agent_id,
                 )
-                return reused
+                return reused, False
             with held.invalidation_guard:
                 if held.unusable:
                     raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
@@ -1558,7 +1616,7 @@ class AcasSandboxBackend:
                 self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
-        return created
+        return created, True
 
     async def _probe_commands(self, spec: SandboxSpec, sandbox: _AcasSandbox, held: _Held) -> None:
         deadline = asyncio.get_running_loop().time() + min(10.0, self._config.read_timeout_seconds)

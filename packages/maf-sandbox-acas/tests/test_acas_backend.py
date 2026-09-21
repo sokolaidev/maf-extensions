@@ -66,27 +66,251 @@ def _disk_image(image_id: str, reference: str):
     return DiskImage(id=image_id, image=DiskImageSpec(base=reference))
 
 
-def test_acquire_creates_and_repairs_the_base_through_the_data_plane():
+def test_acquire_creates_and_repairs_the_base_as_the_guest():
+    """Preparation creates the base with guest authority, never the file plane's.
+
+    The data plane can only mint root-owned directories (#722), so a parent swapped between the
+    ancestry check and creation could redirect a host-authority ``mkdir``; preparation runs
+    ``mkdir -p`` as the guest instead, which the kernel bounds to the guest's reach (#1339).
+    Warm reuse finds the base and creates nothing; a deleted base is repaired the same way.
+    """
+
     async def scenario():
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
         key = SandboxKey("work-dir", "thread", "agent")
         spec = _spec_requiring(Capability.EXEC)
         first = await backend.acquire(key, spec)
-        assert spec.work_dir is not None
-        assert client.created_directories == ["/maf-sandbox", "/maf-sandbox/work"]
-        client.files[first.instance_id][spec.work_dir + "/keep"] = b"keep"
+        base = first._work_dir
+        assert base == "/maf-sandbox/work"
+        assert client.created_directories == [], "the host-authority file plane was used"
+        assert client.dir_creations == [(base, "/")]
+        client.files[first.instance_id][base + "/keep"] = b"keep"
         second = await backend.acquire(key, spec)
         assert first.instance_id == second.instance_id
-        assert len(client.created_directories) == 2
-        assert client.files[first.instance_id][spec.work_dir + "/keep"] == b"keep"
-        del client.files[first.instance_id][spec.work_dir]
+        assert client.dir_creations == [(base, "/")], "a warm base was recreated"
+        assert client.files[first.instance_id][base + "/keep"] == b"keep"
+        del client.files[first.instance_id][base]
         await backend.acquire(key, spec)
-        assert client.created_directories == [
-            "/maf-sandbox",
-            "/maf-sandbox/work",
-            "/maf-sandbox/work",
-        ]
+        assert client.created_directories == []
+        assert client.dir_creations == [(base, "/"), (base, "/")]
+
+    asyncio.run(scenario())
+
+
+class _PrepClient:
+    """A client that records the guest command preparation runs and any host-plane mkdir."""
+
+    def __init__(self, *, exit_code: int = 0, stderr: str = "") -> None:
+        self.sandbox_id = "sbx-1"
+        self._sbx_path = ""
+        self._api_version = ""
+        self.execs: list[tuple[str, str]] = []
+        self.host_mkdirs: list[str] = []
+        self._exit_code = exit_code
+        self._stderr = stderr
+
+    async def mkdir(self, path):
+        self.host_mkdirs.append(path)
+
+    async def exec(self, command: str, *, working_directory: str):
+        self.execs.append((command, working_directory))
+        return SimpleNamespace(exit_code=self._exit_code, stdout="", stderr=self._stderr)
+
+
+def _prep_sandbox(client: _PrepClient):
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    return _AcasSandbox(client, 30.0, held=_Held("sbx-1", egress=(Egress.CLOSED, frozenset())))
+
+
+def test_create_directories_runs_one_guest_mkdir_and_never_the_file_plane():
+    """The whole missing suffix is one guest ``mkdir -p`` from ``/``; the file plane is unused.
+
+    Host authority (``sc.mkdir``) is simply never reached, so no swap between the ancestry
+    check and creation can select it — the property does not depend on when a swap lands.
+    """
+    client = _PrepClient()
+    sandbox = _prep_sandbox(client)
+    asyncio.run(sandbox._create_directories(("/maf-sandbox", "/maf-sandbox/work")))
+    assert client.host_mkdirs == []
+    assert client.execs == [("export LC_ALL=C; mkdir -p -- /maf-sandbox/work", "/")]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("mkdir: cannot create directory '/protected/x': Permission denied", PermissionError),
+        ("mkdir: not found", OSError),
+    ],
+)
+def test_a_guest_that_cannot_create_its_base_is_refused_without_a_host_fallback(stderr, expected):
+    """A failed guest creation refuses; it never falls back to the host-authority file plane."""
+    client = _PrepClient(exit_code=1, stderr=stderr)
+    sandbox = _prep_sandbox(client)
+    with pytest.raises(expected) as raised:
+        asyncio.run(sandbox._create_directories(("/protected/x",)))
+    assert type(raised.value) is expected, "the diagnostic selected the wrong error type"
+    assert client.host_mkdirs == []
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+@pytest.mark.parametrize("diagnostic", ["Permission denied", "No such file or directory"])
+def test_preparation_does_not_classify_diagnostics_in_multiline_paths(line_break, diagnostic):
+    base = f"/tmp/start{line_break}mkdir: {diagnostic}{line_break}tail"
+    client = _PrepClient(
+        exit_code=1, stderr=f"mkdir: cannot create directory '{base}': Input/output error"
+    )
+    with pytest.raises(OSError) as raised:
+        asyncio.run(_prep_sandbox(client)._create_directories((base,)))
+    assert type(raised.value) is OSError
+    assert shlex.split(client.execs[0][0])[-1] == base
+    assert client.host_mkdirs == []
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+def test_preparation_accepts_successful_creation_of_multiline_paths(line_break):
+    base = f"/tmp/start{line_break}tail"
+    client = _PrepClient()
+    asyncio.run(_prep_sandbox(client)._create_directories((base,)))
+    assert shlex.split(client.execs[0][0])[-1] == base
+
+
+@pytest.mark.parametrize("capability", [Capability.EXEC, Capability.FILES_IN])
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_cold_preparation_refusal_disposes_before_accepting_a_different_base(
+    capability, delete_fails, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    original = _GuestSandboxClient.exec
+
+    async def refuse(client, command, *, working_directory):
+        if command.startswith("export LC_ALL=C; mkdir -p -- /protected/"):
+            client.files["/protected/partial"] = None
+            return SimpleNamespace(exit_code=1, stdout="", stderr="mkdir: Permission denied")
+        return await original(client, command, working_directory=working_directory)
+
+    monkeypatch.setattr(_GuestSandboxClient, "exec", refuse)
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True), delete_fails=delete_fails)
+        backend = _backend_with(client)
+        key = SandboxKey("work-dir", "thread", "agent")
+        spec = replace(_spec_requiring(capability), work_dir="/protected/partial/base")
+        with pytest.raises(PermissionError) as refused:
+            await backend.acquire(key, spec)
+        held = next(iter(backend._registry.values()))
+        assert held.unusable
+        assert client.create_calls == 1
+        assert client.deleted == ([] if delete_fails else [held.sandbox_id])
+        assert client.created_directories == []
+        repaired = replace(spec, work_dir="/tmp/base")
+        if delete_fails:
+            assert "disposal must be retried" in refused.value.__notes__[0]
+            with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
+                await backend.acquire(key, repaired)
+            assert client.create_calls == 1
+            assert held.sandbox_id in backend._undeleted[_entry(key, spec.kind)[:4]]
+            client.delete_fails = False
+        replacement = await backend.acquire(key, repaired)
+        assert replacement.instance_id != held.sandbox_id
+        assert replacement._work_dir == "/tmp/base"
+        assert held.sandbox_id in client.deleted
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+def test_warm_preparation_permission_refusal_preserves_the_existing_sandbox(monkeypatch):
+    original = _GuestSandboxClient.exec
+
+    async def refuse(client, command, *, working_directory):
+        if command.startswith("export LC_ALL=C; mkdir -p -- "):
+            return SimpleNamespace(exit_code=1, stdout="", stderr="mkdir: Permission denied")
+        return await original(client, command, working_directory=working_directory)
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key, spec = SandboxKey("work-dir", "thread", "agent"), _spec_requiring(Capability.EXEC)
+        first = await backend.acquire(key, spec)
+        files = client.files[first.instance_id]
+        files["/keep"] = b"keep"
+        del files[first._work_dir]
+        with monkeypatch.context() as patch:
+            patch.setattr(_GuestSandboxClient, "exec", refuse)
+            with pytest.raises(PermissionError):
+                await backend.acquire(key, spec)
+        assert not first._held.unusable and not client.deleted
+        repaired = await backend.acquire(key, spec)
+        assert repaired.instance_id == first.instance_id
+        assert files["/keep"] == b"keep"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("failure", ["timeout", "cancel", "transport", "malformed"])
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_interrupted_preparation_invalidates_and_blocks_reuse_until_disposal(
+    warm, failure, delete_fails, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    original = _GuestSandboxClient.exec
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True), delete_fails=delete_fails)
+        backend = _backend_with(client, _config(read_timeout_seconds=0.1))
+        key, spec = SandboxKey("work-dir", "thread", "agent"), _spec_requiring(Capability.EXEC)
+        first = None
+        if warm:
+            first = await backend.acquire(key, spec)
+            del client.files[first.instance_id][first._work_dir]
+        started = asyncio.Event()
+
+        async def interrupt(sc, command, *, working_directory):
+            answer = await original(sc, command, working_directory=working_directory)
+            if command.startswith("export LC_ALL=C; mkdir -p -- "):
+                started.set()
+                if failure == "transport":
+                    raise OSError("response lost")
+                if failure == "malformed":
+                    return SimpleNamespace(exit_code=None, stdout="", stderr="")
+                await asyncio.Future()
+            return answer
+
+        with monkeypatch.context() as patch:
+            patch.setattr(_GuestSandboxClient, "exec", interrupt)
+            attempt = asyncio.create_task(backend.acquire(key, spec))
+            await asyncio.wait_for(started.wait(), 5)
+            if failure == "cancel":
+                attempt.cancel()
+            expected = {
+                "timeout": TimeoutError,
+                "cancel": asyncio.CancelledError,
+                "transport": OSError,
+                "malformed": ValueError,
+            }[failure]
+            with pytest.raises(expected):
+                await attempt
+
+        held = next(iter(backend._registry.values()))
+        assert held.unusable
+        assert client.deleted == ([] if delete_fails else [held.sandbox_id])
+        if first is not None:
+            with pytest.raises(SandboxOutputError, match="invalidated"):
+                await first.exec("true", working_directory="/", timeout=1)
+        if delete_fails:
+            with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
+                await backend.acquire(key, spec)
+            assert client.create_calls == 1
+            client.delete_fails = False
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != held.sandbox_id
+        assert held.sandbox_id in client.deleted
+        assert not backend._undeleted
 
     asyncio.run(scenario())
 
@@ -826,6 +1050,18 @@ class _GuestSandboxClient(_FakeSandboxClient):
     async def exec(self, command: str, *, working_directory: str):
         if shlex.split(command)[:2] == ["sh", "-c"]:
             return SimpleNamespace(exit_code=0, stdout="", stderr="")
+        tokens = shlex.split(command)
+        if len(tokens) == 6 and tokens[2:5] == ["mkdir", "-p", "--"]:
+            # Guest-authority working-directory preparation (#1339): the exact
+            # `export LC_ALL=C; mkdir -p -- <base>` command, not a compound staging mkdir.
+            # Modelled apart from the compatibility probes `probes` counts, and it creates the
+            # base and its missing parents as the guest would, so warm reuse finds it present.
+            base = tokens[-1]
+            parts = [part for part in base.split("/") if part]
+            for depth in range(len(parts)):
+                self.files.setdefault("/" + "/".join(parts[: depth + 1]), None)
+            self._owner.dir_creations.append((base, working_directory))
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
         self.execs.append((command, working_directory))
         if isinstance(self._answer, Exception):
             raise self._answer
@@ -848,7 +1084,11 @@ class _GuestGroupClient:
         self.clients: list[_GuestSandboxClient] = []
         self.files: dict[str, dict[str, bytes | None]] = {}
         self.cleanups: list[str] = []
+        #: Host-authority ``sc.mkdir`` calls. Working-directory preparation must never reach
+        #: this since #1339: it stays empty and ``dir_creations`` records the guest commands.
         self.created_directories: list[str] = []
+        #: Guest ``mkdir -p`` commands preparation issued: ``(base, working_directory)``.
+        self.dir_creations: list[tuple[str, str]] = []
 
     def get_sandbox_client(self, sandbox_id: str) -> _GuestSandboxClient:
         return self._client(sandbox_id)
@@ -1137,7 +1377,9 @@ class TestAnImageWhoseGuestIsNotRoot:
         original = _GuestSandboxClient.exec
 
         async def selective_rm(sc, command, *, working_directory):
-            if command.startswith("rm -- /.maf-authority-"):
+            if command.startswith("rm -- /.maf-authority-") or "mkdir -p --" in command:
+                # The authority probe and guest-authority base preparation are not what this
+                # test drives; only the removal under test carries the synthesized exit code.
                 return await original(sc, command, working_directory=working_directory)
             return _GuestAnswer(exit_code=exit_code)
 
@@ -3815,7 +4057,7 @@ def test_reacquire_refuses_invalidation_during_preparation(stage, monkeypatch):
             acquire = asyncio.create_task(backend.acquire(key, spec))
             await asyncio.wait_for(ready.wait(), 5)
             try:
-                await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+                await first.invalidate(SandboxOutputError("capture failed"))
             finally:
                 release.set()
             with pytest.raises(SandboxOutputError, match="invalidated during acquire"):
@@ -3868,7 +4110,7 @@ def test_acquire_return_waits_for_invalidation_on_another_loop(monkeypatch):
 
     def invalidate():
         role.name = "writer"
-        asyncio.run(first._invalidate_after_exec(SandboxOutputError("capture failed")))
+        asyncio.run(first.invalidate(SandboxOutputError("capture failed")))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         result = pool.submit(acquire)
@@ -3899,7 +4141,7 @@ def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed)
 
     async def scenario():
         first = await backend.acquire(key, original)
-        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        await first.invalidate(SandboxOutputError("capture failed"))
         assert first._held.unusable
         if delete_failed:
             with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
@@ -3935,7 +4177,7 @@ def test_invalidated_acquire_reconciles_concurrent_disposal(
 
     async def scenario():
         first = await backend.acquire(key, spec)
-        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        await first.invalidate(SandboxOutputError("capture failed"))
         client.delete_fails = False
         started, release = asyncio.Event(), asyncio.Event()
 

@@ -230,6 +230,46 @@ def test_a_non_throttle_retry_after_timeout_disposes_the_ambiguous_sandbox():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("status_code", [429, 503])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_preparation_retains_only_a_completed_throttle_wait(status_code, cancel, monkeypatch):
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.core.rest import HttpRequest
+    from maf_sandbox import Capability, SandboxSpec
+
+    from maf_sandbox_acas._retry import install_retry_observer
+
+    async def scenario():
+        transport = _RetryAfterTransport(status_code=status_code)
+        client = _RetryAfterClient(AsyncPipeline(transport, policies=[AsyncRetryPolicy()]))
+        install_retry_observer(client)
+        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()))
+        sandbox = _AcasSandbox(client, 0.1, held=held)
+
+        async def missing(path, *, params):
+            raise ResourceNotFoundError("missing")
+
+        async def execute(command, *, working_directory):
+            await client._pipeline.run(HttpRequest("POST", client._endpoint))
+            raise AssertionError("the retry sleep should consume the preparation deadline")
+
+        monkeypatch.setattr(client, "_dp_get", missing)
+        monkeypatch.setattr(client, "exec", execute)
+        spec = SandboxSpec(kind="test", requires=frozenset({Capability.EXEC}))
+        attempt = asyncio.create_task(sandbox.prepare_work_dir(spec))
+        await asyncio.wait_for(transport.sleeping.wait(), 5)
+        if cancel:
+            attempt.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+            await attempt
+        assert transport.sent == 1
+        invalidated = cancel or status_code != 429
+        assert client.deleted is invalidated
+        assert held.unusable is invalidated
+
+    asyncio.run(scenario())
+
+
 async def _shell(script: str) -> ExecResult:
     proc = await asyncio.create_subprocess_exec(
         "sh", "-c", script, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

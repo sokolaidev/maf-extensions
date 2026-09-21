@@ -22,7 +22,7 @@ Capabilities are a ceiling for compatible images. Acquisition checks the command
 
 ## File authority
 
-![ACAS workload writes and removals pass through guest execution and use the guest's permissions. Native read, stat and list operations pass through the service file API with host authority. Their path checks and access are separate, leaving a window for a guest to replace a path. Working-directory setup and the removal probe also use the service file API. Neither guest ownership nor a successful probe makes native reads atomic.](../assets/acas-file-authority.svg)
+![ACAS workload writes and removals pass through guest execution and use the guest's permissions. Native read, stat and list operations pass through the service file API with host authority. Their path checks and access are separate, leaving a window for a guest to replace a path. Working-directory setup also runs as the guest; the removal probe uses the service file API. Neither guest ownership nor a successful probe makes native reads atomic.](../assets/acas-file-authority.svg)
 
 ### `write_file` always runs as the guest
 
@@ -34,7 +34,9 @@ A completed permission refusal leaves the sandbox reusable. Expiry between comma
 
 Path checks reject existing links and escapes. A later parent swap can still redirect a guest write, but it cannot grant more permission than the guest already has. A root guest already has broad authority inside its microVM.
 
-Working-directory setup is separate: the service creates missing directories as root. Use an existing guest-writable base, or arrange guest creation beneath a writable parent. Choosing a missing child of `/tmp` alone does not make it guest-owned.
+Working-directory setup runs as the guest too. Missing directories are created with `mkdir -p` run under the guest's own authority, never the file plane's, so a parent replaced between the ancestry check and creation can only redirect the creation to where the guest could already have made one. Acquisition refuses when the guest cannot create a missing directory, such as a non-root guest creating a missing base under a root-owned tree. Existing directories are preserved without checking whether the guest could create or write to them. For a workload that needs to write, bake a guest-writable base into a non-root image, or place `work_dir` under a writable parent such as `/tmp`.
+
+Preparation failure on a new sandbox invalidates it and attempts disposal. Failed disposal blocks acquisition until cleanup succeeds. A completed permission refusal during warm repair preserves the existing sandbox; interruption of a preparation command follows the [execution invalidation rules](#execution-and-failure).
 
 <a id="live-write-authority-verification"></a>
 
@@ -135,6 +137,6 @@ The broader metadata, private-network, host-path and host-socket isolation probe
 | Native read/stat/list path race | Open; no atomic service primitive | [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) (open) |
 | Typed SDK file metadata | Open; adapter requires raw flags | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) (open) |
 | Special-file classification | Open; regular files cannot be distinguished reliably | [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) (open) |
-| Guest-owned service-created directories | Open; setup can create root-owned directories | [microsoft/azure-container-apps#1820](https://github.com/microsoft/azure-container-apps/issues/1820) (open) |
+| Working-directory preparation authority | Bounded; setup creates missing directories as the guest and refuses if that creation fails | [#1339](https://github.com/sokolaidev/maf-extensions/issues/1339) (closed) by [#1379](https://github.com/sokolaidev/maf-extensions/pull/1379) (merged) |
 | Method-level network policy | Withheld pending full validation | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open) |
 | Broader isolation probes | Not implemented | untracked |
