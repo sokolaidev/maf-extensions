@@ -1,6 +1,39 @@
 # Sandboxed tools for agents
 
-`maf-sandbox` lets an agent's tool run work in a sandbox. A **kind** defines the workload. A **backend** provides the execution environment. The host chooses which backend contracts are acceptable, and the router checks them before work starts.
+`maf-sandbox` connects Microsoft Agent Framework (MAF) tools to sandbox backends. It separates what a tool needs from where its work runs.
+
+## Introduction
+
+### The problem
+
+Agents can write code, but checking it needs real execution. A compiler can find an invalid template. A Python runtime can test a calculation or process a file.
+
+That work handles model-generated code and untrusted inputs. Running it with the application's permissions can expose files, credentials and network services. A child process alone does not remove those permissions.
+
+Isolation is only part of the job. The application must control who can use a sandbox and what may enter or leave it. It also needs rules for cleanup and for using the results.
+
+### Available solutions
+
+| Approach | What it provides |
+|---|---|
+| [Provider-hosted code interpreters](https://learn.microsoft.com/en-us/agent-framework/agents/tools/) | The model service runs code through its own tool interface. |
+| MAF's [Hyperlight](https://github.com/microsoft/agent-framework/tree/main/python/packages/hyperlight) and [Monty](https://github.com/microsoft/agent-framework/tree/main/python/packages/monty) tools | Python execution through a specific runtime, with agent tool integration. |
+| Sandbox services, such as [E2B](https://docs.e2b.dev/) and [Modal](https://modal.com/docs/guide/sandboxes) | Environments the application creates and controls through a provider SDK. |
+| Containment SDKs, such as [MXC](https://github.com/microsoft/mxc) | Common configuration for several operating-system containment backends. |
+| [Deep Agents](https://docs.langchain.com/oss/python/deepagents/sandboxes) and [Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit/tree/main/agent-governance-python/agent-sandbox) | Shared interfaces across sandbox providers, with agent integration or governance features. |
+
+These approaches overlap. Shared APIs reduce provider-specific code. An application still needs rules for its own workloads and the results it sends back to the model.
+
+### What maf-sandbox adds
+
+`maf-sandbox` supplies that integration for MAF. A **kind** defines the workload. A **backend** supplies the execution environment. Their shared contract covers four concerns:
+
+- **Workload reuse.** [Kinds](kinds/README.md) use one protocol and contain no backend imports. A workload can move between compatible backends without provider-specific code in the kind.
+- **Checks before execution.** The [router](policy-isolation.md) checks required operations, the host's minimum isolation and network rules. It refuses an unsupported combination.
+- **Host control.** Outer tool calls pass through framework policy. [Identity](architecture.md#keys-and-storage) comes from trusted request context. [File access](hosts.md) and [cleanup](tool-call.md) follow shared rules.
+- **Useful, labelled results.** The [result contract](information-flow.md#the-result-contract) separates completion and a declared answer from raw workload output. The model can read the answer while untrusted text stays separately labelled.
+
+A Bicep tool can use Docker locally or Azure Container Apps Sandboxes (ACAS). Each setup must satisfy the workload requirements and its host's policy. Hyperlight cannot run the Bicep compiler, so the router refuses it for this kind.
 
 The suite connects sandbox implementations; it does not provide isolation by itself. A backend must establish the boundary and behavior it declares.
 
