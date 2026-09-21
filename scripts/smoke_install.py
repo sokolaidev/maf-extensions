@@ -374,7 +374,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     asyncio.run(with_files(code="print(1)", files=["data.csv"]))
     if not any(path.endswith("/data.csv") for path in shared_written):
         raise SystemExit(f"FAIL: the listed file was not shared: {shared_written}")
-    refused = asyncio.run(with_files(code="print(1)", files=["absent.csv"]))
+    refused = _rendered(asyncio.run(with_files(code="print(1)", files=["absent.csv"])))
     if "not in this tool's file listing" not in refused:
         raise SystemExit(f"FAIL: an unlisted file was not refused: {refused!r}")
 
