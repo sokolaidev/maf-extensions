@@ -1383,7 +1383,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-otel"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "packages/maf-sandbox-otel" }
 dependencies = [
     { name = "maf-sandbox" },
