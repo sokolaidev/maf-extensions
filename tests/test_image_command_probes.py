@@ -28,14 +28,10 @@ def test_only_requested_commands_are_probed_and_success_is_reused(backend):
         await check(spec, verified, run)
         await check(spec, verified, run)
         assert seen[0] == (("sh", "-c", "exit 0"), False, False)
-        assert len(seen) == (1 if backend == "docker" else 2)
+        assert len(seen) == (2 if backend == "acas" else 1)
         if backend == "acas":
             assert "mkfifo" in seen[1][0][2] and "head -c" in seen[1][0][2]
             assert seen[1][1:] == (False, True)
-        if backend == "wslc":
-            # Working-directory setup runs for EXEC too, so its root prerequisites are checked.
-            assert seen[1][0][0] == "/bin/sh" and "chown" in seen[1][0][2]
-            assert seen[1][1] is True
 
     asyncio.run(scenario())
 
@@ -62,8 +58,7 @@ def test_unsuccessful_checks_are_typed_refusals_and_retry(backend, failure):
             return 0
 
         await check(spec, verified, succeed)
-        expected = {"docker": {"sh"}, "wslc": {"sh", "setup"}, "acas": {"sh", "exec-capture"}}
-        assert verified == expected[backend]
+        assert verified == ({"sh", "exec-capture"} if backend == "acas" else {"sh"})
 
     asyncio.run(scenario())
 
@@ -128,7 +123,7 @@ def test_wslc_tests_the_pinned_external_binary_with_true_and_false_cases(negativ
         spec = SandboxSpec(kind="write", requires=frozenset({Capability.FILES_IN}))
         if negative_status == 1:
             await probe_commands(spec, verified, run)
-            assert verified == {"/usr/bin/test", "write", "setup"}
+            assert verified == {"/usr/bin/test", "write"}
             # The write commands are looked up as the image's user, who runs them.
             assert seen[2][0][:2] == ("sh", "-c")
             assert seen[2][1] is False
@@ -192,7 +187,9 @@ def test_engine_probe_cache_is_per_instance_and_extends_for_new_requirements(kin
 
     async def engine(*args, **kwargs):
         calls.append((args, kwargs))
-        return SimpleNamespace(returncode=1 if "-e" in args else 0)
+        # `stdout` as well as `returncode`: the seam this stands in for returns both, and
+        # the wslc probe reads it to tell a capped read from a command that answered.
+        return SimpleNamespace(returncode=1 if "-e" in args else 0, stdout=b"")
 
     setattr(backend, f"_{kind}", engine)
 
@@ -206,11 +203,11 @@ def test_engine_probe_cache_is_per_instance_and_extends_for_new_requirements(kin
         )
         await backend._probe_commands("same-name", "first-id", shell)
         await backend._probe_commands("same-name", "first-id", shell)
-        assert len(calls) == (1 if kind == "docker" else 2)
+        assert len(calls) == 1
         capability = Capability.FILES_DELETE if kind == "docker" else Capability.FILES_IN
         richer = SandboxSpec(kind="probe", requires=frozenset({Capability.EXEC, capability}))
         await backend._probe_commands("same-name", "first-id", richer)
-        assert len(calls) == (2 if kind == "docker" else 5)
+        assert len(calls) == (2 if kind == "docker" else 4)
         await backend._probe_commands("same-name", "replacement-id", shell)
         assert "replacement-id" in calls[-1][0]
         assert backend.declarations is declarations

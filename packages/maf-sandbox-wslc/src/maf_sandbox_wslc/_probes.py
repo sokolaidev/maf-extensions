@@ -17,15 +17,21 @@ _REQUIREMENTS = {
     "sh": frozenset({Capability.EXEC}),
     TEST_COMMAND: frozenset({Capability.FILES_IN}),
     "write": frozenset({Capability.FILES_IN}),
-    # Working-directory setup runs for either capability, so its prerequisites are checked
-    # for both. Without this an image passes every advertised probe and then fails setup
-    # with an untyped error, which a caller cannot tell from a broken engine.
-    "setup": frozenset({Capability.EXEC, Capability.FILES_IN}),
+    # Working-directory setup is *not* probed here. It only runs when the base is missing,
+    # which is not known until `prepare_work_dir` walks it, so probing at acquire refused
+    # images that never reach setup at all. The creation command checks its own
+    # prerequisites instead and exits `_SETUP_MISSING`, which the backend turns into the
+    # same typed refusal — see `SETUP_COMMANDS`.
 }
 #: What ``write_file`` runs as the image's user, besides ``sh``.
 _WRITE_COMMANDS = ("mkdir", "cat", "wc", "mv", "rm")
-#: What working-directory setup runs as root, from the pinned system ``PATH``.
-_SETUP_COMMANDS = ("mkdir", "chown")
+#: What working-directory setup runs as root, from the pinned system ``PATH``. Checked by the
+#: creation command itself rather than at acquire, because a base that is already there needs
+#: none of them.
+SETUP_COMMANDS = ("mkdir", "chown")
+#: What the creation command exits when one of those is missing, so a backend can tell that
+#: apart from the ordinary failures and answer with a capability refusal.
+SETUP_MISSING = 127
 #: The shell setup runs, named absolutely so no lookup path can choose it.
 SETUP_SHELL = "/bin/sh"
 #: The ``PATH`` setup pins; the probe must resolve its commands the same way.
@@ -50,18 +56,9 @@ async def probe_commands(spec: SandboxSpec, verified: set[str], run: RunProbe) -
                 f"command -v {command} >/dev/null || exit 1" for command in _WRITE_COMMANDS
             )
             commands = [(("sh", "-c", script), False, 0)]
-        elif name == "setup":
-            script = f"export PATH={SETUP_PATH}; " + "; ".join(
-                f"command -v {command} >/dev/null || exit 1" for command in _SETUP_COMMANDS
-            )
-            commands = [((SETUP_SHELL, "-c", script), True, 0)]
         else:
             raise AssertionError(name)
-        labels = {
-            "write": f"sh and {', '.join(_WRITE_COMMANDS)}",
-            "setup": f"root {SETUP_SHELL} and {', '.join(_SETUP_COMMANDS)} on {SETUP_PATH}",
-        }
-        label = labels.get(name, name)
+        label = f"sh and {', '.join(_WRITE_COMMANDS)}" if name == "write" else name
         try:
             for argv, as_root, expected in commands:
                 status = await run(argv, as_root)

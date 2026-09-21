@@ -72,7 +72,14 @@ from maf_sandbox.paths import (
 )
 
 from ._config import WslcSandboxConfig
-from ._probes import SETUP_PATH, SETUP_SHELL, TEST_COMMAND, probe_commands
+from ._probes import (
+    SETUP_COMMANDS,
+    SETUP_MISSING,
+    SETUP_PATH,
+    SETUP_SHELL,
+    TEST_COMMAND,
+    probe_commands,
+)
 from ._proxy import build_context
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
@@ -476,6 +483,13 @@ _FILE_COMMAND_STDOUT_LIMIT = 4096
 #: named for this call, ``$4`` the byte count. The content arrives on stdin. A host that is
 #: cancelled or times out closes stdin, and ``cat`` then ends as if the file were whole, so
 #: the sibling moves into place only when every byte arrived.
+#:
+#: The last line is why the rename is checked rather than trusted: ``mv`` treats a destination
+#: that is a directory as a container and succeeds, leaving the content at ``$target/<sibling>``
+#: while reporting that the write landed. A leaf turned into a directory after the check above
+#: does exactly that, so the target has to be a regular file afterwards or the write is refused
+#: and the misplaced sibling taken back. ``mv -T`` would say it in one flag, but not every
+#: ``mv`` this backend admits has it.
 _WRITE_AS_THE_GUEST = """\
 export LC_ALL=C
 umask 022
@@ -491,6 +505,10 @@ received=$(wc -c < "$staged") && [ "$received" -eq "$size" ] || {
 }
 refuse_directory
 mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
+[ -f "$target" ] || {
+    rm -f -- "$target/${staged##*/}"
+    echo 'Is a directory' >&2; exit 1
+}
 """
 
 #: Creates a base's missing directories as root: ``$1`` the existing parent of the first, then
@@ -513,6 +531,14 @@ _PINNED_ENV = f"export LC_ALL=C PATH={SETUP_PATH} CDPATH=\n"
 
 _CREATE_DIRECTORIES = (
     _PINNED_ENV
+    # Its own prerequisites, checked here rather than at acquire: a base that is already
+    # there never runs this command, and refusing such an image would turn away one this
+    # backend can serve.
+    + f"""\
+for command in {" ".join(SETUP_COMMANDS)}; do
+    command -v "$command" >/dev/null || exit {SETUP_MISSING}
+done
+"""
     + """\
 umask 022
 parent=$1
@@ -748,7 +774,7 @@ class _WslcSandbox:
             # leaving a directory behind.
             self._refuse_a_base_without_an_owner(spec, directories[-1])
             created = True
-            await self._create_directories(directories)
+            await self._create_directories(directories, spec)
 
         await ensure_guest_work_dir(
             spec,
@@ -761,7 +787,7 @@ class _WslcSandbox:
         if created and base and spec.required_capabilities & _PREPARED_CAPABILITIES:
             await self._ensure_base_owner(base[-1], spec)
 
-    async def _create_directories(self, directories: tuple[str, ...]) -> None:
+    async def _create_directories(self, directories: tuple[str, ...], spec: SandboxSpec) -> None:
         """Create the missing directories as root, without following a swapped-in link.
 
         Existing directories keep their metadata; the base's ownership is a separate step
@@ -785,6 +811,16 @@ class _WslcSandbox:
             read_limit=_FILE_COMMAND_STDOUT_LIMIT,
             in_the_guest=True,
         )
+        if result.returncode == SETUP_MISSING:
+            raise SandboxCapabilityNotSupported(
+                f"sandbox backend 'wslc' cannot serve "
+                f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
+                f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
+                f"directory {directories[-1]!r} is missing, and creating it needs "
+                f"{' and '.join(SETUP_COMMANDS)} on {SETUP_PATH} as root. Supply an image "
+                "with them, or point work_dir at a directory the image already provides. "
+                "The next acquire retries."
+            )
         if result.returncode:
             raise RuntimeError(
                 f"wslc could not create the working directory: {result.stderr_text.strip()}"
@@ -1488,21 +1524,52 @@ class WslcSandboxBackend:
 
         async def run(argv: tuple[str, ...], as_root: bool) -> int:
             privilege = ("--user", "0") if as_root else ()
-            async with asyncio.timeout_at(deadline):
-                result = await self._wslc(
-                    "container",
-                    "exec",
-                    *privilege,
-                    "-w",
-                    "/",
-                    instance_id,
-                    *argv,
-                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
-                    read_limit=1024,
+            try:
+                async with asyncio.timeout_at(deadline):
+                    result = await self._wslc(
+                        "container",
+                        "exec",
+                        *privilege,
+                        "-w",
+                        "/",
+                        instance_id,
+                        *argv,
+                        timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                        read_limit=1024,
+                    )
+            except BaseException:
+                # A probe that never came back may still be running in there, and a probe
+                # can be raised to root. Acquire returns nothing for a caller to dispose,
+                # and the container stays registered for warm reuse, so take it with us.
+                # A probe that *answered* is an ordinary refusal and keeps the container.
+                await self._discard_container(instance_id)
+                raise
+            if len(result.stdout) >= 1024:
+                await self._discard_container(instance_id)
+                raise RuntimeError(
+                    f"wslc stopped the {argv[0]} probe after it filled the read cap, so it "
+                    "may still be running inside the container, which was discarded"
                 )
             return result.returncode
 
         await probe_commands(spec, verified, run)
+
+    async def _discard_container(self, target: str) -> None:
+        """Force-remove a container whose in-flight command cannot be accounted for.
+
+        Bounded on this side too: this runs on the path where the engine has already missed
+        one deadline, and a removal that hangs would trade a stale container for a stuck
+        acquire. What it could not remove is left to the reaper.
+        """
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(self._config.command_timeout_seconds):
+                await self._wslc(
+                    "container",
+                    "remove",
+                    "-f",
+                    target,
+                    timeout=self._config.command_timeout_seconds,
+                )
 
     def _forget_command_probes(self, target: str) -> None:
         for name, (instance_id, _) in list(self._command_probes.items()):

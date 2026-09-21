@@ -277,6 +277,45 @@ def test_an_existing_base_is_served_without_a_resolved_image_user():
     assert _only_write(fake).stdin == b"data"
 
 
+@pytest.mark.parametrize("ending", ["times out", "fills the read cap"])
+def test_a_probe_that_may_still_be_running_takes_the_container_with_it(ending):
+    """A probe can be raised to root, and acquire returns nothing for anyone to dispose.
+
+    An ordinary refusal — a probe that answered with the wrong status — keeps the container,
+    because nothing is left running in it and the next acquire retries.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "exec") and "sh" in args:
+            if ending == "times out":
+                raise TimeoutError("the probe did not answer")
+            return _WslcResult(0, b"x" * 1024, b"")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="did not complete"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
+
+
+def test_a_probe_that_answered_badly_keeps_the_container():
+    """The retryable case: the image lacks a command, and nothing is running in there."""
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "exec") and "sh" in args:
+            return _WslcResult(127, b"", b"not found")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="sh command probe exited"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert not fake.matching("container", "remove")
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]
@@ -590,8 +629,8 @@ class TestImageCommandProbes:
             )
             assert first.instance_id == second.instance_id
             probes = [call for call in fake.calls if call.read_limit == 1024]
-            # sh, test twice, the guest write utilities, and the root setup prerequisites.
-            assert len(probes) == 5
+            # sh, the pinned test twice, and the guest write utilities.
+            assert len(probes) == 4
 
         asyncio.run(scenario())
 
@@ -1266,39 +1305,57 @@ class TestWriteFile:
         assert call.stdin == b"data"
         assert not fake.matching("container", "cp", "-")
 
-    @pytest.mark.parametrize(
-        "inspection",
-        [
-            _WslcResult(1, b"", b"unavailable"),
-            _WslcResult(0, b"not json", b""),
-            _WslcResult(0, b"[]", b""),
-            _WslcResult(0, b"{}", b""),
-            _WslcResult(
-                0,
-                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":null}}]',
-                b"",
-            ),
-            _WslcResult(
-                0,
-                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"worker"}}]',
-                b"",
-            ),
-            _WslcResult(
-                0,
-                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"4294967295:0"}}]',
-                b"",
-            ),
-        ],
-    )
+    #: Inspection payloads this backend cannot read at all. They fail acquire, but on the
+    #: engine's shape rather than on the image's user, so they carry no typed promise.
+    _UNREADABLE_INSPECTIONS = [
+        _WslcResult(1, b"", b"unavailable"),
+        _WslcResult(0, b"not json", b""),
+        _WslcResult(0, b"[]", b""),
+        _WslcResult(0, b"{}", b""),
+    ]
+
+    #: Inspection payloads this backend reads fine and that leave the image user unresolved:
+    #: absent, a name whose `id` does not answer, and an out-of-range uid.
+    _UNRESOLVED_IDENTITIES = [
+        _WslcResult(
+            0,
+            b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":null}}]',
+            b"",
+        ),
+        _WslcResult(
+            0,
+            b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"worker"}}]',
+            b"",
+        ),
+        _WslcResult(
+            0,
+            b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"4294967295:0"}}]',
+            b"",
+        ),
+    ]
+
+    @pytest.mark.parametrize("inspection", _UNREADABLE_INSPECTIONS)
+    def test_an_unreadable_inspection_fails_acquire(self, inspection):
+        """Not a capability verdict: the engine's answer was unusable, not the image's user."""
+        backend, fake = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
+        )
+        with pytest.raises((RuntimeError, ValueError)):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert not _writes(fake) and not _creations(fake)
+
+    @pytest.mark.parametrize("inspection", _UNRESOLVED_IDENTITIES)
     def test_unresolved_identity_refuses_a_base_it_would_have_to_create(self, inspection):
         """Creating a base needs an owner, so an unresolved user stops it before it starts.
 
-        The refusal is raised ahead of creation, which is why nothing was created either.
+        The type is the contract here, not just the failure: a caller tells "this image
+        cannot serve that" from "the engine broke" by the exception it gets. Accepting a
+        bare ``RuntimeError`` would let that guard regress unnoticed.
         """
         backend, fake = _backend_with(
             _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
         )
-        with pytest.raises((RuntimeError, ValueError, SandboxCapabilityNotSupported)):
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
         assert not _writes(fake) and not _creations(fake)
         assert not fake.matching("container", "cp", "-")
@@ -1593,7 +1650,9 @@ class TestTheFileCommandsInARealShell:
     """
 
     @staticmethod
-    def _write(target: Path, content: bytes, *, size: int | None = None):
+    def _write(
+        target: Path, content: bytes, *, size: int | None = None, env: dict[str, str] | None = None
+    ):
         parent = str(target.parent)
         return subprocess.run(
             ["sh", "-c", _WRITE_AS_THE_GUEST, "sh", str(target), parent, f"{parent}/.maf-0.part"]
@@ -1601,6 +1660,7 @@ class TestTheFileCommandsInARealShell:
             input=content,
             capture_output=True,
             check=False,
+            env={**os.environ, **(env or {})},
         )
 
     @staticmethod
@@ -1666,6 +1726,30 @@ class TestTheFileCommandsInARealShell:
             assert list(locked.iterdir()) == []
         finally:
             locked.chmod(0o755)
+
+    def test_a_leaf_turned_into_a_directory_at_the_rename_is_refused(self, tmp_path):
+        """``mv`` treats a destination directory as a container and reports success.
+
+        The stand-in for ``mv`` makes the leaf a directory in the one place it matters —
+        after the last check and before the rename — so without the check that follows it,
+        the write would report success with the content at ``<target>/<sibling>``.
+        """
+        real = shutil.which("mv")
+        assert real, "the real mv has to be somewhere for the wrapper to call"
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        wrapper = binaries / "mv"
+        # `mv -f -- <staged> <target>`, so the target is the fourth argument.
+        wrapper.write_text("\n".join(["#!/bin/sh", 'mkdir -p "$4"', f'exec {real} "$@"', ""]))
+        wrapper.chmod(0o755)
+        target = tmp_path / "target"
+        done = self._write(
+            target, b"payload", env={"PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}"}
+        )
+        assert done.returncode != 0
+        assert shell_refusal(done.stderr.decode()) is FileRefusal.IS_DIRECTORY
+        # The misplaced sibling is taken back rather than left inside the directory.
+        assert target.is_dir() and list(target.iterdir()) == []
 
     def test_setup_creates_each_missing_directory(self, tmp_path):
         base = tmp_path.resolve()
