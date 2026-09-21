@@ -42,7 +42,7 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     results arrays. Failed invocations and error notifications leave analysis incomplete.
     Driver defaults and invocation overrides are checked even when results are empty.
     Severity follows explicit results, invocation overrides, then driver rule defaults.
-    Returns ``None`` for an incomplete or malformed report, never zero diagnostics.
+    Returns ``None`` for an incomplete or malformed report instead of treating it as zero diagnostics.
     """
     try:
         data = json.loads(text[:_SARIF_MAX_CHARS])
