@@ -202,6 +202,8 @@ def test_missing_launcher_error_status_is_incomplete(engine, formatting):
     original = store.files.copy()
     result = asyncio.run(tool.func(files=["main.tf"]))
     operation = "Formatting" if formatting else "Validation"
+    assert _verdict(result) is None
+    assert str(result[0].text) == NOT_COMPLETED_TEXT
     assert _body(result).startswith(f"{operation} INCOMPLETE:")
     assert "locals" not in _body(result) and "PASS" not in _body(result)
     assert store.files == original
@@ -478,6 +480,8 @@ def test_incomplete_guest_reports_never_pass(case):
         data["unused"] = float("nan")
     tool, backend, _ = attach(sandbox=RecordingSandbox(default_stdout=json.dumps(data)))
     result = asyncio.run(tool.func(files=["main.tf"]))
+    assert _verdict(result) is None
+    assert str(result[0].text) == NOT_COMPLETED_TEXT
     assert "INCOMPLETE" in _body(result) and "PASS" not in _body(result)
     assert len(backend.disposed) == 1
 
