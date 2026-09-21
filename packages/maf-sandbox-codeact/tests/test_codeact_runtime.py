@@ -33,7 +33,7 @@ from maf_sandbox import (
     Selection,
     SourceIntegrity,
 )
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -671,7 +671,11 @@ def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed, cap
     )
     with caplog.at_level("WARNING", logger="maf_sandbox_codeact._tool"):
         answer = _run(different)
-    assert answer == "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+    assert answer == (
+        f"{NOT_COMPLETED_TEXT}\n"
+        "Error: the sandbox could not be acquired.\n"
+        "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+    )
     assert refusal in caplog.text
     assert len(sandbox.programs) == 1 and not sandbox.writes
     assert "4" in _run(original)
