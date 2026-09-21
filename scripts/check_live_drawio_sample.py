@@ -26,6 +26,25 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def _outcome(validation: dict[str, Any]) -> str:
+    """Read the fixed contract prefix or a released sample's legacy result."""
+    diagnostic = validation["diagnostic"]
+    lines = diagnostic.split("\n", 2)
+    if lines[0] == "The workload ran to a definitive result.":
+        if len(lines) == 3 and lines[1] in {"Result: created", "Result: refused"}:
+            return lines[1].removeprefix("Result: ")
+    elif lines[0] == "The workload did not reach a definitive result.":
+        if len(lines) > 1 and not lines[1].startswith("Result:"):
+            return "incomplete"
+    elif diagnostic.startswith("Error:"):
+        return "refused"
+    elif re.fullmatch(
+        re.escape(f"{validation['call']}/diagram.drawio") + r"(?: \([0-9]+ bytes\))?", diagnostic
+    ):
+        return "created"
+    raise ValueError("Unrecognized converter result")
+
+
 def assess(output: str) -> list[str]:
     """Return reasons the transcript fails to establish the repair and cleanup contract."""
     try:
@@ -72,7 +91,7 @@ def assess(output: str) -> list[str]:
         validations = [record for record in evidence if record["stage"] == "validation"]
         _require(
             validations[0]["diagnostic"] == rejected["diagnostic"]
-            and rejected["diagnostic"].startswith("Error:")
+            and _outcome(validations[0]) == "refused"
             and validations[0]["delivered"] == 0,
             "Rejection does not match the converter result",
         )
@@ -93,7 +112,7 @@ def assess(output: str) -> list[str]:
             _require(
                 type(retry["attempt"]) is int
                 and retry["attempt"] == number
-                and retry["diagnostic"].startswith("Error:")
+                and _outcome(validations[number]) in {"refused", "incomplete"}
                 and retry["diagnostic"] == validations[number]["diagnostic"],
                 "Missing failed repair diagnostic",
             )
@@ -113,7 +132,7 @@ def assess(output: str) -> list[str]:
                 type(validation["delivered"]) is int
                 and validation["delivered"] == int(success)
                 and bool(validation["diagnostic"])
-                and validation["diagnostic"].startswith("Error:") is not success,
+                and (_outcome(validation) == "created") is success,
                 "Validation outcome does not match artifact delivery",
             )
         for call in calls:

@@ -29,7 +29,12 @@ from maf_sandbox import (
     SandboxRouter,
     make_file_system_sink,
 )
-from maf_sandbox.maf import list_no_files, make_caller_context
+from maf_sandbox.maf import (
+    COMPLETED_TEXT,
+    DERIVED_INTEGRITY_PROPERTY,
+    list_no_files,
+    make_caller_context,
+)
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InProcessSandbox,
@@ -106,22 +111,80 @@ def attach(
     return tools[0], backend
 
 
-def invoke(tool, source: str = _XML) -> str:
+def items(tool, source: str = _XML):
+    """Whatever the wrapper rendered, unflattened — for the tests about the split itself."""
     return asyncio.run(tool.func(xml=source))
+
+
+def invoke(tool, source: str = _XML) -> str:
+    """What the call said, between the fixed completion line and nothing else.
+
+    This kind commits no standing sentence, so everything after the completion line is the
+    call's own: the verdict, what this module says about it, and the converter's diagnostic.
+    """
+    return said(items(tool, source))
+
+
+def completed(answer) -> bool:
+    """Whether a call reported a definitive result, read from the field that says so.
+
+    Over an answer rather than a tool: these tests count what reached the sandbox, and a
+    helper that called it again would count twice.
+    """
+    return str(answer[0].text) == COMPLETED_TEXT
+
+
+def verdict(answer) -> str | None:
+    """The verdict line's value in one answer, or ``None`` where it reported none."""
+    for text in (str(item.text) for item in answer):
+        if text.startswith("Result: "):
+            return text.removeprefix("Result: ")
+    return None
+
+
+def said(answer) -> str:
+    """One answer's text, after the fixed completion line."""
+    return chr(10).join(str(item.text) for item in answer[1:])
 
 
 def test_complete_tool_call_lands_native_xml_and_disposes(tmp_path: Path):
     sandbox = ConverterSandbox()
     tool, backend = attach(sandbox, tmp_path / "out")
     assert tool.name == "create_drawio"
-    assert tool.additional_properties == {"source_integrity": "untrusted"}
-    result = invoke(tool)
-    assert result.startswith("diagram.drawio (") and result.endswith(" bytes)")
+    # The contract raises the declaration so the verdict stays readable; the kind's own
+    # claim about the converter's text moves to its own key.
+    assert tool.additional_properties == {
+        "source_integrity": "trusted",
+        DERIVED_INTEGRITY_PROPERTY: "untrusted",
+    }
+    answer = items(tool)
+    assert completed(answer)
+    assert verdict(answer) == "created"
+    reference = str(answer[-1].text)
+    assert reference.startswith("diagram.drawio (") and reference.endswith(" bytes)")
+    assert answer[-1].additional_properties["security_label"]["integrity"] == "untrusted"
     document = ET.fromstring((tmp_path / "out/diagram.drawio").read_bytes())
     assert document.find(".//mxCell[@id='a']").get("value") == "Résumé & 中文"
     assert backend.disposed
     assert len(sandbox.calls) == 1
     assert sandbox.calls[0][0][3:7] == ["--preserve-layout", "true", "--direction", "TB"]
+
+
+def test_sink_display_from_guest_xml_remains_untrusted(tmp_path: Path):
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        return LandedArtifact(name=artifact.name, display=artifact.content.decode("utf-8"))
+
+    tool, _ = attach(ConverterSandbox(), tmp_path, sink=OutputSink(deliver))
+    completion, result, display = items(tool)
+    assert completion.text == COMPLETED_TEXT
+    assert result.text == "Result: created"
+    assert not (completion.additional_properties or {}).get("security_label")
+    assert not (result.additional_properties or {}).get("security_label")
+    assert "Résumé &amp; 中文" in display.text
+    assert display.additional_properties["security_label"] == {
+        "integrity": "untrusted",
+        "confidentiality": "public",
+    }
 
 
 def test_per_call_sink_keeps_repeated_diagrams_separate(tmp_path: Path):
@@ -136,7 +199,10 @@ def test_per_call_sink_keeps_repeated_diagrams_separate(tmp_path: Path):
     results = [invoke(tool), invoke(tool, _XML.replace("Résumé", "Updated"))]
     call_ids = [directory.rsplit("/", 1)[-1] for _, directory, _ in sandbox.calls]
     assert len(set(call_ids)) == 2
-    assert results == [f"{call_id}/diagram.drawio" for call_id in call_ids]
+    # The display reference is the last part of each answer; the verdict precedes it.
+    assert [result.rsplit(chr(10), 1)[-1] for result in results] == [
+        f"{call_id}/diagram.drawio" for call_id in call_ids
+    ]
     assert [artifact.call_id for artifact in artifacts] == call_ids
     assert [artifact.name for artifact in artifacts] == ["diagram.drawio", "diagram.drawio"]
     assert [
@@ -231,7 +297,9 @@ def test_oversized_input_does_not_acquire(tmp_path: Path):
 )
 def test_execution_failures_are_sanitized(tmp_path: Path, failure: Exception, expected: str):
     tool, _ = attach(InProcessSandbox(raises=failure), tmp_path)
-    result = invoke(tool)
+    answer = items(tool)
+    assert not completed(answer) and verdict(answer) is None
+    result = said(answer)
     assert expected in result
     assert "private-transport-account" not in result
     assert not (tmp_path / "diagram.drawio").exists()
@@ -239,7 +307,35 @@ def test_execution_failures_are_sanitized(tmp_path: Path, failure: Exception, ex
 
 def test_success_without_an_output_is_not_reported_as_saved(tmp_path: Path):
     tool, _ = attach(InProcessSandbox(), tmp_path)
-    assert invoke(tool).startswith("Error:")
+    answer = items(tool)
+    assert not completed(answer) and verdict(answer) is None
+    assert said(answer).startswith("Error:")
+
+
+@pytest.mark.parametrize("exit_code", [3, 127, 137, -9])
+def test_operational_exit_has_no_verdict(tmp_path: Path, exit_code: int):
+    class FailedConverter(InProcessSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            return ExecResult(exit_code=exit_code, stderr="conversion unavailable")
+
+    tool, _ = attach(FailedConverter(), tmp_path)
+    answer = items(tool)
+    assert not completed(answer) and verdict(answer) is None
+    assert "conversion unavailable" in answer[-1].text
+    assert answer[-1].additional_properties["security_label"]["integrity"] == "untrusted"
+    assert not (tmp_path / "diagram.drawio").exists()
+
+
+def test_missing_graphviz_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PATH", "")
+    source = ET.fromstring(_XML)
+    vertex = source.find(".//mxCell[@id='a']")
+    vertex.remove(vertex.find("mxGeometry"))
+    tool, _ = attach(ConverterSandbox(), tmp_path)
+    answer = items(tool, ET.tostring(source, encoding="unicode"))
+    assert not completed(answer) and verdict(answer) is None
+    assert "Graphviz dot" in said(answer)
+    assert not (tmp_path / "diagram.drawio").exists()
 
 
 @pytest.mark.parametrize("producer_owns_stderr", [False, True])
@@ -262,9 +358,14 @@ def test_converter_diagnostic_uses_bounded_guest_stream(
             )
 
     tool, _ = attach(FailedConverter(), tmp_path)
-    result = invoke(tool)
+    answer = items(tool)
+    assert completed(answer) and verdict(answer) == "refused"
+    result = said(answer)
     expected = (diagnostic or "The converter returned no diagnostic")[:2048]
-    assert result == f"Error: draw.io conversion failed (exit 2): {expected}"
+    # The converter ran and rejected the diagram: that is an answer, so it has a verdict,
+    # and its diagnostic is the converter's own text rather than this module's.
+    assert "Result: refused" in result
+    assert f"draw.io conversion failed (exit 2): {expected}" in result
     assert "private-transport-account" not in result
     assert not (tmp_path / "diagram.drawio").exists()
 

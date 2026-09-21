@@ -491,12 +491,12 @@ def test_layout_timeout_and_output_flood_are_bounded(monkeypatch: pytest.MonkeyP
 
     process_for("import time; time.sleep(30)")
     started = time.monotonic()
-    with pytest.raises(DiagramError, match="timed out"):
+    with pytest.raises(renderer.ConversionError, match="timed out"):
         renderer._dot("x" * 100_000, time.monotonic() + 0.2)
     assert time.monotonic() - started < 5
     for stream in ("stdout", "stderr"):
         process_for(f"import sys; sys.{stream}.buffer.write(b'x' * 4000000)")
-        with pytest.raises(DiagramError, match="output limit"):
+        with pytest.raises(renderer.ConversionError, match="output limit"):
             renderer._dot("", time.monotonic() + 5)
 
 
@@ -524,4 +524,34 @@ def test_cli_never_writes_a_partial_file(tmp_path: Path):
     )
     assert result.returncode == 2
     assert "Page 2" in result.stderr
+    assert not (tmp_path / "diagram.drawio").exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("dot"),
+        renderer.ConversionError("Automatic layout timed out"),
+        renderer.ConversionError("Graphviz could not lay out this graph"),
+        "not a layout",
+        "graph 1 2 NaN\nstop\n",
+        "graph 1 2 3\nnode n0 NaN 2 1 1\nstop\n",
+    ],
+)
+def test_cli_operational_failure_is_not_source_rejection(tmp_path, monkeypatch, failure):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["renderer.py", "--preserve-layout", "true", "--direction", "TB", "--timeout", "5"],
+    )
+    (tmp_path / "input.xml").write_text(xml(model()), encoding="utf-8")
+
+    def fail(source, deadline):
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(renderer, "_dot", fail)
+    assert renderer.main() == 3
     assert not (tmp_path / "diagram.drawio").exists()

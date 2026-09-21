@@ -21,13 +21,19 @@ from maf_sandbox import (
     collect_outputs,
     error_detail,
 )
-from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
+from maf_sandbox.maf import SandboxResult, SandboxToolSession, sandboxed_tool
 
 from ._renderer import MAX_DIAGNOSTIC, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES
 
 DRAWIO_KIND = "drawio"
 CREATE_DRAWIO_TOOL_NAME = "create_drawio"
 _LOGGER = logging.getLogger(__name__)
+
+
+#: Every answer `create_drawio` may reach about the source it was given.
+#:
+#: Calls without a definitive conversion result carry no verdict.
+DRAWIO_VERDICTS = ("created", "refused")
 
 
 def drawio_sandbox_spec(image: str | None = None) -> SandboxSpec:
@@ -88,6 +94,8 @@ def make_drawio_tools(
         name=CREATE_DRAWIO_TOOL_NAME,
         approval_mode="never_require",
         source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=True,
+        verdicts=DRAWIO_VERDICTS,
         output_sink=sink,
         logger=_LOGGER,
     )
@@ -99,10 +107,14 @@ def _create_tool(
     preserve_layout: bool,
     direction: str,
     timeout: float,
-) -> Callable[..., Awaitable[str]]:
+) -> Callable[..., Awaitable[SandboxResult]]:
     program = files("maf_sandbox_drawio").joinpath("_renderer.py").read_text(encoding="utf-8")
 
-    async def create_drawio(xml: str) -> str:
+    def _stopped(sentence: str) -> SandboxResult:
+        """A call that reached no answer, and this module's own sentence saying why."""
+        return SandboxResult(completed=False, trusted_output=(sentence,))
+
+    async def create_drawio(xml: str) -> SandboxResult:
         """Create an editable diagram.drawio file from native, uncompressed draw.io XML.
 
         Supply an mxfile containing diagram/mxGraphModel/root, or a bare mxGraphModel.
@@ -126,17 +138,17 @@ def _create_tool(
         """
         try:
             if not isinstance(cast(object, xml), str):
-                return "Error: xml must be a string"
+                return _stopped("Error: xml must be a string")
             if len(xml) > MAX_INPUT_BYTES or len(xml.encode("utf-8")) > MAX_INPUT_BYTES:
-                return "Error: XML exceeds the 1 MiB input limit"
+                return _stopped("Error: XML exceeds the 1 MiB input limit")
         except UnicodeError:
-            return "Error: XML must be valid UTF-8 text"
+            return _stopped("Error: XML must be valid UTF-8 text")
         key = session.key()
         if isinstance(key, str):
-            return key
+            return _stopped(key)
         sandbox = await session.acquire(key)
         if isinstance(sandbox, str):
-            return sandbox
+            return _stopped(sandbox)
         guest_call_directory = session.guest_call_path()
         call_id = guest_call_directory.rsplit("/", 1)[-1]
         try:
@@ -158,16 +170,30 @@ def _create_tool(
                 timeout=timeout,
             )
         except TimeoutError:
-            return f"Error: draw.io conversion timed out after {timeout:g}s"
+            return _stopped(f"Error: draw.io conversion timed out after {timeout:g}s")
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("create_drawio: sandbox execution failed: %s", error_detail(exc))
-            return "Error: could not run the draw.io converter in the sandbox"
+            return _stopped("Error: could not run the draw.io converter in the sandbox")
         if result.exit_code != 0:
             guest_diagnostic = result.stdout if result.producer_owns_stderr else result.stderr
             diagnostic = (guest_diagnostic or "The converter returned no diagnostic")[
                 :MAX_DIAGNOSTIC
             ]
-            return f"Error: draw.io conversion failed (exit {result.exit_code}): {diagnostic}"
+            refused = result.exit_code == 2
+            return SandboxResult(
+                completed=refused,
+                verdict="refused" if refused else None,
+                trusted_output=(
+                    (
+                        "The converter rejected the diagram. Its own diagnostic is in the "
+                        "hidden half of this result."
+                    )
+                    if refused
+                    else "The converter could not complete the diagram.",
+                ),
+                # The converter's text, quoting whatever the supplied source made it say.
+                output=(f"draw.io conversion failed (exit {result.exit_code}): {diagnostic}",),
+            )
         try:
             landed = await collect_outputs(
                 sandbox,
@@ -186,10 +212,10 @@ def _create_tool(
             )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("create_drawio: output delivery failed: %s", error_detail(exc))
-            return "Error: delivery of diagram.drawio failed"
+            return _stopped("Error: delivery of diagram.drawio failed")
         if not landed:
-            return "Error: the converter produced no diagram.drawio file"
-        return landed[0].display
+            return _stopped("Error: the converter produced no diagram.drawio file")
+        return SandboxResult(completed=True, verdict="created", output=(landed[0].display,))
 
     policy = (
         "Preserve supplied page geometry; automatically lay out pages with missing geometry."

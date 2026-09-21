@@ -1,6 +1,6 @@
 # draw.io
 
-`create_drawio(xml: str)` turns native draw.io XML into one editable `diagram.drawio` file. A guest program checks the graph and applies the host's layout settings. The host's `OutputSink` receives the file; the model receives a delivery reference.
+`create_drawio(xml: str)` turns native draw.io XML into one editable `diagram.drawio` file. A guest program checks the graph and applies the host's layout settings. The host's `OutputSink` receives the file; the model receives completion, verdict and output items.
 
 See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wiring and an input example.
 
@@ -14,9 +14,15 @@ See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wir
 | Network | `CLOSED` |
 | Output | One `diagram.drawio` file, `application/xml` |
 | Cleanup | Disposal by default; no call-directory confinement claim |
-| Result integrity | `untrusted`; no standing guidance |
+| Result integrity | Trusted completion and verdict; untrusted sink display and converter diagnostics; no standing guidance |
 
 Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide an equivalent one. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment.
+
+## Result
+
+The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `created` after artifact delivery and `refused` when the converter rejects the source or an unsupported layout request. `completed` is false, with no verdict, for invalid tool arguments, an unavailable sandbox, execution or Graphviz failures, timeouts, missing output and failed delivery. The renderer reserves exit code 2 for source rejection and exit code 3 for operational failure; other nonzero exits also report incomplete conversion.
+
+The sink's display reference and the converter's diagnostic are `output`, labelled untrusted because either can contain guest-derived text. Fixed explanations from the kind are `trusted_output`. The wrapper renders completion and verdict as separate trusted items, so a host can hide workload output while leaving the result readable.
 
 ## Host configuration
 
@@ -57,9 +63,9 @@ The model owns diagram meaning, such as sequence-message order. Layout does not 
 
 ## Result labels and tool flow
 
-![The draw.io tool is a source tool declaring untrusted integrity. Its delivery reference or diagnostic is one untrusted content result with host-controlled confidentiality. It has no trusted guidance item. FIDES shows the text or a hidden reference to the model. The model's next call to a reader, writer or other tool is checked against that destination's integrity and confidentiality policy. Artifact delivery occurs separately during create_drawio.](../assets/drawio-information-flow.svg)
+![The result contract gives draw.io trusted completion, verdict and fixed explanations, with separately labelled untrusted sink display or converter diagnostics. FIDES can hide untrusted items while leaving the verdict readable. Every item carries the call's confidentiality. Later model-called tools enforce destination policy. The artifact reaches the configured OutputSink during create_drawio.](../assets/drawio-information-flow.svg)
 
-The XML argument can contain expanded hidden content. Diagnostics can quote it, and Graphviz is a separate program producing layout output. The result therefore claims `SourceIntegrity.UNTRUSTED` explicitly.
+The XML argument can contain expanded hidden content. Diagnostics can quote it, and the sink can compose its display from artifact bytes. The kind declares `SourceIntegrity.UNTRUSTED` for workload output. The result contract raises the attached tool's declaration to trusted and writes the untrusted label only on output items.
 
 The artifact goes to the configured sink during the call. The diagram shows the text result and later model-called tools. The host supplies result confidentiality and any outward confidentiality limit; [information flow](../information-flow.md) explains the distinction.
 
@@ -84,4 +90,4 @@ Every page must succeed before collection. Missing output or failed delivery is 
 |---|---|---|
 | Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
 | Specialized automatic layouts and previews | Outside the supported contract | untracked |
-| Four-field result contract | Open; this kind returns text | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for draw.io, sample 18 and its checks; remaining adoption tracked separately | [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
