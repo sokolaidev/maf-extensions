@@ -288,19 +288,26 @@ def test_live_warm_setup_refuses_a_parent_swapped_after_the_check():
             )
             assert replaced.returncode == 0, replaced.stderr_text
 
+            # A refused setup disposes the container, so read the protected directory while
+            # it is still there: right after the setup command answered.
+            landed: list[str] = []
+
             async def intercept(*args, **kwargs):
-                if _CREATE_DIRECTORIES in args:
-                    swapped = await live.command(
-                        f"mv {_WORK}/outer {_WORK}/outer.mine && ln -s /protected {_WORK}/outer"
-                    )
-                    assert swapped.returncode == 0, swapped.stderr_text
-                return await live.run(*args, **kwargs)
+                if _CREATE_DIRECTORIES not in args:
+                    return await live.run(*args, **kwargs)
+                swapped = await live.command(
+                    f"mv {_WORK}/outer {_WORK}/outer.mine && ln -s /protected {_WORK}/outer"
+                )
+                assert swapped.returncode == 0, swapped.stderr_text
+                result = await live.run(*args, **kwargs)
+                landed.extend(await live.protected())
+                return result
 
             live.backend._wslc = intercept
             with pytest.raises(RuntimeError, match="no longer the directory the check found"):
                 await live.backend.acquire(live.key, spec)
             live.backend._wslc = live.run
-            assert await live.protected() == []
+            assert landed == []
         finally:
             live.backend._wslc = live.run
             await live.close()

@@ -168,6 +168,39 @@ def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
     assert not fake.matching("container", "cp", "-")
 
 
+@pytest.mark.parametrize("ending", ["fails", "times out", "is cancelled"])
+def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending):
+    """`acquire` returns no sandbox, so nothing else can dispose the container it made.
+
+    Setup runs privileged commands the host process cannot reach once it is killed, and the
+    container stays registered for warm reuse, so a later acquire could race one.
+    """
+    machine = _machine(
+        running=[],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        if _CREATE_DIRECTORIES in args:
+            if ending == "fails":
+                return _WslcResult(1, b"", b"setup refused")
+            raise (
+                TimeoutError("setup timed out")
+                if ending == "times out"
+                else asyncio.CancelledError()
+            )
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises((RuntimeError, TimeoutError, asyncio.CancelledError)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]

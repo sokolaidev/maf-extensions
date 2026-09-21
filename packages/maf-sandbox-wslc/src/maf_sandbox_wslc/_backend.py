@@ -706,9 +706,10 @@ class _WslcSandbox:
         to preserve the contents, ownership and permissions it finds — chowning one would
         hand the image's user a directory the host never offered.
 
-        A setup that times out takes the container with it, so the half-prepared base goes
-        too. What survives that is a host killed outright between the two commands: the base
-        is then left root-owned, and the first write says so with ``PermissionError``.
+        A setup that fails, times out or is cancelled takes the container with it — ``acquire``
+        disposes it, since it returns no sandbox for anyone else to — so the half-prepared base
+        goes too. What survives that is a host killed outright between the two commands: the
+        base is then left root-owned, and the first write says so with ``PermissionError``.
         """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         created = False
@@ -1401,7 +1402,19 @@ class WslcSandboxBackend:
                 sandbox.guest_principal,
                 guest_uid,
             )
-            await sandbox.prepare_work_dir(spec)
+            try:
+                await sandbox.prepare_work_dir(spec)
+            except BaseException:
+                # Nothing is returned, so no caller can dispose this container — and setup
+                # runs privileged commands the host process cannot reach once it is gone.
+                # A cancelled prepare needs this as much as a failed one.
+                try:
+                    failure = await self.dispose(key, kind=spec.kind)
+                    if failure is not None:
+                        logger.warning("sandbox setup cleanup failed: %s", failure)
+                except Exception as failure:
+                    logger.warning("sandbox setup cleanup raised: %s", failure)
+                raise
             return sandbox
 
     async def _verify_storage_base(
