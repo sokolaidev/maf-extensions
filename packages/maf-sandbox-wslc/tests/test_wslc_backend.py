@@ -201,6 +201,60 @@ def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending):
     assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
 
 
+def test_a_guest_command_stopped_at_its_output_cap_discards_the_container():
+    """Reaching ``read_limit`` kills the host process and returns; nothing raises on its own.
+
+    The command inside the container keeps running, so it can still publish the file after
+    the caller was told the write failed, and a warm acquire would reuse that container.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if _WRITE_AS_THE_GUEST in args:
+            return _WslcResult(1, b"x" * 4096, b"")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(RuntimeError, match="may still be running inside the container"):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
+
+
+def test_a_copy_that_fills_its_stdout_cap_is_not_a_guest_command():
+    """``container cp`` is the host's own copy: a full cap is not an unclean guest command.
+
+    Its stdout can legitimately carry a tar header, and killing the host ends the copy.
+    """
+    header = tarfile.TarInfo("sub/").tobuf()
+    overrides = {("container", "cp"): _WslcResult(1, header, b"copy failed")}
+    backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(RuntimeError, match="copy failed"):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert not fake.matching("container", "remove")
+
+
+def test_an_exec_only_acquire_that_must_create_a_base_needs_the_image_user():
+    """A base that has to be created has to be given to someone, EXEC included.
+
+    The typed refusal is what a caller can act on; a bare RuntimeError reads as a broken
+    engine rather than an image this backend cannot serve.
+    """
+    inspected = {
+        "Id": "i",
+        "Config": {"User": "worker", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+    }
+    overrides = {
+        ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
+        ("container", "exec", "-w", "/", _NAME, "id"): _WslcResult(1, b"", b"no id"),
+    }
+    backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
+        asyncio.run(backend.acquire(_KEY, spec))
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]

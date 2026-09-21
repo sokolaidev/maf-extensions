@@ -681,22 +681,41 @@ class _WslcSandbox:
         stdin: bytes | None = None,
         timeout: float | None = None,
         read_limit: int | None = None,
+        in_the_guest: bool = False,
     ) -> _WslcResult:
-        """One command, force-removing this container if its deadline expires.
+        """One command, force-removing this container if the command's end is unknown.
 
-        Killing the host process does not reach the command it started inside the container,
-        so a timed-out file command can leave privileged work running in a container a warm
-        acquire would reuse. Every file-surface command goes through here for that reason.
+        Killing the host process does not reach the command it started *inside* the container,
+        so a file command this host stopped can leave privileged work running in a container a
+        warm acquire would reuse. Every file-surface command goes through here for that reason,
+        and an expired deadline discards the container.
+
+        ``in_the_guest`` marks the commands that keep running after the host side dies — the
+        ``exec`` ones. For those, stdout reaching ``read_limit`` is a second such ending:
+        :meth:`_read_bounded` answers it by killing the host process and returning normally,
+        so nothing else would notice. It is not set for ``container cp``, whose copy the host
+        owns and whose stdout can legitimately carry a header.
+
         A cancellation does not remove it: the caller owns that sandbox and disposes it.
         """
         try:
-            return await self._run(*args, stdin=stdin, timeout=timeout, read_limit=read_limit)
+            result = await self._run(*args, stdin=stdin, timeout=timeout, read_limit=read_limit)
         except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run(
-                    "container", "remove", "-f", self._name, timeout=self._command_timeout
-                )
+            await self._discard()
             raise
+        if in_the_guest and read_limit is not None and len(result.stdout) >= read_limit:
+            await self._discard()
+            raise RuntimeError(
+                f"wslc stopped a guest command after it wrote {read_limit} bytes to stdout, "
+                "which these commands do not; it may still be running inside the container, "
+                "so the container was discarded"
+            )
+        return result
+
+    async def _discard(self) -> None:
+        """Force-remove this container, swallowing whatever removal says."""
+        with contextlib.suppress(Exception):
+            await self._run("container", "remove", "-f", self._name, timeout=self._command_timeout)
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base as root, without following links.
@@ -728,7 +747,7 @@ class _WslcSandbox:
         )
         base = posix_work_dir_ancestors(self._work_dir)
         if created and base and spec.required_capabilities & _PREPARED_CAPABILITIES:
-            await self._ensure_base_owner(base[-1])
+            await self._ensure_base_owner(base[-1], spec)
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
         """Create the missing directories as root, without following a swapped-in link.
@@ -752,19 +771,31 @@ class _WslcSandbox:
             *directories,
             timeout=self._command_timeout,
             read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
         )
         if result.returncode:
             raise RuntimeError(
                 f"wslc could not create the working directory: {result.stderr_text.strip()}"
             )
 
-    async def _ensure_base_owner(self, base: str) -> None:
+    async def _ensure_base_owner(self, base: str, spec: SandboxSpec) -> None:
         """Give ``base`` to the image's user as root, refusing a base swapped for a link.
 
         The caller decides when this is allowed: only over storage this backend allocated.
+
+        An unresolved image user is refused as a capability the image cannot serve, not as a
+        failure of this call — a base that has to be *created* has to be given to someone, so
+        every capability that prepares one needs the identity, not ``FILES_IN`` alone.
         """
         if self._guest_identity is None:
-            raise RuntimeError("wslc could not resolve the image user for the working directory")
+            raise SandboxCapabilityNotSupported(
+                f"sandbox backend 'wslc' cannot serve "
+                f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
+                f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
+                f"directory {base!r} had to be created, and the image user it would belong to "
+                "is unresolved. Use a numeric uid:gid or working id commands, or point "
+                "work_dir at a directory the image already provides. The next acquire retries."
+            )
         uid, gid = self._guest_identity
         result = await self._run_or_discard(
             "container",
@@ -782,6 +813,7 @@ class _WslcSandbox:
             base,
             timeout=self._command_timeout,
             read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
         )
         if result.returncode:
             raise RuntimeError(
@@ -831,6 +863,7 @@ class _WslcSandbox:
             stdin=data,
             timeout=self._command_timeout,
             read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
         )
         if result.returncode != 0:
             detail = result.stderr_text.strip()

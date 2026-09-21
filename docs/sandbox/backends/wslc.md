@@ -23,7 +23,7 @@ Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr
 
 `write_file` runs one command as the image's user through `container exec`. The content arrives on stdin. The command creates missing parents, writes a sibling named for the call, checks the byte count, then moves the sibling into place. The file and any new parents belong to the image's user because that user wrote them. Existing directories keep their metadata.
 
-A destination the image's user cannot write raises `PermissionError`. There is no root fallback. Where the image's user is root, writes reach what its own programs reach. A write that times out — a blocked guest utility, say — discards the container, because killing the host process does not reach the command inside it; this matches `exec`.
+A destination the image's user cannot write raises `PermissionError`. There is no root fallback. Where the image's user is root, writes reach what its own programs reach. A write this host stops discards the container, because killing the host process does not reach the command inside it: that covers a blocked guest utility hitting the deadline, and a command whose stdout reaches the read cap, which the host answers by killing it and returning. This matches `exec`.
 
 On WSLC 2.9.12.0 a 32 MiB write took 0.31 s and a plain exec 0.11 s. The write's byte count is checked against the content length before the file is published, so an engine whose `exec` does not stream stdin refuses the write rather than publishing a short file. `container exec --interactive` is present in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.12.0.
 
@@ -41,7 +41,7 @@ A second held command gives the base to the image's user. It is held the same wa
 
 A setup that times out removes the container, so a half-prepared base goes with it. A host killed outright between the two commands leaves the base root-owned; the first write then says so with `PermissionError`, and disposing the sandbox rebuilds it.
 
-Numeric IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root. Unresolved identity refuses `FILES_IN` at acquisition. Identity is checked on each acquire.
+Numeric IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root. Unresolved identity refuses `FILES_IN` at acquisition, and refuses any capability that has to *create* a base — a directory this backend creates has to be given to someone, so `EXEC` needs the identity too when the base is missing. An existing base needs none of this. Identity is checked on each acquire.
 
 <a id="write-checkcopy-residual"></a>
 
