@@ -22,6 +22,7 @@ from maf_sandbox import (
     Capability,
     Cleanup,
     Egress,
+    EntryKind,
     ListedFile,
     SandboxKey,
     SandboxQueuedTimeout,
@@ -106,7 +107,8 @@ def test_no_environment_or_filesystem_channel(live_backend, monkeypatch: pytest.
     asyncio.run(check())
 
 
-def test_real_flat_outputs_are_binary_and_reset_before_reuse():
+@pytest.mark.parametrize("work_dir", [None, "/output"])
+def test_real_flat_outputs_are_binary_and_reset_before_reuse(work_dir):
     from maf_sandbox import SandboxTransferCapExceeded
 
     backend = HyperlightSandboxBackend(
@@ -114,17 +116,26 @@ def test_real_flat_outputs_are_binary_and_reset_before_reuse():
             file_outputs=True, linux_cgroup_root=os.environ.get("MAF_HYPERLIGHT_CGROUP_ROOT")
         )
     )
-    spec = replace(SPEC, work_dir="/output", requires=SPEC.requires | {Capability.FILES_OUT})
+    spec = replace(
+        SPEC,
+        work_dir=work_dir,
+        requires=SPEC.requires | {Capability.FILES_OUT, Capability.FILES_LIST},
+    )
 
     async def check():
         try:
             async with backend.call_admission(KEY, spec, owner="files", timeout=30):
                 sandbox = await backend.acquire(KEY, spec)
+                assert await sandbox.list_dir(".", working_directory=".") == ()
                 result = await sandbox.run_code(
                     "import os\nfor operation in (lambda: os.symlink('/output/result.bin', '/output/link'), lambda: os.mkdir('/output/nested')):\n    try:\n        operation()\n    except (OSError, AttributeError):\n        pass\n    else:\n        raise RuntimeError('unexpected guest link/directory creation')\nwith open('/output/result.bin', 'wb') as f:\n    f.write(bytes(range(256)))",
                     timeout=5,
                 )
                 assert result.exit_code == 0, result.stderr
+                entries = await sandbox.list_dir(".", working_directory=".")
+                assert [(entry.path, entry.kind, entry.size_bytes) for entry in entries] == [
+                    ("result.bin", EntryKind.FILE, 256)
+                ]
                 assert (
                     await sandbox.stat_file("result.bin", working_directory=".")
                 ).size_bytes == 256
@@ -135,8 +146,31 @@ def test_real_flat_outputs_are_binary_and_reset_before_reuse():
                 ) == bytes(range(256))
                 await sandbox.reset(timeout=5)
                 assert await sandbox.stat_file("result.bin", working_directory=".") is None
+                assert await sandbox.list_dir(".", working_directory=".") == ()
                 result = await sandbox.run_code("print('next')", timeout=5)
                 assert result.stdout == "next\n"
+            async with backend.call_admission(KEY, spec, owner="next-files", timeout=30):
+                fresh = await backend.acquire(KEY, spec)
+                assert await fresh.list_dir(".", working_directory=".") == ()
+                result = await fresh.run_code(
+                    "with open('/output/one.bin', 'wb') as f:\n    f.write(b'\\x00\\xff')\n"
+                    "with open('/output/two.bin', 'wb') as f:\n    f.write(b'\\xff')",
+                    timeout=5,
+                )
+                assert result.exit_code == 0, result.stderr
+                entries = await fresh.list_dir(".", working_directory=".")
+                assert [(entry.path, entry.kind, entry.size_bytes) for entry in entries] == [
+                    ("one.bin", EntryKind.FILE, 2),
+                    ("two.bin", EntryKind.FILE, 1),
+                ]
+                for entry in entries:
+                    data = await fresh.read_file(entry.path, working_directory=".", max_bytes=2)
+                    assert data == (b"\x00\xff" if entry.path == "one.bin" else b"\xff")
+                outputs = cast("_backend._HyperlightSandbox", fresh).outputs
+                assert outputs is not None
+                directory = outputs.path
+                assert await backend.dispose(KEY) is None
+                assert not directory.exists()
         finally:
             await backend.aclose()
 

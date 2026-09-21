@@ -353,7 +353,15 @@ class _HyperlightSandbox:
                 )
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
-        raise NotImplementedError("Hyperlight file channels are not enabled")
+        if self.outputs is None:
+            raise NotImplementedError("Hyperlight file channels are not enabled")
+        self._authorize()
+        async with _claim(self._gate, _deadline(self.config.startup_timeout)):
+            self._authorize()
+            with self._files_gate:
+                if not self.alive:
+                    raise OSError("sandbox is retired")
+                return self.outputs.list_dir(path, working_directory)
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         raise NotImplementedError("Hyperlight file channels are not enabled")
@@ -384,7 +392,8 @@ class HyperlightSandboxBackend:
         self._owner = uuid.uuid4().hex
         if self.config.file_outputs:
             self.declarations = BackendDeclarations(
-                capabilities=self.declarations.capabilities | {Capability.FILES_OUT},
+                capabilities=self.declarations.capabilities
+                | {Capability.FILES_OUT, Capability.FILES_LIST},
                 egress_modes=self.declarations.egress_modes,
                 requires_exclusive_admission=True,
             )

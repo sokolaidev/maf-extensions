@@ -16,15 +16,44 @@ from typing import BinaryIO
 from maf_sandbox import EntryKind, SandboxEntry, SandboxTransferCapExceeded
 from maf_sandbox.paths import confine_resolve_guest_path, resolve_guest_working_directory
 
-from ._windows_files import open_no_follow
+from ._windows_files import directory_names, open_no_follow
 
 GUEST_ROOT = "/output"
+MAX_LIST_ENTRIES = 64
+MAX_LIST_NAME_BYTES = 64 * 1024
 
 
 def _is_link(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(
         getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
     )
+
+
+def _entry(path: str, info: os.stat_result) -> SandboxEntry:
+    kind = (
+        EntryKind.SYMLINK
+        if _is_link(info)
+        else EntryKind.DIRECTORY
+        if stat.S_ISDIR(info.st_mode)
+        else EntryKind.FILE
+        if stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+        else EntryKind.OTHER
+    )
+    return SandboxEntry(path, kind, info.st_size if kind is EntryKind.FILE else None)
+
+
+def _validate_name(name: str) -> None:
+    device = name.split(".", 1)[0].upper()
+    if (
+        not name
+        or name in {".", ".."}
+        or name.endswith((".", " "))
+        or any(c in name for c in '/\\\0:<>"|?*')
+        or any(ord(c) < 32 for c in name)
+        or device in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+        or device in {f"{prefix}{n}" for prefix in ("COM", "LPT") for n in "123456789¹²³"}
+    ):
+        raise ValueError("unsupported output filename")
 
 
 class OutputDirectory:
@@ -36,15 +65,22 @@ class OutputDirectory:
         self._identity = (info.st_dev, info.st_ino)
 
     @contextmanager
-    def _reader(self, target: Path) -> Generator[BinaryIO]:
+    def _opened_root(self, *, listing: bool = False) -> Generator[int]:
         if sys.platform == "win32":
-            root = open_no_follow(self.path, directory=True)
+            root = open_no_follow(self.path, directory=True, list_directory=listing)
         else:
             root = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             info = os.fstat(root)
             if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != self._identity:
                 raise ValueError("the output directory was replaced")
+            yield root
+        finally:
+            os.close(root)
+
+    @contextmanager
+    def _reader(self, target: Path) -> Generator[BinaryIO]:
+        with self._opened_root() as root:
             if sys.platform == "win32":
                 descriptor = open_no_follow(target)
             else:
@@ -56,8 +92,6 @@ class OutputDirectory:
                     yield stream
             finally:
                 os.close(descriptor)
-        finally:
-            os.close(root)
 
     def _root(self) -> None:
         info = self.path.lstat()
@@ -79,15 +113,7 @@ class OutputDirectory:
         parts = [] if relative == "." else relative.split("/")
         target = self.path
         for index, part in enumerate(parts):
-            device = part.split(".", 1)[0].upper()
-            if (
-                part.endswith((".", " "))
-                or any(c in part for c in '<>"|?*')
-                or any(ord(c) < 32 for c in part)
-                or device in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
-                or device in {f"{prefix}{n}" for prefix in ("COM", "LPT") for n in "123456789¹²³"}
-            ):
-                raise ValueError("unsupported output filename")
+            _validate_name(part)
             target /= part
             if index < len(parts) - 1 or (guest == cwd and cwd != GUEST_ROOT):
                 try:
@@ -109,16 +135,53 @@ class OutputDirectory:
             info = target.lstat()
         except FileNotFoundError:
             return None
-        kind = (
-            EntryKind.SYMLINK
-            if _is_link(info)
-            else EntryKind.DIRECTORY
-            if stat.S_ISDIR(info.st_mode)
-            else EntryKind.FILE
-            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-            else EntryKind.OTHER
-        )
-        return SandboxEntry(relative, kind, info.st_size if kind is EntryKind.FILE else None)
+        return _entry(relative, info)
+
+    def _names(self, root: int) -> Generator[tuple[str, int]]:
+        if sys.platform == "win32":
+            yield from directory_names(root)
+        else:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    yield entry.name, entry.inode()
+
+    def list_dir(self, path: str, working_directory: str) -> tuple[SandboxEntry, ...]:
+        """List the prepared base, refusing incomplete or redirected enumeration."""
+        target, _ = self._path(path, working_directory)
+        with self._opened_root(listing=True) as root:
+            if target != self.path:
+                info = self._stat_child(root, target.name)
+                if _is_link(info):
+                    raise ValueError("output listing target is a link")
+                if not stat.S_ISDIR(info.st_mode):
+                    raise NotADirectoryError(path)
+                raise ValueError("the pinned Hyperlight guest supports only flat output files")
+            entries: dict[str, SandboxEntry] = {}
+            name_bytes = 0
+            names = self._names(root)
+            try:
+                for name, identity in names:
+                    name_bytes += len(name.encode("utf-8"))
+                    if len(entries) >= MAX_LIST_ENTRIES or name_bytes > MAX_LIST_NAME_BYTES:
+                        raise SandboxTransferCapExceeded(
+                            "output listing exceeds its metadata budget"
+                        )
+                    _validate_name(name)
+                    if name in entries:
+                        raise OSError("output listing contains a duplicate name")
+                    info = self._stat_child(root, name)
+                    if (info.st_dev, info.st_ino) != (self._identity[0], identity):
+                        raise OSError("output entry was replaced during listing")
+                    entries[name] = _entry(name, info)
+            finally:
+                names.close()
+            return tuple(entries[name] for name in sorted(entries))
+
+    def _stat_child(self, root: int, name: str) -> os.stat_result:
+        if sys.platform == "win32":
+            # The root denies rename/delete; compare each fresh identity with its handle listing.
+            return (self.path / name).lstat()
+        return os.stat(name, dir_fd=root, follow_symlinks=False)
 
     def read_file(self, path: str, working_directory: str, max_bytes: int) -> bytes:
         """Read a regular file, refusing overflow rather than returning a prefix."""

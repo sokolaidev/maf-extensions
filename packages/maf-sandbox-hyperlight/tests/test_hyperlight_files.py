@@ -18,6 +18,7 @@ from maf_sandbox import (
     Capability,
     Cleanup,
     EntryKind,
+    SandboxEntry,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -29,14 +30,19 @@ from maf_sandbox.conformance import (
     assert_storage_base_conformance,
 )
 
-from maf_sandbox_hyperlight import HyperlightSandboxBackend, HyperlightSandboxConfig, _backend
+from maf_sandbox_hyperlight import (
+    HyperlightSandboxBackend,
+    HyperlightSandboxConfig,
+    _backend,
+    _files,
+)
 from maf_sandbox_hyperlight._files import OutputDirectory
 
 KEY = SandboxKey("files-test", "thread", "agent")
 SPEC = SandboxSpec(
     kind="python",
     work_dir="/output",
-    requires=frozenset({Capability.RUN_CODE, Capability.FILES_OUT}),
+    requires=frozenset({Capability.RUN_CODE, Capability.FILES_OUT, Capability.FILES_LIST}),
 )
 
 
@@ -62,6 +68,134 @@ def test_binary_size_refusal_empty_and_missing(output):
         output.read_file("missing", ".", 10)
 
 
+@pytest.mark.parametrize("cwd", [".", "/output"])
+def test_listing_is_flat_complete_and_reports_binary_sizes(output, cwd):
+    assert output.list_dir(".", cwd) == ()
+    (output.path / "zéro.bin").write_bytes(bytes(range(256)))
+    (output.path / "empty").touch()
+    (output.path / "directory").mkdir()
+    assert output.list_dir(".", cwd) == (
+        SandboxEntry("directory", EntryKind.DIRECTORY, None),
+        SandboxEntry("empty", EntryKind.FILE, 0),
+        SandboxEntry("zéro.bin", EntryKind.FILE, 256),
+    )
+    with pytest.raises(ValueError, match="flat"):
+        output.list_dir("directory", cwd)
+    with pytest.raises(NotADirectoryError):
+        output.list_dir("empty", cwd)
+    with pytest.raises(FileNotFoundError):
+        output.list_dir("missing", cwd)
+
+
+def test_listing_reports_hardlinks_without_readable_sizes(output, tmp_path):
+    target = tmp_path / "secret"
+    target.write_bytes(b"outside")
+    os.link(target, output.path / "hard")
+    assert output.list_dir(".", ".") == (SandboxEntry("hard", EntryKind.OTHER, None),)
+
+
+def test_listing_entry_cap_counts_directories_and_refuses_without_partial_success(output):
+    for i in range(_files.MAX_LIST_ENTRIES):
+        (output.path / f"d{i:02}").mkdir()
+    assert len(output.list_dir(".", ".")) == _files.MAX_LIST_ENTRIES
+    (output.path / "overflow").touch()
+    with pytest.raises(SandboxTransferCapExceeded, match="metadata"):
+        output.list_dir(".", ".")
+
+
+def test_listing_name_budget_uses_encoded_bytes(output, monkeypatch):
+    (output.path / "é").touch()
+    monkeypatch.setattr(_files, "MAX_LIST_NAME_BYTES", 2)
+    assert output.list_dir(".", ".")[0].path == "é"
+    monkeypatch.setattr(_files, "MAX_LIST_NAME_BYTES", 1)
+    with pytest.raises(SandboxTransferCapExceeded):
+        output.list_dir(".", ".")
+
+
+@pytest.mark.parametrize("fault", ["iterator", "metadata", "identity", "duplicate", "unsafe"])
+def test_listing_inspection_failure_closes_enumeration_and_root(output, monkeypatch, fault):
+    (output.path / "result").write_bytes(b"inside")
+    original = output._names
+    closed = []
+    descriptors = []
+
+    def names(root):
+        descriptors.append(root)
+        try:
+            records = list(original(root))
+            yield from records
+            if fault == "iterator":
+                raise OSError("inspection failure")
+            if fault == "duplicate":
+                yield from records
+            if fault == "unsafe":
+                yield "../outside", 0
+        finally:
+            closed.append(True)
+
+    if fault in {"metadata", "identity"}:
+
+        def inspect(root, name):
+            if fault == "metadata":
+                raise OSError("inspection failure")
+            return os.fstat(root)
+
+        monkeypatch.setattr(output, "_stat_child", inspect)
+    monkeypatch.setattr(output, "_names", names)
+    with pytest.raises((OSError, ValueError)):
+        output.list_dir(".", ".")
+    assert closed == [True]
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+def test_listing_rechecks_root_after_path_validation(output, monkeypatch):
+    (output.path / "inside").touch()
+    moved = output.path.with_name(output.path.name + "-original")
+    original = output._path
+
+    def replace_root(path, cwd):
+        result = original(path, cwd)
+        output.path.rename(moved)
+        output.path.mkdir()
+        (output.path / "outside").touch()
+        return result
+
+    monkeypatch.setattr(output, "_path", replace_root)
+    try:
+        with pytest.raises(ValueError, match="replaced"):
+            output.list_dir(".", ".")
+    finally:
+        (output.path / "outside").unlink()
+        output.path.rmdir()
+        moved.rename(output.path)
+
+
+def test_listing_root_cannot_redirect_after_open(output, monkeypatch):
+    (output.path / "inside").touch()
+    moved = output.path.with_name(output.path.name + "-original")
+    original = output._names
+
+    def names(root):
+        if sys.platform == "win32":
+            with pytest.raises(OSError):
+                output.path.rename(moved)
+        else:
+            output.path.rename(moved)
+            output.path.mkdir()
+            (output.path / "outside").touch()
+        yield from original(root)
+
+    monkeypatch.setattr(output, "_names", names)
+    try:
+        assert output.list_dir(".", ".") == (SandboxEntry("inside", EntryKind.FILE, 0),)
+    finally:
+        if moved.exists():
+            (output.path / "outside").unlink()
+            output.path.rmdir()
+            moved.rename(output.path)
+
+
 @pytest.mark.parametrize(
     "path,cwd",
     [
@@ -84,6 +218,8 @@ def test_unsafe_names_are_refused(output, path, cwd):
         output.stat_file(path, cwd)
     with pytest.raises(ValueError):
         output.read_file(path, cwd, 10)
+    with pytest.raises(ValueError):
+        output.list_dir(path, cwd)
 
 
 def test_nested_host_file_is_not_mistaken_for_guest_reach(output):
@@ -107,6 +243,9 @@ def test_links_are_classified_but_never_read(output, tmp_path):
     secret.write_bytes(b"secret")
     _symlink(output.path / "link", secret)
     assert output.stat_file("link", ".").kind is EntryKind.SYMLINK
+    assert output.list_dir(".", ".") == (SandboxEntry("link", EntryKind.SYMLINK, None),)
+    with pytest.raises(ValueError, match="link"):
+        output.list_dir("link", ".")
     with pytest.raises(OSError):
         output.read_file("link", ".", 100)
     with pytest.raises(ValueError):
@@ -245,6 +384,10 @@ def test_junctions_cannot_redirect_collection_or_cleanup(output, tmp_path):
     junction = output.path / "junction"
     subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(tmp_path)], check=True)
     assert output.stat_file("junction", ".").kind is EntryKind.SYMLINK
+    assert output.list_dir(".", ".") == (SandboxEntry("junction", EntryKind.SYMLINK, None),)
+    for path, cwd in (("junction", "."), ("junction/secret", "."), (".", "/output/junction")):
+        with pytest.raises(ValueError, match="link"):
+            output.list_dir(path, cwd)
     with pytest.raises(OSError):
         output.read_file("junction", ".", 100)
     with pytest.raises(ValueError, match="link"):
@@ -263,6 +406,7 @@ def test_fifo_is_never_opened(output):
         pytest.skip("POSIX FIFO fixture")
     os.mkfifo(output.path / "pipe")
     assert output.stat_file("pipe", ".").kind is EntryKind.OTHER
+    assert output.list_dir(".", ".") == (SandboxEntry("pipe", EntryKind.OTHER, None),)
     with pytest.raises(OSError):
         output.read_file("pipe", ".", 100)
 
@@ -296,6 +440,13 @@ def backend(monkeypatch):
 
 
 def test_direct_access_requires_call_scope_and_reset_cleans(backend):
+    assert backend.declarations.capabilities == {
+        Capability.RUN_CODE,
+        Capability.SNAPSHOT,
+        Capability.FILES_OUT,
+        Capability.FILES_LIST,
+    }
+
     async def check():
         with pytest.raises(RuntimeError, match="call_admission"):
             await backend.acquire(KEY, SPEC)
@@ -304,6 +455,9 @@ def test_direct_access_requires_call_scope_and_reset_cleans(backend):
             directory = sandbox.outputs.path
             assert (await sandbox.stat_file(".", working_directory=".")).kind is EntryKind.DIRECTORY
             await sandbox.run_code("write", timeout=1)
+            assert await sandbox.list_dir(".", working_directory=".") == (
+                SandboxEntry("result.bin", EntryKind.FILE, 2),
+            )
             assert (
                 await sandbox.read_file("result.bin", working_directory=".", max_bytes=2)
                 == b"\x00\xff"
@@ -312,8 +466,11 @@ def test_direct_access_requires_call_scope_and_reset_cleans(backend):
             await sandbox.reset(timeout=1)
             assert sandbox.instance_id != identity
             assert list(directory.iterdir()) == []
+            assert await sandbox.list_dir(".", working_directory=".") == ()
         with pytest.raises(RuntimeError):
             await sandbox.read_file("result.bin", working_directory=".", max_bytes=2)
+        with pytest.raises(RuntimeError):
+            await sandbox.list_dir(".", working_directory=".")
         await backend.aclose()
         assert not directory.exists()
 
@@ -534,7 +691,11 @@ def test_call_ownership_crosses_event_loops_and_backend_objects(backend):
     async def attempt():
         waiting.set()
         async with second.call_admission(KEY, SPEC, owner="second", timeout=0.1):
-            return await second.acquire(KEY, SPEC)
+            sandbox = await second.acquire(KEY, SPEC)
+            assert await sandbox.list_dir(".", working_directory=".") == (
+                SandboxEntry("result.bin", EntryKind.FILE, 2),
+            )
+            return sandbox
 
     async def check():
         with ThreadPoolExecutor(max_workers=1) as executor:
@@ -546,6 +707,81 @@ def test_call_ownership_crosses_event_loops_and_backend_objects(backend):
                     await asyncio.wrap_future(future)
                 await sandbox.run_code("write", timeout=1)
             assert await asyncio.wrap_future(executor.submit(asyncio.run, attempt())) is sandbox
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("operation", ["run", "reset", "dispose"])
+def test_listing_holds_execution_and_storage_cleanup_across_loops(backend, monkeypatch, operation):
+    async def check():
+        async with backend.call_admission(KEY, SPEC, owner="listing", timeout=5):
+            sandbox = await backend.acquire(KEY, SPEC)
+            await sandbox.run_code("write", timeout=1)
+            scanning, release = threading.Event(), threading.Event()
+            names = sandbox.outputs._names
+
+            def blocked_names(root):
+                scanning.set()
+                assert release.wait(5)
+                yield from names(root)
+
+            monkeypatch.setattr(sandbox.outputs, "_names", blocked_names)
+            request, close = sandbox.worker.request, sandbox.outputs.close
+
+            def checked_request(message, *, deadline):
+                assert release.is_set(), "execution/reset interleaved with listing"
+                return request(message, deadline=deadline)
+
+            def checked_close():
+                assert release.is_set(), "storage deletion interleaved with listing"
+                return close()
+
+            monkeypatch.setattr(sandbox.worker, "request", checked_request)
+            monkeypatch.setattr(sandbox.outputs, "close", checked_close)
+            listing = asyncio.create_task(
+                asyncio.to_thread(lambda: asyncio.run(sandbox.list_dir(".", working_directory=".")))
+            )
+            pending = None
+            try:
+                assert await asyncio.to_thread(scanning.wait, 2)
+                action = (
+                    sandbox.run_code("write", timeout=3)
+                    if operation == "run"
+                    else sandbox.reset(timeout=3)
+                    if operation == "reset"
+                    else backend.dispose(KEY)
+                )
+                pending = asyncio.create_task(action)
+                await asyncio.sleep(0)
+                assert not pending.done()
+            finally:
+                release.set()
+                entries = await listing
+                if pending is not None:
+                    await pending
+            assert entries == (SandboxEntry("result.bin", EntryKind.FILE, 2),)
+
+    asyncio.run(check())
+
+
+def test_cancelled_listing_waiter_never_enumerates(backend, monkeypatch):
+    async def check():
+        async with backend.call_admission(KEY, SPEC, owner="listing", timeout=1):
+            sandbox = await backend.acquire(KEY, SPEC)
+
+            def unexpected(*args):
+                pytest.fail("a cancelled listing entered the file plane")
+
+            monkeypatch.setattr(sandbox.outputs, "list_dir", unexpected)
+            sandbox._gate.acquire()
+            try:
+                task = asyncio.create_task(sandbox.list_dir(".", working_directory="."))
+                await asyncio.sleep(0)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                sandbox._gate.release()
 
     asyncio.run(check())
 
@@ -593,7 +829,8 @@ def test_failed_file_reset_retires_instance_before_another_router_can_reuse(back
     asyncio.run(check())
 
 
-def test_output_conformance_uses_exec_free_fixture(backend, tmp_path):
+@pytest.mark.parametrize("work_dir", [None, "/output"])
+def test_output_conformance_uses_exec_free_fixture(backend, tmp_path, work_dir):
     class Subject:
         capabilities = backend.declarations.capabilities
         working_directory = "/output"
@@ -631,10 +868,10 @@ def test_output_conformance_uses_exec_free_fixture(backend, tmp_path):
     async def check():
         async with backend.call_admission(KEY, SPEC, owner="conformance", timeout=1):
             subject = Subject()
-            subject.sandbox = await backend.acquire(KEY, SPEC)
+            subject.sandbox = await backend.acquire(KEY, replace(SPEC, work_dir=work_dir))
             await assert_storage_base_conformance(subject.sandbox, subject.capabilities)
             results = await assert_files_out_conformance(subject, flat_files=True)
-            assert sum(result.passed for result in results) == 8
+            assert len(results) == 12 and all(result.passed for result in results)
             reach = await assert_reach_conformance(subject)
             assert all(result.skipped for result in reach)
 
