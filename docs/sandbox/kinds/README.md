@@ -83,5 +83,5 @@ The [authoring guide](writing-a-kind.md) contains a working example, host setup 
 |---|---|---|
 | Four kinds, including optional Terraform/OpenTofu formatting | Implemented | [Bicep](bicep.md), [CodeAct](codeact.md), [draw.io](drawio.md), [Terraform](terraform.md) |
 | Wrapper-owned labels and file-read checks | Implemented | [Information flow](../information-flow.md) |
-| Four-field result contract | Available in core; implemented for Terraform/OpenTofu tools and their live tests; other kinds, samples and their live checks remain open | [Information flow status](../information-flow.md#status) |
+| Four-field result contract | Implemented in all four kinds, their samples and live checks | [Information flow status](../information-flow.md#status) |
 | CodeAct native runtime host tools and inherited network defaults | Open | [CodeAct status](codeact.md#status) |

@@ -103,4 +103,4 @@ The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-
 | Offline validation and optional formatting | Implemented | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
-| Four-field result contract | Implemented for Terraform and OpenTofu; remaining kinds tracked separately | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for Terraform and OpenTofu, including live checks | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |

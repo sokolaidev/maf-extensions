@@ -163,4 +163,4 @@ Provider details stay in host logs. A control-plane timeout is not reported as p
 | Explicit Python runtime | Implemented | [Hyperlight profiles](../backends/hyperlight.md) |
 | Native runtime host tools | Open; nonempty registries are refused | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Inherited deployment network defaults | Open; hosts supply explicit allowlists | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) |
-| Four-field result contract | CodeAct returns completion, verdict, trusted explanations and untrusted output; migration of other kinds remains open | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for CodeAct, its samples and live checks | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |

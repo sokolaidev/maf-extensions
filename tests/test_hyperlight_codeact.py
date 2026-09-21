@@ -217,14 +217,14 @@ def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitor
                 code="with open(guest_call_path + '/big.bin', 'wb') as f:\n    f.write(b'x' * 257)",
                 outputs=["big.bin"],
             )
-            assert "Error" in result and len(landed) == 1, result
+            assert "Error" in _said(result) and len(landed) == 1, result
             result = await function(
                 code="with open(guest_call_path + '/a', 'wb') as f:\n    f.write(b'a' * 129)\nwith open(guest_call_path + '/b', 'wb') as f:\n    f.write(b'b' * 128)",
                 outputs=["a", "b"],
             )
-            assert "Error" in result and len(landed) == 1, result
+            assert "Error" in _said(result) and len(landed) == 1, result
             result = await function(code="print('must not run')", outputs=["a", "b", "c"])
-            assert "Error" in result and len(landed) == 1, result
+            assert "Error" in _said(result) and len(landed) == 1, result
         finally:
             await backend.aclose()
 

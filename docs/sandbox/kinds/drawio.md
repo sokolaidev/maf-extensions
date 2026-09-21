@@ -90,4 +90,4 @@ Every page must succeed before collection. Missing output or failed delivery is 
 |---|---|---|
 | Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
 | Specialized automatic layouts and previews | Outside the supported contract | untracked |
-| Four-field result contract | Implemented for draw.io, sample 18 and its checks; remaining adoption tracked separately | [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for draw.io, sample 18 and its checks | [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
