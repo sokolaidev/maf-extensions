@@ -113,7 +113,7 @@ When method scope is eventually reconsidered, acceptance must cover an endpoint 
 
 ## Working-directory preparation authority
 
-Measured 2026-09-21 against the disposable dev group `acas-ats-maf-swe-dev` (Sweden Central), `azure-containerapps-sandbox 0.1.0b4`, on prebuilt `python-3.13`, imported `bicep-sandbox:0.46.1` (root guests) and imported `python-nonroot:3.13` (guest uid 10001).
+Measured 2026-09-21 against a disposable dev sandbox group (Sweden Central), `azure-containerapps-sandbox 0.1.0b4`, on prebuilt `python-3.13`, imported `bicep-sandbox:0.46.1` (root guests) and imported `python-nonroot:3.13` (guest uid 10001).
 
 ### The service stat carries no ownership
 
