@@ -1805,7 +1805,7 @@ _UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return
         Returns:
             The program's stdout, its stderr when it wrote any, and its exit
             code when that was not zero.  If the sandbox is unavailable the tool returns an
-            error message instead, so the run degrades rather than blocking.
+            error message instead, so the call returns rather than blocking.
         """
 
 
