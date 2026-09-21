@@ -377,8 +377,6 @@ class TestWriteOrdering:
         )
         backend = _fake_backend(sandbox=self._recording_sandbox(events))
 
-        # The parameter file first — the order that used to compile it against a sandbox
-        # holding nothing but itself.
         _run(_tool(store, backend), ["main.bicepparam", "main.bicep"])
 
         written_before_first_exec = [
@@ -1599,8 +1597,6 @@ class TestTheResultSplits:
         """`make_bicep_tools` passes it to `standing_guidance`, so the wrapper appends the
         sentence it was given at attach — the body never emits one and so cannot diverge from
         it. Rewriting the module constant afterwards changes nothing about an attached tool."""
-        # Attached first, so the commitment is the real sentence and only what the body appends
-        # moves — which is the divergence the wrapper exists to catch.
         tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
         committed = _UNREAD_IS_NOT_A_PASS
         monkeypatch.setattr(_tool_module, "_UNREAD_IS_NOT_A_PASS", "Something else entirely.")
@@ -1613,6 +1609,196 @@ class TestTheResultSplits:
 
 class TestTheVerdict:
     """The one part of the result a model may act on without reading the compiler."""
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "invocations",
+        [
+            pytest.param([{"executionSuccessful": False}], id="failed"),
+            pytest.param(
+                [{"executionSuccessful": True}, {"executionSuccessful": False}],
+                id="failed-second",
+            ),
+            pytest.param([{}], id="missing-status"),
+            pytest.param([{"executionSuccessful": None}], id="null-status"),
+            pytest.param([{"executionSuccessful": 1}], id="numeric-status"),
+            pytest.param([{"executionSuccessful": "true"}], id="string-status"),
+            pytest.param(None, id="null-invocations"),
+            pytest.param({}, id="object-invocations"),
+            pytest.param([None], id="null-invocation"),
+        ],
+    )
+    def test_unsuccessful_sarif_invocations_have_no_verdict(self, phase, invocations):
+        document = json.loads(_EMPTY_SARIF)
+        document["runs"][0]["invocations"] = invocations
+        self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "field", ["toolExecutionNotifications", "toolConfigurationNotifications"]
+    )
+    @pytest.mark.parametrize(
+        "notifications",
+        [
+            [{"level": "error", "message": {"text": "Analysis interrupted."}}],
+            [{"level": "fatal", "message": {"text": "Unknown severity."}}],
+            [{}],
+            [{"message": {"text": 1}}],
+            None,
+            {},
+            [None],
+        ],
+    )
+    def test_sarif_notification_errors_have_no_verdict(self, phase, field, notifications):
+        document = json.loads(_EMPTY_SARIF)
+        document["runs"][0]["invocations"] = [{"executionSuccessful": True, field: notifications}]
+        self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            {"ruleId": "BCP035"},
+            {"ruleIndex": 0},
+            {"rule": {"id": "BCP035"}},
+            {"rule": {"index": 0}},
+        ],
+    )
+    def test_rule_default_errors_make_the_verdict_invalid(self, phase, reference):
+        document = json.loads(_sarif(rule="BCP035"))
+        run = document["runs"][0]
+        run["tool"]["driver"]["rules"][0]["defaultConfiguration"] = {"level": "error"}
+        result = run["results"][0]
+        del result["level"]
+        del result["ruleId"]
+        result.update(reference)
+        self._assert_report_level(phase, document, "error")
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "default,explicit,expected",
+        [
+            ({"level": "error"}, "warning", "warning"),
+            ({"level": "warning"}, "error", "error"),
+            ({"level": "note"}, None, "note"),
+            ({}, None, "warning"),
+        ],
+    )
+    def test_explicit_severity_precedes_the_rule_default(self, phase, default, explicit, expected):
+        document = json.loads(_sarif())
+        run = document["runs"][0]
+        run["tool"]["driver"]["rules"][0]["defaultConfiguration"] = default
+        if explicit is None:
+            del run["results"][0]["level"]
+        else:
+            run["results"][0]["level"] = explicit
+        self._assert_report_level(phase, document, expected)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "default", [None, [], {"level": None}, {"level": 1}, {"level": "fatal"}]
+    )
+    def test_malformed_rule_defaults_have_no_verdict(self, phase, default):
+        document = json.loads(_sarif())
+        run = document["runs"][0]
+        run["tool"]["driver"]["rules"][0]["defaultConfiguration"] = default
+        del run["results"][0]["level"]
+        self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            {"ruleIndex": True},
+            {"ruleIndex": "0"},
+            {"ruleIndex": 1},
+            {"ruleIndex": -2},
+            {"ruleId": "other", "ruleIndex": 0},
+            {"ruleId": "BCP035", "rule": {"id": "other"}},
+            {"ruleIndex": 0, "rule": {"index": 1}},
+            {"rule": None},
+            {"rule": {"id": "unknown"}, "ruleId": "unknown"},
+            {"rule": {"toolComponent": {"index": 0}}},
+            {"rule": {"guid": "92b4d31a-bff3-4704-9a16-7c116b79a008"}},
+        ],
+    )
+    def test_invalid_rule_references_have_no_verdict(self, phase, reference):
+        document = json.loads(_sarif(rule="BCP035"))
+        result = document["runs"][0]["results"][0]
+        del result["level"]
+        result.update(reference)
+        self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize("explicit", [None, "warning"])
+    def test_invocation_override_precedes_the_rule_default(self, phase, explicit):
+        document = json.loads(_sarif(rule="BCP035"))
+        run = document["runs"][0]
+        run["tool"]["driver"]["rules"][0]["defaultConfiguration"] = {"level": "warning"}
+        run["invocations"] = [
+            {
+                "executionSuccessful": True,
+                "ruleConfigurationOverrides": [
+                    {"descriptor": {"id": "BCP035"}, "configuration": {"level": "error"}}
+                ],
+            }
+        ]
+        result = run["results"][0]
+        result["provenance"] = {"invocationIndex": 0}
+        if explicit is None:
+            del result["level"]
+        else:
+            result["level"] = explicit
+        self._assert_report_level(phase, document, explicit or "error")
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            [{"descriptor": {"id": "unknown"}, "configuration": {"level": "error"}}],
+            [
+                {"descriptor": {"id": "BCP035"}, "configuration": {"level": "error"}},
+                {"descriptor": {"id": "BCP035"}, "configuration": {"level": "warning"}},
+            ],
+            [{"descriptor": {"id": "BCP035"}, "configuration": {"level": "fatal"}}],
+            [{"descriptor": {"id": "BCP035"}, "configuration": None}],
+            None,
+        ],
+    )
+    def test_malformed_invocation_overrides_have_no_verdict(self, phase, overrides):
+        document = json.loads(_sarif(rule="BCP035"))
+        run = document["runs"][0]
+        run["invocations"] = [
+            {"executionSuccessful": True, "ruleConfigurationOverrides": overrides}
+        ]
+        result = run["results"][0]
+        result["provenance"] = {"invocationIndex": 0}
+        del result["level"]
+        self._assert_report_incomplete(phase, document)
+
+    def _assert_report_incomplete(self, phase, document):
+        blob = json.dumps(document)
+        sandbox = _KeepsWhatItWrote(outputs={f"bicep {phase}": blob}, default_stdout=_EMPTY_SARIF)
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+        texts = [str(item.text) for item in _items(tool, ["main.bicep"])]
+
+        assert texts[0] == NOT_COMPLETED_TEXT
+        assert not any(text.startswith("Result:") for text in texts)
+        assert any("could not parse SARIF" in text for text in texts)
+        assert parse_sarif(blob) is None
+
+    def _assert_report_level(self, phase, document, level):
+        blob = json.dumps(document)
+        sandbox = _KeepsWhatItWrote(outputs={f"bicep {phase}": blob}, default_stdout=_EMPTY_SARIF)
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+        texts = [str(item.text) for item in _items(tool, ["main.bicep"])]
+        verdict = "invalid" if level == "error" else "valid"
+
+        assert texts[:2] == [COMPLETED_TEXT, f"Result: {verdict}"]
+        diagnostics = parse_sarif(blob)
+        assert diagnostics is not None
+        assert diagnostics[0]["level"] == level
+        assert any(f"[{level}]" in text for text in texts)
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
     @pytest.mark.parametrize("document", _INCOMPLETE_SARIF)
@@ -1743,8 +1929,7 @@ class TestTheVerdict:
         assert _verdict(tool, ["main.tf"]) is None
 
     def test_the_refusal_itself_is_readable(self):
-        """It is this package's own sentence naming a position, so it is not the guest's to
-        hide — before the contract it was labelled untrusted with the compiler output."""
+        """A tool-authored refusal stays readable when compiler diagnostics are hidden."""
         tool = _tool(InMemoryStore({"main.tf": "x"}), _fake_backend())
         refusal = next(
             item for item in _items(tool, ["main.tf"]) if "only accepts .bicep" in str(item.text)
@@ -1787,7 +1972,7 @@ class TestWhatAFidesHostSeesOfASplitResult:
         return seen, context.metadata["result_label"], middleware.get_context_label()
 
     def _tool_answering_one_string(self, text: str) -> Any:
-        """What this kind was before the split: the same declaration over a single string."""
+        """An untrusted string result for comparison with the structured result."""
         from agent_framework import tool as as_tool
 
         async def bicep_validate(files: list[str]) -> str:
@@ -2096,6 +2281,31 @@ class TestSafeListedPath:
 
 
 class TestParseSarif:
+    @pytest.mark.parametrize(
+        "invocations",
+        [
+            [],
+            [{"executionSuccessful": True}],
+            [{"executionSuccessful": True}, {"executionSuccessful": True}],
+            [
+                {
+                    "executionSuccessful": True,
+                    "exitCode": 1,
+                    "toolExecutionNotifications": [
+                        {"level": "warning", "message": {"text": "A nonfatal warning."}}
+                    ],
+                    "toolConfigurationNotifications": [
+                        {"message": {"text": "A default-severity warning."}}
+                    ],
+                }
+            ],
+        ],
+    )
+    def test_successful_sarif_invocations_allow_empty_diagnostics(self, invocations):
+        document = json.loads(_EMPTY_SARIF)
+        document["runs"][0]["invocations"] = invocations
+        assert parse_sarif(json.dumps(document)) == []
+
     def test_returns_none_for_empty_string(self):
         assert parse_sarif("") is None
 

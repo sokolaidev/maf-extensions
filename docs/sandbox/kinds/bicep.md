@@ -58,7 +58,9 @@ The compiler and its input files are sources of the diagnostic text. The kind th
 
 The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `valid` or `invalid`, and only where the compiler answered for every file it was given. `completed` is false where it did not: a refused name, a file that could not be staged, a timeout, unreadable SARIF, or a module restore failure, which leaves module input type checking undone. A call that did not complete carries no verdict.
 
-A readable report must identify SARIF 2.1.0 and contain at least one analysis with a named tool driver and an explicit results array. Missing, null or malformed fields cannot stand in for an empty diagnostic list. An analysis with `results: []` can establish a clean result; an absent analysis cannot.
+A readable report must identify SARIF 2.1.0 and contain at least one analysis with a named tool driver and an explicit results array. Missing, null or malformed fields cannot stand in for an empty diagnostic list. Every reported invocation must declare successful execution, and neither execution nor configuration notifications may report an error. An analysis with `results: []` can establish a clean result only when these checks pass.
+
+Diagnostic severity comes from the result's explicit level, then its invocation's rule override, then the matching driver rule's default, and finally `warning`. Driver rules are matched by ID or index. Malformed references or severity values leave the call incomplete. References to other tool components or rule GUIDs are unsupported and also leave the call incomplete.
 
 What this tool says about its own refusal goes in `trusted_output`. The kind writes the refusal templates and may echo short, printable names the model supplied visibly; hidden or unsafe names are identified by argument position. A "did you mean" hint lists names from the file store, whose integrity is not established, so the hint goes in `output` with the compiler's text while the sentence introducing it stays readable.
 
