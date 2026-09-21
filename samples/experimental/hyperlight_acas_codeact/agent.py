@@ -25,7 +25,7 @@ from _scaffold import (
     tool_results,
 )
 from maf_sandbox import CallerContext, Cleanup, SandboxRouter
-from maf_sandbox.maf import list_no_files, make_caller_context
+from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
 from maf_sandbox_codeact import CodeactRuntime, make_codeact_tools
 
 if TYPE_CHECKING:
@@ -163,10 +163,8 @@ async def run(*, smoke: bool = False) -> int:
 
         print(evidence("CodeAct tool results", outputs, "CodeAct results returned"))
         # A correct reply alone does not prove that the sandbox ran the program.
-        # The result is several items now: a completion line, a verdict drawn from the
-        # tool's declared set, then the program's own text. The scaffold renders them
-        # in order, so the check reads the parts it needs rather than the whole.
-        if not any("Result: ok" in output and f"stdout:\n{ANSWER}" in output for output in outputs):
+        expected = f"{COMPLETED_TEXT}\nResult: ok\nstdout:\n{ANSWER}"
+        if not any(output.strip() == expected for output in outputs):
             raise RuntimeError("No successful CodeAct result contained the expected integer.")
         if reply is not None and ANSWER not in reply:
             raise RuntimeError("The model did not report the integer returned by CodeAct.")

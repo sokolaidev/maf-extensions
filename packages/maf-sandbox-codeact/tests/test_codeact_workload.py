@@ -625,15 +625,18 @@ def _route(tool, code: str, **kw) -> str:
 
 
 def _run(tool, code: str, **kw) -> str:
-    """What the call said about the run, between the completion line and any sentence.
-
-    The wrapper renders a fixed completion sentence first and a verdict after it, then this
-    tool's own text or the program's, and the committed sentence last where one is committed.
-    These tests are about what the text says, so they read the middle whole.
-    """
+    """The detailed report, or the trusted reason where a refusal carries no detail."""
     answer = _items(tool, code, **kw)
     if isinstance(answer, str):
         return answer
+    details = [
+        str(item.text)
+        for item in answer
+        if (item.additional_properties or {}).get("security_label", {}).get("integrity")
+        == "untrusted"
+    ]
+    if details:
+        return chr(10).join(details)
     texts = [str(item.text) for item in answer]
     body = texts[1:]
     if body and body[0].startswith("Result: "):
@@ -3702,6 +3705,68 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         seen, _, _ = self._processed(tool, files=[], outputs=[])
         # It commits no sentence, and the contract still leaves the verdict readable.
         assert seen == [COMPLETED_TEXT, "Result: ok", "hidden"]
+
+    def test_partial_timeout_output_stays_hidden(self):
+        tool = _calling_tool(
+            _StallingSandbox(printed=b"guest-controlled-text"),
+            _round_half_up,
+            exec_timeout_seconds=1,
+        )
+
+        seen, result, conversation = self._processed(tool)
+
+        assert seen == [
+            NOT_COMPLETED_TEXT,
+            "Error: the program did not reach a result before the timeout.",
+            "hidden",
+        ]
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
+
+    @pytest.mark.parametrize("listing_fails", [False, True])
+    @pytest.mark.parametrize("withhold", [False, True])
+    def test_file_listing_details_stay_hidden(self, listing_fails, withhold):
+        class Store(InMemoryStore):
+            async def list(self):
+                if listing_fails:
+                    raise ValueError("store-controlled-text")
+                return await super().list()
+
+        store = Store({"store-controlled-text.txt": "data"}, integrity=SourceIntegrity.UNTRUSTED)
+        options = _landing(CodeactOutputs.DECLARED) if withhold else {}
+        tool = _tool(
+            _backend(capabilities=_PULLS),
+            file_store=store,
+            withhold_guest_output=withhold,
+            **options,
+        )
+
+        seen, result, conversation = self._processed(tool, files=["missing.csv"])
+
+        expected = [
+            NOT_COMPLETED_TEXT,
+            "Error: the requested input files could not be resolved.",
+            "hidden",
+        ]
+        assert seen == expected + ([_WITHHELD_ROUTE] if withhold else [])
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
+
+    def test_input_file_sizes_stay_hidden(self):
+        tool = _tool(
+            _backend(),
+            file_store=InMemoryStore({"data.txt": "x" * 123}),
+            files_in=TransferLimits(max_files=10, max_bytes_per_file=64, max_total_bytes=128),
+        )
+
+        seen, _, conversation = self._processed(tool, files=["data.txt"])
+
+        assert seen == [
+            NOT_COMPLETED_TEXT,
+            "Error: an input file could not be read or staged.",
+            "hidden",
+        ]
+        assert str(conversation.integrity) == "trusted"
 
 
 class TestOnlyAnAttachedToolSealsTheRegistry:

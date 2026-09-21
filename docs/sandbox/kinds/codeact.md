@@ -91,9 +91,9 @@ The Python source never becomes a shell command. Exec without a registry uses fi
 
 The guest program can print data from any enabled source. CodeAct therefore claims `untrusted` for its workload result, including when guest text is withheld.
 
-The kind uses the [result contract](../information-flow.md#the-result-contract) in **both** modes. `verdict` is `ok` or `failed`, from the program's exit status as one bit — eight bits are what a program chooses, and one is what a model can act on without the text. `completed` is false where the program never ran: a refusal, a file that could not be staged, a timeout, or a transport failure. Such a run carries no verdict, because "failed" would describe a program that was never given.
+The kind uses the [result contract](../information-flow.md#the-result-contract) in **both** modes. `verdict` is `ok` or `failed`, from the program's exit status as one bit — eight bits are what a program chooses, and one is what a model can act on without the text. `completed` is false where no exit status was obtained: a refusal, a file that could not be staged, a timeout, or a transport failure. Such a run carries no verdict, because its exit status is unknown.
 
-A run that stopped early puts the reason in `trusted_output`. That sentence is written in this package or by the session, it names an argument position rather than quoting it, and before the contract it was hidden with everything else — so a model could not see why its call did not run.
+A run that stopped early puts a host-authored explanation in `trusted_output`, so a model can read why the call stopped. Variable diagnostics remain in untrusted `output`, including file-store names, byte counts, provider errors and partial guest stdout. Withholding mode still omits guest stdout from timeout diagnostics.
 
 Both modes are raised to `trusted` at the framework, not just the withholding one. The completion line and the verdict have to stay readable, and on `agent-framework-core` 1.19 only the tool's own declaration can keep an item there.
 

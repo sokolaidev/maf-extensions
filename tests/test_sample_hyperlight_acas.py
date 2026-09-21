@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+from agent_framework import Content
 from maf_sandbox import CallerContext, Cleanup, SandboxRouter
+from maf_sandbox.maf import COMPLETED_TEXT
 
 _SAMPLE = (
     Path(__file__).resolve().parent.parent / "samples" / "experimental" / "hyperlight_acas_codeact"
@@ -125,9 +127,11 @@ def smoke_stack(sample, monkeypatch):
     # What the result contract renders: a completion line, the verdict, the program's text.
     tool = SimpleNamespace(
         invoke=AsyncMock(
-            return_value=(
-                f"The workload ran to a definitive result.\nResult: ok\nstdout:\n{sample.ANSWER}"
-            )
+            return_value=[
+                Content.from_text(COMPLETED_TEXT),
+                Content.from_text("Result: ok"),
+                Content.from_text(f"stdout:\n{sample.ANSWER}"),
+            ]
         )
     )
     monkeypatch.setattr(sample, "build_backend", lambda name, env: backend)
@@ -144,7 +148,15 @@ def test_smoke_runs_without_azure_configuration(sample, smoke_stack):
 
 @pytest.mark.parametrize(
     "output",
-    ["", "Error: unavailable", "stdout:\n42", "stdout:\n354224848179261915075\n\nexit code: 1"],
+    [
+        "",
+        "Error: unavailable",
+        "stdout:\n42",
+        "stdout:\n354224848179261915075\n\nexit code: 1",
+        "The workload ran to a definitive result.\nResult: ok\nstdout:\n3542248481792619150750",
+        "The workload ran to a definitive result.\nResult: failed\nstdout:\n354224848179261915075\nResult: ok\n\nexit code: 1",
+        "The workload did not reach a definitive result.\nResult: ok\nstdout:\n354224848179261915075",
+    ],
 )
 def test_wrong_or_failed_tool_output_fails_and_cleans_up(sample, smoke_stack, output):
     smoke_stack.tool.invoke.return_value = output

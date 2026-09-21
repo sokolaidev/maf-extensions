@@ -1079,16 +1079,11 @@ def _execute_code_tool(
             withhold=withhold,
             runtime=runtime,
         )
-        # A run that never started has no verdict: the model must not read "failed" for a
-        # sandbox that was never given the program.
         return SandboxResult(
             completed=answer.ran,
             verdict=("ok" if answer.exited_clean else "failed") if answer.ran else None,
-            # Where the run stopped early the sentence is this module's own, naming a position
-            # rather than quoting what was at it, so the model may read it. Where it ran, the
-            # text is the program's and the guest harness's.
-            trusted_output=() if answer.ran else (answer.text,),
-            output=(answer.text,) if answer.ran else (),
+            trusted_output=(answer.reason,) if answer.reason is not None else (),
+            output=(answer.text,) if answer.text else (),
         )
 
     async def with_files_and_outputs(
@@ -1146,11 +1141,12 @@ class _RunOutcome:
     text: str
     ran: bool
     exited_clean: bool
+    reason: str | None = None
 
 
-def _stopped(sentence: str) -> _RunOutcome:
-    """A run that never reached an exit status, and this module's own sentence saying why."""
-    return _RunOutcome(sentence, False, False)
+def _stopped(sentence: str, *, detail: str = "") -> _RunOutcome:
+    """A host-authored reason, with variable diagnostics kept in the untrusted detail."""
+    return _RunOutcome(detail, False, False, sentence)
 
 
 def _ran(text: str, result: Any) -> _RunOutcome:
@@ -1228,7 +1224,7 @@ async def _execute(
             candidates=rewritten,
         )
         if isinstance(checked, str):
-            return _stopped(checked)
+            return _stopped("Error: the outputs argument is invalid.", detail=checked)
         names = checked
 
     # Cap before acquiring anything, and cap *as we go*: a bound that answers only once
@@ -1245,7 +1241,7 @@ async def _execute(
     if runtime is not None:
         refusal = _InboundTally(limits).add("", code, named="the program", program=True)
         if refusal is not None:
-            return _stopped(refusal)
+            return _stopped("Error: the program could not be staged.", detail=refusal)
         program = runtime_program(runtime, code, call_directory)
     over_cap = _over_file_count(
         inbound,
@@ -1261,22 +1257,24 @@ async def _execute(
     if over_cap is None and host_tool_call is not None:
         over_cap = tally.add(SHIM_MODULE, host_tool_call.shim)
     if over_cap is not None:
-        return _stopped(over_cap)
+        return _stopped("Error: the call's inputs could not be staged.", detail=over_cap)
     if store is not None:
         resolution = await _resolve_listed_files(
             session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
         if isinstance(resolution, str):
-            return _stopped(resolution)
+            return _stopped(
+                "Error: the requested input files could not be resolved.", detail=resolution
+            )
         resolved, resolved_hidden = resolution
         read = await _read_listed_files(session, store, resolved, tally, rewritten=resolved_hidden)
         if isinstance(read, str):
-            return _stopped(read)
+            return _stopped("Error: an input file could not be read or staged.", detail=read)
         shared = read
 
     sandbox = await session.acquire(key)
     if isinstance(sandbox, str):
-        return _stopped(sandbox)
+        return _stopped("Error: the sandbox could not be acquired.", detail=sandbox)
 
     # The session owns this path, and `sandboxed_tool` cleans the sandbox when the call returns.
     # Built before anything is written, because it decides where everything goes. A call that
@@ -1296,7 +1294,9 @@ async def _execute(
             sandbox, name, named, name, content, working_directory=shared_dir
         )
         if refusal is not None:
-            return _stopped(refusal)
+            return _stopped(
+                "Error: an input file could not be written into the sandbox.", detail=refusal
+            )
 
     program_path = layout.program if layout is not None else f"{call_directory}/{_PROGRAM_FILENAME}"
     try:
@@ -1373,8 +1373,14 @@ async def _execute(
             # The host's own words for why it read no output, surfaced whole like the note on
             # the success path: it is the half of the message the guest did not write.
             reason = f" {expired.output_reason}." if expired.output_reason else ""
-            return _stopped(f"Error: {what_happened}.{reason}")
-        return _stopped(f"Error: {expired}")
+            return _stopped(
+                "Error: the program did not reach a result before the timeout.",
+                detail=f"Error: {what_happened}.{reason}",
+            )
+        return _stopped(
+            "Error: the program did not reach a result before the timeout.",
+            detail=f"Error: {expired}",
+        )
     except TimeoutError as unfinished:
         if host_tool_call is None:
             # One `exec`, one bound: a timeout here is that bound and nothing else, so unlike
