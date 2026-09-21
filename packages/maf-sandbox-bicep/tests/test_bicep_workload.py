@@ -77,7 +77,49 @@ def _sarif(rule: str = "no-unused-params", message: str = "Parameter 'foo' is un
     )
 
 
-_EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": []})
+_EMPTY_SARIF = json.dumps(
+    {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "bicep"}}, "results": []}]}
+)
+
+_INCOMPLETE_SARIF = [
+    pytest.param({}, id="empty-object"),
+    pytest.param({"version": "2.1.0"}, id="missing-runs"),
+    pytest.param({"runs": json.loads(_EMPTY_SARIF)["runs"]}, id="missing-version"),
+    pytest.param(
+        {"version": "2.0.0", "runs": json.loads(_EMPTY_SARIF)["runs"]}, id="unsupported-version"
+    ),
+    pytest.param(
+        {"version": 2.1, "runs": json.loads(_EMPTY_SARIF)["runs"]}, id="non-string-version"
+    ),
+    pytest.param({"version": "2.1.0", "runs": []}, id="no-analysis"),
+    pytest.param({"version": "2.1.0", "runs": None}, id="null-runs"),
+    pytest.param({"version": "2.1.0", "runs": [{}]}, id="empty-run"),
+    pytest.param({"version": "2.1.0", "runs": [{"results": []}]}, id="missing-tool"),
+    pytest.param({"version": "2.1.0", "runs": [{"tool": {}, "results": []}]}, id="missing-driver"),
+    pytest.param(
+        {"version": "2.1.0", "runs": [{"tool": {"driver": {}}, "results": []}]},
+        id="missing-driver-name",
+    ),
+    pytest.param(
+        {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": 5}}, "results": []}]},
+        id="invalid-driver-name",
+    ),
+    pytest.param(
+        {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "bicep"}}}]},
+        id="missing-results",
+    ),
+    pytest.param(
+        {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "bicep"}}, "results": None}]},
+        id="null-results",
+    ),
+    pytest.param(
+        {
+            "version": "2.1.0",
+            "runs": [{"tool": {"driver": {"name": "bicep"}}, "results": []}, {}],
+        },
+        id="incomplete-second-run",
+    ),
+]
 
 
 class _RecordingContents(dict[str, bytes]):
@@ -1068,8 +1110,10 @@ class TestARewrittenArgumentIsNeverQuoted:
         self._rewrite(monkeypatch, name)
         sarif = json.dumps(
             {
+                "version": "2.1.0",
                 "runs": [
                     {
+                        "tool": {"driver": {"name": "bicep"}},
                         "results": [
                             {
                                 "level": "error",
@@ -1083,9 +1127,9 @@ class TestARewrittenArgumentIsNeverQuoted:
                                     }
                                 ],
                             }
-                        ]
+                        ],
                     }
-                ]
+                ],
             }
         )
         backend = _fake_backend(_KeepsWhatItWrote(default_stdout=sarif))
@@ -1099,8 +1143,10 @@ class TestARewrittenArgumentIsNeverQuoted:
     def _sarif_at(*uris: str) -> str:
         return json.dumps(
             {
+                "version": "2.1.0",
                 "runs": [
                     {
+                        "tool": {"driver": {"name": "bicep"}},
                         "results": [
                             {
                                 "level": "error",
@@ -1115,9 +1161,9 @@ class TestARewrittenArgumentIsNeverQuoted:
                                 ],
                             }
                             for u in uris
-                        ]
+                        ],
                     }
-                ]
+                ],
             }
         )
 
@@ -1204,8 +1250,10 @@ class TestARewrittenArgumentIsNeverQuoted:
         self._rewrite(monkeypatch, name)
         sarif = json.dumps(
             {
+                "version": "2.1.0",
                 "runs": [
                     {
+                        "tool": {"driver": {"name": "bicep"}},
                         "results": [
                             {
                                 "ruleId": "BCP192",
@@ -1213,9 +1261,9 @@ class TestARewrittenArgumentIsNeverQuoted:
                                 "message": {"text": "could not restore the module"},
                                 "locations": [],
                             }
-                        ]
+                        ],
                     }
-                ]
+                ],
             }
         )
         backend = _fake_backend(_KeepsWhatItWrote(default_stdout=sarif))
@@ -1506,9 +1554,8 @@ class TestTheResultSplits:
                 "integrity": "trusted",
                 "confidentiality": "public",
             }, path
-            # Whatever a path renders, nothing between the completion line and the sentence
-            # is ever labelled anything but untrusted: a part this tool vouches for carries
-            # no label and inherits the declaration, and the rest is stamped.
+            # Tool-authored parts are unlabelled and inherit the trusted declaration;
+            # compiler output and listing hints are explicitly labelled untrusted/public.
             for item in answer[1:-1]:
                 assert self._label(item) in (
                     None,
@@ -1566,6 +1613,45 @@ class TestTheResultSplits:
 
 class TestTheVerdict:
     """The one part of the result a model may act on without reading the compiler."""
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize("document", _INCOMPLETE_SARIF)
+    def test_incomplete_sarif_never_becomes_a_trusted_verdict(self, phase, document):
+        sandbox = _KeepsWhatItWrote(
+            outputs={f"bicep {phase}": json.dumps(document)}, default_stdout=_EMPTY_SARIF
+        )
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+
+        texts = [str(item.text) for item in _items(tool, ["main.bicep"])]
+
+        assert texts[0] == NOT_COMPLETED_TEXT
+        assert not any(text.startswith("Result:") for text in texts)
+        assert any("could not parse SARIF" in text for text in texts)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "diagnostic",
+        [
+            pytest.param({}, id="missing-message"),
+            pytest.param({"message": {}}, id="missing-message-text"),
+            pytest.param({"message": {"text": 5}}, id="non-string-message"),
+            pytest.param({"message": {"text": "failure"}, "level": None}, id="null-level"),
+            pytest.param({"message": {"text": "failure"}, "level": "fatal"}, id="unknown-level"),
+            pytest.param({"message": {"text": "failure"}, "ruleId": 5}, id="non-string-rule-id"),
+        ],
+    )
+    def test_malformed_diagnostics_never_become_a_trusted_verdict(self, phase, diagnostic):
+        document = json.loads(_EMPTY_SARIF)
+        document["runs"][0]["results"] = [diagnostic]
+        blob = json.dumps(document)
+        sandbox = _KeepsWhatItWrote(outputs={f"bicep {phase}": blob}, default_stdout=_EMPTY_SARIF)
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+
+        texts = [str(item.text) for item in _items(tool, ["main.bicep"])]
+
+        assert texts[0] == NOT_COMPLETED_TEXT
+        assert not any(text.startswith("Result:") for text in texts)
+        assert parse_sarif(blob) is None
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
     @pytest.mark.parametrize(
@@ -2016,8 +2102,9 @@ class TestParseSarif:
     def test_returns_none_for_non_json(self):
         assert parse_sarif("not json") is None
 
-    def test_returns_empty_for_no_runs(self):
-        assert parse_sarif(json.dumps({"version": "2.1.0"})) == []
+    @pytest.mark.parametrize("document", _INCOMPLETE_SARIF)
+    def test_incomplete_sarif_is_not_zero_diagnostics(self, document):
+        assert parse_sarif(json.dumps(document)) is None
 
     def test_parses_single_diagnostic(self):
         diags = parse_sarif(_sarif())
@@ -2038,21 +2125,6 @@ class TestParseSarif:
             pytest.param('"hi"', id="a-top-level-string"),
             pytest.param("5", id="a-top-level-number"),
             pytest.param("null", id="a-top-level-null"),
-            pytest.param('{"runs": null}', id="runs-is-not-a-list"),
-            pytest.param('{"runs": [{"results": [{"message": null}]}]}', id="a-null-object"),
-            pytest.param('{"runs": {}}', id="runs-is-an-object"),
-            pytest.param('{"runs": [{"results": {}}]}', id="results-is-an-object"),
-            pytest.param(
-                '{"runs": [{"results": [{"locations": {}}]}]}', id="locations-is-an-object"
-            ),
-            pytest.param(
-                '{"runs": [{"tool": {"driver": {"rules": {}}}}]}', id="rules-is-an-object"
-            ),
-            pytest.param(
-                '{"runs": [{"results": [{"locations": [{"physicalLocation":'
-                ' {"artifactLocation": {"uri": 5}}}]}]}]}',
-                id="a-uri-that-is-not-a-string",
-            ),
         ],
     )
     def test_json_that_is_not_sarif_is_a_parse_failure(self, blob: str):
@@ -2064,10 +2136,46 @@ class TestParseSarif:
         """
         assert parse_sarif(blob) is None
 
-    def test_a_document_with_no_runs_is_still_zero_diagnostics(self):
-        """The container checks must not turn a legitimately empty report into a failure."""
-        assert parse_sarif(json.dumps({"version": "2.1.0"})) == []
-        assert parse_sarif(json.dumps({"version": "2.1.0", "runs": []})) == []
+    @pytest.mark.parametrize(
+        ("path", "value"),
+        [
+            pytest.param(("runs",), None, id="null-runs"),
+            pytest.param(("runs",), {}, id="runs-object"),
+            pytest.param(("runs", 0, "results", 0, "message"), None, id="null-message"),
+            pytest.param(("runs", 0, "results"), {}, id="results-object"),
+            pytest.param(("runs", 0, "results", 0, "locations"), {}, id="locations-object"),
+            pytest.param(("runs", 0, "tool", "driver", "rules"), {}, id="rules-object"),
+            pytest.param(
+                (
+                    "runs",
+                    0,
+                    "results",
+                    0,
+                    "locations",
+                    0,
+                    "physicalLocation",
+                    "artifactLocation",
+                    "uri",
+                ),
+                5,
+                id="non-string-uri",
+            ),
+        ],
+    )
+    def test_malformed_fields_in_a_complete_envelope_are_refused(self, path, value):
+        document = json.loads(_sarif())
+        target = document
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+        assert parse_sarif(json.dumps(document)) is None
+
+    def test_complete_empty_reports_are_zero_diagnostics(self):
+        """Each reported analysis explicitly supplies its empty results array."""
+        document = json.loads(_EMPTY_SARIF)
+        document["runs"].append({"tool": {"driver": {"name": "bicep"}}, "results": []})
+        assert parse_sarif(json.dumps(document)) == []
 
 
 class TestAgainstRealBicepOutput:

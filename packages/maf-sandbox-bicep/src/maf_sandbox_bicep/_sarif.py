@@ -16,6 +16,7 @@ __all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostic
 
 # Maximum characters from a SARIF blob fed into the parser.
 _SARIF_MAX_CHARS = 200_000
+_SARIF_LEVELS = frozenset({"none", "note", "warning", "error"})
 
 #: Diagnostics that mean a module artifact never arrived: BCP190 (artifact not restored),
 #: BCP191 (restore failed), BCP192 (restore failed, with the transport's reason).  When any
@@ -34,10 +35,11 @@ def count_restore_failures(diagnostics: list[dict[str, Any]]) -> int:
 
 
 def parse_sarif(text: str) -> list[dict[str, Any]] | None:
-    """Parse a SARIF JSON blob into a compact list of diagnostic dicts.
+    """Parse Bicep SARIF analysis reports into a compact list of diagnostic dicts.
 
-    Returns ``None`` on any parse failure — the caller must treat that as an error rather
-    than as zero diagnostics, or a broken sandbox reads as a clean build.
+    Requires version 2.1.0, at least one analysis with a named tool driver, and explicit
+    results arrays. Missing or null results do not establish that analysis took place.
+    Returns ``None`` for an incomplete or malformed report, never zero diagnostics.
     """
     try:
         data = json.loads(text[:_SARIF_MAX_CHARS])
@@ -46,7 +48,7 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
 
     try:
         return _diagnostics(data)
-    except TypeError:
+    except (TypeError, ValueError):
         # Valid JSON does not establish the SARIF shape.
         return None
 
@@ -72,21 +74,36 @@ def _array(value: object) -> list[Any]:
 
 def _diagnostics(data: Any) -> list[dict[str, Any]]:
     """The SARIF walk itself, over a blob that has parsed but is not yet known to be SARIF."""
+    report = _object(data)
+    if report.get("version") != "2.1.0":
+        raise ValueError("expected SARIF version 2.1.0")
+    runs = _array(report.get("runs"))
+    if not runs:
+        raise ValueError("no analysis was reported")
     diagnostics: list[dict[str, Any]] = []
-    for entry in _array(_object(data).get("runs", [])):
+    for entry in runs:
         run = _object(entry)
-        driver = _object(_object(run.get("tool", {})).get("driver", {}))
+        driver = _object(_object(run.get("tool")).get("driver"))
+        if not isinstance(driver.get("name"), str) or not driver["name"]:
+            raise ValueError("expected a named tool driver")
         rules: dict[str, Any] = {}
         for rule_entry in _array(driver.get("rules", [])):
             rule = _object(rule_entry)
             rules[rule.get("id", "")] = rule
 
-        for result_entry in _array(run.get("results", [])):
+        # SARIF 2.1.0 section 3.14.23: missing/null results mean analysis did not begin.
+        for result_entry in _array(run.get("results")):
             result = _object(result_entry)
             rule_id = result.get("ruleId", "")
+            if not isinstance(rule_id, str):
+                raise TypeError("expected a rule ID string")
             rule = rules.get(rule_id, {})
-            message = _object(result.get("message", {})).get("text", "")
+            message = _object(result.get("message")).get("text")
+            if not isinstance(message, str):
+                raise TypeError("expected diagnostic message text")
             level = result.get("level", "warning")
+            if not isinstance(level, str) or level not in _SARIF_LEVELS:
+                raise ValueError("expected a SARIF diagnostic level")
             locs: list[dict[str, Any]] = []
             for loc_entry in _array(result.get("locations", [])):
                 physical = _object(_object(loc_entry).get("physicalLocation", {}))

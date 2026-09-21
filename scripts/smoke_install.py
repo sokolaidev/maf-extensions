@@ -46,6 +46,7 @@ _SARIF = json.dumps(
         "version": "2.1.0",
         "runs": [
             {
+                "tool": {"driver": {"name": "bicep"}},
                 "results": [
                     {
                         "ruleId": "BCP035",
@@ -60,12 +61,14 @@ _SARIF = json.dumps(
                             }
                         ],
                     }
-                ]
+                ],
             }
         ],
     }
 )
-_EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": []})
+_EMPTY_SARIF = json.dumps(
+    {"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "bicep"}}, "results": []}]}
+)
 
 
 class _RecordingContents(dict[str, bytes]):
