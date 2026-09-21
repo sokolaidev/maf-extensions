@@ -731,7 +731,7 @@ def _validate_runtime(
 # body, so the description is built rather than written twelve times. It still reaches the
 # model exactly as `__doc__`.
 
-_DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return what it printed.
+_DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return its execution result.
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
@@ -839,6 +839,11 @@ _DESCRIPTION_ARG_FILES = """files: Store-relative paths to share into the sandbo
 _DESCRIPTION_ARG_OUTPUTS = """outputs: The file names your program will write into its
                 working directory, or omit if it writes none."""
 
+_DESCRIPTION_RESULT_CONTRACT = """Content items for completion, an ``ok`` or ``failed`` verdict
+            when an exit status exists, any fixed host explanation, and a separately labelled
+            report. Incomplete calls have no verdict. The report contains:
+            """
+
 _DESCRIPTION_RETURNS = """The program's stdout, its stderr when it wrote any, and its exit
             code when that was not zero."""
 
@@ -854,19 +859,16 @@ _DESCRIPTION_RETURNS_HOST_TOOL_CALLED = """The program's output — stdout and s
 #: front writes to a declared output on its first call.
 _DESCRIPTION_RETURNS_WITHHELD = """Whether the program exited with status 0 — **never what it
             printed, which does not come back.**  Write anything you need to see into a
-            declared output instead."""
+            declared output instead. Fixed route guidance names how to retrieve it."""
 
 #: The same for a run served over the host-tool-call transport, whose result carries the
 #: launcher's `note` line — the host's, never the program's.
 _DESCRIPTION_RETURNS_WITHHELD_HOST_TOOL_CALLED = """Whether the program exited with status 0 —
             **never what it printed, which does not come back.**  A ``note`` line is the host's
             remark about the run.  Write anything you need to see into a declared output
-            instead."""
+            instead. Fixed route guidance names how to retrieve it."""
 
-#: Appended to whichever of the two above applies.  Where it wraps is model-facing text, so the
-#: break sits where the plain sentence needs it, not where this fragment reads best.
-_DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable the tool returns an
-            error message instead, so the call returns rather than blocking."""
+_DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable, a host explanation says so."""
 
 _DESCRIPTION_RETURNS_SAVED = """  A call that saved files also names where each one landed."""
 
@@ -1007,7 +1009,7 @@ def _tool_description(
         )
     else:
         returns = _DESCRIPTION_RETURNS_HOST_TOOL_CALLED if host_tool_names else _DESCRIPTION_RETURNS
-    returns += _DESCRIPTION_RETURNS_DEGRADES
+    returns = _DESCRIPTION_RESULT_CONTRACT + returns + _DESCRIPTION_RETURNS_DEGRADES
     if outputs is not CodeactOutputs.NONE:
         if not withhold:
             returns += _DESCRIPTION_RETURNS_SAVED

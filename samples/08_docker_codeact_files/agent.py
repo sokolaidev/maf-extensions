@@ -5,8 +5,8 @@ Sample 06 with both of CodeAct's file channels wired::
     app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
                   ^ maf_sandbox_codeact calls the router
 
-Samples 03, 04 and 06 give `execute_code` nothing to read and take only stdout
-back.  This one passes a `file_store`, which grows the tool a `files`
+Samples 03, 04 and 06 use the program output in `execute_code`'s report without file channels.
+This one passes a `file_store`, which grows the tool a `files`
 parameter, and an `output_sink` with `CodeactOutputs.DECLARED`, which grows it an
 `outputs` parameter.  The task needs both, so a run that skips either is visibly
 wrong rather than quietly thinner.

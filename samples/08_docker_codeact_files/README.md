@@ -1,6 +1,6 @@
 # 08 — CodeAct with files in and files out (Docker)
 
-The first sample where the agent is **given** a file and **hands one back**. Samples 03, 04 and 06 run `execute_code` with nothing to read and take only stdout; this one wires both of the kind's file channels and asks a question that needs each.
+The first sample where the agent is **given** a file and **hands one back**. Samples 03, 04 and 06 use the program output in `execute_code`'s report without file channels; this one wires both of the kind's file channels and asks a question that needs each.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container

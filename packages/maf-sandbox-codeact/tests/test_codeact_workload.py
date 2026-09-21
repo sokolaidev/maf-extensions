@@ -1431,7 +1431,7 @@ class TestTheModelIsToldUpFront:
         behaviour this mode redirects, and argues with its own `Returns:` section."""
         description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
 
-        assert "return what it printed" not in description
+        assert "return its execution result" not in description
         assert "Only what you print is read back as text" not in description
         assert "print(...)`` of\n        everything you need to see" not in description
         assert "Nothing your program writes to stdout or stderr comes back" in description
@@ -1503,10 +1503,10 @@ class TestTheModelIsToldUpFront:
             assert "bytes each" not in description
             assert "stream received" not in description
 
-    def test_the_shown_head_is_unchanged(self):
+    def test_the_shown_head_describes_the_result_and_printed_output(self):
         description = _callable(_tool(_backend())).__doc__ or ""
 
-        assert "return what it printed" in description
+        assert "return its execution result" in description
         assert "Only what you print is read back as text" in description
 
     def test_it_does_not_promise_a_reference_to_where_a_file_landed(self):
@@ -1773,7 +1773,7 @@ class TestDegrades:
 # ---------------------------------------------------------------------------
 
 #: `execute_code`'s `__doc__` with no file store, no output mode and no registry wired.
-_UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return what it printed.
+_UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return its execution result.
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
@@ -1792,9 +1792,11 @@ _UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return
                 whatever the sandbox image ships.
 
         Returns:
+            Content items for completion, an ``ok`` or ``failed`` verdict
+            when an exit status exists, any fixed host explanation, and a separately labelled
+            report. Incomplete calls have no verdict. The report contains:
             The program's stdout, its stderr when it wrote any, and its exit
-            code when that was not zero.  If the sandbox is unavailable the tool returns an
-            error message instead, so the call returns rather than blocking.
+            code when that was not zero.  If the sandbox is unavailable, a host explanation says so.
         """
 
 
@@ -1822,7 +1824,7 @@ class TestToolDescription:
         so an edit that reaches this leg has to be made here too, deliberately."""
         assert self._description() == _UNWIRED_DESCRIPTION
 
-    def test_it_says_only_printed_output_comes_back(self):
+    def test_it_requires_explicit_printing_for_program_output(self):
         assert "print" in self._description()
 
     def test_it_says_the_sandbox_has_no_network(self):

@@ -7,8 +7,9 @@ and get them::
                   ^ maf_sandbox_codeact calls the router
 
 `withhold_guest_output=True` keeps everything the program printed out of the result.
-What comes back is one line saying whether it exited cleanly: no exit code, and no size
-for either stream.  What replaces the text is a **second store**:
+The workspace result has separate completion, verdict, report, and route-guidance items.
+An incomplete call has no verdict. The report contains no numeric exit code or stream size.
+The program's content reaches a **second store** instead:
 `make_file_store_sink` lands each call's declared outputs under a folder named for that
 call, `sandbox_outputs_read_tools` gives the model a read-only pair of tools over that
 store, and the withheld result names the folder.  The model writes a file, is told
