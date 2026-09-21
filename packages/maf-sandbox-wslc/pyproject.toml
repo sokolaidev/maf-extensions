@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-wslc"
-version = "0.23.0"
+version = "0.23.1"
 description = "WSL containers (wslc) as a developer-machine sandbox backend for Microsoft Agent Framework agents."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
