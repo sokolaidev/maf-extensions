@@ -349,8 +349,8 @@ jobs:
     # flipped now: the jobs run concurrently, so for the few minutes the ACAS samples are live
     # their sandboxes are up at once, in exchange for the run taking one sample's time instead
     # of all of them in turn. A failure still names which sample broke.
-    # Five ACAS samples per full run — 01, 03, 14, 15 and 18 — and five per run is not five
-    # overall: the workflow-level `concurrency` block above is keyed per package, so a release
+    # Seven ACAS sample jobs per full run — 01, 03, 14, 15, 18 and both engines of 20.
+    # The workflow-level `concurrency` block above is keyed per package, so a release
     # train verifying several packages has several runs in flight and each holds its own. What
     # each package costs is the number of billable jobs its `if` admits: `maf-sandbox` and
     # `maf-sandbox-acas` eight (01, 03, 14, 15, 18, both engines of 20 and `acas-e2e`),
@@ -365,9 +365,9 @@ jobs:
     # test disposes its own inside the test, the prebuilt one hangs off a *class*-scoped fixture
     # pytest finalises when that class ends, and the egress one comes from a module-scoped fixture
     # first requested by the class after it. sample-15 holds two, a sandbox per route; sample-18
-    # holds one at a time, disposing it before the next conversion. One verification of each
-    # of those five packages can therefore peak at 22 concurrent billable sandboxes
-    # (8 + 8 + 4 + 1 + 1). Sample-18 spends two to four sandbox creations per verification,
+    # holds one at a time, disposing it before the next conversion. With one validation call
+    # per sample-20 job, one verification of each of those six packages can reach 28 concurrent
+    # billable sandboxes (10 + 10 + 4 + 1 + 1 + 2). Sample-18 spends two to four creations,
     # depending on its repair attempts; that sequential spend does not raise its peak above one.
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
