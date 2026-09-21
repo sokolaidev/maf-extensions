@@ -571,7 +571,7 @@ def _bicep_validate_tool(
                 extensions are accepted.
 
         Returns:
-            A :class:`~maf_sandbox.SandboxResult`.  ``verdict`` is ``valid`` or ``invalid``
+            A :class:`~maf_sandbox.maf.SandboxResult`.  ``verdict`` is ``valid`` or ``invalid``
             where the compiler answered for every file, ``completed`` is false where it did
             not — a refused name, a file that could not be staged, a timeout, or a module
             restore failure that leaves input type checking undone.  The diagnostics are

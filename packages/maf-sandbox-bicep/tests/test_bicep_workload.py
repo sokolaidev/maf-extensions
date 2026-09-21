@@ -1567,6 +1567,71 @@ class TestTheResultSplits:
 class TestTheVerdict:
     """The one part of the result a model may act on without reading the compiler."""
 
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        ("outcome", "message"),
+        [
+            pytest.param(TimeoutError(), "timed out", id="timeout"),
+            pytest.param(RuntimeError("provider failed"), "exec failed", id="exec-failure"),
+            pytest.param("not SARIF", "could not parse SARIF", id="unreadable-sarif"),
+            pytest.param(
+                _sarif(rule="BCP192", message="Unable to restore module"),
+                "MODULE RESTORE FAILED",
+                id="restore-failure",
+            ),
+        ],
+    )
+    def test_an_incomplete_phase_prevents_completion_and_verdict(self, phase, outcome, message):
+        class _OnePhaseFails(_KeepsWhatItWrote):
+            async def exec(self, command, *, working_directory, timeout):
+                if isinstance(outcome, Exception) and f"bicep {phase} " in command:
+                    raise outcome
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        sandbox = _OnePhaseFails(
+            outputs={f"bicep {phase}": outcome} if isinstance(outcome, str) else {},
+            default_stdout=_EMPTY_SARIF,
+        )
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+
+        texts = [str(item.text) for item in _items(tool, ["main.bicep"])]
+
+        assert any(f"{phase}(main.bicep):" in text and message in text for text in texts)
+        assert texts[0] == NOT_COMPLETED_TEXT
+        assert not any(text.startswith("Result:") for text in texts)
+
+    @pytest.mark.parametrize(
+        "files",
+        [
+            pytest.param(["blocked.bicep"], id="all-files-refused"),
+            pytest.param(["blocked.bicep", "main.bicep"], id="first-file-refused"),
+            pytest.param(["main.bicep", "blocked.bicep"], id="last-file-refused"),
+        ],
+    )
+    def test_a_staging_failure_prevents_completion_and_verdict(self, files):
+        class _OneWriteFails(_KeepsWhatItWrote):
+            async def write_file(self, path, *args, **kwargs):
+                if path == "blocked.bicep":
+                    raise RuntimeError("no space left on device")
+                await super().write_file(path, *args, **kwargs)
+
+        backend = _fake_backend(_OneWriteFails(default_stdout=_EMPTY_SARIF))
+        tool = _tool(InMemoryStore(dict.fromkeys(files, "x")), backend)
+
+        texts = [str(item.text) for item in _items(tool, files)]
+
+        assert any("could not write" in text for text in texts)
+        assert texts[0] == NOT_COMPLETED_TEXT
+        assert not any(text.startswith("Result:") for text in texts)
+        compiler_commands = [command for command, _, _ in _commands(backend) if "bicep " in command]
+        if len(files) > 1:
+            assert len(compiler_commands) == 2
+            assert all("main.bicep" in command for command in compiler_commands)
+        else:
+            assert not compiler_commands
+
     def test_a_clean_compile_is_valid(self):
         tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
 

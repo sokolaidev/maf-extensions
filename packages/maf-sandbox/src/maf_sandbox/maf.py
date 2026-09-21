@@ -2712,17 +2712,16 @@ def sandboxed_tool(
        A ``spec`` whose ``work_dir`` is the guest root is refused, because a path one
        component from the root is one this cannot remove — and only for such a body, since a
        synchronous one is not held to a rule it cannot break.
-    8. **The wrapper owns result labels.** With ``result_contract=True``, a body returns
-       :class:`SandboxResult`; the wrapper renders its parts and appends committed guidance.
-       Otherwise, a body returns one string or unlabelled items. A body committing guidance
-       must return items ending with those sentences, which the wrapper stamps trusted/public.
-       A tool committing guidance declares ``trusted`` to the framework so those sentences are
-       trusted whatever the kind claims, keeps that claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
-       stamps every derived item from it. One committing none stamps only with valid
-       ``source_integrity`` and host-set ``confidentiality`` declarations, and otherwise leaves
-       derived items to the framework's fallback. Either way a stamp weakens integrity when
-       this call read an untrusted or unestablished file, a string becomes one item, and
-       neither the declaration nor another call is changed.
+    8. **The wrapper owns result labels.** With ``result_contract=True``, every body return
+       is a :class:`SandboxResult`; the wrapper renders its fields and appends committed
+       guidance. Otherwise the body returns a string or unlabelled items; committed guidance
+       must be included as trailing items. The wrapper stamps guidance trusted/public.
+       A contract or guidance commitment raises the tool's declaration to ``trusted`` and
+       keeps the kind's output claim on :data:`DERIVED_INTEGRITY_PROPERTY`. Derived output
+       receives that claim and the host-set confidentiality, weakened by any untrusted or
+       unestablished file read. Without either opt-in, valid source-integrity and
+       confidentiality declarations label the result; absent declarations leave it to the
+       framework's fallback. Neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -2740,8 +2739,8 @@ def sandboxed_tool(
 
     Args:
         build: Given the session, returns the async function to expose as the tool. With
-            ``result_contract=True`` it returns :class:`SandboxResult`; otherwise it returns
-            a ``str`` or the list of items point 8 above describes.
+            ``result_contract=True``, it answers with :class:`SandboxResult` on every path.
+            Otherwise it returns a ``str`` or the unlabelled items described in point 8.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store (see :func:`make_caller_context`).
@@ -2817,13 +2816,13 @@ def sandboxed_tool(
             so a value arriving from anywhere else is refused on return. Declaring a set
             without ``result_contract`` is refused, since nothing would read it.
         standing_guidance: Sentences the wrapper stamps ``trusted/public``. With
-            ``result_contract=True``, the wrapper appends them; the body returns only its
-            :class:`SandboxResult`. Otherwise, return them as unlabelled text items at the end,
-            in this order, after at least one derived item. A missing or changed sentence,
-            a bare string, or a body-supplied label is refused on that legacy path.
-            Only ``{call_id}`` may interpolate; the wrapper renders it from this call and
-            rebuilds the guidance without other fields from the body's items. A malformed or
-            empty sentence, or a call-id sentence on a synchronous body, is refused at attach.
+            ``result_contract=True``, the wrapper appends them after rendering the result;
+            the body returns only :class:`SandboxResult` fields. Otherwise return them as
+            trailing unlabelled text items in this order, after at least one derived item;
+            a missing or changed sentence, a bare string, or a body-supplied label is refused.
+            Only ``{call_id}`` may interpolate. The wrapper renders it from this call and
+            constructs the guidance from the commitment. A malformed or empty sentence, or a
+            call-id sentence on a synchronous body, is refused at attach.
             **Committing any sentence requires an integrity declaration** — this keyword or a
             ``source_integrity`` in ``declarations`` — because the guidance stays readable by
             sitting above what every other item is labelled, and an undeclared tool has nothing
