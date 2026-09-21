@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import uuid
@@ -41,7 +42,9 @@ _MODULE = """module storage 'br/public:avm/res/storage/storage-account:0.31.0' =
 """
 
 
-@pytest.mark.parametrize("case", ["local", "diagnostics", "modules", "closed-modules", "cancelled"])
+@pytest.mark.parametrize(
+    "case", ["local", "diagnostics", "policy", "modules", "closed-modules", "cancelled"]
+)
 def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monkeypatch):
     if case == "modules" and not _PROXY:
         pytest.skip("module restore needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
@@ -61,9 +64,14 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
         )
         if case == "diagnostics":
             source = "output value string = missingValue\n"
-        store = InMemoryStore(
-            {"nested/main.bicep": source, "main.bicepparam": "using './nested/main.bicep'\n"}
-        )
+        elif case == "policy":
+            source = "param unused string = 'hello'\n"
+        sources = {"nested/main.bicep": source, "main.bicepparam": "using './nested/main.bicep'\n"}
+        inputs = ["main.bicepparam", "nested/main.bicep"]
+        if case == "policy":
+            sources["bicepconfig.bicep"] = "output value string = 'hello'\n"
+            inputs.insert(0, "bicepconfig.bicep")
+        store = InMemoryStore(sources)
         context = CallerContext(
             current_scope=lambda: key.scope,
             current_thread_id=lambda: key.thread_id,
@@ -101,7 +109,7 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
                         await pending
                     assert (await router.acquire(key, spec)).instance_id == instance
                     return
-                result = await tool.func(files=["main.bicepparam", "nested/main.bicep"])
+                result = await tool.func(files=inputs)
                 texts = [str(item.text) for item in result]
                 report = "\n".join(texts)
                 assert "Error:" not in report, report
@@ -110,10 +118,19 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
                     assert not any(text.startswith("Result: ") for text in texts), report
                     assert "MODULE RESTORE FAILED" in report, report
                     assert "BCP190" in report, report
-                elif case == "diagnostics":
+                elif case in {"diagnostics", "policy"}:
                     assert texts[:2] == [COMPLETED_TEXT, "Result: invalid"], report
                     assert "MODULE RESTORE FAILED" not in report, report
-                    assert "BCP057" in report, report
+                    rule = "BCP057" if case == "diagnostics" else "no-unused-params"
+                    summary = json.loads(
+                        next(t for t in texts if t.startswith('{"type":"bicep_diagnostics"'))
+                    )
+                    assert {
+                        "file": "files[2]" if case == "policy" else "files[1]",
+                        "rule": rule,
+                        "severity": "error",
+                    } in summary["diagnostics"], report
+                    assert not summary["unrecognized_diagnostics"], report
                 else:
                     assert texts[:2] == [COMPLETED_TEXT, "Result: valid"], report
                     assert "MODULE RESTORE FAILED" not in report, report

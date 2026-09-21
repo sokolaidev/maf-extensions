@@ -12,13 +12,13 @@ Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas
 | `icu` | Without it the CLI aborts at startup: `Couldn't find a valid ICU package`. It is not optional for a .NET single-file binary unless you set the invariant-globalization switch |
 | `ca-certificates` | Module restore is HTTPS to MCR. Without them every `br/public:` reference fails to restore |
 | Bicep CLI, pinned to `v0.46.1` | The pin is the point. Diagnostic wording, built-in rule levels and the API-version cut-off all follow the compiler, so an unpinned image would let a sample's documented output drift underneath it |
-| `bicepconfig.json` at `/maf-sandbox/work` | The lint rule set, at the one path Bicep will look for it |
+| `bicepconfig.json` at `/maf-sandbox/work` | Fallback policy for clients that do not stage a packaged configuration |
 
-## The config path is the fragile part
+## Configuration discovery
 
-`/maf-sandbox/work` is not a convention — it is `maf_sandbox_bicep`'s `_WORK_DIR`, the root its `SandboxSpec` fixes for every validation. Bicep resolves `bicepconfig.json` **only** by walking up from the source file, and the pinned CLI has no `--config-file` flag on either `build` or `lint`. The tool writes each round into a fresh subdirectory of that root — `/maf-sandbox/work/<round>/main.bicep` — so the walk up finds the config in a single step.
+The Bicep kind uploads its [packaged configuration](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) into each call directory before staging sources. Bicep finds that file by walking up from the source directory. This policy travels with the Python package and takes precedence over the image's fallback config, including for nested sources and reused sandboxes.
 
-Put the file anywhere else and nothing goes red. Measured against this image, on sample 01's `main.bicep`:
+Clients without packaged configuration depend on the fallback at `/maf-sandbox/work`. The pinned CLI has no `--config-file` flag. Compiling outside that directory uses built-in defaults, which changes these sample diagnostics:
 
 | | Compiled under `/maf-sandbox/work` | Compiled elsewhere |
 |---|---|---|
@@ -26,9 +26,7 @@ Put the file anywhere else and nothing goes red. Measured against this image, on
 | `use-recent-api-versions` | reported, with the age in days | **absent** — the config is what switches it on |
 | SARIF | parses, diagnostics render | parses, diagnostics render |
 
-Both runs look entirely healthy. The second is simply linting against a weaker rule set than the repository asked for, and the tells are the two rows above — which is why both samples' READMEs tell you to read that severity, why `scripts/check_live_sample.py` fails a live run that shows neither tell, and why `TestConfigDiscovery` in `maf-sandbox-bicep` reaches out of the package to read this `Dockerfile` and assert its `COPY` line against the published `_WORK_DIR` constant.
-
-Those three cover the source tree and a live run. They do **not** cover the artifact sample 01 actually boots. A disk image is a snapshot taken from this `Dockerfile`'s output at one moment, it lives in a sandbox group rather than in git, and no test can reach it — so it is the one copy that can still be wrong while the `Dockerfile` and the constant agree with each other. Keeping it current is a deploy step, and the tagging rule below is what makes that step work.
+`scripts/check_live_sample.py` checks these diagnostics to verify configuration discovery. For clients relying on the fallback, a disk image must contain the current file; replacing its source tag does not update an imported disk image.
 
 ## Build
 
@@ -105,7 +103,9 @@ Build time is a different question and a different machine: the `Dockerfile` dow
 
 ## Changing the rule set
 
-[`bicepconfig.json`](bicepconfig.json) is the rule set both samples report against, so editing it changes their output. Two rules are deliberately away from their defaults: `no-unused-params` is raised to `error`, because that severity is the samples' visible proof the config was discovered at all, and `use-recent-api-versions` is switched on with `maxAgeInDays: 730`. Rebuild, push and import under the next revision afterwards (`0.46.1-1` → `0.46.1-2`) — a disk image already imported does not change when the tag it came from is overwritten.
+Edit the [package's `bicepconfig.json`](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) to change the policy staged by the Bicep kind. It retains two overrides: `no-unused-params` is `error`, and `use-recent-api-versions` is `warning` with `maxAgeInDays: 730`. [Catalog maintenance](../../docs/maintainers.md#updating-bicep-diagnostic-catalogs) describes the automated proposals for new rules and compiler codes.
+
+The image's [`bicepconfig.json`](bicepconfig.json) remains a fallback for older clients. Changing that fallback requires rebuilding, pushing and importing under a new image revision. A packaged policy change requires updating the Python package and needs no image rebuild.
 
 ## Reproducibility
 

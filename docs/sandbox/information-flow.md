@@ -78,6 +78,8 @@ The wrapper checks a returned verdict by type and text. Declaring `0` does not a
 
 Sandbox diagnostics, guest text and provider reports belong in `output`. Their integrity is `untrusted`. A custom tool with a justified `trusted` source declaration can retain trusted output, subject to the [file-read checks](#how-core-labels-a-call).
 
+A kind may also select a diagnostic summary from a package-owned finite vocabulary under the rule below. [Bicep](kinds/bicep.md) selects known rule IDs, severities and staged argument references, while its full report stays untrusted. This selection does not authorize echoing diagnostic messages or paths.
+
 ### How the wrapper labels the fields
 
 Enable the contract with `result_contract=True` and declare the allowed `verdicts=(...)`. The body returns a `SandboxResult`, with strings rather than labelled `Content` objects. An integrity declaration is required.

@@ -170,6 +170,7 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
         assert argv[argv.index("--expected") + 1] in body["body"]
         assert "workspace commit abc123" in body["body"]
         expected_packages = {
+            "bicep-catalog.yml": {"maf-sandbox-bicep"},
             "docker-live.yml": {
                 "maf-sandbox",
                 "maf-sandbox-docker",

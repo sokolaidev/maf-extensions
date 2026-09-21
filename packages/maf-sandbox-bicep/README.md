@@ -36,7 +36,9 @@ The tool reads only requested names from the caller's listing. It stages all sel
 
 Templates use `bicep build`; parameter files use `bicep build-params`. The tool also runs lint as applicable. Commands are fixed templates with validated paths. Model text is passed as file content.
 
-The image supplies the CLI and `bicepconfig.json` at `/maf-sandbox/work`. The compiler finds that configuration by walking up from the source. Each call uses a fresh child directory for sources, generated files, `HOME`, `TMPDIR` and the module cache.
+The image supplies the CLI. The package supplies a complete `bicepconfig.json` and stages it before compilation in each fresh call directory below `/maf-sandbox/work`. Bicep finds that configuration by walking up from the source. A config upload failure leaves validation incomplete. Each call also owns its generated files, `HOME`, `TMPDIR` and module cache. A manifest accepts at most 63 source files, reserving one transfer slot for the config.
+
+The packaged config lists every linter rule in its recorded upstream release, including disabled rules. It preserves upstream defaults except for `no-unused-params=error` and `use-recent-api-versions=warning` with `maxAgeInDays=730`. Compiler IDs live separately in `compiler_codes.json`; `catalog_source.json` records the release, commit and upstream settings. These files ship in the wheel and source archive. Updating the catalog does not upgrade the host-selected compiler.
 
 `exec_timeout_seconds` defaults to 120 per compiler command. Cancellation waits for the bounded active command before cleanup. A cancelled host wait alone does not prove that the guest stopped.
 
@@ -59,9 +61,11 @@ The allowlist grants no Azure Resource Manager access and supplies no credential
 
 ## Results and cleanup
 
-This version requires `maf-sandbox>=0.42.0,<0.43`. `bicep_validate` returns `SandboxResult`, which the attached tool renders as a `list[Content]`: completion, an optional `valid` or `invalid` verdict, any trusted refusals, any untrusted diagnostics or file-listing hints, then fixed guidance. The item count varies. Incomplete calls have no verdict, and either output sequence may be empty.
+This version requires `maf-sandbox>=0.42.0,<0.43`. `bicep_validate` returns `SandboxResult`, which the attached tool renders as a `list[Content]`: completion, an optional `valid` or `invalid` verdict, any trusted refusals and diagnostic summary, any untrusted diagnostics or file-listing hints, then fixed guidance. The item count varies. Incomplete calls have no verdict, and either output sequence may be empty.
 
-Completion, verdict and refusals carry trusted integrity. Diagnostics retain untrusted integrity even with trusted inputs. The host supplies result confidentiality; fixed guidance remains trusted/public. When middleware hides diagnostics, the model reads the verdict or reports the files as unvalidated if there is none. Refused names, staging failures, timeouts, unreadable SARIF and failed module restores leave the call incomplete.
+Completion, verdict, refusals and the selected summary carry trusted integrity. Raw diagnostics retain untrusted integrity even with trusted inputs. The host supplies result confidentiality; fixed guidance remains trusted/public. When middleware hides diagnostics, the model reads the verdict and summary or reports the files as unvalidated if there is no verdict. Refused names, staging failures, timeouts, unreadable SARIF and failed module restores leave the call incomplete.
+
+The summary is a separate JSON text item with `type="bicep_diagnostics"`. Each record selects a catalog rule ID, a severity and a reference such as `files[0]` to an input argument. It contains no messages, raw paths, line numbers or counts. Records are deduplicated across build and lint, sorted and capped at 128. Boolean fields `unrecognized_diagnostics`, `unattributed_locations` and `truncated` identify gaps; unmatched locations use `file="unattributed"`. Unknown IDs remain in the raw report. An empty recognized subset does not establish clean validation. The summary retains the call's confidentiality and does not restore a conversation that is already untrusted.
 
 A restore failure reports `MODULE RESTORE FAILED`. Hidden, empty or unreadable diagnostics do not establish a successful validation. Forwarding hidden diagnostics to a file writer remains subject to that tool's policy.
 

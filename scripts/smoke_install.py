@@ -229,6 +229,16 @@ def _smoke_maf_sandbox_bicep() -> str:
     out = _rendered(answer)
     if "BCP035" not in out:
         raise SystemExit(f"FAIL: diagnostics missing from tool output: {out!r}")
+    summaries = [
+        item.text
+        for item in answer
+        if item.text and item.text.startswith('{"type":"bicep_diagnostics"')
+    ]
+    if len(summaries) != 1 or '"rule":"BCP035"' not in summaries[0]:
+        raise SystemExit("FAIL: packaged compiler catalog did not supply the trusted summary")
+    configs = [text for path, text in written.items() if path.endswith("/bicepconfig.json")]
+    if len(configs) != 1 or '"no-unused-params"' not in configs[0]:
+        raise SystemExit("FAIL: packaged Bicep configuration was not staged")
     # The split a FIDES host reads, under the result contract: the parts the model may act
     # on carry no label of their own and inherit the tool's raised declaration, the compiler's
     # own text says untrusted for itself, and the standing sentence closes it as trusted. So
