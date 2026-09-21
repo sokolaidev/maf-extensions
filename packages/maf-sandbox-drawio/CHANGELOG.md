@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.2.0...maf-sandbox-drawio-v0.3.0) (2026-09-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **drawio:** return readable conversion verdicts with labelled output ([#1374](https://github.com/sokolaidev/maf-extensions/issues/1374))
+
+### Features
+
+* **drawio:** return readable conversion verdicts with labelled output ([#1374](https://github.com/sokolaidev/maf-extensions/issues/1374)) ([1088581](https://github.com/sokolaidev/maf-extensions/commit/1088581159a2d167785a900f6d5af67b8d8515d8))
+
+
+### Fixes
+
+* require the tested agent-framework-core 1.19 floor ([#1346](https://github.com/sokolaidev/maf-extensions/issues/1346)) ([cbbbec5](https://github.com/sokolaidev/maf-extensions/commit/cbbbec501d436cbb6098d6f184a2f60b6c444435))
+
+
+### Documentation
+
+* clarify package setup, usage and limits ([#1370](https://github.com/sokolaidev/maf-extensions/issues/1370)) ([b0dd379](https://github.com/sokolaidev/maf-extensions/commit/b0dd3791cb18fab0b7c565e327ee872b4620c6f7))
+
 ## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.1.0...maf-sandbox-drawio-v0.2.0) (2026-09-19)
 
 
