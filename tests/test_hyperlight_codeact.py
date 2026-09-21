@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
 import pytest
 from maf_sandbox import CallerContext, Cleanup, ListedFile, SandboxKey, SandboxRouter, Selection
-from maf_sandbox_codeact import CodeactRuntime, make_codeact_tools
+from maf_sandbox_codeact import CodeactOutputs, CodeactRuntime, make_codeact_tools
 from maf_sandbox_hyperlight import (
     FILE_RUNTIME_INSTRUCTIONS,
     RUNTIME_INSTRUCTIONS,
@@ -162,9 +163,9 @@ def test_native_panics_are_sanitized_for_codeact(
 @pytest.mark.skipif(os.environ.get("MAF_HYPERLIGHT_LIVE") != "1", reason="requires live Hyperlight")
 @pytest.mark.parametrize("selection", list(Selection))
 @pytest.mark.parametrize("monitored", [False, True])
-def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitored):
+@pytest.mark.parametrize("mode", [CodeactOutputs.DECLARED, CodeactOutputs.MANIFEST])
+def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitored, mode):
     from maf_sandbox import LandedArtifact, OutputSink, TransferLimits
-    from maf_sandbox_codeact import CodeactOutputs
 
     backend = HyperlightSandboxBackend(
         HyperlightSandboxConfig(
@@ -190,6 +191,7 @@ def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitor
     context = CallerContext(
         current_scope=lambda: "files-live", current_thread_id=lambda: "thread", list_files=no_files
     )
+    manifest_bytes = 128 if mode is CodeactOutputs.MANIFEST else 0
     tool = make_codeact_tools(
         router,
         "agent",
@@ -197,33 +199,48 @@ def test_live_codeact_delivers_flat_binary_outputs_and_cleans(selection, monitor
         runtime=CodeactRuntime(
             FILE_RUNTIME_INSTRUCTIONS, guest_work_dir="/output", use_call_directory=False
         ),
-        outputs=CodeactOutputs.DECLARED,
+        outputs=mode,
         output_sink=OutputSink(deliver),
-        files_out=TransferLimits(max_bytes_per_file=256, max_total_bytes=256, max_files=2),
+        files_out=TransferLimits(
+            max_bytes_per_file=256,
+            max_total_bytes=256 + manifest_bytes,
+            max_files=2 + bool(manifest_bytes),
+        ),
     )[0]
     function = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
+    async def invoke(code, outputs):
+        if mode is CodeactOutputs.MANIFEST:
+            manifest = json.dumps({"outputs": [{"path": name} for name in outputs]}).encode()
+            assert len(manifest) <= manifest_bytes
+            # Keep the artifacts' aggregate allowance identical for every manifest shape.
+            manifest = manifest.ljust(manifest_bytes, b" ")
+            code += f"\nwith open(guest_call_path + '/outputs.json', 'wb') as f:\n    f.write({manifest!r})"
+            return await function(code=code)
+        return await function(code=code, outputs=outputs)
+
     async def check():
         try:
-            result = await function(
+            result = await invoke(
                 code="with open(guest_call_path + '/result.bin', 'wb') as f:\n    f.write(bytes(range(256)))",
                 outputs=["result.bin"],
             )
             assert "saved" in _said(result), result
             assert len(landed) == 1 and landed[0].content == bytes(range(256))
-            result = await function(code="print('next')", outputs=["result.bin"])
+            result = await invoke(code="print('next')", outputs=["result.bin"])
+            assert "Not written by the program, so not saved: 'result.bin'" in _said(result), result
             assert len(landed) == 1, result
-            result = await function(
+            result = await invoke(
                 code="with open(guest_call_path + '/big.bin', 'wb') as f:\n    f.write(b'x' * 257)",
                 outputs=["big.bin"],
             )
             assert "Error" in _said(result) and len(landed) == 1, result
-            result = await function(
+            result = await invoke(
                 code="with open(guest_call_path + '/a', 'wb') as f:\n    f.write(b'a' * 129)\nwith open(guest_call_path + '/b', 'wb') as f:\n    f.write(b'b' * 128)",
                 outputs=["a", "b"],
             )
             assert "Error" in _said(result) and len(landed) == 1, result
-            result = await function(code="print('must not run')", outputs=["a", "b", "c"])
+            result = await invoke(code="print('count check')", outputs=["a", "b", "c"])
             assert "Error" in _said(result) and len(landed) == 1, result
         finally:
             await backend.aclose()
