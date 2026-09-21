@@ -33,15 +33,19 @@ _GEOMETRY_ATTRIBUTES = {
 
 
 class DiagramError(ValueError):
-    """An input or layout failure safe to report as untrusted tool diagnostics."""
+    """A rejected input or unsupported layout request."""
 
 
-def _number(value: str, field: str) -> float:
+class ConversionError(ValueError):
+    """An operational failure that leaves conversion incomplete."""
+
+
+def _number(value: str, field: str, *, error: type[ValueError] = DiagramError) -> float:
     if _DECIMAL.fullmatch(value.strip(" \t\r\n")) is None:
-        raise DiagramError(f"{field} must be a finite ASCII decimal number")
+        raise error(f"{field} must be a finite ASCII decimal number")
     result = float(value)
     if not math.isfinite(result) or abs(result) > 1_000_000:
-        raise DiagramError(f"{field} must be finite and within +/-1000000")
+        raise error(f"{field} must be finite and within +/-1000000")
     return result
 
 
@@ -227,7 +231,7 @@ def _has_layout(cells: dict[str, ET.Element]) -> bool:
 
 def _dot(source: str, deadline: float) -> str:
     if deadline <= time.monotonic():
-        raise DiagramError("Automatic layout timed out")
+        raise ConversionError("Automatic layout timed out")
     # Only generated identifiers and validated dimensions enter DOT, never labels or styles.
     # A seekable input avoids a blocked pipe write spending the supervision deadline.
     with tempfile.TemporaryFile() as dot_input:
@@ -267,15 +271,18 @@ def _capture_dot(input_descriptor: int, deadline: float) -> str:
         except subprocess.TimeoutExpired as exc:
             process.kill()
             process.wait()
-            raise DiagramError("Automatic layout timed out") from exc
+            raise ConversionError("Automatic layout timed out") from exc
         finally:
             for thread in threads:
                 thread.join(timeout=1)
         if overflow.is_set() or any(thread.is_alive() for thread in threads):
-            raise DiagramError("Graphviz exceeded its output limit")
+            raise ConversionError("Graphviz exceeded its output limit")
         if process.returncode != 0:
-            raise DiagramError("Graphviz could not lay out this graph")
-        return buffers[0].decode("ascii")
+            raise ConversionError("Graphviz could not lay out this graph")
+        try:
+            return buffers[0].decode("ascii")
+        except UnicodeError as exc:
+            raise ConversionError("Graphviz returned non-ASCII output") from exc
 
 
 def _style_without(style: str, keys: set[str]) -> str:
@@ -343,13 +350,15 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
     output = _dot("\n".join(lines), deadline)
     records = [line.split() for line in output.splitlines()]
     if not records or records[0][0] != "graph" or records[-1] != ["stop"]:
-        raise DiagramError("Graphviz returned an incomplete layout")
-    graph_height = _number(records[0][3], "Layout height") * _PIXELS_PER_INCH
+        raise ConversionError("Graphviz returned an incomplete layout")
+    graph_height = _number(records[0][3], "Layout height", error=ConversionError) * _PIXELS_PER_INCH
 
     def point(x: str, y: str) -> dict[str, str]:
+        horizontal = _number(x, "Layout x", error=ConversionError) * _PIXELS_PER_INCH
+        vertical = _number(y, "Layout y", error=ConversionError) * _PIXELS_PER_INCH
         return {
-            "x": f"{_number(x, 'Layout x') * _PIXELS_PER_INCH + _MARGIN:.3f}",
-            "y": f"{graph_height - _number(y, 'Layout y') * _PIXELS_PER_INCH + _MARGIN:.3f}",
+            "x": f"{horizontal + _MARGIN:.3f}",
+            "y": f"{graph_height - vertical + _MARGIN:.3f}",
         }
 
     positioned: set[str] = set()
@@ -357,7 +366,7 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
         if record[0] == "node":
             name = record[1]
             if name not in by_name or name in positioned:
-                raise DiagramError("Graphviz returned unexpected vertices")
+                raise ConversionError("Graphviz returned unexpected vertices")
             positioned.add(name)
             cell = by_name[name]
             center = point(record[2], record[3])
@@ -378,7 +387,7 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
         elif record[0] == "edge":
             pair = (record[1], record[2])
             if not by_pair[pair]:
-                raise DiagramError("Graphviz returned unexpected edges")
+                raise ConversionError("Graphviz returned unexpected edges")
             cell = by_pair[pair].popleft()
             geometry = cell.find("mxGeometry")
             if geometry is None:
@@ -389,7 +398,7 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
             previous: dict[str, str] | None = None
             count = int(record[3])
             if count < 2 or len(record) != 6 + 2 * count:
-                raise DiagramError("Graphviz returned invalid connector points")
+                raise ConversionError("Graphviz returned invalid connector points")
             for index in range(count):
                 current = point(record[4 + index * 2], record[5 + index * 2])
                 if current != previous:
@@ -418,9 +427,9 @@ def _layout(cells: dict[str, ET.Element], direction: str, deadline: float) -> No
                 + ";edgeStyle=none;curved=0;",
             )
         else:
-            raise DiagramError("Graphviz returned an unknown layout record")
+            raise ConversionError("Graphviz returned an unknown layout record")
     if positioned != set(by_name) or any(by_pair.values()):
-        raise DiagramError("Graphviz did not position every vertex and edge")
+        raise ConversionError("Graphviz did not position every vertex and edge")
     for cell in cells.values():
         if "style" in cell.attrib:
             cell.set("style", _style_without(cell.attrib["style"], {"childLayout"}))
@@ -450,7 +459,7 @@ def convert(
                 if cell.get("edge") == "1" and cell.find("mxGeometry") is None:
                     ET.SubElement(cell, "mxGeometry", {"as": "geometry", "relative": "1"})
             if not _has_layout(_cells(model)):
-                raise DiagramError("Layout left incomplete vertex geometry")
+                raise ConversionError("Layout left incomplete vertex geometry")
         except DiagramError as exc:
             raise DiagramError(f"Page {index}: {exc}") from exc
     document.set("compressed", "false")
@@ -482,6 +491,9 @@ def main() -> int:
     except (DiagramError, UnicodeError) as exc:
         print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
         return 2
+    except ConversionError as exc:
+        print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
+        return 3
     except FileNotFoundError:
         print("The draw.io sandbox needs Python 3 and Graphviz dot", file=sys.stderr)
         return 3

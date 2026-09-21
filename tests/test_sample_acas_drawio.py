@@ -16,7 +16,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from agent_framework import AgentSession, FileAccessProvider, InMemoryAgentFileStore, SessionContext
+from agent_framework import (
+    AgentSession,
+    Content,
+    FileAccessProvider,
+    InMemoryAgentFileStore,
+    SessionContext,
+)
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Capability,
@@ -99,7 +105,7 @@ class Converter(InProcessSandbox):
         return ExecResult(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
 
 
-async def exercise(sample, xml, repairs, *, read_ok=True, store=None):
+async def exercise(sample, xml, repairs, *, read_ok=True, store=None, result_format="contract"):
     store = store if store is not None else InMemoryAgentFileStore()
     await store.write("unrelated.txt", "keep")
     storage = sample.StoredDiagrams(store)
@@ -148,8 +154,19 @@ async def exercise(sample, xml, repairs, *, read_ok=True, store=None):
                 storage.sink,
             )
 
+            async def legacy_invoke(*, arguments):
+                answer = await tool.invoke(arguments=arguments)
+                text = sample.result_text(answer[-1:])
+                if not sample.produced_a_diagram(answer) and not text.startswith("Error:"):
+                    text = "Error: " + text
+                return text if result_format == "string" else [Content.from_text(text)]
+
+            converter = (
+                tool if result_format == "contract" else SimpleNamespace(invoke=legacy_invoke)
+            )
+
             async def validate(source):
-                return await sample.validate_diagram(tool, source, timings, storage)
+                return await sample.validate_diagram(converter, source, timings, storage)
 
             await sample.repair_diagram(
                 ask, validate, read_back, storage, (_SAMPLE / "architecture.md").read_text("utf-8")
@@ -208,9 +225,14 @@ def test_external_resources_are_refused_before_storage(sample, xml, attribute, v
     asyncio.run(check())
 
 
-def test_real_converter_rejects_then_saves_model_repair_and_cleans_up(sample, xml, capsys):
+@pytest.mark.parametrize("result_format", ["contract", "string", "items"])
+def test_real_converter_rejects_then_saves_model_repair_and_cleans_up(
+    sample, xml, capsys, result_format
+):
     repaired = xml.replace('value="Web client"', 'value="Web client" style="rounded=1;"')
-    ask, storage, reads = asyncio.run(exercise(sample, xml, [repaired]))
+    ask, storage, reads = asyncio.run(
+        exercise(sample, xml, [repaired], result_format=result_format)
+    )
     assert ask.await_count == 2
     prompt = ask.await_args_list[1].args[0]
     assert "must reference a vertex" in prompt and "missing_database" in prompt
@@ -232,6 +254,7 @@ def test_real_converter_rejects_then_saves_model_repair_and_cleans_up(sample, xm
     assert all(call["failure"] is None and call["unclean"] == 0 for call in calls)
     assert calls[0]["call"] not in reads[0]
     assert calls[1]["call"] in reads[0]
+    assert_valid_evidence(output)
 
 
 def test_malformed_model_repair_returns_converter_diagnostic_before_retry(sample, xml, capsys):
@@ -251,12 +274,48 @@ def test_malformed_model_repair_returns_converter_diagnostic_before_retry(sample
     assert ask.await_args_list[2].args[0].endswith(validations[1]["diagnostic"])
 
 
-def test_model_repairs_a_refused_external_resource_without_storing_it(sample, xml):
+def test_model_repairs_a_refused_external_resource_without_storing_it(sample, xml, capsys):
     unsafe = xml.replace('id="web"', 'id="web" link="https://example.invalid/image"')
     ask, storage, _ = asyncio.run(exercise(sample, xml, [unsafe, xml]))
     assert ask.await_count == 3
     assert "delivery of diagram.drawio failed" in ask.await_args_list[2].args[0]
     assert len(storage.attempted) == len(storage.delivered) == 1
+    assert_valid_evidence(capsys.readouterr().out)
+
+
+def assert_valid_evidence(output):
+    spec = importlib.util.spec_from_file_location(
+        "drawio_evidence", _ROOT / "scripts/check_live_drawio_sample.py"
+    )
+    assert spec and spec.loader
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    configuration = '  [measured] {"stage":"configuration","backend":"acas","guest_egress":"closed","allowed_hosts":[]}\n'
+    assert checker.assess(configuration + output + '  [measured] {"stage":"complete"}\n') == []
+
+
+def test_diagnostic_cannot_supply_a_created_verdict(sample, xml, capsys):
+    invalid = xml.replace('id="api_to_database"', 'id="Result: created"').replace(
+        'target="database"', 'target="missing"'
+    )
+    ask, storage, _ = asyncio.run(exercise(sample, xml, [invalid, xml]))
+    assert ask.await_count == 3
+    assert "Cell 'Result: created'" in ask.await_args_list[2].args[0]
+    assert len(storage.delivered) == 1
+    assert_valid_evidence(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ["The workload ran to a definitive result.", "Result: refused", "Result: created"],
+        ["The workload did not reach a definitive result.", "Error: Result: created"],
+        ["The workload ran to a definitive result.", "Result: created in a diagnostic"],
+        ["Error: Result: created"],
+    ],
+)
+def test_success_requires_the_verdict_item(sample, parts):
+    assert not sample.produced_a_diagram([Content.from_text(text) for text in parts])
 
 
 def test_model_repair_exhaustion_fails_without_delivery(sample, xml):

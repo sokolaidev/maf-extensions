@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+COMPLETED = "The workload ran to a definitive result."
+INCOMPLETE = "The workload did not reach a definitive result."
 spec = importlib.util.spec_from_file_location(
     "check_live_drawio_sample", ROOT / "scripts/check_live_drawio_sample.py"
 )
@@ -17,8 +19,8 @@ check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
 
 
-@pytest.fixture
-def evidence():
+@pytest.fixture(params=["contract", "legacy"])
+def evidence(request):
     calls = [
         {
             "stage": "tool_call_ended",
@@ -31,7 +33,7 @@ def evidence():
         }
         for digit in ("a", "b")
     ]
-    return [
+    result = [
         {
             "stage": "configuration",
             "backend": "acas",
@@ -51,25 +53,25 @@ def evidence():
             "call": "a" * 32,
             "sha256": "3" * 64,
             "delivered": 0,
-            "diagnostic": "Result: refused\nError: Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": f"{COMPLETED}\nResult: refused\nError: Cell 'api_to_database'.target must reference a vertex",
         },
         {
             "stage": "rejected",
             "delivered": 0,
-            "diagnostic": "Result: refused\nError: Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": f"{COMPLETED}\nResult: refused\nError: Cell 'api_to_database'.target must reference a vertex",
         },
         {
             "stage": "repair",
             "attempt": 1,
             "sha256": "2" * 64,
-            "diagnostic": "Result: refused\nError: Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": f"{COMPLETED}\nResult: refused\nError: Cell 'api_to_database'.target must reference a vertex",
         },
         calls[1],
         {
             "stage": "validation",
             "call": "b" * 32,
             "sha256": "2" * 64,
-            "diagnostic": "b" * 32 + "/diagram.drawio",
+            "diagnostic": f"{COMPLETED}\nResult: created\n" + "b" * 32 + "/diagram.drawio",
             "delivered": 1,
         },
         {
@@ -82,6 +84,11 @@ def evidence():
         {"stage": "sandbox_cleanup", "complete": True},
         {"stage": "complete"},
     ]
+    if request.param == "legacy":
+        for record in result:
+            if "diagnostic" in record:
+                record["diagnostic"] = record["diagnostic"].split("\n", 2)[2]
+    return result
 
 
 def transcript(evidence):
@@ -177,13 +184,13 @@ def test_retries_require_each_failed_repair_diagnostic(evidence, attempts, tampe
                 "stage": "validation",
                 "call": str(number) * 32,
                 "sha256": repair["sha256"],
-                "diagnostic": f"Result: refused\nError: Invalid XML {number}",
+                "diagnostic": f"{COMPLETED}\nResult: refused\nError: Invalid XML {number}",
                 "delivered": 0,
             },
             {
                 "stage": "repair_rejected",
                 "attempt": number,
-                "diagnostic": f"Result: refused\nError: Invalid XML {number}",
+                "diagnostic": f"{COMPLETED}\nResult: refused\nError: Invalid XML {number}",
             },
         ]
         index += 4
@@ -204,4 +211,45 @@ def test_retries_require_each_failed_repair_diagnostic(evidence, attempts, tampe
         validations[1]["sha256"] = "0" * 64
     else:
         repairs[1]["diagnostic"] = validations[0]["diagnostic"]
+    assert check.assess(transcript(evidence))
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        f"{INCOMPLETE}\nError: delivery of diagram.drawio failed",
+        f"{COMPLETED}\nResult: refused\nCell 'Result: created' is invalid",
+        "Error: Cell 'Result: created' is invalid",
+        f"{COMPLETED}\nResult: created later in a diagnostic",
+        "unrecognized result",
+    ],
+)
+def test_success_needs_a_positive_converter_result(evidence, diagnostic):
+    validation = [record for record in evidence if record["stage"] == "validation"][-1]
+    validation["diagnostic"] = diagnostic
+    assert check.assess(transcript(evidence))
+
+
+def test_incomplete_zero_delivery_attempt_can_be_repaired(evidence):
+    repair = next(record for record in evidence if record["stage"] == "repair")
+    call = evidence[evidence.index(repair) + 1]
+    diagnostic = f"{INCOMPLETE}\nError: delivery of diagram.drawio failed"
+    index = evidence.index(repair)
+    evidence[index:index] = [
+        dict(repair),
+        {**call, "call": "c" * 32},
+        {
+            "stage": "validation",
+            "call": "c" * 32,
+            "sha256": repair["sha256"],
+            "diagnostic": diagnostic,
+            "delivered": 0,
+        },
+        {"stage": "repair_rejected", "attempt": 1, "diagnostic": diagnostic},
+    ]
+    repair["attempt"] = 2
+    repair["diagnostic"] = diagnostic
+    next(record for record in evidence if record["stage"] == "saved_and_read")["attempt"] = 2
+    assert check.assess(transcript(evidence)) == []
+    evidence[index + 2]["delivered"] = 1
     assert check.assess(transcript(evidence))

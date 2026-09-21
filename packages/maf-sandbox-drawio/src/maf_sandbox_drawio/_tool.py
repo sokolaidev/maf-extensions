@@ -32,8 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 
 #: Every answer `create_drawio` may reach about the source it was given.
 #:
-#: The converter either produced a diagram or rejected one. A call that never reached the
-#: converter reports no verdict at all.
+#: Calls without a definitive conversion result carry no verdict.
 DRAWIO_VERDICTS = ("created", "refused")
 
 
@@ -180,14 +179,17 @@ def _create_tool(
             diagnostic = (guest_diagnostic or "The converter returned no diagnostic")[
                 :MAX_DIAGNOSTIC
             ]
+            refused = result.exit_code == 2
             return SandboxResult(
-                completed=True,
-                verdict="refused",
+                completed=refused,
+                verdict="refused" if refused else None,
                 trusted_output=(
                     (
                         "The converter rejected the diagram. Its own diagnostic is in the "
                         "hidden half of this result."
-                    ),
+                    )
+                    if refused
+                    else "The converter could not complete the diagram.",
                 ),
                 # The converter's text, quoting whatever the supplied source made it say.
                 output=(f"draw.io conversion failed (exit {result.exit_code}): {diagnostic}",),

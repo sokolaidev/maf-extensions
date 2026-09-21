@@ -279,7 +279,9 @@ def test_oversized_input_does_not_acquire(tmp_path: Path):
 )
 def test_execution_failures_are_sanitized(tmp_path: Path, failure: Exception, expected: str):
     tool, _ = attach(InProcessSandbox(raises=failure), tmp_path)
-    result = invoke(tool)
+    answer = items(tool)
+    assert not completed(answer) and verdict(answer) is None
+    result = said(answer)
     assert expected in result
     assert "private-transport-account" not in result
     assert not (tmp_path / "diagram.drawio").exists()
@@ -287,7 +289,35 @@ def test_execution_failures_are_sanitized(tmp_path: Path, failure: Exception, ex
 
 def test_success_without_an_output_is_not_reported_as_saved(tmp_path: Path):
     tool, _ = attach(InProcessSandbox(), tmp_path)
-    assert invoke(tool).startswith("Error:")
+    answer = items(tool)
+    assert not completed(answer) and verdict(answer) is None
+    assert said(answer).startswith("Error:")
+
+
+@pytest.mark.parametrize("exit_code", [3, 127, 137, -9])
+def test_operational_exit_has_no_verdict(tmp_path: Path, exit_code: int):
+    class FailedConverter(InProcessSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            return ExecResult(exit_code=exit_code, stderr="conversion unavailable")
+
+    tool, _ = attach(FailedConverter(), tmp_path)
+    answer = items(tool)
+    assert not completed(answer) and verdict(answer) is None
+    assert "conversion unavailable" in answer[-1].text
+    assert answer[-1].additional_properties["security_label"]["integrity"] == "untrusted"
+    assert not (tmp_path / "diagram.drawio").exists()
+
+
+def test_missing_graphviz_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PATH", "")
+    source = ET.fromstring(_XML)
+    vertex = source.find(".//mxCell[@id='a']")
+    vertex.remove(vertex.find("mxGeometry"))
+    tool, _ = attach(ConverterSandbox(), tmp_path)
+    answer = items(tool, ET.tostring(source, encoding="unicode"))
+    assert not completed(answer) and verdict(answer) is None
+    assert "Graphviz dot" in said(answer)
+    assert not (tmp_path / "diagram.drawio").exists()
 
 
 @pytest.mark.parametrize("producer_owns_stderr", [False, True])
@@ -310,7 +340,9 @@ def test_converter_diagnostic_uses_bounded_guest_stream(
             )
 
     tool, _ = attach(FailedConverter(), tmp_path)
-    result = invoke(tool)
+    answer = items(tool)
+    assert completed(answer) and verdict(answer) == "refused"
+    result = said(answer)
     expected = (diagnostic or "The converter returned no diagnostic")[:2048]
     # The converter ran and rejected the diagram: that is an answer, so it has a verdict,
     # and its diagnostic is the converter's own text rather than this module's.

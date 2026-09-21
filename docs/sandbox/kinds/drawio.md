@@ -20,7 +20,7 @@ Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide
 
 ## Result
 
-The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `created` where the converter produced a diagram and `refused` where it ran and rejected the source. `completed` is false where the converter never ran — a source that is not text, an oversized input, an unavailable sandbox — and such a call carries no verdict at all.
+The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `created` after artifact delivery and `refused` when the converter rejects the source or an unsupported layout request. `completed` is false, with no verdict, for invalid tool arguments, an unavailable sandbox, execution or Graphviz failures, timeouts, missing output and failed delivery. The renderer reserves exit code 2 for source rejection and exit code 3 for operational failure; other nonzero exits also report incomplete conversion.
 
 The delivered artifact's display reference is `trusted_output`: the sink minted it for a name this kind fixed, so it carries nothing the supplied source chose. The converter's own diagnostic is `output`, because it quotes whatever the source made it say. What this kind says about refusing before the converter ran is `trusted_output` too.
 

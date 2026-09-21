@@ -258,38 +258,32 @@ class StoredDiagrams:
             raise ExceptionGroup("Sample storage cleanup failed", failures)
 
 
-#: What the converter's result says when it produced a diagram.
-#:
-#: A verdict rather than a prefix on the text: the result is several items now, and the first
-#: is a fixed completion line. A model can write a plausible reply; it cannot write this into
-#: a tool result.
-CREATED = "Result: created"
-
-
-def produced_a_diagram(diagnostic: str) -> bool:
-    """Whether the converter actually produced one.
-
-    Anything else is a call to retry: the converter ran and rejected the source, or it never
-    ran at all — a refused external resource, an oversized input, an unavailable sandbox. The
-    contract reports the second as no verdict rather than as a refusal, so the sample asks the
-    positive question rather than enumerating the ways it can fail.
-    """
-    return CREATED in diagnostic
+def produced_a_diagram(answer: object) -> bool:
+    """Read the contract's verdict item or a released tool's call-scoped reference."""
+    if isinstance(answer, list) and len(answer) > 1:
+        return (
+            getattr(answer[0], "text", None) == "The workload ran to a definitive result."
+            and getattr(answer[1], "text", None) == "Result: created"
+        )
+    return (
+        re.fullmatch(r"[0-9a-f]{32}/diagram\.drawio(?: \([0-9]+ bytes\))?", result_text(answer))
+        is not None
+    )
 
 
 async def validate_diagram(
     converter: Any, xml: str, timings: CallTimings, storage: StoredDiagrams
-) -> str:
+) -> object:
     """Bind a converter result to the observed call and the exact submitted XML."""
     count = len(timings.calls)
-    result = result_text(await converter.invoke(arguments={"xml": xml}))
+    result = await converter.invoke(arguments={"xml": xml})
     if len(timings.calls) != count + 1:
         raise RuntimeError("Expected exactly one observed draw.io call")
     measure(
         "validation",
         call=timings.calls[-1],
         sha256=hashlib.sha256(xml.encode()).hexdigest(),
-        diagnostic=result,
+        diagnostic=result_text(result),
         delivered=len(storage.delivered),
     )
     return result
@@ -297,7 +291,7 @@ async def validate_diagram(
 
 async def repair_diagram(
     ask: Callable[[str], Awaitable[str]],
-    validate: Callable[[str], Awaitable[str]],
+    validate: Callable[[str], Awaitable[object]],
     read_back: Callable[[str, str], Awaitable[bool]],
     storage: StoredDiagrams,
     markdown: str,
@@ -314,9 +308,10 @@ async def repair_diagram(
         target=MISSING_VERTEX,
         sha256=hashlib.sha256(broken.encode()).hexdigest(),
     )
-    diagnostic = await validate(broken)
+    answer = await validate(broken)
+    diagnostic = result_text(answer)
     expected = f"Cell '{BROKEN_EDGE}'.target must reference a vertex"
-    if produced_a_diagram(diagnostic) or expected not in diagnostic or storage.attempted:
+    if produced_a_diagram(answer) or expected not in diagnostic or storage.attempted:
         raise RuntimeError("The deliberately broken edge was not rejected without delivery")
     measure("rejected", diagnostic=diagnostic, delivered=0)
     candidate = broken
@@ -334,8 +329,9 @@ async def repair_diagram(
             diagnostic=diagnostic,
         )
         count = len(storage.delivered)
-        diagnostic = await validate(candidate)
-        if not produced_a_diagram(diagnostic):
+        answer = await validate(candidate)
+        diagnostic = result_text(answer)
+        if not produced_a_diagram(answer):
             if len(storage.delivered) != count or storage.attempted:
                 raise RuntimeError("A failed conversion attempted artifact delivery")
             measure("repair_rejected", attempt=attempt, diagnostic=diagnostic)
@@ -344,8 +340,8 @@ async def repair_diagram(
             raise RuntimeError("Converter success did not deliver exactly one artifact")
         landed, artifact = storage.delivered[-1]
         expected_path = f"{artifact.call_id}/diagram.drawio"
-        # The reference is the last part of the answer now; the verdict precedes it.
-        if landed.handle != expected_path or not diagnostic.endswith(landed.display):
+        reference = result_text(answer[-1:]) if isinstance(answer, list) else diagnostic
+        if landed.handle != expected_path or reference != landed.display:
             raise RuntimeError("Success did not identify this call's stored artifact")
         architecture(candidate)
         saved = await storage.store.read(expected_path)
@@ -449,7 +445,7 @@ async def run() -> int:
             print(quoted(response.text))
             return response.text
 
-        async def validate(xml: str) -> str:
+        async def validate(xml: str) -> object:
             return await validate_diagram(converter, xml, timings, storage)
 
         async def read_back(path: str, expected: str) -> bool:
