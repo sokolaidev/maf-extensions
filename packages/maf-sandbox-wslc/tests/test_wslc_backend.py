@@ -1700,7 +1700,7 @@ class TestTheFileCommandsInARealShell:
         real.symlink_to(protected)
         done = self._own(real)
         assert done.returncode == 1
-        assert b"no longer the directory the check found" in done.stderr
+        assert b"does not resolve to itself any more" in done.stderr
 
     def test_setup_refuses_a_parent_swapped_for_a_link(self, tmp_path):
         base = tmp_path.resolve()
@@ -1709,7 +1709,7 @@ class TestTheFileCommandsInARealShell:
         (base / "parent").symlink_to(protected)
         done = self._create(base / "parent", base / "parent" / "child")
         assert done.returncode == 1
-        assert b"no longer the directory the check found" in done.stderr
+        assert b"does not resolve to itself any more" in done.stderr
         assert list(protected.iterdir()) == []
 
     def test_setup_refuses_a_link_above_the_parent(self, tmp_path):
