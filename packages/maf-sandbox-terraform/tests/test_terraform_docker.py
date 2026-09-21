@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from maf_sandbox import CallerContext, SandboxRouter
 from maf_sandbox.testing import InMemoryStore
+from test_terraform_diagnostics import exercise_repair_flow, summary_item
 
 from maf_sandbox_terraform import make_terraform_tools
 
@@ -69,12 +70,14 @@ def _body(result) -> str:
     "case",
     [
         "local",
+        "local-invalid",
         "json",
         "invalid",
         "syntax",
         "missing-dependency",
         "provider",
         "provider-invalid",
+        "provider-missing",
         "formatting",
         "wrong-engine",
         "cancelled",
@@ -92,7 +95,9 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
             "modules/child/main.tf": 'output "hello" { value = "hi" }\n',
         }
         root = "root"
-        if case == "json":
+        if case == "local-invalid":
+            data["modules/child/main.tf"] = 'output "hello" { value = var.undeclared }\n'
+        elif case == "json":
             data = {"main.tf.json": '{"output":{"hello":{"value":"world"}}}'}
         elif case == "invalid":
             data = {"main.tf": 'output "hello" { value = var.undeclared }\n'}
@@ -100,6 +105,8 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
             data = {"main.tf": "this is not HCL !"}
         elif case == "missing-dependency":
             data = {"main.tf": 'module "child" { source = "./absent" }\n'}
+        elif case == "provider-missing":
+            data = {"main.tf": _RANDOM.replace('"3.7.2"', '"99.0.0"')}
         elif case in {"provider", "provider-invalid", "cancelled", "timeout"}:
             data = {
                 "main.tf": _RANDOM.replace("min = 1", 'min = "wrong"')
@@ -167,12 +174,27 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
                 else:
                     result = await tool.func(files=list(data), root_module=root)
                     report = _body(result)
-                    if case in {"syntax", "missing-dependency", "wrong-engine", "timeout"} or (
-                        case == "tofu-precedence" and engine == "terraform"
-                    ):
+                    if case in {
+                        "syntax",
+                        "missing-dependency",
+                        "provider-missing",
+                        "wrong-engine",
+                        "timeout",
+                    } or (case == "tofu-precedence" and engine == "terraform"):
                         assert "INCOMPLETE" in report, report
-                    elif case in {"invalid", "provider-invalid"}:
+                        assert "terraform_diagnostics" not in report
+                    elif case in {"invalid", "provider-invalid", "local-invalid"}:
                         assert "validation FAIL" in report, report
+                        assert json.loads(summary_item(result).text) == {
+                            "type": "terraform_diagnostics",
+                            "diagnostics": [
+                                {
+                                    "file": "files[1]" if case == "local-invalid" else "files[0]",
+                                    "severity": "error",
+                                }
+                            ],
+                            "unattributed_diagnostics": False,
+                        }
                     else:
                         assert "validation PASS" in report, report
                         if case == "formatting":
@@ -180,6 +202,32 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
                 assert not await containers(scope)
                 assert store.files == data
             assert len(instances) == len(set(instances))
+        finally:
+            await router.dispose_scope(scope, "live")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_real_fides_repair_flow(engine):
+    async def scenario():
+        scope = "terraform-repair-" + uuid.uuid4().hex
+        backend = await DockerSandboxBackend.create(DockerSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        store = InMemoryStore({"main.tf": 'output "hello" { value = var.undeclared }\n'})
+        context = CallerContext(
+            current_scope=lambda: scope,
+            current_thread_id=lambda: "live",
+            list_files=InMemoryStore.list,
+        )
+        validator = make_terraform_tools(
+            router, store, "live", context, engine=engine, image=IMAGES[engine]
+        )[0]
+        try:
+            repaired = await exercise_repair_flow(validator, store)
+            assert any(item.text == "Result: valid" for item in repaired)
+            assert json.loads(summary_item(repaired).text)["diagnostics"] == []
+            assert not await containers(scope)
         finally:
             await router.dispose_scope(scope, "live")
 

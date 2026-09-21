@@ -570,6 +570,7 @@ class TestWhatAFidesHostSeesOfASplitResult:
         assert seen == [
             COMPLETED_TEXT,
             "Result: valid",
+            '{"type":"terraform_diagnostics","diagnostics":[],"unattributed_diagnostics":false}',
             "hidden",
             workload.STANDING_GUIDANCE,
         ]

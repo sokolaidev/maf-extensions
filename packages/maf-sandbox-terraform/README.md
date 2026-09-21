@@ -59,6 +59,10 @@ A supplied root lock file is read-only during initialization. Without one, a gen
 
 Initialization failure or malformed, inconsistent, truncated or oversized output means incomplete validation. Use the fixed completion and verdict to interpret a hidden report. Successful validation does not prove that a deployment will succeed.
 
+Completed validation also returns a readable `terraform_diagnostics` JSON summary for either engine. Each entry pairs a fixed input reference such as `files[0]` with `error` or `warning`. Entries indicate presence, not counts; duplicates collapse and the 64-file input limit bounds the summary to 128 pairs. `unattributed_diagnostics: true` signals findings without a matching staged input. Hidden filenames, engine prose, expressions and source positions stay out of this summary.
+
+Terraform and OpenTofu do not expose stable rule IDs in their validation JSON. The summary identifies where to inspect, but cannot identify the rule, explain the error or prescribe a repair. The verdict comes from the complete checked report, so an empty summary is not evidence of validity. See the [summary contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md#trusted-diagnostic-summary).
+
 ## Formatting
 
 Set `formatting=True` to attach the separate formatting tool. It runs `fmt -recursive -no-color` without initialization or validation, so a base image without providers is sufficient.
@@ -77,8 +81,8 @@ All phases share `exec_timeout_seconds`: 120 by default, finite and at most 600.
 
 Providers execute native code and may read other guest paths. Use a dedicated image without credentials, sensitive files or host mounts. This tool exposes no plan, apply, destroy, import or state operations.
 
-Both tools use the `SandboxResult` contract. Core renders separate content items for completion, an optional verdict, fixed failure reasons, untrusted output and standing guidance. Validation exposes `valid` or `invalid`; formatting exposes `changed` or `unchanged`. An incomplete call reports `completed=False` and no verdict.
+Both tools use the `SandboxResult` contract. Core renders separate content items for completion, an optional verdict, trusted output, untrusted output and standing guidance. Trusted output holds the validation summary or fixed failure reasons. Validation exposes `valid` or `invalid`; formatting exposes `changed` or `unchanged`. An incomplete call reports `completed=False`, no verdict and no diagnostic summary.
 
-Completion, declared verdicts, fixed reasons and guidance remain readable while FIDES may hide engine reports, session exception details and formatted file contents. Formatting-check details within a validation report remain untrusted. The host supplies confidentiality and later-tool policy. See the [kind guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md) for the complete contract.
+Completion, declared verdicts, diagnostic summaries, fixed reasons and guidance remain readable while FIDES may hide engine reports, session exception details and formatted file contents. All items retain effective confidentiality; a summary never restores an already-untrusted conversation. Formatting-check details within a validation report remain untrusted. The host supplies confidentiality and later-tool policy. See the [kind guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md) for the complete contract.
 
 The `random` profile is live-verified with Terraform and OpenTofu on Linux amd64 Docker and ACAS using published wheels. See the [kind guide's measurements](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md#live-verification) for the tested versions and evidence. WSLC execution remains unverified. When the launcher changes, rebuild both base and prepared images; prepared-image receipts bind to its `reader_sha256`.

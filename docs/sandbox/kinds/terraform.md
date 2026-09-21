@@ -15,7 +15,7 @@ See the [package README](../../../packages/maf-sandbox-terraform/README.md) for 
 | Guest | POSIX; supplied images pin Linux amd64 engines and dependencies |
 | Isolation and lifetime | At least container isolation; a separate sandbox per call; mandatory disposal |
 | Network | `CLOSED`, with a filesystem provider mirror and no direct-download fallback |
-| Results | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, the reason it stopped where it did, the engine's report, then fixed guidance. Validation answers `valid` or `invalid`; formatting answers `changed` or `unchanged` |
+| Results | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, a trusted diagnostic summary or fixed failure reason, the engine's report, then fixed guidance. Validation answers `valid` or `invalid`; formatting answers `changed` or `unchanged` |
 
 This kind exposes no plan, apply or state commands. It does not write to the agent's store. Providers and expressions may access other guest paths, so there is no call-directory confinement or warm-reuse claim.
 
@@ -36,6 +36,22 @@ The fixed launcher runs noninteractive initialization with `-backend=false`. A s
 Initialization failure means incomplete validation. `validate -json` must return a supported 1.x format, a Boolean verdict, consistent diagnostic counts and a matching exit status. Malformed, truncated, oversized or inconsistent output is incomplete.
 
 Formatting checks use `fmt -check -recursive` across the staged project. Validation returns no formatted file contents; the model edits the files through host tools.
+
+## Trusted diagnostic summary
+
+Both validation tools emit a `terraform_diagnostics` JSON item after completed validation:
+
+```json
+{"type":"terraform_diagnostics","diagnostics":[{"file":"files[0]","severity":"error"}],"unattributed_diagnostics":false}
+```
+
+The [Terraform validation format](https://developer.hashicorp.com/terraform/cli/commands/validate#json-output-format) and [OpenTofu validation format](https://opentofu.org/docs/cli/commands/validate/#json-output-format) provide severity and optional source ranges without stable rule IDs. The kind selects only diagnostic presence for an input and severity. It does not derive categories or IDs from summary or detail text. Provider messages, expressions, addresses, snippets, source positions and raw counts remain untrusted.
+
+Each `file` is one of the fixed references `files[0]` through `files[63]`, preserving manifest order. A diagnostic filename must exactly match a successfully staged path expressed relative to `root_module`, the CLI's working directory. This includes sibling-module paths such as `../modules/child/main.tf`. There is no basename, suffix, URI or absolute-path inference. Hidden file and root names are never emitted.
+
+Duplicate input/severity pairs collapse. At most 128 pairs are possible, ordered by input position and then `error`, `warning`. Missing, malformed or unmatched locations set `unattributed_diagnostics` to `true` without exposing their values. An unfamiliar message still contributes its checked severity and location; no message taxonomy is claimed. An unknown severity or malformed required diagnostic field makes the report incomplete. Future additive JSON fields are ignored for summary selection.
+
+The summary helps the model choose a file to inspect. It does not explain the defect or supply a repair instruction. Read the separate verdict: an empty attributed set can accompany `invalid`, and warnings can accompany `valid`. Failed initialization, launcher failures and incomplete reports produce neither a verdict nor a diagnostic summary. Provider and module initialization errors are not classified from their prose.
 
 ## Optional formatting
 
@@ -58,9 +74,9 @@ An oversized project needs a smaller complete manifest. A single changed file la
 
 Provider programs and stored configuration are sources of the reports. Formatted file contents also come from that configuration. The kind claims `untrusted` for both validation and formatting output.
 
-![Terraform and OpenTofu tools return readable completion, a valid/invalid or changed/unchanged verdict when complete, fixed failure reasons, and standing guidance. Engine reports and formatted files remain untrusted and may be hidden by FIDES. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
+![Terraform and OpenTofu tools return readable completion, a valid/invalid or changed/unchanged verdict when complete, diagnostic summaries, fixed failure reasons, and standing guidance. Engine reports and formatted files remain untrusted and may be hidden by FIDES. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
 
-The wrapper raises the framework-facing declaration to keep completion, declared verdicts, fixed failure reasons and guidance readable. It stores the workload claim in `maf_sandbox_derived_integrity` and labels engine output separately. Hidden names suppress guest prose in reports.
+The wrapper raises the framework-facing declaration to keep completion, declared verdicts, diagnostic summaries, fixed failure reasons and guidance readable. It stores the workload claim in `maf_sandbox_derived_integrity` and labels engine output separately. Hidden names suppress guest prose in reports. Summaries retain the call's effective confidentiality and never restore an already-untrusted conversation.
 
 Use completion and the readable verdict to determine whether validation passed or formatting changed files; the engine report can remain hidden. An incomplete call carries no verdict. Hidden content still affects confidentiality, and forwarding its reference remains subject to host policy. The host chooses result classification. See [information flow](../information-flow.md).
 
@@ -78,7 +94,7 @@ The [image guide](../../../images/terraform-sandbox/README.md) owns engine pins,
 
 Dependency preparation is a host-controlled image-build step. It downloads only approved, pinned artifacts, verifies their content and writes a provider mirror, module files and a sanitized receipt. It runs no provider executable on the host.
 
-![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model reads completion and a valid/invalid or changed/unchanged verdict when complete, with fixed failure reasons and guidance. Engine reports and changed whole files stay untrusted. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
+![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model reads completion and a valid/invalid or changed/unchanged verdict when complete, with diagnostic summaries, fixed failure reasons and guidance. Engine reports and changed whole files stay untrusted. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
 
 | Dependency | Supported preparation |
 |---|---|
@@ -97,6 +113,8 @@ Prepared receipts pin the launcher as `reader_sha256`. Rebuild both base and der
 The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-provider-image) adds service-specific OpenTofu providers. The [multi-version example](../../../images/terraform-sandbox/USAGE.md#build-an-image-with-two-provider-lines) shows two provider lines in one offline mirror.
 
 ## Live verification
+
+The diagnostic summary and FIDES repair flow passed local Docker checks on 2026-09-22 with Terraform 1.16.2 and OpenTofu 1.12.6 using the `random` profile. All 40 validation, formatting and cleanup checks passed, including root and sibling-module attribution, provider-schema errors, missing providers and modules, cancellation and deadlines. With automatic hiding enabled, each repair-flow test read the summary, kept raw diagnostics hidden, wrote a corrected file through a permitted host tool and revalidated it successfully. These checks use the workspace package; they do not establish published-package, ACAS or WSLC coverage for the summary.
 
 [Sample 20](../../../samples/20_terraform_validation/) validates the same random-provider module with both engines on Docker and ACAS. Its live checks require the expected engine version, provider-schema diagnostics and per-call disposal. Each combination runs as a separate published-package verification job.
 
@@ -119,5 +137,5 @@ All four combinations also passed in the [all-sample published-package dispatch]
 | Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Four-field result contract | Implemented for Terraform and OpenTofu, including live checks | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
-| Trusted diagnostic summaries for repair loops | Tracked for Terraform and OpenTofu | [#1390](https://github.com/sokolaidev/maf-extensions/issues/1390) (open) |
+| Trusted diagnostic summaries for repair loops | Implemented for Terraform and OpenTofu | [#1390](https://github.com/sokolaidev/maf-extensions/issues/1390) (closed) by [#1394](https://github.com/sokolaidev/maf-extensions/pull/1394) (merged) |
 | Published-package random-profile samples on Docker and ACAS | Implemented and measured for both engines | [#1296](https://github.com/sokolaidev/maf-extensions/issues/1296) (closed) by [#1378](https://github.com/sokolaidev/maf-extensions/pull/1378) (merged) |

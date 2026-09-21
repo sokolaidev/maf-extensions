@@ -47,12 +47,30 @@ def transcript(engine="terraform", version="1.16.2", backend="docker"):
 
 @pytest.mark.parametrize("backend", ["docker", "acas"])
 @pytest.mark.parametrize("engine,version", [("terraform", "1.16.2"), ("opentofu", "1.12.6")])
-def test_each_combination_passes_without_any_requirement_on_model_prose(backend, engine, version):
-    assert (
-        check.assess(
-            transcript(engine, version, backend), engine=engine, version=version, backend=backend
+@pytest.mark.parametrize("with_summary", [False, True])
+def test_each_combination_passes_without_any_requirement_on_model_prose(
+    backend, engine, version, with_summary
+):
+    output = transcript(engine, version, backend)
+    if with_summary:
+        output = output.replace(
+            f"  {engine} {version}:",
+            '  {"type":"terraform_diagnostics","diagnostics":[{"file":"files[0]","severity":"error"}],"unattributed_diagnostics":false}\n'
+            f"  {engine} {version}:",
         )
-        == []
+    assert check.assess(output, engine=engine, version=version, backend=backend) == []
+
+
+@pytest.mark.parametrize("engine,version", [("terraform", "1.16.2"), ("opentofu", "1.12.6")])
+def test_presence_summary_cannot_substitute_for_the_provider_diagnostic(engine, version):
+    output = "\n".join(
+        '  {"type":"terraform_diagnostics","diagnostics":[{"file":"files[0]","severity":"error"}],"unattributed_diagnostics":false}'
+        if line.startswith('  {"severity"')
+        else line
+        for line in transcript(engine, version).splitlines()
+    )
+    assert "missing the random provider's required length diagnostic" in check.assess(
+        output, engine=engine, version=version, backend="docker"
     )
 
 
