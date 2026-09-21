@@ -90,4 +90,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 |---|---|---|
 | Validation, restore controls and diagnostic handling | Implemented | [Package README](../../../packages/maf-sandbox-bicep/README.md) |
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
-| Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) |
+| Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged) |
