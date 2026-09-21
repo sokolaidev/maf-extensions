@@ -162,11 +162,29 @@ def test_complete_tool_call_lands_native_xml_and_disposes(tmp_path: Path):
     assert verdict(answer) == "created"
     reference = str(answer[-1].text)
     assert reference.startswith("diagram.drawio (") and reference.endswith(" bytes)")
+    assert answer[-1].additional_properties["security_label"]["integrity"] == "untrusted"
     document = ET.fromstring((tmp_path / "out/diagram.drawio").read_bytes())
     assert document.find(".//mxCell[@id='a']").get("value") == "Résumé & 中文"
     assert backend.disposed
     assert len(sandbox.calls) == 1
     assert sandbox.calls[0][0][3:7] == ["--preserve-layout", "true", "--direction", "TB"]
+
+
+def test_sink_display_from_guest_xml_remains_untrusted(tmp_path: Path):
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        return LandedArtifact(name=artifact.name, display=artifact.content.decode("utf-8"))
+
+    tool, _ = attach(ConverterSandbox(), tmp_path, sink=OutputSink(deliver))
+    completion, result, display = items(tool)
+    assert completion.text == COMPLETED_TEXT
+    assert result.text == "Result: created"
+    assert not (completion.additional_properties or {}).get("security_label")
+    assert not (result.additional_properties or {}).get("security_label")
+    assert "Résumé &amp; 中文" in display.text
+    assert display.additional_properties["security_label"] == {
+        "integrity": "untrusted",
+        "confidentiality": "public",
+    }
 
 
 def test_per_call_sink_keeps_repeated_diagrams_separate(tmp_path: Path):

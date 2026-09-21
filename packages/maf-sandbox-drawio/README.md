@@ -89,7 +89,7 @@ Every page is checked before and after layout. Invalid IDs, parent cycles, broke
 | Execution | One deadline for all pages: 60 seconds by default, at most 300 |
 | Diagnostics | At most 2,048 characters |
 
-A failure on any page prevents delivery of the entire artifact. The result is untrusted, whether it contains a delivery reference or a diagnostic. The host sets confidentiality and destination policy.
+A failure on any page prevents delivery of the entire artifact. `create_drawio` returns separate content items: trusted completion and verdict, any fixed explanation, and untrusted sink display text or converter diagnostics. The verdict is `created` after delivery and `refused` for rejected XML or unsupported layout requests. Invalid tool arguments, execution failures, missing output and delivery failures remain incomplete with no verdict. The host sets confidentiality and destination policy.
 
 Verify all four layout-policy cases against Docker from a repository checkout:
 

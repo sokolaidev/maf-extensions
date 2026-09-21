@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from maf_sandbox import Isolation, SandboxRouter, make_file_system_sink
-from maf_sandbox.maf import list_no_files, make_caller_context
+from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_drawio import make_drawio_tools
 
@@ -86,8 +86,9 @@ async def check(image: str, output: Path) -> None:
                 preserve_layout=preserve,
             )
             reply = await tool.func(xml=_input(positioned))
-            if reply.startswith("Error:"):
-                raise RuntimeError(reply)
+            texts = [item.text or "" for item in reply]
+            if texts[:2] != [COMPLETED_TEXT, "Result: created"]:
+                raise RuntimeError("\n".join(texts))
             artifact = destination / "diagram.drawio"
             document = ET.fromstring(artifact.read_bytes())
             vertices = document.findall(".//mxCell[@vertex='1']")
@@ -106,7 +107,7 @@ async def check(image: str, output: Path) -> None:
                     "bytes": artifact.stat().st_size,
                     "vertices": len(vertices),
                     "edges": len(edges),
-                    "result": reply,
+                    "result": "\n".join(texts),
                 }
             )
     finally:

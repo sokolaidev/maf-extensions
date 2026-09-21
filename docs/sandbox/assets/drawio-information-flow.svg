@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 750" width="1180" height="750" role="img" aria-labelledby="drawio-title drawio-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="drawio-title">draw.io: artifact delivery and the text result are separate</title>
-  <desc id="drawio-desc">The draw.io source tool declares untrusted source_integrity. It returns a delivery reference or error diagnostic as one untrusted/C text result with no standing guidance. C includes host result classification and any stricter argument confidentiality. FIDES shows text or a hidden reference to the model, with hidden text still contributing confidentiality. The next model-called tool is checked against accepts_untrusted and max_allowed_confidentiality, plus host approval policy. The diagram describes the text result and later model calls. The diagram artifact itself is delivered to the configured OutputSink during create_drawio, before that later call.</desc>
+  <desc id="drawio-desc">The result contract gives draw.io trusted completion, verdict and fixed explanations, with separately labelled untrusted sink display or converter diagnostics. FIDES can hide untrusted items while leaving the verdict readable. Every item carries call confidentiality C: the host classification plus stricter argument confidentiality. Hidden text still contributes confidentiality. Later model-called tools enforce destination policy and host approvals. The artifact reaches the configured OutputSink during create_drawio.</desc>
   <defs>
     <marker id="drawio-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
@@ -8,12 +8,12 @@
   </defs>
   <rect width="1180" height="750" rx="16" fill="#ffffff"/>
   <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">draw.io: artifact delivery and the text result are separate</text>
-  <text x="32" y="76" font-size="17" fill="#526072">The sink receives the file during create_drawio. The model receives an untrusted text result.</text>
+  <text x="32" y="76" font-size="17" fill="#526072">The sink receives the file during create_drawio. The model receives separately labelled result items.</text>
   <rect x="32" y="112" width="340" height="300" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
   <text x="52" y="148" font-size="22" font-weight="600" fill="#243040">Source tool</text>
   <text x="52" y="180" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">create_drawio</text>
   <text x="52" y="244" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">source_integrity</text>
-  <text x="52" y="270" font-size="17" fill="#243040">untrusted</text>
+  <text x="52" y="270" font-size="17" fill="#243040">trusted by the result contract</text>
   <text x="52" y="328" font-size="17" fill="#526072">Workload claim: untrusted</text>
   <text x="52" y="368" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">confidentiality</text>
   <text x="52" y="394" font-size="17" fill="#526072">Host's result classification</text>
@@ -21,17 +21,20 @@
   <rect x="422" y="112" width="334" height="300" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
   <text x="442" y="148" font-size="22" font-weight="600" fill="#243040">Content items</text>
   <text x="442" y="176" font-size="16" fill="#526072">Effective labels shown below</text>
-  <rect x="442" y="195" width="294" height="93" rx="8" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
-  <text x="459" y="222" font-size="18" font-weight="600" fill="#243040">Delivery or error report</text>
-  <text x="459" y="249" font-size="15" fill="#526072">Reference on success; else diagnostic</text>
-  <text x="459" y="276" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">untrusted / C</text>
-  <text x="442" y="330" font-size="17" fill="#526072">One text result</text>
-  <text x="442" y="361" font-size="17" fill="#526072">No standing guidance</text>
+  <rect x="442" y="190" width="294" height="88" rx="8" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="456" y="214" font-size="17" font-weight="600" fill="#243040">Completion and verdict</text>
+  <text x="456" y="238" font-size="15" fill="#526072">Plus any fixed explanation</text>
+  <text x="456" y="263" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">trusted / C</text>
+  <rect x="442" y="290" width="294" height="74" rx="8" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="456" y="318" font-size="17" font-weight="600" fill="#243040">Sink display or diagnostic</text>
+  <text x="456" y="348" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">untrusted / C</text>
+  <text x="442" y="392" font-size="17" fill="#526072">No standing guidance</text>
   <path d="M 756 260 H 794" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#drawio-arrow)"/>
   <text x="754" y="241" font-size="14" fill="#526072">FIDES</text>
   <rect x="806" y="112" width="342" height="300" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
   <text x="826" y="148" font-size="22" font-weight="600" fill="#243040">Model</text>
-  <text x="826" y="180" font-size="17" fill="#243040">Reads text or a hidden [var_…]</text>
+  <text x="826" y="180" font-size="17" fill="#243040">Reads completion and verdict</text>
+  <text x="826" y="207" font-size="16" fill="#526072">Output may be a hidden [var_…]</text>
   <text x="826" y="233" font-size="19" font-weight="600" fill="#243040">Conversation label</text>
   <text x="826" y="268" font-size="17" fill="#526072">Visible text affects integrity.</text>
   <text x="826" y="306" font-size="17" fill="#526072">Hidden content still counts</text>

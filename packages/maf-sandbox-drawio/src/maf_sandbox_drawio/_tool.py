@@ -215,9 +215,7 @@ def _create_tool(
             return _stopped("Error: delivery of diagram.drawio failed")
         if not landed:
             return _stopped("Error: the converter produced no diagram.drawio file")
-        # The sink minted this reference for a name this kind fixed, so it is the host's
-        # own and carries nothing the supplied source chose.
-        return SandboxResult(completed=True, verdict="created", trusted_output=(landed[0].display,))
+        return SandboxResult(completed=True, verdict="created", output=(landed[0].display,))
 
     policy = (
         "Preserve supplied page geometry; automatically lay out pages with missing geometry."
