@@ -176,6 +176,10 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: sudo python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python"
 
+      - name: CodeAct artifact delivery on Linux KVM
+        if: needs.changes.outputs.code == 'true'
+        run: sudo python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python" -- -q tests/test_hyperlight_codeact.py
+
       - name: CodeAct sample on Linux KVM
         if: needs.changes.outputs.code == 'true'
         run: sudo python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python" -- -q tests/test_sample_hyperlight_acas_live.py

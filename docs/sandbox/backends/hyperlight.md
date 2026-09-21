@@ -86,6 +86,7 @@ AKS hosting remains under investigation. Device access alone does not establish 
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Investigation | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Writable inputs | Not implemented | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
-| Output collection and listing | Flat `FILES_OUT` implemented; listing withheld | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
-| File cleanup | Not implemented | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
+| Output collection | Flat `FILES_OUT` implemented by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344) (merged) | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
+| Flat output listing | Not implemented | [#1392](https://github.com/sokolaidev/maf-extensions/issues/1392) (open) |
+| File cleanup | Output-only reset and disposal implemented by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344) (merged); input and selective cleanup remain separate | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
 | Native host tools | Not implemented | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
