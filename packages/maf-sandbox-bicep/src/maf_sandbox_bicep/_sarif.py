@@ -17,6 +17,7 @@ __all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostic
 # Maximum characters from a SARIF blob fed into the parser.
 _SARIF_MAX_CHARS = 200_000
 _SARIF_LEVELS = frozenset({"none", "note", "warning", "error"})
+_MISSING = object()
 
 #: Diagnostics that mean a module artifact never arrived: BCP190 (artifact not restored),
 #: BCP191 (restore failed), BCP192 (restore failed, with the transport's reason).  When any
@@ -81,8 +82,10 @@ def _level(value: object) -> str:
 
 
 def _index(value: object, size: int) -> int:
-    if type(value) is not int or not -1 <= value < size:
-        raise ValueError("expected a SARIF array index or -1")
+    if value is _MISSING:
+        return -1
+    if type(value) is not int or not 0 <= value < size:
+        raise ValueError("expected a SARIF array index")
     return value
 
 
@@ -158,7 +161,7 @@ def _rule(
     rule_id = result.get("ruleId", reference.get("id", ""))
     if not isinstance(rule_id, str):
         raise TypeError("expected a rule ID string")
-    index = _index(result.get("ruleIndex", reference.get("index", -1)), len(rules))
+    index = _index(result.get("ruleIndex", reference.get("index", _MISSING)), len(rules))
     if reference.get("id", rule_id) != rule_id or reference.get("index", index) != index:
         raise ValueError("conflicting SARIF rule references")
     if "index" in reference:
@@ -193,7 +196,9 @@ def _result_level(
     result: Mapping[str, Any], rule: Mapping[str, Any], invocations: list[dict[str, str]]
 ) -> str:
     provenance = _object(result.get("provenance", {}))
-    index = _index(provenance.get("invocationIndex", -1), len(invocations))
+    # SARIF 2.1.0 section 3.48.6 associates an omitted index with a sole invocation.
+    default_index = 0 if len(invocations) == 1 else _MISSING
+    index = _index(provenance.get("invocationIndex", default_index), len(invocations))
     return _effective_level(result, rule, invocations[index] if index >= 0 else {})
 
 

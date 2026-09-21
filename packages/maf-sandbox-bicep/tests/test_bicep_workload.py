@@ -1723,7 +1723,10 @@ class TestTheVerdict:
             {"ruleIndex": True},
             {"ruleIndex": "0"},
             {"ruleIndex": 1},
+            {"ruleIndex": -1},
             {"ruleIndex": -2},
+            {"ruleIndex": None},
+            {"rule": {"id": "BCP035", "index": -1}},
             {"ruleId": "other", "ruleIndex": 0},
             {"ruleId": "BCP035", "rule": {"id": "other"}},
             {"ruleIndex": 0, "rule": {"index": 1}},
@@ -1742,7 +1745,8 @@ class TestTheVerdict:
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
     @pytest.mark.parametrize("explicit", [None, "warning"])
-    def test_invocation_override_precedes_the_rule_default(self, phase, explicit):
+    @pytest.mark.parametrize("provenance", [None, {}, {"invocationIndex": 0}])
+    def test_invocation_override_precedes_the_rule_default(self, phase, explicit, provenance):
         document = json.loads(_sarif(rule="BCP035"))
         run = document["runs"][0]
         run["tool"]["driver"]["rules"][0]["defaultConfiguration"] = {"level": "warning"}
@@ -1755,7 +1759,8 @@ class TestTheVerdict:
             }
         ]
         result = run["results"][0]
-        result["provenance"] = {"invocationIndex": 0}
+        if provenance is not None:
+            result["provenance"] = provenance
         if explicit is None:
             del result["level"]
         else:
@@ -1773,6 +1778,7 @@ class TestTheVerdict:
         "overrides",
         [
             [{"descriptor": {"id": "unknown"}, "configuration": {"level": "error"}}],
+            [{"descriptor": {"id": "BCP035", "index": -1}, "configuration": {"level": "error"}}],
             [
                 {"descriptor": {"id": "BCP035"}, "configuration": {"level": "error"}},
                 {"descriptor": {"id": "BCP035"}, "configuration": {"level": "warning"}},
@@ -1802,6 +1808,7 @@ class TestTheVerdict:
         self._assert_report_incomplete(phase, document)
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize("explicit", [False, True])
     @pytest.mark.parametrize(
         "provenance",
         [
@@ -1810,14 +1817,57 @@ class TestTheVerdict:
             {"invocationIndex": True},
             {"invocationIndex": "0"},
             {"invocationIndex": 1},
+            {"invocationIndex": -1},
             {"invocationIndex": -2},
+            {"invocationIndex": None},
         ],
     )
-    def test_explicit_result_levels_do_not_bypass_provenance_validation(self, phase, provenance):
+    def test_result_levels_do_not_bypass_provenance_validation(self, phase, explicit, provenance):
         document = json.loads(_sarif())
         run = document["runs"][0]
         run["invocations"] = [{"executionSuccessful": True}]
         run["results"][0]["provenance"] = provenance
+        if not explicit:
+            del run["results"][0]["level"]
+        self._assert_report_incomplete(phase, document)
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize("count", [0, 2])
+    @pytest.mark.parametrize("provenance", [None, {}])
+    def test_missing_provenance_does_not_guess_between_invocations(self, phase, count, provenance):
+        document = json.loads(_sarif(rule="BCP035"))
+        run = document["runs"][0]
+        run["invocations"] = [
+            {
+                "executionSuccessful": True,
+                "ruleConfigurationOverrides": [
+                    {"descriptor": {"id": "BCP035"}, "configuration": {"level": "error"}}
+                ],
+            }
+            for _ in range(count)
+        ]
+        result = run["results"][0]
+        del result["level"]
+        if provenance is not None:
+            result["provenance"] = provenance
+        self._assert_report_level(phase, document, "warning")
+
+    @pytest.mark.parametrize("phase", ["build", "lint"])
+    @pytest.mark.parametrize(
+        "field", ["toolExecutionNotifications", "toolConfigurationNotifications"]
+    )
+    @pytest.mark.parametrize("explicit", [False, True])
+    def test_negative_notification_descriptor_indexes_have_no_verdict(self, phase, field, explicit):
+        document = json.loads(_EMPTY_SARIF)
+        run = document["runs"][0]
+        run["tool"]["driver"]["notifications"] = [{"id": "analysis-condition"}]
+        notification = {
+            "descriptor": {"id": "analysis-condition", "index": -1},
+            "message": {"text": "Analysis condition."},
+        }
+        if explicit:
+            notification["level"] = "warning"
+        run["invocations"] = [{"executionSuccessful": True, field: [notification]}]
         self._assert_report_incomplete(phase, document)
 
     @pytest.mark.parametrize("phase", ["build", "lint"])
