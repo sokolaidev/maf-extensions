@@ -183,11 +183,7 @@ def _function(tool):
 
 
 def _run(tool, code="print(2 + 2)", **kwargs):
-    """One call's text, whichever parts the wrapper rendered it into.
-
-    These tests are about what the run said, not about which part carries which label, so
-    they read the items joined. `test_codeact_workload.py` owns the split itself.
-    """
+    """Join one call's result items; workload tests cover each item's security label."""
     answer = asyncio.run(_function(tool)(code=code, **kwargs))
     if isinstance(answer, str):
         return answer
@@ -516,8 +512,7 @@ def test_withholding_collects_after_guest_failure_without_returning_streams():
     assert "non-zero" in result
     assert "declared output" in result
     assert landed[0].content == b"secret"
-    # Withholding commits standing guidance, so the tool declares trusted and the wrapper
-    # labels every item; its own claim about the derived half moves to this key.
+    # The result contract declares the tool trusted; derived reports keep this untrusted claim.
     assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == SourceIntegrity.UNTRUSTED
 
 

@@ -1178,7 +1178,7 @@ class TestWithheldResultFormat:
 
     def test_every_result_names_the_route_that_still_carries_content(self):
         """The exit line on its own leaves a model nothing it can act on — and the sentence is
-        an item of its own, so hiding the call-derived half leaves this one readable."""
+        an item of its own, so hiding the call-derived report leaves the route readable."""
         out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
         assert "declared output" not in out, "the report still splices the route in"
         route = self._route_out(ExecResult(stdout="", stderr="boom", exit_code=1))
@@ -3555,12 +3555,12 @@ class TestAWithheldTimeoutQuotesNothing:
 
 
 # ---------------------------------------------------------------------------
-# The withheld result splits: the route is trusted, the call-derived half says untrusted
+# Withheld results keep completion, verdict and route trusted; the report is untrusted
 # ---------------------------------------------------------------------------
 
 
 class TestAWithheldResultSplits:
-    """A withholding tool answers with items, so hiding can reach one and not the other.
+    """A withholding tool labels its report separately from completion, verdict and guidance.
 
     Hiding an untrusted item is conditional — on `auto_hide_untrusted`, and on the conversation
     still being trusted — so these fix both and vary only what they are measuring.
@@ -3569,7 +3569,7 @@ class TestAWithheldResultSplits:
     def _label(self, item) -> dict[str, Any] | None:
         return (item.additional_properties or {}).get("security_label")
 
-    def test_a_withheld_answer_is_two_items(self):
+    def test_a_withheld_answer_has_completion_verdict_report_and_route(self):
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
 
         assert [str(item.text) for item in answer] == [
@@ -3584,15 +3584,16 @@ class TestAWithheldResultSplits:
 
         assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
 
-    def test_the_call_derived_half_is_labelled_untrusted(self):
-        """What the tool declares to the framework is trusted, so this half says otherwise for
-        itself. Its `public` is a floor rather than a classification — the framework keeps the
+    def test_the_report_is_labelled_untrusted(self):
+        """The report's own label overrides the tool's trusted declaration.
+
+        Its `public` is a floor rather than a classification — the framework keeps the
         stricter of it and the call's own, which is the host's to set."""
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
 
         assert self._label(answer[-2]) == {"integrity": "untrusted", "confidentiality": "public"}
 
-    def test_a_tool_that_withholds_nothing_still_answers_with_one_string(self):
+    def test_a_showing_answer_has_completion_verdict_and_program_text(self):
         answer = _items(_tool(_backend(_ScriptedSandbox(ExecResult(stdout="42")))), "print(1)")
         texts = [str(item.text) for item in answer]
 
@@ -3612,8 +3613,7 @@ class TestAWithheldResultSplits:
         assert any("no active thread context" in str(item.text) for item in answer)
         assert str(answer[-1].text) == _WITHHELD_ROUTE
         assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
-        # A refusal is this module's own sentence, so the model may read it: before the
-        # contract it was labelled untrusted and hidden with everything else.
+        # The fixed host explanation inherits the tool's trusted integrity declaration.
         assert self._label(answer[1]) is None
 
     def test_a_refusal_the_model_caused_carries_it_too(self):
@@ -3649,17 +3649,17 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         ]
         return seen, context.metadata["result_label"], middleware.get_context_label()
 
-    def test_the_route_stays_readable_while_the_rest_is_hidden(self):
+    def test_completion_verdict_and_route_stay_readable_while_the_report_is_hidden(self):
         tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
 
         seen, _, _ = self._processed(tool, files=[], outputs=[])
-        # The parts the model may act on stay readable; only the run's own text hides.
+        # The parts the model may act on stay readable; only the call's report is hidden.
         assert seen == [COMPLETED_TEXT, "Result: ok", "hidden", _WITHHELD_ROUTE]
 
     def test_a_raised_host_default_no_longer_decides_the_call(self):
         """A raised `default_integrity` does not reach this call: the declaration replaces it.
 
-        The wrapper stamps the derived half untrusted for itself, so without a declaration
+        The wrapper stamps the derived report untrusted for itself, so without a declaration
         that restriction is all that stands between a raised default and the call. Tier 2
         replaces the default rather than flooring it, which is what makes this host's answer
         the same as every other's.
@@ -4806,8 +4806,7 @@ class TestTheGuidanceThisKindCommitsTo:
     kind owes is that the set it commits is exactly what its body emits, on every path."""
 
     def test_a_shown_tool_commits_nothing(self):
-        """The shown path answers with one string, and no sentence it renders is true on every
-        return path — so committing one would be a claim this kind cannot keep."""
+        """Showing mode needs no standing route guidance beyond the result contract items."""
         assert _standing_guidance(withhold=False, lands_per_call=False) == ()
         assert _standing_guidance(withhold=False, lands_per_call=True) == ()
 

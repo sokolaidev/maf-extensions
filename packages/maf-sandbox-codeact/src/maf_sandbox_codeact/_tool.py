@@ -140,17 +140,17 @@ _NO_OUTPUT = (
     "program with print(...) of what you need to see."
 )
 
-#: Closes every result a withholding host returns, as an item of its own labelled trusted. A
-#: sentence rather than a silence, because the exit line alone leaves a model nothing to act on;
-#: it names the route without promising a reader, which is the host's wiring rather than this
-#: kind's to claim. The label holds only while nothing a call produced reaches it and it stays
-#: on every return path, refusals included.
 #: Every answer `execute_code` may reach about the program it ran.
 #:
 #: Fixed here so the whole set is written before any call runs. The exit status is eight bits
 #: the program chooses, and this is the one bit of it a model can act on without the text.
 CODEACT_VERDICTS = ("ok", "failed")
 
+#: Closes every result a withholding host returns, as an item of its own labelled trusted. A
+#: sentence rather than a silence, because the exit line alone leaves a model nothing to act on;
+#: it names the route without promising a reader, which is the host's wiring rather than this
+#: kind's to claim. The label holds only while nothing a call produced reaches it and it stays
+#: on every return path, refusals included.
 _WITHHELD_ROUTE = (
     "What the program printed is not read back as text. To surface a value, write it into a "
     "declared output rather than printing it."
