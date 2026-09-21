@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import json
 import logging
 import posixpath
@@ -30,7 +31,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -77,6 +78,7 @@ from ._probes import (
     SETUP_MISSING,
     SETUP_PATH,
     SETUP_SHELL,
+    SETUP_UNSTARTABLE,
     TEST_COMMAND,
     probe_commands,
 )
@@ -536,7 +538,7 @@ _CREATE_DIRECTORIES = (
     # backend can serve.
     + f"""\
 for command in {" ".join(SETUP_COMMANDS)}; do
-    command -v "$command" >/dev/null || exit {SETUP_MISSING}
+    command -v "$command" >/dev/null || {{ echo "{SETUP_MISSING} $command" >&2; exit 127; }}
 done
 """
     + """\
@@ -689,8 +691,13 @@ class _WslcSandbox:
         guest_identity: tuple[int, int] | None = None,
         *,
         instance_id: str,
+        discard: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._run = run
+        # The backend's own discard, which also forgets this container's probe results and
+        # remembers it if the removal fails. Absent in tests that drive the sandbox alone,
+        # where a bare force-remove is all there is to do.
+        self._discard_container = discard
         self._name = name
         self._command_timeout = command_timeout
         self.instance_id = instance_id
@@ -747,7 +754,14 @@ class _WslcSandbox:
         return result
 
     async def _discard(self) -> None:
-        """Force-remove this container, swallowing whatever removal says."""
+        """Force-remove this container, swallowing whatever removal says.
+
+        Through the backend where there is one, so the removal also drops this container's
+        cached probe results and, if it will not go, marks it as not to be reused.
+        """
+        if self._discard_container is not None:
+            await self._discard_container()
+            return
         with contextlib.suppress(Exception):
             await self._run("container", "remove", "-f", self._name, timeout=self._command_timeout)
 
@@ -811,15 +825,16 @@ class _WslcSandbox:
             read_limit=_FILE_COMMAND_STDOUT_LIMIT,
             in_the_guest=True,
         )
-        if result.returncode == SETUP_MISSING:
+        missing = self._setup_prerequisite_missing(result)
+        if missing is not None:
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend 'wslc' cannot serve "
                 f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
                 f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
-                f"directory {directories[-1]!r} is missing, and creating it needs "
-                f"{' and '.join(SETUP_COMMANDS)} on {SETUP_PATH} as root. Supply an image "
-                "with them, or point work_dir at a directory the image already provides. "
-                "The next acquire retries."
+                f"directory {directories[-1]!r} is missing, and creating it needs {missing} "
+                f"as root, on {SETUP_PATH} where it is a command. Supply an image with it, or "
+                "point work_dir at a directory the image already provides. The next acquire "
+                f"retries. The engine said: {result.stderr_text.strip()}"
             )
         if result.returncode:
             raise RuntimeError(
@@ -844,6 +859,23 @@ class _WslcSandbox:
             "unresolved. Use a numeric uid:gid or working id commands, or point work_dir at "
             "a directory the image already provides. The next acquire retries."
         )
+
+    @staticmethod
+    def _setup_prerequisite_missing(result: _WslcResult) -> str | None:
+        """Which setup prerequisite an answer says is absent, or ``None``.
+
+        The script names the command it could not find, so that case is exact. A shell the
+        engine could not start never reaches the script, and then the only thing known is the
+        shell itself — which is what gets named, with the engine's own words quoted rather
+        than guessed at.
+        """
+        marker = SETUP_MISSING + " "
+        for line in result.stderr_text.splitlines():
+            if line.startswith(marker):
+                return line[len(marker) :].strip()
+        if result.returncode in SETUP_UNSTARTABLE and SETUP_SHELL in result.stderr_text:
+            return SETUP_SHELL
+        return None
 
     async def _ensure_base_owner(self, base: str, spec: SandboxSpec) -> None:
         """Give ``base`` to the image's user as root, refusing a base reached through a link.
@@ -1202,6 +1234,10 @@ class WslcSandboxBackend:
         # collapse onto one entry here.
         self._registry: dict[tuple[str, str, str, str, str], str] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
+        #: Containers a discard could not remove. Something may still be running in one, so
+        #: a warm acquire must not hand it back; the next acquire retries the removal and
+        #: refuses if it still will not go.
+        self._undiscarded: set[str] = set()
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
@@ -1411,6 +1447,18 @@ class WslcSandboxBackend:
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
             await self._verify_storage_base(name, spec, missing_ok=True)
+            if name in self._undiscarded:
+                # A discard could not remove this one, so something may still be running in
+                # it. Try again before anything reuses it, and refuse rather than hand back
+                # a container this backend cannot account for.
+                retried = await self._remove(name)
+                if retried.failure is not None:
+                    raise RuntimeError(
+                        f"wslc could not discard container {name} after a command was cut "
+                        f"short, so it may still be running something: {retried.failure}. "
+                        "Remove it, or let the reaper reach it, before acquiring again."
+                    )
+                self._undiscarded.discard(name)
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -1481,6 +1529,7 @@ class WslcSandboxBackend:
                 guest_uid,
                 guest_identity,
                 instance_id=instance_id,
+                discard=functools.partial(self._discard_container, name),
             )
             logger.info(
                 "sandbox cleanup: container=%s guest_principal=%s guest_uid=%s cleanup=dispose",
@@ -1561,15 +1610,15 @@ class WslcSandboxBackend:
         one deadline, and a removal that hangs would trade a stale container for a stuck
         acquire. What it could not remove is left to the reaper.
         """
-        with contextlib.suppress(Exception):
+        try:
             async with asyncio.timeout(self._config.command_timeout_seconds):
-                await self._wslc(
-                    "container",
-                    "remove",
-                    "-f",
-                    target,
-                    timeout=self._config.command_timeout_seconds,
-                )
+                removal = await self._remove(target)
+        except Exception:
+            removal = _Removal(False, DisposalFailure("timeout", "the removal did not finish"))
+        if removal.failure is not None:
+            # It may still be running in there, so nothing may reuse it until it goes.
+            self._undiscarded.add(target)
+            logger.warning("wslc could not discard %s: %s", target, removal.failure)
 
     def _forget_command_probes(self, target: str) -> None:
         for name, (instance_id, _) in list(self._command_probes.items()):

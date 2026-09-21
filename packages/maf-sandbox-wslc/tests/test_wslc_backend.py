@@ -316,6 +316,85 @@ def test_a_probe_that_answered_badly_keeps_the_container():
     assert not fake.matching("container", "remove")
 
 
+@pytest.mark.parametrize(
+    ("answer", "named"),
+    [
+        (_WslcResult(127, b"", b"maf-setup-missing mkdir"), "mkdir"),
+        (_WslcResult(127, b"", b"maf-setup-missing chown"), "chown"),
+        # A shell the engine could not start never reaches the script, so no marker comes
+        # back — only the runtime's own words and a status in the unstartable range.
+        (
+            _WslcResult(
+                126,
+                b"",
+                b"OCI runtime exec failed: exec failed: unable to start container process: "
+                b'exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown',
+            ),
+            "/bin/sh",
+        ),
+    ],
+)
+def test_a_missing_setup_prerequisite_is_named_in_a_typed_refusal(answer, named):
+    """Which one is missing decides where a reader looks, so the refusal has to say.
+
+    A bare status cannot: 126 and 127 are also what an engine answers when it cannot start
+    the shell at all, so the script marks its own answer and the engine's is read separately.
+    """
+    machine = _machine(
+        running=[_NAME],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        return answer if _CREATE_DIRECTORIES in args else machine(args)
+
+    backend, _ = _backend_with(respond)
+    with pytest.raises(SandboxCapabilityNotSupported, match=re.escape(named)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+def test_a_container_a_discard_could_not_remove_is_not_reused():
+    """Something may still be running in it, so a warm acquire must not hand it back."""
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert fake.matching("container", "remove"), "the discard was attempted"
+    # The removal failed, so the next acquire refuses rather than reusing that container.
+    with pytest.raises(RuntimeError, match="may still be running something"):
+        asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+
+
+def test_a_discard_forgets_what_the_container_had_answered():
+    """Probe results belong to the container, so they cannot outlive an attempt to remove it."""
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert backend._command_probes.get(_NAME, ("", set()))[1], "probes were cached by acquire"
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert _NAME not in backend._command_probes
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]

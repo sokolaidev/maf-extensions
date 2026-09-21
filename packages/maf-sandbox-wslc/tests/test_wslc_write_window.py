@@ -231,7 +231,10 @@ def test_live_placement_without_a_swap(operation):
     Writes belong to the image's user because that user wrote them. Setup leaves the new
     intermediate directory to root and gives the base to the image's user. A write where that
     user cannot write is refused, even though root could have placed it. The fixture's base
-    is setgid, so every directory made beneath it takes its group and the bit.
+    is setgid, so a directory created beneath it takes its group and the bit. The base is
+    then chowned, which overwrites that group with the image user's; the fixture cannot show
+    the difference because both are 20001, so a separate control uses a parent whose group
+    differs.
     """
 
     async def scenario():
@@ -391,6 +394,43 @@ def test_live_cancelling_after_the_guest_command_started_is_not_a_rollback():
             assert "cancelled.txt" not in left.stdout_text.split()
             usable = await live.command("printf usable")
             assert usable.returncode == 0 and usable.stdout_text == "usable"
+        finally:
+            await live.close()
+
+    asyncio.run(scenario())
+
+
+@_LIVE
+def test_live_a_created_base_takes_the_image_users_group_not_the_inherited_one():
+    """The control the fixture cannot be: a setgid parent whose group is not the image user's.
+
+    `mkdir` gives a new directory its parent's group, and the ownership step then sets
+    `uid:gid` outright — so the base ends up with the image user's group, not the inherited
+    one. The setgid bit survives, because chown clears it only for non-directories.
+    """
+
+    async def scenario():
+        live = _Live()
+        spec = replace(live.spec, work_dir=f"{_WORK}/inherited/base")
+        try:
+            await live.open(spec)
+            # Root's group, deliberately not the image user's 20001, and setgid so a child
+            # would inherit it if nothing overwrote it.
+            staged = await live.command(
+                f"rm -rf {_WORK}/inherited; mkdir {_WORK}/inherited; "
+                f"chgrp 0 {_WORK}/inherited; chmod 2775 {_WORK}/inherited",
+                root=True,
+            )
+            assert staged.returncode == 0, staged.stderr_text
+            sandbox = await live.backend.acquire(live.key, spec)
+            assert sandbox is not None
+            metadata = await live.command(
+                f"stat -c '%u:%g:%a' {_WORK}/inherited {_WORK}/inherited/base", root=True
+            )
+            parent, base = metadata.stdout_text.splitlines()
+            assert parent == "0:0:2775", parent
+            # Group 20001 is the image user's, not the 0 it would have inherited.
+            assert base == "10001:20001:2755", base
         finally:
             await live.close()
 

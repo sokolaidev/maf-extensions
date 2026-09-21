@@ -29,9 +29,14 @@ _WRITE_COMMANDS = ("mkdir", "cat", "wc", "mv", "rm")
 #: creation command itself rather than at acquire, because a base that is already there needs
 #: none of them.
 SETUP_COMMANDS = ("mkdir", "chown")
-#: What the creation command exits when one of those is missing, so a backend can tell that
-#: apart from the ordinary failures and answer with a capability refusal.
-SETUP_MISSING = 127
+#: What the creation command prints before it gives up, followed by the command it could not
+#: find. A marker rather than a bare exit status: 126 and 127 are what an engine answers when
+#: it cannot start the shell at all, so a status alone cannot say which prerequisite is
+#: missing — and saying the wrong one sends a reader to the wrong place.
+SETUP_MISSING = "maf-setup-missing"
+#: What an engine answers when it could not start the command it was given. Measured on WSLC
+#: 2.9.12.0: an absent shell exits 126 with the runtime's own diagnostic.
+SETUP_UNSTARTABLE = (126, 127)
 #: The shell setup runs, named absolutely so no lookup path can choose it.
 SETUP_SHELL = "/bin/sh"
 #: The ``PATH`` setup pins; the probe must resolve its commands the same way.

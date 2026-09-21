@@ -235,7 +235,12 @@ def test_an_engine_that_ignores_its_timeout_is_still_bounded(kind):
                 backend._probe_commands("name", "id", SandboxSpec(kind="probe")),
                 timeout=1,
             )
-        assert not backend._command_probes["name"][1]
+        # Nothing was verified either way. wslc goes further: a probe whose completion is
+        # unknown discards the container, and the cache goes with it rather than being
+        # left behind for an instance nobody can account for.
+        assert not backend._command_probes.get("name", ("id", set()))[1]
+        if kind == "wslc":
+            assert "name" not in backend._command_probes
 
     asyncio.run(scenario())
 
