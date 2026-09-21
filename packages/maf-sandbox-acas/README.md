@@ -61,7 +61,7 @@ Command capture needs `sh`, `mkdir`, `mkfifo`, `head`, `cat`, `wc`, `dd`, `base6
 
 ## File authority and limits
 
-Acquisition prepares the storage base as the guest: it creates any missing directories with `mkdir` run under the guest's own authority, never the file plane's, so a parent swapped mid-preparation can only redirect a creation to where the guest could already have made one. A guest that cannot create its base is refused rather than served one the file plane made for it. `work_dir=None` selects `/maf-sandbox/work`; an explicit path selects that exact base. Existing directories keep their contents, ownership and modes. A non-root image therefore needs a guest-writable base — bake one into the image, or place `work_dir` under a writable parent such as `/tmp`.
+Acquisition prepares the storage base as the guest: it creates any missing directories with `mkdir` run under the guest's own authority, never the file plane's, so a parent swapped mid-preparation can only redirect a creation to where the guest could already have made one. Acquisition refuses when the guest cannot create a missing directory. `work_dir=None` selects `/maf-sandbox/work`; an explicit path selects that exact base. Existing directories keep their contents, ownership and modes; preparation does not check whether the guest could create or write to them. For a workload that needs to write, bake a guest-writable base into a non-root image, or place `work_dir` under a writable parent such as `/tmp`.
 
 **Writes always run as the guest.** The image needs a guest-writable directory and the shell transfer utilities. A permission failure has no privileged file-API fallback. Bake the writable base into a non-root image rather than assuming acquisition will grant access.
 

@@ -640,10 +640,8 @@ class _AcasSandbox:
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base, creating any missing directories as the guest.
 
-        The unconfined stat that walks the base runs with the file plane's authority, but the
-        creation that follows does not: see :meth:`_create_directories`. A guest that cannot
-        create its own base is refused rather than served one the file plane made for it, so a
-        held sandbox's base is always one the workload could have made itself.
+        Existing directories are preserved without checking whether the guest could create
+        them. Missing directories must be creatable with the guest's own authority.
         """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         deadline = asyncio.get_running_loop().time() + self._read_timeout
@@ -670,20 +668,9 @@ class _AcasSandbox:
     ) -> None:
         """Create the missing base as the guest; the file plane's ``mkdir`` is never used.
 
-        The data plane creates every directory root-owned (#722), so a parent replaced by a
-        link between the ancestry check and creation could redirect a host-authority ``mkdir``
-        to a protected location the guest could not reach itself — the check and the creation
-        are separate service calls, and nothing holds the resolution across them (#1339).
-        Running ``mkdir`` as the guest bounds preparation to the guest's own reach: the kernel
-        applies the guest's permissions to the syscall, so a redirected creation can only land
-        where the guest could already have created, whatever a swap does to the path. Where the
-        guest cannot create its base, acquisition is refused rather than completed with more
-        authority than the workload has; this does not restore a host-authority fallback.
-
-        ``mkdir -p`` creates the whole missing suffix — ``directories`` is that suffix, deepest
-        last — and is idempotent, so a component another caller created in between is not an
-        error. It runs from ``/`` with an absolute, already-confined path, so the working
-        directory decides nothing, exactly as the write and removal commands do.
+        Guest permissions bound creation even if a parent changes after the ancestry check.
+        ``directories`` is the missing suffix, deepest last; ``mkdir -p`` creates it in one
+        command and tolerates directories created concurrently.
         """
         base = directories[-1]
         with retry_observation():
@@ -700,7 +687,8 @@ class _AcasSandbox:
         if result.exit_code == 0:
             return
         detail = result.stderr.strip()
-        refusal = shell_refusal(detail)
+        # A path echoed in stderr must not inject diagnostic lines.
+        refusal = None if "\r" in base or "\n" in base else shell_refusal(detail)
         error = _REFUSAL_ERRORS.get(refusal, OSError) if refusal is not None else OSError
         raise error(
             f"could not prepare the working directory {base!r} as the guest: "

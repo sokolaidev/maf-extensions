@@ -8,6 +8,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from maf_sandbox import ExecResult, Isolation
@@ -65,6 +67,59 @@ def _live_suite():
     suite = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(suite)
     return suite
+
+
+def _nonroot_suite(monkeypatch, acquire):
+    suite = _live_suite()
+    backend = SimpleNamespace(acquire=acquire, dispose_scope=AsyncMock(), aclose=AsyncMock())
+    monkeypatch.setattr(suite, "_NONROOT_IMAGE", "nonroot:1")
+    monkeypatch.setattr(suite, "AcasSandboxBackend", lambda config: backend)
+    monkeypatch.setattr(suite, "_drains_to_empty", AsyncMock())
+    return suite, backend
+
+
+@pytest.mark.parametrize("failure", [PermissionError, OSError, FileNotFoundError])
+def test_live_preparation_refusal_requires_a_permission_error(monkeypatch, failure):
+    async def acquire(key, spec):
+        raise failure("guest mkdir failed")
+
+    suite, backend = _nonroot_suite(monkeypatch, acquire)
+    loop = asyncio.new_event_loop()
+    try:
+        probe = suite.test_acquire_prepares_base_before_exec_and_repairs_warm_reuse
+        if failure is PermissionError:
+            probe(loop, "nonroot:1")
+        else:
+            with pytest.raises(failure):
+                probe(loop, "nonroot:1")
+        backend.aclose.assert_awaited_once()
+    finally:
+        loop.close()
+
+
+def test_nonroot_live_fixture_requires_creation_under_a_writable_parent(monkeypatch):
+    existing = {"/", "/tmp"}
+
+    async def acquire(key, spec):
+        assert spec.work_dir not in existing, "the live fixture must exercise directory creation"
+        assert spec.work_dir.startswith("/tmp/")
+        existing.add(spec.work_dir)
+        return _StoppableSandbox("sandbox-1")
+
+    suite, backend = _nonroot_suite(monkeypatch, acquire)
+    probes = suite.TestAnImageWhoseGuestIsNotRoot()
+    loop = asyncio.new_event_loop()
+    try:
+        for _ in range(2):
+            fixture = probes.nonroot.__wrapped__(probes, loop)
+            try:
+                next(fixture)
+            finally:
+                fixture.close()
+        assert backend.dispose_scope.await_count == 2
+        assert backend.aclose.await_count == 2
+    finally:
+        loop.close()
 
 
 def test_guest_family_probe_retains_the_adopted_sandbox(monkeypatch):

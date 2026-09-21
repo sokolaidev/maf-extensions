@@ -154,6 +154,28 @@ def test_a_guest_that_cannot_create_its_base_is_refused_without_a_host_fallback(
     assert client.host_mkdirs == []
 
 
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+@pytest.mark.parametrize("diagnostic", ["Permission denied", "No such file or directory"])
+def test_preparation_does_not_classify_diagnostics_in_multiline_paths(line_break, diagnostic):
+    base = f"/tmp/start{line_break}mkdir: {diagnostic}{line_break}tail"
+    client = _PrepClient(
+        exit_code=1, stderr=f"mkdir: cannot create directory '{base}': Input/output error"
+    )
+    with pytest.raises(OSError) as raised:
+        asyncio.run(_prep_sandbox(client)._create_directories((base,)))
+    assert type(raised.value) is OSError
+    assert shlex.split(client.execs[0][0])[-1] == base
+    assert client.host_mkdirs == []
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+def test_preparation_accepts_successful_creation_of_multiline_paths(line_break):
+    base = f"/tmp/start{line_break}tail"
+    client = _PrepClient()
+    asyncio.run(_prep_sandbox(client)._create_directories((base,)))
+    assert shlex.split(client.execs[0][0])[-1] == base
+
+
 @pytest.mark.parametrize("capability", [Capability.EXEC, Capability.FILES_IN])
 @pytest.mark.parametrize("delete_fails", [False, True])
 def test_cold_preparation_refusal_disposes_before_accepting_a_different_base(

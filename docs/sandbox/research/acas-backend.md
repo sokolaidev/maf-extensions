@@ -7,7 +7,7 @@
 - ACAS control-plane credentials are host-owned and selected per request. Acquired wrappers capture a non-secret authority binding; later disposal resolves cleanup authority independently so another replica can clean up after the creator disappears. Credential objects and bearer tokens never enter the guest.
 - ACAS exec output loses arbitrary bytes before the SDK decodes it. The implemented solution uses bounded FIFO capture and chunked retrieval through guest execution, preserving exact stdout/stderr while retaining deadlines, cancellation, overflow refusal and cleanup semantics.
 - ACAS can enforce method-scoped HTTP policy on the tested HTTPS path, including custom methods, but its service matches method spelling case-insensitively and important surfaces remain unmeasured. The backend therefore withholds `EGRESS_METHODS` and refuses method-scoped rules rather than claiming literal enforcement.
-- ACAS working-directory preparation creates missing directories with guest authority and refuses a base the guest cannot create. The service stat exposes no ownership, so the host-authority file plane — which mints root-owned directories — cannot be bounded by an ownership check and is not used for preparation.
+- ACAS working-directory preparation preserves existing directories and creates missing directories with guest authority, refusing if that creation fails. The service stat exposes no ownership, so the host-authority file plane — which mints root-owned directories — cannot be bounded by an ownership check and is not used for preparation.
 - ACAS remains the reference `MICROVM` backend and the only shipped backend that declares directory listing. It is a remote, billable service: live evidence is separate from offline tests and must be run with disposable groups and explicit cleanup.
 
 ## Host-selected credentials
@@ -121,7 +121,7 @@ A raw `files/stat` payload carries `name`, `path`, `size`, `mode`, `isDir`, `isS
 
 ### Why creation runs as the guest
 
-The data plane creates every directory root-owned (#722), and preparation's ancestry check and its creation are separate service calls, so a parent replaced between them could redirect a host-authority `mkdir` to a protected location the guest could not reach. With no ownership to bound it by, the reach rule cannot license a host-authority creation here. Preparation therefore issues `mkdir -p` as the guest over exec and refuses a base the guest cannot create (#1339). The kernel applies the guest's permissions to the syscall, so a redirected creation can only land where the guest could already have made one. This does not restore the host-authority write fallback #1266 removed.
+The data plane creates every directory root-owned (#722), and preparation's ancestry check and its creation are separate service calls, so a parent replaced between them could redirect a host-authority `mkdir` to a protected location the guest could not reach. With no ownership to bound it by, the reach rule cannot license a host-authority creation here. Preparation therefore issues `mkdir -p` as the guest over exec for missing directories and refuses if that creation fails (#1339). Existing directories are preserved without checking whether the guest could create or write to them. The kernel applies the guest's permissions to the syscall, so a redirected creation can only land where the guest could already have made one. This does not restore the host-authority write fallback #1266 removed.
 
 ### Live evidence
 

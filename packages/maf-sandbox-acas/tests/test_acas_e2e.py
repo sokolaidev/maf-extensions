@@ -1178,11 +1178,7 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
 
     async def scenario() -> None:
         if nonroot:
-            # The data plane can only mint root-owned directories (#722), so guest-authority
-            # preparation cannot build a base under a root-owned tree, and acquisition refuses
-            # rather than fall back to the host file plane (#1339). The base is one the guest
-            # could have made itself, or there is no sandbox.
-            with pytest.raises((PermissionError, OSError)):
+            with pytest.raises(PermissionError):
                 await backend.acquire(key, spec)
             return
 
@@ -1221,10 +1217,8 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
 class TestAnImageWhoseGuestIsNotRoot:
     """The acquire-time gate, and the wall it rests on, against the service (#722, #950, #1339).
 
-    The fixture's base is ``/tmp`` rather than ``/maf-sandbox/work``: guest-authority
-    preparation refuses a base the guest cannot create, so a non-root sandbox exists only on a
-    base the guest could have made itself. The old host-plane creation of a root-owned base is
-    gone, and with it the write into it these tests once measured.
+    The fixture uses a missing base beneath ``/tmp`` to exercise guest-authority creation
+    under a writable parent. A separate acquire checks refusal under a root-owned parent.
 
     Costs **two more billable sandboxes** when the environment names such an image, and nothing
     otherwise: the fixture's, and one `test_a_cold_refusal_deletes_the_sandbox_it_had_to_create`
@@ -1245,14 +1239,10 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = AcasSandboxBackend(_config())
         scope = f"e2e-nonroot-{uuid.uuid4()}"
         key = _key(scope)
-        # A guest-writable base, because guest-authority preparation now refuses `/maf-sandbox`
-        # on a non-root image (#1339): the guest cannot create there, and the file plane's
-        # root-owned mkdir is no longer used. `/tmp` is one every Linux image ships writable,
-        # so the sandbox this class needs can be acquired at all.
         spec = SandboxSpec(
             kind="e2e-nonroot",
             image=_NONROOT_IMAGE,
-            work_dir="/tmp",
+            work_dir=f"/tmp/maf-sandbox-nonroot-{uuid.uuid4().hex}/nested",
             requires=frozenset({Capability.EXEC}),
         )
         try:
@@ -1262,6 +1252,17 @@ class TestAnImageWhoseGuestIsNotRoot:
         finally:
             loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())
+
+    def test_the_guest_can_use_the_prepared_base(self, nonroot: _Live):
+        result = nonroot.run(
+            nonroot.sandbox.exec(
+                ["sh", "-c", "printf prepared > marker && cat marker"],
+                working_directory=nonroot.spec.work_dir,
+                timeout=_EXEC_TIMEOUT,
+            )
+        )
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == "prepared"
 
     def test_the_image_this_leg_names_really_is_someone_elses(self, nonroot: _Live):
         """The control. Pointed at a root image, everything below would pass for free."""
