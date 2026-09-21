@@ -2,6 +2,27 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.18.0...maf-sandbox-bicep-v0.19.0) (2026-09-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* expose structured Bicep verdicts and sanitize core sandbox refusals ([#1363](https://github.com/sokolaidev/maf-extensions/issues/1363))
+
+### Features
+
+* expose structured Bicep verdicts and sanitize core sandbox refusals ([#1363](https://github.com/sokolaidev/maf-extensions/issues/1363)) ([c4816da](https://github.com/sokolaidev/maf-extensions/commit/c4816dacf6bd20908e8ccab300dc5a7cfe93d6d5))
+
+
+### Fixes
+
+* require the tested agent-framework-core 1.19 floor ([#1346](https://github.com/sokolaidev/maf-extensions/issues/1346)) ([cbbbec5](https://github.com/sokolaidev/maf-extensions/commit/cbbbec501d436cbb6098d6f184a2f60b6c444435))
+
+
+### Documentation
+
+* clarify package setup, usage and limits ([#1370](https://github.com/sokolaidev/maf-extensions/issues/1370)) ([b0dd379](https://github.com/sokolaidev/maf-extensions/commit/b0dd3791cb18fab0b7c565e327ee872b4620c6f7))
+
 ## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.17.0...maf-sandbox-bicep-v0.18.0) (2026-09-19)
 
 

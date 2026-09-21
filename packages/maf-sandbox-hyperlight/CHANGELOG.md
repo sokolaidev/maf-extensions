@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.2.0...maf-sandbox-hyperlight-v0.3.0) (2026-09-21)
+
+
+### Features
+
+* **core,hyperlight,codeact,tui:** collect isolated Hyperlight output files ([#1344](https://github.com/sokolaidev/maf-extensions/issues/1344)) ([8a2ea67](https://github.com/sokolaidev/maf-extensions/commit/8a2ea67c2da513c1e5dd4efcf3b6d62efef99bfb))
+
+
+### Documentation
+
+* clarify package setup, usage and limits ([#1370](https://github.com/sokolaidev/maf-extensions/issues/1370)) ([b0dd379](https://github.com/sokolaidev/maf-extensions/commit/b0dd3791cb18fab0b7c565e327ee872b4620c6f7))
+
 ## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.1.0...maf-sandbox-hyperlight-v0.2.0) (2026-09-19)
 
 
