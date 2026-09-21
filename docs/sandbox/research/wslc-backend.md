@@ -1,4 +1,4 @@
-> Exploration and live measurements for [#1203](https://github.com/sokolaidev/maf-extensions/issues/1203): WSLC input placement authority and the check/copy boundary. The decision to retain an explicit residual is documented in the [backend contract](../backends/wslc.md#write-checkcopy-residual).
+> Exploration and live measurements for [#1203](https://github.com/sokolaidev/maf-extensions/issues/1203) and [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338): WSLC input placement authority and the check/placement boundary. The first record below measured the root archive copy. The second records how writes and setup now avoid it. The [backend contract](../backends/wslc.md#write-checkcopy-residual) states the result.
 
 # WSLC write placement and parent swaps
 
@@ -40,15 +40,44 @@ The installed CLI help and upstream source were checked separately. Upstream `ma
 | Guest freeze while copying | No pause/unpause command in installed help or upstream commands, nor a freeze method or paused state in the [public SDK](https://github.com/microsoft/WSL/blob/eaa69e766cf375d96053207a4ba8858f54ea1536/src/windows/WslcSDK/wslcsdk.h) | No supported operation to time or adopt; no thaw/recovery implementation is claimed |
 | `container kill --signal SIGSTOP` / `SIGCONT` | Both returned 0, but a new guest exec between them returned `still-running`; SIGCONT and disposal completed | Process signalling does not freeze the container; not an alternative to a freezer |
 | Stop/start | Ends and restarts workload processes, losing running exec state; the remaining classifier also requires guest exec | Changes lifecycle semantics, not an acceptable transparent file-operation guard |
-| Transfer through guest exec | Can bound placement to the image user, but requires a trusted helper or extra utilities; the shared shell route needs `sh`, `base64`, `mkdir`, `mv` | Additional image contract and transfer cost; not adopted for this engine-tar file plane |
-| Keep engine tar and state the residual | No new image dependencies or extra engine round trips | Selected; this states the risk rather than reducing placement authority |
+| Transfer through guest exec | Can bound placement to the image user, but requires a trusted helper or extra utilities; the shared shell route needs `sh`, `base64`, `mkdir`, `mv` | Additional image contract and transfer cost; not adopted in #1203, adopted in #1338 with stdin instead of base64 |
+| Keep engine tar and state the residual | No new image dependencies or extra engine round trips | Selected in #1203; replaced in #1338 |
 
 Two exploratory passes measured input-copy subprocess durations of roughly **35–163 ms** and whole checked operations of **0.29–0.93 s**, including the deterministic swap exec. These small local samples are descriptive, not performance guarantees. No freeze timing exists because no supported freeze operation was found. No guest-helper benchmark was performed because that transport was not selected.
 
 Even a future freeze command is insufficient by itself for the current algorithm: classifying an accepted non-directory copy source still executes guest `test`, which cannot be assumed to run under a real freeze. It also needs trusted metadata that can be read while frozen. The output-archive request [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) may supply type metadata but cannot alone hold resolution through upload. Bypassing WSLC to reach its internal runtime is not a supported WSLC API contract.
 
-## Decision and remaining work
+## Decision in #1203
 
 Retain `FILES_IN` with a prominent, measured residual beside the capability declaration, including `prepare_work_dir` on cold acquire and warm repair. Host-side serialization alone cannot stop guest background processes. Non-root archive ownership is not a bound, and neither a second stat nor a guest shell check closes the interval. Workloads requiring confinement against concurrent guest mutation must use a backend with a supported closure or avoid this input plane.
 
 The focused upstream request is for **constrained archive upload with held, no-follow resolution**. Filed upstream as [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594) (open), tracked locally by [#1203](https://github.com/sokolaidev/maf-extensions/issues/1203). A freeze-based alternative would require engine-authenticated metadata during freeze and the concurrency, exec, cancellation, failed-thaw and warm-recovery requirements recorded in [#1130](https://github.com/sokolaidev/maf-extensions/issues/1130). No such lifecycle implementation or live freezer validation is claimed by this record.
+
+## Writes as the image user and held setup (#1338)
+
+Measured on 2026-09-21 with WSLC/WSL **2.9.12.0**, kernel **6.18.40.1-1** and Windows **10.0.26220.9472**. microsoft/WSL#41594 was still open with no maintainer reply, and the installed CLI still had no pause command and no `cp` option beyond `--archive` and `--quiet`. The engine archive copy is no longer used for input.
+
+**Writes run as the image user.** `write_file` sends the content on the stdin of one `container exec -i` without `--user`. That command creates missing parents with `mkdir -p`, writes a sibling named for the call, compares its size with `wc -c`, and renames it into place with `mv -f`. A 1 MiB write took 0.13 s and a 32 MiB write 0.31 s, both byte-identical by SHA-256. A plain exec took 0.11 s.
+
+Killing the host `wslc` process closes stdin in the container. `cat` then exits 0 with the bytes that had arrived: 100,000 of them in the measurement, left in the staged file. So the size check is required. Without it a cancelled write would publish a truncated file. With it the command removes the sibling and exits by itself, so a timeout does not need to dispose the container.
+
+**Setup runs as root inside held directories.** A non-root user cannot create `/maf-sandbox`, so setup stays root. One `/bin/sh` command enters the deepest existing directory with `cd -P`, compares `pwd -P` with the expected path, and creates each missing directory with `mkdir` relative to the directory it holds. It then enters and confirms each new directory the same way. `mkdir` without `-p` fails on an existing link, and `getcwd` reports where the held directory physically is. A link anywhere on the path makes the comparison fail. `chown` on `.` gives the base to the image user. `PATH` is pinned to `/usr/sbin:/usr/bin:/sbin:/bin`, so a directory the image user can write cannot supply a command that runs as root.
+
+Both commands were run by hand on the guest-owned fixture (bash, coreutils, uid 10001) and on `python:3.13-alpine` (BusyBox 1.37.0 `ash`). They were also run under Debian's `dash` as a non-root user through the offline shell tests. All three handled short content, a directory at the target, a destination the user cannot write, an existing file, empty content, a swapped parent, a link planted at a missing directory, and names beginning with `-`.
+
+The [boundary tests](../../../packages/maf-sandbox-wslc/tests/test_wslc_write_window.py) now place the swap immediately before the placement command. Setup and inspection use root; the swap uses the image user.
+
+| Checked shape | Change immediately before placement | Result |
+|---|---|---|
+| Existing parent, write a file beneath it | Rename parent and link it to `/protected` | `PermissionError`; `/protected` stays empty |
+| Existing parent, create a missing child and file | Same swap | `PermissionError`; `/protected` stays empty |
+| Missing parent | Plant a link at that exact path | `PermissionError`; the link is left in place |
+| Setup, existing parent and missing child/base | Rename parent and link it to `/protected` | Refused: the parent is no longer the directory the check found |
+| Setup, missing parent | Plant a link at that exact path | Refused: `mkdir` meets the link |
+| Warm acquire recreating a missing base | Replace its parent with a link | Refused the same way; `/protected` stays empty |
+
+The controls, with nothing swapped, land where asked. A write is `10001:20001:644`. A new intermediate directory from setup belongs to root and the base to `10001:20001`. The fixture's base is setgid, so directories made beneath it take its group and the bit. A write with `working_directory="/etc"` raises `PermissionError` and leaves nothing. Root could have placed it before this change.
+
+`exec --interactive` is declared in the upstream CLI source from [2.9.3](https://github.com/microsoft/WSL/blob/2.9.3/src/windows/wslc/commands/ContainerExecCommand.cpp) on, the backend's stated floor. It was run live only on 2.9.12.0.
+
+**What remains.** A write is bounded, not atomic: a swap can still send it to another place the image user can write. Cancellation after the command starts is not a rollback: content that fully arrived still lands. A staged `.maf-<hex>.part` sibling remains if the command itself is interrupted. Root `test` in path checks still resolves through the image's `PATH`; setup's pinned `PATH` does not cover it.

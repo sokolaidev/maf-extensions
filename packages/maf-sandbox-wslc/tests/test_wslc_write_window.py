@@ -1,13 +1,16 @@
-"""Deterministic characterization of the WSLC check/copy boundary, including its residual.
+"""The WSLC check/placement boundary: a swap there reaches nothing the guest could not.
 
-Live measurements require MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE. They deliberately place a
-swap at the boundary; they are not probabilistic race controls or proof of atomicity.
+Writes run as the image's user, so a swapped parent redirects them only to where that user
+can write. Working-directory setup runs as root inside directories its shell holds, so a
+swapped parent is refused. Live measurements require MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE.
+They place the swap at the boundary deliberately; they are not probabilistic race controls.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import posixpath
 import shutil
 import uuid
 from dataclasses import replace
@@ -16,12 +19,22 @@ import pytest
 from maf_sandbox import Capability, EntryKind, SandboxEntry, SandboxKey, SandboxSpec
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
-from maf_sandbox_wslc._backend import _WslcResult, _WslcSandbox
+from maf_sandbox_wslc._backend import (
+    _CREATE_DIRECTORIES,
+    _WRITE_AS_THE_GUEST,
+    _WslcResult,
+    _WslcSandbox,
+)
 
 _WORK = "/maf-sandbox/work"
 _PARENT = _WORK + "/parent"
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE")
 _SPEC = SandboxSpec(kind="write-window", image="fixture", requires=frozenset({Capability.FILES_IN}))
+
+
+def _places(args: tuple[str, ...]) -> bool:
+    """Whether a wslc command is the one that places a write or creates a directory."""
+    return _WRITE_AS_THE_GUEST in args or _CREATE_DIRECTORIES in args
 
 
 async def _operate(sandbox, operation, missing):
@@ -36,21 +49,23 @@ async def _operate(sandbox, operation, missing):
 
 
 @pytest.mark.parametrize("operation", ["write", "prepare"])
-@pytest.mark.parametrize("outcome", ["refuse", "cancel-check", "cancel-copy", "copy-error"])
+@pytest.mark.parametrize(
+    "outcome", ["refuse", "cancel-check", "cancel-placement", "placement-error"]
+)
 def test_refusal_and_cancellation_at_the_write_boundary(operation, outcome):
     async def scenario():
-        copying = asyncio.Event()
+        placing = asyncio.Event()
         checking = asyncio.Event()
-        copies = 0
+        placements = 0
 
         async def run(*args, **kwargs):
-            nonlocal copies
-            assert args[:3] == ("container", "cp", "-")
-            copies += 1
-            copying.set()
-            if outcome == "cancel-copy":
+            nonlocal placements
+            assert _places(args)
+            placements += 1
+            placing.set()
+            if outcome == "cancel-placement":
                 await asyncio.Event().wait()
-            return _WslcResult(1, b"", b"extraction refused")
+            return _WslcResult(1, b"", b"placement refused")
 
         sandbox = _WslcSandbox(run, "fixture", 30, 10001, (10001, 20001), instance_id="id")
 
@@ -69,7 +84,7 @@ def test_refusal_and_cancellation_at_the_write_boundary(operation, outcome):
         task = asyncio.create_task(_operate(sandbox, operation, True))
         if outcome.startswith("cancel"):
             await asyncio.wait_for(
-                copying.wait() if outcome == "cancel-copy" else checking.wait(), 5
+                placing.wait() if outcome == "cancel-placement" else checking.wait(), 5
             )
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -77,15 +92,63 @@ def test_refusal_and_cancellation_at_the_write_boundary(operation, outcome):
         else:
             with pytest.raises(ValueError if outcome == "refuse" else RuntimeError):
                 await task
-        assert copies == (1 if outcome in ("cancel-copy", "copy-error") else 0)
+        assert placements == (1 if outcome in ("cancel-placement", "placement-error") else 0)
 
     asyncio.run(scenario())
 
 
-@pytest.mark.skipif(
+class _Live:
+    """A fresh guest-owned container with a root-only ``/protected`` and a guest-owned parent."""
+
+    def __init__(self) -> None:
+        self.backend = WslcSandboxBackend(WslcSandboxConfig())
+        self.key = SandboxKey(
+            scope="write-window-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
+        )
+        self.spec = replace(_SPEC, image=_IMAGE)
+        self.run = self.backend._wslc
+
+    async def open(self, spec: SandboxSpec | None = None):
+        self.sandbox = await self.backend.acquire(self.key, spec or self.spec)
+        identity = await self.command("id -u; id -g")
+        assert identity.returncode == 0 and identity.stdout_text.splitlines() == [
+            "10001",
+            "20001",
+        ]
+        setup = await self.command(
+            "mkdir -p /protected; chmod 700 /protected; "
+            f"mkdir -p {_PARENT}; chown 10001:20001 {_PARENT}",
+            root=True,
+        )
+        assert setup.returncode == 0, setup.stderr_text
+        denied = await self.command("printf denied > /protected/control")
+        assert denied.returncode != 0 and "Permission denied" in denied.stderr_text
+        return self.sandbox
+
+    async def command(self, script, *, root=False):
+        args = ["container", "exec"]
+        if root:
+            args += ["--user", "0"]
+        return await self.run(
+            *args, "-w", "/", self.sandbox.container_name, "sh", "-c", script, timeout=30
+        )
+
+    async def protected(self) -> list[str]:
+        listed = await self.command("find /protected -mindepth 1 -print", root=True)
+        assert listed.returncode == 0
+        return listed.stdout_text.splitlines()
+
+    async def close(self) -> None:
+        assert await self.backend.dispose(self.key, kind=self.spec.kind) is None
+
+
+_LIVE = pytest.mark.skipif(
     shutil.which("wslc") is None or not _IMAGE,
     reason="needs wslc and MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE",
 )
+
+
+@_LIVE
 @pytest.mark.parametrize(
     ("operation", "missing", "swap_missing_parent"),
     [
@@ -99,65 +162,38 @@ def test_refusal_and_cancellation_at_the_write_boundary(operation, outcome):
 @pytest.mark.parametrize("boundary", ["swap", "refuse", "cancel"])
 def test_live_write_window(operation, missing, swap_missing_parent, boundary):
     async def scenario():
-        backend = WslcSandboxBackend(WslcSandboxConfig())
-        key = SandboxKey(
-            scope="write-window-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
-        )
-        spec = replace(_SPEC, image=_IMAGE)
+        live = _Live()
         try:
-            sandbox = await backend.acquire(key, spec)
-            run = backend._wslc
-
-            async def command(script, *, root=False):
-                args = ["container", "exec"]
-                if root:
-                    args += ["--user", "0"]
-                return await run(
-                    *args, "-w", "/", sandbox.container_name, "sh", "-c", script, timeout=30
-                )
-
-            identity = await command("id -u; id -g")
-            assert identity.returncode == 0 and identity.stdout_text.splitlines() == [
-                "10001",
-                "20001",
-            ]
-            setup = await command(
-                "mkdir /protected; chmod 700 /protected; "
-                f"mkdir {_PARENT}; chown 10001:20001 {_PARENT}",
-                root=True,
-            )
-            assert setup.returncode == 0, setup.stderr_text
-            denied = await command("printf denied > /protected/control")
-            assert denied.returncode != 0 and "Permission denied" in denied.stderr_text
+            sandbox = await live.open()
             if swap_missing_parent:
-                removed = await command(f"rmdir {_PARENT}")
+                removed = await live.command(f"rmdir {_PARENT}")
                 assert removed.returncode == 0
 
             async def swap():
                 move = "" if swap_missing_parent else f"mv {_PARENT} {_WORK}/saved && "
-                result = await command(move + f"ln -s /protected {_PARENT}")
+                result = await live.command(move + f"ln -s /protected {_PARENT}")
                 assert result.returncode == 0, result.stderr_text
 
             if boundary == "refuse":
                 await swap()
-            reached_copy = asyncio.Event()
-            copies = 0
+            reached = asyncio.Event()
+            placements = 0
 
             async def intercept(*args, **kwargs):
-                nonlocal copies
-                if args[:3] == ("container", "cp", "-"):
-                    copies += 1
-                    reached_copy.set()
+                nonlocal placements
+                if _places(args):
+                    placements += 1
+                    reached.set()
                     if boundary == "cancel":
                         await asyncio.Event().wait()
                     elif boundary == "swap":
                         await swap()
-                return await run(*args, **kwargs)
+                return await live.run(*args, **kwargs)
 
             sandbox._run = intercept
             task = asyncio.create_task(_operate(sandbox, operation, missing))
             if boundary == "cancel":
-                await asyncio.wait_for(reached_copy.wait(), 10)
+                await asyncio.wait_for(reached.wait(), 10)
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
@@ -165,44 +201,139 @@ def test_live_write_window(operation, missing, swap_missing_parent, boundary):
                 with pytest.raises(ValueError):
                     await task
             else:
-                await task
-            sandbox._run = run
-            assert copies == (0 if boundary == "refuse" else 1)
-
-            protected = await command("find /protected -mindepth 1 -print", root=True)
-            assert protected.returncode == 0
-            escaped = boundary == "swap" and not swap_missing_parent
-            if escaped:
-                suffix = (
-                    "/child/base"
-                    if operation == "prepare"
-                    else ("/child/landed" if missing else "/landed")
-                )
-                target = "/protected" + suffix
-                assert target in protected.stdout_text.splitlines()
-                metadata = await command(
-                    f"stat -c '%u:%g:%a' {target}; stat -c '%u:%g:%a' /protected", root=True
-                )
-                assert metadata.stdout_text.splitlines() == [
-                    "10001:20001:" + ("755" if operation == "prepare" else "644"),
-                    "0:0:700",
-                ]
-                if operation == "write":
-                    content = await command(f"cat {target}", root=True)
-                    assert content.stdout_text == "boundary payload"
-                else:
-                    ancestor = await command("stat -c '%u:%g' /protected/child", root=True)
-                    assert ancestor.stdout_text.strip() == "0:0"
-            else:
-                assert protected.stdout_text == ""
+                # The guest's own permission refuses a write; held setup refuses the swap.
+                with pytest.raises(PermissionError if operation == "write" else RuntimeError):
+                    await task
+            sandbox._run = live.run
+            assert placements == (0 if boundary == "refuse" else 1)
+            assert await live.protected() == []
             if boundary == "swap" and swap_missing_parent:
-                replaced = await command(f"test -d {_PARENT} && test ! -L {_PARENT}")
-                assert replaced.returncode == 0
+                # Nothing replaced the planted link either: it is still the guest's.
+                kept = await live.command(f"test -L {_PARENT}")
+                assert kept.returncode == 0
 
-            # Cancellation before submission leaves the container usable and nothing to thaw.
-            usable = await command("printf usable")
+            # A cancelled or refused placement leaves the container usable.
+            usable = await live.command("printf usable")
             assert usable.returncode == 0 and usable.stdout_text == "usable"
         finally:
-            assert await backend.dispose(key, kind=spec.kind) is None
+            await live.close()
+
+    asyncio.run(scenario())
+
+
+@_LIVE
+@pytest.mark.parametrize(
+    "operation", ["write", "write-missing-parents", "prepare", "write-root-owned"]
+)
+def test_live_placement_without_a_swap(operation):
+    """The control: with nothing swapped, each operation lands where it was asked.
+
+    Writes belong to the image's user because that user wrote them. Setup leaves the new
+    intermediate directory to root and gives the base to the image's user. A write where that
+    user cannot write is refused, even though root could have placed it. The fixture's base
+    is setgid, so every directory made beneath it takes its group and the bit.
+    """
+
+    async def scenario():
+        live = _Live()
+        try:
+            sandbox = await live.open()
+            if operation == "prepare":
+                await sandbox.prepare_work_dir(replace(_SPEC, work_dir=_PARENT + "/child/base"))
+                paths = [f"{_PARENT}/child", f"{_PARENT}/child/base"]
+                expected = ["0:20001:2755", "10001:20001:2755"]
+            elif operation == "write-root-owned":
+                with pytest.raises(PermissionError):
+                    await sandbox.write_file("landed", b"payload", working_directory="/etc")
+                absent = await live.command("test ! -e /etc/landed", root=True)
+                assert absent.returncode == 0
+                return
+            else:
+                name = "child/landed" if operation == "write-missing-parents" else "landed"
+                await sandbox.write_file(
+                    f"parent/{name}", b"boundary payload", working_directory=_WORK
+                )
+                paths = [f"{_PARENT}/{name}"]
+                expected = ["10001:20001:644"]
+                if operation == "write-missing-parents":
+                    paths.insert(0, f"{_PARENT}/child")
+                    expected.insert(0, "10001:20001:2755")
+                content = await live.command(f"cat {paths[-1]}")
+                assert content.stdout_text == "boundary payload"
+                leftovers = await live.command(f"ls -A {posixpath.dirname(paths[-1])}")
+                assert leftovers.stdout_text.split() == ["landed"]
+            metadata = await live.command(f"stat -c '%u:%g:%a' {' '.join(paths)}", root=True)
+            assert metadata.stdout_text.splitlines() == expected
+        finally:
+            await live.close()
+
+    asyncio.run(scenario())
+
+
+@_LIVE
+def test_live_warm_setup_refuses_a_parent_swapped_after_the_check():
+    """A warm acquire that recreates a missing base holds its parent the same way.
+
+    The base sits in a directory the guest replaced with its own, so the guest can swap that
+    directory for a link between the check and the setup command.
+    """
+
+    async def scenario():
+        live = _Live()
+        spec = replace(live.spec, work_dir=f"{_WORK}/outer/base")
+        try:
+            await live.open(spec)
+            replaced = await live.command(
+                f"mv {_WORK}/outer {_WORK}/outer.saved && mkdir {_WORK}/outer"
+            )
+            assert replaced.returncode == 0, replaced.stderr_text
+
+            async def intercept(*args, **kwargs):
+                if _CREATE_DIRECTORIES in args:
+                    swapped = await live.command(
+                        f"mv {_WORK}/outer {_WORK}/outer.mine && ln -s /protected {_WORK}/outer"
+                    )
+                    assert swapped.returncode == 0, swapped.stderr_text
+                return await live.run(*args, **kwargs)
+
+            live.backend._wslc = intercept
+            with pytest.raises(RuntimeError, match="no longer the directory the check found"):
+                await live.backend.acquire(live.key, spec)
+            live.backend._wslc = live.run
+            assert await live.protected() == []
+        finally:
+            live.backend._wslc = live.run
+            await live.close()
+
+    asyncio.run(scenario())
+
+
+@_LIVE
+def test_live_setup_refuses_a_directory_swapped_right_after_mkdir():
+    """The check after each ``mkdir``: a new directory replaced by a link is not entered.
+
+    A wrapper stands in for ``mkdir`` in this one container and swaps the directory it just
+    made, which puts the swap between creation and the ``cd -P`` that holds it.
+    """
+
+    async def scenario():
+        live = _Live()
+        try:
+            await live.open()
+            wrapped = await live.command(
+                "mv /usr/bin/mkdir /usr/bin/mkdir.real && printf '%s\n' '#!/bin/sh' "
+                "'/usr/bin/mkdir.real \"$@\" || exit' 'for last; do :; done' "
+                "'[ \"$last\" = child ] && mv child child.moved && ln -s /protected child' "
+                "'exit 0' > /usr/bin/mkdir && chmod 755 /usr/bin/mkdir",
+                root=True,
+            )
+            assert wrapped.returncode == 0, wrapped.stderr_text
+            with pytest.raises(RuntimeError, match="no longer the directory this command created"):
+                await live.sandbox.prepare_work_dir(
+                    replace(_SPEC, work_dir=_PARENT + "/child/base")
+                )
+            assert await live.protected() == []
+        finally:
+            await live.close()
 
     asyncio.run(scenario())

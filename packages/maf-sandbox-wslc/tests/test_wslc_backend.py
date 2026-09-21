@@ -13,9 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import io
 import json
 import logging
+import os
+import posixpath
+import re
+import shutil
+import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -49,12 +54,15 @@ from maf_sandbox import (
     SandboxSpec,
     ScopePurge,
 )
+from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _CREATE_DIRECTORIES,
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
+    _WRITE_AS_THE_GUEST,
     _container_name,
     _egress_decisions,
     _network_name,
@@ -108,7 +116,7 @@ def _cp_path_not_found(source: str) -> _WslcResult:
 
 
 @pytest.mark.parametrize("state", ["cold", "warm", "stopped"])
-def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
+def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
     machine = _machine(
         running=[_NAME] if state == "warm" else [],
         stopped=[_NAME] if state == "stopped" else [],
@@ -135,14 +143,46 @@ def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
     )
     backend, fake = _backend_with(machine)
     asyncio.run(backend.acquire(_KEY, _SPEC))
-    with tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin)) as archive:
-        entries = archive.getmembers()
-    assert [(e.name, e.uid, e.gid, e.mode) for e in entries] == [
-        ("maf-sandbox", 0, 0, 0o755),
-        ("maf-sandbox/work", 10001, 20001, 0o755),
-    ]
-    assert all(e.isdir() for e in entries)
-    assert not any("mkdir" in call.args for call in fake.calls)
+    (created,) = _creations(fake)
+    assert created.args == (
+        "container",
+        "exec",
+        "--user",
+        "0",
+        "-w",
+        "/",
+        _NAME,
+        "/bin/sh",
+        "-c",
+        _CREATE_DIRECTORIES,
+        "sh",
+        "10001:20001",
+        "/",
+        "/maf-sandbox",
+        _WORK,
+    )
+    assert not fake.matching("container", "cp", "-")
+
+
+def _writes(fake: _FakeWslc) -> list[_Recorded]:
+    """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
+    return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]
+
+
+def _only_write(fake: _FakeWslc) -> _Recorded:
+    (write,) = _writes(fake)
+    return write
+
+
+def _creations(fake: _FakeWslc) -> list[_Recorded]:
+    """Every working-directory setup command the fake saw."""
+    return [call for call in fake.calls if _CREATE_DIRECTORIES in call.args]
+
+
+def _operands(call: _Recorded) -> tuple[str, ...]:
+    """A write's target, parent, staged sibling and byte count, in that order."""
+    start = call.args.index(_WRITE_AS_THE_GUEST) + 2
+    return call.args[start:]
 
 
 #: The argv a guest-side stat probe arrives on: raised, and `test` passed as argv with no
@@ -383,16 +423,18 @@ class TestImageCommandProbes:
         assert probes[1][-1].startswith("/.maf-command-probe-")
 
     @pytest.mark.parametrize(
-        "capability,command,privilege",
+        "capability,argv,privilege,named",
         [
-            (Capability.EXEC, "sh", ()),
-            (Capability.FILES_IN, "/usr/bin/test", ("--user", "0")),
+            (Capability.EXEC, ("sh",), (), "sh"),
+            (Capability.FILES_IN, ("/usr/bin/test",), ("--user", "0"), "/usr/bin/test"),
+            # The write commands are checked in one guest shell, and the refusal names them.
+            (Capability.FILES_IN, ("sh", "-c"), (), "mv"),
         ],
     )
     def test_missing_commands_refuse_acquire_and_can_be_retried(
-        self, capability, command, privilege
+        self, capability, argv, privilege, named
     ):
-        prefix = ("container", "exec", *privilege, "-w", "/", f"id-{_NAME}", command)
+        prefix = ("container", "exec", *privilege, "-w", "/", f"id-{_NAME}", *argv)
         backend, fake = _backend_with(
             _machine(
                 running=[_NAME],
@@ -404,7 +446,7 @@ class TestImageCommandProbes:
         spec = replace(_SPEC, requires=frozenset({capability}))
         router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
         router.ensure_can_serve(spec)
-        with pytest.raises(SandboxCapabilityNotSupported, match=command):
+        with pytest.raises(SandboxCapabilityNotSupported, match=named):
             asyncio.run(router.acquire(_KEY, spec))
         assert not fake.matching("container", "remove")
         fake._responder = _machine(running=[_NAME])
@@ -426,7 +468,7 @@ class TestImageCommandProbes:
             )
             assert first.instance_id == second.instance_id
             probes = [call for call in fake.calls if call.read_limit == 1024]
-            assert len(probes) == 3
+            assert len(probes) == 4
 
         asyncio.run(scenario())
 
@@ -1057,78 +1099,49 @@ class TestGuestPrincipal:
 
 class TestWriteFile:
     @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
-    def test_work_dir_spellings_stamp_every_missing_directory(self, work):
+    def test_work_dir_spellings_reach_one_target(self, work):
         spec = replace(_METHOD_SPEC, work_dir=work if work.startswith("/") else "/")
         name = _container_name(_KEY, spec.kind)
-        overrides = {
-            ("container", "inspect"): _WslcResult(
-                0,
-                json.dumps(
-                    [
-                        {
-                            "Id": "instance",
-                            "Config": {
-                                "Labels": {"maf-sandbox.work-dir.v1": spec.work_dir},
-                                "User": "10001:20001",
-                            },
-                        }
-                    ]
-                ).encode(),
-                b"",
-            ),
-        }
-        backend, fake = _backend_with(_machine(running=[name], overrides=overrides))
+        backend, fake = _backend_with(_machine(running=[name], work_dir=str(spec.work_dir)))
         sandbox = asyncio.run(backend.acquire(_KEY, spec))
         asyncio.run(sandbox.write_file("call-a1/nested/input", b"data", working_directory=work))
-        sent = fake.only("container", "cp").stdin
-        assert sent is not None
-        with tarfile.open(fileobj=io.BytesIO(sent)) as archive:
-            assert archive.getnames() == [
-                "workspace",
-                "workspace/call-a1",
-                "workspace/call-a1/nested",
-                "workspace/call-a1/nested/input",
-            ]
-            assert all(entry.isdir() for entry in archive.getmembers()[:-1])
-            assert {(entry.uid, entry.gid) for entry in archive} == {(10001, 20001)}
+        target, parent, staged, size = _operands(_only_write(fake))
+        assert target == "/workspace/call-a1/nested/input"
+        assert parent == "/workspace/call-a1/nested"
+        assert re.fullmatch(r"/workspace/call-a1/nested/\.maf-[0-9a-f]{32}\.part", staged)
+        assert size == "4"
 
-    @pytest.mark.parametrize(
-        ("user", "uid", "gid", "expected"),
-        [
-            ("10001:20001", b"", b"", (10001, 20001)),
-            ("", b"", b"", (0, 0)),
-            ("10001", b"10001", b"20001", (10001, 20001)),
-            ("worker:staff", b"10001", b"20001", (10001, 20001)),
-            ("10001:staff", b"10001", b"20001", (10001, 20001)),
-        ],
-    )
-    @pytest.mark.parametrize("instance_id", ["engine-instance-1", "engine-instance-2"])
-    def test_files_and_missing_parents_belong_to_the_image_user(
-        self, user, uid, gid, expected, instance_id
-    ):
-        inspected = {
-            "Id": instance_id,
-            "Config": {"User": user, "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
-        }
+    @pytest.mark.parametrize("user", ["10001:20001", "", "worker"])
+    def test_the_write_runs_as_the_image_user_with_the_content_on_stdin(self, user):
+        """No ``--user``: the principal the guest program runs as places the file.
+
+        That is what bounds a parent swapped after the check, and why a write needs no
+        resolved identity: nothing is stamped.
+        """
+        labels = {"maf-sandbox.work-dir.v1": _WORK}
+        inspected = {"Id": "i", "Config": {"User": user, "Labels": labels}}
         overrides = {
             ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
-            ("container", "exec", "-w", "/", _NAME, "id", "-u"): _WslcResult(0, uid, b""),
-            ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
+            ("container", "exec", "-w", "/", _NAME, "id"): _WslcResult(1, b"", b"no id"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        assert sandbox.instance_id == instance_id
-        assert len(fake.matching("container", "inspect")) == 2
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
-        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
-        assert archive.getnames() == [
-            "maf-sandbox/work",
-            "maf-sandbox/work/nested",
-            "maf-sandbox/work/nested/input",
-        ]
-        assert [(entry.uid, entry.gid) for entry in archive] == [expected] * 3
-        assert [entry.mode for entry in archive] == [0o755, 0o755, 0o644]
-        assert [entry.isdir() for entry in archive] == [True, True, False]
+        call = _only_write(fake)
+        assert call.args[: call.args.index(_WRITE_AS_THE_GUEST) + 2] == (
+            "container",
+            "exec",
+            "-i",
+            "-w",
+            "/",
+            _NAME,
+            "sh",
+            "-c",
+            _WRITE_AS_THE_GUEST,
+            "sh",
+        )
+        assert call.stdin == b"data"
+        assert not fake.matching("container", "cp", "-")
 
     @pytest.mark.parametrize(
         "inspection",
@@ -1154,28 +1167,41 @@ class TestWriteFile:
             ),
         ],
     )
-    def test_unresolved_identity_refuses_before_copying(self, inspection):
+    def test_unresolved_identity_refuses_files_in_before_any_placement(self, inspection):
+        """Setup gives the base to the image's user, so it needs to know who that is."""
         backend, fake = _backend_with(
             _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
         )
-        with pytest.raises((RuntimeError, ValueError)):
-            sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-        assert not fake.matching("container", "cp")
+        with pytest.raises((RuntimeError, ValueError, SandboxCapabilityNotSupported)):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert not _writes(fake) and not _creations(fake)
+        assert not fake.matching("container", "cp", "-")
 
-    def test_existing_directories_are_not_restamped(self):
+    def test_existing_directories_are_held_rather_than_created(self):
+        """Only the missing suffix is created; an existing parent is where the shell starts."""
         overrides = {
-            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
-            for guest in ("/maf-sandbox", _WORK, f"{_WORK}/existing")
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_is_a_directory(),
+            ("container", "inspect"): _WslcResult(
+                0,
+                json.dumps(
+                    [
+                        {
+                            "Id": "i",
+                            "Config": {
+                                "User": "10001:20001",
+                                "Labels": {"maf-sandbox.work-dir.v1": _WORK},
+                            },
+                        }
+                    ]
+                ).encode(),
+                b"",
+            ),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        asyncio.run(sandbox.write_file("existing/new/input", b"data", working_directory=_WORK))
-        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
-        assert archive.getnames() == [
-            "maf-sandbox/work/existing/new",
-            "maf-sandbox/work/existing/new/input",
-        ]
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        (created,) = _creations(fake)
+        start = created.args.index(_CREATE_DIRECTORIES) + 2
+        assert created.args[start:] == ("10001:20001", "/maf-sandbox", _WORK)
 
     @pytest.mark.parametrize("gid", [b"", b"-1", b"staff", b"20001\n0", b"4294967295"])
     def test_a_named_user_with_no_valid_group_cannot_write(self, gid):
@@ -1191,9 +1217,9 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
-        assert not fake.matching("container", "cp")
+        assert not _writes(fake) and not _creations(fake)
 
-    def test_each_acquire_resolves_write_ownership_again(self):
+    def test_each_acquire_resolves_the_base_owner_again(self):
         answers = iter(
             [
                 _WslcResult(
@@ -1222,96 +1248,87 @@ class TestWriteFile:
         backend, fake = _backend_with(respond)
         with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
-        for expected in ((10001, 20001), (10002, 20002)):
-            sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-            sent = fake.matching("container", "cp", "-")[-1]
-            archive = tarfile.open(fileobj=io.BytesIO(sent.stdin))
-            assert {(entry.uid, entry.gid) for entry in archive} == {expected}
+        for expected in ("10001:20001", "10002:20002"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+            created = _creations(fake)[-1]
+            assert created.args[created.args.index(_CREATE_DIRECTORIES) + 2] == expected
 
-    def test_working_at_root_never_emits_a_root_directory_entry(self):
+    def test_working_at_root_writes_beneath_it(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory="/"))
-        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
-        assert archive.getnames() == ["nested", "nested/input"]
+        assert _operands(_only_write(fake))[:2] == ("/nested/input", "/nested")
 
-    def _sent(self, path: str, content: str) -> tuple[_Recorded, tarfile.TarFile]:
+    def _sent(self, path: str, content: str | bytes) -> _Recorded:
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file(path, content, working_directory=_WORK))
-        call = fake.only("container", "cp")
-        assert call.stdin is not None
-        return call, tarfile.open(fileobj=io.BytesIO(call.stdin), mode="r")
+        return _only_write(fake)
 
-    def test_the_copy_targets_the_container_root(self):
-        """A `cp` destination must already exist, and `/` is the only path that always does."""
-        call, _ = self._sent("/maf-sandbox/work/main.bicep", "x")
-        assert call.args == ("container", "cp", "-", f"{_NAME}:/")
-
-    def test_the_entry_is_the_path_without_its_leading_slash(self):
-        _, archive = self._sent("/maf-sandbox/work/r1/main.bicep", "x")
-        assert archive.getnames() == [
-            "maf-sandbox/work",
-            "maf-sandbox/work/r1",
-            "maf-sandbox/work/r1/main.bicep",
-        ]
+    def test_an_absolute_path_inside_the_working_directory_is_its_own_target(self):
+        target, parent, staged, _ = _operands(self._sent("/maf-sandbox/work/r1/main.bicep", "x"))
+        assert (target, parent) == ("/maf-sandbox/work/r1/main.bicep", "/maf-sandbox/work/r1")
+        assert posixpath.dirname(staged) == parent
 
     def test_a_relative_path_is_left_alone(self):
-        _, archive = self._sent("maf-sandbox/work/main.bicep", "x")
-        assert archive.getnames() == [
-            "maf-sandbox/work",
-            "maf-sandbox/work/maf-sandbox",
-            "maf-sandbox/work/maf-sandbox/work",
-            "maf-sandbox/work/maf-sandbox/work/main.bicep",
-        ]
+        target = _operands(self._sent("maf-sandbox/work/main.bicep", "x"))[0]
+        assert target == "/maf-sandbox/work/maf-sandbox/work/main.bicep"
 
     def test_the_content_round_trips_as_utf8(self):
-        _, archive = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")
-        member = archive.extractfile("maf-sandbox/work/main.bicep")
-        assert member is not None
-        assert member.read().decode("utf-8") == "param naïve string\n"
+        call = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")
+        assert call.stdin == "param naïve string\n".encode()
+        assert _operands(call)[3] == str(len("param naïve string\n".encode()))
 
     def test_bytes_are_written_as_given(self):
         """The protocol's ``write_file`` takes ``str | bytes`` — an in-door carrying a PNG or a
-        spreadsheet needs bytes, and they must reach the tar entry unencoded. Raising
+        spreadsheet needs bytes, and they must reach the guest unencoded. Raising
         ``AttributeError`` on ``bytes.encode`` here was the load-bearing half of #370."""
+        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+        call = self._sent("/maf-sandbox/work/diagram.png", payload)
+        assert call.stdin == payload
+        assert _operands(call)[3] == str(len(payload))
+
+    def test_each_write_stages_beside_its_target_under_a_new_name(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
-        asyncio.run(
-            sandbox.write_file("/maf-sandbox/work/diagram.png", payload, working_directory=_WORK)
-        )
+        for _ in range(2):
+            asyncio.run(sandbox.write_file("input", b"x", working_directory=_WORK))
+        first, second = (_operands(call)[2] for call in _writes(fake))
+        assert first != second
+        assert posixpath.dirname(first) == posixpath.dirname(second) == _WORK
 
-        call = fake.only("container", "cp")
-        assert call.stdin is not None
-        archive = tarfile.open(fileobj=io.BytesIO(call.stdin), mode="r")
-        member = archive.extractfile("maf-sandbox/work/diagram.png")
-        assert member is not None
-        assert member.read() == payload
-
-    def test_the_entry_is_readable(self):
-        _, archive = self._sent("/maf-sandbox/work/main.bicep", "x")
-        assert archive.getmember("maf-sandbox/work/main.bicep").mode == 0o644
-
-    def test_a_failed_copy_raises(self):
+    @pytest.mark.parametrize(
+        ("stderr", "error"),
+        [
+            (b"mkdir: cannot create directory '/etc/x': Permission denied", PermissionError),
+            (b"sh: can't create /x/.maf-a.part: Permission denied", PermissionError),
+            (b"Is a directory", IsADirectoryError),
+            (b"mkdir: cannot create directory '/x/f': Not a directory", NotADirectoryError),
+            (b"mkdir: cannot create directory '/x/f': File exists", NotADirectoryError),
+            (b"cat: /x/.maf-a.part: No such file or directory", FileNotFoundError),
+            (b"the content was cut short", RuntimeError),
+            (b"WSLC_E_CONTAINER_NOT_FOUND", RuntimeError),
+        ],
+    )
+    def test_a_failed_write_raises_what_the_guest_said(self, stderr, error):
         """A write that silently did nothing would surface as a compiler error about a file
         the workload believes it just wrote."""
-        overrides = {("container", "cp", "-"): _WslcResult(1, b"", b"WSLC_E_PATH_NOT_FOUND")}
+        overrides = {("container", "exec", "-i"): _WslcResult(1, b"", stderr)}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-
-        with pytest.raises(RuntimeError, match="WSLC_E_PATH_NOT_FOUND"):
+        with pytest.raises(error, match="could not write /maf-sandbox/work/main.bicep") as raised:
             asyncio.run(
                 sandbox.write_file("/maf-sandbox/work/main.bicep", "x", working_directory=_WORK)
             )
+        assert type(raised.value) is error
+        assert stderr.decode() in str(raised.value)
 
-    def test_a_refused_path_never_reaches_the_copy_seam(self):
+    def test_a_refused_path_never_reaches_the_guest(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(ValueError):
             asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
-        assert fake.matching("container", "cp", "-") == []
+        assert _writes(fake) == []
 
     #: A filesystem the check can actually get through: every directory above the work dir
     #: answers as one, which is what the engine's own refusal to copy a directory looks like.
@@ -1330,8 +1347,8 @@ class TestWriteFile:
 
         `test` runs inside that container, so the workload picks the answer. It picks which
         refusal the caller sees and nothing else: the engine refuses to copy a directory, so a
-        component it accepted is not one, and every claim here ends in a refusal with no tar
-        reaching the copy seam.
+        component it accepted is not one, and every claim here ends in a refusal with no write
+        command reaching the guest.
         """
         overrides = {
             ("container", "cp", f"{_NAME}:{_WORK}/ld"): _WslcResult(0, b"", b""),
@@ -1343,15 +1360,14 @@ class TestWriteFile:
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(refusal):
             asyncio.run(sandbox.write_file("ld/landed", b"x", working_directory=_WORK))
-        assert fake.matching("container", "cp", "-") == []
+        assert _writes(fake) == []
 
     def test_an_existing_file_at_the_leaf_is_written_over(self):
         """The leaf is the one component the guest's word is taken on, and it is bounded.
 
         A link here is refused; anything else is written over. A guest lying the other way —
-        hiding a link at its own leaf — gets the bytes landed on the link itself rather than on
-        its target, because this file plane replaces a leaf link instead of following it, so
-        the lie buys a path inside the working directory either way.
+        hiding a link at its own leaf — gets nothing its own user could not write, because
+        the write runs as that user.
         """
         overrides = {
             ("container", "cp", f"{_NAME}:{_WORK}/main.bicep"): _WslcResult(0, b"", b""),
@@ -1362,10 +1378,128 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file("main.bicep", b"second", working_directory=_WORK))
-        sent = fake.only("container", "cp").stdin
-        assert sent is not None
-        with tarfile.open(fileobj=io.BytesIO(sent)) as archive:
-            assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
+        assert _operands(_only_write(fake))[0] == f"{_WORK}/main.bicep"
+
+
+#: The offline suite runs on Linux in CI; Windows has no POSIX shell to run these in.
+if sys.platform == "win32":
+    _POSIX_SH, _OWNER, _AS_ROOT = None, "", False
+else:
+    _POSIX_SH, _OWNER, _AS_ROOT = (
+        shutil.which("sh"),
+        f"{os.getuid()}:{os.getgid()}",
+        os.geteuid() == 0,
+    )
+
+
+@pytest.mark.skipif(_POSIX_SH is None, reason="needs a POSIX sh")
+class TestTheFileCommandsInARealShell:
+    """Both commands run as written, in the host's own ``sh``.
+
+    The live suite runs them in a container. Here, links planted before the command starts
+    stand in for a swap after the check: the command must refuse what it finds.
+    """
+
+    @staticmethod
+    def _write(target: Path, content: bytes, *, size: int | None = None):
+        parent = str(target.parent)
+        return subprocess.run(
+            ["sh", "-c", _WRITE_AS_THE_GUEST, "sh", str(target), parent, f"{parent}/.maf-0.part"]
+            + [str(len(content) if size is None else size)],
+            input=content,
+            capture_output=True,
+            check=False,
+        )
+
+    @staticmethod
+    def _create(parent: Path, *directories: Path):
+        return subprocess.run(
+            ["sh", "-c", _CREATE_DIRECTORIES, "sh", _OWNER, str(parent)]
+            + [str(directory) for directory in directories],
+            capture_output=True,
+            check=False,
+        )
+
+    def test_a_write_creates_its_parents_and_lands_whole(self, tmp_path):
+        target = tmp_path / "a" / "b" / "input"
+        done = self._write(target, b"data")
+        assert done.returncode == 0, done.stderr
+        assert target.read_bytes() == b"data"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        assert stat.S_IMODE((tmp_path / "a").stat().st_mode) == 0o755
+        assert [path.name for path in target.parent.iterdir()] == ["input"]
+
+    def test_a_write_replaces_a_file_and_keeps_its_parents_mode(self, tmp_path):
+        tmp_path.chmod(0o700)
+        target = tmp_path / "input"
+        target.write_bytes(b"before")
+        done = self._write(target, b"after")
+        assert done.returncode == 0, done.stderr
+        assert target.read_bytes() == b"after"
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+
+    def test_content_cut_short_never_lands(self, tmp_path):
+        target = tmp_path / "input"
+        target.write_bytes(b"before")
+        done = self._write(target, b"part", size=10)
+        assert done.returncode == 1
+        assert done.stderr.decode().strip() == "the content was cut short"
+        assert target.read_bytes() == b"before"
+        assert [path.name for path in tmp_path.iterdir()] == ["input"]
+
+    def test_a_directory_at_the_target_is_refused_and_left_empty(self, tmp_path):
+        target = tmp_path / "input"
+        target.mkdir()
+        done = self._write(target, b"x")
+        assert shell_refusal(done.stderr.decode()) is FileRefusal.IS_DIRECTORY
+        assert list(target.iterdir()) == []
+        assert [path.name for path in tmp_path.iterdir()] == ["input"]
+
+    @pytest.mark.skipif(_AS_ROOT, reason="root writes anywhere")
+    def test_a_parent_the_user_cannot_write_is_refused(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o555)
+        try:
+            done = self._write(locked / "input", b"x")
+            assert shell_refusal(done.stderr.decode()) is FileRefusal.PERMISSION_DENIED
+            assert list(locked.iterdir()) == []
+        finally:
+            locked.chmod(0o755)
+
+    def test_setup_creates_each_missing_directory(self, tmp_path):
+        base = tmp_path.resolve()
+        done = self._create(base, base / "a", base / "a" / "b")
+        assert done.returncode == 0, done.stderr
+        assert (base / "a" / "b").is_dir()
+        assert stat.S_IMODE((base / "a").stat().st_mode) == 0o755
+
+    def test_setup_refuses_a_parent_swapped_for_a_link(self, tmp_path):
+        base = tmp_path.resolve()
+        protected = base / "protected"
+        protected.mkdir()
+        (base / "parent").symlink_to(protected)
+        done = self._create(base / "parent", base / "parent" / "child")
+        assert done.returncode == 1
+        assert b"no longer the directory the check found" in done.stderr
+        assert list(protected.iterdir()) == []
+
+    def test_setup_refuses_a_link_above_the_parent(self, tmp_path):
+        base = tmp_path.resolve()
+        (base / "real" / "parent").mkdir(parents=True)
+        (base / "via").symlink_to(base / "real")
+        done = self._create(base / "via" / "parent", base / "via" / "parent" / "child")
+        assert done.returncode == 1
+        assert list((base / "real" / "parent").iterdir()) == []
+
+    def test_setup_refuses_a_link_planted_where_a_directory_was_missing(self, tmp_path):
+        base = tmp_path.resolve()
+        protected = base / "protected"
+        protected.mkdir()
+        (base / "child").symlink_to(protected)
+        done = self._create(base, base / "child", base / "child" / "base")
+        assert done.returncode == 1
+        assert (base / "child").is_symlink()
+        assert list(protected.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -3494,9 +3628,7 @@ def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
     command = fake.matching("container", "exec", "-w")[-1].args
     assert command[3] == f"{base}/call"
     assert command[-2:] == ("echo", "/opaque/argument")
-    transfer = [call for call in fake.matching("container", "cp") if call.stdin][-1]
-    with tarfile.open(fileobj=io.BytesIO(transfer.stdin)) as archive:
-        assert f"{base.lstrip('/')}/call/input" in archive.getnames()
+    assert _operands(_writes(fake)[-1])[0] == f"{base}/call/input"
 
 
 @pytest.mark.parametrize("override", [None, "/image/base"])

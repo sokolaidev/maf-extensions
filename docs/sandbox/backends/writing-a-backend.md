@@ -110,7 +110,7 @@ The four lines under each method name summarize the contract, shared helper, com
 
 Use engine metadata for path checks wherever available. When guest inspection is unavoidable, use `stat_by_asking_the_guest` or `stat_by_asking_the_guest_as_root` and state that dependency in the package README. The shared helpers keep link checks in the required order.
 
-A path check and a later operation are separate unless the provider makes them atomic or prevents intervening mutation. Docker pauses guest processes around archive operations. ACAS native reads and WSLC uploads retain explicit races. Passing an ownership probe does not close those windows.
+A path check and a later operation are separate unless the provider makes them atomic or prevents intervening mutation. Docker pauses guest processes around archive operations. WSLC writes as the image's user, which bounds a swap, and creates its base from directories it holds. ACAS native reads retain an explicit race. Passing an ownership probe does not close those windows.
 
 The file view must match the storage being documented. For example, [Docker archives](docker.md#the-pull-surface-one-tar-read-twice) cover the root filesystem, not guest tmpfs. A missing result in one view does not establish absence in another.
 
@@ -146,6 +146,6 @@ Some file suites verify through `exec`, and delete probes also use uploads. They
 | Area | State | Reference |
 |---|---|---|
 | Protocol methods, path helpers and named probes | Implemented | [Capabilities](../capabilities.md) |
-| Provider path-replacement races | Backend-specific; ACAS reads and WSLC writes retain limits | [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (open), [ACAS](acas.md), [WSLC](wslc.md) |
+| Provider path-replacement races | Backend-specific; ACAS reads retain limits, WSLC writes are bounded by the image's user | [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (open), [ACAS](acas.md), [WSLC](wslc.md) |
 | Shared runtime and reset suites | Not implemented; Hyperlight has provider-specific tests | [Hyperlight](hyperlight.md) |
 | File suites without exec/upload dependencies | Harness gap | untracked |

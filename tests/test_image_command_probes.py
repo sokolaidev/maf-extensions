@@ -123,7 +123,10 @@ def test_wslc_tests_the_pinned_external_binary_with_true_and_false_cases(negativ
         spec = SandboxSpec(kind="write", requires=frozenset({Capability.FILES_IN}))
         if negative_status == 1:
             await probe_commands(spec, verified, run)
-            assert verified == {"/usr/bin/test"}
+            assert verified == {"/usr/bin/test", "write"}
+            # The write commands are looked up as the image's user, who runs them.
+            assert seen[2][0][:2] == ("sh", "-c")
+            assert seen[2][1] is False
         else:
             with pytest.raises(SandboxCapabilityNotSupported, match="files_in.*test"):
                 await probe_commands(spec, verified, run)
@@ -202,7 +205,7 @@ def test_engine_probe_cache_is_per_instance_and_extends_for_new_requirements(kin
         capability = Capability.FILES_DELETE if kind == "docker" else Capability.FILES_IN
         richer = SandboxSpec(kind="probe", requires=frozenset({Capability.EXEC, capability}))
         await backend._probe_commands("same-name", "first-id", richer)
-        assert len(calls) == (2 if kind == "docker" else 3)
+        assert len(calls) == (2 if kind == "docker" else 4)
         await backend._probe_commands("same-name", "replacement-id", shell)
         assert "replacement-id" in calls[-1][0]
         assert backend.declarations is declarations

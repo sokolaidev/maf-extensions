@@ -22,15 +22,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import io
 import json
 import logging
 import posixpath
 import re
-import tarfile
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -63,10 +62,10 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.bounded_exec import read_bounded_process_output
+from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
-    guest_path_and_ancestors,
     posix_work_dir_ancestors,
     resolve_guest_working_directory,
     stat_by_asking_the_guest_as_root,
@@ -465,6 +464,61 @@ def _proxy_name(container: str) -> str:
 _STAT_STDOUT_LIMIT = 512
 _STDERR_LIMIT = 64 * 1024
 
+#: Stdout a file command may return. Both commands below print nothing on success.
+_FILE_COMMAND_STDOUT_LIMIT = 4096
+
+#: One write, run as the image's user: ``$1`` target, ``$2`` its parent, ``$3`` a sibling
+#: named for this call, ``$4`` the byte count. The content arrives on stdin. A host that is
+#: cancelled or times out closes stdin, and ``cat`` then ends as if the file were whole, so
+#: the sibling moves into place only when every byte arrived.
+_WRITE_AS_THE_GUEST = """\
+export LC_ALL=C
+umask 022
+target=$1 parent=$2 staged=$3 size=$4
+refuse_directory() {
+    if [ -d "$target" ]; then rm -f -- "$staged"; echo 'Is a directory' >&2; exit 1; fi
+}
+mkdir -p -- "$parent" || exit 1
+refuse_directory
+cat > "$staged" || { rm -f -- "$staged"; exit 1; }
+received=$(wc -c < "$staged") && [ "$received" -eq "$size" ] || {
+    rm -f -- "$staged"; echo 'the content was cut short' >&2; exit 1
+}
+refuse_directory
+mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
+"""
+
+#: Creates a base's missing directories as root: ``$1`` the owner of the last one, ``$2`` the
+#: existing parent of the first, then the directories, outermost first. Each ``mkdir`` runs in
+#: a directory this shell holds as its working directory, after ``pwd -P`` confirmed where it
+#: is, so a link swapped in after the check is refused rather than followed. ``PATH`` is pinned
+#: so a directory the image's user can write cannot supply a command that runs as root.
+_CREATE_DIRECTORIES = """\
+export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+owner=$1 parent=$2
+shift 2
+cd -P -- "$parent" && [ "$(pwd -P)" = "$parent" ] || {
+    echo "$parent is no longer the directory the check found" >&2; exit 1
+}
+for directory do
+    mkdir -- "${directory##*/}" || exit 1
+    cd -P -- "${directory##*/}" && [ "$(pwd -P)" = "$directory" ] || {
+        echo "$directory is no longer the directory this command created" >&2; exit 1
+    }
+done
+chown -- "$owner" .
+"""
+
+#: What a refused write raises. ``NotADirectoryError`` covers "Not a directory" and "File
+#: exists": both mean a parent is a file.
+_REFUSAL_ERRORS: Mapping[FileRefusal, type[OSError]] = {
+    FileRefusal.NOT_FOUND: FileNotFoundError,
+    FileRefusal.IS_DIRECTORY: IsADirectoryError,
+    FileRefusal.PERMISSION_DENIED: PermissionError,
+    FileRefusal.INVALID_PATH: NotADirectoryError,
+}
+
 
 class _UnreadableListing(ValueError):
     """A ``container list`` payload whose shape this code does not know."""
@@ -596,7 +650,7 @@ class _WslcSandbox:
         return self._name
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base through the container file plane."""
+        """Establish the spec's base, creating what is missing as root without following links."""
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
@@ -607,87 +661,83 @@ class _WslcSandbox:
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
-        """Create missing parents without changing existing directory metadata."""
+        """Create the missing directories; the last one belongs to the image's user.
+
+        Root, because the image's user often cannot create the base's parents. Existing
+        directories keep their metadata. A refusal can leave the earlier directories behind.
+        """
         if self._guest_identity is None:
             raise RuntimeError("wslc could not resolve the image user for directory creation")
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for directory in directories:
-                entry = tarfile.TarInfo(directory.lstrip("/") + "/")
-                entry.type = tarfile.DIRTYPE
-                entry.mode = 0o755
-                if directory == directories[-1]:
-                    entry.uid, entry.gid = self._guest_identity
-                archive.addfile(entry)
+        uid, gid = self._guest_identity
         result = await self._run(
             "container",
-            "cp",
-            "-",
-            f"{self._name}:/",
-            stdin=buffer.getvalue(),
+            "exec",
+            "--user",
+            "0",
+            "-w",
+            "/",
+            self._name,
+            "/bin/sh",
+            "-c",
+            _CREATE_DIRECTORIES,
+            "sh",
+            f"{uid}:{gid}",
+            posixpath.dirname(directories[0]),
+            *directories,
             timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
         )
         if result.returncode:
-            raise RuntimeError(f"wslc could not create the working directory: {result.stderr_text}")
+            raise RuntimeError(
+                f"wslc could not create the working directory: {result.stderr_text.strip()}"
+            )
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
-        """Write ``content`` to ``path`` inside the container, parents included.
+        """Write ``content`` to ``path`` as the image's user, parents included.
 
-        Explicit entries give missing directories at or below ``working_directory`` the
-        guest's ownership; existing directories must keep their modes and owners. An
-        unresolved image identity refuses the write rather than planting root-owned inputs.
+        The path check runs first; one guest command then places the file. A parent swapped
+        between the two can still redirect the write, but only to where the image's user
+        could write anyway. The file and any missing parents belong to that user, and
+        existing directories keep their metadata. The guest's refusals raise the matching
+        ``OSError``: ``PermissionError`` where the image's user cannot write.
+
+        The content moves into place only when every byte arrived. Cancellation after the
+        command starts is not a rollback: the file may still land whole, and a sibling named
+        ``.maf-<hex>.part`` may be left beside it.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        if self._guest_identity is None:
-            raise RuntimeError("wslc could not resolve the image user for write_file")
-        existing: set[str] = set()
-
         guest = await confine_resolve_guest_write_path(
-            lambda p: self._stat_for_write(p, existing), path, working_directory
+            lambda p: self._stat_guest(p, p), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
-        guest_work_dir = "/" + posixpath.normpath(working_directory).lstrip("/")
-        guest_leaf_dir = "/" + posixpath.normpath(posixpath.dirname(guest)).lstrip("/")
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for guest_directory in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir):
-                if (
-                    guest_directory in existing
-                    or guest_directory == "/"
-                    or not (
-                        guest_directory == guest_work_dir
-                        or guest_directory.startswith(guest_work_dir.rstrip("/") + "/")
-                    )
-                ):
-                    continue
-                entry = tarfile.TarInfo(guest_directory.lstrip("/") + "/")
-                entry.type = tarfile.DIRTYPE
-                entry.mode = 0o755
-                entry.uid, entry.gid = self._guest_identity
-                archive.addfile(entry)
-            entry = tarfile.TarInfo(guest.lstrip("/"))
-            entry.size = len(data)
-            entry.mode = 0o644
-            entry.uid, entry.gid = self._guest_identity
-            archive.addfile(entry, io.BytesIO(data))
-
+        # A working directory spelled `//x` keeps both slashes; the guest reads them as one.
+        guest = "/" + guest.lstrip("/")
+        parent = posixpath.dirname(guest)
+        staged = posixpath.join(parent, f".maf-{uuid.uuid4().hex}.part")
         result = await self._run(
             "container",
-            "cp",
-            "-",
-            f"{self._name}:/",
-            stdin=buffer.getvalue(),
+            "exec",
+            "-i",
+            "-w",
+            "/",
+            self._name,
+            "sh",
+            "-c",
+            _WRITE_AS_THE_GUEST,
+            "sh",
+            guest,
+            parent,
+            staged,
+            str(len(data)),
+            stdin=data,
             timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"wslc could not write {guest}: {result.stderr_text.strip()}")
-
-    async def _stat_for_write(self, guest: str, existing: set[str]) -> SandboxEntry | None:
-        """Retain existing paths so tar entries cannot restamp their directory metadata."""
-        entry = await self._stat_guest(guest, guest)
-        if entry is not None:
-            existing.add(guest)
-        return entry
+            detail = result.stderr_text.strip()
+            refusal = shell_refusal(detail)
+            error = RuntimeError if refusal is None else _REFUSAL_ERRORS[refusal]
+            raise error(f"wslc could not write {guest}: {detail}")
 
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path: the engine settles the kind, the guest splits the rest.
@@ -741,8 +791,8 @@ class _WslcSandbox:
     async def _test_in_guest(self, argv: Sequence[str]) -> int:
         """One ``container exec --user 0``, answering its exit status for the guest-side stat.
 
-        The file plane writes as root, so a probe as the image's user would leave the check
-        blind exactly where a write is not. What asking the guest costs is on
+        Root, because working-directory setup runs as root and a probe as the image's user
+        would be blind below a directory that user cannot search. What asking the guest costs is on
         :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root` and in this package's README.
         """
         probe = await self._run(
@@ -919,9 +969,9 @@ class _WslcSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Unsupported: the engine cannot establish ancestor ownership for a raised delete."""
         raise NotImplementedError(
-            "the wslc backend does not support RECLAIM: its file plane writes as root, but no "
-            "branch of its path check reports an owner, so nothing licenses a recursive delete "
-            f"as root. Guest principal: {self.guest_principal}. Dispose the sandbox instead."
+            "the wslc backend does not support RECLAIM: no branch of its path check reports an "
+            "owner, so nothing licenses a recursive delete as root. Guest principal: "
+            f"{self.guest_principal}. Dispose the sandbox instead."
         )
 
 
