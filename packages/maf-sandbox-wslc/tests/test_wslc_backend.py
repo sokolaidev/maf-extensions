@@ -148,7 +148,7 @@ def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
 #: The argv a guest-side stat probe arrives on: raised, and `test` passed as argv with no
 #: shell. The fake matches overrides by prefix, so a key missing `--user 0` silently stops
 #: matching and every probe falls through to the responder's default success.
-_PROBE = ("container", "exec", "--user", "0", _NAME, "test")
+_PROBE = ("container", "exec", "--user", "0", _NAME, "/usr/bin/test")
 
 
 class _Recorded:
@@ -359,11 +359,34 @@ def test_instance_id_comes_from_the_engine_on_every_acquire():
 
 
 class TestImageCommandProbes:
+    @pytest.mark.parametrize("false_status", [0, 1, 126])
+    def test_files_in_checks_both_statuses_of_the_pinned_command(self, false_status):
+        machine = _machine(running=[_NAME])
+        prefix = ("container", "exec", "--user", "0", "-w", "/", f"id-{_NAME}", "/usr/bin/test")
+
+        def respond(args):
+            if args[: len(prefix)] == prefix and args[-2] == "-e":
+                return _WslcResult(false_status, b"", b"")
+            return machine(args)
+
+        backend, fake = _backend_with(respond)
+        spec = replace(_SPEC, requires=frozenset({Capability.FILES_IN}))
+        if false_status == 1:
+            asyncio.run(backend.acquire(_KEY, spec))
+        else:
+            with pytest.raises(SandboxCapabilityNotSupported, match="/usr/bin/test"):
+                asyncio.run(backend.acquire(_KEY, spec))
+        probes = [call.args for call in fake.calls if call.read_limit == 1024]
+        assert len(probes) == 2
+        assert probes[0] == (*prefix, "-d", "/")
+        assert probes[1][:-1] == (*prefix, "-e")
+        assert probes[1][-1].startswith("/.maf-command-probe-")
+
     @pytest.mark.parametrize(
         "capability,command,privilege",
         [
             (Capability.EXEC, "sh", ()),
-            (Capability.FILES_IN, "test", ("--user", "0")),
+            (Capability.FILES_IN, "/usr/bin/test", ("--user", "0")),
         ],
     )
     def test_missing_commands_refuse_acquire_and_can_be_retried(
@@ -1526,7 +1549,8 @@ class TestStatGuest:
         assert result is not None
         assert result.kind is EntryKind.SYMLINK
 
-    def test_the_probe_is_raised_to_root(self):
+    @pytest.mark.parametrize("guest", ["/w/out", "/w/a 'quoted'; $(touch injected) file"])
+    def test_the_probe_is_raised_to_root_with_an_absolute_command(self, guest):
         """The file plane writes as root, so the probe that guards it reads as root: a probe as
         the image's user would be blind above a directory only root can search, which is exactly
         where a `container cp` still lands bytes."""
@@ -1535,8 +1559,8 @@ class TestStatGuest:
             (*_PROBE, "-L"): _WslcResult(0, b"", b""),
         }
         sandbox, fake = self._sandbox_and_fake(overrides=overrides)
-        asyncio.run(sandbox._stat_guest("/w/out", "out"))
-        assert fake.only(*_PROBE, "-L").args == (*_PROBE, "-L", "/w/out")
+        asyncio.run(sandbox._stat_guest(guest, "out"))
+        assert fake.only(*_PROBE, "-L").args == (*_PROBE, "-L", guest)
 
     def test_a_guest_answering_nothing_cannot_make_an_accepted_path_absent(self):
         """The engine accepted this path as a copy source, so a guest answering no is refused.

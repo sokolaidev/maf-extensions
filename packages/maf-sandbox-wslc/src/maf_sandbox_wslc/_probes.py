@@ -10,9 +10,12 @@ from uuid import uuid4
 
 from maf_sandbox import Capability, SandboxCapabilityNotSupported, SandboxSpec
 
+# Raised probes must not resolve an executable through the guest's PATH.
+TEST_COMMAND = "/usr/bin/test"
+
 _REQUIREMENTS = {
     "sh": frozenset({Capability.EXEC}),
-    "test": frozenset({Capability.FILES_IN}),
+    TEST_COMMAND: frozenset({Capability.FILES_IN}),
 }
 RunProbe = Callable[[tuple[str, ...], bool], Awaitable[int]]
 
@@ -27,8 +30,8 @@ async def probe_commands(spec: SandboxSpec, verified: set[str], run: RunProbe) -
         commands: list[tuple[tuple[str, ...], bool, int]]
         if name == "sh":
             commands = [(("sh", "-c", "exit 0"), False, 0)]
-        elif name == "test":
-            commands = [(("test", "-d", "/"), True, 0), (("test", "-e", guest_missing), True, 1)]
+        elif name == TEST_COMMAND:
+            commands = [((name, "-d", "/"), True, 0), ((name, "-e", guest_missing), True, 1)]
         else:
             raise AssertionError(name)
         try:
