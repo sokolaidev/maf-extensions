@@ -154,6 +154,145 @@ def test_a_guest_that_cannot_create_its_base_is_refused_without_a_host_fallback(
     assert client.host_mkdirs == []
 
 
+@pytest.mark.parametrize("capability", [Capability.EXEC, Capability.FILES_IN])
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_cold_preparation_refusal_disposes_before_accepting_a_different_base(
+    capability, delete_fails, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    original = _GuestSandboxClient.exec
+
+    async def refuse(client, command, *, working_directory):
+        if command.startswith("export LC_ALL=C; mkdir -p -- /protected/"):
+            client.files["/protected/partial"] = None
+            return SimpleNamespace(exit_code=1, stdout="", stderr="mkdir: Permission denied")
+        return await original(client, command, working_directory=working_directory)
+
+    monkeypatch.setattr(_GuestSandboxClient, "exec", refuse)
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True), delete_fails=delete_fails)
+        backend = _backend_with(client)
+        key = SandboxKey("work-dir", "thread", "agent")
+        spec = replace(_spec_requiring(capability), work_dir="/protected/partial/base")
+        with pytest.raises(PermissionError) as refused:
+            await backend.acquire(key, spec)
+        held = next(iter(backend._registry.values()))
+        assert held.unusable
+        assert client.create_calls == 1
+        assert client.deleted == ([] if delete_fails else [held.sandbox_id])
+        assert client.created_directories == []
+        repaired = replace(spec, work_dir="/tmp/base")
+        if delete_fails:
+            assert "disposal must be retried" in refused.value.__notes__[0]
+            with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
+                await backend.acquire(key, repaired)
+            assert client.create_calls == 1
+            assert held.sandbox_id in backend._undeleted[_entry(key, spec.kind)[:4]]
+            client.delete_fails = False
+        replacement = await backend.acquire(key, repaired)
+        assert replacement.instance_id != held.sandbox_id
+        assert replacement._work_dir == "/tmp/base"
+        assert held.sandbox_id in client.deleted
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+def test_warm_preparation_permission_refusal_preserves_the_existing_sandbox(monkeypatch):
+    original = _GuestSandboxClient.exec
+
+    async def refuse(client, command, *, working_directory):
+        if command.startswith("export LC_ALL=C; mkdir -p -- "):
+            return SimpleNamespace(exit_code=1, stdout="", stderr="mkdir: Permission denied")
+        return await original(client, command, working_directory=working_directory)
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key, spec = SandboxKey("work-dir", "thread", "agent"), _spec_requiring(Capability.EXEC)
+        first = await backend.acquire(key, spec)
+        files = client.files[first.instance_id]
+        files["/keep"] = b"keep"
+        del files[first._work_dir]
+        with monkeypatch.context() as patch:
+            patch.setattr(_GuestSandboxClient, "exec", refuse)
+            with pytest.raises(PermissionError):
+                await backend.acquire(key, spec)
+        assert not first._held.unusable and not client.deleted
+        repaired = await backend.acquire(key, spec)
+        assert repaired.instance_id == first.instance_id
+        assert files["/keep"] == b"keep"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("failure", ["timeout", "cancel", "transport", "malformed"])
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_interrupted_preparation_invalidates_and_blocks_reuse_until_disposal(
+    warm, failure, delete_fails, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    original = _GuestSandboxClient.exec
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True), delete_fails=delete_fails)
+        backend = _backend_with(client, _config(read_timeout_seconds=0.1))
+        key, spec = SandboxKey("work-dir", "thread", "agent"), _spec_requiring(Capability.EXEC)
+        first = None
+        if warm:
+            first = await backend.acquire(key, spec)
+            del client.files[first.instance_id][first._work_dir]
+        started = asyncio.Event()
+
+        async def interrupt(sc, command, *, working_directory):
+            answer = await original(sc, command, working_directory=working_directory)
+            if command.startswith("export LC_ALL=C; mkdir -p -- "):
+                started.set()
+                if failure == "transport":
+                    raise OSError("response lost")
+                if failure == "malformed":
+                    return SimpleNamespace(exit_code=None, stdout="", stderr="")
+                await asyncio.Future()
+            return answer
+
+        with monkeypatch.context() as patch:
+            patch.setattr(_GuestSandboxClient, "exec", interrupt)
+            attempt = asyncio.create_task(backend.acquire(key, spec))
+            await asyncio.wait_for(started.wait(), 5)
+            if failure == "cancel":
+                attempt.cancel()
+            expected = {
+                "timeout": TimeoutError,
+                "cancel": asyncio.CancelledError,
+                "transport": OSError,
+                "malformed": ValueError,
+            }[failure]
+            with pytest.raises(expected):
+                await attempt
+
+        held = next(iter(backend._registry.values()))
+        assert held.unusable
+        assert client.deleted == ([] if delete_fails else [held.sandbox_id])
+        if first is not None:
+            with pytest.raises(SandboxOutputError, match="invalidated"):
+                await first.exec("true", working_directory="/", timeout=1)
+        if delete_fails:
+            with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
+                await backend.acquire(key, spec)
+            assert client.create_calls == 1
+            client.delete_fails = False
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != held.sandbox_id
+        assert held.sandbox_id in client.deleted
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
 class _FakePager:
     """Stands in for AsyncItemPaged."""
 
@@ -3896,7 +4035,7 @@ def test_reacquire_refuses_invalidation_during_preparation(stage, monkeypatch):
             acquire = asyncio.create_task(backend.acquire(key, spec))
             await asyncio.wait_for(ready.wait(), 5)
             try:
-                await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+                await first.invalidate(SandboxOutputError("capture failed"))
             finally:
                 release.set()
             with pytest.raises(SandboxOutputError, match="invalidated during acquire"):
@@ -3949,7 +4088,7 @@ def test_acquire_return_waits_for_invalidation_on_another_loop(monkeypatch):
 
     def invalidate():
         role.name = "writer"
-        asyncio.run(first._invalidate_after_exec(SandboxOutputError("capture failed")))
+        asyncio.run(first.invalidate(SandboxOutputError("capture failed")))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         result = pool.submit(acquire)
@@ -3980,7 +4119,7 @@ def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed)
 
     async def scenario():
         first = await backend.acquire(key, original)
-        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        await first.invalidate(SandboxOutputError("capture failed"))
         assert first._held.unusable
         if delete_failed:
             with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
@@ -4016,7 +4155,7 @@ def test_invalidated_acquire_reconciles_concurrent_disposal(
 
     async def scenario():
         first = await backend.acquire(key, spec)
-        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        await first.invalidate(SandboxOutputError("capture failed"))
         client.delete_fails = False
         started, release = asyncio.Event(), asyncio.Event()
 

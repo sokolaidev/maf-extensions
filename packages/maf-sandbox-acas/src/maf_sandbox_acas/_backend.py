@@ -646,15 +646,28 @@ class _AcasSandbox:
         held sandbox's base is always one the workload could have made itself.
         """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        deadline = asyncio.get_running_loop().time() + self._read_timeout
+
+        async def stat(path: str) -> SandboxEntry | None:
+            async with asyncio.timeout_at(deadline):
+                return await self._unconfined_stat(path)
+
+        async def create(directories: tuple[str, ...]) -> None:
+            await self._create_directories(
+                directories, timeout=max(0.0, deadline - asyncio.get_running_loop().time())
+            )
+
         await ensure_guest_work_dir(
             spec,
-            self._unconfined_stat,
-            self._create_directories,
+            stat,
+            create,
             resolve=posix_work_dir_ancestors,
             base=self._work_dir,
         )
 
-    async def _create_directories(self, directories: tuple[str, ...]) -> None:
+    async def _create_directories(
+        self, directories: tuple[str, ...], *, timeout: float | None = None
+    ) -> None:
         """Create the missing base as the guest; the file plane's ``mkdir`` is never used.
 
         The data plane creates every directory root-owned (#722), so a parent replaced by a
@@ -673,11 +686,17 @@ class _AcasSandbox:
         directory decides nothing, exactly as the write and removal commands do.
         """
         base = directories[-1]
-        result = await self._exec_text(
-            f"{_C_LOCALE}mkdir -p -- {shlex.quote(base)}",
-            working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
-            timeout=self._read_timeout,
-        )
+        with retry_observation():
+            try:
+                result = await self._exec_text(
+                    f"{_C_LOCALE}mkdir -p -- {shlex.quote(base)}",
+                    working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
+                    timeout=self._read_timeout if timeout is None else timeout,
+                )
+            except BaseException as failure:
+                if not (isinstance(failure, TimeoutError) and retry_after_interrupted()):
+                    await self.invalidate(failure)
+                raise
         if result.exit_code == 0:
             return
         detail = result.stderr.strip()
@@ -801,10 +820,11 @@ class _AcasSandbox:
                         return result
             except BaseException as failure:
                 if not (isinstance(failure, TimeoutError) and retry_after_interrupted()):
-                    await self._invalidate_after_exec(failure)
+                    await self.invalidate(failure)
                 raise
 
-    async def _invalidate_after_exec(self, failure: BaseException) -> None:
+    async def invalidate(self, failure: BaseException) -> None:
+        """Refuse reuse and attempt disposal, retaining failed cleanup for retry."""
         with self._held.invalidation_guard:
             completion = self._held.invalidation
             owns_cleanup = completion is None
@@ -866,10 +886,10 @@ class _AcasSandbox:
             result = await self._exec_text(command, working_directory="/", timeout=timeout)
         except BaseException as failure:
             if owns_capture:
-                await self._invalidate_after_exec(failure)
+                await self.invalidate(failure)
             raise
         if owns_capture and result.exit_code:
-            await self._invalidate_after_exec(SandboxOutputError("exec capture probe failed"))
+            await self.invalidate(SandboxOutputError("exec capture probe failed"))
         return result.exit_code
 
     @_with_client
@@ -879,9 +899,9 @@ class _AcasSandbox:
         """Run backend control commands; these never supply program-output bytes."""
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         cmd = command if isinstance(command, str) else shlex.join(command)
-        result = await asyncio.wait_for(
-            self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
-        )
+        # Retry observations must reach the task that owns the deadline.
+        async with asyncio.timeout(timeout):
+            result = await self._sc.exec(cmd, working_directory=working_directory)
         return _control_result(
             stdout=getattr(result, "stdout", ""),
             stderr=getattr(result, "stderr", ""),
@@ -1364,10 +1384,16 @@ class AcasSandboxBackend:
                 self._client_lease(request) as (client, binding),
                 AsyncExitStack() as acquisition,
             ):
-                sandbox = await self._get_or_create(key, spec, client, binding, acquisition)
-                async with asyncio.timeout(self._config.read_timeout_seconds):
+                sandbox, freshly_created = await self._get_or_create(
+                    key, spec, client, binding, acquisition
+                )
+                try:
                     await sandbox.prepare_work_dir(spec)
-                sandbox.check_usable()
+                    sandbox.check_usable()
+                except BaseException as failure:
+                    if freshly_created:
+                        await sandbox.invalidate(failure)
+                    raise
                 return sandbox
 
     @asynccontextmanager
@@ -1478,8 +1504,8 @@ class AcasSandboxBackend:
         gc: Any,
         binding: AcasCredentialBinding,
         acquisition: AsyncExitStack,
-    ) -> _AcasSandbox:
-        """:meth:`acquire`'s body, run under that key's lock."""
+    ) -> tuple[_AcasSandbox, bool]:
+        """Return the sandbox and whether this acquire created it, under that key's lock."""
         egress = _egress_key(spec)
         registry_key = (*_key_prefix(key), spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
@@ -1525,7 +1551,7 @@ class AcasSandboxBackend:
                     key.thread_id,
                     key.agent_id,
                 )
-                return reused
+                return reused, False
             with held.invalidation_guard:
                 if held.unusable:
                     raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
@@ -1602,7 +1628,7 @@ class AcasSandboxBackend:
                 self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
-        return created
+        return created, True
 
     async def _probe_commands(self, spec: SandboxSpec, sandbox: _AcasSandbox, held: _Held) -> None:
         deadline = asyncio.get_running_loop().time() + min(10.0, self._config.read_timeout_seconds)

@@ -36,6 +36,8 @@ Path checks reject existing links and escapes. A later parent swap can still red
 
 Working-directory setup runs as the guest too. Missing directories are created with `mkdir -p` run under the guest's own authority, never the file plane's, so a parent replaced between the ancestry check and creation can only redirect the creation to where the guest could already have made one. A guest that cannot create its base — a non-root guest under a root-owned tree such as `/maf-sandbox` — is refused at acquire rather than served a base the file plane made for it. Bake a guest-writable base into a non-root image, or place `work_dir` under a writable parent such as `/tmp`.
 
+Preparation failure on a new sandbox invalidates it and attempts disposal. Failed disposal blocks acquisition until cleanup succeeds. A completed permission refusal during warm repair preserves the existing sandbox; interruption of a preparation command follows the [execution invalidation rules](#execution-and-failure).
+
 <a id="live-write-authority-verification"></a>
 
 The [ACAS research record](../research/acas-backend.md) contains the live write-authority checks and their controls.
@@ -135,6 +137,6 @@ The broader metadata, private-network, host-path and host-socket isolation probe
 | Native read/stat/list path race | Open; no atomic service primitive | [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) (open) |
 | Typed SDK file metadata | Open; adapter requires raw flags | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) (open) |
 | Special-file classification | Open; regular files cannot be distinguished reliably | [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) (open) |
-| Working-directory preparation authority | Bounded; setup creates directories as the guest and refuses a base the guest cannot create | [#1339](https://github.com/sokolaidev/maf-extensions/issues/1339) |
+| Working-directory preparation authority | Bounded; setup creates directories as the guest and refuses a base the guest cannot create | [#1339](https://github.com/sokolaidev/maf-extensions/issues/1339) (closed) by [#1379](https://github.com/sokolaidev/maf-extensions/pull/1379) (merged) |
 | Method-level network policy | Withheld pending full validation | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open) |
 | Broader isolation probes | Not implemented | untracked |

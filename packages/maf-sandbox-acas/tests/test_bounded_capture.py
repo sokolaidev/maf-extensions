@@ -235,7 +235,7 @@ def test_result_waits_for_invalidation_on_another_loop(bounded, monkeypatch):
 
     def invalidate():
         role.name = "writer"
-        asyncio.run(writer._invalidate_after_exec(SandboxOutputError("other exec failed")))
+        asyncio.run(writer.invalidate(SandboxOutputError("other exec failed")))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         result = pool.submit(read)
