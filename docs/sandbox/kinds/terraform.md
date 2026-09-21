@@ -15,7 +15,7 @@ See the [package README](../../../packages/maf-sandbox-terraform/README.md) for 
 | Guest | POSIX; supplied images pin Linux amd64 engines and dependencies |
 | Isolation and lifetime | At least container isolation; a separate sandbox per call; mandatory disposal |
 | Network | `CLOSED`, with a filesystem provider mirror and no direct-download fallback |
-| Results | Untrusted report followed by fixed trusted guidance |
+| Results | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, the reason it stopped where it did, the engine's report, then fixed guidance. Validation answers `valid` or `invalid`; formatting answers `changed` or `unchanged` |
 
 This kind exposes no plan, apply or state commands. It does not write to the agent's store. Providers and expressions may access other guest paths, so there is no call-directory confinement or warm-reuse claim.
 
@@ -43,7 +43,7 @@ Set `formatting=True` to attach a separate formatting tool. Its separate name le
 
 The formatting tool accepts the same manifest and root. It runs `fmt -recursive -no-color` without dependency initialization or validation. A base image with no providers is sufficient.
 
-The result is a JSON mapping from store-relative paths to whole changed files. Unchanged files are omitted. Every returned path must belong to the staged manifest.
+The result reports completion and a readable `changed` or `unchanged` verdict. Its untrusted report contains a JSON mapping from store-relative paths to whole changed files. Unchanged files are omitted. Every returned path must belong to the staged manifest. An incomplete call has no verdict or partial formatted files.
 
 | Bound | Behavior |
 |---|---|
@@ -58,11 +58,11 @@ An oversized project needs a smaller complete manifest. A single changed file la
 
 Provider programs and stored configuration are sources of the reports. Formatted file contents also come from that configuration. The kind claims `untrusted` for both validation and formatting output.
 
-![Terraform and OpenTofu validation or formatting tools return an untrusted report and fixed trusted guidance as separate content items. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
+![Terraform and OpenTofu tools return readable completion, a valid/invalid or changed/unchanged verdict when complete, fixed failure reasons, and standing guidance. Engine reports and formatted files remain untrusted and may be hidden by FIDES. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
 
-The wrapper raises the framework-facing declaration to keep guidance readable. It stores the workload claim in `maf_sandbox_derived_integrity` and labels the report separately. Hidden names suppress guest prose in reports.
+The wrapper raises the framework-facing declaration to keep completion, declared verdicts, fixed failure reasons and guidance readable. It stores the workload claim in `maf_sandbox_derived_integrity` and labels engine output separately. Hidden names suppress guest prose in reports.
 
-A hidden report is not evidence of success. Hidden content still affects confidentiality, and forwarding its reference remains subject to host policy. The host chooses result classification. See [information flow](../information-flow.md).
+Use completion and the readable verdict to determine whether validation passed or formatting changed files; the engine report can remain hidden. An incomplete call carries no verdict. Hidden content still affects confidentiality, and forwarding its reference remains subject to host policy. The host chooses result classification. See [information flow](../information-flow.md).
 
 ## Execution limits and cleanup
 
@@ -78,7 +78,7 @@ The [image guide](../../../images/terraform-sandbox/README.md) owns engine pins,
 
 Dependency preparation is a host-controlled image-build step. It downloads only approved, pinned artifacts, verifies their content and writes a provider mirror, module files and a sanitized receipt. It runs no provider executable on the host.
 
-![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model receives an untrusted report or changed whole files, with separate fixed guidance. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
+![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model reads completion and a valid/invalid or changed/unchanged verdict when complete, with fixed failure reasons and guidance. Engine reports and changed whole files stay untrusted. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
 
 | Dependency | Supported preparation |
 |---|---|
@@ -103,4 +103,4 @@ The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-
 | Offline validation and optional formatting | Implemented | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
-| Four-field result contract | Open; tools return report and guidance items | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for Terraform and OpenTofu; remaining kinds tracked separately | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |

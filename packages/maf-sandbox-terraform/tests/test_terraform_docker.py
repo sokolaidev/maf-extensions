@@ -59,6 +59,11 @@ async def containers(scope: str) -> set[str]:
     return set(stdout.decode().split())
 
 
+def _body(result) -> str:
+    """Read the tool's text between the completion line and standing guidance."""
+    return chr(10).join(str(item.text) for item in result[1:-1])
+
+
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
 @pytest.mark.parametrize(
     "case",
@@ -161,7 +166,7 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
                         await pending
                 else:
                     result = await tool.func(files=list(data), root_module=root)
-                    report = result[0].text
+                    report = _body(result)
                     if case in {"syntax", "missing-dependency", "wrong-engine", "timeout"} or (
                         case == "tofu-precedence" and engine == "terraform"
                     ):
@@ -248,7 +253,7 @@ def test_format_returns_complete_files_without_store_writes(engine, case, monkey
         monkeypatch.setattr(backend, "acquire", acquire)
         try:
             result = await tools[1].func(files=list(data), root_module="root")
-            report = result[0].text
+            report = _body(result)
             assert store.files == data
             if case in {"oversized", "escaped", "syntax"}:
                 assert "Formatting INCOMPLETE" in report, report
@@ -260,7 +265,7 @@ def test_format_returns_complete_files_without_store_writes(engine, case, monkey
                     # A host file tool can persist the returned whole text for check-only validation.
                     store.files.update(files)
                     checked = await tools[0].func(files=list(data), root_module="root")
-                    assert "formatting PASS" in checked[0].text, checked[0].text
+                    assert "formatting PASS" in _body(checked), _body(checked)
                     store.files.update(data)
             assert store.files == data
             assert observed and not await containers(scope)

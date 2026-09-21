@@ -57,7 +57,7 @@ The fixed launcher runs these commands without interaction or terminal color:
 
 A supplied root lock file is read-only during initialization. Without one, a generated lock exists only inside the disposable guest. No command writes back to the host store.
 
-Initialization failure or malformed, inconsistent, truncated or oversized output means incomplete validation. A hidden report is not evidence of success. Successful validation does not prove that a deployment will succeed.
+Initialization failure or malformed, inconsistent, truncated or oversized output means incomplete validation. Use the fixed completion and verdict to interpret a hidden report. Successful validation does not prove that a deployment will succeed.
 
 ## Formatting
 
@@ -77,6 +77,8 @@ All phases share `exec_timeout_seconds`: 120 by default, finite and at most 600.
 
 Providers execute native code and may read other guest paths. Use a dedicated image without credentials, sensitive files or host mounts. This tool exposes no plan, apply, destroy, import or state operations.
 
-Validation and formatting each return an untrusted report and trusted fixed guidance. The host supplies confidentiality and later-tool policy. See the [kind guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md) for the complete contract.
+Both tools use the `SandboxResult` contract. Core renders separate content items for completion, an optional verdict, fixed failure reasons, untrusted output and standing guidance. Validation exposes `valid` or `invalid`; formatting exposes `changed` or `unchanged`. An incomplete call reports `completed=False` and no verdict.
+
+Completion, declared verdicts, fixed reasons and guidance remain readable while FIDES may hide engine reports, session exception details and formatted file contents. Formatting-check details within a validation report remain untrusted. The host supplies confidentiality and later-tool policy. See the [kind guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md) for the complete contract.
 
 Live validation covers Linux amd64 Docker images. ACAS and WSLC execution remain unverified. When the launcher changes, rebuild both base and prepared images; prepared-image receipts bind to its `reader_sha256`.

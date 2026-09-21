@@ -2648,7 +2648,9 @@ def _label_tool_result(
 
 
 def sandboxed_tool(
-    build: Callable[[SandboxToolSession], Callable[..., Awaitable[str | list[Content]]]],
+    build: Callable[
+        [SandboxToolSession], Callable[..., Awaitable[str | list[Content] | SandboxResult]]
+    ],
     *,
     router: SandboxRouter | None,
     context: CallerContext,
@@ -2714,8 +2716,10 @@ def sandboxed_tool(
        A ``spec`` whose ``work_dir`` is the guest root is refused, because a path one
        component from the root is one this cannot remove — and only for such a body, since a
        synchronous one is not held to a rule it cannot break.
-    8. **The wrapper owns result labels.** A body returns one string or unlabelled items,
-       ending with its committed guidance. The wrapper stamps those sentences trusted/public.
+    8. **The wrapper owns result labels.** With ``result_contract=True``, a body returns
+       :class:`SandboxResult`; the wrapper renders its parts and appends committed guidance.
+       Otherwise, a body returns one string or unlabelled items. A body committing guidance
+       must return items ending with those sentences, which the wrapper stamps trusted/public.
        A tool committing guidance declares ``trusted`` to the framework so those sentences are
        trusted whatever the kind claims, keeps that claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
        stamps every derived item from it. One committing none stamps only with valid
@@ -2739,8 +2743,9 @@ def sandboxed_tool(
     call answers the attach gate identically, so an unconfigured host still gets ``[]``.
 
     Args:
-        build: Given the session, returns the async function to expose as the tool.  It
-            answers with a ``str``, or with the list of items point 8 above describes.
+        build: Given the session, returns the async function to expose as the tool. With
+            ``result_contract=True`` it returns :class:`SandboxResult`; otherwise it returns
+            a ``str`` or the list of items point 8 above describes.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store (see :func:`make_caller_context`).
@@ -2815,9 +2820,11 @@ def sandboxed_tool(
             written all of them before the call runs. That is what a trusted verdict rests on,
             so a value arriving from anywhere else is refused on return. Declaring a set
             without ``result_contract`` is refused, since nothing would read it.
-        standing_guidance: Sentences the wrapper stamps ``trusted/public``. Return them as
-            unlabelled text items at the end, in this order, after at least one derived item.
-            A missing or changed sentence, a bare string, or a body-supplied label is refused.
+        standing_guidance: Sentences the wrapper stamps ``trusted/public``. With
+            ``result_contract=True``, the wrapper appends them; the body returns only its
+            :class:`SandboxResult`. Otherwise, return them as unlabelled text items at the end,
+            in this order, after at least one derived item. A missing or changed sentence,
+            a bare string, or a body-supplied label is refused on that legacy path.
             Only ``{call_id}`` may interpolate; the wrapper renders it from this call and
             rebuilds the guidance without other fields from the body's items. A malformed or
             empty sentence, or a call-id sentence on a synchronous body, is refused at attach.
