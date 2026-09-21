@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.3.0...maf-sandbox-terraform-v0.4.0) (2026-09-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **terraform:** answer with a verdict the model can read while the report stays hidden ([#1367](https://github.com/sokolaidev/maf-extensions/issues/1367))
+
+### Features
+
+* **terraform:** answer with a verdict the model can read while the report stays hidden ([#1367](https://github.com/sokolaidev/maf-extensions/issues/1367)) ([1c4d8bc](https://github.com/sokolaidev/maf-extensions/commit/1c4d8bce3cb2445a9cb0f2aad0f3abae777400e2))
+
+
+### Fixes
+
+* require the tested agent-framework-core 1.19 floor ([#1346](https://github.com/sokolaidev/maf-extensions/issues/1346)) ([cbbbec5](https://github.com/sokolaidev/maf-extensions/commit/cbbbec501d436cbb6098d6f184a2f60b6c444435))
+
+
+### Documentation
+
+* clarify package setup, usage and limits ([#1370](https://github.com/sokolaidev/maf-extensions/issues/1370)) ([b0dd379](https://github.com/sokolaidev/maf-extensions/commit/b0dd3791cb18fab0b7c565e327ee872b4620c6f7))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.2.0...maf-sandbox-terraform-v0.3.0) (2026-09-19)
 
 
