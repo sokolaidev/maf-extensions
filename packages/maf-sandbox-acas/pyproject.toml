@@ -43,7 +43,7 @@ dependencies = [
     # older and the clean-env wheel smoke resolves it and dies on ImportError. The number
     # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
     # release the floor is for, never which release that is.
-    "maf-sandbox>=0.41.0,<0.42",
+    "maf-sandbox>=0.42.0,<0.43",
     # The retry observer subclasses and replaces Azure Core's private pipeline policy. Keep the
     # clean-install resolver on the minor line validated with that internal shape.
     "azure-core>=1.41.0,<1.42",
