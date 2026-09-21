@@ -135,6 +135,7 @@ def test_the_hosted_samples_were_found():
         "14_acas_codeact_files",
         "15_acas_codeact_host_tools",
         "18_acas_drawio_repair",
+        "20_terraform_validation",
     ]
 
 

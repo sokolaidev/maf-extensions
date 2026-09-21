@@ -741,7 +741,7 @@ jobs:
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-drawio"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     steps:
       - name: Poll PyPI until the just-published version is installable
@@ -867,7 +867,7 @@ jobs:
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-drawio"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -935,7 +935,7 @@ jobs:
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-drawio"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     with:
       package: ${{ needs.build.outputs.package }}

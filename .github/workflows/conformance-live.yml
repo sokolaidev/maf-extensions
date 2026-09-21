@@ -107,6 +107,8 @@ jobs:
           ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
           DRAWIO_SANDBOX_IMAGE: ${{ vars.DRAWIO_SANDBOX_IMAGE }}
+          TERRAFORM_SANDBOX_IMAGE: ${{ vars.TERRAFORM_SANDBOX_IMAGE }}
+          OPENTOFU_SANDBOX_IMAGE: ${{ vars.OPENTOFU_SANDBOX_IMAGE }}
           ACAS_SANDBOX_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
         run: uv run --locked python scripts/check_acas_live_images.py --summary "$GITHUB_STEP_SUMMARY"
 

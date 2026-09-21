@@ -96,6 +96,21 @@ Prepared receipts pin the launcher as `reader_sha256`. Rebuild both base and der
 
 The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-provider-image) adds service-specific OpenTofu providers. The [multi-version example](../../../images/terraform-sandbox/USAGE.md#build-an-image-with-two-provider-lines) shows two provider lines in one offline mirror.
 
+## Live verification
+
+[Sample 20](../../../samples/20_terraform_validation/) validates the same random-provider module with both engines on Docker and ACAS. Its live checks require the expected engine version, provider-schema diagnostics and per-call disposal. Each combination runs as a separate published-package verification job.
+
+The [published-package Terraform-only run](https://github.com/sokolaidev/maf-extensions/actions/runs/35607979401) passed all four jobs on 2026-09-21. Each agent called its validation tool once. The tool loaded the random provider schema, reported the deliberately missing `length` argument, and completed formatting checks. Host observations reported successful per-call disposal and a final scope purge with no remaining sandbox to remove.
+
+| Engine | Profile | Docker call | ACAS call |
+|---|---|---|---|
+| Terraform 1.16.2 | `random` | Passed; 1.28 seconds | Passed; 14.48 seconds |
+| OpenTofu 1.12.6 | `random` | Passed; 1.30 seconds | Passed; 13.41 seconds |
+
+The durations cover the tool body and cleanup, excluding model latency. All four jobs resolved `maf-sandbox` 0.41.0, `maf-sandbox-terraform` 0.3.0, `maf-sandbox-docker` 0.22.0 and `maf-sandbox-acas` 0.26.0 from PyPI. These measurements cover the pinned `random` images and backend-reported disposal; they do not qualify other provider profiles or WSLC.
+
+All four combinations also passed in the [all-sample published-package dispatch](https://github.com/sokolaidev/maf-extensions/actions/runs/35607982566). Each validation call reported the expected provider diagnostic and successful disposal; each final scope purge found no remaining sandbox to remove. Backend and engine suffixes give concurrent jobs distinct conversation scopes.
+
 ## Status
 
 | Contract | State | Details |
@@ -104,3 +119,4 @@ The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-
 | Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Four-field result contract | Implemented for Terraform and OpenTofu, including live checks | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
+| Published-package random-profile samples on Docker and ACAS | Implemented and measured for both engines | [#1296](https://github.com/sokolaidev/maf-extensions/issues/1296) (closed) by [#1378](https://github.com/sokolaidev/maf-extensions/pull/1378) (merged) |

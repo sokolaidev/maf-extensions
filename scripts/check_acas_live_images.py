@@ -73,6 +73,9 @@ def required_images(
     drawio = (all_jobs or package == "maf-sandbox-drawio") and (
         root / "samples/18_acas_drawio_repair/agent.py"
     ).is_file()
+    terraform = (all_jobs or package == "maf-sandbox-terraform") and (
+        root / "samples/20_terraform_validation/agent.py"
+    ).is_file()
     required: dict[str, list[str]] = {}
     skipped: list[str] = []
     missing = []
@@ -82,6 +85,12 @@ def required_images(
         )
     if drawio and not env.get("DRAWIO_SANDBOX_IMAGE"):
         missing.append("DRAWIO_SANDBOX_IMAGE")
+    if terraform:
+        missing.extend(
+            name
+            for name in ("TERRAFORM_SANDBOX_IMAGE", "OPENTOFU_SANDBOX_IMAGE")
+            if not env.get(name)
+        )
     if missing:
         raise ValueError("the live-verify environment is missing: " + ", ".join(missing))
 
@@ -94,6 +103,9 @@ def required_images(
         add(env["BICEP_SANDBOX_IMAGE"], "sample-01 / acas-e2e" if all_jobs else "sample-01")
     if drawio:
         add(env["DRAWIO_SANDBOX_IMAGE"], "sample-18")
+    if terraform:
+        for engine in ("terraform", "opentofu"):
+            add(env[f"{engine.upper()}_SANDBOX_IMAGE"], f"sample-20-acas-{engine}")
     if codeact:
         for sample in _CODEACT_SAMPLES:
             add(
