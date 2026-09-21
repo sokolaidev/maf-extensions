@@ -14,7 +14,7 @@ Use the [package README](../../../packages/maf-sandbox-docker/README.md) for ins
 | Guest OS | Async factory declares POSIX for a Linux daemon; plain constructor declares none |
 | Sharing | `CONVERSATION`, `CALL` |
 | Transfers | 64 MiB per file, 256 MiB total, 256 files in each direction |
-| Cleanup | Disposal by default; reclaim requires kind confinement and host opt-in |
+| Cleanup | Disposal by default; reclaim requires explicit host opt-in |
 
 Docker's shared kernel is a container boundary, including when Docker Desktop runs the daemon in a VM. Workload containers receive no host bind mounts or Docker socket.
 
@@ -116,6 +116,6 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Paused archive operations | Implemented; prevents concurrent guest path replacement | [File confinement](../capabilities.md) |
 | Root-filesystem scope | Supported; guest mounts remain outside the transfer view | [Archive evidence](../research/docker-backend.md) |
 | Directory listing | Withheld because directory archives transfer the subtree | [Archive evidence](../research/docker-backend.md) |
-| Reclamation | Declared; router use requires confinement and host opt-in | [Cleanup policy](../tool-call.md) |
+| Reclamation | Declared; router use requires host opt-in and a compatible cleanup floor | [Cleanup policy](../tool-call.md) |
 | Proxy enforcement and observation | Implemented with the limits above | [Network policy](../network.md), [observability](../observability.md) |
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
