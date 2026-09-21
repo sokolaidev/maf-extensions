@@ -1,20 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 750" width="1180" height="750" role="img" aria-labelledby="codeact-title codeact-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
-  <title id="codeact-title">CodeAct: output mode controls the report and guidance</title>
-  <desc id="codeact-desc">CodeAct is a source tool. In showing mode its framework source_integrity is untrusted; in withholding mode the wrapper raises it to trusted so fixed route guidance stays readable. The workload claim is untrusted in both modes. The execution report contains guest output in showing mode and completion facts in withholding mode, with effective label untrusted/C. Only withholding mode adds trusted/C guidance. C includes host classification and any stricter argument confidentiality. FIDES shows text or a hidden reference to the model. The next model-called tool is checked using conversation and argument labels against its integrity and confidentiality declarations. Network calls, guest host-tool calls and artifact delivery are separate actions inside execute_code.</desc>
+  <title id="codeact-title">CodeAct: trusted result facts and untrusted program text</title>
+  <desc id="codeact-desc">CodeAct is a source tool whose framework source_integrity is trusted in both output modes. Completion, the exit verdict and fixed host explanations have effective label trusted/C. Program text and variable diagnostics have effective label untrusted/C. The workload claim remains untrusted. Withholding mode omits guest stdout and stderr and adds trusted/C route guidance. C includes host classification and any stricter argument confidentiality. FIDES shows text or a hidden reference to the model. The next model-called tool is checked using conversation and argument labels against its integrity and confidentiality declarations. Network calls, guest host-tool calls and artifact delivery are separate actions inside execute_code.</desc>
   <defs>
     <marker id="codeact-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
     </marker>
   </defs>
   <rect width="1180" height="750" rx="16" fill="#ffffff"/>
-  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">CodeAct: output mode controls the report and guidance</text>
-  <text x="32" y="76" font-size="17" fill="#526072">Both modes keep the workload claim untrusted. Only withholding mode has fixed route guidance.</text>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">CodeAct: trusted result facts and untrusted program text</text>
+  <text x="32" y="76" font-size="17" fill="#526072">Both modes expose completion and any exit verdict. Program text and variable diagnostics stay untrusted.</text>
   <rect x="32" y="112" width="340" height="300" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
   <text x="52" y="148" font-size="22" font-weight="600" fill="#243040">Source tool</text>
   <text x="52" y="180" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">execute_code</text>
   <text x="52" y="244" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">source_integrity</text>
-  <text x="52" y="270" font-size="17" fill="#243040">untrusted (showing mode)</text>
-  <text x="52" y="295" font-size="17" fill="#243040">trusted (withholding mode)</text>
+  <text x="52" y="270" font-size="17" fill="#243040">trusted (both modes)</text>
+  <text x="52" y="295" font-size="17" fill="#243040">Keeps result facts readable</text>
   <text x="52" y="328" font-size="17" fill="#526072">Workload claim: untrusted</text>
   <text x="52" y="368" font-size="16" font-family="ui-monospace, Consolas, monospace" fill="#243040">confidentiality</text>
   <text x="52" y="394" font-size="17" fill="#526072">Host's result classification</text>
@@ -23,12 +23,12 @@
   <text x="442" y="148" font-size="22" font-weight="600" fill="#243040">Content items</text>
   <text x="442" y="176" font-size="16" fill="#526072">Effective labels shown below</text>
   <rect x="442" y="195" width="294" height="93" rx="8" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
-  <text x="459" y="222" font-size="18" font-weight="600" fill="#243040">Execution report</text>
-  <text x="459" y="249" font-size="15" fill="#526072">Guest text or completion facts</text>
+  <text x="459" y="222" font-size="18" font-weight="600" fill="#243040">Program text / diagnostics</text>
+  <text x="459" y="249" font-size="15" fill="#526072">Guest streams omitted if withheld</text>
   <text x="459" y="276" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">untrusted / C</text>
   <rect x="442" y="302" width="294" height="93" rx="8" fill="#eeebfa" stroke="#8b7fd4" stroke-width="1.5"/>
-  <text x="459" y="329" font-size="18" font-weight="600" fill="#243040">Fixed guidance</text>
-  <text x="459" y="356" font-size="15" fill="#526072">Withholding mode only</text>
+  <text x="459" y="329" font-size="18" font-weight="600" fill="#243040">Completion / verdict / reason</text>
+  <text x="459" y="356" font-size="15" fill="#526072">Plus route guidance if withheld</text>
   <text x="459" y="383" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">trusted / C</text>
   <path d="M 756 260 H 794" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#codeact-arrow)"/>
   <text x="754" y="241" font-size="14" fill="#526072">FIDES</text>

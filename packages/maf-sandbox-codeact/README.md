@@ -4,7 +4,7 @@
 
 > **Experimental.** Releases before 1.0 may change or remove APIs. Importing this package emits `MafSandboxCodeactExperimentalWarning`.
 
-Give an agent one `execute_code` tool. The model writes Python statements, the sandbox runs them, and the tool returns what the program printed. Programs must print results; a final expression is not echoed.
+Give an agent one `execute_code` tool. The model writes Python statements, the sandbox runs them, and the tool returns content items for completion, an `ok` or `failed` verdict when an exit status is available, and the execution report. Programs must print results; a final expression is not echoed.
 
 This is an independent package for [Microsoft Agent Framework](https://aka.ms/AgentFramework). It uses the `maf-sandbox` protocol and has no backend dependency.
 
@@ -130,13 +130,13 @@ Runtime profiles do not support host-tool registries. Changing the execution var
 
 ## Results and labels
 
-Program output is untrusted. The ordinary report includes stdout, available stderr and a nonzero exit code. With the host-tool transport, program stderr is merged into stdout; a separate `note:` comes from the transport.
+Both output modes use the [result contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md#the-result-contract). Completion, the exit verdict and fixed host explanations are trusted. A call with no exit status has `completed=False` and no verdict. Program output and variable diagnostics remain untrusted. The ordinary report includes stdout, available stderr and a nonzero exit code. With the host-tool transport, program stderr is merged into stdout; a separate `note:` comes from the transport.
 
 FIDES may hide the report while the conversation is trusted. Hidden content still affects confidentiality. The host controls whether later tools may accept it. See [information flow](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md).
 
-`withhold_guest_output=True` removes guest-authored text from the report. It requires `CodeactOutputs.DECLARED` and a sink. The result has an untrusted status item and separate trusted route guidance, so the model can learn how to read saved output through host file tools.
+`withhold_guest_output=True` removes guest-authored text from the report. It requires `CodeactOutputs.DECLARED` and a sink. Completion and the verdict remain readable, alongside separate trusted route guidance so the model can learn how to read saved output through host file tools. Variable status details remain untrusted.
 
-This mode omits sink display text and guest-selected filenames. Exit success and whether declared files landed still depend on the program. Withholding therefore does not make the report trusted or eliminate every data channel.
+This mode omits sink display text and guest-selected filenames. Exit success and whether declared files landed still depend on the program. The trusted verdict exposes exit success deliberately; withholding does not make variable diagnostics trusted or eliminate every data channel.
 
 ## Calls and cleanup
 

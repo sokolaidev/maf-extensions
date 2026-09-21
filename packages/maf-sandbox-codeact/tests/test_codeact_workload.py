@@ -651,19 +651,6 @@ def _is_guidance(text: str) -> bool:
     return text.startswith(_tool_module._WITHHELD_ROUTE[:40]) or "outputs land" in text
 
 
-def _completed(tool, code: str, **kw) -> bool:
-    """Whether the call reported a definitive result, read from the field that says so."""
-    return str(_items(tool, code, **kw)[0].text) == COMPLETED_TEXT
-
-
-def _verdict(tool, code: str, **kw) -> str | None:
-    """The verdict line's value, or ``None`` where the call reported none."""
-    for text in (str(item.text) for item in _items(tool, code, **kw)):
-        if text.startswith("Result: "):
-            return text.removeprefix("Result: ")
-    return None
-
-
 def _run_producing(tool, sandbox: _ProducingSandbox, produced: dict[str, bytes], **kw) -> str:
     """Run one call whose program writes ``produced`` into its own working directory."""
     sandbox.produces = produced
@@ -2106,7 +2093,7 @@ class TestFilesIn:
         out = _run(tool, "print('hi')", files=[nested])
         assert out == (
             f"Error: {nested!r} cannot be shared — {_PROGRAM_FILENAME!r} is a file name this "
-            f"tool reserves in every run's directory, so nothing can live inside it."
+            f"tool reserves in every call's directory, so nothing can live inside it."
         ), out
         assert sandbox.written == {}
 
@@ -2149,7 +2136,7 @@ class TestFilesIn:
 
     def test_the_two_reserved_names_are_refused_for_their_own_reasons(self):
         """One sentence for both would be false about one of them. This tool writes
-        `program.py` into the run's directory and only *reads* `outputs.json` from it — the
+        `program.py` into the call's directory and only *reads* `outputs.json` from it — the
         program writes that. Both refusals are asserted whole, so neither can drift onto the
         other's clause and tell a model this tool writes a file it never touches.
         """
@@ -2171,11 +2158,11 @@ class TestFilesIn:
 
         assert writes == (
             f"Error: {_PROGRAM_FILENAME!r} cannot be shared — this tool writes a file of that "
-            f"name into every run's directory."
+            f"name into every call's directory."
         ), writes
         assert reads == (
             f"Error: {_MANIFEST_FILENAME!r} cannot be shared — this tool reads a file of that "
-            f"name from every run's directory as its manifest."
+            f"name from every call's directory as its manifest."
         ), reads
 
     def test_a_name_that_merely_starts_with_the_program_name_is_fine(self):
@@ -2629,7 +2616,7 @@ class TestDeclaredOutputs:
 
         out = _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
         assert "cannot be saved" in out
-        assert "this tool writes a file of that name into every run's directory" in out, out
+        assert "this tool writes a file of that name into every call's directory" in out, out
 
     @pytest.mark.parametrize(
         "name",
@@ -4794,7 +4781,7 @@ class TestOutputsLandInAFolderOfTheirOwn:
         assert "into a folder named for this call" in description
         assert "If you have a tool that reads that folder" in description
         assert "the result confirms each name that landed" not in description
-        assert "A run that saved files also names each one." not in description
+        assert "A call that saved files also names each one." not in description
 
     def test_the_description_is_unchanged_for_a_sink_that_says_nothing(self):
         tool = _pulling_tool(

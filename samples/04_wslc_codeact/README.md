@@ -9,6 +9,8 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_wslc  ->  the container
 
 [`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, the image reference, and the model client. The untouched workload is the same claim samples 01 and 02 make for `bicep_validate`, shown here for `execute_code` instead.
 
+The completion and verdict lines in the example describe the current workspace. A numbered sample resolving an older published CodeAct release can still show the earlier report-only result.
+
 ## The boundary is weaker, and the refusal is the feature
 
 **`WslcSandboxBackend` declares `Isolation.CONTAINER`**, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — this sample has to opt the floor down explicitly to `min_isolation=Isolation.CONTAINER`, and the default would refuse this backend outright. A shared kernel is a reasonable place to run a short, disposable program on a machine you already trust, and the wrong thing to put next to a deployment's credentials; the router draws that line for you and will not be argued out of it without saying so in code, at construction time.
@@ -54,6 +56,8 @@ It printed:
 
 == Program output as execute_code returned it ==
 
+  The workload ran to a definitive result.
+  Result: ok
   stdout:
   354224848179261915075
 
@@ -62,7 +66,7 @@ It printed:
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run, against a local OpenAI-compatible endpoint. The prose and the formatting around the number are the model's and vary; the number and the disposal line do not.
+That block illustrates the workspace result contract, against a local OpenAI-compatible endpoint. The prose and the formatting around the number are the model's and vary; the number and the disposal line do not.
 
 The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The backend and the image it runs in are what differ from sample 03; the method is not. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The measured program-output count proves a program ran. `Disposed N` reports only the final scope purge, which can remove zero containers after per-call disposal.
 
@@ -89,4 +93,4 @@ Then retry the pull. **`wsl --shutdown` does not fix this** — the container sy
 
 **`SandboxCapabilityNotSupported` at startup** — the backend cannot do what `execute_code` requires: run a command and take a file in. `WslcSandboxBackend` declares both, so this only appears against a swapped-in backend that declares less.
 
-**The tool's answer says "printed nothing"** — `execute_code` only returns what the program printed; there is no REPL echo. A model that wrote an expression instead of a `print(...)` call gets exactly this sentence back, and it usually self-corrects on the next call.
+**The tool's answer says "printed nothing"** — the execution report contains only explicit prints; there is no REPL echo. A model that wrote an expression instead of a `print(...)` call gets this sentence alongside completion and verdict items, and it usually self-corrects on the next call.

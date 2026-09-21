@@ -156,7 +156,7 @@ _WITHHELD_ROUTE = (
     "declared output rather than printing it."
 )
 
-#: The one line a withheld result says about the run: zero or not, never the number. An exit
+#: The one line a withheld report says about the exit status: zero or not, never the number. An exit
 #: status is eight bits a program chooses, and no value of it drives an edit the model can make
 #: without the text.
 _WITHHELD_EXITED_CLEANLY = "The program exited with status 0."
@@ -867,9 +867,9 @@ _DESCRIPTION_RETURNS_WITHHELD_HOST_TOOL_CALLED = """Whether the program exited w
 #: Appended to whichever of the two above applies.  Where it wraps is model-facing text, so the
 #: break sits where the plain sentence needs it, not where this fragment reads best.
 _DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable the tool returns an
-            error message instead, so the run degrades rather than blocking."""
+            error message instead, so the call returns rather than blocking."""
 
-_DESCRIPTION_RETURNS_SAVED = """  A run that saved files also names where each one landed."""
+_DESCRIPTION_RETURNS_SAVED = """  A call that saved files also names where each one landed."""
 
 #: The withholding pair. Three sentences above stop being true in that mode: nothing names
 #: *where* a file landed, and a failed program's files are collected rather than discarded —
@@ -886,10 +886,10 @@ _DESCRIPTION_DECLARED_WITHHELD = """**To produce files, name them in ``outputs``
 _DESCRIPTION_IN_PLACE_WITHHELD = """Naming a file in both ``files`` and ``outputs`` is how you
         edit one in place.  It is the one case where "declared and not written" cannot be
         reported, because the copy you were
-        given is already there — and since a failed run still saves, a program that dies part
+        given is already there — and since a failed call still saves, a program that dies part
         way through rewriting one saves whatever it had written by then."""
 
-_DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A run that saved files also names each one."""
+_DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A call that saved files also names each one."""
 
 #: The withholding pair again, for a host whose sink lands each call under a folder of its own.
 #: Two promises above stop being true: nothing names which files landed, so nothing reports a
@@ -1080,8 +1080,8 @@ def _execute_code_tool(
             runtime=runtime,
         )
         return SandboxResult(
-            completed=answer.ran,
-            verdict=("ok" if answer.exited_clean else "failed") if answer.ran else None,
+            completed=answer.has_exit_status,
+            verdict=("ok" if answer.exited_clean else "failed") if answer.has_exit_status else None,
             trusted_output=(answer.reason,) if answer.reason is not None else (),
             output=(answer.text,) if answer.text else (),
         )
@@ -1129,29 +1129,26 @@ def _execute_code_tool(
 
 
 @dataclass(frozen=True, slots=True)
-class _RunOutcome:
-    """One call's text, and what it says about the run as a whole.
+class _CallOutcome:
+    """One call's text and whether a definitive exit status was obtained.
 
-    ``ran`` is whether the program executed and left an exit status behind: false for every
-    path that stopped before it, refusals and transport failures alike.  ``exited_clean`` is
-    that status as one bit and is meaningless unless ``ran``.  Both are values this module
-    writes, never the program's.
+    ``exited_clean`` is meaningful only when ``has_exit_status`` is true.
     """
 
     text: str
-    ran: bool
+    has_exit_status: bool
     exited_clean: bool
     reason: str | None = None
 
 
-def _stopped(sentence: str, *, detail: str = "") -> _RunOutcome:
+def _stopped(sentence: str, *, detail: str = "") -> _CallOutcome:
     """A host-authored reason, with variable diagnostics kept in the untrusted detail."""
-    return _RunOutcome(detail, False, False, sentence)
+    return _CallOutcome(detail, False, False, sentence)
 
 
-def _ran(text: str, result: Any) -> _RunOutcome:
-    """A run that finished, carrying its exit status as one bit."""
-    return _RunOutcome(text, True, result.exit_code == 0)
+def _finished(text: str, result: Any) -> _CallOutcome:
+    """A call with an exit status, reduced to success or failure."""
+    return _CallOutcome(text, True, result.exit_code == 0)
 
 
 async def _execute(
@@ -1166,9 +1163,9 @@ async def _execute(
     *,
     withhold: bool,
     runtime: CodeactRuntime | None = None,
-) -> _RunOutcome:
+) -> _CallOutcome:
     """One ``execute_code`` call: share, run, and collect."""
-    # Keep one view of hidden content through the run, even if the host clears the store
+    # Keep one view of hidden content through the call, even if the host clears the store
     # before the manifest is checked.
     rewritten = hidden_content_candidates()
     # Scope and thread come from the host's request context, never from model input.
@@ -1176,7 +1173,7 @@ async def _execute(
     if isinstance(key, str):
         return _stopped(key)
 
-    # The names this run spends on something other than the model's own files, so neither an
+    # The names this call spends on something other than the model's own files, so neither an
     # input nor an output may claim one. The manifest is reserved only where it means
     # something, and the program only where it shares that directory: a run that calls a host tool
     # puts it in the transport's, beside the shim, where no name a model chooses can reach it.
@@ -1187,11 +1184,11 @@ async def _execute(
     reserved: dict[str, str] = {}
     if host_tool_call is None and runtime is None:
         reserved[_PROGRAM_FILENAME] = (
-            "this tool writes a file of that name into every run's directory"
+            "this tool writes a file of that name into every call's directory"
         )
     if outputs is CodeactOutputs.MANIFEST:
         reserved[_MANIFEST_FILENAME] = (
-            "this tool reads a file of that name from every run's directory as its manifest"
+            "this tool reads a file of that name from every call's directory as its manifest"
         )
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
@@ -1407,7 +1404,7 @@ async def _execute(
         # report stacked on a traceback buries the thing the model has to fix. Withheld there is
         # no traceback to bury, and the declared output is the only channel left — including for
         # a program that caught its own error and wrote the diagnosis into one.
-        return _ran(report, result)
+        return _finished(report, result)
     collected = await _collect(
         session,
         sandbox,
@@ -1420,7 +1417,7 @@ async def _execute(
         withhold=withhold,
         candidates=rewritten,
     )
-    return _ran(f"{report}\n\n{collected}" if collected else report, result)
+    return _finished(f"{report}\n\n{collected}" if collected else report, result)
 
 
 # --- Files in ------------------------------------------------------------------------------
@@ -1595,7 +1592,7 @@ def _inside_a_reserved_file(
         return None
     return (
         f"Error: {echoed_name(name, at=at, hidden=hidden)} cannot be {action} — {above!r} is a "
-        f"file name this tool reserves in every run's directory, so nothing can live inside it."
+        f"file name this tool reserves in every call's directory, so nothing can live inside it."
     )
 
 
@@ -1680,7 +1677,7 @@ async def _write_shared(
     *,
     working_directory: str,
 ) -> str | None:
-    """Put one already-read file store file into the run's directory, or answer with the refusal.
+    """Put one already-read file store file into the call's directory, or answer with the refusal.
 
     ``name`` is the real store path — the guest path is built from it and the host's log records
     it — while ``named`` is the only spelling that may appear in the refusal.  They differ where
@@ -1719,8 +1716,8 @@ def _validated_output_names(
     """Settle every output name before the program runs, or answer with the refusal.
 
     Each rule is applied to the spelling ``collect_outputs`` will judge later — the guest path
-    with its run prefix, and the delivered name after normalization — so that a refusal cannot
-    arrive a whole run late.  That function stays the authority: if the two disagree, this one
+    with its call prefix, and the delivered name after normalization — so that a refusal cannot
+    arrive a whole call late.  That function stays the authority: if the two disagree, this one
     is wrong, and the cost is the late refusal rather than a name reaching a host.
 
     ``named_by`` says where the names came from — the ``outputs`` argument or the manifest —
@@ -1783,12 +1780,12 @@ async def _collect(
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
 ) -> str:
-    """Land whatever this run produced, and say what happened — never raising into the model.
+    """Land whatever this call produced, and say what happened — never raising into the model.
 
     ``call_id`` is passed to :func:`~maf_sandbox.collect_outputs` whatever the sink does with
     it: a host swapping in one that lands per call changes nothing here.
 
-    ``key`` is the caller's, taken before the run rather than read again here, and it goes to
+    ``key`` is the caller's, taken before the call rather than read again here, and it goes to
     the same call beside ``session.observer`` — the pair is what puts a collection's record
     under the conversation whose files these are.
     """
@@ -1847,7 +1844,7 @@ async def _collect(
             key=key,
         )
     except SandboxOutputError as exc:
-        logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
+        logger.warning("execute_code: could not save this call's files: %s", error_detail(exc))
         if withhold:
             # A sink refuses by raising, and it composes that sentence having been handed the
             # artifact's own bytes — nothing constrains it to leave them out. Dropped here for
@@ -1857,7 +1854,7 @@ async def _collect(
             f"Error: the program ran but its files could not be saved — {exc}. {_MAY_HAVE_LANDED}"
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
+        logger.warning("execute_code: saving this call's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
     if withhold and sink.per_call:
         # Which names landed is a bit per declared name the guest's program chooses. The route
@@ -1970,7 +1967,7 @@ def _format_landed(
 
     ``argument`` names the parameter ``declared`` came from, where it came from one — the
     ``outputs`` argument, never the manifest, which no caller spelled.  It is what makes the
-    provenance answer exact here rather than inferred, and it matters as much after the run as
+    provenance answer exact here rather than inferred, and it matters as much after the call as
     before it: without it a declared name equal to hidden content renders as a position, and a
     caller watching which way its own spelling comes back learns that the guess was right.
 
@@ -2030,7 +2027,7 @@ def _format_landed(
 
 
 def _format_result(result: ExecResult) -> str:
-    """Render one run for a model that has to fix its own program.
+    """Render one execution result for a model that has to fix its own program.
 
     Empty sections are omitted rather than shown blank, and the trailing newline ``print``
     leaves is dropped, so a one-line program's answer is one line.
@@ -2048,7 +2045,7 @@ def _format_result(result: ExecResult) -> str:
 
 
 def _format_withheld(result: ExecResult) -> str:
-    """Render one run for a host that withholds guest text: the exit as one bit, and no sizes.
+    """Render a withheld result: exit status as one bit, without guest text or stream sizes.
 
     The streams are neither rendered nor measured: a size is a value the program chooses as
     surely as the text, and it tells the model nothing the text would not. The route sentence

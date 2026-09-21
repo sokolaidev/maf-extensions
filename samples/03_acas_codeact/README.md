@@ -11,6 +11,8 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
 
 The task has exactly one right answer, and that is what makes the run worth watching. `354224848179261915075` is not something to eyeball, and this sample runs whether or not the model can produce it from memory: the number in the reply is what a Python interpreter running inside a microVM-isolated sandbox (**T2**) computed, not what the model predicted (**T0**). A question with a range of acceptable answers would prove much less.
 
+The completion and verdict lines in the example describe the current workspace. A numbered sample resolving an older published CodeAct release can still show the earlier report-only result.
+
 ## Prerequisites
 
 Read these first; none of them is quick to arrange halfway through.
@@ -57,6 +59,8 @@ The first call is slow — the sandbox is created and booted before the interpre
 
 == Program output as execute_code returned it ==
 
+  The workload ran to a definitive result.
+  Result: ok
   stdout:
   354224848179261915075
 
@@ -65,7 +69,7 @@ The first call is slow — the sandbox is created and booted before the interpre
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the number and the disposal line.
+That block illustrates the workspace result contract. The model may answer with the number alone or wrap it in a sentence. What does not vary is the number and the disposal line.
 
 The wording around the number is the model's and varies run to run; the model is instructed to report the tool's answer verbatim, not to paraphrase, round, or recompute it. What tells you the number came from a real run rather than the model reciting a well-known sequence is the block below it. `354224848179261915075` is a constant, and a model that never ran anything can write it — so the live check reads the copy inside `== Program output as execute_code returned it ==`, which is the interpreter's own stdout, recorded by the framework beside the call ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The `[measured]` lines are the sample vouching for a number, and the model's reply is filtered before printing so a line of it starting with that tag comes out quoted (`> [measured] …`) — a reply can write the heading and cannot close the block.
 
@@ -83,4 +87,4 @@ The measured program-output count and the interpreter block prove the work. `Dis
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. See the prerequisite above; nothing about the sandbox is involved, and the run fails before one is created.
 
-**The tool's answer says "printed nothing"** — `execute_code` only returns what the program printed; there is no REPL echo. A model that wrote an expression instead of a `print(...)` call gets exactly this sentence back, and it usually self-corrects on the next call.
+**The tool's answer says "printed nothing"** — the execution report contains only explicit prints; there is no REPL echo. A model that wrote an expression instead of a `print(...)` call gets this sentence alongside completion and verdict items, and it usually self-corrects on the next call.
