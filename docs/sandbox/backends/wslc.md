@@ -23,9 +23,9 @@ Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr
 
 `write_file` runs one command as the image's user through `container exec`. The content arrives on stdin. The command creates missing parents, writes a sibling named for the call, checks the byte count, then moves the sibling into place. The file and any new parents belong to the image's user because that user wrote them. Existing directories keep their metadata.
 
-A destination the image's user cannot write raises `PermissionError`. There is no root fallback. Where the image's user is root, writes reach what its own programs reach.
+A destination the image's user cannot write raises `PermissionError`. There is no root fallback. Where the image's user is root, writes reach what its own programs reach. A write that times out — a blocked guest utility, say — discards the container, because killing the host process does not reach the command inside it; this matches `exec`.
 
-On WSLC 2.9.12.0 a 32 MiB write took 0.31 s and a plain exec 0.11 s.
+On WSLC 2.9.12.0 a 32 MiB write took 0.31 s and a plain exec 0.11 s. The write's byte count is checked against the content length before the file is published, so an engine whose `exec` does not stream stdin refuses the write rather than publishing a short file. `container exec --interactive` is present in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.12.0.
 
 Path checks use the engine's copy behavior to identify missing paths and directories. For other accepted copy sources, a guest probe supplies the remaining type. A guest claim that such a source is a directory contradicts the engine and is rejected. The probe is still an image-dependent limitation.
 
@@ -35,9 +35,11 @@ Each stat copies into a private host temporary directory, removed after the subp
 
 ## Working-directory setup
 
-Acquisition creates a missing base as root, because the image's user often cannot create its parents. One command runs `/bin/sh` with `PATH` set to `/usr/sbin:/usr/bin:/sbin:/bin`. It enters the deepest existing directory with `cd -P` and confirms with `pwd -P` that the directory is where the check found it. It then runs `mkdir` for each missing directory inside the directory it holds, confirming each one the same way. A link swapped in after the check is refused rather than followed. A refusal can leave behind the directories created before it.
+Acquisition creates a missing base as root, because the image's user often cannot create its parents. One command runs `/bin/sh` with `PATH` set to `/usr/sbin:/usr/bin:/sbin:/bin` and `CDPATH` cleared, so an inherited `CDPATH` cannot divert a relative `cd`. It enters the deepest existing directory with `cd -P` and confirms with `pwd -P` that the directory is where the check found it. It then runs `mkdir` for each missing directory inside the directory it holds, confirming each one the same way. A link swapped in after the check is refused rather than followed. A refusal can leave behind the directories created before it.
 
-The base goes to the image's user through `chown`; the directories above it stay root's. Numeric IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root. Unresolved identity refuses `FILES_IN` at acquisition. Identity is checked on each acquire.
+A second held command gives the base to the image's user, on every acquire. It is held the same way — `cd -P` then a `pwd -P` comparison — so a base swapped for a link is refused rather than chowned through. Running it every time is deliberate: it is a no-op on a base the guest already owns, and it repairs a base a partial setup left root-owned, so a later acquire never returns a base the guest cannot write. The directories above the base stay root's.
+
+Numeric IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root. Unresolved identity refuses `FILES_IN` at acquisition. Identity is checked on each acquire.
 
 <a id="write-checkcopy-residual"></a>
 

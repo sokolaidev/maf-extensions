@@ -59,6 +59,7 @@ from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
     _CREATE_DIRECTORIES,
+    _ENSURE_BASE_OWNER,
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
@@ -144,6 +145,7 @@ def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
     backend, fake = _backend_with(machine)
     asyncio.run(backend.acquire(_KEY, _SPEC))
     (created,) = _creations(fake)
+    # Creation is held and owns nothing: parent first, then the missing directories.
     assert created.args == (
         "container",
         "exec",
@@ -156,11 +158,13 @@ def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
         "-c",
         _CREATE_DIRECTORIES,
         "sh",
-        "10001:20001",
         "/",
         "/maf-sandbox",
         _WORK,
     )
+    # A separate held step gives the base to the image's user.
+    (owned,) = _owner_steps(fake)
+    assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == ("sh", "10001:20001", _WORK)
     assert not fake.matching("container", "cp", "-")
 
 
@@ -177,6 +181,11 @@ def _only_write(fake: _FakeWslc) -> _Recorded:
 def _creations(fake: _FakeWslc) -> list[_Recorded]:
     """Every working-directory setup command the fake saw."""
     return [call for call in fake.calls if _CREATE_DIRECTORIES in call.args]
+
+
+def _owner_steps(fake: _FakeWslc) -> list[_Recorded]:
+    """Every base-ownership command the fake saw."""
+    return [call for call in fake.calls if _ENSURE_BASE_OWNER in call.args]
 
 
 def _operands(call: _Recorded) -> tuple[str, ...]:
@@ -1177,6 +1186,41 @@ class TestWriteFile:
         assert not _writes(fake) and not _creations(fake)
         assert not fake.matching("container", "cp", "-")
 
+    def test_an_existing_base_is_still_given_to_the_guest(self):
+        """The repair path: nothing is created, but the base is chowned to the guest anyway.
+
+        A partial setup can leave the base root-owned; without this a warm acquire would hand
+        back a base the guest cannot write. The ownership step runs on every prepare.
+        """
+        overrides = {
+            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
+            for guest in ("/", "/maf-sandbox", _WORK)
+        }
+        overrides[("container", "inspect")] = _WslcResult(
+            0,
+            json.dumps(
+                [
+                    {
+                        "Id": "i",
+                        "Config": {
+                            "User": "10001:20001",
+                            "Labels": {"maf-sandbox.work-dir.v1": _WORK},
+                        },
+                    }
+                ]
+            ).encode(),
+            b"",
+        )
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert not _creations(fake)
+        (owned,) = _owner_steps(fake)
+        assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == (
+            "sh",
+            "10001:20001",
+            _WORK,
+        )
+
     def test_existing_directories_are_held_rather_than_created(self):
         """Only the missing suffix is created; an existing parent is where the shell starts."""
         overrides = {
@@ -1201,7 +1245,7 @@ class TestWriteFile:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         (created,) = _creations(fake)
         start = created.args.index(_CREATE_DIRECTORIES) + 2
-        assert created.args[start:] == ("10001:20001", "/maf-sandbox", _WORK)
+        assert created.args[start:] == ("/maf-sandbox", _WORK)
 
     @pytest.mark.parametrize("gid", [b"", b"-1", b"staff", b"20001\n0", b"4294967295"])
     def test_a_named_user_with_no_valid_group_cannot_write(self, gid):
@@ -1250,8 +1294,8 @@ class TestWriteFile:
             asyncio.run(backend.acquire(_KEY, _SPEC))
         for expected in ("10001:20001", "10002:20002"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
-            created = _creations(fake)[-1]
-            assert created.args[created.args.index(_CREATE_DIRECTORIES) + 2] == expected
+            owned = _owner_steps(fake)[-1]
+            assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 2] == expected
 
     def test_working_at_root_writes_beneath_it(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
@@ -1412,10 +1456,19 @@ class TestTheFileCommandsInARealShell:
         )
 
     @staticmethod
-    def _create(parent: Path, *directories: Path):
+    def _create(parent: Path, *directories: Path, env: dict[str, str] | None = None):
         return subprocess.run(
-            ["sh", "-c", _CREATE_DIRECTORIES, "sh", _OWNER, str(parent)]
+            ["sh", "-c", _CREATE_DIRECTORIES, "sh", str(parent)]
             + [str(directory) for directory in directories],
+            capture_output=True,
+            check=False,
+            env={**os.environ, **(env or {})},
+        )
+
+    @staticmethod
+    def _own(base: Path):
+        return subprocess.run(
+            ["sh", "-c", _ENSURE_BASE_OWNER, "sh", _OWNER, str(base)],
             capture_output=True,
             check=False,
         )
@@ -1472,6 +1525,34 @@ class TestTheFileCommandsInARealShell:
         assert done.returncode == 0, done.stderr
         assert (base / "a" / "b").is_dir()
         assert stat.S_IMODE((base / "a").stat().st_mode) == 0o755
+
+    def test_setup_ignores_an_inherited_cdpath(self, tmp_path):
+        """A relative ``cd`` must reach the directory just made, not a same-named decoy.
+
+        ``CDPATH`` is cleared in the script, so an inherited one cannot divert the loop's
+        ``cd`` into a directory of the same name that happens to sit under a ``CDPATH`` entry.
+        """
+        base = tmp_path.resolve()
+        decoy = base / "decoy"
+        (decoy / "a").mkdir(parents=True)
+        done = self._create(base, base / "a", base / "a" / "b", env={"CDPATH": str(decoy)})
+        assert done.returncode == 0, done.stderr
+        assert (base / "a" / "b").is_dir()
+        assert not (decoy / "a" / "b").exists()
+
+    def test_ownership_step_holds_the_base_and_refuses_a_swapped_link(self, tmp_path):
+        base = tmp_path.resolve()
+        real = base / "work"
+        real.mkdir()
+        assert self._own(real).returncode == 0
+        # A base swapped for a link after the check is refused, not chowned through it.
+        protected = base / "protected"
+        protected.mkdir(mode=0o700)
+        real.rmdir()
+        real.symlink_to(protected)
+        done = self._own(real)
+        assert done.returncode == 1
+        assert b"no longer the directory the check found" in done.stderr
 
     def test_setup_refuses_a_parent_swapped_for_a_link(self, tmp_path):
         base = tmp_path.resolve()

@@ -117,6 +117,11 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 # cleanup requires disposal.
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
+#: The capabilities that need the base prepared and given to the guest. A spec requiring none
+#: of them — a pure lifecycle acquire — gets no ownership step. Both of this backend's declared
+#: capabilities need a base the guest can write: files in over it, and exec running under it.
+_PREPARED_CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
+
 #: Both scopes, because a container's identity folds the key's ``call_id`` — into the name it is
 #: created under, the registry entry it is filed at and the label a disposal selects on — so two
 #: acquires differing only there are two containers and a disposal reaches one of them. Declaring
@@ -488,16 +493,17 @@ refuse_directory
 mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
 """
 
-#: Creates a base's missing directories as root: ``$1`` the owner of the last one, ``$2`` the
-#: existing parent of the first, then the directories, outermost first. Each ``mkdir`` runs in
-#: a directory this shell holds as its working directory, after ``pwd -P`` confirmed where it
-#: is, so a link swapped in after the check is refused rather than followed. ``PATH`` is pinned
-#: so a directory the image's user can write cannot supply a command that runs as root.
+#: Creates a base's missing directories as root: ``$1`` the existing parent of the first, then
+#: the directories, outermost first. Each ``mkdir`` runs in a directory this shell holds as its
+#: working directory, after ``pwd -P`` confirmed where it is, so a link swapped in after the
+#: check is refused rather than followed. ``PATH`` is pinned so a directory the image's user
+#: can write cannot supply a command that runs as root, and ``CDPATH`` is cleared so an
+#: inherited one cannot divert a relative ``cd`` to a same-named directory elsewhere.
 _CREATE_DIRECTORIES = """\
-export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin CDPATH=
 umask 022
-owner=$1 parent=$2
-shift 2
+parent=$1
+shift
 cd -P -- "$parent" && [ "$(pwd -P)" = "$parent" ] || {
     echo "$parent is no longer the directory the check found" >&2; exit 1
 }
@@ -507,7 +513,19 @@ for directory do
         echo "$directory is no longer the directory this command created" >&2; exit 1
     }
 done
-chown -- "$owner" .
+"""
+
+#: Gives the base to the image's user as root: ``$1`` the ``uid:gid``, ``$2`` the base. Held
+#: the same way — ``cd -P`` then a ``pwd -P`` comparison — so a base swapped for a link after
+#: the check is refused rather than chowned through. Idempotent: run on every prepare, it is a
+#: no-op on a base the guest already owns and repairs one a partial setup left root-owned, so a
+#: warm acquire never hands back a base the guest cannot write.
+_ENSURE_BASE_OWNER = """\
+export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin CDPATH=
+cd -P -- "$2" && [ "$(pwd -P)" = "$2" ] || {
+    echo "$2 is no longer the directory the check found" >&2; exit 1
+}
+chown -- "$1" .
 """
 
 #: What a refused write raises. ``NotADirectoryError`` covers "Not a directory" and "File
@@ -650,7 +668,13 @@ class _WslcSandbox:
         return self._name
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base, creating what is missing as root without following links."""
+        """Establish the spec's base as root, without following links, and give it to the guest.
+
+        Creation and the ownership step are separate held commands, so a setup interrupted
+        between them cannot leave a root-owned base a later acquire would hand back unwritable:
+        the ownership step runs on every prepare and repairs it. It is a no-op on a base the
+        guest already owns.
+        """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
@@ -659,16 +683,17 @@ class _WslcSandbox:
             resolve=posix_work_dir_ancestors,
             base=self._work_dir,
         )
+        prepared = spec.required_capabilities & _PREPARED_CAPABILITIES
+        base = posix_work_dir_ancestors(self._work_dir)
+        if prepared and base:
+            await self._ensure_base_owner(base[-1])
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
-        """Create the missing directories; the last one belongs to the image's user.
+        """Create the missing directories as root, without following a swapped-in link.
 
-        Root, because the image's user often cannot create the base's parents. Existing
-        directories keep their metadata. A refusal can leave the earlier directories behind.
+        Existing directories keep their metadata; the base's ownership is a separate step
+        (:meth:`_ensure_base_owner`). A refusal can leave the earlier directories behind.
         """
-        if self._guest_identity is None:
-            raise RuntimeError("wslc could not resolve the image user for directory creation")
-        uid, gid = self._guest_identity
         result = await self._run(
             "container",
             "exec",
@@ -681,7 +706,6 @@ class _WslcSandbox:
             "-c",
             _CREATE_DIRECTORIES,
             "sh",
-            f"{uid}:{gid}",
             posixpath.dirname(directories[0]),
             *directories,
             timeout=self._command_timeout,
@@ -690,6 +714,37 @@ class _WslcSandbox:
         if result.returncode:
             raise RuntimeError(
                 f"wslc could not create the working directory: {result.stderr_text.strip()}"
+            )
+
+    async def _ensure_base_owner(self, base: str) -> None:
+        """Give ``base`` to the image's user as root, refusing a base swapped for a link.
+
+        Run on every prepare, so a base a partial setup left root-owned is repaired rather
+        than handed back to a guest that cannot write it.
+        """
+        if self._guest_identity is None:
+            raise RuntimeError("wslc could not resolve the image user for the working directory")
+        uid, gid = self._guest_identity
+        result = await self._run(
+            "container",
+            "exec",
+            "--user",
+            "0",
+            "-w",
+            "/",
+            self._name,
+            "/bin/sh",
+            "-c",
+            _ENSURE_BASE_OWNER,
+            "sh",
+            f"{uid}:{gid}",
+            base,
+            timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"wslc could not set the working directory owner: {result.stderr_text.strip()}"
             )
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
@@ -701,7 +756,9 @@ class _WslcSandbox:
         existing directories keep their metadata. The guest's refusals raise the matching
         ``OSError``: ``PermissionError`` where the image's user cannot write.
 
-        The content moves into place only when every byte arrived. Cancellation after the
+        The content moves into place only when every byte arrived. A **timeout** — a blocked
+        utility, say — discards the sandbox the way :meth:`exec` does, because killing the host
+        process does not reach the command inside the container. A **cancellation** after the
         command starts is not a rollback: the file may still land whole, and a sibling named
         ``.maf-<hex>.part`` may be left beside it.
         """
@@ -714,25 +771,32 @@ class _WslcSandbox:
         guest = "/" + guest.lstrip("/")
         parent = posixpath.dirname(guest)
         staged = posixpath.join(parent, f".maf-{uuid.uuid4().hex}.part")
-        result = await self._run(
-            "container",
-            "exec",
-            "-i",
-            "-w",
-            "/",
-            self._name,
-            "sh",
-            "-c",
-            _WRITE_AS_THE_GUEST,
-            "sh",
-            guest,
-            parent,
-            staged,
-            str(len(data)),
-            stdin=data,
-            timeout=self._command_timeout,
-            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
-        )
+        try:
+            result = await self._run(
+                "container",
+                "exec",
+                "-i",
+                "-w",
+                "/",
+                self._name,
+                "sh",
+                "-c",
+                _WRITE_AS_THE_GUEST,
+                "sh",
+                guest,
+                parent,
+                staged,
+                str(len(data)),
+                stdin=data,
+                timeout=self._command_timeout,
+                read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            )
+        except TimeoutError:
+            with contextlib.suppress(Exception):
+                await self._run(
+                    "container", "remove", "-f", self._name, timeout=self._command_timeout
+                )
+            raise
         if result.returncode != 0:
             detail = result.stderr_text.strip()
             refusal = shell_refusal(detail)
