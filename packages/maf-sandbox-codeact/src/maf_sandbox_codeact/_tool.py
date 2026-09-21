@@ -300,9 +300,11 @@ def make_codeact_tools(
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
             with whether it exited cleanly and the model's own declared names instead. No
             guest-authored text survives into the result — but the values that replace it were
-            still chosen by a program the model wrote, so this changes what the result *holds*
-            and not where it came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either
-            way. **Where the sink declares :attr:`~maf_sandbox.OutputSink.per_call` the names
+            still chosen by a program the model wrote. The workload therefore claims
+            ``SourceIntegrity.UNTRUSTED`` for its derived report in both modes. The result
+            contract raises the framework-facing declaration to ``trusted`` so completion,
+            verdict, and host-authored explanations can inherit it. **Where the sink declares
+            :attr:`~maf_sandbox.OutputSink.per_call` the names
             half is a folder rather than a list**, and that one is not the program's to choose:
             it is the host's id for this call, and it rides on the ``trusted`` route item
             rather than beside the exit line. Requires
@@ -318,17 +320,17 @@ def make_codeact_tools(
             program's, and its note about the run is surfaced whole under ``note:`` —
             withholding it would report a dropped output as a program that printed nothing.
 
-            **The result is two items, not one string.**  The call-derived half — the exit line and
-            the landed names, or the exit line alone where a folder replaces them — carries no
-            label of its own, so it takes whatever the call's label is; beside it sits the
-            standing sentence naming the recovery route, which carries that folder, labelled
-            ``trusted``, because nothing a call produced reaches it and it is emitted on every
-            return path including the refusals.  **Where the conversation is still clean** —
-            hiding is a first-taint protection — a framework hiding untrusted content hides the
-            first and leaves the second readable, which is the point: under one label the
-            sentence went with the line it was there to explain.  The call resolving untrusted
-            is not a second condition any more, because this tool declares it.  What remains is
-            not this kind's to promise, and is measured in ``docs/sandbox/information-flow.md``.
+            **The result is a list of content items.** A completed call normally returns a
+            completion line, an ``ok`` or ``failed`` verdict, an explicitly untrusted report,
+            and trusted route guidance. An incomplete call has no verdict and may include a
+            host-authored explanation before its variable diagnostics. Completion, verdict,
+            and host explanations inherit the framework-facing declaration; the wrapper
+            labels the report untrusted and the fixed guidance trusted. Guidance is emitted
+            on every return path, including refusals, and carries the host-generated folder
+            when the sink declares ``per_call``. With a trusted conversation and automatic
+            hiding enabled, FIDES can hide the report while leaving these trusted items
+            readable. Host-controlled confidentiality still applies; see
+            ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
             and the artifact names are the model's own — but what fills them is the program's
@@ -555,17 +557,14 @@ def make_codeact_tools(
         ),
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # Withheld or not: what comes back is chosen by a program the model wrote, an exit bit
-        # and a presence bit per output being as much its choice as the text. Declared rather
-        # than omitted because a declaration replaces the other two tiers, and neither is this
-        # kind's to answer for. Where the withheld route commits guidance the wrapper raises
-        # what reaches the framework and stamps every derived item from this claim instead —
-        # `information-flow.md` carries both.
+        # Guest text and output-presence bits require an explicit untrusted workload claim;
+        # neither the input labels nor the host's default can establish their integrity.
         source_integrity=SourceIntegrity.UNTRUSTED,
-        # The wrapper validates and stamps this suffix so the body cannot choose which
-        # returned items become trusted.
+        # Both modes need a raised framework declaration to keep contract items readable.
         result_contract=True,
         verdicts=CODEACT_VERDICTS,
+        # The wrapper validates and stamps this suffix so the body cannot choose which
+        # guidance becomes trusted.
         standing_guidance=_standing_guidance(
             withhold=withhold_guest_output,
             lands_per_call=output_sink is not None and output_sink.per_call,

@@ -1355,16 +1355,11 @@ class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
 
 
 class TestWithholdingDeclaresUntrustedToo:
-    """Withholding takes the guest's *text* out of the result, not the guest out of its
-    derivation: the exit status and every output's presence bit are chosen
-    by a program the model wrote. So there is nothing here to call trusted, and the declaration
-    says so on both renderings rather than only on the noisier one.
+    """Withholding removes guest text but leaves guest-chosen output-presence bits.
 
-    Where the two renderings differ is which key carries it. Only the withholding one commits
-    standing guidance, and a tool with a sentence to keep visible declares `"trusted"` to the
-    framework so the wrapper owns every item's label — its own claim moving to
-    `maf_sandbox_derived_integrity`. A host reads that key where it is present and
-    `source_integrity` otherwise."""
+    Both modes retain the untrusted workload claim in `maf_sandbox_derived_integrity` while
+    raising framework-facing `source_integrity` to `trusted` for the result contract.
+    """
 
     def _claim(self, tool: Any) -> Any:
         properties = dict(tool.additional_properties or {})
@@ -1385,7 +1380,7 @@ class TestWithholdingDeclaresUntrustedToo:
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
         assert self._claim(tool) == "untrusted"
 
-    def test_a_showing_tool_commits_nothing_so_its_declaration_is_left_alone(self):
+    def test_a_showing_tool_raises_its_declaration_without_standing_guidance(self):
         """It commits no sentence, but the result contract raises it all the same: the completion
         line and the verdict have to stay readable, and on 1.19 only the tool's own declaration
         can keep an item there."""
@@ -1409,9 +1404,7 @@ class TestWithholdingDeclaresUntrustedToo:
     def test_no_stamping_of_the_registry_puts_a_declaration_back(
         self, registered: Callable[..., Any]
     ):
-        """A registry's `result_integrity` can only weaken a workload's own claim, and this
-        workload makes none — so a trusted source, a sink-only tool and an unstamped one all
-        read alike."""
+        """A registry's `result_integrity` cannot strengthen the untrusted workload claim."""
         assert self._claim(self._with_registry(registered)) == "untrusted"
 
 
@@ -1589,14 +1582,10 @@ class TestMakeCodeactTools:
 
 
 class TestFidesDeclarations:
-    """This tool declares `source_integrity="untrusted"`, and says so rather than implying it.
+    """Guest-derived reports need an explicit untrusted claim independent of host defaults.
 
-    What comes back is whatever a model-written `print(...)` chose to emit, so untrusted is the
-    honest reading. Reaching it by *declaring* rather than by silence is the point: an
-    undeclared tool takes whichever of the other two tiers speaks — the input-label join, which
-    knows nothing about which argument the body read, or the host's `default_integrity`, which
-    a host may raise. Neither is this package's to control, and both answer `trusted` when
-    asked.
+    The wrapper records that claim in `maf_sandbox_derived_integrity` and raises framework-facing
+    `source_integrity` to `trusted` so completion, verdict, and host explanations stay readable.
     """
 
     def test_it_declares_untrusted(self):
