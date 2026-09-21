@@ -255,6 +255,28 @@ def test_an_exec_only_acquire_that_must_create_a_base_needs_the_image_user():
         asyncio.run(backend.acquire(_KEY, spec))
 
 
+def test_an_existing_base_is_served_without_a_resolved_image_user():
+    """Writes run as the image's user and stamp nothing, so nothing needs its numbers.
+
+    Only creating a base does. Refusing this at acquire turned away an image that works.
+    """
+    inspected = {
+        "Id": "i",
+        "Config": {"User": "worker", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+    }
+    overrides = {
+        ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
+        for guest in ("/", "/maf-sandbox", _WORK)
+    }
+    overrides[("container", "inspect")] = _WslcResult(0, json.dumps([inspected]).encode(), b"")
+    overrides[("container", "exec", "-w", "/", _NAME, "id")] = _WslcResult(1, b"", b"no id")
+    backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+    sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert not _creations(fake) and not _owner_steps(fake)
+    asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert _only_write(fake).stdin == b"data"
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]
@@ -1268,8 +1290,11 @@ class TestWriteFile:
             ),
         ],
     )
-    def test_unresolved_identity_refuses_files_in_before_any_placement(self, inspection):
-        """Setup gives the base to the image's user, so it needs to know who that is."""
+    def test_unresolved_identity_refuses_a_base_it_would_have_to_create(self, inspection):
+        """Creating a base needs an owner, so an unresolved user stops it before it starts.
+
+        The refusal is raised ahead of creation, which is why nothing was created either.
+        """
         backend, fake = _backend_with(
             _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
         )
@@ -1382,7 +1407,7 @@ class TestWriteFile:
             ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
         assert not _writes(fake) and not _creations(fake)
 
@@ -1413,7 +1438,7 @@ class TestWriteFile:
             return next(answers) if args[:2] == ("container", "inspect") else machine(args)
 
         backend, fake = _backend_with(respond)
-        with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
         for expected in ("10001:20001", "10002:20002"):
             asyncio.run(backend.acquire(_KEY, _SPEC))

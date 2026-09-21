@@ -304,7 +304,7 @@ def test_live_warm_setup_refuses_a_parent_swapped_after_the_check():
                 return result
 
             live.backend._wslc = intercept
-            with pytest.raises(RuntimeError, match="no longer the directory the check found"):
+            with pytest.raises(RuntimeError, match="does not resolve to itself any more"):
                 await live.backend.acquire(live.key, spec)
             live.backend._wslc = live.run
             assert landed == []
@@ -335,11 +335,62 @@ def test_live_setup_refuses_a_directory_swapped_right_after_mkdir():
                 root=True,
             )
             assert wrapped.returncode == 0, wrapped.stderr_text
-            with pytest.raises(RuntimeError, match="no longer the directory this command created"):
+            with pytest.raises(RuntimeError, match="does not resolve to itself any more"):
                 await live.sandbox.prepare_work_dir(
                     replace(_SPEC, work_dir=_PARENT + "/child/base")
                 )
             assert await live.protected() == []
+        finally:
+            await live.close()
+
+    asyncio.run(scenario())
+
+
+@_LIVE
+def test_live_cancelling_after_the_guest_command_started_is_not_a_rollback():
+    """The documented after-start contract, with the command provably running.
+
+    The other cancellation case stops before anything is submitted. This one waits until the
+    guest has written the staged sibling, so what it measures is the half the contract
+    describes: the command outlives the host, the target does not appear while it is blocked,
+    and the container stays usable.
+    """
+
+    async def scenario():
+        live = _Live()
+        try:
+            sandbox = await live.open()
+            # `mv` blocks, so the command is stuck after `cat` wrote the staged sibling.
+            shimmed = await live.command(
+                "mv /usr/bin/mv /usr/bin/mv.real; printf '%s\n' '#!/bin/sh' "
+                "'exec sleep 3600' > /usr/bin/mv; chmod 755 /usr/bin/mv",
+                root=True,
+            )
+            assert shimmed.returncode == 0, shimmed.stderr_text
+            task = asyncio.create_task(
+                sandbox.write_file("cancelled.txt", b"payload", working_directory=_WORK)
+            )
+            for _ in range(100):
+                await asyncio.sleep(0.1)
+                staged = await live.command(f"ls -A {_WORK}")
+                if ".maf-" in staged.stdout_text:
+                    break
+            else:  # pragma: no cover - the guest never got as far as staging
+                task.cancel()
+                raise AssertionError("the guest command never wrote its staged sibling")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            restored = await live.command("cp /usr/bin/mv.real /usr/bin/mv", root=True)
+            assert restored.returncode == 0, restored.stderr_text
+            # Not a rollback: the sibling is still there, and the target never appeared while
+            # the command was blocked on it.
+            left = await live.command(f"ls -A {_WORK}")
+            assert ".maf-" in left.stdout_text
+            assert "cancelled.txt" not in left.stdout_text.split()
+            usable = await live.command("printf usable")
+            assert usable.returncode == 0 and usable.stdout_text == "usable"
         finally:
             await live.close()
 

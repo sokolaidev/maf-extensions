@@ -72,7 +72,7 @@ The [boundary tests](../../../packages/maf-sandbox-wslc/tests/test_wslc_write_wi
 | Existing parent, write a file beneath it | Rename parent and link it to `/protected` | `PermissionError`; `/protected` stays empty |
 | Existing parent, create a missing child and file | Same swap | `PermissionError`; `/protected` stays empty |
 | Missing parent | Plant a link at that exact path | `PermissionError`; the link is left in place |
-| Setup, existing parent and missing child/base | Rename parent and link it to `/protected` | Refused: the parent is no longer the directory the check found |
+| Setup, existing parent and missing child/base | Rename parent and link it to `/protected` | Refused: the parent no longer resolves to itself |
 | Setup, missing parent | Plant a link at that exact path | Refused: `mkdir` meets the link |
 | Warm acquire recreating a missing base | Replace its parent with a link | Refused the same way; `/protected` stays empty |
 

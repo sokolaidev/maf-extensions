@@ -50,7 +50,7 @@ Acquisition checks `sh` for commands. Input transfer also needs the external `/u
 
 Acquisition prepares the storage base for workloads using commands or files. `work_dir=None` selects `/maf-sandbox/work`; an explicit path requests that exact base. Existing directories keep their contents, ownership and modes.
 
-A missing base is created as root, and a base this acquire created goes to the image user through a held `chown`. A base that was already there keeps its owner, whichever path named it: `acquire` preserves the ownership it finds. An unset `Config.User` means root. Named users or an omitted group need working `id` commands. Unresolved ownership refuses `FILES_IN`, and refuses any capability that has to create a base, `EXEC` included; an existing base needs no identity.
+A missing base is created as root, and a base this acquire created goes to the image user through a held `chown`. A base that was already there keeps its owner, whichever path named it: `acquire` preserves the ownership it finds. An unset `Config.User` means root. Named users or an omitted group need working `id` commands. Unresolved ownership refuses any capability that has to create a base, `EXEC` and `FILES_IN` alike, before anything is created; an existing base needs no identity at all.
 
 **Writes run as the image user.** The file and any missing parents belong to that user. A destination it cannot write raises `PermissionError`; nothing falls back to root. The path check is separate from the write, so a guest can swap a checked parent for a symlink first. The write then reaches only what the image user could write anyway. A write this host stops discards the container, as `exec` does — an expired deadline, or stdout reaching the read cap.
 

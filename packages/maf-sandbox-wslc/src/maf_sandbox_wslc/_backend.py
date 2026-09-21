@@ -495,10 +495,17 @@ mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
 
 #: Creates a base's missing directories as root: ``$1`` the existing parent of the first, then
 #: the directories, outermost first. Each ``mkdir`` runs in a directory this shell holds as its
-#: working directory, after ``pwd -P`` confirmed where it is, so a link swapped in after the
-#: check is refused rather than followed. ``PATH`` is pinned so a directory the image's user
-#: can write cannot supply a command that runs as root, and ``CDPATH`` is cleared so an
-#: inherited one cannot divert a relative ``cd`` to a same-named directory elsewhere.
+#: working directory, after ``pwd -P`` reported that directory's own path.
+#:
+#: **What that comparison proves is that nothing on the way was a link**, since resolving one
+#: lands somewhere whose physical path differs. It does not prove the directory is the one the
+#: earlier check looked at: a guest that can write the parent can rename one real directory out
+#: and another in, and the name still resolves to a directory. No engine stat here reports an
+#: inode or an owner, so there is nothing to compare identity against — see the backend doc.
+#:
+#: ``PATH`` is pinned so a directory the image's user can write cannot supply a command that
+#: runs as root, and ``CDPATH`` is cleared so an inherited one cannot divert a relative ``cd``
+#: to a same-named directory elsewhere.
 #: The environment both root commands run under. Built from the probe's own constants, so the
 #: ``PATH`` an acquire checks and the ``PATH`` setup uses cannot drift apart. Concatenated
 #: rather than interpolated: the scripts below carry ``${...}`` and ``$(...)``.
@@ -511,26 +518,27 @@ umask 022
 parent=$1
 shift
 cd -P -- "$parent" && [ "$(pwd -P)" = "$parent" ] || {
-    echo "$parent is no longer the directory the check found" >&2; exit 1
+    echo "$parent does not resolve to itself any more" >&2; exit 1
 }
 for directory do
     mkdir -- "${directory##*/}" || exit 1
     cd -P -- "${directory##*/}" && [ "$(pwd -P)" = "$directory" ] || {
-        echo "$directory is no longer the directory this command created" >&2; exit 1
+        echo "$directory does not resolve to itself any more" >&2; exit 1
     }
 done
 """
 )
 
 #: Gives the base to the image's user as root: ``$1`` the ``uid:gid``, ``$2`` the base. Held
-#: the same way — ``cd -P`` then a ``pwd -P`` comparison — so a base swapped for a link after
-#: the check is refused rather than chowned through. Run only over a base this backend just
-#: created; a directory that was already there keeps the owner it had.
+#: the same way — ``cd -P`` then a ``pwd -P`` comparison — so a base reached through a link is
+#: refused rather than chowned through, with the same limit: it rules out links, not a real
+#: directory renamed into that name. Run only over a base this backend just created; a
+#: directory that was already there keeps the owner it had.
 _ENSURE_BASE_OWNER = (
     _PINNED_ENV
     + """\
 cd -P -- "$2" && [ "$(pwd -P)" = "$2" ] || {
-    echo "$2 is no longer the directory the check found" >&2; exit 1
+    echo "$2 does not resolve to itself any more" >&2; exit 1
 }
 chown -- "$1" .
 """
@@ -735,6 +743,10 @@ class _WslcSandbox:
 
         async def create(directories: tuple[str, ...]) -> None:
             nonlocal created
+            # Refuse before creating, not after: a base is only ever created to be given to
+            # the image's user, so not knowing who that is stops the work rather than
+            # leaving a directory behind.
+            self._refuse_a_base_without_an_owner(spec, directories[-1])
             created = True
             await self._create_directories(directories)
 
@@ -778,24 +790,32 @@ class _WslcSandbox:
                 f"wslc could not create the working directory: {result.stderr_text.strip()}"
             )
 
+    def _refuse_a_base_without_an_owner(self, spec: SandboxSpec, base: str) -> None:
+        """Refuse to create a base when the user it would belong to is unresolved.
+
+        This is the image failing a capability, not this call failing: a base that has to be
+        *created* has to be given to someone, so every capability that prepares one needs the
+        identity. A base that is already there needs none of it, which is why nothing checks
+        this at acquire — writes run as the image's user and stamp nothing.
+        """
+        if self._guest_identity is not None:
+            return
+        raise SandboxCapabilityNotSupported(
+            f"sandbox backend 'wslc' cannot serve "
+            f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
+            f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
+            f"directory {base!r} is missing and the image user it would belong to is "
+            "unresolved. Use a numeric uid:gid or working id commands, or point work_dir at "
+            "a directory the image already provides. The next acquire retries."
+        )
+
     async def _ensure_base_owner(self, base: str, spec: SandboxSpec) -> None:
-        """Give ``base`` to the image's user as root, refusing a base swapped for a link.
+        """Give ``base`` to the image's user as root, refusing a base reached through a link.
 
         The caller decides when this is allowed: only over storage this backend allocated.
-
-        An unresolved image user is refused as a capability the image cannot serve, not as a
-        failure of this call — a base that has to be *created* has to be given to someone, so
-        every capability that prepares one needs the identity, not ``FILES_IN`` alone.
         """
-        if self._guest_identity is None:
-            raise SandboxCapabilityNotSupported(
-                f"sandbox backend 'wslc' cannot serve "
-                f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
-                f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
-                f"directory {base!r} had to be created, and the image user it would belong to "
-                "is unresolved. Use a numeric uid:gid or working id commands, or point "
-                "work_dir at a directory the image already provides. The next acquire retries."
-            )
+        self._refuse_a_base_without_an_owner(spec, base)
+        assert self._guest_identity is not None
         uid, gid = self._guest_identity
         result = await self._run_or_discard(
             "container",
@@ -1414,12 +1434,9 @@ class WslcSandboxBackend:
             guest_identity = await self._write_identity(
                 name, guest_uid, cast("dict[str, object]", row)
             )
-            if Capability.FILES_IN in spec.required_capabilities and guest_identity is None:
-                raise SandboxCapabilityNotSupported(
-                    f"sandbox backend 'wslc' cannot serve files_in to {spec.kind!r} from "
-                    f"image {spec.image_id or spec.image!r}: the image user is unresolved. "
-                    "Use a numeric uid:gid or working id commands. The next acquire retries."
-                )
+            # No identity check here. Writes run as the image's user and stamp nothing, so
+            # only *creating* a base needs to know who to give it to — `_ensure_base_owner`
+            # refuses there, and an image whose base already exists is served either way.
             await self._probe_commands(name, instance_id, spec)
             sandbox = _WslcSandbox(
                 self._wslc,
