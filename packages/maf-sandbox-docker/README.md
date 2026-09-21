@@ -2,17 +2,11 @@
 
 [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/LICENSE)
 
-> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxDockerExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_docker.MafSandboxDockerExperimentalWarning)` once you've read the notice.
+> **Experimental.** Releases before 1.0 may change or remove APIs. Importing this package emits `MafSandboxDockerExperimentalWarning`.
 
-This package is not affiliated with, endorsed by, or a product of Docker Inc. or Microsoft — it is a third-party sandbox backend for [Microsoft Agent Framework](https://aka.ms/AgentFramework).
+Run sandbox workloads in Linux containers through the Docker CLI. This backend provides commands, file transfer and guest-to-host tool calls. Its Python dependency is `maf-sandbox`.
 
-```
-app  ->  maf_sandbox  ->  maf_sandbox_docker  ->  the container
-```
-
-The sandbox backend for everyone `wslc` leaves out: plain Docker containers, driven through the `docker` command-line client, on any machine with a Docker-compatible engine — macOS, Linux, Windows with WSL 2, and every GitHub Actions `ubuntu-latest` runner. No subscription, no login, and no dependency but [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox) itself. A workload written against the protocol runs here unchanged, which is what makes it a workload rather than an integration.
-
-For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures the bound storage base exists, including on warm reuse. `spec.work_dir=None` lets this backend allocate `/maf-sandbox/work`; an explicit value requires that exact guest-native base. Relative working directories resolve beneath it, with `"."` naming the base; commands and argv remain untouched. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory. Missing directories are sent through the Docker tar file plane: ancestors are root-owned and the base uses the resolved image uid/gid (the existing root fallback applies to unresolved identities). No guest `mkdir` is needed, and the concurrent-redirection window the file plane used to carry does not apply here either: establishing the base is one of the tar-plane members that runs under a freeze.
+This is an independent package, not a Docker Inc. or Microsoft product.
 
 ## Quickstart
 
@@ -24,105 +18,106 @@ pip install maf-sandbox-docker
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
-router = SandboxRouter([DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER)
+backend = await DockerSandboxBackend.create(DockerSandboxConfig())
+router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 ```
 
-[`samples/06_docker_codeact`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/06_docker_codeact) runs those two lines end to end: an agent that executes model-written Python in a container and reads the result back out. Its siblings `03_acas_codeact` and `04_wslc_codeact` are the same program on a microVM-isolated Azure backend and on `wslc`, and the diff between any two of them is two imports and one constructor.
+The async factory reads the daemon's OS and declares POSIX for Linux. The plain constructor also works, but declares no OS family. A kind requiring POSIX therefore needs the async factory.
+
+Container isolation shares a kernel and is below the router's default microVM minimum. The explicit minimum above allows it. Docker Desktop's shared VM does not change this declaration.
+
+See the [Docker CodeAct sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/06_docker_codeact) or [file-output sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/08_docker_codeact_files) for a complete application.
 
 ## Requirements
 
-**A Docker-compatible engine, reachable through the `docker` client.** Docker Desktop (macOS, Linux, Windows with WSL 2) and Docker Engine (Linux, rootful or rootless) are what this backend supports. The client environment is captured when the backend is constructed. `create()` resolves the effective context and endpoint immediately; the plain constructor resolves on first use. Later commands name that context explicitly and retain the captured TLS settings, so an ambient context or environment switch cannot redirect an existing backend. An unresolved or deleted context refuses instead of falling back. Set `DockerSandboxConfig.docker_path` to select a Docker CLI binary. **Compatibility change:** direct `docker_path="podman"` use no longer works: daemon binding requires Docker's context-inspection schema, which the Podman CLI does not provide. Use the Docker CLI to reach a compatible socket instead. Colima, OrbStack, Rancher Desktop and Podman expose Docker-compatible sockets and may work through the same client (Podman's default outbound network is called `podman`, so set `outbound_network="podman"` in allowlist mode), but they are not officially supported and nothing here is verified against them.
+Use Docker Desktop or Docker Engine with a reachable Docker CLI. Both rootful and rootless Linux engines are supported. Windows requires an event loop that can start subprocesses, such as the default Proactor loop.
 
-**Docker Engine 28.0.0 or newer, to serve `Egress.ALLOWLIST` with hosts on the list.** Such a sandbox is attached to an internal network whose bridge holds no host address. That is the bridge driver's `gateway_mode_ipv4=isolated` and its IPv6 twin `gateway_mode_ipv6=isolated`, both of which arrived in that engine. Both are set, because a daemon with IPv6 enabled would otherwise keep the v6 half addressed, and the route back with it. An older daemon rejects the options, and the acquire fails saying so rather than serving the workload on an addressed bridge — a bridge address is a route to the host that the allowlist does not cover. The floor is only for that case, because it is only there that a network is built at all: `Egress.CLOSED`, and an `ALLOWLIST` spec whose `egress_allow` is empty, both run on `--network none` and on any supported engine.
+`DockerSandboxConfig.docker_path` selects the CLI binary. The client must support Docker context inspection; the Podman CLI does not. Other compatible engines reached through Docker's CLI are not verified here.
 
-Every call spawns the `docker` client, so the host's event loop has to be one that can start subprocesses — asyncio's default Proactor loop on Windows does, and a host that installs `WindowsSelectorEventLoopPolicy` has to undo that first, or every acquire fails with a message saying so.
+The backend captures the client environment and binds its context, endpoint and TLS settings. Later context changes cannot redirect it. A missing context refuses instead of falling back. The async factory binds immediately; the constructor binds on first use.
 
-**Hosts this backend does not serve:** Windows without WSL (Docker Desktop's Hyper-V backend is documented by Docker but not its default, needs Pro or Enterprise, and is not verified here; Windows Home has no route at all), GitHub Actions' `windows-latest` (Windows containers only) and `macos-latest` (no Docker, no nested virtualization). For WSL-less Windows the eventual answer is a separate backend over Docker's "Docker Sandboxes" micro-VM product.
+## Supported operations
 
-## What this backend declares
+| Setting | Behavior |
+|---|---|
+| Isolation | `CONTAINER` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS`, `RECLAIM` |
+| Network | `CLOSED`; `ALLOWLIST` with a configured proxy |
+| Lifetime | Conversation or separate sandbox per call |
+| Transfer ceiling | 64 MiB per file, 256 MiB total, 256 files in each direction |
+| Cleanup | Disposal by default; reclaim requires explicit host opt-in |
 
-The capabilities below are a ceiling for a conforming image. Acquire checks `sh` for `EXEC`, `rm` invocation for `FILES_DELETE`, and the shell, `mkdir`, `mv` and `nohup` for `HOST_TOOLS`, refusing missing prerequisites with `SandboxCapabilityNotSupported`. Successful checks are cached per container instance; failed checks are retryable. Docker file transfers need no guest command. An argv-only workload still requires a shell when it asks for `EXEC`, because that capability also promises shell strings. See the [image command contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire) for bounds and cleanup behavior.
+Directory listing, runtime `run_code`, snapshots, method-level network rules and core attached identity are unavailable.
 
-**`Isolation.CONTAINER`.** A container shares the host kernel, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — construct the router with `min_isolation=Isolation.CONTAINER` and it admits this backend; leave the floor at its default and construction raises `SandboxBackendNotPermitted`. A Docker Desktop or Colima VM does not lift the rung: one shared VM kernel serves every container, the same shape `wslc`'s WSL 2 utility VM has, and the ladder classifies that at `container`. The declaration is a **constant** — no configuration raises it, because a security level the backend cannot verify must not become one the router repeats.
+Acquisition checks the guest commands needed by the requested capabilities. `EXEC` needs `sh`, even for an argv-only workload. Deletion needs `rm`; host tools also need `mkdir`, `mv` and `nohup`. File transfer itself needs no guest command.
 
-**`declarations.egress_modes = {closed}` by default, `{allowlist, closed}` with a proxy configured.** With no proxy configured every container is created `--network none`: a network namespace with only loopback, enforced by whichever kernel runs the container. That serves a workload declaring `Egress.CLOSED`, and **refuses** one declaring `Egress.ALLOWLIST` — the router never substitutes a mode, so denying everything is no longer offered as a stricter stand-in for a host list. Never `UNRESTRICTED`: a container backend always cuts or proxies, so it cannot serve a workload that asked to run open.
+The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration.
 
-Set `egress_proxy_image` and `ALLOWLIST` joins the set: each sandbox gets its own internal network and a dual-homed filtering proxy, and the spec's allowlist is enforced by topology — the container has no route out except the proxy, which opens a CONNECT tunnel only to the hosts the spec names. The `HTTP_PROXY`/`HTTPS_PROXY` variables set on the workload are how ordinary clients find the proxy, not what enforces the allowlist; the topology is. TLS is not decrypted, and the sandbox never resolves an external name itself. The proxy is shipped as source, not as an image you must trust: build it from the packaged recipe, whose only pinned dependency is its Azure Linux base.
+## File transfer
+
+Acquisition prepares the storage base for workloads using commands or files. `work_dir=None` selects `/maf-sandbox/work`; an explicit path requests that exact base. Use `working_directory="."` to address it.
+
+Files move through Docker's tar-based copy API. Input files and newly created directories use the resolved image UID/GID. Existing directories keep their contents, ownership and modes.
+
+Output reads check every ancestor from the filesystem root and reject links or non-directory parents. The final entry must be a regular file. Reads over the caller's cap fail without returning a prefix.
+
+The container stays paused across each path check and transfer. This prevents guest code from replacing a checked parent before the copy. It also stops all guest execution during the transfer and adds overhead, especially when host tools poll for files.
+
+The engine must support pause, including for ordinary command acquisition that prepares a work directory. There is no unpaused fallback.
+
+Transfers observe the ordinary container filesystem. Keep outputs out of tmpfs, `/proc`, `/sys`, `/dev` and other guest mounts the copy API does not expose. A guest-visible mounted file can appear absent to the collector.
+
+`FILES_LIST` is unavailable because Docker's directory archive transfers the whole subtree to discover its names. Kinds must name outputs explicitly.
+
+## Image users
+
+The backend resolves `Config.User` using container account files and, when needed, `id`. An unset user means root. A numeric `uid:gid` is the clearest image setting.
+
+Unresolved users refuse workloads requiring `FILES_OUT` or `HOST_TOOLS`. Root-owned inputs cannot promise the guest can create adjacent outputs or transport files. Other workloads may proceed with a warning and root-owned inputs. Failed resolution is retried on later acquisition.
+
+## Network access
+
+Without a proxy, only `Egress.CLOSED` is supported and containers use `--network none`. An allowlist request is refused.
+
+Build the packaged proxy once and select it in configuration:
 
 ```python
-from maf_sandbox_docker import proxy_build_context, DockerSandboxConfig
+from maf_sandbox_docker import DockerSandboxConfig, proxy_build_context
 
-print(f"docker build -t maf-egress-proxy:local {proxy_build_context()}")  # run this once
+print(f"docker build -t maf-egress-proxy:local {proxy_build_context()}")
 config = DockerSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 ```
 
-**`Capability.FILES_OUT`, with `Capability.FILES_LIST` withheld.** This backend reads declared outputs back out — `docker cp <container>:<path> -` streams a tar whose entry header carries the size, the entry type and any link target after any extended metadata, so a file is statted and read from one stream with no stat command and no shell in the image. Docker can also archive a directory, but discovering its immediate children requires transferring the whole subtree, including file contents: ten 100 MiB files cost about 1 GiB just to learn ten names. A byte ceiling would have to refuse an oversized archive, never return a partial listing. This backend declines that cost; it does not fall back to guest-controlled `ls` or `find`. A kind that cannot name its outputs in advance requires `FILES_LIST` and is refused here — served instead by a backend, like ACAS, that offers directory listing. The [investigation](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/research/docker.md) records the measurements and alternatives.
+A nonempty allowlist needs Docker Engine 28.0.0 or newer. The workload joins an isolated internal network with no bridge address. Its only route out is a filtering proxy that permits the spec's hosts. Proxy environment variables help clients find it; the network topology enforces the restriction.
 
-**Every path component is checked, not just the last one.** A symlink is refused on the tar entry's type bit only when it is the entry being tarred; the engine resolves the path daemon-side, so a guest that points `out` at `/etc` gets a stat of `out/hostname` describing a regular file with the parent link nowhere in it. `stat_file` and `read_file` therefore stat every parent component from the **filesystem root** down — not from the working directory, whose own ancestors the guest can replace just as easily: with `/maf-sandbox -> /` unchecked, `/maf-sandbox/work` stats as a real directory and serves `/`. The check itself is `maf_sandbox.paths.refuse_symlinked_ancestors`, not a copy living here: this backend passes it the unconfined tar-header stat above. A link is refused as a *confinement* failure and any other non-directory as an ordinary `ENOTDIR` — the entry comes back as `EntryKind.SYMLINK` or `EntryKind.OTHER`, so a caller can tell an escape from a guest tripping over its own fifo. The check and the read are separate calls and `docker cp` has no no-follow form, so what keeps a classified component from being a link by the time it is read is the **freeze** below rather than the read. What *ends* that check is a component the engine said is not there, so a copy that failed for any other reason raises rather than answering "absent": the daemon names the path it could not find, and a message that names something else — a container that has gone, a socket underneath an unreachable daemon — is a failure, not an empty directory tree.
+TLS is not decrypted. Unrestricted access and method-scoped rules are refused. An empty allowlist uses `--network none`.
 
-**The guest is frozen around every tar-plane call.** `write_file` checks the path, then sends a tar to `docker cp`, which extracts with the daemon's root authority — two engine calls, so a guest that turned a checked parent into a symlink in between would land bytes where the guest program could not write. `docker pause` closes that: it is the cgroup freezer, nothing inside the container can lift it, and `docker cp` keeps working while it is held because the copy is the daemon's. So `prepare_work_dir`, `write_file`, `read_file` and `stat_file` each hold one freeze across their check and their copy, and one container is never frozen twice at once anywhere in the process — including by `acquire`'s recovery of a container a dead host left frozen, which reads the state under that same lock so it cannot lift a live call's freeze. **What it costs you**, measured against Docker Desktop on Windows: a `stat_file` goes from 303 ms to 448 ms and a `write_file` from 375 ms to 558 ms, and the guest is stopped for the whole call rather than for the pause alone. Host tools poll with `stat_file` every 0.2 s while a guest program runs, and under that poll the guest kept 43% of its wall clock against 91% unfrozen — so a supervised program runs about half as fast. `exec` is the one thing a frozen container refuses, so `remove` and `reclaim` are not frozen; they are bounded by the reach rule instead, and a refused guest command is re-issued only if this process held its container frozen throughout the attempt. A refusal that outlives that freeze is returned unchanged. A symlinked final component is replaced rather than followed, as before.
+Proxy decisions can be reported through the router's observer after confirmed proxy removal. Failed removal can leave a window unreported; missing events do not prove no traffic occurred. See [egress observation](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md).
 
-**An engine without pause support also rejects ordinary EXEC-only acquisition.** Core prepares the working directory for `Capability.EXEC`, so the default `/maf-sandbox/work` takes a freeze at its first stat, before acquisition returns. `write_file`, `read_file` and `stat_file` also require pause support. `prepare_work_dir` skips the freeze only when it makes no engine call, such as for a runtime-only spec needing no filesystem base or `work_dir="/"`. Acquisition still makes its usual engine calls, and an already paused container must be recovered before reuse.
+## Cleanup and retention
 
-**The pull surface supports rootfs paths only.** Keep `work_dir` and declared outputs on the container's ordinary filesystem. `docker cp` does not answer from the running guest's mount namespace: a file visible to the guest under a tmpfs or another unsupported mount can be reported absent, and `collect_outputs` can consequently report no output. Resources under `/proc`, `/sys` and `/dev` are outside this contract too ([Docker's copy limitations](https://docs.docker.com/reference/cli/docker/container/cp/#corner-cases)). Creation adds no volume, mount or tmpfs flags; this is not a runtime check of mounts introduced by an image or inside the guest. Adding mounted output storage requires a pull mechanism that observes it, or an explicit refusal of the affected work directory, before it can be supported.
+Acquisition reuses a matching running container, restarts a stopped one or creates a missing one. Router-managed tools dispose after each call unless the host explicitly permits reclaim. Reclaim can leave state outside the call directory; a kind's confinement declaration is advisory.
 
-Whether that is actually enforced is not this package's own claim either. `maf_sandbox.conformance` is the shared suite every backend serving `FILES_OUT` answers, and this is the one backend that answers it **against a real engine on every pull request** — a container on the runner, a hostile layout planted in it through the public surface, and the probes attacking that.
+`dispose(key, kind=...)` removes a selected kind. `dispose_scope(scope, thread_id)` finds conversation resources through engine labels, including resources created by another host process.
 
-**`declarations.os_families = {POSIX}` on a Linux daemon, and nothing on any other — asked for with `create`.** A workload states the guest shape its commands are written for in `SandboxSpec.requires_os_family`, and the router refuses a backend whose `os_families` does not hold it. This backend reads the answer from its own daemon (`docker version --format '{{.Server.Os}}'`) rather than taking it as configuration: a host would be restating what the engine already knows, and a value it typed could only go stale against the engine that has to back it. The read needs an `await`, so it lives in a factory — `__init__` makes no engine calls, and a blocking read in a constructor would do subprocess I/O on your event loop against a daemon that can hang rather than refuse.
+An operator can remove old workloads and orphaned proxy infrastructure:
 
 ```python
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from datetime import timedelta
 
-
-async def wired() -> DockerSandboxBackend:
-    # Asks the daemon once, and declares what it answered.
-    return await DockerSandboxBackend.create(DockerSandboxConfig())
-
-
-# Unchanged, and declares no family — which refuses only a spec that names one.
-backend = DockerSandboxBackend(DockerSandboxConfig())
+result = await backend.reap(timedelta(hours=24), scope="my-app")
+print(result.disposed, result.proxies_removed, result.networks_removed)
+for failure in result.failures:
+    print(failure)
 ```
 
-**A `windows` daemon declares nothing, not `WINDOWS`.** Everything this backend runs in a guest is POSIX: `sh -c` for a string command, `rm -rf` for a removal, and `/`-rooted path arithmetic that refuses a backslash outright. Declaring `WINDOWS` would be a promise no code path here backs, and would move the failure from the guest's first command to the router's certificate. A daemon that will not answer declares nothing for the same reason: silence refuses a spec that asks for a family and serves every spec that does not, which is what this backend did before it asked at all.
+**This is a maximum creation age, not an idle timeout. It can terminate active sandboxes.** Omitting `scope` covers all backend-owned scopes on the engine. The backend starts no scheduler.
 
-**The declaration is a snapshot, so a cold acquire re-asks.** The endpoint is bound, but the daemon behind it can be replaced or reconfigured. The router matched the old answer when your tool was attached and cannot ask again — so an `acquire` that is about to create *or restart* a container reads the daemon once more, ahead of the container and its network, and raises `SandboxOsFamilyNotSupported` if the answer changed. A restart counts because one that fails falls through to a create, and one that succeeds hands out a container from the bound endpoint. Reusing an already-running container does not re-ask — that would cost a round trip on every tool call — and a backend built by the plain constructor never asks at all.
+Inventory and revalidation failures prevent deletion. Removals target inspected resource IDs, and attached networks are not forcibly disconnected. Individual failures remain in the result for operator handling. See [cleanup ownership](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/operations.md).
 
-Egress decisions are read before proxy removal and reported only once that removal succeeds or confirms absence. Failed or cancelled removals publish no egress event; a retry reads the surviving proxy again. Without a successful retry, that window remains unreported. See the [egress observation contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) for attribution and delivery limits.
+## Verification
 
-## The backend
-
-`DockerSandboxBackend` implements `maf_sandbox.SandboxBackend`:
-
-| | |
-|---|---|
-| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, call, kind)`. A running container is reused, a stopped one started, a missing one created; an absent image is pulled explicitly first so a cold pull does not ride the lifecycle timeout. At `IsolationScope.CONVERSATION` the key's `call_id` is empty and one sandbox serves the conversation's calls; at `IsolationScope.CALL` it names the tool call, so no acquire repeats it and get-or-create finds nothing warm. |
-| `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, carrying the file and an explicit entry for every missing directory at or below `working_directory`, each stamped with the user `Config.User` resolves to — with root's `0:0` retained only for workloads that require neither `FILES_OUT` nor `HOST_TOOLS` when the uid is unresolved; `str` is UTF-8, `bytes` is written as given |
-| `stat_file` / `read_file` | the `FILES_OUT` pull surface — stat from the tar entry header of `docker cp`, read from the same stream; extended metadata limited to a 64 KiB prefix and 32 headers, with a larger copy retried when needed; symlinks and other non-regular entries refused on the header type, every parent component refused unless it is a real directory, a body over the caller's cap refused rather than truncated |
-| `dispose(key, *, kind=None)` | `rm -f` on the named kind's container, or on every kind's when omitted, with the proxy and network of an allowlisted one; a retained failure keeps its kind, so a retry stays as narrow as the disposal that left it |
-| `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
-| `reap(older_than, *, scope=None)` | an operator's age-based cleanup across scopes, optionally narrowed to one scope; returns `DockerReapResult` with workload, proxy and network removal counts and any failures |
-| `isolation` | `container`, unconditionally |
-| `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set |
-| `declarations.isolation_scopes` | `{conversation, call}` — the key's `call_id` folds into the container name, the registry entry and the label a disposal selects on, so a spec asking for one sandbox per tool call is served rather than refused |
-| `declarations.capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
-| `declarations.limits` | the transfer ceilings a spec may not exceed, per direction |
-| `declarations.os_families` | `{posix}` when the daemon reports `linux`, and `frozenset()` for every other answer — filled by `DockerSandboxBackend.create`, empty from the plain constructor |
-
-Container names are derived from the key and kind rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose_scope` selects on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
-
-No bind mounts, no host paths, and never the Docker socket cross into a sandbox — files go in and out only through `docker cp`. The hardening flags `--security-opt no-new-privileges` and `--pids-limit` go on every container; `--cap-drop ALL`, `--memory` and `--cpus` are opt-in through the config.
-
-`stop` is never used. A container whose init process ignores `SIGTERM` takes ten seconds to stop and a fraction of a second to remove, and there is nothing in a sandbox worth waiting for.
-
-## Images whose user cannot be resolved
-
-`acquire` raises `SandboxCapabilityNotSupported` when a workload requires `FILES_OUT` or `HOST_TOOLS` and the container's uid cannot be resolved. Root-owned input directories cannot promise that the guest can write outputs or host-tool markers beside them. Resolution uses `Config.User`, the container's `/etc/passwd` and `/etc/group` over `docker cp`, then `id` for missing values. An unset user is root; a numeric uid or any user these sources resolve remains supported.
-
-Give the image a numeric `uid:gid`, readable account files, or an `id` it can run. Unresolved identities are retried on the next acquire, including after an unreadable `Config.User`; the container remains registered for retry or explicit disposal. Workloads requiring neither writing capability still run with a warning and root-owned inputs, which the guest may be unable to modify or reclaim. Commands whose result is stdout remain usable.
-
-## Proving a kind's confinement claim
-
-Docker declares `RECLAIM` over its existing acquire-time reach check. With core 0.38, cleanup defaults to disposal; warm reuse requires explicit host opt-in through `Cleanup.RECLAIM` and a workload cleanup floor that permits it. Kind confinement metadata is advisory, so a host may also accept reuse of an unconfined workload with possible residual state. Core 0.37 requires `confined_to_guest_call_path=True` for reclamation-based reuse. In a kind's tests, run its real call and cleanup through the shared probe on a fresh acquired sandbox:
+The repository's Docker live suite runs shared conformance probes against a real engine. To test a kind's confinement claim, use `DockerFingerprintSubject` with `assert_nothing_left_behind` and require every result to pass.
 
 ```python
 from maf_sandbox.conformance import assert_nothing_left_behind
@@ -133,73 +128,10 @@ results = await assert_nothing_left_behind(subject, call_and_cleanup)
 assert all(result.passed for result in results)
 ```
 
-The observer image is host-trusted tooling, available locally with Python 3.12+ as `python`; the helper pins its image ID. On Linux it combines rootfs changes with mounted-file contents, metadata, and process birth identities read through a separate observer container. This covers `/dev/shm`, which `docker cp` cannot observe. The observer has no network, a read-only filesystem, and only `SYS_PTRACE` for the kernel namespace read. It is removed on every exit path. The subject refuses dirty baselines, writable declared mounts, shared PID namespaces, privileged workloads, unreadable measurements, and exceeded limits. Non-Linux engines explicitly skip; asserting `passed` prevents treating a skip as proof. See the [backend guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/docker.md#measuring-a-confinement-claim) for the trust boundary and measurement limits.
+`call_and_cleanup` runs the kind and awaits its cleanup on a fresh sandbox. Set `MAF_SANDBOX_DOCKER_E2E_IMAGE` and `MAF_SANDBOX_DOCKER_OBSERVER_IMAGE` to run the repository's live observer tests with your images.
 
-The comparison measures final state. Regular-file contents use SHA-256 hashes. Verified Docker-managed mounts at `/etc/hostname`, `/etc/hosts`, and `/etc/resolv.conf` retain all other measured metadata but exclude ctime between observations, because Docker's archive setup changes it even on reads. Ctime still guards consistency during each read and remains compared for other mounted entries. A temporary change fully restored to the compared state leaves no residue under this measurement.
+The subject needs a trusted local observer image with Python 3.12 or newer. It measures final filesystem and process state, including mounted storage such as `/dev/shm`. A restored temporary change can leave no measured residue, and the probe does not prove all kernel state is clean.
 
-Run the live observer suite with `MAF_SANDBOX_DOCKER_E2E_IMAGE` naming a Linux workload image and `MAF_SANDBOX_DOCKER_OBSERVER_IMAGE` naming the trusted Python image. The same tests run on rootful and rootless engines. This adapter needs the core 0.37 line; the Docker release must follow that core's publication.
-
-## Explicit age-based cleanup
-
-A killed host cannot run its cleanup. `reap` lets an operator find eligible Docker resources through the engine's labels and creation times, without the original conversation keys or process registry. **This API does not provide automatic recovery:** nothing schedules or runs it independently of the application.
-
-```python
-import asyncio
-from datetime import timedelta
-
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
-
-backend = DockerSandboxBackend(DockerSandboxConfig())
-result = asyncio.run(backend.reap(timedelta(hours=24)))
-print(result.disposed, result.proxies_removed, result.networks_removed)
-for failure in result.failures:
-    print(failure)
-```
-
-The positive `older_than` duration is an explicit maximum-lifetime policy for this sweep. **Age means creation time, not idleness or proof the host died: calling this API permits terminating active sandboxes older than that lifetime.** An expired workload takes its proxy and network with it even if they were rebuilt more recently. Without a workload, the proxy's age decides; a network alone uses its own age. A workload exactly at the cutoff is retained; an orphan group applies the same strict comparison to the resource whose age decides. Hosts requiring long-lived active sandboxes to be protected must not use creation age as orphan detection. `scope="my-app"` narrows the same operator action to that scope; omitting it covers all scopes on the configured engine. This is separate from a conversation's `dispose_scope` authority.
-
-Only names from this Docker backend with all four sandbox identity labels qualify. The inventory includes stopped containers, orphaned proxies and networks whose containers are already gone. Every removal addresses the inspected resource ID, so recreating a name does not redirect it to the replacement; a network with attached containers is never forced away. After inventory, the resource whose age controls each expired group is inspected again by ID. If it has disappeared, that group is skipped so its stale age cannot expire replacement infrastructure discovered later. Inventory and revalidation failures prevent all deletion. Removal failures are returned individually, including infrastructure failures. Proxies are removed before workloads; a failed or already-absent container removal leaves the rest of that group untouched, preserving the workload age when a younger proxy needs a retry. Networks follow container removal because attached endpoints prevent their deletion. Each sweep recomputes eligibility from the resources that remain: a recently rebuilt network left alone after a failed removal may not qualify again until its own maximum lifetime elapses. The counts include only successful removals, with proxies separate from sandboxes.
-
-The egress drain recovers the key from the proxy's engine labels and reads its log by the inspected ID before removal, including from a fresh operator process. New proxies carry a lossless `maf-sandbox.key.v1` label when its encoded value fits within 4,096 bytes; existing ownership labels and cleanup filters are unchanged. Larger keys still acquire normally: the backend warns and writes an empty attribution label, so scope purges and reaping cannot recover their keys. Key-addressed disposal and acquire can still drain them using the caller's key, which stands in only where there is no attribution to read — an absent or empty label, never a present one that was refused — and only where the ownership labels name that key, call included. A swept leftover is reported under the key that ran behind that proxy, and one whose attribution cannot be recovered at all is left unreported rather than filed under the conversation that swept it. Legacy proxies with plain ownership values remain attributable, while hashed values cannot be recovered without the caller's key. Missing or malformed attribution yields no event, and absence alone does not establish a lost window. Failed or cancelled removals publish no event, and a successful sequential retry reports its window once. Overlapping cleanup can still report the same window more than once; see the [egress observation contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md).
-
-To inspect the labelled containers before maintenance, Docker also exposes their creation times directly:
-
-```bash
-docker ps -a --no-trunc --filter 'name=^maf-sandbox-docker-' --filter label=maf-sandbox.scope --filter label=maf-sandbox.thread --filter label=maf-sandbox.agent --filter label=maf-sandbox.kind --format '{{.ID}} {{.Names}} {{.CreatedAt}}'
-```
-
-## Upgrading to 0.10
-
-**The four optional declarations moved into one `BackendDeclarations`.** `maf-sandbox` 0.26 replaced `capabilities`, `limits`, `egress_modes` and `os_families` as backend attributes with one `declarations` object holding them as fields, and this backend follows it. A host that read them off the backend gets an `AttributeError`:
-
-| Was | Is |
-| --- | --- |
-| `backend.capabilities` | `backend.declarations.capabilities` |
-| `backend.limits` | `backend.declarations.limits` |
-| `backend.egress_modes` | `backend.declarations.egress_modes` |
-| `backend.os_families` | `backend.declarations.os_families` |
-
-Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.
-
-## Upgrading to 0.7
-
-`0.7.0` requires `maf-sandbox` 0.19, which made the egress mode a thing a workload declares and a set a backend enforces.
-
-**`egress` is replaced by `egress_modes: frozenset[Egress]`.** A host that read `backend.egress` gets an `AttributeError`; read `backend.egress_modes` instead. Nothing in the wiring changes — the set is still derived from `egress_proxy_image` exactly as the single value was.
-
-**Without a proxy image this backend now refuses an allowlist workload rather than confining it further.** That is the upgrade's one behavioural break, and it is most likely to reach you through a kind whose default asks for one — `maf-sandbox-bicep` 0.9 does:
-
-```
-SandboxEgressNotEnforced: sandbox backend 'docker' cannot enforce the 'allowlist'
-egress the 'bicep' workload runs in (it enforces closed).
-```
-
-Configure `egress_proxy_image` if the workload is meant to reach the hosts it names, or ask the kind for `Egress.CLOSED` if it is meant to run offline. The old behaviour — serve it anyway, warn, and let the workload fail at the first fetch — is gone deliberately: a fetch failure deep in a tool call is a worse report than a refusal at attach.
-
----
+See the [backend guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/docker.md) for measurement limits and the complete transfer, network and cleanup contract.
 
 Maintained by [SOKOLAI BV](https://www.sokol.ai).
-
-## Exec bytes and text views
-
-`ExecResult.stdout_bytes` and `stderr_bytes` preserve returned program bytes; `stdout_text` and `stderr_text` (also `stdout` and `stderr`) are UTF-8 display views with replacement decoding. Use the byte fields for artifacts and byte counts, and the text views for model or JSON display. See the [output contract, ACAS prerequisites and release migration](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/exec-output.md).

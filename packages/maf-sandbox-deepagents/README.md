@@ -12,8 +12,6 @@ This is a third-party integration, not a product of or endorsed by LangChain, In
 deepagents  ->  maf_sandbox_deepagents  ->  maf_sandbox (router)  ->  a backend  ->  the sandbox
 ```
 
-![The model calls Deep Agents command and file tools. MafSandbox maps those operations to the router and backend, which execute the model's shell commands in a guest. Text and downloaded bytes return through Deep Agents' result types. This route does not attach MAF content labels, hide untrusted output, run packaged kinds or provide their declared-output and host-tool channels. Other tools and their information-flow policy belong to the host's Deep Agents integration.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/deepagents-boundary.svg)
-
 ## Quickstart
 
 ```bash
@@ -61,8 +59,6 @@ The model controls the shell. Backend isolation and network policy apply, but th
 ## Files and paths
 
 Deep Agents' file tools use absolute guest paths. Adapter uploads and downloads also accept relative paths beneath the configured base.
-
-![An upload or download path is checked against the configured guest base. A path inside the base uses the backend's file methods and their confinement checks. A path outside the base uses bounded guest shell commands with base64 transfers, under the guest's existing authority and the same file caps. Both routes return Deep Agents file responses. The base is a transfer-routing boundary, not a restriction on the shell's whole filesystem access.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/deepagents-file-routes.svg)
 
 | Path | Upload | Download |
 |---|---|---|

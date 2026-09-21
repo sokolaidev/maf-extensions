@@ -2,26 +2,81 @@
 
 [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-terraform)](https://pypi.org/project/maf-sandbox-terraform/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-terraform)](https://pypi.org/project/maf-sandbox-terraform/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-terraform/LICENSE)
 
-> **Experimental.** This package warns on import with `MafSandboxTerraformExperimentalWarning`. Releases before 1.0 may change or remove APIs without notice.
+> **Experimental.** Releases before 1.0 may change or remove APIs. Importing this package emits `MafSandboxTerraformExperimentalWarning`.
 
-Offline configuration validation for Terraform and OpenTofu, as a sibling of `maf-sandbox-bicep`. Not yet released; run from this workspace until the first package release.
+Validate Terraform or OpenTofu projects offline. Optional formatting tools return changed file contents for the model to save through host file tools.
 
-The host calls `make_terraform_tools(router, file_store, agent_id, context, engine="terraform", image=...)`. The accepted engine options are exactly `terraform` (default) and `opentofu`. They attach `terraform_validate` and `opentofu_validate`, respectively, with separate sandbox kinds. Each tool accepts `files: list[str]` and `root_module: str = "."`. No engine fallback or model-selected CLI flags are supported.
+Requires Python 3.12–3.14. The Python package does not include the Terraform or OpenTofu CLI.
 
-The tool stages the explicit manifest, runs `init -backend=false -input=false -no-color`, `validate -json`, and `fmt -check -recursive -no-color`, and returns separate validation and formatting verdicts. Initialization failure means validation is incomplete. Malformed or inconsistent reports never produce a pass. A supplied root `.terraform.lock.hcl` adds `-lockfile=readonly`; otherwise initialization may create a lock only inside that call's disposable guest. No files are written back to the store, and no formatted text is returned. The tool description and the fixed guidance say so, so a model fixes formatting by editing the files.
+```bash
+pip install maf-sandbox-terraform
+```
 
-Pass `formatting=True` to attach a second tool, `terraform_format` or `opentofu_format`, after validation. It accepts the same `files` and `root_module` arguments and runs `fmt -recursive -no-color` across the staged project. It skips initialization and needs no providers or modules, so the `builtin` image is sufficient. Its report contains a JSON mapping from store-relative paths to the complete formatted text of changed files; unchanged files are omitted. The model can write those whole files back with the host's file tools under the host's existing approvals. Neither sandbox tool writes to the store, and formatting does not validate the configuration.
+## Attach the tools
 
-Formatting returns all changed files or none. CLI output and returned file bytes share the 128 KiB allowance, and the complete JSON launcher report, including escaping and metadata, must also fit 128 KiB. A failed formatter, exceeded deadline, or oversized report returns `Formatting INCOMPLETE` without partial file text. Select a smaller complete manifest when necessary; one changed file larger than the allowance cannot be returned. Formatted text remains untrusted guest output, and hidden argument names withhold all returned text and locations. Formatting is disabled by default so hosts choose whether to attach or approve the additional tool.
+```python
+from maf_sandbox_terraform import make_terraform_tools
 
-Include every configuration sibling in each selected directory, every local module, and referenced text assets. Select a root module containing at least one recognized configuration file. Relative paths preserve local references such as `../modules/child`; uploads cannot contain `..` segments. Terraform accepts `.tf` and `.tf.json`; OpenTofu also accepts `.tofu` and `.tofu.json`, with its native precedence. Terraform mode refuses `.tofu` files rather than silently validating an empty directory. The listing completeness check covers only files the host shares with this tool.
+tools = make_terraform_tools(
+    router,
+    file_store,
+    "infrastructure-agent",
+    context,
+    engine="terraform",
+    image="terraform-sandbox:local",
+    formatting=False,
+)
+```
 
-State, plans, variable files, CLI credential/configuration paths, plugin binaries, and reserved directories are refused. Files must be text and fit the core transfer limits (64 files, 8 MiB per file, 32 MiB total). Reads retain the listing's provenance and all reads and writes must succeed before execution begins. Guest results carry untrusted source integrity; fixed standing guidance is a separate item. When argument names contain hidden content, diagnostic prose and locations are withheld.
+The host supplies a router, file store and `CallerContext`. It chooses `engine="terraform"` or `engine="opentofu"` and a matching image. With no configured backend the factory returns `[]`.
 
-The spec requires POSIX, container isolation or stronger, closed egress, call isolation, and disposal. The host may configure a stronger router. The guest launcher clears inherited environment variables, uses a fixed filesystem provider mirror without a direct-install fallback, bounds combined CLI output to 128 KiB, and shares one deadline across CLI phases. `exec_timeout_seconds` defaults to 120 and accepts finite values in `(0, 600]`. Host execution allows an additional five seconds for transport and process cleanup. Cancellation waits for that bounded execution before core-owned disposal.
+| Engine | Validation tool | Optional formatting tool |
+|---|---|---|
+| Terraform | `terraform_validate` | `terraform_format` |
+| OpenTofu | `opentofu_validate` | `opentofu_format` |
 
-Provider validation executes native provider code. Expressions can read other guest files. Directory staging is not a confinement boundary: use a dedicated immutable image containing no credentials, host mounts, or sensitive content. This package does not support warm reuse, online dependency resolution, variable-dependent initialization, plan, apply, destroy, import, state commands, tests, or policy/security linting. A valid configuration does not establish that a deployment will succeed.
+The model supplies `files: list[str]` and `root_module: str = "."`. It cannot select CLI flags, an image or an engine.
 
-Build instructions, platform and dependency pins, and a runnable checkout example are in [the image README](https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/README.md). Python wheels contain no engine or provider binaries. The initial measured guest platform is Linux amd64 on Docker; ACAS and WSLC have not been verified for this workload. [The kind guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md) describes the evidence and remaining work.
+Build images using the [image guide](https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/README.md). The [usage guide](https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/USAGE.md) provides runnable examples and dependency preparation.
 
-Formatting requires a rebuilt image containing the launcher's fixed `format` mode. Rebuild base images and every derived prepared image together: preparation records the launcher's `reader_sha256`, so copying a new launcher into an old prepared image is not a supported update.
+## Inputs
+
+Supply a complete manifest of configuration files, local modules and referenced text assets. Every name must appear in the caller's listing. Completeness checks cover only files that the host exposes there.
+
+Terraform accepts `.tf` and `.tf.json`. OpenTofu also accepts `.tofu` and `.tofu.json`, using its native precedence rules. The root must contain recognized configuration. Upload names cannot traverse with `..`; valid relative module references inside files are preserved.
+
+State, plans, variable-value files, CLI credentials, plugin binaries and reserved directories are refused. Inputs are text only, with limits of 64 files, 8 MiB per file and 32 MiB total.
+
+## Validation
+
+The fixed launcher runs these commands without interaction or terminal color:
+
+1. `init -backend=false`, using prepared modules and a filesystem provider mirror.
+2. `validate -json`, checking the verdict, diagnostic counts and exit status.
+3. `fmt -check -recursive`, reporting formatting separately.
+
+A supplied root lock file is read-only during initialization. Without one, a generated lock exists only inside the disposable guest. No command writes back to the host store.
+
+Initialization failure or malformed, inconsistent, truncated or oversized output means incomplete validation. A hidden report is not evidence of success. Successful validation does not prove that a deployment will succeed.
+
+## Formatting
+
+Set `formatting=True` to attach the separate formatting tool. It runs `fmt -recursive -no-color` without initialization or validation, so a base image without providers is sufficient.
+
+The report maps store-relative paths to complete changed file contents. Unchanged files are omitted. Saving them is a separate host file-write call with the host's approval policy.
+
+All changed files are returned together, or none are. CLI output and returned file bytes share a 128 KiB budget. The complete JSON report, including escaping and metadata, must also fit 128 KiB.
+
+A timeout, formatter failure or overflow returns `Formatting INCOMPLETE` without partial text. Use a smaller complete manifest if possible. A single changed file over the limit cannot be returned. Hidden argument names also withhold file text and locations.
+
+## Execution and labels
+
+The kind requires POSIX, `EXEC`, `FILES_IN`, at least container isolation, closed network access and a separate sandbox per call. Disposal is mandatory. There is no direct-download fallback for missing dependencies.
+
+All phases share `exec_timeout_seconds`: 120 by default, finite and at most 600. Host execution adds five seconds for transport and cleanup. Cancellation waits for bounded execution before disposal.
+
+Providers execute native code and may read other guest paths. Use a dedicated image without credentials, sensitive files or host mounts. This tool exposes no plan, apply, destroy, import or state operations.
+
+Validation and formatting each return an untrusted report and trusted fixed guidance. The host supplies confidentiality and later-tool policy. See the [kind guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/terraform.md) for the complete contract.
+
+Live validation covers Linux amd64 Docker images. ACAS and WSLC execution remain unverified. When the launcher changes, rebuild both base and prepared images; prepared-image receipts bind to its `reader_sha256`.

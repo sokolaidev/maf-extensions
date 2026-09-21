@@ -6,8 +6,6 @@
 
 MST is a local operator console for sandboxes owned by applications that enable it. It lists physical instances, shows their MAF keys and asks the owning application to delete an exact instance.
 
-![The operator's TUI or CLI discovers a loopback endpoint published by the application. That endpoint calls the application's control adapter, which uses the same monitored router and backend that serve agent work. The host scheduler stops new work and drains active calls before deletion. Inventory comes from admitted acquisitions and observed worker state. MST does not scan arbitrary VMs or kill worker processes directly. The unauthenticated loopback endpoint is reachable by local processes while enabled.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/tui-control-boundary.svg)
-
 ## Try it
 
 The demo provides three sample Hyperlight records through a local control server. It does not create real sandboxes.

@@ -28,8 +28,6 @@ registry = HostToolRegistry(observer=observer)
 
 Kinds using `collect_outputs` pass `observer=` and `key=` to that function. The observer records existing events; it does not change tool policy or the labels on returned content.
 
-![The router, sandboxed tool wrapper, host-tool registry, output collector and observing backends send events to a host observer. The OpenTelemetry observer selects attributes and sends logs, spans and metrics through independently configured providers. The host chooses exporters and retention. Tool and content labels remain part of agent policy; recording them does not enforce that policy.](https://raw.githubusercontent.com/sokolaidev/maf-extensions/45a84dd48c90bdf6158e1fab0f9ed57004dff933/docs/sandbox/assets/observability-channels.svg)
-
 Provider arguments default to the application's global providers. Supply a separate provider to route a signal elsewhere:
 
 ```python
