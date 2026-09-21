@@ -215,17 +215,17 @@ def _build_tool(
             if formatting:
                 formatted = format_outcome(result.stdout_bytes, engine, dict(staged), hidden=hidden)
                 return SandboxResult(
-                    completed=formatted.ran,
+                    completed=formatted.completed,
                     verdict=("changed" if formatted.valid else "unchanged")
-                    if formatted.ran
+                    if formatted.completed
                     else None,
                     trusted_output=(formatted.reason,) if formatted.reason else (),
                     output=(formatted.output,) if formatted.output else (),
                 )
             outcome = report_outcome(result.stdout_bytes, engine, hidden=hidden)
             return SandboxResult(
-                completed=outcome.ran,
-                verdict=("valid" if outcome.valid else "invalid") if outcome.ran else None,
+                completed=outcome.completed,
+                verdict=("valid" if outcome.valid else "invalid") if outcome.completed else None,
                 trusted_output=(outcome.reason,) if outcome.reason else (),
                 output=(outcome.output,) if outcome.output else (),
             )

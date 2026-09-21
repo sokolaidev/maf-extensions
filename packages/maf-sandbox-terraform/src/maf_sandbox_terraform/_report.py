@@ -13,16 +13,16 @@ MAX_FORMAT_BYTES = 128 * 1024
 
 @dataclass(frozen=True, slots=True)
 class ReportOutcome:
-    """A rendered report, and what it says about the run as a whole.
+    """A rendered report and whether the operation reached a result.
 
-    ``ran`` says whether the operation reached a verdict. When it did, ``valid`` means the
+    ``completed`` says whether the operation reached a verdict. When it did, ``valid`` means the
     configuration passed validation, or the formatter changed at least one file. It is
-    meaningless unless ``ran``. Fixed refusal text lives in ``reason``; engine detail stays
+    meaningless unless ``completed``. Fixed refusal text lives in ``reason``; engine detail stays
     in ``output``.
     """
 
     output: str
-    ran: bool
+    completed: bool
     valid: bool
     reason: str = ""
 
@@ -97,7 +97,7 @@ def format_outcome(
 ) -> ReportOutcome:
     """Return only complete changed files from the manifest; hidden names suppress all prose.
 
-    ``valid`` carries "the formatter changed something" here: the run reached an answer, and
+    ``valid`` carries "the formatter changed something" here: the operation reached an answer, and
     that answer is whether any file differs.
     """
     envelope = _envelope(raw, engine, MAX_FORMAT_BYTES)
