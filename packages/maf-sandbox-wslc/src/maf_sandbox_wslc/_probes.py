@@ -17,9 +17,19 @@ _REQUIREMENTS = {
     "sh": frozenset({Capability.EXEC}),
     TEST_COMMAND: frozenset({Capability.FILES_IN}),
     "write": frozenset({Capability.FILES_IN}),
+    # Working-directory setup runs for either capability, so its prerequisites are checked
+    # for both. Without this an image passes every advertised probe and then fails setup
+    # with an untyped error, which a caller cannot tell from a broken engine.
+    "setup": frozenset({Capability.EXEC, Capability.FILES_IN}),
 }
 #: What ``write_file`` runs as the image's user, besides ``sh``.
 _WRITE_COMMANDS = ("mkdir", "cat", "wc", "mv", "rm")
+#: What working-directory setup runs as root, from the pinned system ``PATH``.
+_SETUP_COMMANDS = ("mkdir", "chown")
+#: The shell setup runs, named absolutely so no lookup path can choose it.
+SETUP_SHELL = "/bin/sh"
+#: The ``PATH`` setup pins; the probe must resolve its commands the same way.
+SETUP_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 RunProbe = Callable[[tuple[str, ...], bool], Awaitable[int]]
 
 
@@ -40,9 +50,18 @@ async def probe_commands(spec: SandboxSpec, verified: set[str], run: RunProbe) -
                 f"command -v {command} >/dev/null || exit 1" for command in _WRITE_COMMANDS
             )
             commands = [(("sh", "-c", script), False, 0)]
+        elif name == "setup":
+            script = f"export PATH={SETUP_PATH}; " + "; ".join(
+                f"command -v {command} >/dev/null || exit 1" for command in _SETUP_COMMANDS
+            )
+            commands = [((SETUP_SHELL, "-c", script), True, 0)]
         else:
             raise AssertionError(name)
-        label = f"sh and {', '.join(_WRITE_COMMANDS)}" if name == "write" else name
+        labels = {
+            "write": f"sh and {', '.join(_WRITE_COMMANDS)}",
+            "setup": f"root {SETUP_SHELL} and {', '.join(_SETUP_COMMANDS)} on {SETUP_PATH}",
+        }
+        label = labels.get(name, name)
         try:
             for argv, as_root, expected in commands:
                 status = await run(argv, as_root)

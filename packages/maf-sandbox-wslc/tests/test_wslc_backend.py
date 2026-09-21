@@ -477,7 +477,8 @@ class TestImageCommandProbes:
             )
             assert first.instance_id == second.instance_id
             probes = [call for call in fake.calls if call.read_limit == 1024]
-            assert len(probes) == 4
+            # sh, test twice, the guest write utilities, and the root setup prerequisites.
+            assert len(probes) == 5
 
         asyncio.run(scenario())
 
@@ -1186,15 +1187,42 @@ class TestWriteFile:
         assert not _writes(fake) and not _creations(fake)
         assert not fake.matching("container", "cp", "-")
 
-    def test_an_existing_base_is_still_given_to_the_guest(self):
-        """The repair path: nothing is created, but the base is chowned to the guest anyway.
+    @pytest.mark.parametrize("work", [_WORK, "/etc"])
+    def test_a_base_that_was_already_there_keeps_its_owner(self, work):
+        """``acquire`` preserves the ownership it finds, so an existing base is never chowned.
 
-        A partial setup can leave the base root-owned; without this a warm acquire would hand
-        back a base the guest cannot write. The ownership step runs on every prepare.
+        Chowning one hands the image's user a directory the host never offered — with
+        ``work_dir="/etc"`` that is the guest owning ``/etc`` and every entry it can unlink.
+        Ownership goes only to a base this backend created.
         """
+        ancestors = ("/", "/maf-sandbox", _WORK) if work == _WORK else ("/", "/etc")
+        overrides = {
+            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory() for guest in ancestors
+        }
+        overrides[("container", "inspect")] = _WslcResult(
+            0,
+            json.dumps(
+                [
+                    {
+                        "Id": "i",
+                        "Config": {
+                            "User": "10001:20001",
+                            "Labels": {"maf-sandbox.work-dir.v1": work},
+                        },
+                    }
+                ]
+            ).encode(),
+            b"",
+        )
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides, work_dir=work))
+        asyncio.run(backend.acquire(_KEY, replace(_SPEC, work_dir=work)))
+        assert not _creations(fake)
+        assert not _owner_steps(fake)
+
+    def test_a_base_this_acquire_created_goes_to_the_guest(self):
         overrides = {
             ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
-            for guest in ("/", "/maf-sandbox", _WORK)
+            for guest in ("/", "/maf-sandbox")
         }
         overrides[("container", "inspect")] = _WslcResult(
             0,
@@ -1213,7 +1241,11 @@ class TestWriteFile:
         )
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         asyncio.run(backend.acquire(_KEY, _SPEC))
-        assert not _creations(fake)
+        (created,) = _creations(fake)
+        assert created.args[created.args.index(_CREATE_DIRECTORIES) + 2 :] == (
+            "/maf-sandbox",
+            _WORK,
+        )
         (owned,) = _owner_steps(fake)
         assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == (
             "sh",

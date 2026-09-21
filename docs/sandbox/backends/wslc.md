@@ -17,7 +17,7 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 
 The default Windows Proactor event loop supports the required subprocesses. A selector event loop does not.
 
-Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr/bin/test` command, including true and false exit statuses under the root principal used for path checks. A shell builtin or a `test` elsewhere on `PATH` does not satisfy that check. `FILES_IN` also checks that the image's user finds `mkdir`, `cat`, `wc`, `mv` and `rm`. Successful checks are cached per physical container; failed checks are retried.
+Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr/bin/test` command, including true and false exit statuses under the root principal used for path checks. A shell builtin or a `test` elsewhere on `PATH` does not satisfy that check. `FILES_IN` also checks that the image's user finds `mkdir`, `cat`, `wc`, `mv` and `rm`. Either capability additionally checks the working-directory setup prerequisites as root: `/bin/sh`, and `mkdir` and `chown` on the pinned `PATH`. A missing one is refused as an unsupported capability at acquisition rather than surfacing later as a setup failure. Successful checks are cached per physical container; failed checks are retried.
 
 ## Writes and path checks
 
@@ -37,7 +37,9 @@ Each stat copies into a private host temporary directory, removed after the subp
 
 Acquisition creates a missing base as root, because the image's user often cannot create its parents. One command runs `/bin/sh` with `PATH` set to `/usr/sbin:/usr/bin:/sbin:/bin` and `CDPATH` cleared, so an inherited `CDPATH` cannot divert a relative `cd`. It enters the deepest existing directory with `cd -P` and confirms with `pwd -P` that the directory is where the check found it. It then runs `mkdir` for each missing directory inside the directory it holds, confirming each one the same way. A link swapped in after the check is refused rather than followed. A refusal can leave behind the directories created before it.
 
-A second held command gives the base to the image's user, on every acquire. It is held the same way — `cd -P` then a `pwd -P` comparison — so a base swapped for a link is refused rather than chowned through. Running it every time is deliberate: it is a no-op on a base the guest already owns, and it repairs a base a partial setup left root-owned, so a later acquire never returns a base the guest cannot write. The directories above the base stay root's.
+A second held command gives the base to the image's user. It is held the same way — `cd -P` then a `pwd -P` comparison — so a base swapped for a link is refused rather than chowned through. It runs **only for a base this acquire created**: a directory that was already there keeps its owner, whichever path named it, because `acquire` preserves the contents, ownership and permissions it finds. Chowning an existing base would hand the image's user a directory the host never offered — with `work_dir=/etc`, `/etc` itself. The directories above the base stay root's.
+
+A setup that times out removes the container, so a half-prepared base goes with it. A host killed outright between the two commands leaves the base root-owned; the first write then says so with `PermissionError`, and disposing the sandbox rebuilds it.
 
 Numeric IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root. Unresolved identity refuses `FILES_IN` at acquisition. Identity is checked on each acquire.
 

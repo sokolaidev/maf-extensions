@@ -72,7 +72,7 @@ from maf_sandbox.paths import (
 )
 
 from ._config import WslcSandboxConfig
-from ._probes import TEST_COMMAND, probe_commands
+from ._probes import SETUP_PATH, SETUP_SHELL, TEST_COMMAND, probe_commands
 from ._proxy import build_context
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
@@ -499,8 +499,14 @@ mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
 #: check is refused rather than followed. ``PATH`` is pinned so a directory the image's user
 #: can write cannot supply a command that runs as root, and ``CDPATH`` is cleared so an
 #: inherited one cannot divert a relative ``cd`` to a same-named directory elsewhere.
-_CREATE_DIRECTORIES = """\
-export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin CDPATH=
+#: The environment both root commands run under. Built from the probe's own constants, so the
+#: ``PATH`` an acquire checks and the ``PATH`` setup uses cannot drift apart. Concatenated
+#: rather than interpolated: the scripts below carry ``${...}`` and ``$(...)``.
+_PINNED_ENV = f"export LC_ALL=C PATH={SETUP_PATH} CDPATH=\n"
+
+_CREATE_DIRECTORIES = (
+    _PINNED_ENV
+    + """\
 umask 022
 parent=$1
 shift
@@ -514,19 +520,21 @@ for directory do
     }
 done
 """
+)
 
 #: Gives the base to the image's user as root: ``$1`` the ``uid:gid``, ``$2`` the base. Held
 #: the same way — ``cd -P`` then a ``pwd -P`` comparison — so a base swapped for a link after
-#: the check is refused rather than chowned through. Idempotent: run on every prepare, it is a
-#: no-op on a base the guest already owns and repairs one a partial setup left root-owned, so a
-#: warm acquire never hands back a base the guest cannot write.
-_ENSURE_BASE_OWNER = """\
-export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin CDPATH=
+#: the check is refused rather than chowned through. Run only over a base this backend just
+#: created; a directory that was already there keeps the owner it had.
+_ENSURE_BASE_OWNER = (
+    _PINNED_ENV
+    + """\
 cd -P -- "$2" && [ "$(pwd -P)" = "$2" ] || {
     echo "$2 is no longer the directory the check found" >&2; exit 1
 }
 chown -- "$1" .
 """
+)
 
 #: What a refused write raises. ``NotADirectoryError`` covers "Not a directory" and "File
 #: exists": both mean a parent is a file.
@@ -667,25 +675,58 @@ class _WslcSandbox:
     def container_name(self) -> str:
         return self._name
 
-    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base as root, without following links, and give it to the guest.
+    async def _run_or_discard(
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
+    ) -> _WslcResult:
+        """One command, force-removing this container if its deadline expires.
 
-        Creation and the ownership step are separate held commands, so a setup interrupted
-        between them cannot leave a root-owned base a later acquire would hand back unwritable:
-        the ownership step runs on every prepare and repairs it. It is a no-op on a base the
-        guest already owns.
+        Killing the host process does not reach the command it started inside the container,
+        so a timed-out file command can leave privileged work running in a container a warm
+        acquire would reuse. Every file-surface command goes through here for that reason.
+        A cancellation does not remove it: the caller owns that sandbox and disposes it.
+        """
+        try:
+            return await self._run(*args, stdin=stdin, timeout=timeout, read_limit=read_limit)
+        except TimeoutError:
+            with contextlib.suppress(Exception):
+                await self._run(
+                    "container", "remove", "-f", self._name, timeout=self._command_timeout
+                )
+            raise
+
+    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
+        """Establish the spec's base as root, without following links.
+
+        **Ownership is transferred only for a base this call created.** A base that was
+        already there keeps its owner, whichever path named it, because ``acquire`` promises
+        to preserve the contents, ownership and permissions it finds — chowning one would
+        hand the image's user a directory the host never offered.
+
+        A setup that times out takes the container with it, so the half-prepared base goes
+        too. What survives that is a host killed outright between the two commands: the base
+        is then left root-owned, and the first write says so with ``PermissionError``.
         """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        created = False
+
+        async def create(directories: tuple[str, ...]) -> None:
+            nonlocal created
+            created = True
+            await self._create_directories(directories)
+
         await ensure_guest_work_dir(
             spec,
             lambda path: self._stat_guest(path, path),
-            self._create_directories,
+            create,
             resolve=posix_work_dir_ancestors,
             base=self._work_dir,
         )
-        prepared = spec.required_capabilities & _PREPARED_CAPABILITIES
         base = posix_work_dir_ancestors(self._work_dir)
-        if prepared and base:
+        if created and base and spec.required_capabilities & _PREPARED_CAPABILITIES:
             await self._ensure_base_owner(base[-1])
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -694,7 +735,7 @@ class _WslcSandbox:
         Existing directories keep their metadata; the base's ownership is a separate step
         (:meth:`_ensure_base_owner`). A refusal can leave the earlier directories behind.
         """
-        result = await self._run(
+        result = await self._run_or_discard(
             "container",
             "exec",
             "--user",
@@ -702,7 +743,7 @@ class _WslcSandbox:
             "-w",
             "/",
             self._name,
-            "/bin/sh",
+            SETUP_SHELL,
             "-c",
             _CREATE_DIRECTORIES,
             "sh",
@@ -719,13 +760,12 @@ class _WslcSandbox:
     async def _ensure_base_owner(self, base: str) -> None:
         """Give ``base`` to the image's user as root, refusing a base swapped for a link.
 
-        Run on every prepare, so a base a partial setup left root-owned is repaired rather
-        than handed back to a guest that cannot write it.
+        The caller decides when this is allowed: only over storage this backend allocated.
         """
         if self._guest_identity is None:
             raise RuntimeError("wslc could not resolve the image user for the working directory")
         uid, gid = self._guest_identity
-        result = await self._run(
+        result = await self._run_or_discard(
             "container",
             "exec",
             "--user",
@@ -733,7 +773,7 @@ class _WslcSandbox:
             "-w",
             "/",
             self._name,
-            "/bin/sh",
+            SETUP_SHELL,
             "-c",
             _ENSURE_BASE_OWNER,
             "sh",
@@ -758,8 +798,9 @@ class _WslcSandbox:
 
         The content moves into place only when every byte arrived. A **timeout** — a blocked
         utility, say — discards the sandbox the way :meth:`exec` does, because killing the host
-        process does not reach the command inside the container. A **cancellation** after the
-        command starts is not a rollback: the file may still land whole, and a sibling named
+        process does not reach the command inside the container; that covers the path check's
+        own guest commands as much as the placement. A **cancellation** after the command
+        starts is not a rollback: the file may still land whole, and a sibling named
         ``.maf-<hex>.part`` may be left beside it.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
@@ -771,32 +812,25 @@ class _WslcSandbox:
         guest = "/" + guest.lstrip("/")
         parent = posixpath.dirname(guest)
         staged = posixpath.join(parent, f".maf-{uuid.uuid4().hex}.part")
-        try:
-            result = await self._run(
-                "container",
-                "exec",
-                "-i",
-                "-w",
-                "/",
-                self._name,
-                "sh",
-                "-c",
-                _WRITE_AS_THE_GUEST,
-                "sh",
-                guest,
-                parent,
-                staged,
-                str(len(data)),
-                stdin=data,
-                timeout=self._command_timeout,
-                read_limit=_FILE_COMMAND_STDOUT_LIMIT,
-            )
-        except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run(
-                    "container", "remove", "-f", self._name, timeout=self._command_timeout
-                )
-            raise
+        result = await self._run_or_discard(
+            "container",
+            "exec",
+            "-i",
+            "-w",
+            "/",
+            self._name,
+            "sh",
+            "-c",
+            _WRITE_AS_THE_GUEST,
+            "sh",
+            guest,
+            parent,
+            staged,
+            str(len(data)),
+            stdin=data,
+            timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+        )
         if result.returncode != 0:
             detail = result.stderr_text.strip()
             refusal = shell_refusal(detail)
@@ -821,7 +855,7 @@ class _WslcSandbox:
                 f"forge a line of the engine's own diagnostic, which is what decides this"
             )
         with tempfile.TemporaryDirectory(prefix="maf-wslc-stat-") as temporary:
-            result = await self._run(
+            result = await self._run_or_discard(
                 "container",
                 "cp",
                 f"{self._name}:{guest}",
@@ -859,7 +893,7 @@ class _WslcSandbox:
         would be blind below a directory that user cannot search. What asking the guest costs is on
         :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root` and in this package's README.
         """
-        probe = await self._run(
+        probe = await self._run_or_discard(
             "container",
             "exec",
             "--user",
