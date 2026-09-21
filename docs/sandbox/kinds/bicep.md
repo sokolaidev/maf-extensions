@@ -97,4 +97,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 | Validation, restore controls and diagnostic handling | Implemented | [Package README](../../../packages/maf-sandbox-bicep/README.md) |
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
 | Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged) |
-| Packaged rule catalogs and trusted diagnostic selection | Implemented for Bicep; Terraform summaries remain outside this change | [#1389](https://github.com/sokolaidev/maf-extensions/pull/1389) (merged); [#1386](https://github.com/sokolaidev/maf-extensions/issues/1386) (open) |
+| Packaged rule catalogs and trusted diagnostic selection | Implemented for Bicep | [#1386](https://github.com/sokolaidev/maf-extensions/issues/1386) (closed) by [#1389](https://github.com/sokolaidev/maf-extensions/pull/1389) (merged) |
