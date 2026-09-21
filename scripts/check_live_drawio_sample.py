@@ -72,7 +72,7 @@ def assess(output: str) -> list[str]:
         validations = [record for record in evidence if record["stage"] == "validation"]
         _require(
             validations[0]["diagnostic"] == rejected["diagnostic"]
-            and rejected["diagnostic"].startswith("Error:")
+            and "Result: refused" in rejected["diagnostic"]
             and validations[0]["delivered"] == 0,
             "Rejection does not match the converter result",
         )
@@ -93,7 +93,7 @@ def assess(output: str) -> list[str]:
             _require(
                 type(retry["attempt"]) is int
                 and retry["attempt"] == number
-                and retry["diagnostic"].startswith("Error:")
+                and "Result: refused" in retry["diagnostic"]
                 and retry["diagnostic"] == validations[number]["diagnostic"],
                 "Missing failed repair diagnostic",
             )
@@ -113,7 +113,7 @@ def assess(output: str) -> list[str]:
                 type(validation["delivered"]) is int
                 and validation["delivered"] == int(success)
                 and bool(validation["diagnostic"])
-                and validation["diagnostic"].startswith("Error:") is not success,
+                and ("Result: refused" in validation["diagnostic"]) is not success,
                 "Validation outcome does not match artifact delivery",
             )
         for call in calls:

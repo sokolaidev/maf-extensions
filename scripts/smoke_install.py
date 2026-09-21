@@ -691,7 +691,9 @@ def _smoke_maf_sandbox_drawio() -> str:
             raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
         result = asyncio.run(tool.func(xml=source))
         destinations = list(output_directory.glob("*/diagram.drawio"))
-        if not str(result).startswith("diagram.drawio (") or len(destinations) != 1:
+        rendered = _rendered(result)
+        # Separate items now: a completion line, the verdict, then the sink reference.
+        if "Result: created" not in rendered or len(destinations) != 1:
             raise SystemExit(f"FAIL: draw.io did not deliver an artifact: {result!r}")
         [destination] = destinations
         landed_call_id = destination.parent.name

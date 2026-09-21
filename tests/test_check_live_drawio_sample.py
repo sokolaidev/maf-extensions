@@ -51,18 +51,18 @@ def evidence():
             "call": "a" * 32,
             "sha256": "3" * 64,
             "delivered": 0,
-            "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": "Result: refused\nError: Cell 'api_to_database'.target must reference a vertex",
         },
         {
             "stage": "rejected",
             "delivered": 0,
-            "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": "Result: refused\nError: Cell 'api_to_database'.target must reference a vertex",
         },
         {
             "stage": "repair",
             "attempt": 1,
             "sha256": "2" * 64,
-            "diagnostic": "Error: Cell 'api_to_database'.target must reference a vertex",
+            "diagnostic": "Result: refused\nError: Cell 'api_to_database'.target must reference a vertex",
         },
         calls[1],
         {
@@ -133,7 +133,7 @@ def test_invalid_duration_fails(evidence, seconds):
         ("storage_cleanup", "failures", 1),
         ("sandbox_cleanup", "complete", False),
         ("corrupted", "target", "database"),
-        ("validation", "diagnostic", "Error: a different error"),
+        ("validation", "diagnostic", "Result: refused\nError: a different error"),
         ("validation", "call", "b" * 32),
         ("validation", "sha256", "f" * 64),
         ("authored", "sha256", ""),
@@ -177,13 +177,13 @@ def test_retries_require_each_failed_repair_diagnostic(evidence, attempts, tampe
                 "stage": "validation",
                 "call": str(number) * 32,
                 "sha256": repair["sha256"],
-                "diagnostic": f"Error: Invalid XML {number}",
+                "diagnostic": f"Result: refused\nError: Invalid XML {number}",
                 "delivered": 0,
             },
             {
                 "stage": "repair_rejected",
                 "attempt": number,
-                "diagnostic": f"Error: Invalid XML {number}",
+                "diagnostic": f"Result: refused\nError: Invalid XML {number}",
             },
         ]
         index += 4
@@ -197,7 +197,7 @@ def test_retries_require_each_failed_repair_diagnostic(evidence, attempts, tampe
     if tamper == "attempt":
         rejected["attempt"] = attempts
     elif tamper == "retry_result":
-        rejected["diagnostic"] = "Error: a stale result"
+        rejected["diagnostic"] = "Result: refused\nError: a stale result"
     elif tamper == "call":
         validations[1]["call"] = "a" * 32
     elif tamper == "xml":

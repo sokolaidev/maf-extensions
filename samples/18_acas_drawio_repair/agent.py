@@ -258,6 +258,25 @@ class StoredDiagrams:
             raise ExceptionGroup("Sample storage cleanup failed", failures)
 
 
+#: What the converter's result says when it produced a diagram.
+#:
+#: A verdict rather than a prefix on the text: the result is several items now, and the first
+#: is a fixed completion line. A model can write a plausible reply; it cannot write this into
+#: a tool result.
+CREATED = "Result: created"
+
+
+def produced_a_diagram(diagnostic: str) -> bool:
+    """Whether the converter actually produced one.
+
+    Anything else is a call to retry: the converter ran and rejected the source, or it never
+    ran at all — a refused external resource, an oversized input, an unavailable sandbox. The
+    contract reports the second as no verdict rather than as a refusal, so the sample asks the
+    positive question rather than enumerating the ways it can fail.
+    """
+    return CREATED in diagnostic
+
+
 async def validate_diagram(
     converter: Any, xml: str, timings: CallTimings, storage: StoredDiagrams
 ) -> str:
@@ -297,7 +316,7 @@ async def repair_diagram(
     )
     diagnostic = await validate(broken)
     expected = f"Cell '{BROKEN_EDGE}'.target must reference a vertex"
-    if not diagnostic.startswith("Error:") or expected not in diagnostic or storage.attempted:
+    if produced_a_diagram(diagnostic) or expected not in diagnostic or storage.attempted:
         raise RuntimeError("The deliberately broken edge was not rejected without delivery")
     measure("rejected", diagnostic=diagnostic, delivered=0)
     candidate = broken
@@ -316,7 +335,7 @@ async def repair_diagram(
         )
         count = len(storage.delivered)
         diagnostic = await validate(candidate)
-        if diagnostic.startswith("Error:"):
+        if not produced_a_diagram(diagnostic):
             if len(storage.delivered) != count or storage.attempted:
                 raise RuntimeError("A failed conversion attempted artifact delivery")
             measure("repair_rejected", attempt=attempt, diagnostic=diagnostic)
@@ -325,7 +344,8 @@ async def repair_diagram(
             raise RuntimeError("Converter success did not deliver exactly one artifact")
         landed, artifact = storage.delivered[-1]
         expected_path = f"{artifact.call_id}/diagram.drawio"
-        if landed.handle != expected_path or diagnostic != landed.display:
+        # The reference is the last part of the answer now; the verdict precedes it.
+        if landed.handle != expected_path or not diagnostic.endswith(landed.display):
             raise RuntimeError("Success did not identify this call's stored artifact")
         architecture(candidate)
         saved = await storage.store.read(expected_path)
