@@ -163,7 +163,10 @@ async def run(*, smoke: bool = False) -> int:
 
         print(evidence("CodeAct tool results", outputs, "CodeAct results returned"))
         # A correct reply alone does not prove that the sandbox ran the program.
-        if not any(output.strip() == f"stdout:\n{ANSWER}" for output in outputs):
+        # The result is several items now: a completion line, a verdict drawn from the
+        # tool's declared set, then the program's own text. The scaffold renders them
+        # in order, so the check reads the parts it needs rather than the whole.
+        if not any("Result: ok" in output and f"stdout:\n{ANSWER}" in output for output in outputs):
             raise RuntimeError("No successful CodeAct result contained the expected integer.")
         if reply is not None and ANSWER not in reply:
             raise RuntimeError("The model did not report the integer returned by CodeAct.")

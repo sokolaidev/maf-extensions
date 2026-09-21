@@ -122,7 +122,14 @@ def smoke_stack(sample, monkeypatch):
 
     backend = SimpleNamespace(aclose=close)
     router = SimpleNamespace(dispose_scope=AsyncMock(side_effect=purge))
-    tool = SimpleNamespace(invoke=AsyncMock(return_value=f"stdout:\n{sample.ANSWER}"))
+    # What the result contract renders: a completion line, the verdict, the program's text.
+    tool = SimpleNamespace(
+        invoke=AsyncMock(
+            return_value=(
+                f"The workload ran to a definitive result.\nResult: ok\nstdout:\n{sample.ANSWER}"
+            )
+        )
+    )
     monkeypatch.setattr(sample, "build_backend", lambda name, env: backend)
     monkeypatch.setattr(sample, "SandboxRouter", lambda *args, **kwargs: router)
     monkeypatch.setattr(sample, "tools_for", lambda *args: [tool])

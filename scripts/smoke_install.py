@@ -410,7 +410,7 @@ def _smoke_maf_sandbox_codeact() -> str:
             image="registry.invalid/python:3",
         )
     )
-    saved = asyncio.run(with_outputs(code="print(1)", outputs=["report.csv"]))
+    saved = _rendered(asyncio.run(with_outputs(code="print(1)", outputs=["report.csv"])))
     if landed != ["report.csv"] or "saved report.csv" not in saved:
         raise SystemExit(f"FAIL: the declared output did not land: {landed} / {saved!r}")
 
