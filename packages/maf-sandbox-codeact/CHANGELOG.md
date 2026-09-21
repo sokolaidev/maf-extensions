@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.19.0...maf-sandbox-codeact-v0.20.0) (2026-09-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codeact:** answer with an exit verdict the model can read without the program's text ([#1369](https://github.com/sokolaidev/maf-extensions/issues/1369))
+
+### Features
+
+* **codeact:** answer with an exit verdict the model can read without the program's text ([#1369](https://github.com/sokolaidev/maf-extensions/issues/1369)) ([882c138](https://github.com/sokolaidev/maf-extensions/commit/882c1384426dcf5c920b5af48d4496c2bac0a25f))
+* **core,hyperlight,codeact,tui:** collect isolated Hyperlight output files ([#1344](https://github.com/sokolaidev/maf-extensions/issues/1344)) ([8a2ea67](https://github.com/sokolaidev/maf-extensions/commit/8a2ea67c2da513c1e5dd4efcf3b6d62efef99bfb))
+
+
+### Fixes
+
+* require the tested agent-framework-core 1.19 floor ([#1346](https://github.com/sokolaidev/maf-extensions/issues/1346)) ([cbbbec5](https://github.com/sokolaidev/maf-extensions/commit/cbbbec501d436cbb6098d6f184a2f60b6c444435))
+
+
+### Documentation
+
+* clarify package setup, usage and limits ([#1370](https://github.com/sokolaidev/maf-extensions/issues/1370)) ([b0dd379](https://github.com/sokolaidev/maf-extensions/commit/b0dd3791cb18fab0b7c565e327ee872b4620c6f7))
+
 ## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.18.0...maf-sandbox-codeact-v0.19.0) (2026-09-19)
 
 
