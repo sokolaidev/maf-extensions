@@ -687,7 +687,7 @@ def _smoke_maf_sandbox_drawio() -> str:
         if tool.name != "create_drawio":
             raise SystemExit(f"FAIL: expected create_drawio, got {tool.name!r}")
         refused = asyncio.run(tool.func(xml="x" * (1024 * 1024 + 1)))
-        if "1 MiB" not in str(refused) or backend.keys or any(output_directory.iterdir()):
+        if "1 MiB" not in _rendered(refused) or backend.keys or any(output_directory.iterdir()):
             raise SystemExit("FAIL: draw.io did not reject oversized input before acquiring")
         result = asyncio.run(tool.func(xml=source))
         destinations = list(output_directory.glob("*/diagram.drawio"))
