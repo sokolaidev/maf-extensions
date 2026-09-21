@@ -1177,31 +1177,26 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
     nonroot = image == _NONROOT_IMAGE
 
     async def scenario() -> None:
+        if nonroot:
+            # The data plane can only mint root-owned directories (#722), so guest-authority
+            # preparation cannot build a base under a root-owned tree, and acquisition refuses
+            # rather than fall back to the host file plane (#1339). The base is one the guest
+            # could have made itself, or there is no sandbox.
+            with pytest.raises((PermissionError, OSError)):
+                await backend.acquire(key, spec)
+            return
+
         sandbox = await backend.acquire(key, spec)
         ran = await sandbox.exec("pwd", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT)
         assert ran.exit_code == 0, ran.stderr
         assert ran.stdout.strip() == spec.work_dir
 
-        # The data plane can only mint root-owned directories, so on a non-root image the
-        # guest cannot write its own base and the refusal is the expected result, not a
-        # failure of the preparation this test checks.
-        if nonroot:
-            with pytest.raises(PermissionError):
-                await sandbox.write_file(
-                    f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir
-                )
-        else:
-            await sandbox.write_file(
-                f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir
-            )
+        await sandbox.write_file(f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir)
         warm = await backend.acquire(key, spec)
         assert warm.instance_id == sandbox.instance_id
-        if not nonroot:
-            kept = await warm.exec(
-                "cat marker", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT
-            )
-            assert kept.exit_code == 0, kept.stderr
-            assert kept.stdout == "kept"
+        kept = await warm.exec("cat marker", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT)
+        assert kept.exit_code == 0, kept.stderr
+        assert kept.stdout == "kept"
 
         async with backend._client_pool.lease(default_binding()) as gc:
             sc = gc.get_sandbox_client(sandbox.sandbox_id)
@@ -1224,7 +1219,12 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
 
 
 class TestAnImageWhoseGuestIsNotRoot:
-    """The acquire-time gate, and the wall it rests on, against the service (#722, #950).
+    """The acquire-time gate, and the wall it rests on, against the service (#722, #950, #1339).
+
+    The fixture's base is ``/tmp`` rather than ``/maf-sandbox/work``: guest-authority
+    preparation refuses a base the guest cannot create, so a non-root sandbox exists only on a
+    base the guest could have made itself. The old host-plane creation of a root-owned base is
+    gone, and with it the write into it these tests once measured.
 
     Costs **two more billable sandboxes** when the environment names such an image, and nothing
     otherwise: the fixture's, and one `test_a_cold_refusal_deletes_the_sandbox_it_had_to_create`
@@ -1245,10 +1245,14 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = AcasSandboxBackend(_config())
         scope = f"e2e-nonroot-{uuid.uuid4()}"
         key = _key(scope)
+        # A guest-writable base, because guest-authority preparation now refuses `/maf-sandbox`
+        # on a non-root image (#1339): the guest cannot create there, and the file plane's
+        # root-owned mkdir is no longer used. `/tmp` is one every Linux image ships writable,
+        # so the sandbox this class needs can be acquired at all.
         spec = SandboxSpec(
             kind="e2e-nonroot",
             image=_NONROOT_IMAGE,
-            work_dir=_WORK,
+            work_dir="/tmp",
             requires=frozenset({Capability.EXEC}),
         )
         try:
@@ -1270,16 +1274,27 @@ class TestAnImageWhoseGuestIsNotRoot:
             "leg would assert nothing"
         )
 
-    def test_the_guest_cannot_write_into_the_service_created_base(self, nonroot: _Live):
-        planted = f"{_WORK}/refused-{uuid.uuid4().hex}.txt"
-        with pytest.raises(PermissionError):
-            nonroot.run(nonroot.sandbox.write_file(planted, "in\n", working_directory=_WORK))
+    def test_the_guest_cannot_create_under_the_root_owned_tree(self, nonroot: _Live):
+        """The wall the acquire-time refusal rests on (#722, #1339).
+
+        ``/`` is root-owned, so the guest cannot make ``/maf-sandbox`` — which is why
+        guest-authority preparation refuses a base there rather than letting the file plane
+        mint it root-owned. The acquire-time refusal itself is covered by
+        ``test_acquire_prepares_base_before_exec_and_repairs_warm_reuse[nonroot]``; this proves
+        the guest really lacks the authority the old host-plane creation stood in for, so the
+        refusal is denying a reach the guest never had.
+        """
+        probe = f"/maf-sandbox-probe-{uuid.uuid4().hex}"
+        made = nonroot.run(
+            nonroot.sandbox.exec(["mkdir", probe], working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert made.exit_code != 0, "the guest created under /, so this image's guest is root"
         absent = nonroot.run(
             nonroot.sandbox.exec(
-                ["test", "!", "-e", planted], working_directory="/", timeout=_EXEC_TIMEOUT
+                ["test", "!", "-e", probe], working_directory="/", timeout=_EXEC_TIMEOUT
             )
         )
-        assert absent.exit_code == 0, "a refused write still placed bytes"
+        assert absent.exit_code == 0, "the guest created the directory after all"
 
     def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
         """The fixture's failed removal compatibility result refuses before another create."""

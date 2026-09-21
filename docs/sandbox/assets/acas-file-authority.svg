@@ -32,7 +32,7 @@
   <text x="422" y="422" font-size="16" font-weight="400" fill="#526072">Guest may change it between</text>
   <path d="M 322 391 L 402 391" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#acas-file-authority-arrow)"/>
   <path d="M 722 391 L 772 391 L 772 349 L 822 349" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#acas-file-authority-arrow)"/>
-  <text x="32" y="294" font-size="17" font-weight="400" fill="#526072">Base-directory setup and the removal probe also use the service file API.</text>
+  <text x="32" y="294" font-size="17" font-weight="400" fill="#526072">The removal probe uses the service file API; base-directory setup runs as the guest.</text>
   <rect x="32" y="484" width="1116" height="60" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
   <text x="52" y="517" font-size="21" font-weight="600" fill="#243040">Read limits, timeouts and later disposal do not close the path-replacement window.</text>
 </svg>

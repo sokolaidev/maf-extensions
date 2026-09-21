@@ -63,6 +63,7 @@ from maf_sandbox.file_transfer import (
     SandboxFileRefused,
     SandboxShellTransferFailed,
     SandboxShellTransferUnfinished,
+    shell_refusal,
     write_file_over_exec,
 )
 from maf_sandbox.paths import (
@@ -249,6 +250,11 @@ _PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | _NEEDS_OBSERVED_REMOVAL | {Capab
 #: handed it fails to start where the data plane only did path arithmetic with it. Every path
 #: these commands touch is absolute and already confined, so the cwd decides nothing.
 _GUEST_COMMAND_WORKING_DIRECTORY = "/"
+
+#: Guest control commands run under the C locale so their diagnostics are libc's own words,
+#: which :func:`~maf_sandbox.file_transfer.shell_refusal` classifies. The write road sets this
+#: inside ``write_file_over_exec``; the directory-preparation command sets it here.
+_C_LOCALE = "export LC_ALL=C; "
 
 #: One bound for preparation, exec and observation; cleanup has its own equal bound.
 _PROBE_TIMEOUT_S = 30.0
@@ -632,7 +638,13 @@ class _AcasSandbox:
 
     @_with_client
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base through the data plane."""
+        """Establish the spec's base, creating any missing directories as the guest.
+
+        The unconfined stat that walks the base runs with the file plane's authority, but the
+        creation that follows does not: see :meth:`_create_directories`. A guest that cannot
+        create its own base is refused rather than served one the file plane made for it, so a
+        held sandbox's base is always one the workload could have made itself.
+        """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
@@ -643,9 +655,41 @@ class _AcasSandbox:
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
-        """Create each missing parent through the data plane."""
-        for directory in directories:
-            await self._sc.mkdir(directory)
+        """Create the missing base as the guest; the file plane's ``mkdir`` is never used.
+
+        The data plane creates every directory root-owned (#722), so a parent replaced by a
+        link between the ancestry check and creation could redirect a host-authority ``mkdir``
+        to a protected location the guest could not reach itself — the check and the creation
+        are separate service calls, and nothing holds the resolution across them (#1339).
+        Running ``mkdir`` as the guest bounds preparation to the guest's own reach: the kernel
+        applies the guest's permissions to the syscall, so a redirected creation can only land
+        where the guest could already have created, whatever a swap does to the path. Where the
+        guest cannot create its base, acquisition is refused rather than completed with more
+        authority than the workload has; this does not restore a host-authority fallback.
+
+        ``mkdir -p`` creates the whole missing suffix — ``directories`` is that suffix, deepest
+        last — and is idempotent, so a component another caller created in between is not an
+        error. It runs from ``/`` with an absolute, already-confined path, so the working
+        directory decides nothing, exactly as the write and removal commands do.
+        """
+        base = directories[-1]
+        result = await self._exec_text(
+            f"{_C_LOCALE}mkdir -p -- {shlex.quote(base)}",
+            working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
+            timeout=self._read_timeout,
+        )
+        if result.exit_code == 0:
+            return
+        detail = result.stderr.strip()
+        refusal = shell_refusal(detail)
+        error = _REFUSAL_ERRORS.get(refusal, OSError) if refusal is not None else OSError
+        raise error(
+            f"could not prepare the working directory {base!r} as the guest: "
+            f"{detail or f'mkdir exited {result.exit_code}'}. The data plane's directory "
+            "creation is host-authority and is not used, so a non-root guest needs a base it "
+            "can create — bake a guest-writable directory into the image or place work_dir "
+            "under one."
+        )
 
     @_with_client
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:

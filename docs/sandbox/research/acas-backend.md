@@ -7,6 +7,7 @@
 - ACAS control-plane credentials are host-owned and selected per request. Acquired wrappers capture a non-secret authority binding; later disposal resolves cleanup authority independently so another replica can clean up after the creator disappears. Credential objects and bearer tokens never enter the guest.
 - ACAS exec output loses arbitrary bytes before the SDK decodes it. The implemented solution uses bounded FIFO capture and chunked retrieval through guest execution, preserving exact stdout/stderr while retaining deadlines, cancellation, overflow refusal and cleanup semantics.
 - ACAS can enforce method-scoped HTTP policy on the tested HTTPS path, including custom methods, but its service matches method spelling case-insensitively and important surfaces remain unmeasured. The backend therefore withholds `EGRESS_METHODS` and refuses method-scoped rules rather than claiming literal enforcement.
+- ACAS working-directory preparation creates missing directories with guest authority and refuses a base the guest cannot create. The service stat exposes no ownership, so the host-authority file plane — which mints root-owned directories — cannot be bounded by an ownership check and is not used for preparation.
 - ACAS remains the reference `MICROVM` backend and the only shipped backend that declares directory listing. It is a remote, billable service: live evidence is separate from offline tests and must be run with disposable groups and explicit cleanup.
 
 ## Host-selected credentials
@@ -109,6 +110,22 @@ A live reuse measurement acquired a host-wide allowlist, changed the same key/ki
 The backend declares `{Egress.ALLOWLIST, Egress.CLOSED}` and never `UNRESTRICTED`; ACAS cannot express an unrestricted mode because the service policy is deny-by-default. A method-scoped rule therefore refuses at router preflight and direct backend acquisition with `SandboxCapabilityNotSupported`. The service measurement is evidence for a future capability, not its implementation acceptance.
 
 When method scope is eventually reconsidered, acceptance must cover an endpoint that accepts both GET and POST, a control policy where POST reaches, a scoped policy where GET reaches and POST is denied, custom methods, case behavior, redirects, precedence, wildcard overlap and the non-TLS path. A backend must declare enforceable tokens and compare policy changes during warm reuse; a raw SDK method field is not enough.
+
+## Working-directory preparation authority
+
+Measured 2026-09-21 against the disposable dev group `acas-ats-maf-swe-dev` (Sweden Central), `azure-containerapps-sandbox 0.1.0b4`, on prebuilt `python-3.13`, imported `bicep-sandbox:0.46.1` (root guests) and imported `python-nonroot:3.13` (guest uid 10001).
+
+### The service stat carries no ownership
+
+A raw `files/stat` payload carries `name`, `path`, `size`, `mode`, `isDir`, `isSymlink` and `modifiedTime` — no owner, uid or gid. `mode` is the low nine permission bits with the sticky and setuid bits stripped: `/tmp`, really `1777`, reports `511` (`0o777`). So core's `path_ancestors_are_host_owned`, which needs `(uid, mode)` per ancestor, cannot be answered from a stat; `mode` alone cannot tell a root-owned `0755` directory from a guest-owned one, nor see the sticky bit that makes `/tmp` safe to create under.
+
+### Why creation runs as the guest
+
+The data plane creates every directory root-owned (#722), and preparation's ancestry check and its creation are separate service calls, so a parent replaced between them could redirect a host-authority `mkdir` to a protected location the guest could not reach. With no ownership to bound it by, the reach rule cannot license a host-authority creation here. Preparation therefore issues `mkdir -p` as the guest over exec and refuses a base the guest cannot create (#1339). The kernel applies the guest's permissions to the syscall, so a redirected creation can only land where the guest could already have made one. This does not restore the host-authority write fallback #1266 removed.
+
+### Live evidence
+
+On `python-nonroot:3.13` the guest (uid 10001) could not `mkdir` under `/`; acquiring with a base under the root-owned `/maf-sandbox` tree was refused, while a `/tmp` base was prepared and usable. Root guests (`python-3.13`, `bicep-sandbox:0.46.1`) prepared, reused and repaired a nested `/maf-sandbox/...` base. The full live suite passed 58/58 and left zero sandboxes in the group.
 
 ## Remaining limits and operational boundaries
 

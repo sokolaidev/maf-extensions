@@ -66,29 +66,92 @@ def _disk_image(image_id: str, reference: str):
     return DiskImage(id=image_id, image=DiskImageSpec(base=reference))
 
 
-def test_acquire_creates_and_repairs_the_base_through_the_data_plane():
+def test_acquire_creates_and_repairs_the_base_as_the_guest():
+    """Preparation creates the base with guest authority, never the file plane's.
+
+    The data plane can only mint root-owned directories (#722), so a parent swapped between the
+    ancestry check and creation could redirect a host-authority ``mkdir``; preparation runs
+    ``mkdir -p`` as the guest instead, which the kernel bounds to the guest's reach (#1339).
+    Warm reuse finds the base and creates nothing; a deleted base is repaired the same way.
+    """
+
     async def scenario():
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
         key = SandboxKey("work-dir", "thread", "agent")
         spec = _spec_requiring(Capability.EXEC)
         first = await backend.acquire(key, spec)
-        assert spec.work_dir is not None
-        assert client.created_directories == ["/maf-sandbox", "/maf-sandbox/work"]
-        client.files[first.instance_id][spec.work_dir + "/keep"] = b"keep"
+        base = first._work_dir
+        assert base == "/maf-sandbox/work"
+        assert client.created_directories == [], "the host-authority file plane was used"
+        assert client.dir_creations == [(base, "/")]
+        client.files[first.instance_id][base + "/keep"] = b"keep"
         second = await backend.acquire(key, spec)
         assert first.instance_id == second.instance_id
-        assert len(client.created_directories) == 2
-        assert client.files[first.instance_id][spec.work_dir + "/keep"] == b"keep"
-        del client.files[first.instance_id][spec.work_dir]
+        assert client.dir_creations == [(base, "/")], "a warm base was recreated"
+        assert client.files[first.instance_id][base + "/keep"] == b"keep"
+        del client.files[first.instance_id][base]
         await backend.acquire(key, spec)
-        assert client.created_directories == [
-            "/maf-sandbox",
-            "/maf-sandbox/work",
-            "/maf-sandbox/work",
-        ]
+        assert client.created_directories == []
+        assert client.dir_creations == [(base, "/"), (base, "/")]
 
     asyncio.run(scenario())
+
+
+class _PrepClient:
+    """A client that records the guest command preparation runs and any host-plane mkdir."""
+
+    def __init__(self, *, exit_code: int = 0, stderr: str = "") -> None:
+        self.sandbox_id = "sbx-1"
+        self._sbx_path = ""
+        self._api_version = ""
+        self.execs: list[tuple[str, str]] = []
+        self.host_mkdirs: list[str] = []
+        self._exit_code = exit_code
+        self._stderr = stderr
+
+    async def mkdir(self, path):
+        self.host_mkdirs.append(path)
+
+    async def exec(self, command: str, *, working_directory: str):
+        self.execs.append((command, working_directory))
+        return SimpleNamespace(exit_code=self._exit_code, stdout="", stderr=self._stderr)
+
+
+def _prep_sandbox(client: _PrepClient):
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    return _AcasSandbox(client, 30.0, held=_Held("sbx-1", egress=(Egress.CLOSED, frozenset())))
+
+
+def test_create_directories_runs_one_guest_mkdir_and_never_the_file_plane():
+    """The whole missing suffix is one guest ``mkdir -p`` from ``/``; the file plane is unused.
+
+    Host authority (``sc.mkdir``) is simply never reached, so no swap between the ancestry
+    check and creation can select it — the property does not depend on when a swap lands.
+    """
+    client = _PrepClient()
+    sandbox = _prep_sandbox(client)
+    asyncio.run(sandbox._create_directories(("/maf-sandbox", "/maf-sandbox/work")))
+    assert client.host_mkdirs == []
+    assert client.execs == [("export LC_ALL=C; mkdir -p -- /maf-sandbox/work", "/")]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("mkdir: cannot create directory '/protected/x': Permission denied", PermissionError),
+        ("mkdir: not found", OSError),
+    ],
+)
+def test_a_guest_that_cannot_create_its_base_is_refused_without_a_host_fallback(stderr, expected):
+    """A failed guest creation refuses; it never falls back to the host-authority file plane."""
+    client = _PrepClient(exit_code=1, stderr=stderr)
+    sandbox = _prep_sandbox(client)
+    with pytest.raises(expected) as raised:
+        asyncio.run(sandbox._create_directories(("/protected/x",)))
+    assert type(raised.value) is expected, "the diagnostic selected the wrong error type"
+    assert client.host_mkdirs == []
 
 
 class _FakePager:
@@ -826,6 +889,18 @@ class _GuestSandboxClient(_FakeSandboxClient):
     async def exec(self, command: str, *, working_directory: str):
         if shlex.split(command)[:2] == ["sh", "-c"]:
             return SimpleNamespace(exit_code=0, stdout="", stderr="")
+        tokens = shlex.split(command)
+        if len(tokens) == 6 and tokens[2:5] == ["mkdir", "-p", "--"]:
+            # Guest-authority working-directory preparation (#1339): the exact
+            # `export LC_ALL=C; mkdir -p -- <base>` command, not a compound staging mkdir.
+            # Modelled apart from the compatibility probes `probes` counts, and it creates the
+            # base and its missing parents as the guest would, so warm reuse finds it present.
+            base = tokens[-1]
+            parts = [part for part in base.split("/") if part]
+            for depth in range(len(parts)):
+                self.files.setdefault("/" + "/".join(parts[: depth + 1]), None)
+            self._owner.dir_creations.append((base, working_directory))
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
         self.execs.append((command, working_directory))
         if isinstance(self._answer, Exception):
             raise self._answer
@@ -848,7 +923,11 @@ class _GuestGroupClient:
         self.clients: list[_GuestSandboxClient] = []
         self.files: dict[str, dict[str, bytes | None]] = {}
         self.cleanups: list[str] = []
+        #: Host-authority ``sc.mkdir`` calls. Working-directory preparation must never reach
+        #: this since #1339: it stays empty and ``dir_creations`` records the guest commands.
         self.created_directories: list[str] = []
+        #: Guest ``mkdir -p`` commands preparation issued: ``(base, working_directory)``.
+        self.dir_creations: list[tuple[str, str]] = []
 
     def get_sandbox_client(self, sandbox_id: str) -> _GuestSandboxClient:
         return self._client(sandbox_id)
@@ -1137,7 +1216,9 @@ class TestAnImageWhoseGuestIsNotRoot:
         original = _GuestSandboxClient.exec
 
         async def selective_rm(sc, command, *, working_directory):
-            if command.startswith("rm -- /.maf-authority-"):
+            if command.startswith("rm -- /.maf-authority-") or "mkdir -p --" in command:
+                # The authority probe and guest-authority base preparation are not what this
+                # test drives; only the removal under test carries the synthesized exit code.
                 return await original(sc, command, working_directory=working_directory)
             return _GuestAnswer(exit_code=exit_code)
 
