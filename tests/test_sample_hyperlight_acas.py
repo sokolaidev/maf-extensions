@@ -124,7 +124,7 @@ def smoke_stack(sample, monkeypatch):
 
     backend = SimpleNamespace(aclose=close)
     router = SimpleNamespace(dispose_scope=AsyncMock(side_effect=purge))
-    # What the result contract renders: a completion line, the verdict, the program's text.
+    # Separate items exercise the scaffold's rendering of a structured tool result.
     tool = SimpleNamespace(
         invoke=AsyncMock(
             return_value=[
