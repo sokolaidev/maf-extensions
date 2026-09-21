@@ -39,7 +39,10 @@ def assess(output: str, *, engine: str, version: str, backend: str) -> list[str]
         for line in block.splitlines():
             if line.startswith("  {"):
                 try:
-                    diagnostics.append(json.loads(line))
+                    item = json.loads(line)
+                    if isinstance(item, dict) and item.get("type") == "terraform_diagnostics":
+                        continue
+                    diagnostics.append(item)
                 except ValueError:
                     failures.append("invalid tool diagnostic")
         if (

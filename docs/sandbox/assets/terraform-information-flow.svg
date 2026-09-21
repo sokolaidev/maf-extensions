@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 750" width="1180" height="750" role="img" aria-labelledby="terraform-title terraform-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="terraform-title">Terraform and OpenTofu: reports do not write host files</title>
-  <desc id="terraform-desc">Terraform or OpenTofu validation and formatting are source tools. The wrapper declares trusted source_integrity while the workload claim remains untrusted. Completion, declared verdicts, fixed failure reasons and guidance have effective label trusted/C. Validation answers valid or invalid; formatting answers changed or unchanged. Incomplete calls have no verdict. Engine reports and formatted-file mappings have effective label untrusted/C and may be hidden by FIDES. C includes host classification and any stricter argument confidentiality. Later host file tools persist formatted files only after conversation and argument labels pass their integrity and confidentiality limits and host approval policy. The source tools operate in a disposable guest and do not write the host file store.</desc>
+  <desc id="terraform-desc">Terraform or OpenTofu validation and formatting are source tools. The wrapper declares trusted source_integrity while the workload claim remains untrusted. Completion, declared verdicts, diagnostic summaries, fixed failure reasons and guidance have effective label trusted/C. Validation answers valid or invalid; formatting answers changed or unchanged. Incomplete calls have no verdict. Engine reports and formatted-file mappings have effective label untrusted/C and may be hidden by FIDES. C includes host classification and any stricter argument confidentiality. Later host file tools persist formatted files only after conversation and argument labels pass their integrity and confidentiality limits and host approval policy. The source tools operate in a disposable guest and do not write the host file store.</desc>
   <defs>
     <marker id="terraform-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
@@ -27,14 +27,15 @@
   <text x="459" y="249" font-size="15" fill="#526072">Engine details or changed files</text>
   <text x="459" y="276" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">untrusted / C</text>
   <rect x="442" y="302" width="294" height="93" rx="8" fill="#eeebfa" stroke="#8b7fd4" stroke-width="1.5"/>
-  <text x="459" y="329" font-size="18" font-weight="600" fill="#243040">Completion + verdict</text>
-  <text x="459" y="356" font-size="15" fill="#526072">Fixed failure reasons and guidance</text>
+  <text x="459" y="322" font-size="18" font-weight="600" fill="#243040">Completion + verdict</text>
+  <text x="459" y="343" font-size="15" fill="#526072">Diagnostic presence + severity</text>
+  <text x="459" y="363" font-size="15" fill="#526072">Fixed failure reasons and guidance</text>
   <text x="459" y="383" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">trusted / C</text>
   <path d="M 756 260 H 794" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#terraform-arrow)"/>
   <text x="754" y="241" font-size="14" fill="#526072">FIDES</text>
   <rect x="806" y="112" width="342" height="300" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
   <text x="826" y="148" font-size="22" font-weight="600" fill="#243040">Model</text>
-  <text x="826" y="180" font-size="17" fill="#243040">Reads completion and verdict</text>
+  <text x="826" y="180" font-size="17" fill="#243040">Reads verdict and summary</text>
   <text x="826" y="207" font-size="16" fill="#526072">Engine output may be hidden.</text>
   <text x="826" y="233" font-size="19" font-weight="600" fill="#243040">Conversation label</text>
   <text x="826" y="268" font-size="17" fill="#526072">Visible text affects integrity.</text>

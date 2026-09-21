@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, cast
 
+from ._diagnostics import Diagnostic
 from ._spec import TerraformEngine
 
 MAX_REPORT_BYTES = 1024 * 1024
@@ -25,6 +26,7 @@ class ReportOutcome:
     completed: bool
     valid: bool
     reason: str = ""
+    diagnostics: tuple[Diagnostic, ...] = ()
 
     @property
     def text(self) -> str:
@@ -208,6 +210,7 @@ def report_outcome(raw: bytes, engine: TerraformEngine, *, hidden: bool = False)
     ):
         raise ValueError("unsupported or inconsistent validation verdict")
     counted = {"error": 0, "warning": 0}
+    checked: list[Diagnostic] = []
     lines: list[str] = []
     for item in cast(list[Any], diagnostics):
         diagnostic = _mapping(item)
@@ -219,6 +222,16 @@ def report_outcome(raw: bytes, engine: TerraformEngine, *, hidden: bool = False)
             raise ValueError("invalid diagnostic")
         severity = diagnostic["severity"]
         counted[severity] += 1
+        location = diagnostic.get("range")
+        filename = (
+            cast(dict[str, Any], location).get("filename") if isinstance(location, dict) else None
+        )
+        checked.append(
+            Diagnostic(
+                "error" if severity == "error" else "warning",
+                filename if isinstance(filename, str) else None,
+            )
+        )
         if not hidden:
             # JSON preserves locations/snippets without trusting optional schema extensions.
             lines.append(json.dumps(diagnostic, ensure_ascii=True))
@@ -239,4 +252,4 @@ def report_outcome(raw: bytes, engine: TerraformEngine, *, hidden: bool = False)
         lines.append(
             "Guest diagnostic text and locations withheld because argument names are hidden."
         )
-    return ReportOutcome(chr(10).join(lines), True, valid)
+    return ReportOutcome(chr(10).join(lines), True, valid, diagnostics=tuple(checked))
