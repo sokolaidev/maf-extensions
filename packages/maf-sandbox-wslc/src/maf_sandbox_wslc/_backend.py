@@ -1546,8 +1546,13 @@ class WslcSandboxBackend:
                 try:
                     failure = await self.dispose(key, kind=spec.kind)
                     if failure is not None:
+                        # Cleanup said it could not remove it, and disposal has already
+                        # dropped the registry entry — so nothing else remembers that this
+                        # container is half-prepared and may still be running setup.
+                        self._undiscarded.add(name)
                         logger.warning("sandbox setup cleanup failed: %s", failure)
                 except Exception as failure:
+                    self._undiscarded.add(name)
                     logger.warning("sandbox setup cleanup raised: %s", failure)
                 raise
             return sandbox

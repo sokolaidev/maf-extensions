@@ -395,6 +395,36 @@ def test_a_discard_forgets_what_the_container_had_answered():
     assert _NAME not in backend._command_probes
 
 
+def test_a_container_left_half_prepared_by_a_failed_cleanup_is_not_reused():
+    """Setup failed and the cleanup could not remove it, so setup may still be running.
+
+    Disposal drops the registry entry, so without remembering the name nothing else knows
+    this container is half-prepared — and the next acquire would list it and reuse it.
+    """
+    machine = _machine(
+        running=[],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        if _CREATE_DIRECTORIES in args:
+            return _WslcResult(1, b"", b"setup refused")
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(RuntimeError, match="could not create the working directory"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert fake.matching("container", "remove"), "cleanup was attempted"
+    with pytest.raises(RuntimeError, match="may still be running something"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]

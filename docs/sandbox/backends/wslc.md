@@ -49,11 +49,11 @@ Numeric IDs come from container inspection. Named users or missing groups requir
 
 ## Parent swaps
 
-![WSLC checks the path, and a guest can then replace a checked parent with a link before the placement command starts. A write runs as the image's user, so the swap can send it only where that user can already write; a root-only target refuses it. Working-directory setup runs as root, but it confirms each directory with cd -P and pwd -P before creating anything inside it, so a swapped parent or a planted link is refused. Both cases stay inside the container.](../assets/wslc-write-window.svg)
+![WSLC checks the path, and a guest can then replace a checked parent before the placement command starts. A write runs as the image's user, so the swap can send it only where that user can already write; a root-only target refuses it. Working-directory setup runs as root and compares cd -P with pwd -P before creating anything inside a directory, which rules out a component replaced by a link but not a different real directory renamed into the same name. Both cases stay inside the container.](../assets/wslc-write-window.svg)
 
 The path check and the placement are separate commands. A guest can replace a checked parent with a link between them. A link present during the check is refused.
 
-A write runs as the image's user, so a swap can send it only where that user can already write. This is a bound, not atomicity: another place that user can write is still reachable. Setup runs as root, but a swapped parent or a link planted where a directory was missing is refused.
+A write runs as the image's user, so a swap can send it only where that user can already write. This is a bound, not atomicity: another place that user can write is still reachable. Setup runs as root and refuses a component replaced by a **link**, including one planted where a directory was missing — but not a different real directory renamed into the same name, which is the residual below.
 
 Cancelling before the placement command starts writes nothing. Cancelling after it starts is not a rollback. The host closes stdin, and the command then refuses short content. A write whose bytes had all arrived still lands. A `.maf-<hex>.part` sibling can remain if the command itself is interrupted.
 
@@ -104,7 +104,7 @@ The backend starts no scheduler. See the [retention example](../../../packages/m
 | Area | State | Tracking |
 |---|---|---|
 | Commands, guest-owned inputs, call scope and disposal | Implemented | [Package README](../../../packages/maf-sandbox-wslc/README.md) |
-| Parent swaps at placement | Bounded for writes by the image's user; refused for setup | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (closed) by [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged) |
+| Parent swaps at placement | Bounded for writes by the image's user; link replacement refused for setup, renamed-directory residual stated | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (closed) by [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged) |
 | Output reads and listing | Withheld pending an adequate engine interface | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open), [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (open), [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (open) |
 | Delete, reclaim and reset | Withheld | [Cleanup contract](../tool-call.md) |
 | Temporary host disk use during stat | Explicit limit; requires host quotas | [Package README](../../../packages/maf-sandbox-wslc/README.md) |
