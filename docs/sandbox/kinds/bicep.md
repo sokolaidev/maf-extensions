@@ -12,10 +12,10 @@ See the [package README](../../../packages/maf-sandbox-bicep/README.md) for inst
 | Required capabilities | `EXEC`, `FILES_IN` |
 | Guest software | Bicep CLI and the commands required by the supplied image |
 | Network modes | `ALLOWLIST` by default; host may select `CLOSED` or `UNRESTRICTED` |
-| Work directory | `/maf-sandbox/work`, with `bicepconfig.json` at its root |
+| Work directory | `/maf-sandbox/work`, with a package-supplied config in each call directory |
 | Isolation | The host's minimum; the kind does not raise it |
 | Cleanup | Disposal by default; explicit `Cleanup.RECLAIM` can reuse a supported sandbox |
-| Result | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, any refusal this tool wrote, the compiler's output, then the standing sentence |
+| Result | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, trusted refusals and selected diagnostics, the compiler's output, then the standing sentence |
 
 The spec does not declare an OS family. The host must select an image that supports the compiler commands. A backend lacking the required capabilities or network mode is refused at attachment.
 
@@ -23,13 +23,15 @@ The spec does not declare an OS family. The host must select an image that suppo
 
 1. Resolve requested names against the caller's file listing.
 2. Read the original listing entries through the session.
-3. Write every selected file into a fresh call directory.
+3. Stage the packaged `bicepconfig.json`, then every selected file, in a fresh call directory.
 4. Build templates with `bicep build` and parameter files with `bicep build-params`. Run lint as applicable.
 5. Format the compiler's diagnostics, then let core clean up the call.
 
 ![All selected files are staged before compilation. For each file, Bicep builds the template or parameter file, then lints it. The host's network mode applies to every phase: closed access disables restore; other modes permit restore within their limits. The tool formats every phase report. Restore failures, timeouts and execution or report-parsing failures leave validation incomplete. Other diagnostics report compiler errors and warnings. No diagnostics covers only what was checked; hidden or empty output does not establish success. Every normal return includes fixed guidance, and core cleans up.](../assets/bicep-validation-flow.svg)
 
 All files are staged before compilation so local modules and parameter-file references resolve together. The call directory also holds compiled output, the module cache and the temporary profile.
+
+The package owns the linter configuration and compiler-code catalog. The config enumerates every linter rule in its recorded upstream release, including rules set to `off`. It preserves upstream defaults plus the suite's `no-unused-params=error` and `use-recent-api-versions=warning` overrides. Every call uploads its own config before compilation, including on warm reuse. An upload failure stops validation. A manifest permits 63 source files and reserves the remaining transfer slot for configuration. The image supplies the compiler; its version is independent of the catalog's source release.
 
 Paths allow `[A-Za-z0-9._/-]` and reject `..` segments. The listing's key is used for reads. Unsafe names do not cause the listing to be echoed; ordinary missing names can receive suggestions.
 
@@ -66,6 +68,10 @@ All driver severity defaults and invocation overrides are validated before resul
 
 What this tool says about its own refusal goes in `trusted_output`. The kind writes the refusal templates and may echo short, printable names the model supplied visibly; hidden or unsafe names are identified by argument position. A "did you mean" hint lists names from the file store, whose integrity is not established, so the hint goes in `output` with the compiler's text while the sentence introducing it stays readable.
 
+When diagnostics exist, a separate `trusted_output` item contains a JSON summary with `type="bicep_diagnostics"`. Its `diagnostics` records contain only `file`, `rule` and `severity`. The kind loads its vocabulary at attachment from packaged `bicepconfig.json` rule names and `compiler_codes.json`, and returns those constants for exact matches. Severity selects `error`, `warning`, `note` or `none` after SARIF severity resolution. Guest descriptors cannot add trusted identifiers.
+
+Files select argument references such as `files[0]` through matches against successfully staged paths. Absolute reports may include a backend-owned base; attribution requires the complete call-directory component and an exact staged path beneath it. A filename suffix alone cannot identify a file. Raw paths and hidden names never enter the summary. Unknown locations select `unattributed`; duplicate destinations use their first argument position. Records are deduplicated across phases, sorted and capped at 128. The Boolean fields `unrecognized_diagnostics`, `unattributed_locations` and `truncated` report gaps without exposing unknown text or counts. An empty selected subset does not mean the report is clean. Summary items retain the call's confidentiality. Completion and verdict still cover every requested file, including failures that prevent a definitive result.
+
 ![Bicep validation is a source tool. Its wrapper declares trusted integrity to the framework while retaining an untrusted workload claim. Diagnostics are untrusted content; fixed guidance is trusted content. Both retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. Later calls to file writers or other tools face the destination's integrity and confidentiality policy.](../assets/bicep-information-flow.svg)
 
 The wrapper exposes `source_integrity="trusted"` and keeps the workload claim in `maf_sandbox_derived_integrity`. It rebuilds the fixed guidance on every normal return, including refusals.
@@ -91,3 +97,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 | Validation, restore controls and diagnostic handling | Implemented | [Package README](../../../packages/maf-sandbox-bicep/README.md) |
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
 | Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged) |
+| Packaged rule catalogs and trusted diagnostic selection | Implemented for Bicep | [#1386](https://github.com/sokolaidev/maf-extensions/issues/1386) (closed) by [#1389](https://github.com/sokolaidev/maf-extensions/pull/1389) (merged) |

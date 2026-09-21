@@ -183,10 +183,14 @@ def _commands(backend: InProcessSandboxBackend) -> list[tuple[str, str, float]]:
 
 
 def _written(backend: InProcessSandboxBackend) -> Mapping[str, str]:
-    """Every file written into this backend's sandbox, decoded, reclaimed ones included."""
+    """Staged source files, including reclaimed ones; configuration has separate coverage."""
     sandbox = backend.sandbox
     assert isinstance(sandbox, _KeepsWhatItWrote), "every sandbox in this module keeps its writes"
-    return sandbox.written_files
+    return {
+        path: text
+        for path, text in sandbox.written_files.items()
+        if not path.endswith("/bicepconfig.json")
+    }
 
 
 def _context(store: InMemoryStore, *, thread_id: str | None = "thread-1") -> CallerContext:
@@ -365,8 +369,9 @@ class TestWriteOrdering:
         _run(_tool(store, backend), ["main.bicep", "modules/db.bicep"])
 
         kinds = [k for k, c in events if not (k == "exec" and _is_core_removal(c))]
-        assert kinds == ["write", "write"] + ["exec"] * 4, events
-        assert kinds.index("exec") == 2, (
+        assert kinds == ["write"] * 3 + ["exec"] * 4, events
+        assert events[0] == ("write", "bicepconfig.json")
+        assert kinds.index("exec") == 3, (
             f"a file was compiled before every file had been written: {events}"
         )
 
@@ -382,7 +387,8 @@ class TestWriteOrdering:
         written_before_first_exec = [
             path for kind, path in events[: [k for k, _ in events].index("exec")] if kind == "write"
         ]
-        assert len(written_before_first_exec) == 2, events
+        assert len(written_before_first_exec) == 3, events
+        assert written_before_first_exec[0] == "bicepconfig.json"
         assert any(p.endswith("main.bicep") for p in written_before_first_exec), events
 
 
@@ -759,7 +765,7 @@ class TestConcurrentRounds:
         assert "b.bicep" in second and "a.bicep" not in second
 
     def test_the_round_directory_sits_under_the_work_dir(self):
-        """`bicepconfig.json` is at the work-dir root; Bicep finds it by walking up."""
+        """Each call owns a directory for its config and sources."""
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
@@ -768,7 +774,6 @@ class TestConcurrentRounds:
 
         (path,) = _written(backend)
         assert path.startswith(f"{_WORK_DIR}/")
-        # Not the root itself — that is where bicepconfig.json lives.
         assert path != f"{_WORK_DIR}/main.bicep"
 
     def test_the_compiler_runs_in_the_round_directory(self):
@@ -864,56 +869,19 @@ class TestDeployWorkflowStaysOffTheApplication:
 
 
 class TestConfigDiscovery:
-    """The image must ship `bicepconfig.json` at the root the tool writes under.
+    """Bicep discovers the staged config by walking up from nested sources."""
 
-    Bicep resolves that file only by walking up from the source, and the pinned CLI has no
-    `--config-file` flag on `build` or `lint`. So if the image's path and `_WORK_DIR` ever
-    drift apart, the config is simply never found and `bicep lint` falls back to its
-    built-in defaults — while still returning parseable SARIF and rendering diagnostics
-    normally. Nothing else in this suite would notice, which is the whole reason this test
-    reaches outside the package to read the Dockerfile.
-
-    The image is a *deployment* artifact and lives with whichever repository builds it — it
-    did not come along when these packages were extracted.  So this runs where the image is
-    present and skips where it is not; the deploying repository owns the other half of the
-    guard, asserting its Dockerfile against this package's published ``_WORK_DIR``.  Both
-    halves read the same constant, which is what keeps them from drifting apart.
-    """
-
-    def _dockerfile(self):
-        import pathlib
-
-        import maf_sandbox_bicep
-
-        distribution = pathlib.Path(maf_sandbox_bicep.__file__).parents[2]
-        candidates = [
-            # Beside the package, when a repository holds both.
-            distribution.parents[1] / "images" / "bicep-sandbox" / "Dockerfile",
-            distribution / "images" / "bicep-sandbox" / "Dockerfile",
-        ]
-        for path in candidates:
-            if path.is_file():
-                return path
-        return None
-
-    def test_the_image_puts_bicepconfig_at_the_work_dir_root(self):
-        from maf_sandbox_bicep._tool import _WORK_DIR
-
-        dockerfile = self._dockerfile()
-        if dockerfile is None:
-            pytest.skip(
-                "the bicep-sandbox image is not in this repository — the repository that "
-                "builds it asserts its Dockerfile against maf_sandbox_bicep's _WORK_DIR"
-            )
-
-        text = dockerfile.read_text(encoding="utf-8")
-        assert f"COPY bicepconfig.json {_WORK_DIR}/bicepconfig.json" in text, (
-            f"the image must COPY bicepconfig.json to {_WORK_DIR}/, the root the tool writes "
-            "each validation under — Bicep finds it only by walking up from the source file"
-        )
+    def test_config_is_staged_above_nested_sources(self):
+        store = InMemoryStore({"nested/main.bicep": "x"})
+        backend = _fake_backend()
+        _run(_tool(store, backend), ["nested/main.bicep"])
+        (source,) = _written(backend)
+        call_directory = source.removesuffix("/nested/main.bicep")
+        assert isinstance(backend.sandbox, _KeepsWhatItWrote)
+        assert f"{call_directory}/bicepconfig.json" in backend.sandbox.written_files
 
     def test_the_round_directory_is_a_child_of_that_root(self):
-        """One level down, so the walk-up reaches the config in a single step."""
+        """The call directory isolates the staged config and sources."""
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
@@ -1278,7 +1246,9 @@ class TestARewrittenArgumentIsNeverQuoted:
         self._rewrite(monkeypatch, name)
 
         class _RefusesToWrite(_KeepsWhatItWrote):
-            async def write_file(self, *args, **kwargs):
+            async def write_file(self, path, *args, **kwargs):
+                if path == "bicepconfig.json":
+                    return await super().write_file(path, *args, **kwargs)
                 raise RuntimeError("no space left on device")
 
         backend = _fake_backend(_RefusesToWrite(default_stdout=_EMPTY_SARIF))

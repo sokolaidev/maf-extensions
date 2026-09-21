@@ -39,6 +39,7 @@ from maf_sandbox.maf import (
     sandboxed_tool,
 )
 
+from ._catalog import FILE_REFERENCES, BicepCatalog, diagnostic_summary, load_catalog
 from ._paths import resolve_listed_path
 from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
 
@@ -131,21 +132,7 @@ _MODULE_HOSTS = (_MCR_HOST, _MCR_DATA_HOST, _MODULE_INDEX_REDIRECT_HOST, _MODULE
 #: open posture is a dev convenience rather than an exfiltration surface).
 _EGRESS_MODES = frozenset({Egress.UNRESTRICTED, Egress.ALLOWLIST, Egress.CLOSED})
 
-#: Root for everything shared with the sandbox: `bicepconfig.json` at the top, and one
-#: subdirectory per validation beneath it.
-#:
-#: A dedicated path rather than `/tmp/work` or the image's own tree.  `/tmp` is a plausible
-#: mount point — anything that mounts a tmpfs over it would hide the config baked into the
-#: image, and the symptom would be invisible (see below) — while a path nothing else owns
-#: cannot be shadowed by accident and says plainly whose files these are.
-#:
-#: `bicepconfig.json` has to sit at this exact root.  Bicep resolves it ONLY by walking up
-#: from the source file — verified against the pinned CLI, which has no `--config-file` flag
-#: on either `build` or `lint` — so a config anywhere else is simply never found and the
-#: linter silently falls back to its built-in defaults.  That failure looks completely
-#: healthy: SARIF still parses, diagnostics still render, just against a weaker rule set than
-#: the repo asked for.  `TestConfigDiscovery` pins the image against this constant, and the
-#: sandbox CI checks the built image really contains the file, so neither can drift.
+#: Each call stages its own config and sources below this root, including on warm reuse.
 _WORK_DIR = "/maf-sandbox/work"
 
 # Fixed bicep command templates — no agent text interpolated.
@@ -155,7 +142,11 @@ _WORK_DIR = "/maf-sandbox/work"
 # Note: `bicep build` emits SARIF on stderr; `2>&1` merges it into stdout so both legs read
 # `.stdout` uniformly.  `bicep lint` emits SARIF on stdout natively.
 # Bicep writes its module cache under HOME and its profile under the temporary directory.
-_BUILD_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep build {path} --diagnostics-format sarif 2>&1 || true'
+# Compiled JSON must not overwrite the staged policy when a source is named bicepconfig.bicep.
+_BUILD_CMD = (
+    'HOME="$PWD" TMPDIR="$PWD" bicep build {path} --diagnostics-format sarif '
+    "--outfile /dev/null 2>&1 || true"
+)
 
 # `.bicepparam` is a parameter file, not a template, and `bicep build` refuses it outright:
 #   The specified input "…/main.bicepparam" was not recognized as a Bicep file.
@@ -189,7 +180,9 @@ _UNREAD_IS_NOT_A_PASS = (
     "Anything you cannot read here is the compiler's own text, or the file listing a name "
     "did not match, or nothing at all. The completion line and any verdict above it are this "
     "tool's own answer: read those, and report the files as unvalidated where there is no "
-    "verdict."
+    "verdict. The diagnostic summary contains recognized rule identifiers and severities; "
+    "files[N] refers to the corresponding input argument. It omits messages and source "
+    "positions. Unknown, unattributed or truncated findings do not mean a clean check."
 )
 
 
@@ -274,8 +267,9 @@ def make_bicep_tools(
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """
+    catalog = load_catalog()
     return sandboxed_tool(
-        lambda session: _bicep_validate_tool(session, file_store, exec_timeout_seconds),
+        lambda session: _bicep_validate_tool(session, file_store, exec_timeout_seconds, catalog),
         router=router,
         context=context,
         agent_id=agent_id,
@@ -302,6 +296,7 @@ def _bicep_validate_tool(
     session: SandboxToolSession,
     store: AgentFileStore,
     timeout: int,
+    catalog: BicepCatalog,
 ) -> Callable[..., Awaitable[SandboxResult]]:
     """Build the ``bicep_validate`` body for one attached tool.
 
@@ -320,6 +315,12 @@ def _bicep_validate_tool(
         key = session.key()
         if isinstance(key, str):
             return SandboxResult(completed=False, trusted_output=(key,))
+
+        if len(files) > min(len(FILE_REFERENCES), session.spec.files_in.max_files - 1):
+            return SandboxResult(
+                completed=False,
+                trusted_output=("Error: the validation manifest exceeds the file-count limit.",),
+            )
 
         # Asked once for the whole list: the middleware may have rewritten a variable
         # reference into any of these, and its answer is what a refusal renders instead of the
@@ -349,8 +350,7 @@ def _bicep_validate_tool(
         listed_by_name = {entry.name: entry for entry in listing}
 
         # Fresh directories keep stale or concurrent inputs out of this validation.
-        # Bicep finds the parent's bicepconfig.json by walking up from the source, so cleanup
-        # removes only the call's inputs, module cache, and temporary profile.
+        # The nearest config belongs to this call, so a reused image cannot change its policy.
         call_directory = session.guest_call_path()
 
         # Validate each name against that listing (the injection guard).
@@ -404,6 +404,18 @@ def _bicep_validate_tool(
         sandbox = await session.acquire(key)
         if isinstance(sandbox, str):
             return SandboxResult(completed=False, trusted_output=(sandbox,))
+
+        if validated:
+            try:
+                await sandbox.write_file(
+                    "bicepconfig.json", catalog.config, working_directory=call_directory
+                )
+            except Exception as exc:
+                logger.warning("bicep_validate: config staging failed: %s", error_detail(exc))
+                return SandboxResult(
+                    completed=False,
+                    trusted_output=("Error: could not stage the packaged Bicep configuration.",),
+                )
 
         # Two passes, and the order is load-bearing: every file is written before ANY of them
         # is compiled.
@@ -493,15 +505,19 @@ def _bicep_validate_tool(
         # `main.bicep`). Keying on the listing alone leaves the compiler's own spelling
         # unmatched, which is the spelling that reaches the model.
         renames: dict[str, str] = {}
+        references: dict[str, str] = {}
+        positions: dict[str, str] = {}
+        for _listed, guest_path, position in validated:
+            positions.setdefault(guest_path, FILE_REFERENCES[position])
         for entry_name, entry_label, entry_path in written:
             guest_relative = entry_path.removeprefix(call_directory).lstrip("/")
-            # The absolute path as well: it is what Bicep was handed and what it reports back,
-            # so it is the key that makes the match exact rather than a suffix guess.
+            # Keep the call-relative path so attribution can identify the complete call subtree.
             for key in (entry_name, guest_relative, entry_path):
                 if key:
                     # Overwriting is safe because `hidden_at` gives one destination one label:
                     # two entries reaching the same key agree on what it renders as.
                     renames[key] = entry_label
+                    references[key] = positions[entry_path]
 
         for name, label, sandbox_path in written:
             for phase, template in (
@@ -537,7 +553,13 @@ def _bicep_validate_tool(
             # A verdict only where the compiler answered for every file it was given: a
             # call missing one is not a pass for the rest, and completed=False says so.
             verdict=("valid" if all(o.clean for o in phases) else "invalid") if ran else None,
-            trusted_output=tuple(notes),
+            trusted_output=tuple(notes)
+            + diagnostic_summary(
+                (diagnostic for outcome in phases for diagnostic in outcome.diagnostics),
+                catalog,
+                references,
+                guest_call_directory=call_directory,
+            ),
             output=tuple(outcome.text for outcome in phases),
         )
 
@@ -546,7 +568,7 @@ def _bicep_validate_tool(
     ) -> SandboxResult:
         """Run ``bicep build`` and ``bicep lint`` on Bicep files inside a sandboxed VM.
 
-        Validates that the named files pass the Bicep compiler and linter under the repo
+        Validates that the named files pass the Bicep compiler and linter under the packaged
         ``bicepconfig.json`` (T2 — compiler truth rather than LLM self-check).  Call this
         after writing the files with ``file_access_write`` and before reporting them.
 
@@ -595,6 +617,7 @@ class _PhaseOutcome:
     text: str
     ran: bool
     clean: bool
+    diagnostics: tuple[dict[str, Any], ...] = ()
 
 
 async def _run_phase(
@@ -695,5 +718,8 @@ async def _run_phase(
             f"{report}",
             False,
             False,
+            tuple(diagnostics),
         )
-    return _PhaseOutcome(report, True, not any(d.get("level") == "error" for d in diagnostics))
+    return _PhaseOutcome(
+        report, True, not any(d.get("level") == "error" for d in diagnostics), tuple(diagnostics)
+    )

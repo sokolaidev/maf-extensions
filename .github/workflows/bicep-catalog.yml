@@ -1,0 +1,78 @@
+name: Bicep diagnostic catalog
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bicep-diagnostic-catalog
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Generate catalogs from the latest stable release
+        run: python3 scripts/update_bicep_catalog.py --body-file "$RUNNER_TEMP/bicep-catalog-pr.md"
+
+      - name: Validate the catalogs and trusted summaries
+        run: |
+          uv sync --locked
+          uv run pytest -q tests/test_update_bicep_catalog.py packages/maf-sandbox-bicep/tests/test_bicep_catalog.py packages/maf-sandbox-bicep/tests/test_bicep_workload.py
+
+      - name: Propose the catalog update
+        id: proposal
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          branch: antsok-bicep-catalog-update
+          title: "feat(bicep): refresh the packaged diagnostic catalog"
+          commit-message: "feat(bicep): refresh the packaged diagnostic catalog"
+          body-path: ${{ runner.temp }}/bicep-catalog-pr.md
+          add-paths: |
+            packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json
+            packages/maf-sandbox-bicep/src/maf_sandbox_bicep/compiler_codes.json
+            packages/maf-sandbox-bicep/src/maf_sandbox_bicep/catalog_source.json
+
+      - name: Report the proposal
+        if: steps.proposal.outputs.pull-request-url != ''
+        env:
+          PROPOSAL_URL: ${{ steps.proposal.outputs.pull-request-url }}
+        run: |
+          echo "Catalog proposal: $PROPOSAL_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Review the catalog diff and any required Approve and run gate. The workflow does not merge or publish." >> "$GITHUB_STEP_SUMMARY"
+
+  report-failure:
+    name: Report Bicep catalog failure
+    needs: propose
+    if: always() && needs.propose.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Open or notify the catalog failure tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- bicep-catalog-failure-tracker -->'
+          --title 'Bicep diagnostic catalog update failed'
+          --reproduce 'Re-run the linked attempt or dispatch bicep-catalog.yml against the failing commit. Run scripts/update_bicep_catalog.py locally to inspect extraction failures; then run the catalog and Bicep tool tests.'
+          --expected 'The latest stable Bicep source produces complete catalogs, the focused tests pass, and any catalog changes are proposed in a pull request.'
+          --packages maf-sandbox-bicep
