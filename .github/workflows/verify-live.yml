@@ -38,7 +38,8 @@ name: Verify (live)
 # over multiple turns. 18 repairs draw.io XML, verifies storage read-back, reports each call's
 # duration and removes its diagram and sandboxes. 19 returns the same Fibonacci answer through
 # an AutoGen agent's own code-execution tool over 06's router, image and container — pairing
-# across frameworks as 17 does with 05.
+# across frameworks as 17 does with 05. Sample 20 validates a random-provider module
+# with Terraform and OpenTofu on each backend, checking engine identity and per-call disposal.
 #
 # This is the half of issue #33 that runs after a release rather than on a pull request. The
 # ACAS jobs each create a billable Azure sandbox and need a subscription; the docker jobs create
@@ -136,7 +137,7 @@ jobs:
     name: Check ACAS image prerequisites
     if: >-
       inputs.package == ''
-      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-drawio"]'), inputs.package)
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), inputs.package)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: live-verify
@@ -151,6 +152,8 @@ jobs:
       ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
       BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
       DRAWIO_SANDBOX_IMAGE: ${{ vars.DRAWIO_SANDBOX_IMAGE }}
+      TERRAFORM_SANDBOX_IMAGE: ${{ vars.TERRAFORM_SANDBOX_IMAGE }}
+      OPENTOFU_SANDBOX_IMAGE: ${{ vars.OPENTOFU_SANDBOX_IMAGE }}
       ACAS_SANDBOX_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -191,6 +194,15 @@ jobs:
             ''|maf-sandbox|maf-sandbox-acas|maf-sandbox-drawio)
               if [ -f samples/18_acas_drawio_repair/agent.py ] && [ -z "$DRAWIO_SANDBOX_IMAGE" ]; then
                 missing+=("DRAWIO_SANDBOX_IMAGE")
+              fi
+              ;;
+          esac
+          case "$PACKAGE" in
+            ''|maf-sandbox|maf-sandbox-acas|maf-sandbox-terraform)
+              if [ -f samples/20_terraform_validation/agent.py ]; then
+                for name in TERRAFORM_SANDBOX_IMAGE OPENTOFU_SANDBOX_IMAGE; do
+                  [ -n "${!name}" ] || missing+=("$name")
+                done
               fi
               ;;
           esac
@@ -341,9 +353,10 @@ jobs:
     # overall: the workflow-level `concurrency` block above is keyed per package, so a release
     # train verifying several packages has several runs in flight and each holds its own. What
     # each package costs is the number of billable jobs its `if` admits: `maf-sandbox` and
-    # `maf-sandbox-acas` six (01, 03, 14, 15, 18 and `acas-e2e`), `maf-sandbox-codeact` three (03,
-    # 14 and 15), `maf-sandbox-bicep` one (01), `maf-sandbox-drawio` one (18), everything else
-    # none. Count sandboxes rather than
+    # `maf-sandbox-acas` eight (01, 03, 14, 15, 18, both engines of 20 and `acas-e2e`),
+    # `maf-sandbox-codeact` three (03, 14 and 15), `maf-sandbox-bicep` one (01),
+    # `maf-sandbox-drawio` one (18), `maf-sandbox-terraform` two (20), everything else none.
+    # Count sandboxes rather than
     # jobs, and count them twice, because spend and concurrency are different numbers here.
     # `acas-e2e` **acquires four sandboxes over its run** — one shared by its probes, one the
     # lifecycle test disposes as the thing under test, one the prebuilt-image test boots from the
@@ -2208,3 +2221,359 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample19-out.txt "$PACKAGE" "$VERSION"
+
+  sample-20-docker-terraform:
+    name: samples/20_terraform_validation terraform on docker
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker", "maf-sandbox-terraform"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+      TERRAFORM_SANDBOX_IMAGE: maf-terraform:live-random
+      SAMPLE_BACKEND: docker
+      SAMPLE_ENGINE: terraform
+      ENGINE_VERSION: "1.16.2"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            TERRAFORM_SANDBOX_IMAGE AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Build the pinned random-provider image
+        run: python3 images/terraform-sandbox/build_image.py --engine "$SAMPLE_ENGINE" --profile random --tag "$TERRAFORM_SANDBOX_IMAGE"
+      - name: Validate with the published tool and verify per-call disposal
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/20_terraform_validation --source "$SOURCE")"
+          uv run --no-project $source_args samples/20_terraform_validation/agent.py 2>&1 | tee "$RUNNER_TEMP/terraform-docker-terraform-live.log"
+          python3 "$HARNESS"/scripts/check_live_terraform_sample.py "$RUNNER_TEMP/terraform-docker-terraform-live.log" --backend "$SAMPLE_BACKEND" --engine "$SAMPLE_ENGINE" --version "$ENGINE_VERSION"
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-docker-terraform-live.log" "$PACKAGE" "$VERSION"
+      - name: Retain call timings and verification result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terraform-docker-terraform-live-log
+          path: ${{ runner.temp }}/terraform-docker-terraform-live.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sample-20-docker-opentofu:
+    name: samples/20_terraform_validation opentofu on docker
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker", "maf-sandbox-terraform"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+      OPENTOFU_SANDBOX_IMAGE: maf-opentofu:live-random
+      SAMPLE_BACKEND: docker
+      SAMPLE_ENGINE: opentofu
+      ENGINE_VERSION: "1.12.6"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            OPENTOFU_SANDBOX_IMAGE AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Build the pinned random-provider image
+        run: python3 images/terraform-sandbox/build_image.py --engine "$SAMPLE_ENGINE" --profile random --tag "$OPENTOFU_SANDBOX_IMAGE"
+      - name: Validate with the published tool and verify per-call disposal
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/20_terraform_validation --source "$SOURCE")"
+          uv run --no-project $source_args samples/20_terraform_validation/agent.py 2>&1 | tee "$RUNNER_TEMP/terraform-docker-opentofu-live.log"
+          python3 "$HARNESS"/scripts/check_live_terraform_sample.py "$RUNNER_TEMP/terraform-docker-opentofu-live.log" --backend "$SAMPLE_BACKEND" --engine "$SAMPLE_ENGINE" --version "$ENGINE_VERSION"
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-docker-opentofu-live.log" "$PACKAGE" "$VERSION"
+      - name: Retain call timings and verification result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terraform-docker-opentofu-live-log
+          path: ${{ runner.temp }}/terraform-docker-opentofu-live.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sample-20-acas-terraform:
+    needs: acas-images
+    name: samples/20_terraform_validation terraform on acas
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-terraform"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+      ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+      ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+      ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+      ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+      TERRAFORM_SANDBOX_IMAGE: ${{ vars.TERRAFORM_SANDBOX_IMAGE }}
+      SAMPLE_BACKEND: acas
+      SAMPLE_ENGINE: terraform
+      ENGINE_VERSION: "1.16.2"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_RESOURCE_GROUP ACAS_SANDBOX_GROUP ACAS_SANDBOX_REGISTRY TERRAFORM_SANDBOX_IMAGE \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Validate with the published tool and verify per-call disposal
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/20_terraform_validation --source "$SOURCE")"
+          uv run --no-project $source_args samples/20_terraform_validation/agent.py 2>&1 | tee "$RUNNER_TEMP/terraform-acas-terraform-live.log"
+          python3 "$HARNESS"/scripts/check_live_terraform_sample.py "$RUNNER_TEMP/terraform-acas-terraform-live.log" --backend "$SAMPLE_BACKEND" --engine "$SAMPLE_ENGINE" --version "$ENGINE_VERSION"
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-acas-terraform-live.log" "$PACKAGE" "$VERSION"
+      - name: Retain call timings and verification result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terraform-acas-terraform-live-log
+          path: ${{ runner.temp }}/terraform-acas-terraform-live.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sample-20-acas-opentofu:
+    needs: acas-images
+    name: samples/20_terraform_validation opentofu on acas
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-terraform"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+      ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+      ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+      ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+      ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+      OPENTOFU_SANDBOX_IMAGE: ${{ vars.OPENTOFU_SANDBOX_IMAGE }}
+      SAMPLE_BACKEND: acas
+      SAMPLE_ENGINE: opentofu
+      ENGINE_VERSION: "1.12.6"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_RESOURCE_GROUP ACAS_SANDBOX_GROUP ACAS_SANDBOX_REGISTRY OPENTOFU_SANDBOX_IMAGE \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Validate with the published tool and verify per-call disposal
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/20_terraform_validation --source "$SOURCE")"
+          uv run --no-project $source_args samples/20_terraform_validation/agent.py 2>&1 | tee "$RUNNER_TEMP/terraform-acas-opentofu-live.log"
+          python3 "$HARNESS"/scripts/check_live_terraform_sample.py "$RUNNER_TEMP/terraform-acas-opentofu-live.log" --backend "$SAMPLE_BACKEND" --engine "$SAMPLE_ENGINE" --version "$ENGINE_VERSION"
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-acas-opentofu-live.log" "$PACKAGE" "$VERSION"
+      - name: Retain call timings and verification result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terraform-acas-opentofu-live-log
+          path: ${{ runner.temp }}/terraform-acas-opentofu-live.log
+          if-no-files-found: ignore
+          retention-days: 7

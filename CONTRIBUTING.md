@@ -45,7 +45,7 @@ CI runs all of that, plus something worth knowing about: it builds each wheel, i
 
 ## Adding a sample
 
-A numbered sample is a consumer of published packages and a live verification target. Add its program, workflow wiring, evidence checker and tests together. [Sample 18](samples/18_acas_drawio_repair/) and its `sample-18` job in [Verify (live)](.github/workflows/verify-live.yml) provide a complete example, including artifact cleanup and per-call timing logs.
+A numbered sample is a consumer of published packages and a live verification target. Add its program, workflow wiring, evidence checker and tests together. [Sample 18](samples/18_acas_drawio_repair/) and its `sample-18` job in [Verify (live)](.github/workflows/verify-live.yml) provide a complete example, including artifact cleanup and per-call timing logs. [Sample 20](samples/20_terraform_validation/) shows one program with four backend/engine jobs and a shared engine-identity and per-call disposal check.
 
 ### Program and dependencies
 

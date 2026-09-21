@@ -96,6 +96,8 @@ Prepared receipts pin the launcher as `reader_sha256`. Rebuild both base and der
 
 The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-provider-image) adds service-specific OpenTofu providers. The [multi-version example](../../../images/terraform-sandbox/USAGE.md#build-an-image-with-two-provider-lines) shows two provider lines in one offline mirror.
 
+[Sample 20](../../../samples/20_terraform_validation/) validates the same random-provider module with both engines on Docker and ACAS. Its live checks require the expected engine version, provider-schema diagnostics and per-call disposal. Each combination runs as a separate published-package verification job.
+
 ## Status
 
 | Contract | State | Details |
@@ -104,3 +106,4 @@ The [platform image](../../../images/terraform-sandbox/README.md#azure-platform-
 | Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Four-field result contract | Implemented for Terraform and OpenTofu, including live checks | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
+| Published-package random-profile samples on Docker and ACAS | Wiring implemented; four-way live measurement pending | [#1296](https://github.com/sokolaidev/maf-extensions/issues/1296) (open) |
