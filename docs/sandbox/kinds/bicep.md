@@ -15,7 +15,7 @@ See the [package README](../../../packages/maf-sandbox-bicep/README.md) for inst
 | Work directory | `/maf-sandbox/work`, with `bicepconfig.json` at its root |
 | Isolation | The host's minimum; the kind does not raise it |
 | Cleanup | Disposal by default; explicit `Cleanup.RECLAIM` can reuse a supported sandbox |
-| Result | Untrusted report followed by trusted standing guidance |
+| Result | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, any refusal this tool wrote, the compiler's output, then the standing sentence |
 
 The spec does not declare an OS family. The host must select an image that supports the compiler commands. A backend lacking the required capabilities or network mode is refused at attachment.
 
@@ -54,13 +54,23 @@ The banner is returned for BCP190, BCP191 or BCP192. It tells the model that mod
 
 ## Result labels and tool flow
 
-The compiler and its input files are sources of the diagnostic text. The kind therefore claims `untrusted`, including for counts and returned error reports.
+The compiler and its input files are sources of the diagnostic text. The kind therefore claims `untrusted` for that text, including counts.
+
+The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `valid` or `invalid`, and only where the compiler answered for every file it was given. `completed` is false where it did not: a refused name, a file that could not be staged, a timeout, unreadable SARIF, or a module restore failure, which leaves module input type checking undone. A call that did not complete carries no verdict.
+
+A readable report must identify SARIF 2.1.0 and contain at least one analysis with a named tool driver and an explicit results array. Missing, null or malformed fields cannot stand in for an empty diagnostic list. Every reported invocation must declare successful execution, and neither execution nor configuration notifications may report an error. An analysis with `results: []` can establish a clean result only when these checks pass.
+
+Diagnostic severity comes from the result's explicit level, then its invocation's rule override, then the matching driver rule's default, and finally `warning`. Notifications use the same order with their notification overrides and driver descriptors. Driver descriptors are matched by ID or index.
+
+All driver severity defaults and invocation overrides are validated before results, including unused entries and reports with `results: []`. Result provenance is validated even when the result supplies an explicit severity. A supplied index must identify an entry in the corresponding array. An omitted invocation index selects the sole reported invocation when there is exactly one. Malformed references or severity values leave the call incomplete. References to other tool components or descriptor GUIDs are unsupported and also leave the call incomplete.
+
+What this tool says about its own refusal goes in `trusted_output`. The kind writes the refusal templates and may echo short, printable names the model supplied visibly; hidden or unsafe names are identified by argument position. A "did you mean" hint lists names from the file store, whose integrity is not established, so the hint goes in `output` with the compiler's text while the sentence introducing it stays readable.
 
 ![Bicep validation is a source tool. Its wrapper declares trusted integrity to the framework while retaining an untrusted workload claim. Diagnostics are untrusted content; fixed guidance is trusted content. Both retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. Later calls to file writers or other tools face the destination's integrity and confidentiality policy.](../assets/bicep-information-flow.svg)
 
 The wrapper exposes `source_integrity="trusted"` and keeps the workload claim in `maf_sandbox_derived_integrity`. It rebuilds the fixed guidance on every normal return, including refusals.
 
-In a trusted conversation with automatic hiding enabled, FIDES hides the report and leaves guidance readable. The guidance says that unreadable diagnostics are not a clean validation. Hidden content still contributes confidentiality.
+In a trusted conversation with automatic hiding enabled, FIDES hides the compiler's output and leaves the completion line, the verdict, any refusal and the guidance readable. The guidance says what the hidden half is and points at the verdict. Hidden content still contributes confidentiality.
 
 The host classifies results and controls destination policy. Passing hidden diagnostics to another tool remains subject to that policy. See [information flow](../information-flow.md).
 
@@ -80,4 +90,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 |---|---|---|
 | Validation, restore controls and diagnostic handling | Implemented | [Package README](../../../packages/maf-sandbox-bicep/README.md) |
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
-| Four-field result contract | Open; this kind returns report and guidance items | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged) |

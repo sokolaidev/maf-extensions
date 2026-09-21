@@ -9,6 +9,7 @@ import subprocess
 
 import pytest
 
+from maf_sandbox_bicep import parse_sarif
 from maf_sandbox_bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD, _LINT_CMD
 
 _IMAGE = os.environ.get("MAF_SANDBOX_BICEP_E2E_IMAGE")
@@ -64,12 +65,12 @@ done
     output = result.stdout.decode().strip()
     decoder = json.JSONDecoder()
     for _ in range(2):
-        sarif, end = decoder.raw_decode(output)
+        _, end = decoder.raw_decode(output)
+        diagnostics = parse_sarif(output[:end])
+        assert diagnostics is not None, output[:end]
         assert all(
-            result.get("ruleId") == "use-recent-module-versions"
-            and result.get("level", "warning") == "warning"
-            for run in sarif["runs"]
-            for result in run.get("results", [])
-        ), sarif
+            result["rule"] == "use-recent-module-versions" and result["level"] == "warning"
+            for result in diagnostics
+        ), diagnostics
         output = output[end:].strip()
     assert not output

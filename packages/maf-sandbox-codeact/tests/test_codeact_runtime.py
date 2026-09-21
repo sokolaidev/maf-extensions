@@ -654,7 +654,7 @@ def test_runtime_calls_use_distinct_directories_after_reset():
     "changed",
     [replace(_RUNTIME, instructions="Python with different modules"), _FILES_RUNTIME, None],
 )
-def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed):
+def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed, caplog):
     sandbox = _PythonSandbox()
     backend = _backend(sandbox, capabilities=_EXEC_AND_RUNTIME_CAPABILITIES)
     router = SandboxRouter([backend], min_isolation=backend.isolation, min_cleanup=Cleanup.RESET)
@@ -666,7 +666,10 @@ def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed):
         if changed is _FILES_RUNTIME
         else "different execution contract"
     )
-    assert refusal in _run(different)
+    with caplog.at_level("WARNING", logger="maf_sandbox_codeact._tool"):
+        answer = _run(different)
+    assert answer == "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+    assert refusal in caplog.text
     assert len(sandbox.programs) == 1 and not sandbox.writes
     assert "4" in _run(original)
 

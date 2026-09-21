@@ -10,6 +10,7 @@ import uuid
 import pytest
 from maf_sandbox import CallerContext, Cleanup, Egress, SandboxKey, SandboxRouter
 from maf_sandbox.conformance import assert_nothing_left_behind
+from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import InMemoryStore
 
 from maf_sandbox_bicep import bicep_sandbox_spec, make_bicep_tools
@@ -101,16 +102,20 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
                     assert (await router.acquire(key, spec)).instance_id == instance
                     return
                 result = await tool.func(files=["main.bicepparam", "nested/main.bicep"])
-                report = str(result[0].text)
+                texts = [str(item.text) for item in result]
+                report = "\n".join(texts)
                 assert "Error:" not in report, report
                 if case == "closed-modules":
+                    assert texts[0] == NOT_COMPLETED_TEXT, report
+                    assert not any(text.startswith("Result: ") for text in texts), report
                     assert "MODULE RESTORE FAILED" in report, report
-                    assert "INCOMPLETE" in report, report
                     assert "BCP190" in report, report
                 elif case == "diagnostics":
+                    assert texts[:2] == [COMPLETED_TEXT, "Result: invalid"], report
                     assert "MODULE RESTORE FAILED" not in report, report
                     assert "BCP057" in report, report
                 else:
+                    assert texts[:2] == [COMPLETED_TEXT, "Result: valid"], report
                     assert "MODULE RESTORE FAILED" not in report, report
                     assert "[error]" not in report, report
                     for name in ("main.bicepparam", "nested/main.bicep"):
@@ -205,12 +210,16 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
                 with pytest.raises(asyncio.CancelledError):
                     await pending
                 return
-            report = str((await tool.func(files=files))[0].text)
+            result = await tool.func(files=files)
+            texts = [str(item.text) for item in result]
+            report = "\n".join(texts)
             assert "Error:" not in report, report
             assert "MODULE RESTORE FAILED" not in report, report
             if case == "diagnostics":
+                assert texts[:2] == [COMPLETED_TEXT, "Result: invalid"], report
                 assert "BCP057" in report, report
             else:
+                assert texts[:2] == [COMPLETED_TEXT, "Result: valid"], report
                 assert "[error]" not in report, report
 
         try:

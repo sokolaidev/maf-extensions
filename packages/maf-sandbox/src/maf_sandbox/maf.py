@@ -171,11 +171,8 @@ __all__ = [
     "sandboxed_tool",
 ]
 
-# The three sentences a workload is allowed to hand the model when it could not get a
-# sandbox.  Fixed text, not a formatted exception: an SDK or transport failure's own message
-# carries endpoint, subscription and tenant ids, and a tool result is persisted into the
-# transcript, so what the model sees must say that the run degraded and nothing else.  The
-# detail goes to the log instead (see :meth:`SandboxToolSession.acquire`).
+# Acquisition failures use fixed text because provider details can carry account identifiers
+# or untrusted content. The model receives the failure category; details stay in the host log.
 #
 # "T0" is this stack's shorthand for the ungrounded tier — the model checking its own work,
 # which is exactly what a host falls back to when the sandbox is gone.
@@ -1428,12 +1425,11 @@ class SandboxToolSession:
         if isinstance(sandbox, str):
             return sandbox
 
-    A workload whose tool answers with something other than a plain ``str`` converts that
-    message into its own result shape at **one** place — the funnel its body returns through —
-    never at each accessor.  Three of them answer this way, :meth:`list_files` included, and a
-    body has its own returns besides, so a per-call-site conversion is a claim about every
-    return path that is one branch from being false.  Nothing else about the contract changes;
-    ``docs/sandbox/architecture.md`` carries the rule.
+    A workload converting legacy text into content items does so at one return funnel,
+    including accessor refusals. A tool using :class:`SandboxResult` may instead construct
+    that type on each branch, with refusals in ``trusted_output`` and ``completed=False``.
+    Its wrapper checks the result type and renders the fields and committed guidance on
+    every normal return; ``docs/sandbox/architecture.md`` carries the rule.
 
     **A wiring mistake in the kind raises**, and that is the line the two shapes are split on: a
     model can cause a refusal and cannot cause a body that asks for a call's key outside a call,
@@ -1604,11 +1600,16 @@ class SandboxToolSession:
         Each entry carries the label the host knows for the bytes at that name.  Read it rather
         than inferring one from the name — see :class:`~maf_sandbox.ListedFile`, and rule 9 in
         ``docs/sandbox/kinds/README.md``.
+
+        Failure details stay in the host log; the returned refusal contains no store text.
         """
         try:
             return await self._context.list_files(store)
         except Exception as exc:  # noqa: BLE001
-            return f"Error: could not list the file store: {exc}"
+            self._logger.warning(
+                f"{self._log_prefix}: could not list the file store: %s", error_detail(exc)
+            )
+            return "Error: could not list the file store"
 
     async def read_file(
         self,
@@ -1816,9 +1817,9 @@ class SandboxToolSession:
 
         Admission and backend refusals return a fixed message; their details stay in the log.
         Refusals take precedence over ValueError, including subclasses of both. Missing SDKs
-        and backends have dedicated messages; stack-authored ValueError text is returned
-        verbatim. Other provider failures are logged with error_detail and return a fixed
-        unavailable message, since tool results are persisted in the transcript.
+        and backends have dedicated messages; an otherwise unclassified failure, including
+        ValueError, returns unavailable. Exception details stay in the log, since results
+        persist in the transcript and may be labelled trusted by the kind.
 
         Raises:
             RuntimeError: the call has closed, or a call-scoped key has no matching open call.
@@ -1890,11 +1891,6 @@ class SandboxToolSession:
         except NoSandboxBackend as exc:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return _NO_BACKEND_CONFIGURED
-        except ValueError as exc:
-            # Raised by image resolution: a configuration message we author, safe to
-            # surface, and actionable for whoever is enabling the feature.
-            self._logger.warning(f"{self._log_prefix}: %s", exc)
-            return f"Error: {exc}"
         except SandboxUnclean as exc:
             # The router's own refusal: a sandbox a previous call could not clean and the
             # framework could not dispose of. Safe to name and actionable for the host, but
@@ -2716,17 +2712,16 @@ def sandboxed_tool(
        A ``spec`` whose ``work_dir`` is the guest root is refused, because a path one
        component from the root is one this cannot remove — and only for such a body, since a
        synchronous one is not held to a rule it cannot break.
-    8. **The wrapper owns result labels.** With ``result_contract=True``, a body returns
-       :class:`SandboxResult`; the wrapper renders its parts and appends committed guidance.
-       Otherwise, a body returns one string or unlabelled items. A body committing guidance
-       must return items ending with those sentences, which the wrapper stamps trusted/public.
-       A tool committing guidance declares ``trusted`` to the framework so those sentences are
-       trusted whatever the kind claims, keeps that claim on :data:`DERIVED_INTEGRITY_PROPERTY`, and
-       stamps every derived item from it. One committing none stamps only with valid
-       ``source_integrity`` and host-set ``confidentiality`` declarations, and otherwise leaves
-       derived items to the framework's fallback. Either way a stamp weakens integrity when
-       this call read an untrusted or unestablished file, a string becomes one item, and
-       neither the declaration nor another call is changed.
+    8. **The wrapper owns result labels.** With ``result_contract=True``, every body return
+       is a :class:`SandboxResult`; the wrapper renders its fields and appends committed
+       guidance. Otherwise the body returns a string or unlabelled items; committed guidance
+       must be included as trailing items. The wrapper stamps guidance trusted/public.
+       A contract or guidance commitment raises the tool's declaration to ``trusted`` and
+       keeps the kind's output claim on :data:`DERIVED_INTEGRITY_PROPERTY`. Derived output
+       receives that claim and the host-set confidentiality, weakened by any untrusted or
+       unestablished file read. Without either opt-in, valid source-integrity and
+       confidentiality declarations label the result; absent declarations leave it to the
+       framework's fallback. Neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -2744,8 +2739,8 @@ def sandboxed_tool(
 
     Args:
         build: Given the session, returns the async function to expose as the tool. With
-            ``result_contract=True`` it returns :class:`SandboxResult`; otherwise it returns
-            a ``str`` or the list of items point 8 above describes.
+            ``result_contract=True``, it answers with :class:`SandboxResult` on every path.
+            Otherwise it returns a ``str`` or the unlabelled items described in point 8.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store (see :func:`make_caller_context`).
@@ -2821,13 +2816,13 @@ def sandboxed_tool(
             so a value arriving from anywhere else is refused on return. Declaring a set
             without ``result_contract`` is refused, since nothing would read it.
         standing_guidance: Sentences the wrapper stamps ``trusted/public``. With
-            ``result_contract=True``, the wrapper appends them; the body returns only its
-            :class:`SandboxResult`. Otherwise, return them as unlabelled text items at the end,
-            in this order, after at least one derived item. A missing or changed sentence,
-            a bare string, or a body-supplied label is refused on that legacy path.
-            Only ``{call_id}`` may interpolate; the wrapper renders it from this call and
-            rebuilds the guidance without other fields from the body's items. A malformed or
-            empty sentence, or a call-id sentence on a synchronous body, is refused at attach.
+            ``result_contract=True``, the wrapper appends them after rendering the result;
+            the body returns only :class:`SandboxResult` fields. Otherwise return them as
+            trailing unlabelled text items in this order, after at least one derived item;
+            a missing or changed sentence, a bare string, or a body-supplied label is refused.
+            Only ``{call_id}`` may interpolate. The wrapper renders it from this call and
+            constructs the guidance from the commitment. A malformed or empty sentence, or a
+            call-id sentence on a synchronous body, is refused at attach.
             **Committing any sentence requires an integrity declaration** — this keyword or a
             ``source_integrity`` in ``declarations`` — because the guidance stays readable by
             sitting above what every other item is labelled, and an undeclared tool has nothing

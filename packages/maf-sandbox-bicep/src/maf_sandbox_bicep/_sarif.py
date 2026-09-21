@@ -16,6 +16,8 @@ __all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostic
 
 # Maximum characters from a SARIF blob fed into the parser.
 _SARIF_MAX_CHARS = 200_000
+_SARIF_LEVELS = frozenset({"none", "note", "warning", "error"})
+_MISSING = object()
 
 #: Diagnostics that mean a module artifact never arrived: BCP190 (artifact not restored),
 #: BCP191 (restore failed), BCP192 (restore failed, with the transport's reason).  When any
@@ -34,10 +36,14 @@ def count_restore_failures(diagnostics: list[dict[str, Any]]) -> int:
 
 
 def parse_sarif(text: str) -> list[dict[str, Any]] | None:
-    """Parse a SARIF JSON blob into a compact list of diagnostic dicts.
+    """Parse Bicep SARIF analysis reports into a compact list of diagnostic dicts.
 
-    Returns ``None`` on any parse failure — the caller must treat that as an error rather
-    than as zero diagnostics, or a broken sandbox reads as a clean build.
+    Requires version 2.1.0, at least one analysis with a named tool driver, and explicit
+    results arrays. Failed invocations and error notifications leave analysis incomplete.
+    Driver defaults and invocation overrides are checked even when results are empty.
+    Severity follows explicit results, invocation overrides, then driver rule defaults.
+    Returns ``None`` for an incomplete or malformed report instead of treating it as
+    zero diagnostics.
     """
     try:
         data = json.loads(text[:_SARIF_MAX_CHARS])
@@ -46,7 +52,7 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
 
     try:
         return _diagnostics(data)
-    except TypeError:
+    except (TypeError, ValueError):
         # Valid JSON does not establish the SARIF shape.
         return None
 
@@ -70,23 +76,159 @@ def _array(value: object) -> list[Any]:
     return cast("list[Any]", value)
 
 
+def _level(value: object) -> str:
+    if not isinstance(value, str) or value not in _SARIF_LEVELS:
+        raise ValueError("expected a SARIF diagnostic level")
+    return value
+
+
+def _index(value: object, size: int) -> int:
+    if value is _MISSING:
+        return -1
+    if type(value) is not int or not 0 <= value < size:
+        raise ValueError("expected a SARIF array index")
+    return value
+
+
+def _configuration_level(value: object) -> str | None:
+    configuration = _object(value)
+    return _level(configuration["level"]) if "level" in configuration else None
+
+
+def _descriptors(driver: Mapping[str, Any], field: str) -> list[Mapping[str, Any]]:
+    descriptors: list[Mapping[str, Any]] = []
+    ids: set[str] = set()
+    for entry in _array(driver.get(field, [])):
+        descriptor = _object(entry)
+        descriptor_id = descriptor.get("id")
+        if not isinstance(descriptor_id, str) or not descriptor_id or descriptor_id in ids:
+            raise ValueError("expected unique nonempty driver descriptor IDs")
+        _configuration_level(descriptor.get("defaultConfiguration", {}))
+        ids.add(descriptor_id)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def _overrides(
+    invocation: Mapping[str, Any], field: str, descriptors: list[Mapping[str, Any]]
+) -> dict[str, str]:
+    levels: dict[str, str] = {}
+    overridden: set[str] = set()
+    for entry in _array(invocation.get(field, [])):
+        override = _object(entry)
+        _, target = _rule({"rule": _object(override.get("descriptor"))}, descriptors)
+        if not target or target["id"] in overridden:
+            raise ValueError("expected one override per driver descriptor")
+        overridden.add(target["id"])
+        level = _configuration_level(override.get("configuration"))
+        if level is not None:
+            levels[target["id"]] = level
+    return levels
+
+
+def _invocation_overrides(
+    run: Mapping[str, Any],
+    rules: list[Mapping[str, Any]],
+    notifications: list[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    overrides: list[dict[str, str]] = []
+    for entry in _array(run.get("invocations", [])):
+        invocation = _object(entry)
+        if invocation.get("executionSuccessful") is not True:
+            raise ValueError("analysis did not succeed")
+        overrides.append(_overrides(invocation, "ruleConfigurationOverrides", rules))
+        notification_levels = _overrides(
+            invocation, "notificationConfigurationOverrides", notifications
+        )
+        # SARIF 2.1.0 Appendix I: either notification channel can report incomplete analysis.
+        for field in ("toolExecutionNotifications", "toolConfigurationNotifications"):
+            for notification_entry in _array(invocation.get(field, [])):
+                notification = _object(notification_entry)
+                if not isinstance(_object(notification.get("message")).get("text"), str):
+                    raise TypeError("expected notification message text")
+                _, descriptor = _rule({"rule": notification.get("descriptor", {})}, notifications)
+                if _effective_level(notification, descriptor, notification_levels) == "error":
+                    raise ValueError("analysis reported an error notification")
+    return overrides
+
+
+def _rule(
+    result: Mapping[str, Any], rules: list[Mapping[str, Any]]
+) -> tuple[str, Mapping[str, Any]]:
+    reference = _object(result.get("rule", {}))
+    # Bicep uses driver rules. Do not guess a default from another tool component.
+    if "toolComponent" in reference or "guid" in reference:
+        raise ValueError("unsupported SARIF rule reference")
+    rule_id = result.get("ruleId", reference.get("id", ""))
+    if not isinstance(rule_id, str):
+        raise TypeError("expected a rule ID string")
+    index = _index(result.get("ruleIndex", reference.get("index", _MISSING)), len(rules))
+    if reference.get("id", rule_id) != rule_id or reference.get("index", index) != index:
+        raise ValueError("conflicting SARIF rule references")
+    if "index" in reference:
+        _index(reference["index"], len(rules))
+    if index >= 0:
+        rule = rules[index]
+        descriptor_id = rule["id"]
+        if rule_id and rule_id != descriptor_id and not rule_id.startswith(descriptor_id + "/"):
+            raise ValueError("rule ID does not match its index")
+        return rule_id or descriptor_id, rule
+    for rule in rules:
+        if rule["id"] == rule_id:
+            return rule_id, rule
+    if reference:
+        raise ValueError("rule reference does not identify a driver rule")
+    return rule_id, {}
+
+
+def _effective_level(
+    item: Mapping[str, Any], descriptor: Mapping[str, Any], overrides: Mapping[str, str]
+) -> str:
+    if "level" in item:
+        return _level(item["level"])
+    return (
+        overrides.get(descriptor.get("id", ""))
+        or _configuration_level(descriptor.get("defaultConfiguration", {}))
+        or "warning"
+    )
+
+
+def _result_level(
+    result: Mapping[str, Any], rule: Mapping[str, Any], invocations: list[dict[str, str]]
+) -> str:
+    provenance = _object(result.get("provenance", {}))
+    # SARIF 2.1.0 section 3.48.6 associates an omitted index with a sole invocation.
+    default_index = 0 if len(invocations) == 1 else _MISSING
+    index = _index(provenance.get("invocationIndex", default_index), len(invocations))
+    return _effective_level(result, rule, invocations[index] if index >= 0 else {})
+
+
 def _diagnostics(data: Any) -> list[dict[str, Any]]:
     """The SARIF walk itself, over a blob that has parsed but is not yet known to be SARIF."""
+    report = _object(data)
+    if report.get("version") != "2.1.0":
+        raise ValueError("expected SARIF version 2.1.0")
+    runs = _array(report.get("runs"))
+    if not runs:
+        raise ValueError("no analysis was reported")
     diagnostics: list[dict[str, Any]] = []
-    for entry in _array(_object(data).get("runs", [])):
+    for entry in runs:
         run = _object(entry)
-        driver = _object(_object(run.get("tool", {})).get("driver", {}))
-        rules: dict[str, Any] = {}
-        for rule_entry in _array(driver.get("rules", [])):
-            rule = _object(rule_entry)
-            rules[rule.get("id", "")] = rule
+        driver = _object(_object(run.get("tool")).get("driver"))
+        if not isinstance(driver.get("name"), str) or not driver["name"]:
+            raise ValueError("expected a named tool driver")
+        rules = _descriptors(driver, "rules")
+        notifications = _descriptors(driver, "notifications")
+        invocations = _invocation_overrides(run, rules, notifications)
 
-        for result_entry in _array(run.get("results", [])):
+        # SARIF 2.1.0 section 3.14.23: missing/null results mean analysis did not begin.
+        for result_entry in _array(run.get("results")):
             result = _object(result_entry)
-            rule_id = result.get("ruleId", "")
-            rule = rules.get(rule_id, {})
-            message = _object(result.get("message", {})).get("text", "")
-            level = result.get("level", "warning")
+            rule_id, rule = _rule(result, rules)
+            message = _object(result.get("message")).get("text")
+            if not isinstance(message, str):
+                raise TypeError("expected diagnostic message text")
+            level = _result_level(result, rule, invocations)
             locs: list[dict[str, Any]] = []
             for loc_entry in _array(result.get("locations", [])):
                 physical = _object(_object(loc_entry).get("physicalLocation", {}))
