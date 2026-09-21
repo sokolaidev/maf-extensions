@@ -9,6 +9,8 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
 
 [`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, and the image reference. That is the tightest diff in the whole set — [sample 04](../04_wslc_codeact/) also swapped sample 03's Azure model for a local one, and this keeps it, because keeping it is exactly what lets this sample be verified in CI.
 
+The completion and verdict lines in the example describe the current workspace. A numbered sample resolving an older published CodeAct release can still show the earlier report-only result.
+
 ## The first sample CI verifies without a cloud sandbox
 
 Sample 03 proves the CodeAct stack against a real Azure microVM, and pays for a billable sandbox each time it runs — so it runs only on demand and after a release. This sample proves the same stack, but its sandbox is a Docker container on the runner: free, and needing no Azure subscription. The model still needs both — it is the same Azure OpenAI deployment sample 03 uses, in a subscription and billed per inference, reached with `DefaultAzureCredential` (a federated credential in CI, `az login` locally), so there is no stored API key. What this sample removes from sample 03 is the **billable sandbox and the stored secret**, not the model's inference charge, which no sample avoids. That is enough to let it join `verify-live.yml`: a real container and a real model, with no billable sandbox and no secret to hold.
@@ -58,6 +60,8 @@ The first call pays for pulling the image, if it is not already local, plus crea
 
 == Program output as execute_code returned it ==
 
+  The workload ran to a definitive result.
+  Result: ok
   stdout:
   354224848179261915075
 
@@ -66,7 +70,7 @@ The first call pays for pulling the image, if it is not already local, plus crea
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the block under it. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as execute_code returned it ==` — the interpreter's own stdout, recorded by the framework beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The measured program-output count proves a program ran. `Disposed N` reports only the final scope purge; `Disposed 0` is expected when per-call cleanup already disposed the container.
+That block illustrates the workspace result contract. The model may answer with the number alone or wrap it in a sentence. What does not vary is the block under it. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as execute_code returned it ==` — the interpreter's own stdout, recorded by the framework beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The measured program-output count proves a program ran. `Disposed N` reports only the final scope purge; `Disposed 0` is expected when per-call cleanup already disposed the container.
 
 The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The sandbox and the image it runs in are what differ from sample 03; the method is not.
 
@@ -82,4 +86,4 @@ The same number sample 03 gets from a microVM in Azure, computed by the same pro
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. See the prerequisite above; nothing about the sandbox is involved, and the run fails before one is created.
 
-**The tool's answer says "printed nothing"** — `execute_code` only returns what the program printed; there is no REPL echo. A model that wrote an expression instead of a `print(...)` call gets exactly this sentence back, and it usually self-corrects on the next call.
+**The tool's answer says "printed nothing"** — the execution report contains only explicit prints; there is no REPL echo. A model that wrote an expression instead of a `print(...)` call gets this sentence alongside completion and verdict items, and it usually self-corrects on the next call.

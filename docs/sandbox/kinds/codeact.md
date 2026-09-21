@@ -14,7 +14,8 @@ See the [package README](../../../packages/maf-sandbox-codeact/README.md) for in
 | Isolation | The host's minimum; the kind does not raise it |
 | Concurrent calls | One call at a time for a conversation's sandbox |
 | Cleanup | Disposal by default; no call-directory confinement claim |
-| Workload integrity | Explicitly `untrusted` in both output modes |
+| Workload integrity | Explicitly `untrusted` in both output modes, carried on `maf_sandbox_derived_integrity` |
+| Result | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, the verdict `ok` or `failed`, the reason a call stopped early, then the program's own text |
 
 Only enabled channels appear in the tool schema. `files` appears with a file store. `outputs` appears with `CodeactOutputs.DECLARED`. The model cannot configure the runtime, sink, registry or network policy.
 
@@ -90,7 +91,13 @@ The Python source never becomes a shell command. Exec without a registry uses fi
 
 The guest program can print data from any enabled source. CodeAct therefore claims `untrusted` for its workload result, including when guest text is withheld.
 
-![CodeAct is a source tool returning an untrusted execution report. In showing mode its framework declaration is untrusted. Withholding mode raises that declaration so a separate fixed route-guidance item can remain trusted, while the workload claim stays untrusted. Content keeps host-controlled confidentiality. FIDES shows text or hidden references to the model. The next model-called tool is checked against its integrity opt-in and confidentiality limit. Guest host-tool calls and artifact delivery belong to execute_code itself.](../assets/codeact-information-flow.svg)
+The kind uses the [result contract](../information-flow.md#the-result-contract) in **both** modes. `verdict` is `ok` or `failed`, from the program's exit status as one bit — eight bits are what a program chooses, and one is what a model can act on without the text. `completed` is false where no exit status was obtained: a refusal, a file that could not be staged, a timeout, or a transport failure. A call without an exit status carries no verdict.
+
+A call that stopped early puts a host-authored explanation in `trusted_output`, so a model can read why the call stopped. Variable diagnostics remain in untrusted `output`, including file-store names, byte counts, provider errors and partial guest stdout. Withholding mode still omits guest stdout from timeout diagnostics.
+
+Both modes are raised to `trusted` at the framework, not just the withholding one. The completion line and the verdict have to stay readable, and on `agent-framework-core` 1.19 only the tool's own declaration can keep an item there.
+
+![CodeAct declares trusted framework integrity in both modes so completion, verdict and host-authored reasons stay readable. Program text and variable diagnostics retain an untrusted workload label. Withholding mode adds trusted route guidance and omits guest stdout and stderr. Content keeps host-controlled confidentiality. FIDES shows text or hidden references to the model. The next model-called tool is checked against its integrity opt-in and confidentiality limit. Guest host-tool calls and artifact delivery belong to execute_code itself.](../assets/codeact-information-flow.svg)
 
 The host supplies result confidentiality. Hiding applies only while the conversation is trusted, automatic hiding is enabled and the tool is not `inspect_variable`. Hidden output still affects confidentiality. See [information flow](../information-flow.md).
 
@@ -156,4 +163,4 @@ Provider details stay in host logs. A control-plane timeout is not reported as p
 | Explicit Python runtime | Implemented | [Hyperlight profiles](../backends/hyperlight.md) |
 | Native runtime host tools | Open; nonempty registries are refused | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Inherited deployment network defaults | Open; hosts supply explicit allowlists | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) |
-| Four-field result contract | Open; this kind returns text or report and guidance items | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (open) |
+| Four-field result contract | Implemented for CodeAct, its samples and live checks | [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |

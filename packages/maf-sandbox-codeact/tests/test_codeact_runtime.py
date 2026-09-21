@@ -33,7 +33,7 @@ from maf_sandbox import (
     Selection,
     SourceIntegrity,
 )
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
+from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -183,7 +183,11 @@ def _function(tool):
 
 
 def _run(tool, code="print(2 + 2)", **kwargs):
-    return asyncio.run(_function(tool)(code=code, **kwargs))
+    """Join one call's result items; workload tests cover each item's security label."""
+    answer = asyncio.run(_function(tool)(code=code, **kwargs))
+    if isinstance(answer, str):
+        return answer
+    return chr(10).join(str(item.text) for item in answer)
 
 
 @pytest.mark.parametrize("outputs", [CodeactOutputs.DECLARED, CodeactOutputs.MANIFEST])
@@ -503,13 +507,12 @@ def test_withholding_collects_after_guest_failure_without_returning_streams():
         "with open(guest_call_path + '/answer.txt', 'w') as f:\n    f.write('secret')\nprint('secret')\nraise ValueError('secret')",
         outputs=["answer.txt"],
     )
-    assert not isinstance(result, str)
-    assert "secret" not in str(result) and "must not be rendered" not in str(result)
-    assert "non-zero" in result[0].text
-    assert "declared output" in result[-1].text
+    assert "secret" not in result and "must not be rendered" not in result
+    assert "Result: failed" in result
+    assert "non-zero" in result
+    assert "declared output" in result
     assert landed[0].content == b"secret"
-    # Withholding commits standing guidance, so the tool declares trusted and the wrapper
-    # labels every item; its own claim about the derived half moves to this key.
+    # The result contract declares the tool trusted; derived reports keep this untrusted claim.
     assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == SourceIntegrity.UNTRUSTED
 
 
@@ -668,7 +671,11 @@ def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed, cap
     )
     with caplog.at_level("WARNING", logger="maf_sandbox_codeact._tool"):
         answer = _run(different)
-    assert answer == "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+    assert answer == (
+        f"{NOT_COMPLETED_TEXT}\n"
+        "Error: the sandbox could not be acquired.\n"
+        "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+    )
     assert refusal in caplog.text
     assert len(sandbox.programs) == 1 and not sandbox.writes
     assert "4" in _run(original)
@@ -739,7 +746,11 @@ def test_runtime_calls_wait_for_exclusive_admission():
         assert len(backend.specs) == acquires and not second.done()
         release.set()
         answers = await asyncio.gather(first, second)
-        assert "first" in answers[0] and "second" in answers[1]
+        rendered = [
+            answer if isinstance(answer, str) else chr(10).join(str(i.text) for i in answer)
+            for answer in answers
+        ]
+        assert "first" in rendered[0] and "second" in rendered[1]
         assert len(sandbox.programs) == 2
 
     asyncio.run(scenario())

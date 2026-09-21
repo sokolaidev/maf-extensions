@@ -336,8 +336,14 @@ def _smoke_maf_sandbox_codeact() -> str:
         )
     )
 
-    out = asyncio.run(body(code="print(3 + 4)"))
-    if out != "stdout:\n7":
+    answer = asyncio.run(body(code="print(3 + 4)"))
+    out = _rendered(answer)
+    # Under the result contract the parts are separate items: a completion line the model
+    # can read, a verdict from the tool's declared set, then the program's own text.
+    integrities = _integrities(answer)
+    if integrities[:2] != [None, None] or integrities[-1] != "untrusted":
+        raise SystemExit(f"FAIL: the parts are not unlabelled then untrusted: {integrities}")
+    if "Result: ok" not in out or not out.endswith("stdout:\n7"):
         raise SystemExit(f"FAIL: the tool rendered {out!r}")
     # Each call gets a directory of its own under the work dir, so the path is not fixed.
     landed_program = list(written.items())
@@ -368,7 +374,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     asyncio.run(with_files(code="print(1)", files=["data.csv"]))
     if not any(path.endswith("/data.csv") for path in shared_written):
         raise SystemExit(f"FAIL: the listed file was not shared: {shared_written}")
-    refused = asyncio.run(with_files(code="print(1)", files=["absent.csv"]))
+    refused = _rendered(asyncio.run(with_files(code="print(1)", files=["absent.csv"])))
     if "not in this tool's file listing" not in refused:
         raise SystemExit(f"FAIL: an unlisted file was not refused: {refused!r}")
 
@@ -404,7 +410,7 @@ def _smoke_maf_sandbox_codeact() -> str:
             image="registry.invalid/python:3",
         )
     )
-    saved = asyncio.run(with_outputs(code="print(1)", outputs=["report.csv"]))
+    saved = _rendered(asyncio.run(with_outputs(code="print(1)", outputs=["report.csv"])))
     if landed != ["report.csv"] or "saved report.csv" not in saved:
         raise SystemExit(f"FAIL: the declared output did not land: {landed} / {saved!r}")
 

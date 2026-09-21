@@ -1,6 +1,6 @@
 # 08 — CodeAct with files in and files out (Docker)
 
-The first sample where the agent is **given** a file and **hands one back**. Samples 03, 04 and 06 run `execute_code` with nothing to read and take only stdout; this one wires both of the kind's file channels and asks a question that needs each.
+The first sample where the agent is **given** a file and **hands one back**. Samples 03, 04 and 06 use the program output in `execute_code`'s report without file channels; this one wires both of the kind's file channels and asks a question that needs each.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
@@ -85,9 +85,11 @@ The wording of the first line is the model's and varies run to run. The two tagg
 
 A nested declared name works too — `reports/summary.md` lands at `out/reports/summary.md`, because the sink makes each destination's own parent. Nesting cannot climb out: names are validated relative before they arrive, and the sink resolves each destination and refuses one that lands outside `out/` — which lexical validation alone would not catch, since a symlink already sitting in `out/` carries a write wherever it points.
 
-The tool result behind that reply — which the sample does not print, because the model's answer is what a host would show — looks like this, and is worth knowing the shape of:
+The tool result behind that reply — which the sample does not print, because the model's answer is what a host would show — has this shape with the current workspace result contract. Older published CodeAct releases used by the standalone sample can still return the report alone:
 
 ```
+The workload ran to a definitive result.
+Result: ok
 stdout:
 1124
 
@@ -95,11 +97,11 @@ Saved:
 - summary.md (96 bytes), in out/
 ```
 
-The bullet is the sink's own sentence. That is the only thing about the landing the model is told: no host path, and nothing guest-derived.
+The landing location comes from the sink's own display text. The report also carries filenames and byte counts, so it remains untrusted alongside the separate completion and verdict items.
 
 ## When it goes wrong
 
-Both refusals below are ordinary tool results, not exceptions — the turn continues and the model can correct itself, which is the point of reporting them by name.
+The two refusal excerpts below follow the completion item and a fixed host explanation; refusals have no verdict. They are ordinary tool results, not exceptions — the turn continues and the model can correct itself, which is the point of reporting them by name.
 
 **A file that is not in the listing.** The listing is the authority, so the refusal shows what is actually visible rather than leaving the model to guess again:
 
@@ -115,7 +117,7 @@ Error: '../secrets.env' cannot be shared — artifact name '../secrets.env' cont
 
 Note what that refusal does **not** carry: the listing. Telling a caller which names exist, in answer to a name that tried to leave the store, is an invitation to keep trying spellings until one lands.
 
-**A declared output that was never written.** The program ran, exited cleanly, and a name it promised is not there — reported by name, with whatever *was* written still saved:
+**A declared output that was never written.** The program ran, exited cleanly, and a name it promised is not there — reported by name in the untrusted report, after successful completion and `Result: ok`, with whatever *was* written still saved:
 
 ```
 Not written by the program, so not saved: missing.md. Write each file into the working directory before the program exits.
@@ -123,4 +125,4 @@ Not written by the program, so not saved: missing.md. Write each file into the w
 
 This is the case `MANIFEST` cannot report, and the reason this sample uses `DECLARED`.
 
-**Nothing printed.** `execute_code` returns stdout; there is no REPL echo, so a program ending in a bare expression comes back with a sentence saying so.
+**Nothing printed.** The report includes stdout; there is no REPL echo, so a program ending in a bare expression gets a sentence saying so alongside completion and verdict items.

@@ -69,7 +69,11 @@ from maf_sandbox import (
     launcher_script,
     sandbox_tool,
 )
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY
+from maf_sandbox.maf import (
+    COMPLETED_TEXT,
+    DERIVED_INTEGRITY_PROPERTY,
+    NOT_COMPLETED_TEXT,
+)
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
     InMemoryStore,
@@ -614,13 +618,37 @@ def _items(tool, code: str, **kw):
 def _route(tool, code: str, **kw) -> str:
     """The standing sentence, off the last item a withholding tool closes its answer with."""
     answer = _items(tool, code, **kw)
-    return "" if isinstance(answer, str) else str(answer[-1].text)
+    if isinstance(answer, str):
+        return ""
+    last = str(answer[-1].text)
+    return "" if last in (COMPLETED_TEXT, NOT_COMPLETED_TEXT) else last
 
 
 def _run(tool, code: str, **kw) -> str:
-    """The call-derived half of the answer, which is the whole of it unless the host withholds."""
+    """The detailed report, or the trusted reason where a refusal carries no detail."""
     answer = _items(tool, code, **kw)
-    return answer if isinstance(answer, str) else str(answer[0].text)
+    if isinstance(answer, str):
+        return answer
+    details = [
+        str(item.text)
+        for item in answer
+        if (item.additional_properties or {}).get("security_label", {}).get("integrity")
+        == "untrusted"
+    ]
+    if details:
+        return chr(10).join(details)
+    texts = [str(item.text) for item in answer]
+    body = texts[1:]
+    if body and body[0].startswith("Result: "):
+        body = body[1:]
+    if body and body[-1] not in (COMPLETED_TEXT, NOT_COMPLETED_TEXT) and _is_guidance(body[-1]):
+        body = body[:-1]
+    return chr(10).join(body)
+
+
+def _is_guidance(text: str) -> bool:
+    """Whether a rendered item is one of the sentences this kind commits at attach."""
+    return text.startswith(_tool_module._WITHHELD_ROUTE[:40]) or "outputs land" in text
 
 
 def _run_producing(tool, sandbox: _ProducingSandbox, produced: dict[str, bytes], **kw) -> str:
@@ -1150,7 +1178,7 @@ class TestWithheldResultFormat:
 
     def test_every_result_names_the_route_that_still_carries_content(self):
         """The exit line on its own leaves a model nothing it can act on — and the sentence is
-        an item of its own, so hiding the call-derived half leaves this one readable."""
+        an item of its own, so hiding the call-derived report leaves the route readable."""
         out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
         assert "declared output" not in out, "the report still splices the route in"
         route = self._route_out(ExecResult(stdout="", stderr="boom", exit_code=1))
@@ -1327,16 +1355,11 @@ class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
 
 
 class TestWithholdingDeclaresUntrustedToo:
-    """Withholding takes the guest's *text* out of the result, not the guest out of its
-    derivation: the exit status and every output's presence bit are chosen
-    by a program the model wrote. So there is nothing here to call trusted, and the declaration
-    says so on both renderings rather than only on the noisier one.
+    """Withholding removes guest text but leaves guest-chosen output-presence bits.
 
-    Where the two renderings differ is which key carries it. Only the withholding one commits
-    standing guidance, and a tool with a sentence to keep visible declares `"trusted"` to the
-    framework so the wrapper owns every item's label — its own claim moving to
-    `maf_sandbox_derived_integrity`. A host reads that key where it is present and
-    `source_integrity` otherwise."""
+    Both modes retain the untrusted workload claim in `maf_sandbox_derived_integrity` while
+    raising framework-facing `source_integrity` to `trusted` for the result contract.
+    """
 
     def _claim(self, tool: Any) -> Any:
         properties = dict(tool.additional_properties or {})
@@ -1357,11 +1380,15 @@ class TestWithholdingDeclaresUntrustedToo:
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
         assert self._claim(tool) == "untrusted"
 
-    def test_a_showing_tool_commits_nothing_so_its_declaration_is_left_alone(self):
-        """Nothing it returns has to stay visible, so it keeps declaring its own integrity and
-        the wrapper leaves its items to the framework's own fallback."""
+    def test_a_showing_tool_raises_its_declaration_without_standing_guidance(self):
+        """It commits no sentence, but the result contract raises it all the same: the completion
+        line and the verdict have to stay readable, and on 1.19 only the tool's own declaration
+        can keep an item there."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
-        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def _with_registry(self, *tools: Callable[..., Any]):
         return _tool(
@@ -1377,9 +1404,7 @@ class TestWithholdingDeclaresUntrustedToo:
     def test_no_stamping_of_the_registry_puts_a_declaration_back(
         self, registered: Callable[..., Any]
     ):
-        """A registry's `result_integrity` can only weaken a workload's own claim, and this
-        workload makes none — so a trusted source, a sink-only tool and an unstamped one all
-        read alike."""
+        """A registry's `result_integrity` cannot strengthen the untrusted workload claim."""
         assert self._claim(self._with_registry(registered)) == "untrusted"
 
 
@@ -1406,7 +1431,7 @@ class TestTheModelIsToldUpFront:
         behaviour this mode redirects, and argues with its own `Returns:` section."""
         description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
 
-        assert "return what it printed" not in description
+        assert "return its execution result" not in description
         assert "Only what you print is read back as text" not in description
         assert "print(...)`` of\n        everything you need to see" not in description
         assert "Nothing your program writes to stdout or stderr comes back" in description
@@ -1478,10 +1503,10 @@ class TestTheModelIsToldUpFront:
             assert "bytes each" not in description
             assert "stream received" not in description
 
-    def test_the_shown_head_is_unchanged(self):
+    def test_the_shown_head_describes_the_result_and_printed_output(self):
         description = _callable(_tool(_backend())).__doc__ or ""
 
-        assert "return what it printed" in description
+        assert "return its execution result" in description
         assert "Only what you print is read back as text" in description
 
     def test_it_does_not_promise_a_reference_to_where_a_file_landed(self):
@@ -1557,25 +1582,27 @@ class TestMakeCodeactTools:
 
 
 class TestFidesDeclarations:
-    """This tool declares `source_integrity="untrusted"`, and says so rather than implying it.
+    """Guest-derived reports need an explicit untrusted claim independent of host defaults.
 
-    What comes back is whatever a model-written `print(...)` chose to emit, so untrusted is the
-    honest reading. Reaching it by *declaring* rather than by silence is the point: an
-    undeclared tool takes whichever of the other two tiers speaks — the input-label join, which
-    knows nothing about which argument the body read, or the host's `default_integrity`, which
-    a host may raise. Neither is this package's to control, and both answer `trusted` when
-    asked.
+    The wrapper records that claim in `maf_sandbox_derived_integrity` and raises framework-facing
+    `source_integrity` to `trusted` so completion, verdict, and host explanations stay readable.
     """
 
     def test_it_declares_untrusted(self):
         tool = _tool(_backend())
-        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def test_an_empty_registry_carries_no_cap_but_still_declares(self):
         """Nothing callable is no *cap* carried, whatever the host holds — the integrity
         declaration is about this tool's own result and does not depend on a registry."""
         tool = _host_tool_calling_tool(_registry(), outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def test_an_opened_allowlist_makes_the_hosts_cap_apply(self):
         """A named host is a way out, so the flow the cap gates exists — and unlike the
@@ -1590,14 +1617,18 @@ class TestFidesDeclarations:
             outbound_max_confidentiality="private",
         )
         assert dict(tool.additional_properties or {}) == {
-            "source_integrity": "untrusted",
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
         }
 
     def test_a_closed_allowlist_leaves_the_cap_unwritten(self):
         """The other side of the same bound: the default must not start declaring a flow."""
         tool = _tool(_backend(capabilities=_PULLS), outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def test_a_registry_with_no_sink_tool_leaves_the_cap_unwritten(self):
         """A source brings data *in* and pure computation carries nothing at all, so the flow
@@ -1605,7 +1636,10 @@ class TestFidesDeclarations:
         calls for nothing."""
         registry = _registry(_exchange_rate, _round_half_up)
         tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
+        }
 
     def test_a_sink_tool_makes_the_hosts_cap_apply_with_nothing_landing(self):
         """Egress is closed and no artifact lands, and the surface carries something out
@@ -1616,7 +1650,8 @@ class TestFidesDeclarations:
             _registry(_log_to_crm), outbound_max_confidentiality="private"
         )
         assert dict(tool.additional_properties or {}) == {
-            "source_integrity": "untrusted",
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
         }
 
@@ -1631,7 +1666,8 @@ class TestFidesDeclarations:
             **_landing(CodeactOutputs.DECLARED),
         )
         assert dict(tool.additional_properties or {}) == {
-            "source_integrity": "untrusted",
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
         }
 
@@ -1645,7 +1681,8 @@ class TestFidesDeclarations:
             _registry(_unstamped_lookup), outbound_max_confidentiality="private"
         )
         assert dict(tool.additional_properties or {}) == {
-            "source_integrity": "untrusted",
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
         }
 
@@ -1653,7 +1690,7 @@ class TestFidesDeclarations:
         """A registry of trusted lookups does not make a model-written `print(...)` trusted."""
         registry = _registry(_exchange_rate, _log_to_crm)
         tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
+        assert dict(tool.additional_properties or {})[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
 
 
 class TestWhatARegistryDoesBeyondTheSpec:
@@ -1736,7 +1773,7 @@ class TestDegrades:
 # ---------------------------------------------------------------------------
 
 #: `execute_code`'s `__doc__` with no file store, no output mode and no registry wired.
-_UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return what it printed.
+_UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return its execution result.
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
@@ -1755,9 +1792,11 @@ _UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return
                 whatever the sandbox image ships.
 
         Returns:
+            Content items for completion, an ``ok`` or ``failed`` verdict
+            when an exit status exists, any fixed host explanation, and a separately labelled
+            report. Incomplete calls have no verdict. The report contains:
             The program's stdout, its stderr when it wrote any, and its exit
-            code when that was not zero.  If the sandbox is unavailable the tool returns an
-            error message instead, so the run degrades rather than blocking.
+            code when that was not zero.  If the sandbox is unavailable, a host explanation says so.
         """
 
 
@@ -1785,7 +1824,7 @@ class TestToolDescription:
         so an edit that reaches this leg has to be made here too, deliberately."""
         assert self._description() == _UNWIRED_DESCRIPTION
 
-    def test_it_says_only_printed_output_comes_back(self):
+    def test_it_requires_explicit_printing_for_program_output(self):
         assert "print" in self._description()
 
     def test_it_says_the_sandbox_has_no_network(self):
@@ -2045,7 +2084,7 @@ class TestFilesIn:
         out = _run(tool, "print('hi')", files=[nested])
         assert out == (
             f"Error: {nested!r} cannot be shared — {_PROGRAM_FILENAME!r} is a file name this "
-            f"tool reserves in every run's directory, so nothing can live inside it."
+            f"tool reserves in every call's directory, so nothing can live inside it."
         ), out
         assert sandbox.written == {}
 
@@ -2088,7 +2127,7 @@ class TestFilesIn:
 
     def test_the_two_reserved_names_are_refused_for_their_own_reasons(self):
         """One sentence for both would be false about one of them. This tool writes
-        `program.py` into the run's directory and only *reads* `outputs.json` from it — the
+        `program.py` into the call's directory and only *reads* `outputs.json` from it — the
         program writes that. Both refusals are asserted whole, so neither can drift onto the
         other's clause and tell a model this tool writes a file it never touches.
         """
@@ -2110,11 +2149,11 @@ class TestFilesIn:
 
         assert writes == (
             f"Error: {_PROGRAM_FILENAME!r} cannot be shared — this tool writes a file of that "
-            f"name into every run's directory."
+            f"name into every call's directory."
         ), writes
         assert reads == (
             f"Error: {_MANIFEST_FILENAME!r} cannot be shared — this tool reads a file of that "
-            f"name from every run's directory as its manifest."
+            f"name from every call's directory as its manifest."
         ), reads
 
     def test_a_name_that_merely_starts_with_the_program_name_is_fine(self):
@@ -2568,7 +2607,7 @@ class TestDeclaredOutputs:
 
         out = _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
         assert "cannot be saved" in out
-        assert "this tool writes a file of that name into every run's directory" in out, out
+        assert "this tool writes a file of that name into every call's directory" in out, out
 
     @pytest.mark.parametrize(
         "name",
@@ -3086,14 +3125,15 @@ class TestTheSinkIsTheHostsChoice:
             outbound_max_confidentiality="private",
         )
         assert dict(tool.additional_properties or {}) == {
-            "source_integrity": "untrusted",
+            "source_integrity": "trusted",
+            DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
         }
 
     def test_it_still_declares_untrusted(self):
         """Landing files changes nothing about where the tool's *result* came from."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
-        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
+        assert dict(tool.additional_properties or {})[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
 
 
 # ---------------------------------------------------------------------------
@@ -3506,12 +3546,12 @@ class TestAWithheldTimeoutQuotesNothing:
 
 
 # ---------------------------------------------------------------------------
-# The withheld result splits: the route is trusted, the call-derived half says untrusted
+# Withheld results keep completion, verdict and route trusted; the report is untrusted
 # ---------------------------------------------------------------------------
 
 
 class TestAWithheldResultSplits:
-    """A withholding tool answers with items, so hiding can reach one and not the other.
+    """A withholding tool labels its report separately from completion, verdict and guidance.
 
     Hiding an untrusted item is conditional — on `auto_hide_untrusted`, and on the conversation
     still being trusted — so these fix both and vary only what they are measuring.
@@ -3520,10 +3560,12 @@ class TestAWithheldResultSplits:
     def _label(self, item) -> dict[str, Any] | None:
         return (item.additional_properties or {}).get("security_label")
 
-    def test_a_withheld_answer_is_two_items(self):
+    def test_a_withheld_answer_has_completion_verdict_report_and_route(self):
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
 
         assert [str(item.text) for item in answer] == [
+            COMPLETED_TEXT,
+            "Result: ok",
             "The program exited with status 0.",
             _WITHHELD_ROUTE,
         ]
@@ -3533,18 +3575,24 @@ class TestAWithheldResultSplits:
 
         assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
 
-    def test_the_call_derived_half_is_labelled_untrusted(self):
-        """What the tool declares to the framework is trusted, so this half says otherwise for
-        itself. Its `public` is a floor rather than a classification — the framework keeps the
+    def test_the_report_is_labelled_untrusted(self):
+        """The report's own label overrides the tool's trusted declaration.
+
+        Its `public` is a floor rather than a classification — the framework keeps the
         stricter of it and the call's own, which is the host's to set."""
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
 
-        assert self._label(answer[0]) == {"integrity": "untrusted", "confidentiality": "public"}
+        assert self._label(answer[-2]) == {"integrity": "untrusted", "confidentiality": "public"}
 
-    def test_a_tool_that_withholds_nothing_still_answers_with_one_string(self):
+    def test_a_showing_answer_has_completion_verdict_and_program_text(self):
         answer = _items(_tool(_backend(_ScriptedSandbox(ExecResult(stdout="42")))), "print(1)")
+        texts = [str(item.text) for item in answer]
 
-        assert isinstance(answer, str) and answer.endswith("42")
+        # It commits no sentence, so the program's text is the last item — but the completion
+        # line and the verdict come first, and a hiding host leaves those readable.
+        assert texts[0] == COMPLETED_TEXT
+        assert texts[1] == "Result: ok"
+        assert texts[-1].endswith("42")
 
     def test_a_refusal_reached_before_any_sandbox_still_carries_the_route(self):
         """The label is honest only where the sentence is on *every* path, so the one that
@@ -3552,15 +3600,18 @@ class TestAWithheldResultSplits:
         tool = _withholding_tool(_ScriptedSandbox(), thread_id=None)
         answer = _items(tool, "print(1)")
 
-        assert "no active thread context" in str(answer[0].text)
+        assert str(answer[0].text) == NOT_COMPLETED_TEXT
+        assert any("no active thread context" in str(item.text) for item in answer)
         assert str(answer[-1].text) == _WITHHELD_ROUTE
         assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
+        # The fixed host explanation inherits the tool's trusted integrity declaration.
+        assert self._label(answer[1]) is None
 
     def test_a_refusal_the_model_caused_carries_it_too(self):
         tool = _withholding_tool(_ScriptedSandbox(), file_store=InMemoryStore({"a.csv": "x"}))
         answer = _items(tool, "print(1)", files=["nope.csv"], outputs=[])
 
-        assert "not in this tool's file listing" in str(answer[0].text)
+        assert any("not in this tool's file listing" in str(item.text) for item in answer)
         assert str(answer[-1].text) == _WITHHELD_ROUTE
 
 
@@ -3589,16 +3640,17 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         ]
         return seen, context.metadata["result_label"], middleware.get_context_label()
 
-    def test_the_route_stays_readable_while_the_rest_is_hidden(self):
+    def test_completion_verdict_and_route_stay_readable_while_the_report_is_hidden(self):
         tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
 
         seen, _, _ = self._processed(tool, files=[], outputs=[])
-        assert seen == ["hidden", _WITHHELD_ROUTE]
+        # The parts the model may act on stay readable; only the call's report is hidden.
+        assert seen == [COMPLETED_TEXT, "Result: ok", "hidden", _WITHHELD_ROUTE]
 
     def test_a_raised_host_default_no_longer_decides_the_call(self):
         """A raised `default_integrity` does not reach this call: the declaration replaces it.
 
-        The wrapper stamps the derived half untrusted for itself, so without a declaration
+        The wrapper stamps the derived report untrusted for itself, so without a declaration
         that restriction is all that stands between a raised default and the call. Tier 2
         replaces the default rather than flooring it, which is what makes this host's answer
         the same as every other's.
@@ -3629,7 +3681,70 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         )
 
         seen, _, _ = self._processed(tool, files=[], outputs=[])
-        assert seen == ["hidden"]
+        # It commits no sentence, and the contract still leaves the verdict readable.
+        assert seen == [COMPLETED_TEXT, "Result: ok", "hidden"]
+
+    def test_partial_timeout_output_stays_hidden(self):
+        tool = _calling_tool(
+            _StallingSandbox(printed=b"guest-controlled-text"),
+            _round_half_up,
+            exec_timeout_seconds=1,
+        )
+
+        seen, result, conversation = self._processed(tool)
+
+        assert seen == [
+            NOT_COMPLETED_TEXT,
+            "Error: the program did not reach a result before the timeout.",
+            "hidden",
+        ]
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
+
+    @pytest.mark.parametrize("listing_fails", [False, True])
+    @pytest.mark.parametrize("withhold", [False, True])
+    def test_file_listing_details_stay_hidden(self, listing_fails, withhold):
+        class Store(InMemoryStore):
+            async def list(self):
+                if listing_fails:
+                    raise ValueError("store-controlled-text")
+                return await super().list()
+
+        store = Store({"store-controlled-text.txt": "data"}, integrity=SourceIntegrity.UNTRUSTED)
+        options = _landing(CodeactOutputs.DECLARED) if withhold else {}
+        tool = _tool(
+            _backend(capabilities=_PULLS),
+            file_store=store,
+            withhold_guest_output=withhold,
+            **options,
+        )
+
+        seen, result, conversation = self._processed(tool, files=["missing.csv"])
+
+        expected = [
+            NOT_COMPLETED_TEXT,
+            "Error: the requested input files could not be resolved.",
+            "hidden",
+        ]
+        assert seen == expected + ([_WITHHELD_ROUTE] if withhold else [])
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
+
+    def test_input_file_sizes_stay_hidden(self):
+        tool = _tool(
+            _backend(),
+            file_store=InMemoryStore({"data.txt": "x" * 123}),
+            files_in=TransferLimits(max_files=10, max_bytes_per_file=64, max_total_bytes=128),
+        )
+
+        seen, _, conversation = self._processed(tool, files=["data.txt"])
+
+        assert seen == [
+            NOT_COMPLETED_TEXT,
+            "Error: an input file could not be read or staged.",
+            "hidden",
+        ]
+        assert str(conversation.integrity) == "trusted"
 
 
 class TestOnlyAnAttachedToolSealsTheRegistry:
@@ -4657,7 +4772,7 @@ class TestOutputsLandInAFolderOfTheirOwn:
         assert "into a folder named for this call" in description
         assert "If you have a tool that reads that folder" in description
         assert "the result confirms each name that landed" not in description
-        assert "A run that saved files also names each one." not in description
+        assert "A call that saved files also names each one." not in description
 
     def test_the_description_is_unchanged_for_a_sink_that_says_nothing(self):
         tool = _pulling_tool(
@@ -4682,8 +4797,7 @@ class TestTheGuidanceThisKindCommitsTo:
     kind owes is that the set it commits is exactly what its body emits, on every path."""
 
     def test_a_shown_tool_commits_nothing(self):
-        """The shown path answers with one string, and no sentence it renders is true on every
-        return path — so committing one would be a claim this kind cannot keep."""
+        """Showing mode needs no standing route guidance beyond the result contract items."""
         assert _standing_guidance(withhold=False, lands_per_call=False) == ()
         assert _standing_guidance(withhold=False, lands_per_call=True) == ()
 

@@ -10,10 +10,11 @@ holds. What stands in for the file on disk is the model's own read-back, fenced.
 
 **The grand total in the reply is one half of the load-bearing check, and the read that
 returned the landed file is the other.** The sample runs with `withhold_guest_output=True`, so
-nothing the program printed comes back: the tool's result is one line saying whether the
-program exited cleanly, and the standing sentence naming this call's folder. So the total did
+none of the program's printed text comes back. The workspace result separates completion,
+verdict, report, and route guidance naming this call's folder; incomplete calls have no
+verdict. So the total did
 not come from `stdout` — but it is the pair that says it came out of the file, because that
-exit line is a bit the *program* chooses, and repeated calls make it a road back of its own
+exit verdict is a bit the *program* chooses, and repeated calls make it a road back of its own
 (`docs/sandbox/kinds/codeact.md`). What the two together draw is the path this sample exists
 for: the program wrote a file, `make_file_store_sink` landed it under this call's folder, and
 the model read it back with a host tool.

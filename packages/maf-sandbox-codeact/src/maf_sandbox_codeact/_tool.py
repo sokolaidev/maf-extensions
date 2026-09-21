@@ -33,7 +33,6 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
-from agent_framework import Content
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
     SHIM_MODULE,
@@ -66,6 +65,7 @@ from maf_sandbox import (
     validate_artifact_name,
 )
 from maf_sandbox.maf import (
+    SandboxResult,
     SandboxToolSession,
     hidden_content_candidates,
     positions_holding_hidden_content,
@@ -140,6 +140,12 @@ _NO_OUTPUT = (
     "program with print(...) of what you need to see."
 )
 
+#: Every answer `execute_code` may reach about the program it ran.
+#:
+#: Fixed here so the whole set is written before any call runs. The exit status is eight bits
+#: the program chooses, and this is the one bit of it a model can act on without the text.
+CODEACT_VERDICTS = ("ok", "failed")
+
 #: Closes every result a withholding host returns, as an item of its own labelled trusted. A
 #: sentence rather than a silence, because the exit line alone leaves a model nothing to act on;
 #: it names the route without promising a reader, which is the host's wiring rather than this
@@ -150,7 +156,7 @@ _WITHHELD_ROUTE = (
     "declared output rather than printing it."
 )
 
-#: The one line a withheld result says about the run: zero or not, never the number. An exit
+#: The one line a withheld report says about the exit status: zero or not, never the number. An exit
 #: status is eight bits a program chooses, and no value of it drives an edit the model can make
 #: without the text.
 _WITHHELD_EXITED_CLEANLY = "The program exited with status 0."
@@ -294,9 +300,11 @@ def make_codeact_tools(
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
             with whether it exited cleanly and the model's own declared names instead. No
             guest-authored text survives into the result — but the values that replace it were
-            still chosen by a program the model wrote, so this changes what the result *holds*
-            and not where it came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either
-            way. **Where the sink declares :attr:`~maf_sandbox.OutputSink.per_call` the names
+            still chosen by a program the model wrote. The workload therefore claims
+            ``SourceIntegrity.UNTRUSTED`` for its derived report in both modes. The result
+            contract raises the framework-facing declaration to ``trusted`` so completion,
+            verdict, and host-authored explanations can inherit it. **Where the sink declares
+            :attr:`~maf_sandbox.OutputSink.per_call` the names
             half is a folder rather than a list**, and that one is not the program's to choose:
             it is the host's id for this call, and it rides on the ``trusted`` route item
             rather than beside the exit line. Requires
@@ -312,17 +320,17 @@ def make_codeact_tools(
             program's, and its note about the run is surfaced whole under ``note:`` —
             withholding it would report a dropped output as a program that printed nothing.
 
-            **The result is two items, not one string.**  The call-derived half — the exit line and
-            the landed names, or the exit line alone where a folder replaces them — carries no
-            label of its own, so it takes whatever the call's label is; beside it sits the
-            standing sentence naming the recovery route, which carries that folder, labelled
-            ``trusted``, because nothing a call produced reaches it and it is emitted on every
-            return path including the refusals.  **Where the conversation is still clean** —
-            hiding is a first-taint protection — a framework hiding untrusted content hides the
-            first and leaves the second readable, which is the point: under one label the
-            sentence went with the line it was there to explain.  The call resolving untrusted
-            is not a second condition any more, because this tool declares it.  What remains is
-            not this kind's to promise, and is measured in ``docs/sandbox/information-flow.md``.
+            **The result is a list of content items.** A completed call normally returns a
+            completion line, an ``ok`` or ``failed`` verdict, an explicitly untrusted report,
+            and trusted route guidance. An incomplete call has no verdict and may include a
+            host-authored explanation before its variable diagnostics. Completion, verdict,
+            and host explanations inherit the framework-facing declaration; the wrapper
+            labels the report untrusted and the fixed guidance trusted. Guidance is emitted
+            on every return path, including refusals, and carries the host-generated folder
+            when the sink declares ``per_call``. With a trusted conversation and automatic
+            hiding enabled, FIDES can hide the report while leaving these trusted items
+            readable. Host-controlled confidentiality still applies; see
+            ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
             and the artifact names are the model's own — but what fills them is the program's
@@ -549,15 +557,14 @@ def make_codeact_tools(
         ),
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # Withheld or not: what comes back is chosen by a program the model wrote, an exit bit
-        # and a presence bit per output being as much its choice as the text. Declared rather
-        # than omitted because a declaration replaces the other two tiers, and neither is this
-        # kind's to answer for. Where the withheld route commits guidance the wrapper raises
-        # what reaches the framework and stamps every derived item from this claim instead —
-        # `information-flow.md` carries both.
+        # Guest text and output-presence bits require an explicit untrusted workload claim;
+        # neither the input labels nor the host's default can establish their integrity.
         source_integrity=SourceIntegrity.UNTRUSTED,
+        # Both modes need a raised framework declaration to keep contract items readable.
+        result_contract=True,
+        verdicts=CODEACT_VERDICTS,
         # The wrapper validates and stamps this suffix so the body cannot choose which
-        # returned items become trusted.
+        # guidance becomes trusted.
         standing_guidance=_standing_guidance(
             withhold=withhold_guest_output,
             lands_per_call=output_sink is not None and output_sink.per_call,
@@ -724,7 +731,7 @@ def _validate_runtime(
 # body, so the description is built rather than written twelve times. It still reaches the
 # model exactly as `__doc__`.
 
-_DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return what it printed.
+_DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return its execution result.
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
@@ -832,6 +839,11 @@ _DESCRIPTION_ARG_FILES = """files: Store-relative paths to share into the sandbo
 _DESCRIPTION_ARG_OUTPUTS = """outputs: The file names your program will write into its
                 working directory, or omit if it writes none."""
 
+_DESCRIPTION_RESULT_CONTRACT = """Content items for completion, an ``ok`` or ``failed`` verdict
+            when an exit status exists, any fixed host explanation, and a separately labelled
+            report. Incomplete calls have no verdict. The report contains:
+            """
+
 _DESCRIPTION_RETURNS = """The program's stdout, its stderr when it wrote any, and its exit
             code when that was not zero."""
 
@@ -847,21 +859,18 @@ _DESCRIPTION_RETURNS_HOST_TOOL_CALLED = """The program's output — stdout and s
 #: front writes to a declared output on its first call.
 _DESCRIPTION_RETURNS_WITHHELD = """Whether the program exited with status 0 — **never what it
             printed, which does not come back.**  Write anything you need to see into a
-            declared output instead."""
+            declared output instead. Fixed route guidance names how to retrieve it."""
 
 #: The same for a run served over the host-tool-call transport, whose result carries the
 #: launcher's `note` line — the host's, never the program's.
 _DESCRIPTION_RETURNS_WITHHELD_HOST_TOOL_CALLED = """Whether the program exited with status 0 —
             **never what it printed, which does not come back.**  A ``note`` line is the host's
             remark about the run.  Write anything you need to see into a declared output
-            instead."""
+            instead. Fixed route guidance names how to retrieve it."""
 
-#: Appended to whichever of the two above applies.  Where it wraps is model-facing text, so the
-#: break sits where the plain sentence needs it, not where this fragment reads best.
-_DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable the tool returns an
-            error message instead, so the run degrades rather than blocking."""
+_DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable, a host explanation says so."""
 
-_DESCRIPTION_RETURNS_SAVED = """  A run that saved files also names where each one landed."""
+_DESCRIPTION_RETURNS_SAVED = """  A call that saved files also names where each one landed."""
 
 #: The withholding pair. Three sentences above stop being true in that mode: nothing names
 #: *where* a file landed, and a failed program's files are collected rather than discarded —
@@ -878,10 +887,10 @@ _DESCRIPTION_DECLARED_WITHHELD = """**To produce files, name them in ``outputs``
 _DESCRIPTION_IN_PLACE_WITHHELD = """Naming a file in both ``files`` and ``outputs`` is how you
         edit one in place.  It is the one case where "declared and not written" cannot be
         reported, because the copy you were
-        given is already there — and since a failed run still saves, a program that dies part
+        given is already there — and since a failed call still saves, a program that dies part
         way through rewriting one saves whatever it had written by then."""
 
-_DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A run that saved files also names each one."""
+_DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A call that saved files also names each one."""
 
 #: The withholding pair again, for a host whose sink lands each call under a folder of its own.
 #: Two promises above stop being true: nothing names which files landed, so nothing reports a
@@ -1000,7 +1009,7 @@ def _tool_description(
         )
     else:
         returns = _DESCRIPTION_RETURNS_HOST_TOOL_CALLED if host_tool_names else _DESCRIPTION_RETURNS
-    returns += _DESCRIPTION_RETURNS_DEGRADES
+    returns = _DESCRIPTION_RESULT_CONTRACT + returns + _DESCRIPTION_RETURNS_DEGRADES
     if outputs is not CodeactOutputs.NONE:
         if not withhold:
             returns += _DESCRIPTION_RETURNS_SAVED
@@ -1050,7 +1059,7 @@ def _execute_code_tool(
     *,
     withhold: bool,
     runtime: CodeactRuntime | None = None,
-) -> Callable[..., Awaitable[str | list[Content]]]:
+) -> Callable[..., Awaitable[SandboxResult]]:
     """Build the ``execute_code`` body for one attached tool.
 
     Four signatures over one implementation, because MAF derives the tool's schema from the
@@ -1058,9 +1067,7 @@ def _execute_code_tool(
     """
     lands_per_call = session.output_sink is not None and session.output_sink.per_call
 
-    async def run(
-        code: str, files: list[str] | None, declared: list[str] | None
-    ) -> str | list[Content]:
+    async def run(code: str, files: list[str] | None, declared: list[str] | None) -> SandboxResult:
         answer = await _execute(
             session,
             store,
@@ -1073,34 +1080,25 @@ def _execute_code_tool(
             withhold=withhold,
             runtime=runtime,
         )
-        if not withhold:
-            return answer
-        # At the funnel rather than at each `return` inside `_execute`: the trusted label is
-        # honest only where the sentence is on every path, refusals included.
-        # Rendered from the commitment itself rather than composed again here: the two
-        # would otherwise be two spellings of one sentence, and only a test would notice them
-        # parting. `_WITHHELD_ROUTE` carries no placeholder, so formatting it is a no-op.
-        folder = session.guest_call_path().rsplit("/", 1)[-1] if lands_per_call else ""
-        route = _standing_guidance(withhold=True, lands_per_call=lands_per_call)[0].format(
-            call_id=folder
+        return SandboxResult(
+            completed=answer.has_exit_status,
+            verdict=("ok" if answer.exited_clean else "failed") if answer.has_exit_status else None,
+            trusted_output=(answer.reason,) if answer.reason is not None else (),
+            output=(answer.text,) if answer.text else (),
         )
-        return [
-            Content.from_text(answer),
-            Content.from_text(route),
-        ]
 
     async def with_files_and_outputs(
         code: str, files: list[str] | None = None, outputs: list[str] | None = None
-    ) -> str | list[Content]:
+    ) -> SandboxResult:
         return await run(code, files, outputs)
 
-    async def with_files(code: str, files: list[str] | None = None) -> str | list[Content]:
+    async def with_files(code: str, files: list[str] | None = None) -> SandboxResult:
         return await run(code, files, None)
 
-    async def with_outputs(code: str, outputs: list[str] | None = None) -> str | list[Content]:
+    async def with_outputs(code: str, outputs: list[str] | None = None) -> SandboxResult:
         return await run(code, None, outputs)
 
-    async def plain(code: str) -> str | list[Content]:
+    async def plain(code: str) -> SandboxResult:
         return await run(code, None, None)
 
     takes_files = store is not None
@@ -1131,6 +1129,29 @@ def _execute_code_tool(
     return body
 
 
+@dataclass(frozen=True, slots=True)
+class _CallOutcome:
+    """One call's text and whether a definitive exit status was obtained.
+
+    ``exited_clean`` is meaningful only when ``has_exit_status`` is true.
+    """
+
+    text: str
+    has_exit_status: bool
+    exited_clean: bool
+    reason: str | None = None
+
+
+def _stopped(sentence: str, *, detail: str = "") -> _CallOutcome:
+    """A host-authored reason, with variable diagnostics kept in the untrusted detail."""
+    return _CallOutcome(detail, False, False, sentence)
+
+
+def _finished(text: str, result: Any) -> _CallOutcome:
+    """A call with an exit status, reduced to success or failure."""
+    return _CallOutcome(text, True, result.exit_code == 0)
+
+
 async def _execute(
     session: SandboxToolSession,
     store: AgentFileStore | None,
@@ -1143,17 +1164,17 @@ async def _execute(
     *,
     withhold: bool,
     runtime: CodeactRuntime | None = None,
-) -> str:
+) -> _CallOutcome:
     """One ``execute_code`` call: share, run, and collect."""
-    # Keep one view of hidden content through the run, even if the host clears the store
+    # Keep one view of hidden content through the call, even if the host clears the store
     # before the manifest is checked.
     rewritten = hidden_content_candidates()
     # Scope and thread come from the host's request context, never from model input.
     key = session.key()
     if isinstance(key, str):
-        return key
+        return _stopped(key)
 
-    # The names this run spends on something other than the model's own files, so neither an
+    # The names this call spends on something other than the model's own files, so neither an
     # input nor an output may claim one. The manifest is reserved only where it means
     # something, and the program only where it shares that directory: a run that calls a host tool
     # puts it in the transport's, beside the shim, where no name a model chooses can reach it.
@@ -1164,11 +1185,11 @@ async def _execute(
     reserved: dict[str, str] = {}
     if host_tool_call is None and runtime is None:
         reserved[_PROGRAM_FILENAME] = (
-            "this tool writes a file of that name into every run's directory"
+            "this tool writes a file of that name into every call's directory"
         )
     if outputs is CodeactOutputs.MANIFEST:
         reserved[_MANIFEST_FILENAME] = (
-            "this tool reads a file of that name from every run's directory as its manifest"
+            "this tool reads a file of that name from every call's directory as its manifest"
         )
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
@@ -1201,7 +1222,7 @@ async def _execute(
             candidates=rewritten,
         )
         if isinstance(checked, str):
-            return checked
+            return _stopped("Error: the outputs argument is invalid.", detail=checked)
         names = checked
 
     # Cap before acquiring anything, and cap *as we go*: a bound that answers only once
@@ -1218,7 +1239,7 @@ async def _execute(
     if runtime is not None:
         refusal = _InboundTally(limits).add("", code, named="the program", program=True)
         if refusal is not None:
-            return refusal
+            return _stopped("Error: the program could not be staged.", detail=refusal)
         program = runtime_program(runtime, code, call_directory)
     over_cap = _over_file_count(
         inbound,
@@ -1234,22 +1255,24 @@ async def _execute(
     if over_cap is None and host_tool_call is not None:
         over_cap = tally.add(SHIM_MODULE, host_tool_call.shim)
     if over_cap is not None:
-        return over_cap
+        return _stopped("Error: the call's inputs could not be staged.", detail=over_cap)
     if store is not None:
         resolution = await _resolve_listed_files(
             session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
         if isinstance(resolution, str):
-            return resolution
+            return _stopped(
+                "Error: the requested input files could not be resolved.", detail=resolution
+            )
         resolved, resolved_hidden = resolution
         read = await _read_listed_files(session, store, resolved, tally, rewritten=resolved_hidden)
         if isinstance(read, str):
-            return read
+            return _stopped("Error: an input file could not be read or staged.", detail=read)
         shared = read
 
     sandbox = await session.acquire(key)
     if isinstance(sandbox, str):
-        return sandbox
+        return _stopped("Error: the sandbox could not be acquired.", detail=sandbox)
 
     # The session owns this path, and `sandboxed_tool` cleans the sandbox when the call returns.
     # Built before anything is written, because it decides where everything goes. A call that
@@ -1269,7 +1292,9 @@ async def _execute(
             sandbox, name, named, name, content, working_directory=shared_dir
         )
         if refusal is not None:
-            return refusal
+            return _stopped(
+                "Error: an input file could not be written into the sandbox.", detail=refusal
+            )
 
     program_path = layout.program if layout is not None else f"{call_directory}/{_PROGRAM_FILENAME}"
     try:
@@ -1285,7 +1310,7 @@ async def _execute(
         logger.warning(
             "execute_code: could not write the program into the sandbox: %s", error_detail(exc)
         )
-        return "Error: could not write the program into the sandbox"
+        return _stopped("Error: could not write the program into the sandbox")
 
     try:
         # The two are built together above and are never one without the other; both are named
@@ -1313,7 +1338,7 @@ async def _execute(
             )
     except SandboxQueuedTimeout:
         logger.warning("execute_code: the deadline expired before the queued program started")
-        return (
+        return _stopped(
             "Error: the deadline expired while queued; the program never started. Retry unchanged."
         )
     except SandboxProgramTimeout as expired:
@@ -1346,23 +1371,29 @@ async def _execute(
             # The host's own words for why it read no output, surfaced whole like the note on
             # the success path: it is the half of the message the guest did not write.
             reason = f" {expired.output_reason}." if expired.output_reason else ""
-            return f"Error: {what_happened}.{reason}"
-        return f"Error: {expired}"
+            return _stopped(
+                "Error: the program did not reach a result before the timeout.",
+                detail=f"Error: {what_happened}.{reason}",
+            )
+        return _stopped(
+            "Error: the program did not reach a result before the timeout.",
+            detail=f"Error: {expired}",
+        )
     except TimeoutError as unfinished:
         if host_tool_call is None:
             # One `exec`, one bound: a timeout here is that bound and nothing else, so unlike
             # the branch above this one may name it.
             logger.warning("execute_code: the program timed out after %ss", timeout)
-            return f"Error: the program timed out after {timeout}s"
+            return _stopped(f"Error: the program timed out after {timeout}s")
         # A backend bounding one of its own control-plane calls, which the transport re-raises
         # untranslated. Blaming the program would be a guess about code the model is about to
         # rewrite — and the wrong one, since the run may have had most of its time left.
         logger.warning("execute_code: a transport call timed out: %s", error_detail(unfinished))
-        return "Error: could not run the program in the sandbox"
+        return _stopped("Error: could not run the program in the sandbox")
     except Exception as exc:  # noqa: BLE001
         # Provider/transport detail can carry account ids — must not reach the transcript.
         logger.warning("execute_code: execution failed: %s", error_detail(exc))
-        return "Error: could not run the program in the sandbox"
+        return _stopped("Error: could not run the program in the sandbox")
 
     logger.info("execute_code: ran exit_code=%d shared=%d", result.exit_code, len(shared))
     report = _format_withheld(result) if withhold else _format_result(result)
@@ -1374,7 +1405,7 @@ async def _execute(
         # report stacked on a traceback buries the thing the model has to fix. Withheld there is
         # no traceback to bury, and the declared output is the only channel left — including for
         # a program that caught its own error and wrote the diagnosis into one.
-        return report
+        return _finished(report, result)
     collected = await _collect(
         session,
         sandbox,
@@ -1387,7 +1418,7 @@ async def _execute(
         withhold=withhold,
         candidates=rewritten,
     )
-    return f"{report}\n\n{collected}" if collected else report
+    return _finished(f"{report}\n\n{collected}" if collected else report, result)
 
 
 # --- Files in ------------------------------------------------------------------------------
@@ -1562,7 +1593,7 @@ def _inside_a_reserved_file(
         return None
     return (
         f"Error: {echoed_name(name, at=at, hidden=hidden)} cannot be {action} — {above!r} is a "
-        f"file name this tool reserves in every run's directory, so nothing can live inside it."
+        f"file name this tool reserves in every call's directory, so nothing can live inside it."
     )
 
 
@@ -1647,7 +1678,7 @@ async def _write_shared(
     *,
     working_directory: str,
 ) -> str | None:
-    """Put one already-read file store file into the run's directory, or answer with the refusal.
+    """Put one already-read file store file into the call's directory, or answer with the refusal.
 
     ``name`` is the real store path — the guest path is built from it and the host's log records
     it — while ``named`` is the only spelling that may appear in the refusal.  They differ where
@@ -1686,8 +1717,8 @@ def _validated_output_names(
     """Settle every output name before the program runs, or answer with the refusal.
 
     Each rule is applied to the spelling ``collect_outputs`` will judge later — the guest path
-    with its run prefix, and the delivered name after normalization — so that a refusal cannot
-    arrive a whole run late.  That function stays the authority: if the two disagree, this one
+    with its call prefix, and the delivered name after normalization — so that a refusal cannot
+    arrive a whole call late.  That function stays the authority: if the two disagree, this one
     is wrong, and the cost is the late refusal rather than a name reaching a host.
 
     ``named_by`` says where the names came from — the ``outputs`` argument or the manifest —
@@ -1750,12 +1781,12 @@ async def _collect(
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
 ) -> str:
-    """Land whatever this run produced, and say what happened — never raising into the model.
+    """Land whatever this call produced, and say what happened — never raising into the model.
 
     ``call_id`` is passed to :func:`~maf_sandbox.collect_outputs` whatever the sink does with
     it: a host swapping in one that lands per call changes nothing here.
 
-    ``key`` is the caller's, taken before the run rather than read again here, and it goes to
+    ``key`` is the caller's, taken before the call rather than read again here, and it goes to
     the same call beside ``session.observer`` — the pair is what puts a collection's record
     under the conversation whose files these are.
     """
@@ -1814,7 +1845,7 @@ async def _collect(
             key=key,
         )
     except SandboxOutputError as exc:
-        logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
+        logger.warning("execute_code: could not save this call's files: %s", error_detail(exc))
         if withhold:
             # A sink refuses by raising, and it composes that sentence having been handed the
             # artifact's own bytes — nothing constrains it to leave them out. Dropped here for
@@ -1824,7 +1855,7 @@ async def _collect(
             f"Error: the program ran but its files could not be saved — {exc}. {_MAY_HAVE_LANDED}"
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
+        logger.warning("execute_code: saving this call's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
     if withhold and sink.per_call:
         # Which names landed is a bit per declared name the guest's program chooses. The route
@@ -1937,7 +1968,7 @@ def _format_landed(
 
     ``argument`` names the parameter ``declared`` came from, where it came from one — the
     ``outputs`` argument, never the manifest, which no caller spelled.  It is what makes the
-    provenance answer exact here rather than inferred, and it matters as much after the run as
+    provenance answer exact here rather than inferred, and it matters as much after the call as
     before it: without it a declared name equal to hidden content renders as a position, and a
     caller watching which way its own spelling comes back learns that the guess was right.
 
@@ -1997,7 +2028,7 @@ def _format_landed(
 
 
 def _format_result(result: ExecResult) -> str:
-    """Render one run for a model that has to fix its own program.
+    """Render one execution result for a model that has to fix its own program.
 
     Empty sections are omitted rather than shown blank, and the trailing newline ``print``
     leaves is dropped, so a one-line program's answer is one line.
@@ -2015,7 +2046,7 @@ def _format_result(result: ExecResult) -> str:
 
 
 def _format_withheld(result: ExecResult) -> str:
-    """Render one run for a host that withholds guest text: the exit as one bit, and no sizes.
+    """Render a withheld result: exit status as one bit, without guest text or stream sizes.
 
     The streams are neither rendered nor measured: a size is a value the program chooses as
     surely as the text, and it tells the model nothing the text would not. The route sentence

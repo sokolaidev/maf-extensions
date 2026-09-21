@@ -1,9 +1,9 @@
 """Live tests: the CodeAct kind against a real container running real Python.
 
 Skipped unless the ``docker`` client is on ``PATH`` and ``MAF_SANDBOX_CODEACT_E2E_IMAGE`` names
-an image with a ``python3`` in it. Both are set by the ``docker-e2e`` job in ``tests.yml``, so
-this runs on **every pull request** — no model, no tokens, no billable anything. The tool body
-is called directly, exactly as ``test_codeact_workload.py`` calls it offline.
+an image with a ``python3`` in it. Both are set by ``docker-live.yml``, which runs on pushes to
+main, on a schedule, or manually. The tool body is called directly, exactly as
+``test_codeact_workload.py`` calls it offline, without a model or billable services.
 
 **Why it exists (#397).** Until this file, every live exercise this kind ever got was driven by
 a model: samples 03, 04, 06, 08 and 14. A sample proves the happy path a model happened to
@@ -48,6 +48,7 @@ from maf_sandbox import (
     TransferLimits,
     sandbox_tool,
 )
+from maf_sandbox.maf import COMPLETED_TEXT
 
 pytest.importorskip(
     "maf_sandbox_docker",
@@ -117,8 +118,7 @@ def _items_in_a_container(
 ):
     """Build the tool over a real Docker backend, run ``code`` in it, and dispose.
 
-    One container per call. They are free — the whole reason this suite can run on a pull
-    request — and a shared one would let a program see what an earlier test wrote.
+    One container per call prevents a program from seeing what an earlier test wrote.
 
     ``observer`` goes on the router; a registry carries its own, so a caller recording both
     passes the same object twice, which is how a host wires it.
@@ -149,10 +149,13 @@ def _items_in_a_container(
     return asyncio.run(scenario())
 
 
+def _result_text(answer) -> str:
+    return answer if isinstance(answer, str) else "\n".join(str(item.text) for item in answer)
+
+
 def _run_in_a_container(code: str, **kw: Any) -> str:
-    """The call-derived half of the answer, which is the whole of it unless the host withholds."""
-    answer = _items_in_a_container(code, **kw)
-    return answer if isinstance(answer, str) else str(answer[0].text)
+    """Render every result item so assertions cover the report and any host guidance."""
+    return _result_text(_items_in_a_container(code, **kw))
 
 
 def test_the_backend_meets_the_floor_this_suite_assumes():
@@ -176,11 +179,11 @@ def test_the_next_call_cannot_read_a_write_outside_the_call_directory():
             first = await _callable(tool)(
                 code=f"from pathlib import Path\nPath({guest_residue!r}).write_text('residue')\nprint('written')"
             )
-            assert "written" in first
+            assert "written" in _result_text(first)
             second = await _callable(tool)(
                 code=f"from pathlib import Path\nprint(Path({guest_residue!r}).exists())"
             )
-            assert second == "stdout:\nFalse"
+            assert _result_text(second) == f"{COMPLETED_TEXT}\nResult: ok\nstdout:\nFalse"
         finally:
             await backend.dispose_scope("e2e", thread_id)
 
@@ -438,8 +441,7 @@ class TestWithheldOutputAgainstARealInterpreter:
         assert self._SECRET not in answer, answer
 
     def test_the_route_is_its_own_trusted_item_against_a_real_container(self):
-        """The split, end to end: a real container, a real non-zero exit, and the labels a
-        framework would hide the first item by, from a conversation still clean enough."""
+        """Completion, verdict, and host guidance stay separate from the untrusted report."""
         answer = _items_in_a_container(
             "import sys\nprint('noise')\nsys.exit(1)\n",
             mode=CodeactOutputs.DECLARED,
@@ -448,13 +450,16 @@ class TestWithheldOutputAgainstARealInterpreter:
             outputs=["why.txt"],
         )
 
-        assert len(answer) == 2, answer
-        assert "non-zero status" in str(answer[0].text)
-        assert (answer[0].additional_properties or {}).get("security_label") == {
+        assert len(answer) == 4, answer
+        assert answer[0].text == COMPLETED_TEXT
+        assert answer[1].text == "Result: failed"
+        assert "non-zero status" in str(answer[2].text)
+        assert "noise" not in _result_text(answer)
+        assert (answer[2].additional_properties or {}).get("security_label") == {
             "integrity": "untrusted",
             "confidentiality": "public",
-        }, "the call-derived half must say untrusted for itself, beneath the tool's declaration"
-        assert (answer[1].additional_properties or {}).get("security_label") == {
+        }, "the report must declare its own untrusted integrity beneath the tool's declaration"
+        assert (answer[3].additional_properties or {}).get("security_label") == {
             "integrity": "trusted",
             "confidentiality": "public",
         }

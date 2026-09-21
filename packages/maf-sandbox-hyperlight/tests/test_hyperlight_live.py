@@ -49,6 +49,13 @@ KEY = SandboxKey("hyperlight-live", "runtime", "agent")
 SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))
 
 
+def _said(answer) -> str:
+    """One call's text, whichever parts the result contract rendered it into."""
+    if isinstance(answer, str):
+        return answer
+    return chr(10).join(str(item.text) for item in answer)
+
+
 @pytest.fixture
 def live_backend():
     backend = HyperlightSandboxBackend(
@@ -272,10 +279,10 @@ def test_codeact_runtime_uses_real_guest_and_resets_between_calls(live_backend, 
         first = await function(
             code="import json, math\nanswer = math.factorial(3) * 7\nprint(json.dumps({'answer': answer}))"
         )
-        assert "42" in first
+        assert "42" in _said(first)
         identity = next(iter(live_backend._sandboxes.values())).instance_id
         second = await function(code="print('answer' in globals())")
-        assert "False" in second
+        assert "False" in _said(second)
         assert next(iter(live_backend._sandboxes.values())).instance_id != identity
         assert len(live_backend._sandboxes) == 1
 
