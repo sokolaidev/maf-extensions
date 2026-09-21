@@ -19,7 +19,7 @@ export OPENTOFU_SANDBOX_IMAGE=maf-opentofu:1.12.6-random
 
 ACAS additionally needs `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and `ACAS_SANDBOX_REGISTRY`. Push and import the selected image into that group before running. [Maintainer setup](../../docs/maintainers.md#terraform-and-opentofu-images) gives the build, push and import commands. Image variables contain bare `repository:tag` references; the registry setting qualifies them. Use a fresh tag and import when rebuilding a snapshot.
 
-**Each ACAS validation call creates a billable sandbox.** Docker creates a local container. Both paths also incur model inference costs. A unique conversation identifier keeps concurrent runs' cleanup separate.
+**Each ACAS validation call creates a billable sandbox.** Docker creates a local container. Both paths also incur model inference costs. The conversation identifier includes the workflow run, attempt, backend and engine so each job's cleanup stays within its own sandboxes.
 
 ## Run and check
 

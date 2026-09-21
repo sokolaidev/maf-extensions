@@ -110,6 +110,8 @@ async def run() -> int:
         )
         return 2
     engine = "terraform" if selected == "terraform" else "opentofu"
+    # Scope purges must not reach another engine's job in the same workflow run.
+    thread_id = f"{THREAD_ID}-{backend_name}-{engine}"
     image_variable = f"{engine.upper()}_SANDBOX_IMAGE"
     env = require_env_vars(
         MODEL_VARS + (image_variable,) + (SANDBOX_VARS if backend_name == "acas" else ())
@@ -139,7 +141,7 @@ async def run() -> int:
         try:
             store = InMemoryAgentFileStore()
             await store.write("main.tf", Path(__file__).with_name("main.tf").read_text("utf-8"))
-            context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
+            context = make_caller_context(list_all_files, lambda: SCOPE, lambda: thread_id)
             tools = make_terraform_tools(
                 router, store, AGENT_DIR, context, engine=engine, image=env[image_variable]
             )
@@ -167,7 +169,7 @@ async def run() -> int:
                 )
             )
         finally:
-            purge = await router.dispose_scope(SCOPE, THREAD_ID)
+            purge = await router.dispose_scope(SCOPE, thread_id)
             print(f"{MEASURED}Disposed {purge.disposed} sandbox(es).")
             if purge.undisposed is not None:
                 print(f"{MEASURED}Not fully disposed: {purge.undisposed}")

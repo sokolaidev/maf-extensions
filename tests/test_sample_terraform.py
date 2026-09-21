@@ -155,6 +155,7 @@ def test_sample_selects_engine_and_cleans_up_on_every_exit(
         monkeypatch.setenv(name, "configured")
     monkeypatch.setenv("SAMPLE_BACKEND", backend)
     monkeypatch.setenv("SAMPLE_ENGINE", engine)
+    monkeypatch.setattr(sample, "THREAD_ID", "20-terraform-validation-shared-workflow")
     closed = AsyncMock()
     configured_backend = SimpleNamespace(name=backend, aclose=closed)
     monkeypatch.setattr(sample, "AcasSandboxBackend", lambda config: configured_backend)
@@ -184,6 +185,7 @@ def test_sample_selects_engine_and_cleans_up_on_every_exit(
 
     def tools(*args, **kwargs):
         assert kwargs == {"engine": engine, "image": "configured"}
+        assert args[3].current_thread_id() == f"{sample.THREAD_ID}-{backend}-{engine}"
         return ["tool"]
 
     monkeypatch.setattr(sample, "make_terraform_tools", tools)
@@ -202,7 +204,7 @@ def test_sample_selects_engine_and_cleans_up_on_every_exit(
             asyncio.run(sample.run())
     else:
         assert asyncio.run(sample.run()) == (1 if failure == "purge" else 0)
-    purge.assert_awaited_once_with(sample.SCOPE, sample.THREAD_ID)
+    purge.assert_awaited_once_with(sample.SCOPE, f"{sample.THREAD_ID}-{backend}-{engine}")
     credential.__aexit__.assert_awaited_once()
     assert closed.await_count == int(backend == "acas")
     assert create_docker.await_count == int(backend == "docker")
