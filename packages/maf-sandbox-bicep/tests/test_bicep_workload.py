@@ -1327,18 +1327,26 @@ class TestARefusalNamesRatherThanEchoes:
 class TestMakeBicepTools:
     """A host with no sandbox gets no tool, not a tool that fails when called."""
 
-    def test_returns_empty_without_a_router(self):
+    @pytest.mark.parametrize("config", [None, "invalid"])
+    def test_returns_empty_without_a_router(self, config):
         assert (
             make_bicep_tools(
-                None, InMemoryStore({}), "devops-engineer", _context(InMemoryStore({}))
+                None,
+                InMemoryStore({}),
+                "devops-engineer",
+                _context(InMemoryStore({})),
+                config=config,
             )
             == []
         )
 
-    def test_returns_empty_when_the_router_has_no_backend(self):
+    @pytest.mark.parametrize("config", [None, "invalid"])
+    def test_returns_empty_when_the_router_has_no_backend(self, config):
         store = InMemoryStore({})
         router = SandboxRouter([])
-        assert make_bicep_tools(router, store, "devops-engineer", _context(store)) == []
+        assert (
+            make_bicep_tools(router, store, "devops-engineer", _context(store), config=config) == []
+        )
 
     def test_tool_has_correct_name(self):
         store = InMemoryStore({})

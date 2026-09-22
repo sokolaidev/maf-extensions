@@ -80,6 +80,13 @@ def test_host_config_replaces_packaged_levels_but_not_trusted_rule_ids():
     assert catalog.rules["BCP033"] == "BCP033"
 
 
+def test_host_config_snapshot_can_be_utf8_encoded_with_an_escaped_surrogate():
+    config = load_catalog(r'{"note":"\ud800"}').config
+
+    assert json.loads(config)["note"] == "\ud800"
+    assert b"\\ud800" in config.encode("utf-8")
+
+
 @pytest.mark.parametrize("rule", ["unknown-rule", "BCP033"])
 def test_host_config_rejects_ids_outside_packaged_linter_rules(rule):
     config = json.dumps({"analyzers": {"core": {"rules": {rule: {"level": "error"}}}}})

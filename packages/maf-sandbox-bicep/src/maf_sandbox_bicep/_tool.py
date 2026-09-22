@@ -270,9 +270,10 @@ def make_bicep_tools(
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """
-    catalog = load_catalog(config)
     return sandboxed_tool(
-        lambda session: _bicep_validate_tool(session, file_store, exec_timeout_seconds, catalog),
+        lambda session: _bicep_validate_tool(
+            session, file_store, exec_timeout_seconds, load_catalog(config)
+        ),
         router=router,
         context=context,
         agent_id=agent_id,

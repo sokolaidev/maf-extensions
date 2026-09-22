@@ -68,7 +68,7 @@ def _validated_host_config(config: str, packaged_rules: Mapping[str, Any]) -> st
         raise ValueError(f"Bicep config names unknown linter rule(s): {', '.join(unknown)}")
 
     try:
-        return json.dumps(selected, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        return json.dumps(selected, allow_nan=False, separators=(",", ":"))
     except ValueError as exc:
         raise ValueError("Bicep config must contain only JSON values") from exc
 
