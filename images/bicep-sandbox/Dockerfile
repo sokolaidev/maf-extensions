@@ -9,5 +9,5 @@ RUN tdnf install -y ca-certificates curl icu \
         "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64" \
     && chmod +x /usr/local/bin/bicep
 
-# Fallback policy for clients that do not stage their own packaged configuration.
+# Fallback policy for clients that do not stage a configuration.
 COPY bicepconfig.json /maf-sandbox/work/bicepconfig.json

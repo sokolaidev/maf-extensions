@@ -237,6 +237,7 @@ def make_bicep_tools(
     image: str | None = None,
     image_id: str | None = None,
     egress: Egress = Egress.ALLOWLIST,
+    config: str | None = None,
     exec_timeout_seconds: int = 120,
 ) -> list[Any]:
     """Return the ``[bicep_validate]`` tool list, or ``[]`` when no sandbox is available.
@@ -264,10 +265,12 @@ def make_bicep_tools(
         image_id: A backend-native disk-image id, skipping resolution.
         egress: The network posture the validation runs in; see :func:`bicep_sandbox_spec`.
             Defaults to :data:`~maf_sandbox.Egress.ALLOWLIST` (the AVM registry hosts).
+        config: Host-supplied ``bicepconfig.json`` text. Defaults to the packaged policy.
+            Linter rule IDs must belong to the packaged catalog.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """
-    catalog = load_catalog()
+    catalog = load_catalog(config)
     return sandboxed_tool(
         lambda session: _bicep_validate_tool(session, file_store, exec_timeout_seconds, catalog),
         router=router,
@@ -414,7 +417,7 @@ def _bicep_validate_tool(
                 logger.warning("bicep_validate: config staging failed: %s", error_detail(exc))
                 return SandboxResult(
                     completed=False,
-                    trusted_output=("Error: could not stage the packaged Bicep configuration.",),
+                    trusted_output=("Error: could not stage the Bicep configuration.",),
                 )
 
         # Two passes, and the order is load-bearing: every file is written before ANY of them
@@ -568,7 +571,7 @@ def _bicep_validate_tool(
     ) -> SandboxResult:
         """Run ``bicep build`` and ``bicep lint`` on Bicep files inside a sandboxed VM.
 
-        Validates that the named files pass the Bicep compiler and linter under the packaged
+        Validates that the named files pass the Bicep compiler and linter under the attached
         ``bicepconfig.json`` (T2 — compiler truth rather than LLM self-check).  Call this
         after writing the files with ``file_access_write`` and before reporting them.
 
