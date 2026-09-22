@@ -7,12 +7,16 @@ import base64
 import copy
 import gzip
 import hashlib
+import io
 import json
+import queue
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,6 +30,7 @@ from maf_sandbox_hyperlight import (
     _backend,
     _pod_bootstrap,
     _pod_supervisor,
+    kubernetes,
 )
 from maf_sandbox_hyperlight._pod import FRAME_LIMIT, frame, unframe, verify_container
 from maf_sandbox_hyperlight._pod_supervisor import Supervisor
@@ -158,6 +163,23 @@ def test_unsafe_or_unbounded_template_is_refused(field, value):
         replace(TEMPLATE, **{field: value})
 
 
+@pytest.mark.parametrize("name", ["", "-a", "a-", "a.b", "A", "a" * 64])
+def test_invalid_dns_labels_are_rejected_locally(name):
+    with pytest.raises(ValueError, match="namespace"):
+        HyperlightPodController(kubeconfig="config", context="context", namespace=name)
+    with pytest.raises(ValueError, match="namespace"):
+        pod_manifest(KEY, KIND, TEMPLATE, namespace=name, generation="gen")
+    with pytest.raises(ValueError, match="ConfigMap"):
+        replace(TEMPLATE, bundle_configmap=name, bundle_sha256="a" * 64)
+
+
+@pytest.mark.parametrize("name", ["a", "0", "a-b", "a" * 63])
+def test_valid_dns_label_boundaries_remain_accepted(name):
+    HyperlightPodController(kubeconfig="config", context="context", namespace=name)
+    template = replace(TEMPLATE, bundle_configmap=name, bundle_sha256="a" * 64)
+    assert pod_manifest(KEY, KIND, template, namespace=name, generation="gen")
+
+
 @pytest.fixture
 def controls(tmp_path: Path):
     values = {
@@ -272,6 +294,92 @@ def test_late_heartbeat_cannot_revive_an_expired_lease(supervisor):
     assert supervisor.retired.is_set()
 
 
+@pytest.mark.parametrize(
+    "payload,reason", [(b"", "stream closed"), (b"not-json\n", "JSONDecodeError")]
+)
+def test_controller_input_retirement_preserves_failure_reason(
+    supervisor, monkeypatch, payload, reason
+):
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(payload)))
+    supervisor.read_controller()
+    assert supervisor.retired.is_set() and supervisor.ack.is_set()
+    assert reason in supervisor.reason
+
+
+def test_controller_input_overflow_retires_with_diagnostic(supervisor, monkeypatch):
+    supervisor.incoming = queue.Queue(maxsize=1)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(frame({}) * 2)))
+    supervisor.read_controller()
+    assert supervisor.retired.is_set() and "Full" in supervisor.reason
+
+
+@pytest.mark.parametrize("error", ["SystemExit(0)", "KeyboardInterrupt()"])
+def test_init_forces_failure_exit_without_waiting_for_python_threads(error):
+    program = f"""
+import json, os, threading
+from maf_sandbox_hyperlight import _pod_supervisor
+os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(BINDING.mapping())!r}
+os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
+def refuse(binding):
+    threading.Thread(target=threading.Event().wait, daemon=False).start()
+    raise {error}
+_pod_supervisor.verify_init = refuse
+_pod_supervisor.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, timeout=10, check=False
+    )
+    assert result.returncode == 71
+    assert b"pod supervisor refused startup" in result.stderr
+
+
+def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
+    payload = frame({"event": "ready", "pod_uid": "pod-uid", "generation": "generation"})
+    for sequence in range(1, 33):
+        for event in ("begin", "end"):
+            payload += frame(
+                {
+                    "event": event,
+                    "sequence": sequence,
+                    "pod_uid": "pod-uid",
+                    "generation": "generation",
+                    "expires_at": time.time() + 60,
+                }
+            )
+
+    # Finish the reader before supervision so the queue is deterministically full.
+    class ReadFirstThread(threading.Thread):
+        def __init__(self, *, target, **kwargs):
+            super().__init__(target=target, **kwargs)
+            self.is_reader = target.__name__ == "read"
+
+        def start(self):
+            super().start()
+            if self.is_reader:
+                self.join(timeout=2)
+                assert not self.is_alive()
+
+    monkeypatch.setattr(threading, "Thread", ReadFirstThread)
+    stopped = threading.Event()
+    stream = SimpleNamespace(
+        stdout=io.BytesIO(payload),
+        stderr=io.BytesIO(),
+        stdin=io.BytesIO(),
+        poll=lambda: 0 if stopped.is_set() else None,
+    )
+    readers = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    try:
+        controller._supervise(
+            stream, "pod-uid", "generation", time.monotonic() + 2, bytearray(), readers
+        )
+    finally:
+        stopped.set()
+        for reader in readers:
+            reader.join(timeout=2)
+    assert all(unframe(line)["op"] != "ack" for line in stream.stdin.getvalue().splitlines(True))
+
+
 def terminal_pod():
     return {
         "metadata": {
@@ -349,11 +457,162 @@ class FakeController(HyperlightPodController):
                 assert body["preconditions"]["uid"] == "pod-uid"
                 self.pod = {}
             else:
-                assert self.ledger["data"]["state"] == "stopped"
+                assert self.ledger["data"]["state"] in {"stopped", "rejected"}
                 assert body["preconditions"]["uid"] == "ledger-uid"
                 self.ledger = {}
             return {"status": "Success"}
         raise AssertionError(arguments)
+
+
+class RejectingController(FakeController):
+    def __init__(self, error):
+        super().__init__(pod={})
+        self.ledger = {}
+        self.error = error
+
+    def api(self, *arguments, body=None):
+        if arguments[0] == "create":
+            self.calls.append((arguments, copy.deepcopy(body)))
+            assert body is not None
+            if body["kind"] == "ConfigMap":
+                assert not self.ledger, "scope was not released"
+                self.ledger = copy.deepcopy(body)
+                self.ledger["metadata"]["uid"] = "ledger-uid"
+                return copy.deepcopy(self.ledger)
+            raise self.error
+        return super().api(*arguments, body=body)
+
+
+def rejected_create(message):
+    return subprocess.CalledProcessError(1, ["kubectl", "create"], output="", stderr=message)
+
+
+QUOTA_REJECTION = 'Error from server (Forbidden): error when creating "STDIN": exceeded quota\n'
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        QUOTA_REJECTION,
+        "Warning: admission policy reports a resource budget warning\n" + QUOTA_REJECTION,
+        'Error from server (BadRequest): error when creating "STDIN": admission denied\n',
+        f'The Pod "{ownership_name(KEY, KIND)}" is invalid: spec: invalid value\n',
+        f'The Pod "{ownership_name(KEY, KIND)}" is invalid:\n* spec: invalid value\n',
+    ],
+)
+def test_definitive_create_rejection_releases_only_the_reserved_ledger(message):
+    controller = RejectingController(rejected_create(message))
+    for _ in range(2):
+        with pytest.raises(subprocess.CalledProcessError):
+            controller.run(KEY, KIND, TEMPLATE)
+        assert not controller.ledger
+    deletes = [(args, body) for args, body in controller.calls if args[0] == "delete"]
+    assert len(deletes) == 2
+    assert all("/configmaps/" in args[2] for args, _ in deletes)
+    assert all(body["preconditions"] == {"uid": "ledger-uid"} for _, body in deletes)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired("kubectl", 15),
+        rejected_create('Error from server (AlreadyExists): pods "existing" already exists'),
+        rejected_create('Error from server (InternalError): error when creating "STDIN": failed'),
+        rejected_create("Unable to connect to the server: Forbidden"),
+        rejected_create("error: failed exec auth: " + QUOTA_REJECTION),
+        rejected_create("Warning: policy warning\nUnable to connect to the server: Forbidden"),
+    ],
+)
+def test_ambiguous_create_failure_keeps_the_scope_reserved(error):
+    controller = RejectingController(error)
+    with pytest.raises(HyperlightPodCleanupPending, match="allocation retained"):
+        controller.run(KEY, KIND, TEMPLATE)
+    assert controller.ledger["data"]["state"] == "allocating"
+    assert not any(args[0] == "delete" for args, _ in controller.calls)
+
+
+def test_rejection_cannot_release_a_scope_with_an_existing_pod():
+    controller = RejectingController(rejected_create(QUOTA_REJECTION))
+    controller.pod = terminal_pod()
+    with pytest.raises(HyperlightPodCleanupPending, match="allocation retained"):
+        controller.run(KEY, KIND, TEMPLATE)
+    assert controller.ledger["data"]["state"] == "allocating"
+    assert not any(args[0] == "delete" for args, _ in controller.calls)
+
+
+def test_rejection_with_unavailable_pod_lookup_retains_allocation(monkeypatch):
+    controller = RejectingController(rejected_create(QUOTA_REJECTION))
+    api = controller.api
+
+    def unavailable(*args, **kwargs):
+        if args[:2] == ("get", "pod"):
+            raise OSError("lookup unavailable")
+        return api(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "api", unavailable)
+    with pytest.raises(HyperlightPodCleanupPending):
+        controller.run(KEY, KIND, TEMPLATE)
+    assert controller.ledger["data"]["state"] == "allocating"
+    assert not any(args[0] == "delete" for args, _ in controller.calls)
+
+
+def test_rejection_receipt_cannot_delete_a_replacement_pod():
+    controller = FakeController()
+    controller.ledger["data"].update({"state": "rejected", "pod_uid": ""})
+    with pytest.raises(HyperlightPodCleanupPending, match="pod exists"):
+        controller.recover(KEY, KIND)
+    assert controller.ledger and controller.pod
+    assert all(args[0] == "get" for args, _ in controller.calls)
+
+
+def test_running_ledger_update_failure_still_attempts_confirmed_cleanup(monkeypatch):
+    controller = FakeController()
+    api = controller.api
+
+    def fail_running_update(*args, body=None):
+        if args[0] == "create":
+            assert body is not None
+            if body["kind"] == "ConfigMap":
+                controller.ledger["data"].update(body["data"])
+                controller.ledger["data"]["generation"] = "generation"
+                return copy.deepcopy(controller.ledger)
+            return copy.deepcopy(controller.pod)
+        if args[0] == "replace" and body and body.get("data", {}).get("state") == "running":
+            raise OSError("running update failed")
+        return api(*args, body=body)
+
+    monkeypatch.setattr(controller, "api", fail_running_update)
+    with pytest.raises(OSError, match="running update failed"):
+        controller.run(KEY, KIND, TEMPLATE)
+    assert not controller.ledger and not controller.pod
+
+
+def test_rejection_receipt_allows_retry_after_ledger_delete_fails(monkeypatch):
+    controller = RejectingController(rejected_create(QUOTA_REJECTION))
+    remove = controller._delete
+
+    def unavailable(*args):
+        raise OSError("API unavailable")
+
+    monkeypatch.setattr(controller, "_delete", unavailable)
+    with pytest.raises(HyperlightPodCleanupPending):
+        controller.run(KEY, KIND, TEMPLATE)
+    assert controller.ledger["data"]["state"] == "rejected"
+    monkeypatch.setattr(controller, "_delete", remove)
+    assert controller.recover(KEY, KIND) == 71
+    assert not controller.ledger
+
+
+def test_manifest_failure_does_not_reserve_the_scope(monkeypatch):
+    controller = RejectingController(rejected_create(QUOTA_REJECTION))
+
+    def unavailable(*args, **kwargs):
+        raise OSError("bootstrap source unavailable")
+
+    monkeypatch.setattr(kubernetes, "pod_manifest", unavailable)
+    with pytest.raises(OSError, match="bootstrap source"):
+        controller.run(KEY, KIND, TEMPLATE)
+    assert not controller.calls
 
 
 def test_cleanup_persists_proof_before_deleting_the_pod_and_reservation():

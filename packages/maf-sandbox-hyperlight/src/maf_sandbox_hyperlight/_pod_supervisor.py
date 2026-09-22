@@ -99,9 +99,10 @@ class Supervisor:
         try:
             while raw := sys.stdin.buffer.readline(FRAME_LIMIT + 1):
                 self.incoming.put_nowait(unframe(raw))
-        except (OSError, ValueError, queue.Full, HyperlightWorkerError):
-            pass
-        self.retire("controller stream closed")
+        except (OSError, ValueError, queue.Full, HyperlightWorkerError) as error:
+            self.retire(f"controller stream failed: {type(error).__name__}")
+        else:
+            self.retire("controller stream closed")
 
     def start_owner(self) -> None:
         """Publish the owner PID before permitting application imports and backend construction."""

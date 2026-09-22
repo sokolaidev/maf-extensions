@@ -19,9 +19,13 @@ UPSTREAM_MANIFEST = f"https://raw.githubusercontent.com/hyperlight-dev/hyperligh
 
 def render_plugin(source: str, *, namespace: str, image: str = PLUGIN_IMAGE, count: int = 1):
     """Keep upstream's plugin and CDI paths while pinning deployment and security settings."""
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", namespace):
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", namespace):
         raise ValueError("invalid infrastructure namespace")
-    if not re.fullmatch(r"[^\s@]+@sha256:[a-f0-9]{64}", image) or not 1 <= count <= 2000:
+    if (
+        not re.fullmatch(r"[^\s@]+@sha256:[a-f0-9]{64}", image)
+        or type(count) is not int
+        or not 1 <= count <= 2000
+    ):
         raise ValueError("a digest-pinned image and bounded device count are required")
     for name, value in {
         "IMAGE": image,

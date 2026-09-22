@@ -8,12 +8,25 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_hyperlight_aks_image
 from hyperlight_aks import PLUGIN_IMAGE, render_plugin
+
+
+@pytest.mark.parametrize("namespace", ["", "-a", "a-", "a.b", "A", "a" * 64])
+def test_overlay_rejects_invalid_namespace_before_rendering(namespace):
+    with pytest.raises(ValueError, match="namespace"):
+        render_plugin("", namespace=namespace)
+
+
+@pytest.mark.parametrize("count", [True, False, 1.5, "1", 0, 2001])
+def test_overlay_refuses_noninteger_or_unbounded_device_counts(count: Any):
+    with pytest.raises(ValueError, match="device count"):
+        render_plugin("", namespace="infra", count=count)
 
 
 def test_bundle_build_accepts_uv_metadata_and_hashes_the_exact_payload(tmp_path, monkeypatch):
@@ -40,7 +53,8 @@ def test_bundle_build_accepts_uv_metadata_and_hashes_the_exact_payload(tmp_path,
         build_hyperlight_aks_image.prepare(tmp_path)
 
 
-def test_overlay_keeps_upstream_devices_without_adding_node_delegation():
+@pytest.mark.parametrize("namespace,count", [("trusted-infra", 1), ("a", 2000), ("a" * 63, 1)])
+def test_overlay_keeps_upstream_devices_without_adding_node_delegation(namespace, count):
     source = {
         "kind": "DaemonSet",
         "metadata": {"name": "hyperlight-device-plugin"},
@@ -60,14 +74,14 @@ def test_overlay_keeps_upstream_devices_without_adding_node_delegation():
             }
         },
     }
-    result = render_plugin(json.dumps(source), namespace="trusted-infra")
+    result = render_plugin(json.dumps(source), namespace=namespace, count=count)
     daemon = result["items"][0]
     pod = daemon["spec"]["template"]["spec"]
     assert pod["nodeSelector"] == source["spec"]["template"]["spec"]["nodeSelector"]
     assert pod["volumes"] == source["spec"]["template"]["spec"]["volumes"]
     assert pod["automountServiceAccountToken"] is False
     assert pod["containers"][0]["image"] == PLUGIN_IMAGE
-    assert pod["containers"][0]["env"][0]["value"] == "1"
+    assert pod["containers"][0]["env"][0]["value"] == str(count)
     assert pod["containers"][0]["securityContext"]["capabilities"] == {"drop": ["ALL"]}
     assert daemon["spec"]["updateStrategy"] == {"type": "OnDelete"}
     with pytest.raises(ValueError, match="digest"):

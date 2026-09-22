@@ -25,6 +25,7 @@ _FINALIZER = "sandbox.sokol.ai/confirmed-stop"
 _GENERATION = "sandbox.sokol.ai/generation"
 _LABEL = "sandbox.sokol.ai/hyperlight-owner"
 _DIAGNOSTIC_LIMIT = 64 * 1024
+_DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
 
 class HyperlightPodCleanupPending(HyperlightWorkerError):
@@ -62,7 +63,7 @@ class HyperlightPodTemplate:
         if self.cpu_request_millis > self.cpu_millis:
             raise ValueError("CPU request must not exceed the limit")
         if self.bundle_configmap is not None or self.bundle_sha256 is not None:
-            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.bundle_configmap or ""):
+            if not re.fullmatch(_DNS_LABEL, self.bundle_configmap or ""):
                 raise ValueError("bundle_configmap must name a namespaced ConfigMap")
             if not re.fullmatch(r"[a-f0-9]{64}", self.bundle_sha256 or ""):
                 raise ValueError("bundle_sha256 must pin the application bundle")
@@ -95,6 +96,8 @@ def pod_manifest(
     generation: str,
 ) -> dict[str, object]:
     """Add a private supervised application to upstream's extended-resource deployment model."""
+    if not re.fullmatch(_DNS_LABEL, namespace):
+        raise ValueError("invalid application namespace")
     name = ownership_name(key, kind)
     binding = {
         "scope": key.scope,
@@ -288,7 +291,7 @@ class HyperlightPodController:
     """
 
     def __init__(self, *, kubeconfig: str, context: str, namespace: str) -> None:
-        if not kubeconfig or not context or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", namespace):
+        if not kubeconfig or not context or not re.fullmatch(_DNS_LABEL, namespace):
             raise ValueError("explicit kubeconfig, context and namespace are required")
         self.namespace = namespace
         self.command = [
@@ -350,6 +353,9 @@ class HyperlightPodController:
             raise ValueError("cleanup_timeout must be positive and finite")
         name = ownership_name(key, kind)
         generation = uuid.uuid4().hex
+        manifest = pod_manifest(
+            key, kind, template, namespace=self.namespace, generation=generation
+        )
         ledger = self.api(
             "create",
             "-f",
@@ -368,21 +374,22 @@ class HyperlightPodController:
             },
         )
         started = time.monotonic()
-        pod = self.api(
-            "create",
-            "-f",
-            "-",
-            "-o",
-            "json",
-            body=pod_manifest(key, kind, template, namespace=self.namespace, generation=generation),
-        )
-        uid = str(cast("dict[str, object]", pod["metadata"])["uid"])
-        cast("dict[str, str]", ledger["data"]).update({"pod_uid": uid, "state": "running"})
-        self._replace(ledger)
+        try:
+            pod = self.api("create", "-f", "-", "-o", "json", body=manifest)
+        except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
+            if not _create_rejected(error, name):
+                raise HyperlightPodCleanupPending(
+                    "pod creation is unconfirmed; allocation retained"
+                ) from error
+            self._release_rejected(name, ledger, record=True)
+            raise
         diagnostics = bytearray()
         readers: list[threading.Thread] = []
         stream: subprocess.Popen[bytes] | None = None
         try:
+            uid = str(cast("dict[str, object]", pod["metadata"])["uid"])
+            cast("dict[str, str]", ledger["data"]).update({"pod_uid": uid, "state": "running"})
+            self._replace(ledger)
             if self._await_running(
                 name, uid, min(started + template.session_timeout, started + 180)
             ):
@@ -457,8 +464,9 @@ class HyperlightPodController:
         diagnostics: bytearray,
         readers: list[threading.Thread],
     ) -> None:
-        messages: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=64)
+        messages: queue.Queue[dict[str, object]] = queue.Queue(maxsize=64)
         outgoing: queue.Queue[bytes] = queue.Queue(maxsize=8)
+        transport_closed = threading.Event()
         assert stream.stdout is not None and stream.stderr is not None and stream.stdin is not None
 
         def read(source: BinaryIO, *, control: bool) -> None:
@@ -470,11 +478,11 @@ class HyperlightPodController:
                     while chunk := source.read(4096):
                         diagnostics.extend(chunk[: max(0, _DIAGNOSTIC_LIMIT - len(diagnostics))])
             except (OSError, ValueError, queue.Full, HyperlightWorkerError):
-                pass
+                return
             finally:
                 if control:
-                    with suppress(queue.Full):
-                        messages.put_nowait(None)
+                    # Retirement must survive a saturated lifecycle queue.
+                    transport_closed.set()
 
         def write() -> None:
             assert stream.stdin is not None
@@ -486,9 +494,8 @@ class HyperlightPodController:
                         continue
                     stream.stdin.write(payload)
                     stream.stdin.flush()
-            except OSError:
-                with suppress(queue.Full):
-                    messages.put_nowait(None)
+            except (OSError, ValueError):
+                transport_closed.set()
 
         readers.extend(
             [
@@ -520,6 +527,8 @@ class HyperlightPodController:
         sequence = 0
         ready = False
         while stream.poll() is None:
+            if transport_closed.is_set():
+                return
             now = time.monotonic()
             if now >= session_deadline or (deadline is not None and time.time() >= deadline):
                 send("stop")
@@ -531,8 +540,6 @@ class HyperlightPodController:
                 message = messages.get(timeout=0.05)
             except queue.Empty:
                 continue
-            if message is None:
-                return
             if message.get("pod_uid") != uid or message.get("generation") != generation:
                 raise HyperlightWorkerError("attach stream belongs to another pod generation")
             event = message.get("event")
@@ -561,12 +568,15 @@ class HyperlightPodController:
     def recover(
         self, key: SandboxKey, kind: str, *, timeout: float = 45, retire: bool = False
     ) -> int:
-        """Confirm a previous owner stopped before releasing its durable allocation record."""
+        """Release a stopped or rejected allocation; confirmed rejection returns code 71."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         name = ownership_name(key, kind)
         ledger = self.api("get", "configmap", name, "-o", "json")
         data = cast("dict[str, str]", ledger["data"])
+        if data.get("state") == "rejected" and not data.get("pod_uid"):
+            self._release_rejected(name, ledger)
+            return 71
         if data.get("state") == "stopped" and data.get("pod_uid"):
             self._finish_cleanup(name, ledger)
             return int(data["exit_code"])
@@ -603,6 +613,23 @@ class HyperlightPodController:
         self._finish_cleanup(name, ledger)
         return result
 
+    def _release_rejected(
+        self, name: str, ledger: dict[str, object], *, record: bool = False
+    ) -> None:
+        """A server rejection plus absence excludes a pod retained by an earlier create attempt."""
+        try:
+            if self.api("get", "pod", name, "-o", "json", "--ignore-not-found=true"):
+                raise HyperlightPodCleanupPending("pod exists after rejection; allocation retained")
+            if record:
+                cast("dict[str, str]", ledger["data"])["state"] = "rejected"
+                ledger = self._replace(ledger)
+            ledger_uid = str(cast("dict[str, object]", ledger["metadata"])["uid"])
+            self._delete("configmaps", name, ledger_uid)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise HyperlightPodCleanupPending(
+                "rejected allocation cleanup is incomplete; allocation retained"
+            ) from error
+
     def _finish_cleanup(self, name: str, ledger: dict[str, object]) -> None:
         """A durable termination receipt permits retry after API deletion or controller death."""
         data = cast("dict[str, str]", ledger["data"])
@@ -630,3 +657,25 @@ class HyperlightPodController:
             raise HyperlightPodCleanupPending(
                 "cleanup is incomplete; termination receipt retained"
             ) from error
+
+
+def _create_rejected(error: BaseException, name: str) -> bool:
+    """Recognize kubectl server refusals; unknown output and transport errors retain ownership."""
+    if (
+        not isinstance(error, subprocess.CalledProcessError)
+        or error.returncode != 1
+        or error.stdout
+        or not isinstance(error.stderr, str)
+    ):
+        return False
+    lines = error.stderr.splitlines()
+    while lines and lines[0].startswith("Warning: "):
+        lines.pop(0)
+    message = "\n".join(lines)
+    return bool(
+        re.match(
+            r'\AError from server \((?:Forbidden|BadRequest)\): error when creating "STDIN": ',
+            message,
+        )
+        or re.match(rf'\AThe Pod "{re.escape(name)}" is invalid(?::[ \n]|$)', message)
+    )
