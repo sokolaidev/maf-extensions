@@ -22,16 +22,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import io
+import functools
 import json
 import logging
 import posixpath
 import re
-import tarfile
 import tempfile
 import threading
 import time
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+import uuid
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -63,17 +63,25 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.bounded_exec import read_bounded_process_output
+from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
-    guest_path_and_ancestors,
     posix_work_dir_ancestors,
     resolve_guest_working_directory,
     stat_by_asking_the_guest_as_root,
 )
 
 from ._config import WslcSandboxConfig
-from ._probes import TEST_COMMAND, probe_commands
+from ._probes import (
+    SETUP_COMMANDS,
+    SETUP_MISSING,
+    SETUP_PATH,
+    SETUP_SHELL,
+    SETUP_UNSTARTABLE,
+    TEST_COMMAND,
+    probe_commands,
+)
 from ._proxy import build_context
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
@@ -117,6 +125,11 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 # No branch of this engine's stat carries an owner, so nothing raised here can be licensed;
 # cleanup requires disposal.
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
+
+#: The capabilities that need the base prepared and given to the guest. A spec requiring none
+#: of them — a pure lifecycle acquire — gets no ownership step. Both of this backend's declared
+#: capabilities need a base the guest can write: files in over it, and exec running under it.
+_PREPARED_CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 #: Both scopes, because a container's identity folds the key's ``call_id`` — into the name it is
 #: created under, the registry entry it is filed at and the label a disposal selects on — so two
@@ -465,6 +478,119 @@ def _proxy_name(container: str) -> str:
 _STAT_STDOUT_LIMIT = 512
 _STDERR_LIMIT = 64 * 1024
 
+#: Stdout a file command may return. Both commands below print nothing on success.
+_FILE_COMMAND_STDOUT_LIMIT = 4096
+
+#: Stdout an identity probe may return. ``id -u`` and ``id -g`` print one number; reaching
+#: this cap means the host killed a command that may still be running, not a long answer.
+_IDENTITY_STDOUT_LIMIT = 64
+
+#: How many quarantined instances one acquire will remove for a single name before deciding
+#: the name is contested. A discard runs outside the acquire lock, so a couple of pending
+#: instances is an ordinary overlap; a name that keeps gaining them is something this acquire
+#: cannot drain, and it says so rather than spinning.
+_QUARANTINE_DRAIN_ATTEMPTS = 8
+
+#: One write, run as the image's user: ``$1`` target, ``$2`` its parent, ``$3`` a sibling
+#: named for this call, ``$4`` the byte count. The content arrives on stdin. A host that is
+#: cancelled or times out closes stdin, and ``cat`` then ends as if the file were whole, so
+#: the sibling moves into place only when every byte arrived.
+#:
+#: The last line is why the rename is checked rather than trusted: ``mv`` treats a destination
+#: that is a directory as a container and succeeds, leaving the content at ``$target/<sibling>``
+#: while reporting that the write landed. A leaf turned into a directory after the check above
+#: does exactly that, so the target has to be a regular file afterwards or the write is refused
+#: and the misplaced sibling taken back. ``mv -T`` would say it in one flag, but not every
+#: ``mv`` this backend admits has it.
+_WRITE_AS_THE_GUEST = """\
+export LC_ALL=C
+umask 022
+target=$1 parent=$2 staged=$3 size=$4
+refuse_directory() {
+    if [ -d "$target" ]; then rm -f -- "$staged"; echo 'Is a directory' >&2; exit 1; fi
+}
+mkdir -p -- "$parent" || exit 1
+refuse_directory
+cat > "$staged" || { rm -f -- "$staged"; exit 1; }
+received=$(wc -c < "$staged") && [ "$received" -eq "$size" ] || {
+    rm -f -- "$staged"; echo 'the content was cut short' >&2; exit 1
+}
+refuse_directory
+mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
+[ -f "$target" ] || {
+    rm -f -- "$target/${staged##*/}"
+    echo 'Is a directory' >&2; exit 1
+}
+"""
+
+#: Creates a base's missing directories as root: ``$1`` the existing parent of the first, then
+#: the directories, outermost first. Each ``mkdir`` runs in a directory this shell holds as its
+#: working directory, after ``pwd -P`` reported that directory's own path.
+#:
+#: **What that comparison proves is that nothing on the way was a link**, since resolving one
+#: lands somewhere whose physical path differs. It does not prove the directory is the one the
+#: earlier check looked at: a guest that can write the parent can rename one real directory out
+#: and another in, and the name still resolves to a directory. No engine stat here reports an
+#: inode or an owner, so there is nothing to compare identity against — see the backend doc.
+#:
+#: ``PATH`` is pinned so a directory the image's user can write cannot supply a command that
+#: runs as root, and ``CDPATH`` is cleared so an inherited one cannot divert a relative ``cd``
+#: to a same-named directory elsewhere.
+#: The environment both root commands run under. Built from the probe's own constants, so the
+#: ``PATH`` an acquire checks and the ``PATH`` setup uses cannot drift apart. Concatenated
+#: rather than interpolated: the scripts below carry ``${...}`` and ``$(...)``.
+_PINNED_ENV = f"export LC_ALL=C PATH={SETUP_PATH} CDPATH=\n"
+
+_CREATE_DIRECTORIES = (
+    _PINNED_ENV
+    # Its own prerequisites, checked here rather than at acquire: a base that is already
+    # there never runs this command, and refusing such an image would turn away one this
+    # backend can serve.
+    + f"""\
+for command in {" ".join(SETUP_COMMANDS)}; do
+    command -v "$command" >/dev/null || {{ echo "{SETUP_MISSING} $command" >&2; exit 127; }}
+done
+"""
+    + """\
+umask 022
+parent=$1
+shift
+cd -P -- "$parent" && [ "$(pwd -P)" = "$parent" ] || {
+    echo "$parent does not resolve to itself any more" >&2; exit 1
+}
+for directory do
+    mkdir -- "${directory##*/}" || exit 1
+    cd -P -- "${directory##*/}" && [ "$(pwd -P)" = "$directory" ] || {
+        echo "$directory does not resolve to itself any more" >&2; exit 1
+    }
+done
+"""
+)
+
+#: Gives the base to the image's user as root: ``$1`` the ``uid:gid``, ``$2`` the base. Held
+#: the same way — ``cd -P`` then a ``pwd -P`` comparison — so a base reached through a link is
+#: refused rather than chowned through, with the same limit: it rules out links, not a real
+#: directory renamed into that name. Run only over a base this backend just created; a
+#: directory that was already there keeps the owner it had.
+_ENSURE_BASE_OWNER = (
+    _PINNED_ENV
+    + """\
+cd -P -- "$2" && [ "$(pwd -P)" = "$2" ] || {
+    echo "$2 does not resolve to itself any more" >&2; exit 1
+}
+chown -- "$1" .
+"""
+)
+
+#: What a refused write raises. ``NotADirectoryError`` covers "Not a directory" and "File
+#: exists": both mean a parent is a file.
+_REFUSAL_ERRORS: Mapping[FileRefusal, type[OSError]] = {
+    FileRefusal.NOT_FOUND: FileNotFoundError,
+    FileRefusal.IS_DIRECTORY: IsADirectoryError,
+    FileRefusal.PERMISSION_DENIED: PermissionError,
+    FileRefusal.INVALID_PATH: NotADirectoryError,
+}
+
 
 class _UnreadableListing(ValueError):
     """A ``container list`` payload whose shape this code does not know."""
@@ -575,8 +701,13 @@ class _WslcSandbox:
         guest_identity: tuple[int, int] | None = None,
         *,
         instance_id: str,
+        discard: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._run = run
+        # The backend's own discard, which also forgets this container's probe results and
+        # remembers it if the removal fails. Absent in tests that drive the sandbox alone,
+        # where a bare force-remove is all there is to do.
+        self._discard_container = discard
         self._name = name
         self._command_timeout = command_timeout
         self.instance_id = instance_id
@@ -595,99 +726,253 @@ class _WslcSandbox:
     def container_name(self) -> str:
         return self._name
 
+    async def _run_or_discard(
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
+        in_the_guest: bool = False,
+    ) -> _WslcResult:
+        """One command, force-removing this container if the command's end is unknown.
+
+        Killing the host process does not reach the command it started *inside* the container,
+        so a file command this host stopped can leave privileged work running in a container a
+        warm acquire would reuse. Every file-surface command goes through here for that reason,
+        and an expired deadline discards the container.
+
+        ``in_the_guest`` marks the commands that keep running after the host side dies — the
+        ``exec`` ones. For those, stdout reaching ``read_limit`` is a second such ending:
+        :meth:`_read_bounded` answers it by killing the host process and returning normally,
+        so nothing else would notice. It is not set for ``container cp``, whose copy the host
+        owns and whose stdout can legitimately carry a header.
+
+        A cancellation does not remove it: the caller owns that sandbox and disposes it.
+        """
+        try:
+            result = await self._run(*args, stdin=stdin, timeout=timeout, read_limit=read_limit)
+        except TimeoutError:
+            await self._discard()
+            raise
+        if in_the_guest and read_limit is not None and len(result.stdout) >= read_limit:
+            await self._discard()
+            raise RuntimeError(
+                f"wslc stopped a guest command after it wrote {read_limit} bytes to stdout, "
+                "which these commands do not; it may still be running inside the container, "
+                "so the container was discarded"
+            )
+        return result
+
+    async def _discard(self) -> None:
+        """Force-remove this container, swallowing whatever removal says.
+
+        By instance ID, never by name: a name is reusable, so a discard that arrives after
+        this sandbox was disposed and its key acquired again would remove the replacement.
+
+        Through the backend where there is one, so the removal also drops this container's
+        cached probe results and, if it will not go, marks it as not to be reused.
+        """
+        if self._discard_container is not None:
+            await self._discard_container()
+            return
+        with contextlib.suppress(Exception):
+            await self._run(
+                "container", "remove", "-f", self.instance_id, timeout=self._command_timeout
+            )
+
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base through the container file plane."""
+        """Establish the spec's base as root, without following links.
+
+        **Ownership is transferred only for a base this call created.** A base that was
+        already there keeps its owner, whichever path named it, because ``acquire`` promises
+        to preserve the contents, ownership and permissions it finds — chowning one would
+        hand the image's user a directory the host never offered.
+
+        A setup that fails, times out or is cancelled takes the container with it — ``acquire``
+        disposes it, since it returns no sandbox for anyone else to — so the half-prepared base
+        goes too. What survives that is a host killed outright between the two commands: the
+        base is then left root-owned, and the first write says so with ``PermissionError``.
+        """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        created = False
+
+        async def create(directories: tuple[str, ...]) -> None:
+            nonlocal created
+            # Refuse before creating, not after: a base is only ever created to be given to
+            # the image's user, so not knowing who that is stops the work rather than
+            # leaving a directory behind.
+            self._refuse_a_base_without_an_owner(spec, directories[-1])
+            created = True
+            await self._create_directories(directories, spec)
+
         await ensure_guest_work_dir(
             spec,
             lambda path: self._stat_guest(path, path),
-            self._create_directories,
+            create,
             resolve=posix_work_dir_ancestors,
             base=self._work_dir,
         )
+        base = posix_work_dir_ancestors(self._work_dir)
+        if created and base and spec.required_capabilities & _PREPARED_CAPABILITIES:
+            await self._ensure_base_owner(base[-1], spec)
 
-    async def _create_directories(self, directories: tuple[str, ...]) -> None:
-        """Create missing parents without changing existing directory metadata."""
-        if self._guest_identity is None:
-            raise RuntimeError("wslc could not resolve the image user for directory creation")
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for directory in directories:
-                entry = tarfile.TarInfo(directory.lstrip("/") + "/")
-                entry.type = tarfile.DIRTYPE
-                entry.mode = 0o755
-                if directory == directories[-1]:
-                    entry.uid, entry.gid = self._guest_identity
-                archive.addfile(entry)
-        result = await self._run(
+    async def _create_directories(self, directories: tuple[str, ...], spec: SandboxSpec) -> None:
+        """Create the missing directories as root, without following a swapped-in link.
+
+        Existing directories keep their metadata; the base's ownership is a separate step
+        (:meth:`_ensure_base_owner`). A refusal can leave the earlier directories behind.
+        """
+        result = await self._run_or_discard(
             "container",
-            "cp",
-            "-",
-            f"{self._name}:/",
-            stdin=buffer.getvalue(),
+            "exec",
+            "--user",
+            "0",
+            "-w",
+            "/",
+            self._name,
+            SETUP_SHELL,
+            "-c",
+            _CREATE_DIRECTORIES,
+            "sh",
+            posixpath.dirname(directories[0]),
+            *directories,
             timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
+        )
+        missing = self._setup_prerequisite_missing(result)
+        if missing is not None:
+            raise SandboxCapabilityNotSupported(
+                f"sandbox backend 'wslc' cannot serve "
+                f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
+                f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
+                f"directory {directories[-1]!r} is missing, and creating it needs {missing} "
+                f"as root, as a shell builtin or on {SETUP_PATH}. Supply an image with it, or "
+                "point work_dir at a directory the image already provides. The next acquire "
+                f"retries. The engine said: {result.stderr_text.strip()}"
+            )
+        if result.returncode:
+            raise RuntimeError(
+                f"wslc could not create the working directory: {result.stderr_text.strip()}"
+            )
+
+    def _refuse_a_base_without_an_owner(self, spec: SandboxSpec, base: str) -> None:
+        """Refuse to create a base when the user it would belong to is unresolved.
+
+        This is the image failing a capability, not this call failing: a base that has to be
+        *created* has to be given to someone, so every capability that prepares one needs the
+        identity. A base that is already there needs none of it, which is why nothing checks
+        this at acquire — writes run as the image's user and stamp nothing.
+        """
+        if self._guest_identity is not None:
+            return
+        raise SandboxCapabilityNotSupported(
+            f"sandbox backend 'wslc' cannot serve "
+            f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
+            f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
+            f"directory {base!r} is missing and the image user it would belong to is "
+            "unresolved. Use a numeric uid:gid or working id commands, or point work_dir at "
+            "a directory the image already provides. The next acquire retries."
+        )
+
+    @staticmethod
+    def _setup_prerequisite_missing(result: _WslcResult) -> str | None:
+        """Which setup prerequisite an answer says is absent, or ``None``.
+
+        The script names the command it could not find, so that case is exact. A shell the
+        engine could not start never reaches the script, and then the only thing known is the
+        shell itself — which is what gets named, with the engine's own words quoted rather
+        than guessed at.
+        """
+        marker = SETUP_MISSING + " "
+        for line in result.stderr_text.splitlines():
+            if line.startswith(marker):
+                return line[len(marker) :].strip()
+        if result.returncode in SETUP_UNSTARTABLE and SETUP_SHELL in result.stderr_text:
+            return SETUP_SHELL
+        return None
+
+    async def _ensure_base_owner(self, base: str, spec: SandboxSpec) -> None:
+        """Give ``base`` to the image's user as root, refusing a base reached through a link.
+
+        The caller decides when this is allowed: only over storage this backend allocated.
+        """
+        self._refuse_a_base_without_an_owner(spec, base)
+        assert self._guest_identity is not None
+        uid, gid = self._guest_identity
+        result = await self._run_or_discard(
+            "container",
+            "exec",
+            "--user",
+            "0",
+            "-w",
+            "/",
+            self._name,
+            SETUP_SHELL,
+            "-c",
+            _ENSURE_BASE_OWNER,
+            "sh",
+            f"{uid}:{gid}",
+            base,
+            timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
         )
         if result.returncode:
-            raise RuntimeError(f"wslc could not create the working directory: {result.stderr_text}")
+            raise RuntimeError(
+                f"wslc could not set the working directory owner: {result.stderr_text.strip()}"
+            )
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
-        """Write ``content`` to ``path`` inside the container, parents included.
+        """Write ``content`` to ``path`` as the image's user, parents included.
 
-        Explicit entries give missing directories at or below ``working_directory`` the
-        guest's ownership; existing directories must keep their modes and owners. An
-        unresolved image identity refuses the write rather than planting root-owned inputs.
+        The path check runs first; one guest command then places the file. A parent swapped
+        between the two can still redirect the write, but only to where the image's user
+        could write anyway. The file and any missing parents belong to that user, and
+        existing directories keep their metadata. The guest's refusals raise the matching
+        ``OSError``: ``PermissionError`` where the image's user cannot write.
+
+        The content moves into place only when every byte arrived. A **timeout** — a blocked
+        utility, say — discards the sandbox the way :meth:`exec` does, because killing the host
+        process does not reach the command inside the container; that covers the path check's
+        own guest commands as much as the placement. A **cancellation** after the command
+        starts is not a rollback: the file may still land whole, and a sibling named
+        ``.maf-<hex>.part`` may be left beside it.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        if self._guest_identity is None:
-            raise RuntimeError("wslc could not resolve the image user for write_file")
-        existing: set[str] = set()
-
         guest = await confine_resolve_guest_write_path(
-            lambda p: self._stat_for_write(p, existing), path, working_directory
+            lambda p: self._stat_guest(p, p), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
-        guest_work_dir = "/" + posixpath.normpath(working_directory).lstrip("/")
-        guest_leaf_dir = "/" + posixpath.normpath(posixpath.dirname(guest)).lstrip("/")
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for guest_directory in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir):
-                if (
-                    guest_directory in existing
-                    or guest_directory == "/"
-                    or not (
-                        guest_directory == guest_work_dir
-                        or guest_directory.startswith(guest_work_dir.rstrip("/") + "/")
-                    )
-                ):
-                    continue
-                entry = tarfile.TarInfo(guest_directory.lstrip("/") + "/")
-                entry.type = tarfile.DIRTYPE
-                entry.mode = 0o755
-                entry.uid, entry.gid = self._guest_identity
-                archive.addfile(entry)
-            entry = tarfile.TarInfo(guest.lstrip("/"))
-            entry.size = len(data)
-            entry.mode = 0o644
-            entry.uid, entry.gid = self._guest_identity
-            archive.addfile(entry, io.BytesIO(data))
-
-        result = await self._run(
+        # A working directory spelled `//x` keeps both slashes; the guest reads them as one.
+        guest = "/" + guest.lstrip("/")
+        parent = posixpath.dirname(guest)
+        staged = posixpath.join(parent, f".maf-{uuid.uuid4().hex}.part")
+        result = await self._run_or_discard(
             "container",
-            "cp",
-            "-",
-            f"{self._name}:/",
-            stdin=buffer.getvalue(),
+            "exec",
+            "-i",
+            "-w",
+            "/",
+            self._name,
+            "sh",
+            "-c",
+            _WRITE_AS_THE_GUEST,
+            "sh",
+            guest,
+            parent,
+            staged,
+            str(len(data)),
+            stdin=data,
             timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"wslc could not write {guest}: {result.stderr_text.strip()}")
-
-    async def _stat_for_write(self, guest: str, existing: set[str]) -> SandboxEntry | None:
-        """Retain existing paths so tar entries cannot restamp their directory metadata."""
-        entry = await self._stat_guest(guest, guest)
-        if entry is not None:
-            existing.add(guest)
-        return entry
+            detail = result.stderr_text.strip()
+            refusal = shell_refusal(detail)
+            error = RuntimeError if refusal is None else _REFUSAL_ERRORS[refusal]
+            raise error(f"wslc could not write {guest}: {detail}")
 
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path: the engine settles the kind, the guest splits the rest.
@@ -707,7 +992,7 @@ class _WslcSandbox:
                 f"forge a line of the engine's own diagnostic, which is what decides this"
             )
         with tempfile.TemporaryDirectory(prefix="maf-wslc-stat-") as temporary:
-            result = await self._run(
+            result = await self._run_or_discard(
                 "container",
                 "cp",
                 f"{self._name}:{guest}",
@@ -741,11 +1026,11 @@ class _WslcSandbox:
     async def _test_in_guest(self, argv: Sequence[str]) -> int:
         """One ``container exec --user 0``, answering its exit status for the guest-side stat.
 
-        The file plane writes as root, so a probe as the image's user would leave the check
-        blind exactly where a write is not. What asking the guest costs is on
+        Root, because working-directory setup runs as root and a probe as the image's user
+        would be blind below a directory that user cannot search. What asking the guest costs is on
         :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root` and in this package's README.
         """
-        probe = await self._run(
+        probe = await self._run_or_discard(
             "container",
             "exec",
             "--user",
@@ -801,10 +1086,7 @@ class _WslcSandbox:
                 max_output_bytes=max_output_bytes,
             )
         except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run(
-                    "container", "remove", "-f", self._name, timeout=self._command_timeout
-                )
+            await self._discard()
             raise
         return ExecResult(
             stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
@@ -829,10 +1111,7 @@ class _WslcSandbox:
                 timeout=timeout,
             )
         except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run(
-                    "container", "remove", "-f", self._name, timeout=self._command_timeout
-                )
+            await self._discard()
             raise
         return ExecResult(
             stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
@@ -919,9 +1198,9 @@ class _WslcSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Unsupported: the engine cannot establish ancestor ownership for a raised delete."""
         raise NotImplementedError(
-            "the wslc backend does not support RECLAIM: its file plane writes as root, but no "
-            "branch of its path check reports an owner, so nothing licenses a recursive delete "
-            f"as root. Guest principal: {self.guest_principal}. Dispose the sandbox instead."
+            "the wslc backend does not support RECLAIM: no branch of its path check reports an "
+            "owner, so nothing licenses a recursive delete as root. Guest principal: "
+            f"{self.guest_principal}. Dispose the sandbox instead."
         )
 
 
@@ -964,6 +1243,18 @@ class WslcSandboxBackend:
         # collapse onto one entry here.
         self._registry: dict[tuple[str, str, str, str, str], str] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
+        #: Containers a discard could not remove, as ``name -> {instance ID}``. Something may
+        #: still be running in one, so a warm acquire must not hand it back; the next acquire
+        #: retries the removal and refuses if it still will not go. The name is the key
+        #: because that is what ``acquire`` has to look up, and the instance IDs are what the
+        #: retry removes: by then the name may belong to something else entirely. A **set**,
+        #: because two discards can be in flight for one name — one instance and the one that
+        #: replaced it — and a single slot would forget whichever registered first.
+        self._undiscarded: dict[str, set[str]] = {}
+        #: Guards the read-modify-writes on it. A discard registers from whatever loop its
+        #: sandbox call runs on and ``acquire`` drains from its own, so the sets above are
+        #: reached from more than one.
+        self._undiscarded_guard = threading.Lock()
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
@@ -1173,6 +1464,34 @@ class WslcSandboxBackend:
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
             await self._verify_storage_base(name, spec, missing_ok=True)
+            # A discard could not remove this one, so something may still be running in it.
+            # Clear the name before anything reuses it, and refuse rather than hand back a
+            # container this backend cannot account for. Removal goes by the ID the entry
+            # holds: another host sharing this name may have replaced the instance since,
+            # and an ID can only ever name the one this backend failed to remove. An ID the
+            # engine no longer has is a removal with nothing left to do.
+            #
+            # Looped, because a discard runs outside this lock and can quarantine another
+            # instance under the same name while the removal below is in flight. Each pass
+            # releases only the instance it removed, so a newer one survives to be drained
+            # too; reusing the name with any still pending would hand back what they hold.
+            drained = 0
+            while (quarantined := self._quarantined(name)) is not None:
+                drained += 1
+                if drained > _QUARANTINE_DRAIN_ATTEMPTS:
+                    raise RuntimeError(
+                        f"wslc container {name} was quarantined again every time this "
+                        "acquire cleared it, so something may still be running in one of "
+                        "them. Remove it, or let the reaper reach it, before acquiring again."
+                    )
+                retried = await self._remove(quarantined)
+                if retried.failure is not None:
+                    raise RuntimeError(
+                        f"wslc could not discard container {name} after a command was cut "
+                        f"short, so it may still be running something: {retried.failure}. "
+                        "Remove it, or let the reaper reach it, before acquiring again."
+                    )
+                self._release_quarantine(name, quarantined)
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -1228,16 +1547,13 @@ class WslcSandboxBackend:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
             _check_storage_base(cast("dict[str, object]", row), spec)
-            guest_uid = await self._probe_guest_uid(name)
+            guest_uid = await self._probe_guest_uid(name, instance_id)
             guest_identity = await self._write_identity(
-                name, guest_uid, cast("dict[str, object]", row)
+                name, instance_id, guest_uid, cast("dict[str, object]", row)
             )
-            if Capability.FILES_IN in spec.required_capabilities and guest_identity is None:
-                raise SandboxCapabilityNotSupported(
-                    f"sandbox backend 'wslc' cannot serve files_in to {spec.kind!r} from "
-                    f"image {spec.image_id or spec.image!r}: the image user is unresolved. "
-                    "Use a numeric uid:gid or working id commands. The next acquire retries."
-                )
+            # No identity check here. Writes run as the image's user and stamp nothing, so
+            # only *creating* a base needs to know who to give it to — `_ensure_base_owner`
+            # refuses there, and an image whose base already exists is served either way.
             await self._probe_commands(name, instance_id, spec)
             sandbox = _WslcSandbox(
                 self._wslc,
@@ -1246,6 +1562,7 @@ class WslcSandboxBackend:
                 guest_uid,
                 guest_identity,
                 instance_id=instance_id,
+                discard=functools.partial(self._discard_container, instance_id, name),
             )
             logger.info(
                 "sandbox cleanup: container=%s guest_principal=%s guest_uid=%s cleanup=dispose",
@@ -1253,7 +1570,38 @@ class WslcSandboxBackend:
                 sandbox.guest_principal,
                 guest_uid,
             )
-            await sandbox.prepare_work_dir(spec)
+            try:
+                await sandbox.prepare_work_dir(spec)
+            except BaseException:
+                # Nothing is returned, so no caller can dispose this container — and setup
+                # runs privileged commands the host process cannot reach once it is gone.
+                # A cancelled prepare needs this as much as a failed one.
+                try:
+                    # By instance, not by key: a key-wide sweep selects on labels a
+                    # replacement would carry too, and setup may already have discarded this
+                    # instance on its way out, so the sweep could reach a container another
+                    # host created under the same name. The instance path rechecks the ID
+                    # before removing anything and answers "nothing to do" once it is gone.
+                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                    if failure is not None:
+                        # Cleanup said it could not remove it, and nothing else remembers
+                        # that this container is half-prepared and may still be running setup.
+                        self._quarantine(name, instance_id)
+                        logger.warning("sandbox setup cleanup failed: %s", failure)
+                except Exception as failure:
+                    self._quarantine(name, instance_id)
+                    logger.warning("sandbox setup cleanup raised: %s", failure)
+                raise
+            # The drain above is a read, not a fence: a discard runs outside this lock and
+            # can quarantine this very instance while the acquire prepares it. Checked by
+            # instance rather than by name, so a sibling held back under the same name does
+            # not refuse a container this acquire just created.
+            if self._is_quarantined(name, instance_id):
+                raise RuntimeError(
+                    f"wslc instance {instance_id} was quarantined while this acquire "
+                    f"prepared container {name}, so it may still be running something and "
+                    "is not handed back. Acquire again once it has been removed."
+                )
             return sandbox
 
     async def _verify_storage_base(
@@ -1277,79 +1625,154 @@ class WslcSandboxBackend:
 
         async def run(argv: tuple[str, ...], as_root: bool) -> int:
             privilege = ("--user", "0") if as_root else ()
-            async with asyncio.timeout_at(deadline):
-                result = await self._wslc(
-                    "container",
-                    "exec",
-                    *privilege,
-                    "-w",
-                    "/",
-                    instance_id,
-                    *argv,
-                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
-                    read_limit=1024,
+            try:
+                async with asyncio.timeout_at(deadline):
+                    result = await self._wslc(
+                        "container",
+                        "exec",
+                        *privilege,
+                        "-w",
+                        "/",
+                        instance_id,
+                        *argv,
+                        timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                        read_limit=1024,
+                    )
+            except BaseException:
+                # A probe that never came back may still be running in there, and a probe
+                # can be raised to root. Acquire returns nothing for a caller to dispose,
+                # and the container stays registered for warm reuse, so take it with us.
+                # A probe that *answered* is an ordinary refusal and keeps the container.
+                await self._discard_container(instance_id, name)
+                raise
+            if len(result.stdout) >= 1024:
+                await self._discard_container(instance_id, name)
+                raise RuntimeError(
+                    f"wslc stopped the {argv[0]} probe after it filled the read cap, so it "
+                    "may still be running inside the container, which was discarded"
                 )
             return result.returncode
 
         await probe_commands(spec, verified, run)
+
+    async def _discard_container(self, target: str, quarantine: str | None = None) -> None:
+        """Force-remove a container whose in-flight command cannot be accounted for.
+
+        ``target`` is what gets removed and ``quarantine`` what the reuse guard will look
+        for. A caller that knows the instance ID passes both: removing the exact instance
+        keeps a discard off whatever holds the name by then, and recording the name is what
+        makes the guard fire, because ``acquire`` decides reuse by name. A failure keeps the
+        pair, so the retry there removes this instance rather than that name.
+
+        Bounded on this side too: this runs on the path where the engine has already missed
+        one deadline, and a removal that hangs would trade a stale container for a stuck
+        acquire. What it could not remove is left to the reaper.
+
+        The quarantine goes in **before** the removal is awaited. This runs outside
+        ``_acquire_lock``, so a concurrent acquire during the removal would otherwise find
+        nothing recorded and warm-reuse a container whose guest command is still running.
+        """
+        name = quarantine or target
+        self._quarantine(name, target)
+        try:
+            async with asyncio.timeout(self._config.command_timeout_seconds):
+                removal = await self._remove(target)
+        except Exception:
+            removal = _Removal(False, DisposalFailure("timeout", "the removal did not finish"))
+        if removal.failure is not None:
+            # It may still be running in there, so nothing may reuse it until it goes.
+            logger.warning("wslc could not discard %s: %s", target, removal.failure)
+            return
+        self._release_quarantine(name, target)
+
+    def _quarantine(self, name: str, instance_id: str) -> None:
+        """Hold this instance back from reuse under ``name``, beside any already pending."""
+        with self._undiscarded_guard:
+            self._undiscarded.setdefault(name, set()).add(instance_id)
+
+    def _release_quarantine(self, name: str, instance_id: str) -> None:
+        """Drop one instance. Only this one: another discard's is not this call's to release."""
+        with self._undiscarded_guard:
+            pending = self._undiscarded.get(name)
+            if pending is None:
+                return
+            pending.discard(instance_id)
+            if not pending:
+                del self._undiscarded[name]
+
+    def _quarantined(self, name: str) -> str | None:
+        """One instance still held back under ``name``, or ``None`` when the name is clear."""
+        with self._undiscarded_guard:
+            pending = self._undiscarded.get(name)
+            return next(iter(pending)) if pending else None
+
+    def _is_quarantined(self, name: str, instance_id: str) -> bool:
+        """Whether this exact instance is held back, which is what decides a reuse."""
+        with self._undiscarded_guard:
+            return instance_id in self._undiscarded.get(name, ())
 
     def _forget_command_probes(self, target: str) -> None:
         for name, (instance_id, _) in list(self._command_probes.items()):
             if target in (name, instance_id):
                 self._command_probes.pop(name, None)
 
+    async def _identity_probe(self, name: str, instance_id: str, *argv: str) -> _WslcResult:
+        """Ask the guest for one identity number, discarding the container if the ask did not end.
+
+        A clean answer this backend cannot use — a non-zero exit, output that is not a number —
+        is an ordinary unresolved identity and keeps the container. An ending the host cannot
+        account for is not, because ``acquire`` is about to hand that container to a caller:
+        killing the ``wslc`` process does not reach the command inside it, and a warm acquire
+        would reuse a container still running one. The same rule as the command probes.
+        """
+        try:
+            result = await self._wslc(
+                "container",
+                "exec",
+                "-w",
+                "/",
+                name,
+                *argv,
+                timeout=self._config.command_timeout_seconds,
+                read_limit=_IDENTITY_STDOUT_LIMIT,
+            )
+        except BaseException:
+            await self._discard_container(instance_id, name)
+            raise
+        if len(result.stdout) >= _IDENTITY_STDOUT_LIMIT:
+            await self._discard_container(instance_id, name)
+            raise RuntimeError(
+                f"wslc stopped the {' '.join(argv)} identity probe after it filled the read "
+                "cap, so it may still be running inside the container, which was discarded"
+            )
+        return result
+
     async def _write_identity(
-        self, name: str, guest_uid: int | None, inspected: dict[str, object]
+        self, name: str, instance_id: str, guest_uid: int | None, inspected: dict[str, object]
     ) -> tuple[int, int] | None:
         """Resolve write ownership from Config.User, using guest ids for named identities."""
-        try:
-            config = inspected.get("Config")
-            if not isinstance(config, dict):
-                return None
-            user = cast("dict[str, object]", config).get("User")
-            if user == "":
-                return (0, 0)
-            if not isinstance(user, str):
-                return None
-            if re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", user):
-                uid, gid = (int(part) for part in user.split(":"))
-                return (uid, gid) if max(uid, gid) < 2**32 - 1 else None
-            if guest_uid is None or guest_uid >= 2**32 - 1:
-                return None
-            result = await self._wslc(
-                "container",
-                "exec",
-                "-w",
-                "/",
-                name,
-                "id",
-                "-g",
-                timeout=self._config.command_timeout_seconds,
-                read_limit=64,
-            )
-            gid = result.stdout_text.strip()
-            if result.returncode == 0 and re.fullmatch(r"[0-9]{1,10}", gid):
-                return (guest_uid, int(gid)) if int(gid) < 2**32 - 1 else None
-        except Exception:
+        config = inspected.get("Config")
+        if not isinstance(config, dict):
             return None
+        user = cast("dict[str, object]", config).get("User")
+        if user == "":
+            return (0, 0)
+        if not isinstance(user, str):
+            return None
+        if re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", user):
+            uid, gid = (int(part) for part in user.split(":"))
+            return (uid, gid) if max(uid, gid) < 2**32 - 1 else None
+        if guest_uid is None or guest_uid >= 2**32 - 1:
+            return None
+        result = await self._identity_probe(name, instance_id, "id", "-g")
+        gid = result.stdout_text.strip()
+        if result.returncode == 0 and re.fullmatch(r"[0-9]{1,10}", gid):
+            return (guest_uid, int(gid)) if int(gid) < 2**32 - 1 else None
         return None
 
-    async def _probe_guest_uid(self, name: str) -> int | None:
+    async def _probe_guest_uid(self, name: str, instance_id: str) -> int | None:
         """Read the image user's announcement; never cache it by a mutable container name."""
-        try:
-            result = await self._wslc(
-                "container",
-                "exec",
-                "-w",
-                "/",
-                name,
-                "id",
-                "-u",
-                timeout=self._config.command_timeout_seconds,
-                read_limit=64,
-            )
-        except Exception:
-            return None
+        result = await self._identity_probe(name, instance_id, "id", "-u")
         uid = result.stdout_text.strip()
         if result.returncode != 0 or re.fullmatch(r"[0-9]{1,10}", uid) is None:
             return None

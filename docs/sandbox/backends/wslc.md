@@ -17,13 +17,15 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 
 The default Windows Proactor event loop supports the required subprocesses. A selector event loop does not.
 
-Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr/bin/test` command, including true and false exit statuses under the root principal used for path checks. A shell builtin or a `test` elsewhere on `PATH` does not satisfy that check. Successful checks are cached per physical container; failed checks are retried.
+Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr/bin/test` command, including true and false exit statuses under the root principal used for path checks. A shell builtin or a `test` elsewhere on `PATH` does not satisfy that check. `FILES_IN` also checks that the image's user can start `sh` and finds `mkdir`, `cat`, `wc`, `mv` and `rm` — the probe runs `sh -c` as that user, and so does every write, so the shell is part of the `FILES_IN` contract and not only the `EXEC` one. Working-directory setup needs root `/bin/sh`, and `mkdir`, `chown` and `pwd` — the last a shell builtin on every shell this backend admits — but those are not probed at acquisition: setup only runs when the base is missing, which is not known until the base is walked, and probing them earlier refused images that never reach setup. The creation command checks them itself and a missing one is refused as an unsupported capability, in the same shape and at the same moment as an unresolved image user. The refusal names which one: the command marks its own answer, because the statuses an engine returns when it cannot start the shell at all overlap with the one a missing utility would use, and naming the wrong prerequisite sends a reader to the wrong place. Successful checks are cached per physical container; failed checks are retried.
 
 ## Writes and path checks
 
-Uploads use an archive extracted by the engine. Numeric guest IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root; unresolved identity refuses upload. Identity is checked on each acquire.
+`write_file` runs one command as the image's user through `container exec`. The content arrives on stdin. The command creates missing parents, writes a sibling named for the call, checks the byte count, then moves the sibling into place. The file and any new parents belong to the image's user because that user wrote them. Existing directories keep their metadata.
 
-Files and missing directories at or below the working directory receive the guest uid/gid. Existing directories retain their metadata. This lets a non-root guest edit inputs and create files beside them. It does not reduce the engine's authority while placing those files.
+A destination the image's user cannot write raises `PermissionError`. There is no root fallback. Where the image's user is root, writes reach what its own programs reach. A write this host stops discards the container, because killing the host process does not reach the command inside it: that covers a blocked guest utility hitting the deadline, and a command whose stdout reaches the read cap, which the host answers by killing it and returning. This matches `exec`.
+
+On WSLC 2.9.12.0 a 32 MiB write took 0.31 s and a plain exec 0.11 s. The write's byte count is checked against the content length before the file is published, so an engine whose `exec` does not stream stdin refuses the write rather than publishing a short file. `container exec --interactive` is present in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.12.0.
 
 Path checks use the engine's copy behavior to identify missing paths and directories. For other accepted copy sources, a guest probe supplies the remaining type. A guest claim that such a source is a directory contradicts the engine and is rejected. The probe is still an image-dependent limitation.
 
@@ -31,19 +33,31 @@ The root probe invokes `/usr/bin/test` directly with separate arguments. A guest
 
 Each stat copies into a private host temporary directory, removed after the subprocess exits. Guest file sizes determine temporary disk use and I/O; upload and stdout limits do not bound those bytes. Host termination or failed cleanup can leave data behind. The operator must bound the host temporary filesystem.
 
+## Working-directory setup
+
+Acquisition creates a missing base as root, because the image's user often cannot create its parents. One command runs `/bin/sh` with `PATH` set to `/usr/sbin:/usr/bin:/sbin:/bin` and `CDPATH` cleared, so an inherited `CDPATH` cannot divert a relative `cd`. It enters the deepest existing directory with `cd -P` and compares `pwd -P` with the path it asked for. It then runs `mkdir` for each missing directory inside the directory it holds, comparing each one the same way. A refusal can leave behind the directories created before it.
+
+**What that comparison rules out is a link**, on any component: resolving one lands somewhere whose physical path differs, so the command refuses instead of following it. It does not establish that the directory is the one the earlier check looked at. A guest that can write the base's parent can rename one real directory out of that name and another in, and the name still resolves to a directory — root would then create inside the substitute, and the ownership step would give it to the image's user. No engine stat here reports an inode or an owner, so there is nothing to compare identity against; closing that needs the held, no-follow resolution requested upstream in [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594). **Do not point `work_dir` at a base whose parent the image's user can write** when that matters.
+
+A second held command gives the base to the image's user. It is held the same way — `cd -P` then a `pwd -P` comparison — so a base swapped for a link is refused rather than chowned through. It runs **only for a base this acquire created**: a directory that was already there keeps its owner, whichever path named it, because `acquire` preserves the contents, ownership and permissions it finds. Chowning an existing base would hand the image's user a directory the host never offered — with `work_dir=/etc`, `/etc` itself. The directories above the base stay root's.
+
+A setup that times out removes the container, so a half-prepared base goes with it. A host killed outright between the two commands leaves the base root-owned; the first write then says so with `PermissionError`, and disposing the sandbox rebuilds it.
+
+Numeric IDs come from container inspection. Named users or missing groups require bounded guest `id` replies. An empty user means root. An `id` this host cannot account for — its deadline expired, or its output reached the read cap — discards the container and fails the acquire: the command may still be running in there, and the sandbox was about to be handed to a caller. An `id` that answers something unusable is an ordinary unresolved identity and keeps the container. Unresolved identity refuses any capability that has to *create* a base — a directory this backend creates has to be given to someone, so `EXEC` and `FILES_IN` alike need it when the base is missing, and the refusal comes before anything is created. An existing base needs none of it: writes run as the image's user and stamp nothing, so an image whose base is already there is served whatever its user resolves to. Identity is checked on each acquire.
+
 <a id="write-checkcopy-residual"></a>
 
-## Write path race
+## Parent swaps
 
-![WSLC checks an existing parent and then submits an archive. Between those steps, a guest can replace that parent with a link. Root-authority extraction follows the changed parent and can place the upload in a protected directory inside the container. Stamping the guest uid and gid changes ownership of the result, not the authority used to place it. The backend has no supported container freeze or constrained upload that closes this window.](../assets/wslc-write-window.svg)
+![WSLC checks the path, and a guest can then replace a checked parent before the placement command starts. A write runs as the image's user, so the swap can send it only where that user can already write; a root-only target refuses it. Working-directory setup runs as root and compares cd -P with pwd -P before creating anything inside a directory, which rules out a component replaced by a link but not a different real directory renamed into the same name. Both cases stay inside the container.](../assets/wslc-write-window.svg)
 
-An existing checked parent can be replaced before archive extraction. The write can then reach a protected directory that the guest cannot write. This is a container-internal permission boundary, not evidence of escape into the Windows host filesystem.
+The path check and the placement are separate commands. A guest can replace a checked parent with a link between them. A link present during the check is refused.
 
-The same race applies to creation of missing children and working-directory setup. Explicit archive directory entries can replace a link at that exact missing path. They do not protect an existing prefix omitted from the archive to preserve its metadata.
+A write runs as the image's user, so a swap can send it only where that user can already write. This is a bound, not atomicity: another place that user can write is still reachable. Setup runs as root and refuses a component replaced by a **link**, including one planted where a directory was missing — but not a different real directory renamed into the same name, which is the residual below.
 
-A link present during checking is refused. A later swap is not prevented. Cancellation before submission writes nothing; cancellation after submission cannot roll back engine extraction.
+Cancelling before the placement command starts writes nothing. Cancelling after it starts is not a rollback. The host closes stdin, and the command then refuses short content. A write whose bytes had all arrived still lands. A `.maf-<hex>.part` sibling can remain if the command itself is interrupted.
 
-The supported engine interface provides no constrained upload, guest-authority copy or container freeze. `SIGSTOP` does not prevent new exec requests. Hosts requiring protection from concurrent guest path changes must avoid this upload mechanism or select another backend. The [WSLC research record](../research/wslc-backend.md) contains the controlled measurements.
+These are container-internal permission boundaries, not an escape into the Windows host filesystem. The [WSLC research record](../research/wslc-backend.md) contains the controlled measurements.
 
 ## Unsupported operations
 
@@ -90,7 +104,7 @@ The backend starts no scheduler. See the [retention example](../../../packages/m
 | Area | State | Tracking |
 |---|---|---|
 | Commands, guest-owned inputs, call scope and disposal | Implemented | [Package README](../../../packages/maf-sandbox-wslc/README.md) |
-| Write path race | Open; root-authority extraction can follow a replaced parent | [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (open), [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594) (open) |
+| Parent swaps at placement | partial — writes are bounded by the image's user, and setup refuses a link; a real directory renamed into the same name still receives root creation | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (open), [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged), [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594) (open) |
 | Output reads and listing | Withheld pending an adequate engine interface | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open), [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (open), [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (open) |
 | Delete, reclaim and reset | Withheld | [Cleanup contract](../tool-call.md) |
 | Temporary host disk use during stat | Explicit limit; requires host quotas | [Package README](../../../packages/maf-sandbox-wslc/README.md) |

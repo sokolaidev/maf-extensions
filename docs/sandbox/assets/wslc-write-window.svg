@@ -1,35 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 545" width="1180" height="545" role="img" aria-labelledby="wslc-write-window-title wslc-write-window-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
-  <title id="wslc-write-window-title">WSLC: a parent can change between check and copy</title>
-  <desc id="wslc-write-window-desc">First, WSLC checks the existing parent path. A guest can then replace that parent with a symbolic link before the archive is submitted and extracted. The engine follows the changed parent with root authority and can place the upload in a protected directory inside the container. Guest uid and gid on archive entries affect result ownership, not placement authority. The supported interface has no constrained upload or container freeze to close this window.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 620" width="1180" height="620" role="img" aria-labelledby="wslc-write-window-title wslc-write-window-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
+  <title id="wslc-write-window-title">WSLC: what a swapped parent can reach</title>
+  <desc id="wslc-write-window-desc">WSLC checks the path, and a guest can then replace a checked parent with a link before the placement command starts. A write runs as the image's user, so the swap can send it only where that user can already write; a root-only target refuses it. Working-directory setup runs as root and compares cd -P with pwd -P before creating anything inside a directory, which rules out a component replaced by a link but not a different real directory renamed into the same name. Both cases stay inside the container.</desc>
   <defs>
     <marker id="wslc-write-window-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
   </defs>
-  <rect width="1180" height="545" rx="16" fill="#ffffff"/>
-  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">WSLC: a parent can change between check and copy</text>
-  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The upload is still performed with root authority inside the container.</text>
-  <rect x="32" y="142" width="334" height="173" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
-  <text x="52" y="175" font-size="21" font-weight="600" fill="#243040">1. Check parent</text>
-  <text x="52" y="206" font-size="17" font-weight="400" fill="#526072">Engine reports a directory.</text>
-  <text x="52" y="232" font-size="17" font-weight="400" fill="#526072">The existing prefix is kept</text>
-  <text x="52" y="258" font-size="17" font-weight="400" fill="#526072">out of the archive so its</text>
-  <text x="52" y="284" font-size="17" font-weight="400" fill="#526072">metadata stays unchanged.</text>
-  <rect x="423" y="142" width="334" height="173" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
-  <text x="443" y="175" font-size="21" font-weight="600" fill="#243040">2. Guest swaps parent</text>
-  <text x="443" y="206" font-size="17" font-weight="400" fill="#526072">The guest replaces that</text>
-  <text x="443" y="232" font-size="17" font-weight="400" fill="#526072">directory with a link before</text>
-  <text x="443" y="258" font-size="17" font-weight="400" fill="#526072">the engine extracts the</text>
-  <text x="443" y="284" font-size="17" font-weight="400" fill="#526072">submitted archive.</text>
-  <rect x="814" y="142" width="334" height="173" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
-  <text x="834" y="175" font-size="21" font-weight="600" fill="#243040">3. Engine copies as root</text>
-  <text x="834" y="206" font-size="17" font-weight="400" fill="#526072">Extraction follows the</text>
-  <text x="834" y="232" font-size="17" font-weight="400" fill="#526072">changed parent and may</text>
-  <text x="834" y="258" font-size="17" font-weight="400" fill="#526072">write where the guest</text>
-  <text x="834" y="284" font-size="17" font-weight="400" fill="#526072">has no write permission.</text>
-  <path d="M 366 223 L 423 223" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#wslc-write-window-arrow)"/>
-  <path d="M 757 223 L 814 223" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#wslc-write-window-arrow)"/>
-  <rect x="32" y="370" width="1116" height="140" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
-  <text x="52" y="403" font-size="21" font-weight="600" fill="#243040">Ownership does not establish placement authority</text>
-  <text x="52" y="434" font-size="16" font-weight="400" fill="#526072">Guest uid/gid on the result does not prevent this redirection. Missing-child and base-directory creation share the window.</text>
-  <text x="52" y="460" font-size="16" font-weight="400" fill="#526072">The demonstrated boundary is inside the container, not an escape into the Windows host filesystem.</text>
-  <text x="52" y="486" font-size="16" font-weight="400" fill="#526072">No supported freeze or constrained upload closes it; choose another backend when this protection is required.</text>
+  <rect width="1180" height="620" rx="16" fill="#ffffff"/>
+  <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">WSLC: what a swapped parent can reach</text>
+  <text x="32" y="76" font-size="17" font-weight="400" fill="#526072">The check and the placement are two commands. Who places decides what a swap between them reaches.</text>
+  <rect x="32" y="112" width="334" height="147" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="52" y="145" font-size="21" font-weight="600" fill="#243040">1. Check the path</text>
+  <text x="52" y="176" font-size="17" font-weight="400" fill="#526072">The engine reports missing</text>
+  <text x="52" y="202" font-size="17" font-weight="400" fill="#526072">paths and directories. A link</text>
+  <text x="52" y="228" font-size="17" font-weight="400" fill="#526072">found here is refused.</text>
+  <rect x="423" y="112" width="334" height="147" rx="12" fill="#fff5e7" stroke="#c88a37" stroke-width="1.5"/>
+  <text x="443" y="145" font-size="21" font-weight="600" fill="#243040">2. Guest swaps a parent</text>
+  <text x="443" y="176" font-size="17" font-weight="400" fill="#526072">It replaces a checked</text>
+  <text x="443" y="202" font-size="17" font-weight="400" fill="#526072">directory with a link before</text>
+  <text x="443" y="228" font-size="17" font-weight="400" fill="#526072">the placement command starts.</text>
+  <rect x="814" y="112" width="334" height="147" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
+  <text x="834" y="145" font-size="21" font-weight="600" fill="#243040">3. One command places</text>
+  <text x="834" y="176" font-size="17" font-weight="400" fill="#526072">Through container exec,</text>
+  <text x="834" y="202" font-size="17" font-weight="400" fill="#526072">not an engine archive copy.</text>
+  <text x="834" y="228" font-size="17" font-weight="400" fill="#526072">Two cases below.</text>
+  <path d="M 366 185 L 423 185" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#wslc-write-window-arrow)"/>
+  <path d="M 757 185 L 814 185" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#wslc-write-window-arrow)"/>
+  <path d="M 981 259 L 981 290 L 303 290 L 303 318" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#wslc-write-window-arrow)"/>
+  <path d="M 981 259 L 981 318" fill="none" stroke="#7d8694" stroke-width="2" stroke-linejoin="round" marker-end="url(#wslc-write-window-arrow)"/>
+  <rect x="32" y="320" width="543" height="221" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="52" y="353" font-size="21" font-weight="600" fill="#243040">write_file runs as the image's user</text>
+  <text x="52" y="386" font-size="17" font-weight="400" fill="#526072">The swap can send the write only where that user</text>
+  <text x="52" y="412" font-size="17" font-weight="400" fill="#526072">can already write. A root-only target refuses it</text>
+  <text x="52" y="438" font-size="17" font-weight="400" fill="#526072">with PermissionError, and nothing lands there.</text>
+  <text x="52" y="476" font-size="17" font-weight="400" fill="#526072">Bounded, not atomic: another place that user</text>
+  <text x="52" y="502" font-size="17" font-weight="400" fill="#526072">can write is still reachable.</text>
+  <rect x="605" y="320" width="543" height="221" rx="12" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
+  <text x="625" y="353" font-size="21" font-weight="600" fill="#243040">Setup runs as root, in held directories</text>
+  <text x="625" y="386" font-size="17" font-weight="400" fill="#526072">It enters each directory with cd -P and confirms</text>
+  <text x="625" y="412" font-size="17" font-weight="400" fill="#526072">with pwd -P where it is before mkdir runs inside it.</text>
+  <text x="625" y="438" font-size="17" font-weight="400" fill="#526072">A component replaced by a link is refused; a</text>
+  <text x="625" y="465" font-size="17" font-weight="400" fill="#526072">renamed real directory is not detected.</text>
+  <text x="625" y="497" font-size="17" font-weight="400" fill="#526072">Only the base goes to the image's user; the</text>
+  <text x="625" y="523" font-size="17" font-weight="400" fill="#526072">directories above it stay root's.</text>
+  <text x="32" y="580" font-size="16" font-weight="400" fill="#526072">Both cases stay inside the container. Neither is an escape into the Windows host filesystem.</text>
 </svg>

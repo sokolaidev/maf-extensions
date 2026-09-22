@@ -13,9 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import io
 import json
 import logging
+import os
+import posixpath
+import re
+import shutil
+import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -49,12 +54,16 @@ from maf_sandbox import (
     SandboxSpec,
     ScopePurge,
 )
+from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _CREATE_DIRECTORIES,
+    _ENSURE_BASE_OWNER,
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
+    _WRITE_AS_THE_GUEST,
     _container_name,
     _egress_decisions,
     _network_name,
@@ -64,6 +73,7 @@ from maf_sandbox_wslc._backend import (
     _WslcResult,
     _WslcSandbox,
 )
+from maf_sandbox_wslc._probes import SETUP_COMMANDS
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -108,7 +118,7 @@ def _cp_path_not_found(source: str) -> _WslcResult:
 
 
 @pytest.mark.parametrize("state", ["cold", "warm", "stopped"])
-def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
+def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
     machine = _machine(
         running=[_NAME] if state == "warm" else [],
         stopped=[_NAME] if state == "stopped" else [],
@@ -135,14 +145,538 @@ def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
     )
     backend, fake = _backend_with(machine)
     asyncio.run(backend.acquire(_KEY, _SPEC))
-    with tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin)) as archive:
-        entries = archive.getmembers()
-    assert [(e.name, e.uid, e.gid, e.mode) for e in entries] == [
-        ("maf-sandbox", 0, 0, 0o755),
-        ("maf-sandbox/work", 10001, 20001, 0o755),
-    ]
-    assert all(e.isdir() for e in entries)
-    assert not any("mkdir" in call.args for call in fake.calls)
+    (created,) = _creations(fake)
+    # Creation is held and owns nothing: parent first, then the missing directories.
+    assert created.args == (
+        "container",
+        "exec",
+        "--user",
+        "0",
+        "-w",
+        "/",
+        _NAME,
+        "/bin/sh",
+        "-c",
+        _CREATE_DIRECTORIES,
+        "sh",
+        "/",
+        "/maf-sandbox",
+        _WORK,
+    )
+    # A separate held step gives the base to the image's user.
+    (owned,) = _owner_steps(fake)
+    assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == ("sh", "10001:20001", _WORK)
+    assert not fake.matching("container", "cp", "-")
+
+
+@pytest.mark.parametrize("ending", ["fails", "times out", "is cancelled"])
+def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending):
+    """`acquire` returns no sandbox, so nothing else can dispose the container it made.
+
+    Setup runs privileged commands the host process cannot reach once it is killed, and the
+    container stays registered for warm reuse, so a later acquire could race one.
+    """
+    machine = _machine(
+        running=[],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        if _CREATE_DIRECTORIES in args:
+            if ending == "fails":
+                return _WslcResult(1, b"", b"setup refused")
+            raise (
+                TimeoutError("setup timed out")
+                if ending == "times out"
+                else asyncio.CancelledError()
+            )
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises((RuntimeError, TimeoutError, asyncio.CancelledError)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
+
+
+def test_setup_cleanup_leaves_a_container_that_took_the_name_after_the_discard():
+    """Setup discarded its own instance, so whatever holds that name now is not this one.
+
+    Cleanup addresses the instance it captured. A key-wide sweep would select on labels a
+    replacement carries too, and remove a container another host is using.
+    """
+    machine = _machine(
+        running=[_NAME],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        # The instance setup discarded is gone; the name is still listed, as a replacement
+        # created between the discard and this cleanup would leave it.
+        if args[:2] == ("container", "inspect") and args[-1] == f"id-{_NAME}":
+            return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
+        if _CREATE_DIRECTORIES in args:
+            raise TimeoutError("setup timed out")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(TimeoutError):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    removed = [call.args[-1] for call in fake.matching("container", "remove")]
+    assert removed == [f"id-{_NAME}"], "cleanup reached past the instance it captured"
+
+
+def test_a_guest_command_stopped_at_its_output_cap_discards_the_container():
+    """Reaching ``read_limit`` kills the host process and returns; nothing raises on its own.
+
+    The command inside the container keeps running, so it can still publish the file after
+    the caller was told the write failed, and a warm acquire would reuse that container.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if _WRITE_AS_THE_GUEST in args:
+            return _WslcResult(1, b"x" * 4096, b"")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(RuntimeError, match="may still be running inside the container"):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
+
+
+def test_a_copy_that_fills_its_stdout_cap_is_not_a_guest_command():
+    """``container cp`` is the host's own copy: a full cap is not an unclean guest command.
+
+    Its stdout can legitimately carry a tar header, and killing the host ends the copy.
+    """
+    header = tarfile.TarInfo("sub/").tobuf()
+    overrides = {("container", "cp"): _WslcResult(1, header, b"copy failed")}
+    backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(RuntimeError, match="copy failed"):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert not fake.matching("container", "remove")
+
+
+def test_an_exec_only_acquire_that_must_create_a_base_needs_the_image_user():
+    """A base that has to be created has to be given to someone, EXEC included.
+
+    The typed refusal is what a caller can act on; a bare RuntimeError reads as a broken
+    engine rather than an image this backend cannot serve.
+    """
+    inspected = {
+        "Id": "i",
+        "Config": {"User": "worker", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+    }
+    overrides = {
+        ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
+        ("container", "exec", "-w", "/", _NAME, "id"): _WslcResult(1, b"", b"no id"),
+    }
+    backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
+        asyncio.run(backend.acquire(_KEY, spec))
+
+
+def test_an_existing_base_is_served_without_a_resolved_image_user():
+    """Only creating a base needs the image user's numbers; a write stamps nothing."""
+    inspected = {
+        "Id": "i",
+        "Config": {"User": "worker", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+    }
+    overrides = {
+        ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
+        for guest in ("/", "/maf-sandbox", _WORK)
+    }
+    overrides[("container", "inspect")] = _WslcResult(0, json.dumps([inspected]).encode(), b"")
+    overrides[("container", "exec", "-w", "/", _NAME, "id")] = _WslcResult(1, b"", b"no id")
+    backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+    sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert not _creations(fake) and not _owner_steps(fake)
+    asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert _only_write(fake).stdin == b"data"
+
+
+@pytest.mark.parametrize("ending", ["times out", "fills the read cap"])
+def test_a_probe_that_may_still_be_running_takes_the_container_with_it(ending):
+    """A probe can be raised to root, and acquire returns nothing for anyone to dispose.
+
+    An ordinary refusal — a probe that answered with the wrong status — keeps the container,
+    because nothing is left running in it and the next acquire retries.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "exec") and "sh" in args:
+            if ending == "times out":
+                raise TimeoutError("the probe did not answer")
+            return _WslcResult(0, b"x" * 1024, b"")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="did not complete"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
+
+
+def test_a_probe_that_answered_badly_keeps_the_container():
+    """The retryable case: the image lacks a command, and nothing is running in there."""
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "exec") and "sh" in args:
+            return _WslcResult(127, b"", b"not found")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="sh command probe exited"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert not fake.matching("container", "remove")
+
+
+@pytest.mark.parametrize(
+    ("answer", "named"),
+    [
+        (_WslcResult(127, b"", b"maf-setup-missing mkdir"), "mkdir"),
+        (_WslcResult(127, b"", b"maf-setup-missing chown"), "chown"),
+        # Both scripts compare `pwd -P`, so a shell without it fails the comparison.
+        (_WslcResult(127, b"", b"maf-setup-missing pwd"), "pwd"),
+        # A shell the engine could not start never reaches the script, so no marker comes
+        # back — only the runtime's own words and a status in the unstartable range.
+        (
+            _WslcResult(
+                126,
+                b"",
+                b"OCI runtime exec failed: exec failed: unable to start container process: "
+                b'exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown',
+            ),
+            "/bin/sh",
+        ),
+    ],
+)
+def test_a_missing_setup_prerequisite_is_named_in_a_typed_refusal(answer, named):
+    """Which one is missing decides where a reader looks, so the refusal has to say.
+
+    A bare status cannot: 126 and 127 are also what an engine answers when it cannot start
+    the shell at all, so the script marks its own answer and the engine's is read separately.
+    """
+    machine = _machine(
+        running=[_NAME],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        return answer if _CREATE_DIRECTORIES in args else machine(args)
+
+    backend, _ = _backend_with(respond)
+    with pytest.raises(SandboxCapabilityNotSupported, match=re.escape(named)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+def test_a_container_a_discard_could_not_remove_is_not_reused():
+    """Something may still be running in it, so a warm acquire must not hand it back."""
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert fake.only("container", "remove").args == ("container", "remove", "-f", f"id-{_NAME}")
+    # The removal failed, so the next acquire refuses rather than reusing that container.
+    with pytest.raises(RuntimeError, match="may still be running something"):
+        asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+
+
+def test_a_discard_forgets_what_the_container_had_answered():
+    """Probe results belong to the container, so they cannot outlive an attempt to remove it."""
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert backend._command_probes.get(_NAME, ("", set()))[1], "probes were cached by acquire"
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert _NAME not in backend._command_probes
+
+
+def test_a_container_left_half_prepared_by_a_failed_cleanup_is_not_reused():
+    """Setup failed and the cleanup could not remove it, so setup may still be running.
+
+    Disposal drops the registry entry, so without remembering the name nothing else knows
+    this container is half-prepared — and the next acquire would list it and reuse it.
+    """
+    machine = _machine(
+        running=[],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        if _CREATE_DIRECTORIES in args:
+            return _WslcResult(1, b"", b"setup refused")
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(RuntimeError, match="could not create the working directory"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert fake.matching("container", "remove"), "cleanup was attempted"
+    with pytest.raises(RuntimeError, match="may still be running something"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+@pytest.mark.parametrize("command", ["mkdir", "chown", "pwd"])
+def test_every_command_the_root_scripts_run_is_a_checked_prerequisite(command):
+    """A command the scripts run but never check fails late, as a generic error.
+
+    The prerequisite loop is what turns a missing one into a refusal that names it, so the
+    checked list has to hold every command either script reaches for.
+    """
+    # Everything but the prerequisite loop itself, which names them all by construction.
+    used = chr(10).join(
+        line
+        for line in (_CREATE_DIRECTORIES + _ENSURE_BASE_OWNER).splitlines()
+        if "command -v" not in line
+    )
+    assert f"{command} " in used, f"{command} is not run by either script"
+    assert command in SETUP_COMMANDS, f"{command} is run but never checked"
+
+
+def test_a_container_a_failed_probe_could_not_remove_is_not_reused():
+    """The probe addresses the container by instance ID; reuse is decided by name.
+
+    Quarantining the ID the removal used would record something the guard never looks for,
+    so a probe that may still be running would be reused on the next acquire.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "exec") and "sh" in args:
+            raise TimeoutError("the probe did not answer")
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="did not complete"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert fake.matching("container", "remove"), "the discard was attempted"
+    # The name is what acquire looks for, so the guard has to have recorded that.
+    assert _NAME in backend._undiscarded
+    with pytest.raises(RuntimeError, match="may still be running something"):
+        asyncio.run(backend.acquire(_KEY, spec))
+
+
+def test_a_discard_quarantines_before_it_awaits_the_removal():
+    """A discard runs outside the acquire lock, so a concurrent acquire has to see it.
+
+    Recording only once the removal returns leaves a window where that acquire finds nothing
+    and warm-reuses a container whose guest command is still running.
+    """
+    machine = _machine(running=[_NAME])
+    during: list[dict[str, set[str]]] = []
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            # Copied a level down: the sets are mutated in place when the entry is released.
+            during.append({held: set(ids) for held, ids in backend._undiscarded.items()})
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert during == [{_NAME: {f"id-{_NAME}"}}], "an acquire during the removal would see nothing"
+    assert not backend._undiscarded, "a removal that succeeded clears it again"
+
+
+def test_a_discard_does_not_clear_a_quarantine_a_later_one_recorded():
+    """Two discards can overlap on one name, and only one of them removed this instance.
+
+    Clearing the entry by name would release a container the other one is still holding back.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            # A second discard, quarantining a different instance under the same name.
+            backend._quarantine(_NAME, "id-newer")
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert backend._undiscarded == {_NAME: {"id-newer"}}
+
+
+def test_two_discards_on_one_name_are_both_held():
+    """An instance and the one that replaced it can be discarded at once under one name.
+
+    A single slot would keep whichever registered last, and the other would be neither
+    retried nor held back — reused on the next acquire with its guest command unaccounted for.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    asyncio.run(backend._discard_container("id-first", _NAME))
+    asyncio.run(backend._discard_container("id-second", _NAME))
+    assert backend._undiscarded == {_NAME: {"id-first", "id-second"}}
+
+
+def test_an_instance_quarantined_while_acquire_prepared_it_is_not_handed_back():
+    """The drain is a read, not a fence: a discard can land while the acquire prepares.
+
+    Returning the sandbox anyway hands the caller the container that entry holds back.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if _CREATE_DIRECTORIES in args or args[-2:] == ("id", "-u"):
+            # A discard of this very instance, landing after the drain read the name clear.
+            backend._quarantine(_NAME, f"id-{_NAME}")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    with pytest.raises(RuntimeError, match="quarantined while this acquire prepared"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+def test_an_acquire_clears_a_quarantine_installed_while_it_cleared_the_last_one():
+    """A discard runs outside the acquire lock, so the name can be quarantined again mid-retry.
+
+    Keeping that newer entry is not a fence on its own: reusing the name with one standing
+    hands back the very container it is holding back.
+    """
+    machine = _machine(running=[_NAME])
+    installed: list[str] = []
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f") and not installed:
+            # A concurrent discard, quarantining a different instance under the same name.
+            installed.append("id-newer")
+            backend._quarantine(_NAME, "id-newer")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    backend._quarantine(_NAME, f"id-{_NAME}")
+    asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert [c.args[-1] for c in fake.matching("container", "remove")] == [f"id-{_NAME}", "id-newer"]
+    assert not backend._undiscarded
+
+
+def test_an_acquire_refuses_a_quarantine_it_cannot_drain():
+    """Bounded: a name quarantined again on every pass is not something to spin on."""
+    machine = _machine(running=[_NAME])
+    seen = 0
+
+    def respond(args):
+        nonlocal seen
+        if args[:3] == ("container", "remove", "-f"):
+            seen += 1
+            backend._quarantine(_NAME, f"id-newer-{seen}")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    backend._quarantine(_NAME, f"id-{_NAME}")
+    with pytest.raises(RuntimeError, match="quarantined again every time"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+def test_the_quarantine_retry_removes_the_instance_it_quarantined_not_the_name():
+    """Another host sharing the name can replace the instance before the retry runs.
+
+    An instance ID only ever names the container this backend failed to remove, so the retry
+    cannot reach a healthy replacement that took the name in the meantime.
+    """
+    machine = _machine(running=[_NAME])
+    removals_fail = True
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f") and removals_fail:
+            return _WslcResult(1, b"", b"device or resource busy")
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    # Keyed by the name acquire looks up, holding the instance the retry has to remove.
+    assert backend._undiscarded == {_NAME: {f"id-{_NAME}"}}
+
+    removals_fail = False
+    asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    assert fake.matching("container", "remove")[-1].args[-1] == f"id-{_NAME}"
+    assert not backend._undiscarded
+
+
+def _writes(fake: _FakeWslc) -> list[_Recorded]:
+    """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
+    return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]
+
+
+def _only_write(fake: _FakeWslc) -> _Recorded:
+    (write,) = _writes(fake)
+    return write
+
+
+def _creations(fake: _FakeWslc) -> list[_Recorded]:
+    """Every working-directory setup command the fake saw."""
+    return [call for call in fake.calls if _CREATE_DIRECTORIES in call.args]
+
+
+def _owner_steps(fake: _FakeWslc) -> list[_Recorded]:
+    """Every base-ownership command the fake saw."""
+    return [call for call in fake.calls if _ENSURE_BASE_OWNER in call.args]
+
+
+def _operands(call: _Recorded) -> tuple[str, ...]:
+    """A write's target, parent, staged sibling and byte count, in that order."""
+    start = call.args.index(_WRITE_AS_THE_GUEST) + 2
+    return call.args[start:]
 
 
 #: The argv a guest-side stat probe arrives on: raised, and `test` passed as argv with no
@@ -259,17 +793,23 @@ def _machine(
                 0, json.dumps([{"Id": args[-1], "Config": {"Labels": labels}}]).encode(), b""
             )
         if args[:2] == ("container", "inspect"):
-            if args[-1] not in storage_labels:
+            # The engine resolves a name or an instance ID, and disposal addresses a
+            # container by ID on purpose, so this fake has to answer both. Its IDs are
+            # `id-<name>`; a real name wins over that shape.
+            selector = args[-1]
+            target = selector if selector in storage_labels else selector.removeprefix("id-")
+            if target not in storage_labels:
                 return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
             return _WslcResult(
                 0,
                 json.dumps(
                     [
                         {
-                            "Id": f"id-{args[-1]}",
+                            "Id": f"id-{target}",
+                            "Name": f"/{target}",
                             "Config": {"User": ""},
                             "Labels": storage_labels.get(
-                                args[-1], {"maf-sandbox.work-dir.v1": work_dir}
+                                target, {"maf-sandbox.work-dir.v1": work_dir}
                             ),
                         }
                     ]
@@ -377,22 +917,28 @@ class TestImageCommandProbes:
             with pytest.raises(SandboxCapabilityNotSupported, match="/usr/bin/test"):
                 asyncio.run(backend.acquire(_KEY, spec))
         probes = [call.args for call in fake.calls if call.read_limit == 1024]
-        assert len(probes) == 2
-        assert probes[0] == (*prefix, "-d", "/")
-        assert probes[1][:-1] == (*prefix, "-e")
-        assert probes[1][-1].startswith("/.maf-command-probe-")
+        # The pinned command is checked first, both statuses, before the write utilities and
+        # the root setup prerequisites a FILES_IN acquire also needs.
+        pinned = [probe for probe in probes if probe[: len(prefix)] == prefix]
+        assert len(pinned) == 2
+        assert pinned[0] == (*prefix, "-d", "/")
+        assert pinned[1][:-1] == (*prefix, "-e")
+        assert pinned[1][-1].startswith("/.maf-command-probe-")
+        assert probes[:2] == pinned
 
     @pytest.mark.parametrize(
-        "capability,command,privilege",
+        "capability,argv,privilege,named",
         [
-            (Capability.EXEC, "sh", ()),
-            (Capability.FILES_IN, "/usr/bin/test", ("--user", "0")),
+            (Capability.EXEC, ("sh",), (), "sh"),
+            (Capability.FILES_IN, ("/usr/bin/test",), ("--user", "0"), "/usr/bin/test"),
+            # The write commands are checked in one guest shell, and the refusal names them.
+            (Capability.FILES_IN, ("sh", "-c"), (), "mv"),
         ],
     )
     def test_missing_commands_refuse_acquire_and_can_be_retried(
-        self, capability, command, privilege
+        self, capability, argv, privilege, named
     ):
-        prefix = ("container", "exec", *privilege, "-w", "/", f"id-{_NAME}", command)
+        prefix = ("container", "exec", *privilege, "-w", "/", f"id-{_NAME}", *argv)
         backend, fake = _backend_with(
             _machine(
                 running=[_NAME],
@@ -404,7 +950,7 @@ class TestImageCommandProbes:
         spec = replace(_SPEC, requires=frozenset({capability}))
         router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
         router.ensure_can_serve(spec)
-        with pytest.raises(SandboxCapabilityNotSupported, match=command):
+        with pytest.raises(SandboxCapabilityNotSupported, match=named):
             asyncio.run(router.acquire(_KEY, spec))
         assert not fake.matching("container", "remove")
         fake._responder = _machine(running=[_NAME])
@@ -426,7 +972,8 @@ class TestImageCommandProbes:
             )
             assert first.instance_id == second.instance_id
             probes = [call for call in fake.calls if call.read_limit == 1024]
-            assert len(probes) == 3
+            # sh, the pinned test twice, and the guest write utilities.
+            assert len(probes) == 4
 
         asyncio.run(scenario())
 
@@ -938,13 +1485,14 @@ class TestExecDiscardsATimedOutSandbox:
         return _backend_with(respond)
 
     def test_a_timed_out_exec_removes_the_container(self):
+        """By instance ID: a name is reusable, so a late discard could reach a replacement."""
         backend, fake = self._timing_out()
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
 
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["sleep", "600"], working_directory="/w", timeout=1))
 
-        assert fake.only("container", "remove").args == ("container", "remove", "-f", _NAME)
+        assert fake.only("container", "remove").args == ("container", "remove", "-f", f"id-{_NAME}")
 
     def test_the_timeout_still_reaches_the_caller(self):
         """The workload reports a hang as a diagnostic; swallowing it would report success."""
@@ -1028,9 +1576,10 @@ class TestGuestPrincipal:
         assert len(fake.calls) == seen
 
     def test_a_failed_probe_is_retried_and_never_cached_by_name(self):
+        """An answer this backend cannot use is an unresolved identity, not a dirty container."""
         answers = iter(
             [
-                TimeoutError("probe timed out"),
+                _WslcResult(1, b"", b"id: cannot find name for user ID"),
                 _WslcResult(0, b"0", b""),
                 _WslcResult(0, b"1000", b""),
             ]
@@ -1038,16 +1587,34 @@ class TestGuestPrincipal:
         machine = _machine(running=[_NAME])
 
         def respond(args):
-            if args[-2:] == ("id", "-u"):
-                answer = next(answers)
-                if isinstance(answer, Exception):
-                    raise answer
-                return answer
-            return machine(args)
+            return next(answers) if args[-2:] == ("id", "-u") else machine(args)
 
-        backend, _ = _backend_with(respond)
+        backend, fake = _backend_with(respond)
         principals = [asyncio.run(backend.acquire(_KEY, _SPEC)).guest_principal for _ in range(3)]
         assert principals == ["unknown", "root", "unprivileged"]
+        assert not fake.matching("container", "remove"), "the container answered and was kept"
+
+    @pytest.mark.parametrize("ending", ["times out", "fills the read cap"])
+    def test_an_identity_probe_that_does_not_end_discards_the_container(self, ending):
+        """`id` runs in the guest, and killing the host process does not reach it.
+
+        Acquire is about to hand this container to a caller and a warm acquire would reuse
+        it, so an ask whose end is unknown takes the container with it.
+        """
+        machine = _machine(running=[_NAME])
+
+        def respond(args):
+            if args[-2:] == ("id", "-u"):
+                if ending == "times out":
+                    raise TimeoutError("the identity probe did not answer")
+                return _WslcResult(0, b"9" * 64, b"")
+            return machine(args)
+
+        backend, fake = _backend_with(respond)
+        with pytest.raises((TimeoutError, RuntimeError)):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("container", "remove")[-1].args[-1] == f"id-{_NAME}"
+        assert not backend._undiscarded, "the removal succeeded, so nothing stays quarantined"
 
 
 # ---------------------------------------------------------------------------
@@ -1057,19 +1624,184 @@ class TestGuestPrincipal:
 
 class TestWriteFile:
     @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
-    def test_work_dir_spellings_stamp_every_missing_directory(self, work):
+    def test_work_dir_spellings_reach_one_target(self, work):
         spec = replace(_METHOD_SPEC, work_dir=work if work.startswith("/") else "/")
         name = _container_name(_KEY, spec.kind)
+        backend, fake = _backend_with(_machine(running=[name], work_dir=str(spec.work_dir)))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file("call-a1/nested/input", b"data", working_directory=work))
+        target, parent, staged, size = _operands(_only_write(fake))
+        assert target == "/workspace/call-a1/nested/input"
+        assert parent == "/workspace/call-a1/nested"
+        assert re.fullmatch(r"/workspace/call-a1/nested/\.maf-[0-9a-f]{32}\.part", staged)
+        assert size == "4"
+
+    @pytest.mark.parametrize("user", ["10001:20001", "", "worker"])
+    def test_the_write_runs_as_the_image_user_with_the_content_on_stdin(self, user):
+        """No ``--user``: the principal the guest program runs as places the file.
+
+        That is what bounds a parent swapped after the check, and why a write needs no
+        resolved identity: nothing is stamped.
+        """
+        labels = {"maf-sandbox.work-dir.v1": _WORK}
+        inspected = {"Id": "i", "Config": {"User": user, "Labels": labels}}
         overrides = {
+            ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
+            ("container", "exec", "-w", "/", _NAME, "id"): _WslcResult(1, b"", b"no id"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+        asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
+        call = _only_write(fake)
+        assert call.args[: call.args.index(_WRITE_AS_THE_GUEST) + 2] == (
+            "container",
+            "exec",
+            "-i",
+            "-w",
+            "/",
+            _NAME,
+            "sh",
+            "-c",
+            _WRITE_AS_THE_GUEST,
+            "sh",
+        )
+        assert call.stdin == b"data"
+        assert not fake.matching("container", "cp", "-")
+
+    #: Inspection payloads this backend cannot read at all. They fail acquire, but on the
+    #: engine's shape rather than on the image's user, so they carry no typed promise.
+    _UNREADABLE_INSPECTIONS = [
+        _WslcResult(1, b"", b"unavailable"),
+        _WslcResult(0, b"not json", b""),
+        _WslcResult(0, b"[]", b""),
+        _WslcResult(0, b"{}", b""),
+    ]
+
+    #: Inspection payloads this backend reads fine and that leave the image user unresolved:
+    #: absent, a name whose `id` does not answer, and an out-of-range uid.
+    _UNRESOLVED_IDENTITIES = [
+        _WslcResult(
+            0,
+            b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":null}}]',
+            b"",
+        ),
+        _WslcResult(
+            0,
+            b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"worker"}}]',
+            b"",
+        ),
+        _WslcResult(
+            0,
+            b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"4294967295:0"}}]',
+            b"",
+        ),
+    ]
+
+    @pytest.mark.parametrize("inspection", _UNREADABLE_INSPECTIONS)
+    def test_an_unreadable_inspection_fails_acquire(self, inspection):
+        """Not a capability verdict: the engine's answer was unusable, not the image's user."""
+        backend, fake = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
+        )
+        with pytest.raises((RuntimeError, ValueError)):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert not _writes(fake) and not _creations(fake)
+
+    @pytest.mark.parametrize("inspection", _UNRESOLVED_IDENTITIES)
+    def test_unresolved_identity_refuses_a_base_it_would_have_to_create(self, inspection):
+        """Creating a base needs an owner, so an unresolved user stops it before it starts.
+
+        The type is the contract here, not just the failure: a caller tells "this image
+        cannot serve that" from "the engine broke" by the exception it gets. Accepting a
+        bare ``RuntimeError`` would let that guard regress unnoticed.
+        """
+        backend, fake = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
+        )
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert not _writes(fake) and not _creations(fake)
+        assert not fake.matching("container", "cp", "-")
+
+    @pytest.mark.parametrize("work", [_WORK, "/etc"])
+    def test_a_base_that_was_already_there_keeps_its_owner(self, work):
+        """``acquire`` preserves the ownership it finds, so an existing base is never chowned.
+
+        Chowning one hands the image's user a directory the host never offered — with
+        ``work_dir="/etc"`` that is the guest owning ``/etc`` and every entry it can unlink.
+        Ownership goes only to a base this backend created.
+        """
+        ancestors = ("/", "/maf-sandbox", _WORK) if work == _WORK else ("/", "/etc")
+        overrides = {
+            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory() for guest in ancestors
+        }
+        overrides[("container", "inspect")] = _WslcResult(
+            0,
+            json.dumps(
+                [
+                    {
+                        "Id": "i",
+                        "Config": {
+                            "User": "10001:20001",
+                            "Labels": {"maf-sandbox.work-dir.v1": work},
+                        },
+                    }
+                ]
+            ).encode(),
+            b"",
+        )
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides, work_dir=work))
+        asyncio.run(backend.acquire(_KEY, replace(_SPEC, work_dir=work)))
+        assert not _creations(fake)
+        assert not _owner_steps(fake)
+
+    def test_a_base_this_acquire_created_goes_to_the_guest(self):
+        overrides = {
+            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
+            for guest in ("/", "/maf-sandbox")
+        }
+        overrides[("container", "inspect")] = _WslcResult(
+            0,
+            json.dumps(
+                [
+                    {
+                        "Id": "i",
+                        "Config": {
+                            "User": "10001:20001",
+                            "Labels": {"maf-sandbox.work-dir.v1": _WORK},
+                        },
+                    }
+                ]
+            ).encode(),
+            b"",
+        )
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        (created,) = _creations(fake)
+        assert created.args[created.args.index(_CREATE_DIRECTORIES) + 2 :] == (
+            "/maf-sandbox",
+            _WORK,
+        )
+        (owned,) = _owner_steps(fake)
+        assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == (
+            "sh",
+            "10001:20001",
+            _WORK,
+        )
+
+    def test_existing_directories_are_held_rather_than_created(self):
+        """Only the missing suffix is created; an existing parent is where the shell starts."""
+        overrides = {
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_is_a_directory(),
             ("container", "inspect"): _WslcResult(
                 0,
                 json.dumps(
                     [
                         {
-                            "Id": "instance",
+                            "Id": "i",
                             "Config": {
-                                "Labels": {"maf-sandbox.work-dir.v1": spec.work_dir},
                                 "User": "10001:20001",
+                                "Labels": {"maf-sandbox.work-dir.v1": _WORK},
                             },
                         }
                     ]
@@ -1077,105 +1809,11 @@ class TestWriteFile:
                 b"",
             ),
         }
-        backend, fake = _backend_with(_machine(running=[name], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, spec))
-        asyncio.run(sandbox.write_file("call-a1/nested/input", b"data", working_directory=work))
-        sent = fake.only("container", "cp").stdin
-        assert sent is not None
-        with tarfile.open(fileobj=io.BytesIO(sent)) as archive:
-            assert archive.getnames() == [
-                "workspace",
-                "workspace/call-a1",
-                "workspace/call-a1/nested",
-                "workspace/call-a1/nested/input",
-            ]
-            assert all(entry.isdir() for entry in archive.getmembers()[:-1])
-            assert {(entry.uid, entry.gid) for entry in archive} == {(10001, 20001)}
-
-    @pytest.mark.parametrize(
-        ("user", "uid", "gid", "expected"),
-        [
-            ("10001:20001", b"", b"", (10001, 20001)),
-            ("", b"", b"", (0, 0)),
-            ("10001", b"10001", b"20001", (10001, 20001)),
-            ("worker:staff", b"10001", b"20001", (10001, 20001)),
-            ("10001:staff", b"10001", b"20001", (10001, 20001)),
-        ],
-    )
-    @pytest.mark.parametrize("instance_id", ["engine-instance-1", "engine-instance-2"])
-    def test_files_and_missing_parents_belong_to_the_image_user(
-        self, user, uid, gid, expected, instance_id
-    ):
-        inspected = {
-            "Id": instance_id,
-            "Config": {"User": user, "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
-        }
-        overrides = {
-            ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
-            ("container", "exec", "-w", "/", _NAME, "id", "-u"): _WslcResult(0, uid, b""),
-            ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
-        }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        assert sandbox.instance_id == instance_id
-        assert len(fake.matching("container", "inspect")) == 2
-        asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
-        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
-        assert archive.getnames() == [
-            "maf-sandbox/work",
-            "maf-sandbox/work/nested",
-            "maf-sandbox/work/nested/input",
-        ]
-        assert [(entry.uid, entry.gid) for entry in archive] == [expected] * 3
-        assert [entry.mode for entry in archive] == [0o755, 0o755, 0o644]
-        assert [entry.isdir() for entry in archive] == [True, True, False]
-
-    @pytest.mark.parametrize(
-        "inspection",
-        [
-            _WslcResult(1, b"", b"unavailable"),
-            _WslcResult(0, b"not json", b""),
-            _WslcResult(0, b"[]", b""),
-            _WslcResult(0, b"{}", b""),
-            _WslcResult(
-                0,
-                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":null}}]',
-                b"",
-            ),
-            _WslcResult(
-                0,
-                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"worker"}}]',
-                b"",
-            ),
-            _WslcResult(
-                0,
-                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"4294967295:0"}}]',
-                b"",
-            ),
-        ],
-    )
-    def test_unresolved_identity_refuses_before_copying(self, inspection):
-        backend, fake = _backend_with(
-            _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
-        )
-        with pytest.raises((RuntimeError, ValueError)):
-            sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-        assert not fake.matching("container", "cp")
-
-    def test_existing_directories_are_not_restamped(self):
-        overrides = {
-            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
-            for guest in ("/maf-sandbox", _WORK, f"{_WORK}/existing")
-        }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        asyncio.run(sandbox.write_file("existing/new/input", b"data", working_directory=_WORK))
-        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
-        assert archive.getnames() == [
-            "maf-sandbox/work/existing/new",
-            "maf-sandbox/work/existing/new/input",
-        ]
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        (created,) = _creations(fake)
+        start = created.args.index(_CREATE_DIRECTORIES) + 2
+        assert created.args[start:] == ("/maf-sandbox", _WORK)
 
     @pytest.mark.parametrize("gid", [b"", b"-1", b"staff", b"20001\n0", b"4294967295"])
     def test_a_named_user_with_no_valid_group_cannot_write(self, gid):
@@ -1189,129 +1827,109 @@ class TestWriteFile:
             ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
-        assert not fake.matching("container", "cp")
+        assert not _writes(fake) and not _creations(fake)
 
-    def test_each_acquire_resolves_write_ownership_again(self):
-        answers = iter(
-            [
-                _WslcResult(
-                    0,
-                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"}}}]',
-                    b"",
-                ),
-                _WslcResult(
-                    0,
-                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"10001:20001"}}]',
-                    b"",
-                ),
-                _WslcResult(
-                    0,
-                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"10002:20002"}}]',
-                    b"",
-                ),
-            ]
-        )
-        answers = iter([answer for answer in answers for _ in range(2)])
+    def test_each_acquire_resolves_the_base_owner_again(self):
+        # What the image reports, changed between acquires rather than counted out per
+        # inspect: an acquire does not promise how many times it asks the engine.
+        user: str | None = None
         machine = _machine(running=[_NAME])
 
         def respond(args):
-            return next(answers) if args[:2] == ("container", "inspect") else machine(args)
+            if args[:2] != ("container", "inspect"):
+                return machine(args)
+            config: dict[str, object] = {"Labels": {"maf-sandbox.work-dir.v1": "/maf-sandbox/work"}}
+            if user is not None:
+                config["User"] = user
+            return _WslcResult(0, json.dumps([{"Id": "instance", "Config": config}]).encode(), b"")
 
         backend, fake = _backend_with(respond)
-        with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
-        for expected in ((10001, 20001), (10002, 20002)):
-            sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-            sent = fake.matching("container", "cp", "-")[-1]
-            archive = tarfile.open(fileobj=io.BytesIO(sent.stdin))
-            assert {(entry.uid, entry.gid) for entry in archive} == {expected}
+        for expected in ("10001:20001", "10002:20002"):
+            user = expected
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+            owned = _owner_steps(fake)[-1]
+            assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 2] == expected
 
-    def test_working_at_root_never_emits_a_root_directory_entry(self):
+    def test_working_at_root_writes_beneath_it(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory="/"))
-        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
-        assert archive.getnames() == ["nested", "nested/input"]
+        assert _operands(_only_write(fake))[:2] == ("/nested/input", "/nested")
 
-    def _sent(self, path: str, content: str) -> tuple[_Recorded, tarfile.TarFile]:
+    def _sent(self, path: str, content: str | bytes) -> _Recorded:
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file(path, content, working_directory=_WORK))
-        call = fake.only("container", "cp")
-        assert call.stdin is not None
-        return call, tarfile.open(fileobj=io.BytesIO(call.stdin), mode="r")
+        return _only_write(fake)
 
-    def test_the_copy_targets_the_container_root(self):
-        """A `cp` destination must already exist, and `/` is the only path that always does."""
-        call, _ = self._sent("/maf-sandbox/work/main.bicep", "x")
-        assert call.args == ("container", "cp", "-", f"{_NAME}:/")
-
-    def test_the_entry_is_the_path_without_its_leading_slash(self):
-        _, archive = self._sent("/maf-sandbox/work/r1/main.bicep", "x")
-        assert archive.getnames() == [
-            "maf-sandbox/work",
-            "maf-sandbox/work/r1",
-            "maf-sandbox/work/r1/main.bicep",
-        ]
+    def test_an_absolute_path_inside_the_working_directory_is_its_own_target(self):
+        target, parent, staged, _ = _operands(self._sent("/maf-sandbox/work/r1/main.bicep", "x"))
+        assert (target, parent) == ("/maf-sandbox/work/r1/main.bicep", "/maf-sandbox/work/r1")
+        assert posixpath.dirname(staged) == parent
 
     def test_a_relative_path_is_left_alone(self):
-        _, archive = self._sent("maf-sandbox/work/main.bicep", "x")
-        assert archive.getnames() == [
-            "maf-sandbox/work",
-            "maf-sandbox/work/maf-sandbox",
-            "maf-sandbox/work/maf-sandbox/work",
-            "maf-sandbox/work/maf-sandbox/work/main.bicep",
-        ]
+        target = _operands(self._sent("maf-sandbox/work/main.bicep", "x"))[0]
+        assert target == "/maf-sandbox/work/maf-sandbox/work/main.bicep"
 
     def test_the_content_round_trips_as_utf8(self):
-        _, archive = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")
-        member = archive.extractfile("maf-sandbox/work/main.bicep")
-        assert member is not None
-        assert member.read().decode("utf-8") == "param naïve string\n"
+        call = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")
+        assert call.stdin == "param naïve string\n".encode()
+        assert _operands(call)[3] == str(len("param naïve string\n".encode()))
 
     def test_bytes_are_written_as_given(self):
         """The protocol's ``write_file`` takes ``str | bytes`` — an in-door carrying a PNG or a
-        spreadsheet needs bytes, and they must reach the tar entry unencoded. Raising
+        spreadsheet needs bytes, and they must reach the guest unencoded. Raising
         ``AttributeError`` on ``bytes.encode`` here was the load-bearing half of #370."""
+        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+        call = self._sent("/maf-sandbox/work/diagram.png", payload)
+        assert call.stdin == payload
+        assert _operands(call)[3] == str(len(payload))
+
+    def test_each_write_stages_beside_its_target_under_a_new_name(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
-        asyncio.run(
-            sandbox.write_file("/maf-sandbox/work/diagram.png", payload, working_directory=_WORK)
-        )
+        for _ in range(2):
+            asyncio.run(sandbox.write_file("input", b"x", working_directory=_WORK))
+        first, second = (_operands(call)[2] for call in _writes(fake))
+        assert first != second
+        assert posixpath.dirname(first) == posixpath.dirname(second) == _WORK
 
-        call = fake.only("container", "cp")
-        assert call.stdin is not None
-        archive = tarfile.open(fileobj=io.BytesIO(call.stdin), mode="r")
-        member = archive.extractfile("maf-sandbox/work/diagram.png")
-        assert member is not None
-        assert member.read() == payload
-
-    def test_the_entry_is_readable(self):
-        _, archive = self._sent("/maf-sandbox/work/main.bicep", "x")
-        assert archive.getmember("maf-sandbox/work/main.bicep").mode == 0o644
-
-    def test_a_failed_copy_raises(self):
+    @pytest.mark.parametrize(
+        ("stderr", "error"),
+        [
+            (b"mkdir: cannot create directory '/etc/x': Permission denied", PermissionError),
+            (b"sh: can't create /x/.maf-a.part: Permission denied", PermissionError),
+            (b"Is a directory", IsADirectoryError),
+            (b"mkdir: cannot create directory '/x/f': Not a directory", NotADirectoryError),
+            (b"mkdir: cannot create directory '/x/f': File exists", NotADirectoryError),
+            (b"cat: /x/.maf-a.part: No such file or directory", FileNotFoundError),
+            (b"the content was cut short", RuntimeError),
+            (b"WSLC_E_CONTAINER_NOT_FOUND", RuntimeError),
+        ],
+    )
+    def test_a_failed_write_raises_what_the_guest_said(self, stderr, error):
         """A write that silently did nothing would surface as a compiler error about a file
         the workload believes it just wrote."""
-        overrides = {("container", "cp", "-"): _WslcResult(1, b"", b"WSLC_E_PATH_NOT_FOUND")}
+        overrides = {("container", "exec", "-i"): _WslcResult(1, b"", stderr)}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-
-        with pytest.raises(RuntimeError, match="WSLC_E_PATH_NOT_FOUND"):
+        with pytest.raises(error, match="could not write /maf-sandbox/work/main.bicep") as raised:
             asyncio.run(
                 sandbox.write_file("/maf-sandbox/work/main.bicep", "x", working_directory=_WORK)
             )
+        assert type(raised.value) is error
+        assert stderr.decode() in str(raised.value)
 
-    def test_a_refused_path_never_reaches_the_copy_seam(self):
+    def test_a_refused_path_never_reaches_the_guest(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(ValueError):
             asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
-        assert fake.matching("container", "cp", "-") == []
+        assert _writes(fake) == []
 
     #: A filesystem the check can actually get through: every directory above the work dir
     #: answers as one, which is what the engine's own refusal to copy a directory looks like.
@@ -1330,8 +1948,8 @@ class TestWriteFile:
 
         `test` runs inside that container, so the workload picks the answer. It picks which
         refusal the caller sees and nothing else: the engine refuses to copy a directory, so a
-        component it accepted is not one, and every claim here ends in a refusal with no tar
-        reaching the copy seam.
+        component it accepted is not one, and every claim here ends in a refusal with no write
+        command reaching the guest.
         """
         overrides = {
             ("container", "cp", f"{_NAME}:{_WORK}/ld"): _WslcResult(0, b"", b""),
@@ -1343,15 +1961,14 @@ class TestWriteFile:
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(refusal):
             asyncio.run(sandbox.write_file("ld/landed", b"x", working_directory=_WORK))
-        assert fake.matching("container", "cp", "-") == []
+        assert _writes(fake) == []
 
     def test_an_existing_file_at_the_leaf_is_written_over(self):
         """The leaf is the one component the guest's word is taken on, and it is bounded.
 
         A link here is refused; anything else is written over. A guest lying the other way —
-        hiding a link at its own leaf — gets the bytes landed on the link itself rather than on
-        its target, because this file plane replaces a leaf link instead of following it, so
-        the lie buys a path inside the working directory either way.
+        hiding a link at its own leaf — gets nothing its own user could not write, because
+        the write runs as that user.
         """
         overrides = {
             ("container", "cp", f"{_NAME}:{_WORK}/main.bicep"): _WslcResult(0, b"", b""),
@@ -1362,10 +1979,192 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file("main.bicep", b"second", working_directory=_WORK))
-        sent = fake.only("container", "cp").stdin
-        assert sent is not None
-        with tarfile.open(fileobj=io.BytesIO(sent)) as archive:
-            assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
+        assert _operands(_only_write(fake))[0] == f"{_WORK}/main.bicep"
+
+
+#: The offline suite runs on Linux in CI; Windows has no POSIX shell to run these in.
+if sys.platform == "win32":
+    _POSIX_SH, _OWNER, _AS_ROOT = None, "", False
+else:
+    _POSIX_SH, _OWNER, _AS_ROOT = (
+        shutil.which("sh"),
+        f"{os.getuid()}:{os.getgid()}",
+        os.geteuid() == 0,
+    )
+
+
+@pytest.mark.skipif(_POSIX_SH is None, reason="needs a POSIX sh")
+class TestTheFileCommandsInARealShell:
+    """Both commands run as written, in the host's own ``sh``.
+
+    The live suite runs them in a container. Here, links planted before the command starts
+    stand in for a swap after the check: the command must refuse what it finds.
+    """
+
+    @staticmethod
+    def _write(
+        target: Path, content: bytes, *, size: int | None = None, env: dict[str, str] | None = None
+    ):
+        parent = str(target.parent)
+        return subprocess.run(
+            ["sh", "-c", _WRITE_AS_THE_GUEST, "sh", str(target), parent, f"{parent}/.maf-0.part"]
+            + [str(len(content) if size is None else size)],
+            input=content,
+            capture_output=True,
+            check=False,
+            env={**os.environ, **(env or {})},
+        )
+
+    @staticmethod
+    def _create(parent: Path, *directories: Path, env: dict[str, str] | None = None):
+        return subprocess.run(
+            ["sh", "-c", _CREATE_DIRECTORIES, "sh", str(parent)]
+            + [str(directory) for directory in directories],
+            capture_output=True,
+            check=False,
+            env={**os.environ, **(env or {})},
+        )
+
+    @staticmethod
+    def _own(base: Path):
+        return subprocess.run(
+            ["sh", "-c", _ENSURE_BASE_OWNER, "sh", _OWNER, str(base)],
+            capture_output=True,
+            check=False,
+        )
+
+    def test_a_write_creates_its_parents_and_lands_whole(self, tmp_path):
+        target = tmp_path / "a" / "b" / "input"
+        done = self._write(target, b"data")
+        assert done.returncode == 0, done.stderr
+        assert target.read_bytes() == b"data"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+        assert stat.S_IMODE((tmp_path / "a").stat().st_mode) == 0o755
+        assert [path.name for path in target.parent.iterdir()] == ["input"]
+
+    def test_a_write_replaces_a_file_and_keeps_its_parents_mode(self, tmp_path):
+        tmp_path.chmod(0o700)
+        target = tmp_path / "input"
+        target.write_bytes(b"before")
+        done = self._write(target, b"after")
+        assert done.returncode == 0, done.stderr
+        assert target.read_bytes() == b"after"
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+
+    def test_content_cut_short_never_lands(self, tmp_path):
+        target = tmp_path / "input"
+        target.write_bytes(b"before")
+        done = self._write(target, b"part", size=10)
+        assert done.returncode == 1
+        assert done.stderr.decode().strip() == "the content was cut short"
+        assert target.read_bytes() == b"before"
+        assert [path.name for path in tmp_path.iterdir()] == ["input"]
+
+    def test_a_directory_at_the_target_is_refused_and_left_empty(self, tmp_path):
+        target = tmp_path / "input"
+        target.mkdir()
+        done = self._write(target, b"x")
+        assert shell_refusal(done.stderr.decode()) is FileRefusal.IS_DIRECTORY
+        assert list(target.iterdir()) == []
+        assert [path.name for path in tmp_path.iterdir()] == ["input"]
+
+    @pytest.mark.skipif(_AS_ROOT, reason="root writes anywhere")
+    def test_a_parent_the_user_cannot_write_is_refused(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o555)
+        try:
+            done = self._write(locked / "input", b"x")
+            assert shell_refusal(done.stderr.decode()) is FileRefusal.PERMISSION_DENIED
+            assert list(locked.iterdir()) == []
+        finally:
+            locked.chmod(0o755)
+
+    def test_a_leaf_turned_into_a_directory_at_the_rename_is_refused(self, tmp_path):
+        """``mv`` treats a destination directory as a container and reports success.
+
+        The stand-in for ``mv`` makes the leaf a directory in the one place it matters —
+        after the last check and before the rename — so without the check that follows it,
+        the write would report success with the content at ``<target>/<sibling>``.
+        """
+        real = shutil.which("mv")
+        assert real, "the real mv has to be somewhere for the wrapper to call"
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        wrapper = binaries / "mv"
+        # `mv -f -- <staged> <target>`, so the target is the fourth argument.
+        wrapper.write_text("\n".join(["#!/bin/sh", 'mkdir -p "$4"', f'exec {real} "$@"', ""]))
+        wrapper.chmod(0o755)
+        target = tmp_path / "target"
+        done = self._write(
+            target, b"payload", env={"PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}"}
+        )
+        assert done.returncode != 0
+        assert shell_refusal(done.stderr.decode()) is FileRefusal.IS_DIRECTORY
+        # The misplaced sibling is taken back rather than left inside the directory.
+        assert target.is_dir() and list(target.iterdir()) == []
+
+    def test_setup_creates_each_missing_directory(self, tmp_path):
+        base = tmp_path.resolve()
+        done = self._create(base, base / "a", base / "a" / "b")
+        assert done.returncode == 0, done.stderr
+        assert (base / "a" / "b").is_dir()
+        assert stat.S_IMODE((base / "a").stat().st_mode) == 0o755
+
+    def test_setup_ignores_an_inherited_cdpath(self, tmp_path):
+        """A relative ``cd`` must reach the directory just made, not a same-named decoy.
+
+        ``CDPATH`` is cleared in the script, so an inherited one cannot divert the loop's
+        ``cd`` into a directory of the same name that happens to sit under a ``CDPATH`` entry.
+        """
+        base = tmp_path.resolve()
+        decoy = base / "decoy"
+        (decoy / "a").mkdir(parents=True)
+        done = self._create(base, base / "a", base / "a" / "b", env={"CDPATH": str(decoy)})
+        assert done.returncode == 0, done.stderr
+        assert (base / "a" / "b").is_dir()
+        assert not (decoy / "a" / "b").exists()
+
+    def test_ownership_step_holds_the_base_and_refuses_a_swapped_link(self, tmp_path):
+        base = tmp_path.resolve()
+        real = base / "work"
+        real.mkdir()
+        assert self._own(real).returncode == 0
+        # A base swapped for a link after the check is refused, not chowned through it.
+        protected = base / "protected"
+        protected.mkdir(mode=0o700)
+        real.rmdir()
+        real.symlink_to(protected)
+        done = self._own(real)
+        assert done.returncode == 1
+        assert b"does not resolve to itself any more" in done.stderr
+
+    def test_setup_refuses_a_parent_swapped_for_a_link(self, tmp_path):
+        base = tmp_path.resolve()
+        protected = base / "protected"
+        protected.mkdir()
+        (base / "parent").symlink_to(protected)
+        done = self._create(base / "parent", base / "parent" / "child")
+        assert done.returncode == 1
+        assert b"does not resolve to itself any more" in done.stderr
+        assert list(protected.iterdir()) == []
+
+    def test_setup_refuses_a_link_above_the_parent(self, tmp_path):
+        base = tmp_path.resolve()
+        (base / "real" / "parent").mkdir(parents=True)
+        (base / "via").symlink_to(base / "real")
+        done = self._create(base / "via" / "parent", base / "via" / "parent" / "child")
+        assert done.returncode == 1
+        assert list((base / "real" / "parent").iterdir()) == []
+
+    def test_setup_refuses_a_link_planted_where_a_directory_was_missing(self, tmp_path):
+        base = tmp_path.resolve()
+        protected = base / "protected"
+        protected.mkdir()
+        (base / "child").symlink_to(protected)
+        done = self._create(base, base / "child", base / "child" / "base")
+        assert done.returncode == 1
+        assert (base / "child").is_symlink()
+        assert list(protected.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -3494,9 +4293,7 @@ def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
     command = fake.matching("container", "exec", "-w")[-1].args
     assert command[3] == f"{base}/call"
     assert command[-2:] == ("echo", "/opaque/argument")
-    transfer = [call for call in fake.matching("container", "cp") if call.stdin][-1]
-    with tarfile.open(fileobj=io.BytesIO(transfer.stdin)) as archive:
-        assert f"{base.lstrip('/')}/call/input" in archive.getnames()
+    assert _operands(_writes(fake)[-1])[0] == f"{base}/call/input"
 
 
 @pytest.mark.parametrize("override", [None, "/image/base"])

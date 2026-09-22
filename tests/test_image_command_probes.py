@@ -123,7 +123,10 @@ def test_wslc_tests_the_pinned_external_binary_with_true_and_false_cases(negativ
         spec = SandboxSpec(kind="write", requires=frozenset({Capability.FILES_IN}))
         if negative_status == 1:
             await probe_commands(spec, verified, run)
-            assert verified == {"/usr/bin/test"}
+            assert verified == {"/usr/bin/test", "write"}
+            # The write commands are looked up as the image's user, who runs them.
+            assert seen[2][0][:2] == ("sh", "-c")
+            assert seen[2][1] is False
         else:
             with pytest.raises(SandboxCapabilityNotSupported, match="files_in.*test"):
                 await probe_commands(spec, verified, run)
@@ -184,7 +187,9 @@ def test_engine_probe_cache_is_per_instance_and_extends_for_new_requirements(kin
 
     async def engine(*args, **kwargs):
         calls.append((args, kwargs))
-        return SimpleNamespace(returncode=1 if "-e" in args else 0)
+        # `stdout` as well as `returncode`: the seam this stands in for returns both, and
+        # the wslc probe reads it to tell a capped read from a command that answered.
+        return SimpleNamespace(returncode=1 if "-e" in args else 0, stdout=b"")
 
     setattr(backend, f"_{kind}", engine)
 
@@ -202,7 +207,7 @@ def test_engine_probe_cache_is_per_instance_and_extends_for_new_requirements(kin
         capability = Capability.FILES_DELETE if kind == "docker" else Capability.FILES_IN
         richer = SandboxSpec(kind="probe", requires=frozenset({Capability.EXEC, capability}))
         await backend._probe_commands("same-name", "first-id", richer)
-        assert len(calls) == (2 if kind == "docker" else 3)
+        assert len(calls) == (2 if kind == "docker" else 4)
         await backend._probe_commands("same-name", "replacement-id", shell)
         assert "replacement-id" in calls[-1][0]
         assert backend.declarations is declarations
@@ -230,7 +235,12 @@ def test_an_engine_that_ignores_its_timeout_is_still_bounded(kind):
                 backend._probe_commands("name", "id", SandboxSpec(kind="probe")),
                 timeout=1,
             )
-        assert not backend._command_probes["name"][1]
+        # Nothing was verified either way. wslc goes further: a probe whose completion is
+        # unknown discards the container, and the cache goes with it rather than being
+        # left behind for an instance nobody can account for.
+        assert not backend._command_probes.get("name", ("id", set()))[1]
+        if kind == "wslc":
+            assert "name" not in backend._command_probes
 
     asyncio.run(scenario())
 

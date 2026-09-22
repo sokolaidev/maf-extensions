@@ -207,7 +207,8 @@ def _names_on_the_machine(name: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "command,capability", [("sh", Capability.EXEC), ("test", Capability.FILES_IN)]
+    "command,capability",
+    [("sh", Capability.EXEC), ("test", Capability.FILES_IN), ("mv", Capability.FILES_IN)],
 )
 def test_command_probe_refusal_retries_after_the_guest_command_is_restored(command, capability):
     backend = WslcSandboxBackend(WslcSandboxConfig())
@@ -904,7 +905,7 @@ class TestTheSharedConformanceSuites:
     reason="needs MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE naming an image whose USER is not root",
 )
 class TestAGuestThatIsNotRoot:
-    """The root file plane and non-root guest are both cleaned by container disposal."""
+    """Inputs and the guest's own files are both cleaned by container disposal."""
 
     def _spec(self, image: str | None = None) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nonroot", image=image or _NONROOT_IMAGE, work_dir=_WORK)

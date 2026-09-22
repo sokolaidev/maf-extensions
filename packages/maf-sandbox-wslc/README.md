@@ -44,19 +44,19 @@ See the [Bicep sample](https://github.com/sokolaidev/maf-extensions/tree/main/sa
 
 Output reads, directory listing, file deletion, runtime `run_code` and host-tool calls are unavailable. A kind requiring one is refused before attachment.
 
-Acquisition checks `sh` for commands. Input transfer also needs the external `/usr/bin/test` command and a resolved image user. Both acquisition and root path probes invoke that absolute executable, without searching the guest's `PATH`. Failed prerequisite checks are retryable; another `test` on `PATH` is not a fallback. The image must protect `/usr/bin/test`, its dependencies and ancestor directories from the runtime user.
+Acquisition checks `sh` for commands. Input transfer also needs the external `/usr/bin/test` command, and `sh` plus `mkdir`, `cat`, `wc`, `mv` and `rm` for the image user: its probe and every write run through that user's shell. A *resolved* image user is needed only where a base has to be created, because a write runs as that user and stamps nothing. Every acquire still asks, though: `id -u` always, and `id -g` when the image names its user rather than numbering it. Working-directory setup needs root `/bin/sh`, `mkdir` and `chown` on the pinned system `PATH`, and `pwd` as a builtin or command, checked when a base has to be created rather than at acquisition, so an image whose base already exists needs none of them. Both acquisition and root path probes invoke that absolute executable, without searching the guest's `PATH`. Failed prerequisite checks are retryable; another `test` on `PATH` is not a fallback. The image must protect `/usr/bin/test`, its dependencies and ancestor directories from the runtime user.
 
 ## Input files and their limits
 
 Acquisition prepares the storage base for workloads using commands or files. `work_dir=None` selects `/maf-sandbox/work`; an explicit path requests that exact base. Existing directories keep their contents, ownership and modes.
 
-Files and missing directories at or below `working_directory` receive the image user's UID/GID. An unset `Config.User` means root. Named users or an omitted group need working `id` commands. Unresolved ownership refuses writes and creation of a missing base.
+A missing base is created as root, and a base this acquire created goes to the image user through a held `chown`. A base that was already there keeps its owner, whichever path named it: `acquire` preserves the ownership it finds. An unset `Config.User` means root. Named users or an omitted group need working `id` commands. An `id` that answers something unusable leaves ownership unresolved; one that does not answer at all discards the container, because it may still be running there. Unresolved ownership refuses any capability that has to create a base, `EXEC` and `FILES_IN` alike, before anything is created; an existing base needs no *resolved* identity at all.
 
-**The copy acts with root authority, and its path check is separate from the write.** A guest can replace a checked parent with a symlink before extraction. That can redirect bytes outside the working directory, including into a root-owned directory the guest cannot write itself.
+**Writes run as the image user.** The file and any missing parents belong to that user. A destination it cannot write raises `PermissionError`; nothing falls back to root. The path check is separate from the write, so a guest can swap a checked parent for a symlink first. The write then reaches only what the image user could write anyway. A write this host stops discards the container, as `exec` does — an expired deadline, or stdout reaching the read cap.
 
-The same race affects creation of missing directories and work-directory repair during acquisition. Setting tar ownership does not reduce placement authority. Cancellation after copy submission can leave partial writes.
+Setup refuses such a swap. It creates each missing directory inside a directory it holds and has confirmed with `pwd -P`, with `CDPATH` cleared. Cancelling a write after it starts is not a rollback: short content is refused, but content that fully arrived still lands.
 
-Some path classification runs inside the guest. It does not hold the checked filesystem state or provide a trusted freeze. Choose another transfer mechanism or backend if concurrent guest changes must not escape the checked directory.
+Some path classification runs inside the guest, as root, with the image's `test`. Its answer can pick which refusal a caller sees. A write it lets through still runs as the image user.
 
 Path inspection can also copy an existing guest file into a private host temporary directory. **Its disk use is not bounded by input limits or stdout limits.** Normal exits remove the temporary copy, but a host crash or cleanup failure can leave it behind. Use an enforced temporary-filesystem quota when that consumption is unacceptable.
 
