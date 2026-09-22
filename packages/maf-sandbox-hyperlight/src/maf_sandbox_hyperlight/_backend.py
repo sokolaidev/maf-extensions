@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import platform
 import sys
@@ -161,6 +162,8 @@ class _HyperlightSandbox:
             raise
 
     def _authorize(self) -> None:
+        if self.config.pod is not None:
+            self.config.pod.authorize(self.key, self.kind)
         if self.outputs is not None:
             require_owner(self.key, self.kind)
 
@@ -181,10 +184,12 @@ class _HyperlightSandbox:
             self._retired = True
             return True
 
-    async def stop(self) -> None:
+    async def stop(self, *, failed: bool = False) -> None:
         self.retire()
 
         def close() -> None:
+            if failed and self.config.pod is not None:
+                self.worker.abort()
             self.worker.close()
             with self._files_gate:
                 if self.outputs is not None:
@@ -222,7 +227,7 @@ class _HyperlightSandbox:
                 dispatched = started
             try:
                 if dispatched:
-                    await self.stop()
+                    await self.stop(failed=True)
             finally:
                 if not dispatched or not self.worker.alive:
                     with suppress(Exception):
@@ -261,14 +266,14 @@ class _HyperlightSandbox:
                 try:
                     self.outputs.validate()
                 except BaseException:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise
             response = await self._exchange({"op": "run", "code": code}, deadline)
             if self.outputs is not None:
                 try:
                     self.outputs.validate()
                 except BaseException:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise
             stdout, stderr, status = (
                 response.get("stdout"),
@@ -280,13 +285,13 @@ class _HyperlightSandbox:
                 or not isinstance(stderr, str)
                 or type(status) is not int
             ):
-                await self.stop()
+                await self.stop(failed=True)
                 raise HyperlightWorkerError("invalid execution result")
             if len(stdout.encode()) + len(stderr.encode()) > self.config.max_output_bytes:
-                await self.stop()
+                await self.stop(failed=True)
                 raise HyperlightWorkerError("worker violated the output limit")
             if status < 0:
-                await self.stop()
+                await self.stop(failed=True)
                 raise HyperlightWorkerError("native execution failed")
             return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
 
@@ -299,17 +304,17 @@ class _HyperlightSandbox:
                 try:
                     self.outputs.validate()
                 except BaseException:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise
             response = await self._exchange({"op": "reset"}, deadline)
             if response != {"ok": True}:
-                await self.stop()
+                await self.stop(failed=True)
                 raise HyperlightWorkerError("worker did not confirm restore")
             if self.outputs is not None:
                 try:
                     self.outputs.clear()
                 except BaseException:
-                    await self.stop()
+                    await self.stop(failed=True)
                     raise
             with self._state:
                 if self._retired:
@@ -444,11 +449,25 @@ class HyperlightSandboxBackend:
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         targets = self._targets(spec)
+        if self.config.pod is not None:
+            self.config.pod.authorize(key, spec.kind)
         if self.config.file_outputs:
             require_owner(key, spec.kind)
         check_host()
         deadline = _deadline(self.config.startup_timeout)
         async with _claim(self._gate, deadline):
+            if self.config.pod is not None:
+                from ._pod import PodJob
+
+                policy = hashlib.sha256(
+                    repr((self.config, targets, spec.execution_contract)).encode()
+                ).hexdigest()
+                binding = self.config.pod
+                await _offload(
+                    lambda: PodJob(binding, self.config.cleanup_timeout).request(
+                        "policy", digest=policy
+                    )
+                )
             if self.config.file_outputs:
                 require_owner(key, spec.kind)
             index = (key, spec.kind)
@@ -462,7 +481,7 @@ class HyperlightSandboxBackend:
                     ):
                         raise ValueError("dispose the sandbox before changing its execution policy")
                     return previous
-                await previous.stop()
+                await previous.stop(failed=self.config.pod is not None)
                 del self._sandboxes[index]
             sandbox = _HyperlightSandbox(
                 self.config, targets, spec.execution_contract, self._owner, key, spec.kind
@@ -471,7 +490,7 @@ class HyperlightSandboxBackend:
             try:
                 await sandbox.prepare(deadline)
             except BaseException:
-                await sandbox.stop()
+                await sandbox.stop(failed=True)
                 del self._sandboxes[index]
                 raise
             return sandbox
@@ -505,6 +524,8 @@ class HyperlightSandboxBackend:
         self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
     ) -> DisposalFailure | None:
         try:
+            if self.config.pod is not None:
+                self.config.pod.authorize(key, kind)
             check_host()
             async with _claim(self._gate, _deadline(self.config.startup_timeout)):
                 _, failure = await self._dispose(key, kind, instance_id)
@@ -516,6 +537,10 @@ class HyperlightSandboxBackend:
         count = 0
         failures: list[DisposalFailure] = []
         try:
+            if self.config.pod is not None and (
+                scope != self.config.pod.key.scope or thread_id != self.config.pod.key.thread_id
+            ):
+                raise HyperlightWorkerError("the pod belongs to another sandbox ownership scope")
             check_host()
             async with _claim(self._gate, _deadline(self.config.startup_timeout)):
                 keys = {

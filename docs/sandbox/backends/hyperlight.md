@@ -14,7 +14,7 @@ Use the [package README](../../../packages/maf-sandbox-hyperlight/README.md) for
 | Capabilities | `RUN_CODE`, `SNAPSHOT`; `FILES_OUT`, `FILES_LIST` when `file_outputs=True` |
 | Network | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443 |
 | Guest OS | None declared; this is a language runtime |
-| Sharing | `CONVERSATION`; one owning host process |
+| Sharing | `CONVERSATION`; one owning host process, optionally one scoped pod |
 | Admission | One call per sandbox through execution, delivery and cleanup |
 | Cleanup | Restore the original baseline; dispose on failure |
 
@@ -36,6 +36,7 @@ Requests and purges must reach the owner. Separate Linux mount, PID or cgroup na
 |---|---|
 | Windows | A job limits committed memory and kills the worker tree when the host exits. |
 | Linux | An operator-delegated cgroup v2 subtree limits memory, disables swap and groups OOM cleanup. A separate trusted supervisor watches host and worker pidfds, kills the group, waits for it to empty and removes it. |
+| Explicit Linux pod mode | Container limits cover the application and one native worker. Namespace PID 1 and an external controller retire the whole pod on active failure. |
 
 The Linux supervisor inherits the owner lock before creating resources. The worker joins containment before execution. The supervisor stays outside the worker's memory group and retains ownership until cleanup finishes. Acquisition refuses unavailable controls.
 
@@ -76,26 +77,26 @@ HTTP uses the host network. An allowed internal or loopback hostname grants acce
 
 ## AKS deployment design
 
-The AKS design builds on [hyperlight-on-kubernetes](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/tree/fc71b4501d23977fcc54f7be144d884fc8210667). Its device-plugin DaemonSet and CDI registration supply the existing node hypervisor device. The application requests `hyperlight.dev/hypervisor: 1` and runs the pinned Python SDK in a non-root container. The first deployment targets Linux KVM; the plugin's MSHV discovery does not extend this backend's supported family.
+The explicit pod integration builds on [hyperlight-on-kubernetes](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/tree/fc71b4501d23977fcc54f7be144d884fc8210667). Its device-plugin DaemonSet and CDI registration supply the existing node hypervisor device. The application requests `hyperlight.dev/hypervisor: 1` and runs the pinned Python SDK in a non-root container. The deployment targets Linux KVM; the plugin's MSHV discovery does not extend this backend's supported family. The [deployment instructions](../../../images/hyperlight-sandbox/README.md) cover the image, overlay, controller permissions and recovery.
 
 | Layer | Responsibility |
 |---|---|
 | Upstream device plugin and CDI | Discover and expose the node device; advertise scheduling allocations. |
 | Deployment overlay | Pin images, render device UID/GID and count, select validated nodes, set resource budgets and restrict infrastructure authority. |
-| Session pod | Run the application, protocol adapter and one resident Hyperlight VM for one authenticated user session. |
-| Host session controller | Admit and route the session, retain deadlines and cleanup state, retire failed pods and gate replacement. |
+| Scoped pod | Run the application, protocol adapter and one resident Hyperlight VM for one `(scope, thread_id, agent_id, kind)`. |
+| External pod controller | Reserve ownership, acknowledge deadlines, retain cleanup state, retire failed pods and gate replacement. |
 
-The controller binds the full `SandboxKey`, kind, selected backend and execution policy to the authenticated session, pod UID, owner generation and exact instance ID. A user identity alone is not a sandbox key. The initial admission limit is one resident VM and one active call per session pod, including warm or failed-cleanup capacity. Different sessions receive different pods and private storage. Reuse and snapshot reset stay within the same session; reassigning a warm pod to another user is forbidden. The application and backend stay together, and kinds continue using the local protocol. This design does not introduce a remote-worker API.
+The trusted host supplies the complete ownership scope. The controller binds it to a pod UID and owner generation; PID 1 pins the application process and its first execution policy. Exact-instance checks remain in the local adapter. A human identity alone is not a sandbox key, and an individual tool call is not a pod allocation. One agent in one conversation may make several calls in its pod. Different scopes receive different pods and private storage. Warm reuse requires `Cleanup.RESET`; the router defaults to disposal. Reassigning a warm pod or changing its execution policy is refused. The application and backend stay together, and kinds continue using the local protocol. There is no remote-worker API.
 
-The workload container is the aggregate CPU and memory boundary, and the entire session pod is the retirement boundary. Its budget includes the application, worker, baseline snapshot, output buffers and memory-backed volumes. `max_worker_memory_bytes` retains its existing per-worker meaning in the local backend; a container budget uses a separate explicit integration and cannot satisfy that setting by relabeling it. The existing Windows job and delegated Linux cgroup paths keep their guarantees and refuse missing controls. There is no fallback from failed cgroup delegation to container containment.
+The workload container is the aggregate CPU and memory boundary, and the whole pod is the retirement boundary. Its budget includes the application, worker, baseline snapshot and output buffers. Construct the adapter with `HyperlightSandboxConfig(pod=HyperlightPodConfig.from_environment(), max_worker_memory_bytes=None)` inside the supervised application. Container mode requires that explicit choice and rejects a delegated cgroup root. The existing Windows job and delegated Linux cgroup paths keep their per-worker guarantees and refuse missing controls. There is no fallback from failed cgroup delegation to container containment.
 
 The host controller runs outside the session pod's resource budget, with only the Kubernetes authority needed for session-pod lifecycle. The application has no Kubernetes service-account token, host PID access, runtime socket or writable host cgroup mount. It runs non-root with all capabilities dropped, RuntimeDefault seccomp, no privilege escalation, a read-only root filesystem and private writable cache/temp/output volumes. CPU, memory and ephemeral-storage requests and limits are explicit. The upstream plugin remains trusted node infrastructure because it writes kubelet/CDI host directories; application restrictions do not remove that trust requirement. A custom node helper for cgroup delegation is outside this design.
 
 ### Session failure and replacement
 
-The controller registers the call deadline before submission. A killable native worker and local watchdog handle deadlines without waiting for a blocked guest thread; the external controller handles owner death and failed local cleanup. Queue expiry before submission preserves the session. An ordinary Python error permits reuse after successful reset. Timeout or cancellation after submission, native failure, worker or owner OOM/death, and failed reset revoke admission and retire the whole session pod. The host reports lost state and retains uncertain execution or cleanup for retry; it never reports confirmed termination merely because deletion was requested. The implementation must establish the protocol-visible error and cleanup mapping before enabling this integration.
+The controller acknowledges each native deadline before submission. Namespace PID 1 watches the application, worker, OOM events and a five-second controller lease independently of the guest thread. Queue expiry before submission preserves the worker. An ordinary Python error permits reuse after successful reset. Active timeout/cancellation, native failure, worker or owner OOM/death, failed reset and controller loss retire the whole pod. The owning application can die before returning a tool error; its host must treat nonzero exit or lost connectivity as lost state and potentially uncertain execution. No successful tool result is inferred from cleanup.
 
-CPU throttling is not a program deadline, and an OOM event is not evidence that every worker has stopped. Kubernetes [resource enforcement](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) and [forced deletion](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#forced-pod-termination) therefore do not replace lifecycle verification. The first deployment uses controller-created pods with `restartPolicy: Never`, without automatic replay or overlapping replacement. A new owner is admitted only after the old workload is confirmed stopped or its node has been fenced. If the node is unreachable, cleanup remains pending and replacement is refused; removing an API object or changing routing cannot stop an old guest's external effects.
+CPU throttling is not a program deadline, and an OOM event is not evidence that every worker has stopped. Kubernetes [resource enforcement](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) and [forced deletion](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#forced-pod-termination) therefore do not replace lifecycle verification. Controller-created pods use `restartPolicy: Never`, without automatic replay. A ConfigMap reserves each ownership scope before pod creation. Cleanup requires exact-UID runtime termination, persists that receipt, then removes the pod finalizer and reservation. Missing pods without saved proof, synthetic terminal states and unreachable nodes keep cleanup pending and block replacement. Node fencing is an operator responsibility. Controller namespaces are separate ownership authorities; generic distributed routing remains unimplemented.
 
 The [AKS research and validation plan](../research/hyperlight-backend.md#aks-upstream-basis-and-evidence-2026-09-22) separates the measured device/delegation path from this container-based design. Per-worker cgroup isolation remains an independent option when several workers must share a container or the owner must survive a worker's resource failure.
 
@@ -103,7 +104,7 @@ The [AKS research and validation plan](../research/hyperlight-backend.md#aks-ups
 
 The real-guest tests cover WHP and KVM execution, reset, queue deadlines, cancellation, worker reaping, output bounds and network policy. Linux tests also cover process-tree containment. The [research record](../research/hyperlight-backend.md) carries environments and measurements.
 
-AKS probes established guest execution and the existing adapter's delegated-cgroup behavior in the measured environments. The single-session container integration above requires its own lifecycle validation. Standard Azure Container Apps does not provide the required local hypervisor device in the evaluated hosting setup. The backend has no remote-worker mode.
+AKS probes cover both the historical delegated-cgroup path and this explicit container integration. The research record distinguishes them and lists remaining operational checks. Standard Azure Container Apps does not provide the required local hypervisor device in the evaluated hosting setup. The backend has no remote-worker mode.
 
 ## Status
 
@@ -112,8 +113,8 @@ AKS probes established guest execution and the existing adapter's delegated-cgro
 | Packaged runtime, reset and worker containment | Implemented on the supported WHP/KVM family | [Package README](../../../packages/maf-sandbox-hyperlight/README.md) |
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Feasibility measured; deployment work remains open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
-| Upstream AKS device deployment | Overlay and operational validation not implemented | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open) |
-| One session per AKS pod | Design selected; container integration not implemented | [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) (open) |
+| Upstream AKS device deployment | Pinned overlay implemented; production operational validation remains | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open) |
+| One ownership scope per AKS pod | Explicit integration implemented; operational acceptance remains open | [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) (open) |
 | Distributed owner routing and purge | Conditional follow-up; not implemented | [#1239](https://github.com/sokolaidev/maf-extensions/issues/1239) (open) |
 | Writable inputs | Not implemented | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
 | Output collection | Flat `FILES_OUT` implemented by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344) (merged); listing completes the output scope | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (closed) by [#1397](https://github.com/sokolaidev/maf-extensions/pull/1397) (merged) |
