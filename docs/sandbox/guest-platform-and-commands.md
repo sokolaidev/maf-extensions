@@ -59,7 +59,7 @@ Does a capability depend on the guest image?
 | Backend | Acquisition checks |
 |---|---|
 | Docker | `sh` for `EXEC`; `rm` invocation for `FILES_DELETE`; launcher helpers for `HOST_TOOLS` |
-| WSLC | `sh` for `EXEC`; true and false cases of external `/usr/bin/test`, pinned independently of `PATH`, and the image user's `sh` plus `mkdir`, `cat`, `wc`, `mv` and `rm`, for `FILES_IN` — that probe and every write run through the image user's shell. Root `/bin/sh`, `mkdir`, `chown` and `pwd`, and a resolved image user, are needed only where a base has to be created, and checked there rather than at acquisition |
+| WSLC | `sh` for `EXEC`; true and false cases of external `/usr/bin/test`, pinned independently of `PATH`, and the image user's `sh` plus `mkdir`, `cat`, `wc`, `mv` and `rm`, for `FILES_IN` — that probe and every write run through the image user's shell. Root `/bin/sh`, `mkdir`, `chown`, `ls` and `pwd`, the image user's `mkdir` where setup leaves the base to that user, and a resolved image user, are needed only where a base has to be created, and checked there rather than at acquisition |
 | ACAS | `sh` for `EXEC`; launcher helpers for `HOST_TOOLS`; a planted-file removal check for relevant file operations |
 
 Docker and ACAS check `sh`, `mkdir`, `mv` and `nohup` when `HOST_TOOLS` is requested. Docker's engine-backed file transfers do not need command checks. A workload's interpreter remains the kind's responsibility.

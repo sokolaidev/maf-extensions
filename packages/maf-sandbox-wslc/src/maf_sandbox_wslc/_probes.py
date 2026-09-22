@@ -26,9 +26,9 @@ _REQUIREMENTS = {
 _WRITE_COMMANDS = ("mkdir", "cat", "wc", "mv", "rm")
 #: What working-directory setup runs as root, checked by the creation command itself rather
 #: than at acquire, because a base that is already there needs none of them. ``pwd`` counts:
-#: both scripts compare ``pwd -P`` against the path they asked for, and ``command -v`` finds
+#: the command compares ``pwd -P`` against the path it asked for, and ``command -v`` finds
 #: it as a builtin as readily as on the pinned ``PATH``.
-SETUP_COMMANDS = ("mkdir", "chown", "pwd")
+SETUP_COMMANDS = ("mkdir", "chown", "ls", "pwd")
 #: What the creation command prints before it gives up, followed by the command it could not
 #: find. A marker rather than a bare exit status: 126 and 127 are what an engine answers when
 #: it cannot start the shell at all, so a status alone cannot say which prerequisite is
