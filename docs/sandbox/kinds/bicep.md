@@ -12,7 +12,7 @@ See the [package README](../../../packages/maf-sandbox-bicep/README.md) for inst
 | Required capabilities | `EXEC`, `FILES_IN` |
 | Guest software | Bicep CLI and the commands required by the supplied image |
 | Network modes | `ALLOWLIST` by default; host may select `CLOSED` or `UNRESTRICTED` |
-| Work directory | `/maf-sandbox/work`, with a package-supplied config in each call directory |
+| Work directory | `/maf-sandbox/work`, with the selected config in each call directory |
 | Isolation | The host's minimum; the kind does not raise it |
 | Cleanup | Disposal by default; explicit `Cleanup.RECLAIM` can reuse a supported sandbox |
 | Result | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, verdict, trusted refusals and selected diagnostics, the compiler's output, then the standing sentence |
@@ -23,7 +23,7 @@ The spec does not declare an OS family. The host must select an image that suppo
 
 1. Resolve requested names against the caller's file listing.
 2. Read the original listing entries through the session.
-3. Stage the packaged `bicepconfig.json`, then every selected file, in a fresh call directory.
+3. Stage the selected `bicepconfig.json`, then every selected file, in a fresh call directory.
 4. Build templates with `bicep build` and parameter files with `bicep build-params`. Run lint as applicable.
 5. Format the compiler's diagnostics, then let core clean up the call.
 
@@ -31,7 +31,9 @@ The spec does not declare an OS family. The host must select an image that suppo
 
 All files are staged before compilation so local modules and parameter-file references resolve together. The call directory also holds compiled output, the module cache and the temporary profile.
 
-The package owns the linter configuration and compiler-code catalog. The config enumerates every linter rule in its recorded upstream release, including rules set to `off`. It preserves upstream defaults plus the suite's `no-unused-params=error` and `use-recent-api-versions=warning` overrides. Every call uploads its own config before compilation, including on warm reuse. An upload failure stops validation. A manifest permits 63 source files and reserves the remaining transfer slot for configuration. The image supplies the compiler; its version is independent of the catalog's source release.
+The packaged config is the default. The host may pass JSON text as `config` to `make_bicep_tools`; the factory validates it at attachment and rejects linter rule IDs outside the packaged catalog. A supplied config replaces the packaged policy, so the host controls rule levels and disabled rules. Bicep merges the selected config with its own defaults. Every call uploads its own config before compilation, including on warm reuse. An upload failure stops validation. A manifest permits 63 source files and reserves the remaining transfer slot for configuration. The image supplies the compiler; its version is independent of the catalog's source release.
+
+A host config using `extends` is rejected because its base file is not staged.
 
 Paths allow `[A-Za-z0-9._/-]` and reject `..` segments. The listing's key is used for reads. Unsafe names do not cause the listing to be echoed; ordinary missing names can receive suggestions.
 
@@ -68,7 +70,7 @@ All driver severity defaults and invocation overrides are validated before resul
 
 What this tool says about its own refusal goes in `trusted_output`. The kind writes the refusal templates and may echo short, printable names the model supplied visibly; hidden or unsafe names are identified by argument position. A "did you mean" hint lists names from the file store, whose integrity is not established, so the hint goes in `output` with the compiler's text while the sentence introducing it stays readable.
 
-When diagnostics exist, a separate `trusted_output` item contains a JSON summary with `type="bicep_diagnostics"`. Its `diagnostics` records contain only `file`, `rule` and `severity`. The kind loads its vocabulary at attachment from packaged `bicepconfig.json` rule names and `compiler_codes.json`, and returns those constants for exact matches. Severity selects `error`, `warning`, `note` or `none` after SARIF severity resolution. Guest descriptors cannot add trusted identifiers.
+When diagnostics exist, a separate `trusted_output` item contains a JSON summary with `type="bicep_diagnostics"`. Its `diagnostics` records contain only `file`, `rule` and `severity`. The kind loads its vocabulary at attachment from packaged `bicepconfig.json` rule names and `compiler_codes.json`, and returns those constants for exact matches. The selected config changes compiler behavior but cannot add trusted identifiers. Severity selects `error`, `warning`, `note` or `none` after SARIF severity resolution. Guest descriptors cannot add trusted identifiers.
 
 Files select argument references such as `files[0]` through matches against successfully staged paths. Absolute reports may include a backend-owned base; attribution requires the complete call-directory component and an exact staged path beneath it. A filename suffix alone cannot identify a file. Raw paths and hidden names never enter the summary. Unknown locations select `unattributed`; duplicate destinations use their first argument position. Records are deduplicated across phases, sorted and capped at 128. The Boolean fields `unrecognized_diagnostics`, `unattributed_locations` and `truncated` report gaps without exposing unknown text or counts. An empty selected subset does not mean the report is clean. Summary items retain the call's confidentiality. Completion and verdict still cover every requested file, including failures that prevent a definitive result.
 
@@ -98,3 +100,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
 | Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged) |
 | Packaged rule catalogs and trusted diagnostic selection | Implemented for Bicep | [#1386](https://github.com/sokolaidev/maf-extensions/issues/1386) (closed) by [#1389](https://github.com/sokolaidev/maf-extensions/pull/1389) (merged) |
+| Host-supplied Bicep configuration | Implemented for Bicep | [#1404](https://github.com/sokolaidev/maf-extensions/issues/1404) (closed) by [#1405](https://github.com/sokolaidev/maf-extensions/pull/1405) (merged) |

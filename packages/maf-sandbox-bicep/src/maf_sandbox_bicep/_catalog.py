@@ -1,4 +1,4 @@
-"""Package-owned validation policy and the finite vocabulary of trusted summaries."""
+"""Bicep configuration and the package-owned vocabulary of trusted summaries."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 FILE_REFERENCES = tuple(f"files[{position}]" for position in range(64))
 _LEVELS = {value: value for value in ("error", "warning", "note", "none")}
@@ -18,17 +18,17 @@ _UNATTRIBUTED = "unattributed"
 
 @dataclass(frozen=True, slots=True)
 class BicepCatalog:
-    """A config snapshot and canonical IDs captured before the tool runs."""
+    """A config snapshot and package-owned IDs captured before the tool runs."""
 
     config: str
     rules: Mapping[str, str]
 
 
-def load_catalog() -> BicepCatalog:
-    """Load package resources rather than learning trusted vocabulary from guest reports."""
+def load_catalog(config: str | None = None) -> BicepCatalog:
+    """Keep trusted IDs from package resources while selecting the host's config."""
     resources = files("maf_sandbox_bicep")
-    config = resources.joinpath("bicepconfig.json").read_text(encoding="utf-8")
-    rules: dict[str, Any] = json.loads(config)["analyzers"]["core"]["rules"]
+    packaged_config = resources.joinpath("bicepconfig.json").read_text(encoding="utf-8")
+    rules: dict[str, Any] = json.loads(packaged_config)["analyzers"]["core"]["rules"]
     codes: list[str] = json.loads(
         resources.joinpath("compiler_codes.json").read_text(encoding="utf-8")
     )
@@ -40,7 +40,39 @@ def load_catalog() -> BicepCatalog:
         or len(codes) != len(set(codes))
     ):
         raise ValueError("invalid packaged Bicep catalog")
-    return BicepCatalog(config, MappingProxyType({value: value for value in (*rules, *codes)}))
+    if config is not None:
+        config = _validated_host_config(config, rules)
+    return BicepCatalog(
+        config if config is not None else packaged_config,
+        MappingProxyType({value: value for value in (*rules, *codes)}),
+    )
+
+
+def _validated_host_config(config: str, packaged_rules: Mapping[str, Any]) -> str:
+    """Snapshot JSON whose linter rule IDs belong to the packaged vocabulary."""
+    try:
+        selected = json.loads(config)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Bicep config must be valid JSON") from exc
+    if not isinstance(selected, dict):
+        raise ValueError("Bicep config must be a JSON object")
+    if "extends" in selected:
+        raise ValueError("Bicep config must not use extends")
+
+    section = cast(dict[str, Any], selected)
+    for name in ("analyzers", "core", "rules"):
+        child = section.get(name, {})
+        if not isinstance(child, dict):
+            raise ValueError(f"Bicep config {name} must be a JSON object")
+        section = cast(dict[str, Any], child)
+    unknown = sorted(section.keys() - packaged_rules.keys())
+    if unknown:
+        raise ValueError(f"Bicep config names unknown linter rule(s): {', '.join(unknown)}")
+
+    try:
+        return json.dumps(selected, allow_nan=False, separators=(",", ":"))
+    except ValueError as exc:
+        raise ValueError("Bicep config must contain only JSON values") from exc
 
 
 def diagnostic_summary(

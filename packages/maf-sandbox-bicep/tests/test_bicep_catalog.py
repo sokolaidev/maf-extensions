@@ -61,6 +61,61 @@ def test_packaged_catalog_covers_compiler_and_linter_with_explicit_policy():
         catalog.rules["invented"] = "invented"  # pyright: ignore[reportIndexIssue]
 
 
+def test_host_config_replaces_packaged_levels_but_not_trusted_rule_ids():
+    supplied = {
+        "analyzers": {
+            "core": {
+                "rules": {
+                    "secure-secrets-in-params": {"level": "error"},
+                    "use-recent-module-versions": {"level": "warning"},
+                }
+            }
+        }
+    }
+    catalog = load_catalog(json.dumps(supplied))
+
+    assert json.loads(catalog.config) == supplied
+    assert "no-unused-params" not in supplied["analyzers"]["core"]["rules"]
+    assert catalog.rules["no-unused-params"] == "no-unused-params"
+    assert catalog.rules["BCP033"] == "BCP033"
+
+
+def test_host_config_snapshot_can_be_utf8_encoded_with_an_escaped_surrogate():
+    config = load_catalog(r'{"note":"\ud800"}').config
+
+    assert json.loads(config)["note"] == "\ud800"
+    assert b"\\ud800" in config.encode("utf-8")
+
+
+@pytest.mark.parametrize("rule", ["unknown-rule", "BCP033"])
+def test_host_config_rejects_ids_outside_packaged_linter_rules(rule):
+    config = json.dumps({"analyzers": {"core": {"rules": {rule: {"level": "error"}}}}})
+    with pytest.raises(ValueError, match=rule):
+        load_catalog(config)
+
+
+@pytest.mark.parametrize("base", ["../policy/bicepconfig.json", "", None])
+def test_host_config_rejects_extends_without_a_staged_base(base):
+    with pytest.raises(ValueError, match="extends"):
+        load_catalog(json.dumps({"extends": base}))
+
+
+@pytest.mark.parametrize(
+    "config, message",
+    [
+        ("{", "valid JSON"),
+        ("[]", "JSON object"),
+        ('{"analyzers":null}', "analyzers"),
+        ('{"analyzers":{"core":[]}}', "core"),
+        ('{"analyzers":{"core":{"rules":null}}}', "rules"),
+        ('{"analyzers":{"core":{"rules":{}},"extra":NaN}}', "JSON values"),
+    ],
+)
+def test_host_config_rejects_malformed_json_or_rule_structure(config, message):
+    with pytest.raises(ValueError, match=message):
+        load_catalog(config)
+
+
 def test_summary_deduplicates_phases_and_contains_only_selected_fields():
     report = [diagnostic(), diagnostic("no-unused-params", severity="warning"), diagnostic()]
     result = summary(report)
@@ -139,7 +194,9 @@ def test_config_is_captured_at_attachment_and_staged_for_every_call(monkeypatch)
     backend = _fake_backend()
     validator = _tool(InMemoryStore({"nested/main.bicep": "x"}), backend)
     config = load_catalog().config
-    monkeypatch.setattr(workload, "load_catalog", lambda: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(
+        workload, "load_catalog", lambda *_: (_ for _ in ()).throw(AssertionError())
+    )
     for _ in range(2):
         _items(validator, ["nested/main.bicep"])
     assert isinstance(backend.sandbox, _KeepsWhatItWrote)
@@ -153,6 +210,47 @@ def test_config_is_captured_at_attachment_and_staged_for_every_call(monkeypatch)
     for _command, directory, _timeout in backend.sandbox.commands:
         assert directory + "/bicepconfig.json" in configs
     assert not backend.sandbox.contents
+
+
+def test_host_config_is_staged_for_every_call_instead_of_the_packaged_config():
+    backend = _fake_backend()
+    supplied = json.dumps(
+        {"analyzers": {"core": {"rules": {"use-recent-module-versions": {"level": "error"}}}}}
+    )
+    validator = _tool(InMemoryStore({"nested/main.bicep": "x"}), backend, config=supplied)
+
+    for _ in range(2):
+        _items(validator, ["nested/main.bicep"])
+
+    assert isinstance(backend.sandbox, _KeepsWhatItWrote)
+    configs = {
+        path: json.loads(text)
+        for path, text in backend.sandbox.written_files.items()
+        if path.endswith("/bicepconfig.json")
+    }
+    assert len(configs) == 2
+    assert all(config == json.loads(supplied) for config in configs.values())
+    for _command, directory, _timeout in backend.sandbox.commands:
+        assert directory + "/bicepconfig.json" in configs
+    assert not backend.sandbox.contents
+
+
+@pytest.mark.parametrize(
+    "config,message",
+    [
+        ('{"analyzers":{"core":{"rules":{"unknown-rule":{"level":"error"}}}}}', "unknown-rule"),
+        ('{"extends":"../policy/bicepconfig.json"}', "extends"),
+    ],
+)
+def test_invalid_host_config_is_refused_before_sandbox_acquisition(config, message):
+    backend = _fake_backend()
+    with pytest.raises(ValueError, match=message):
+        _tool(
+            InMemoryStore({"main.bicep": "x"}),
+            backend,
+            config=config,
+        )
+    assert backend.keys == []
 
 
 def test_config_upload_failure_prevents_compilation_and_hides_exception_text():
