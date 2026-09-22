@@ -4,6 +4,17 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.26.1...maf-sandbox-acas-v0.27.0) (2026-09-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **acas:** create missing work directories with guest permissions ([#1379](https://github.com/sokolaidev/maf-extensions/issues/1379))
+
+### Fixes
+
+* **acas:** create missing work directories with guest permissions ([#1379](https://github.com/sokolaidev/maf-extensions/issues/1379)) ([8f62a15](https://github.com/sokolaidev/maf-extensions/commit/8f62a152ad52831b2e1507715fe71e05fb8c68ee))
+
 ## [0.26.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.26.0...maf-sandbox-acas-v0.26.1) (2026-09-21)
 
 
