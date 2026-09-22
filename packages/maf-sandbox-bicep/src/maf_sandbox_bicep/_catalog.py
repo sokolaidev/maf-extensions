@@ -56,6 +56,8 @@ def _validated_host_config(config: str, packaged_rules: Mapping[str, Any]) -> st
         raise ValueError("Bicep config must be valid JSON") from exc
     if not isinstance(selected, dict):
         raise ValueError("Bicep config must be a JSON object")
+    if "extends" in selected:
+        raise ValueError("Bicep config must not use extends")
 
     section = cast(dict[str, Any], selected)
     for name in ("analyzers", "core", "rules"):

@@ -266,7 +266,8 @@ def make_bicep_tools(
         egress: The network posture the validation runs in; see :func:`bicep_sandbox_spec`.
             Defaults to :data:`~maf_sandbox.Egress.ALLOWLIST` (the AVM registry hosts).
         config: Host-supplied ``bicepconfig.json`` text. Defaults to the packaged policy.
-            Linter rule IDs must belong to the packaged catalog.
+            Linter rule IDs must belong to the packaged catalog. Config inheritance via
+            ``extends`` is unsupported.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """

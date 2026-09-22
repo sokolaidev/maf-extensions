@@ -94,6 +94,12 @@ def test_host_config_rejects_ids_outside_packaged_linter_rules(rule):
         load_catalog(config)
 
 
+@pytest.mark.parametrize("base", ["../policy/bicepconfig.json", "", None])
+def test_host_config_rejects_extends_without_a_staged_base(base):
+    with pytest.raises(ValueError, match="extends"):
+        load_catalog(json.dumps({"extends": base}))
+
+
 @pytest.mark.parametrize(
     "config, message",
     [
@@ -229,13 +235,20 @@ def test_host_config_is_staged_for_every_call_instead_of_the_packaged_config():
     assert not backend.sandbox.contents
 
 
-def test_invalid_host_config_is_refused_before_sandbox_acquisition():
+@pytest.mark.parametrize(
+    "config,message",
+    [
+        ('{"analyzers":{"core":{"rules":{"unknown-rule":{"level":"error"}}}}}', "unknown-rule"),
+        ('{"extends":"../policy/bicepconfig.json"}', "extends"),
+    ],
+)
+def test_invalid_host_config_is_refused_before_sandbox_acquisition(config, message):
     backend = _fake_backend()
-    with pytest.raises(ValueError, match="unknown-rule"):
+    with pytest.raises(ValueError, match=message):
         _tool(
             InMemoryStore({"main.bicep": "x"}),
             backend,
-            config='{"analyzers":{"core":{"rules":{"unknown-rule":{"level":"error"}}}}}',
+            config=config,
         )
     assert backend.keys == []
 

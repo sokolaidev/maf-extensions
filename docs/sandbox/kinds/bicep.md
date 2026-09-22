@@ -33,6 +33,8 @@ All files are staged before compilation so local modules and parameter-file refe
 
 The packaged config is the default. The host may pass JSON text as `config` to `make_bicep_tools`; the factory validates it at attachment and rejects linter rule IDs outside the packaged catalog. A supplied config replaces the packaged policy, so the host controls rule levels and disabled rules. Bicep merges the selected config with its own defaults. Every call uploads its own config before compilation, including on warm reuse. An upload failure stops validation. A manifest permits 63 source files and reserves the remaining transfer slot for configuration. The image supplies the compiler; its version is independent of the catalog's source release.
 
+A host config using `extends` is rejected because its base file is not staged.
+
 Paths allow `[A-Za-z0-9._/-]` and reject `..` segments. The listing's key is used for reads. Unsafe names do not cause the listing to be echoed; ordinary missing names can receive suggestions.
 
 Shell commands are fixed templates with one validated path substitution. Build diagnostics come from stderr; lint diagnostics come from stdout. Parameter-file builds discard compiled output. The compiler finds configuration by walking up from the source file.
