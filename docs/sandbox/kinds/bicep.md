@@ -98,3 +98,4 @@ Core owns cleanup. `confined_to_guest_call_path=True` describes the kind's confi
 | Disposal by default; optional reclaim | Implemented | [Call cleanup](../tool-call.md) |
 | Four-field result contract | Implemented for Bicep, including live confinement checks | [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged) |
 | Packaged rule catalogs and trusted diagnostic selection | Implemented for Bicep | [#1386](https://github.com/sokolaidev/maf-extensions/issues/1386) (closed) by [#1389](https://github.com/sokolaidev/maf-extensions/pull/1389) (merged) |
+| Host-supplied Bicep configuration | Implemented for Bicep | [#1404](https://github.com/sokolaidev/maf-extensions/issues/1404) (closed) by [#1405](https://github.com/sokolaidev/maf-extensions/pull/1405) (merged) |
