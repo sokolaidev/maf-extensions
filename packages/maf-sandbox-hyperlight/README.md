@@ -22,7 +22,7 @@ The package pins the SDK, Wasm backend and Python guest together at 0.7.0. The g
 
 `json`, `math` and `re` are available. `datetime`, `statistics`, `pickle` and `__future__` are absent. Programs run statements and must print results; final expressions are not echoed. There is no shell or package installation.
 
-The backend declares `RUN_CODE` and `SNAPSHOT`, plus `FILES_OUT` when enabled. It supports conversation scope, one call at a time per sandbox. It provides no command execution, input transfer, directory listing or host-tool registration.
+The backend declares `RUN_CODE` and `SNAPSHOT`, plus `FILES_OUT` and `FILES_LIST` when output files are enabled. It supports conversation scope, one call at a time per sandbox. It provides no command execution, input transfer or host-tool registration.
 
 <a id="linux-and-wsl2-setup"></a>
 
@@ -106,13 +106,17 @@ The host supplies `CallerContext` and closes the backend at shutdown. `Cleanup.R
 
 Set `HyperlightSandboxConfig(file_outputs=True)`. Each sandbox receives one private directory exposed as `/output`. `work_dir` may be `None` or `/output`.
 
+This configuration adds `FILES_OUT` and `FILES_LIST`. `list_dir(".", working_directory=".")` returns sorted direct child names with trusted kinds and regular-file sizes. Empty storage returns an empty tuple. Links and Windows reparse entries are reported as links; hardlinks and special entries are reported as `OTHER`, without readable sizes. Child directories can be reported but cannot be enumerated.
+
+Listing is limited to 64 entries and 64 KiB of UTF-8 filenames, counting every entry kind. Overflow, an inspection failure or an entry replaced during inspection refuses the entire listing. Enumeration stays bound to the acquired root and excludes execution, reset and storage deletion until inspection finishes.
+
 Programs write files such as `/output/result.bin`. Collection uses flat relative names such as `result.bin`, with `working_directory="."`. Nested paths, links, special files, traversal and Windows path aliases are refused.
 
 The native write limits are 8 MiB per file, 32 MiB total and 64 files. `read_file(max_bytes=...)` also enforces the requested cap and refuses overflow without returning a prefix. Core applies its own collection limits.
 
 Collect and deliver files before the next execution or reset; both clear previous outputs. Reset keeps the directory. Disposal removes it after confirmed worker termination. Failed termination retains it for retry, and abrupt host exit can leave storage for deployment cleanup.
 
-The router holds exclusive admission through execution, collection, delivery and cleanup. Direct file-enabled callers must hold `backend.call_admission(key, spec, owner=unique_call_id, timeout=30)` around acquire, execution, reads and cleanup. File access outside that scope refuses.
+The router holds exclusive admission through execution, collection, delivery and cleanup. Direct file-enabled callers must hold `backend.call_admission(key, spec, owner=unique_call_id, timeout=30)` around acquire, execution, listing, reads and cleanup. File access outside that scope refuses.
 
 For CodeAct outputs, use this profile with an output sink and `CodeactOutputs.DECLARED` or `MANIFEST`:
 

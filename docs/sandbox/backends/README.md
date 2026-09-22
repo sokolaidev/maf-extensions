@@ -19,7 +19,7 @@ See [information flow](../information-flow.md) for the source-tool, content-item
 | [ACAS](acas.md) | `MICROVM` | Commands; host-tool transport | Upload, read, list, delete; image checks apply | Dispose |
 | [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload, read, delete in the container root filesystem | Dispose by default; optional reclaim |
 | [WSLC](wslc.md) | `CONTAINER` | Commands | Upload | Dispose |
-| [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output files | Reset; dispose on failure |
+| [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output reads and listing | Reset; dispose on failure |
 | [In-process](in-process.md) | `NONE` | Scripted test results | In-memory test store | Test implementations |
 
 The router's default minimum is `MICROVM`. Docker and WSLC require an explicit host floor of `CONTAINER`. The fake requires `NONE` and belongs only in tests.

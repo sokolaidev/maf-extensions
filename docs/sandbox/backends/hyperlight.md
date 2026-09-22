@@ -11,14 +11,14 @@ Use the [package README](../../../packages/maf-sandbox-hyperlight/README.md) for
 | Host | x86-64 Windows with WHP, or x86-64 Linux with KVM, including suitable WSL2 hosts |
 | Isolation | `MICROVM` |
 | Runtime | SDK, Wasm backend and Python guest pinned together at 0.7.0 |
-| Capabilities | `RUN_CODE`, `SNAPSHOT`; `FILES_OUT` when `file_outputs=True` |
+| Capabilities | `RUN_CODE`, `SNAPSHOT`; `FILES_OUT`, `FILES_LIST` when `file_outputs=True` |
 | Network | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443 |
 | Guest OS | None declared; this is a language runtime |
 | Sharing | `CONVERSATION`; one owning host process |
 | Admission | One call per sandbox through execution, delivery and cleanup |
 | Cleanup | Restore the original baseline; dispose on failure |
 
-Custom guests, custom images, ARM64 and Linux MSHV are refused. The adapter declares no `EXEC`, `FILES_IN`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `HOST_TOOLS`, `EGRESS_METHODS` or `ATTACHED_IDENTITY`. It makes no egress observation claim.
+Custom guests, custom images, ARM64 and Linux MSHV are refused. The adapter declares no `EXEC`, `FILES_IN`, `FILES_DELETE`, `RECLAIM`, `HOST_TOOLS`, `EGRESS_METHODS` or `ATTACHED_IDENTITY`. It makes no egress observation claim.
 
 The guest is CPython 3.14 with a reduced standard library. It supports statements, persistent globals and separate stdout/stderr. `json`, `math` and `re` are available; `datetime`, `statistics`, `pickle` and `__future__` are absent. This is not the full desktop Python environment.
 
@@ -64,6 +64,8 @@ With `file_outputs=True`, each sandbox has a private host directory exposed as `
 
 Collection accepts flat relative names and bounded raw bytes. It rejects traversal, links and Windows reparse points. The pinned guest cannot create directories or links. Core collection also enforces file-count and total-byte limits.
 
+`list_dir(".", working_directory=".")` enumerates the prepared base through a verified host directory descriptor or Windows handle. It returns sorted direct child names and trusted metadata, including links and special entries that collection refuses. Listing a child directory or following a link is unsupported. Enumeration allows at most 64 entries and 64 KiB of UTF-8 filenames; overflow, replacement or inspection failure refuses the whole result. Admission prevents execution and reset during listing, and storage deletion waits for enumeration to finish.
+
 Execution and restore clear previous outputs. Collection and delivery must finish before either operation. Reset keeps the directory root; disposal removes it only after the worker stops. Direct file access requires the backend's `call_admission` scope. See the [output examples](../../../packages/maf-sandbox-hyperlight/README.md#output-files).
 
 ## Network boundary
@@ -86,7 +88,7 @@ AKS hosting remains under investigation. Device access alone does not establish 
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Investigation | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Writable inputs | Not implemented | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
-| Output collection | Flat `FILES_OUT` implemented by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344) (merged) | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
-| Flat output listing | Not implemented | [#1392](https://github.com/sokolaidev/maf-extensions/issues/1392) (open) |
+| Output collection | Flat `FILES_OUT` implemented by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344) (merged); listing completes the output scope | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (closed) by [#1397](https://github.com/sokolaidev/maf-extensions/pull/1397) (merged) |
+| Flat output listing | Implemented for the prepared output base | [#1392](https://github.com/sokolaidev/maf-extensions/issues/1392) (closed) by [#1397](https://github.com/sokolaidev/maf-extensions/pull/1397) (merged) |
 | File cleanup | Output-only reset and disposal implemented by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344) (merged); input and selective cleanup remain separate | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
 | Native host tools | Not implemented | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
