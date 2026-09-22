@@ -220,7 +220,7 @@ The workspace rows assume a Windows host. On macOS and Linux they wait on one pr
 2. SSH agent forwarding on the current version, with `SSH_AUTH_SOCK` set and unset in the `sbx` client's environment.
 3. What a registered MCP server gives a guest under deny-all: whether its own traffic passes the sandbox's policy.
 4. Clipboard writes from the guest, and whether they are policy-checked like browser-open.
-5. Whether raw TCP to an **allowed** destination carries data. An allowed `github.com:22` also returned zero bytes, so the non-proxy path is unverified in both directions.
+5. Whether raw TCP to an **allowed** destination carries data. An allowed `github.com` on port 22 also returned zero bytes, so the non-proxy path is unverified in both directions.
 6. Whether `**` in a deny covers IPv6 literals and CIDR-matched destinations.
 7. Timing on `ubuntu-24.04` hosted runners.
 8. Whether the host-name rules for the workspace are complete for NTFS and for APFS in its default case-insensitive mode.
