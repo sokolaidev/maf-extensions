@@ -468,6 +468,35 @@ def test_a_container_a_failed_probe_could_not_remove_is_not_reused():
         asyncio.run(backend.acquire(_KEY, spec))
 
 
+def test_the_quarantine_retry_removes_the_instance_it_quarantined_not_the_name():
+    """Another host sharing the name can replace the instance before the retry runs.
+
+    An instance ID only ever names the container this backend failed to remove, so the retry
+    cannot reach a healthy replacement that took the name in the meantime.
+    """
+    machine = _machine(running=[_NAME])
+    removals_fail = True
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f") and removals_fail:
+            return _WslcResult(1, b"", b"device or resource busy")
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    # Keyed by the name acquire looks up, holding the instance the retry has to remove.
+    assert backend._undiscarded == {_NAME: f"id-{_NAME}"}
+
+    removals_fail = False
+    asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    assert fake.matching("container", "remove")[-1].args[-1] == f"id-{_NAME}"
+    assert not backend._undiscarded
+
+
 def _writes(fake: _FakeWslc) -> list[_Recorded]:
     """Every write command the fake saw: one guest ``exec -i`` per ``write_file``."""
     return [call for call in fake.calls if _WRITE_AS_THE_GUEST in call.args]

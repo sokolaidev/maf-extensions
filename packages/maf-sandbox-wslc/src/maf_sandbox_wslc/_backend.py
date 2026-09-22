@@ -1233,10 +1233,12 @@ class WslcSandboxBackend:
         # collapse onto one entry here.
         self._registry: dict[tuple[str, str, str, str, str], str] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
-        #: Containers a discard could not remove. Something may still be running in one, so
-        #: a warm acquire must not hand it back; the next acquire retries the removal and
-        #: refuses if it still will not go.
-        self._undiscarded: set[str] = set()
+        #: Containers a discard could not remove, as ``name -> instance ID``. Something may
+        #: still be running in one, so a warm acquire must not hand it back; the next acquire
+        #: retries the removal and refuses if it still will not go. The name is the key
+        #: because that is what ``acquire`` has to look up, and the instance ID is what the
+        #: retry removes: by then the name may belong to something else entirely.
+        self._undiscarded: dict[str, str] = {}
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
@@ -1446,18 +1448,22 @@ class WslcSandboxBackend:
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
             await self._verify_storage_base(name, spec, missing_ok=True)
-            if name in self._undiscarded:
+            quarantined = self._undiscarded.get(name)
+            if quarantined is not None:
                 # A discard could not remove this one, so something may still be running in
                 # it. Try again before anything reuses it, and refuse rather than hand back
-                # a container this backend cannot account for.
-                retried = await self._remove(name)
+                # a container this backend cannot account for. By the ID it was quarantined
+                # under: another host sharing this name may have replaced the instance since,
+                # and an ID can only ever name the one this backend failed to remove. An ID
+                # the engine no longer has is a removal with nothing left to do.
+                retried = await self._remove(quarantined)
                 if retried.failure is not None:
                     raise RuntimeError(
                         f"wslc could not discard container {name} after a command was cut "
                         f"short, so it may still be running something: {retried.failure}. "
                         "Remove it, or let the reaper reach it, before acquiring again."
                     )
-                self._undiscarded.discard(name)
+                del self._undiscarded[name]
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -1548,10 +1554,10 @@ class WslcSandboxBackend:
                         # Cleanup said it could not remove it, and disposal has already
                         # dropped the registry entry — so nothing else remembers that this
                         # container is half-prepared and may still be running setup.
-                        self._undiscarded.add(name)
+                        self._undiscarded[name] = instance_id
                         logger.warning("sandbox setup cleanup failed: %s", failure)
                 except Exception as failure:
-                    self._undiscarded.add(name)
+                    self._undiscarded[name] = instance_id
                     logger.warning("sandbox setup cleanup raised: %s", failure)
                 raise
             return sandbox
@@ -1613,7 +1619,8 @@ class WslcSandboxBackend:
         ``target`` is what gets removed and ``quarantine`` what the reuse guard will look
         for. A caller that knows the instance ID passes both: removing the exact instance
         keeps a discard off whatever holds the name by then, and recording the name is what
-        makes the guard fire, because ``acquire`` decides reuse by name.
+        makes the guard fire, because ``acquire`` decides reuse by name. A failure keeps the
+        pair, so the retry there removes this instance rather than that name.
 
         Bounded on this side too: this runs on the path where the engine has already missed
         one deadline, and a removal that hangs would trade a stale container for a stuck
@@ -1626,7 +1633,7 @@ class WslcSandboxBackend:
             removal = _Removal(False, DisposalFailure("timeout", "the removal did not finish"))
         if removal.failure is not None:
             # It may still be running in there, so nothing may reuse it until it goes.
-            self._undiscarded.add(quarantine or target)
+            self._undiscarded[quarantine or target] = target
             logger.warning("wslc could not discard %s: %s", target, removal.failure)
 
     def _forget_command_probes(self, target: str) -> None:

@@ -1,9 +1,12 @@
-"""The WSLC check/placement boundary: a swap there reaches nothing the guest could not.
+"""The WSLC check/placement boundary, and how far a swap there reaches.
 
 Writes run as the image's user, so a swapped parent redirects them only to where that user
 can write. Working-directory setup runs as root inside directories its shell holds, so a
-swapped parent is refused. Live measurements require MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE.
-They place the swap at the boundary deliberately; they are not probabilistic race controls.
+parent replaced by a **link** is refused — that is what these tests plant. A real directory
+renamed into the same name is not detected and still receives root's `mkdir` and `chown`;
+that residual is stated in the backend contract and is not covered here. Live measurements
+require MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE. They place the swap at the boundary
+deliberately; they are not probabilistic race controls.
 """
 
 from __future__ import annotations
