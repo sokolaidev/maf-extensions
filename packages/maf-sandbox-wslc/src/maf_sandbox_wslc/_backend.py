@@ -832,7 +832,7 @@ class _WslcSandbox:
                 f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
                 f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
                 f"directory {directories[-1]!r} is missing, and creating it needs {missing} "
-                f"as root, on {SETUP_PATH} where it is a command. Supply an image with it, or "
+                f"as root, as a shell builtin or on {SETUP_PATH}. Supply an image with it, or "
                 "point work_dir at a directory the image already provides. The next acquire "
                 f"retries. The engine said: {result.stderr_text.strip()}"
             )
@@ -1596,10 +1596,10 @@ class WslcSandboxBackend:
                 # can be raised to root. Acquire returns nothing for a caller to dispose,
                 # and the container stays registered for warm reuse, so take it with us.
                 # A probe that *answered* is an ordinary refusal and keeps the container.
-                await self._discard_container(instance_id)
+                await self._discard_container(instance_id, name)
                 raise
             if len(result.stdout) >= 1024:
-                await self._discard_container(instance_id)
+                await self._discard_container(instance_id, name)
                 raise RuntimeError(
                     f"wslc stopped the {argv[0]} probe after it filled the read cap, so it "
                     "may still be running inside the container, which was discarded"
@@ -1608,8 +1608,13 @@ class WslcSandboxBackend:
 
         await probe_commands(spec, verified, run)
 
-    async def _discard_container(self, target: str) -> None:
+    async def _discard_container(self, target: str, quarantine: str | None = None) -> None:
         """Force-remove a container whose in-flight command cannot be accounted for.
+
+        ``target`` is what gets removed and ``quarantine`` what the reuse guard will look
+        for — the same thing except on the probe path, which addresses the container by its
+        instance ID while ``acquire`` decides reuse by name. Removing the exact instance is
+        what makes the removal unambiguous; naming it is what makes the guard fire.
 
         Bounded on this side too: this runs on the path where the engine has already missed
         one deadline, and a removal that hangs would trade a stale container for a stuck
@@ -1622,7 +1627,7 @@ class WslcSandboxBackend:
             removal = _Removal(False, DisposalFailure("timeout", "the removal did not finish"))
         if removal.failure is not None:
             # It may still be running in there, so nothing may reuse it until it goes.
-            self._undiscarded.add(target)
+            self._undiscarded.add(quarantine or target)
             logger.warning("wslc could not discard %s: %s", target, removal.failure)
 
     def _forget_command_probes(self, target: str) -> None:

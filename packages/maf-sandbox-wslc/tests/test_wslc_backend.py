@@ -73,6 +73,7 @@ from maf_sandbox_wslc._backend import (
     _WslcResult,
     _WslcSandbox,
 )
+from maf_sandbox_wslc._probes import SETUP_COMMANDS
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -321,6 +322,8 @@ def test_a_probe_that_answered_badly_keeps_the_container():
     [
         (_WslcResult(127, b"", b"maf-setup-missing mkdir"), "mkdir"),
         (_WslcResult(127, b"", b"maf-setup-missing chown"), "chown"),
+        # Both scripts compare `pwd -P`, so a shell without it fails the comparison.
+        (_WslcResult(127, b"", b"maf-setup-missing pwd"), "pwd"),
         # A shell the engine could not start never reaches the script, so no marker comes
         # back — only the runtime's own words and a status in the unstartable range.
         (
@@ -423,6 +426,49 @@ def test_a_container_left_half_prepared_by_a_failed_cleanup_is_not_reused():
     assert fake.matching("container", "remove"), "cleanup was attempted"
     with pytest.raises(RuntimeError, match="may still be running something"):
         asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+@pytest.mark.parametrize("command", ["mkdir", "chown", "pwd"])
+def test_every_command_the_root_scripts_run_is_a_checked_prerequisite(command):
+    """A command the scripts use but never check fails late, as a generic error.
+
+    `pwd` is the one that slipped through: both scripts compare `pwd -P` against the path
+    they asked for, and only `mkdir` and `chown` were on the checked list.
+    """
+    # Everything but the prerequisite loop itself, which names them all by construction.
+    used = chr(10).join(
+        line
+        for line in (_CREATE_DIRECTORIES + _ENSURE_BASE_OWNER).splitlines()
+        if "command -v" not in line
+    )
+    assert f"{command} " in used, f"{command} is not run by either script"
+    assert command in SETUP_COMMANDS, f"{command} is run but never checked"
+
+
+def test_a_container_a_failed_probe_could_not_remove_is_not_reused():
+    """The probe addresses the container by instance ID; reuse is decided by name.
+
+    Quarantining the ID the removal used would record something the guard never looks for,
+    so a probe that may still be running would be reused on the next acquire.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "exec") and "sh" in args:
+            raise TimeoutError("the probe did not answer")
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    spec = replace(_SPEC, requires=frozenset({Capability.EXEC}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="did not complete"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert fake.matching("container", "remove"), "the discard was attempted"
+    # The name is what acquire looks for, so the guard has to have recorded that.
+    assert _NAME in backend._undiscarded
+    with pytest.raises(RuntimeError, match="may still be running something"):
+        asyncio.run(backend.acquire(_KEY, spec))
 
 
 def _writes(fake: _FakeWslc) -> list[_Recorded]:

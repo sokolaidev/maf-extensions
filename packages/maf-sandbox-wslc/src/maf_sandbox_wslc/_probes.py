@@ -25,10 +25,13 @@ _REQUIREMENTS = {
 }
 #: What ``write_file`` runs as the image's user, besides ``sh``.
 _WRITE_COMMANDS = ("mkdir", "cat", "wc", "mv", "rm")
-#: What working-directory setup runs as root, from the pinned system ``PATH``. Checked by the
-#: creation command itself rather than at acquire, because a base that is already there needs
-#: none of them.
-SETUP_COMMANDS = ("mkdir", "chown")
+#: What working-directory setup runs as root. Checked by the creation command itself rather
+#: than at acquire, because a base that is already there needs none of them. ``pwd`` is here
+#: because both scripts compare ``pwd -P`` against the path they asked for, and a shell that
+#: does not carry it builtin would fail that comparison rather than answer it — ``command -v``
+#: finds a builtin as readily as something on the pinned ``PATH``, so listing it costs nothing
+#: on an image that has one.
+SETUP_COMMANDS = ("mkdir", "chown", "pwd")
 #: What the creation command prints before it gives up, followed by the command it could not
 #: find. A marker rather than a bare exit status: 126 and 127 are what an engine answers when
 #: it cannot start the shell at all, so a status alone cannot say which prerequisite is
