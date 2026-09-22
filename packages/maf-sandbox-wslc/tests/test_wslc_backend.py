@@ -545,6 +545,47 @@ def test_a_discard_does_not_clear_a_quarantine_a_later_one_recorded():
     assert backend._undiscarded == {_NAME: "id-newer"}
 
 
+def test_an_acquire_clears_a_quarantine_installed_while_it_cleared_the_last_one():
+    """A discard runs outside the acquire lock, so the name can be quarantined again mid-retry.
+
+    Keeping that newer entry is not a fence on its own: reusing the name with one standing
+    hands back the very container it is holding back.
+    """
+    machine = _machine(running=[_NAME])
+    installed: list[str] = []
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f") and not installed:
+            # A concurrent discard, quarantining a different instance under the same name.
+            installed.append("id-newer")
+            backend._undiscarded[_NAME] = "id-newer"
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    backend._undiscarded[_NAME] = f"id-{_NAME}"
+    asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert [c.args[-1] for c in fake.matching("container", "remove")] == [f"id-{_NAME}", "id-newer"]
+    assert not backend._undiscarded
+
+
+def test_an_acquire_refuses_a_quarantine_it_cannot_drain():
+    """Bounded: a name quarantined again on every pass is not something to spin on."""
+    machine = _machine(running=[_NAME])
+    seen = 0
+
+    def respond(args):
+        nonlocal seen
+        if args[:3] == ("container", "remove", "-f"):
+            seen += 1
+            backend._undiscarded[_NAME] = f"id-newer-{seen}"
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    backend._undiscarded[_NAME] = f"id-{_NAME}"
+    with pytest.raises(RuntimeError, match="quarantined again every time"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
 def test_the_quarantine_retry_removes_the_instance_it_quarantined_not_the_name():
     """Another host sharing the name can replace the instance before the retry runs.
 

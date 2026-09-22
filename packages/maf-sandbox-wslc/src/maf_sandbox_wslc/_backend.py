@@ -485,6 +485,12 @@ _FILE_COMMAND_STDOUT_LIMIT = 4096
 #: this cap means the host killed a command that may still be running, not a long answer.
 _IDENTITY_STDOUT_LIMIT = 64
 
+#: How many times one acquire will clear a quarantine that keeps coming back under the same
+#: name. A discard runs outside the acquire lock, so one re-entry is an ordinary overlap;
+#: a name that keeps being quarantined is something this acquire cannot drain, and it says so
+#: rather than spinning.
+_QUARANTINE_DRAIN_ATTEMPTS = 3
+
 #: One write, run as the image's user: ``$1`` target, ``$2`` its parent, ``$3`` a sibling
 #: named for this call, ``$4`` the byte count. The content arrives on stdin. A host that is
 #: cancelled or times out closes stdin, and ``cat`` then ends as if the file were whole, so
@@ -1452,14 +1458,26 @@ class WslcSandboxBackend:
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
             await self._verify_storage_base(name, spec, missing_ok=True)
-            quarantined = self._undiscarded.get(name)
-            if quarantined is not None:
-                # A discard could not remove this one, so something may still be running in
-                # it. Try again before anything reuses it, and refuse rather than hand back
-                # a container this backend cannot account for. By the ID it was quarantined
-                # under: another host sharing this name may have replaced the instance since,
-                # and an ID can only ever name the one this backend failed to remove. An ID
-                # the engine no longer has is a removal with nothing left to do.
+            # A discard could not remove this one, so something may still be running in it.
+            # Clear the name before anything reuses it, and refuse rather than hand back a
+            # container this backend cannot account for. Removal goes by the ID the entry
+            # holds: another host sharing this name may have replaced the instance since,
+            # and an ID can only ever name the one this backend failed to remove. An ID the
+            # engine no longer has is a removal with nothing left to do.
+            #
+            # Looped, because a discard runs outside this lock and can quarantine a *newer*
+            # instance under the same name while the removal below is in flight. Clearing
+            # only the pair this iteration removed keeps that entry, and reusing the name
+            # with an entry still standing would hand back exactly what it holds back.
+            attempts = 0
+            while (quarantined := self._undiscarded.get(name)) is not None:
+                attempts += 1
+                if attempts > _QUARANTINE_DRAIN_ATTEMPTS:
+                    raise RuntimeError(
+                        f"wslc container {name} was quarantined again every time this "
+                        "acquire cleared it, so something may still be running in one of "
+                        "them. Remove it, or let the reaper reach it, before acquiring again."
+                    )
                 retried = await self._remove(quarantined)
                 if retried.failure is not None:
                     raise RuntimeError(
@@ -1467,8 +1485,6 @@ class WslcSandboxBackend:
                         f"short, so it may still be running something: {retried.failure}. "
                         "Remove it, or let the reaper reach it, before acquiring again."
                     )
-                # Only the pair this retry removed: a discard running outside this lock may
-                # have quarantined a newer instance under the same name while it ran.
                 if self._undiscarded.get(name) == quarantined:
                     del self._undiscarded[name]
             running = await self._is_listed(name, all_states=False)
