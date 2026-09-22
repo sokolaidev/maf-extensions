@@ -202,6 +202,37 @@ def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending):
     assert [call.args for call in fake.matching("container", "remove")], "the container was kept"
 
 
+def test_setup_cleanup_leaves_a_container_that_took_the_name_after_the_discard():
+    """Setup discarded its own instance, so whatever holds that name now is not this one.
+
+    Cleanup addresses the instance it captured. A key-wide sweep would select on labels a
+    replacement carries too, and remove a container another host is using.
+    """
+    machine = _machine(
+        running=[_NAME],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args):
+        # The instance setup discarded is gone; the name is still listed, as a replacement
+        # created between the discard and this cleanup would leave it.
+        if args[:2] == ("container", "inspect") and args[-1] == f"id-{_NAME}":
+            return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
+        if _CREATE_DIRECTORIES in args:
+            raise TimeoutError("setup timed out")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(TimeoutError):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    removed = [call.args[-1] for call in fake.matching("container", "remove")]
+    assert removed == [f"id-{_NAME}"], "cleanup reached past the instance it captured"
+
+
 def test_a_guest_command_stopped_at_its_output_cap_discards_the_container():
     """Reaching ``read_limit`` kills the host process and returns; nothing raises on its own.
 
@@ -637,17 +668,23 @@ def _machine(
                 0, json.dumps([{"Id": args[-1], "Config": {"Labels": labels}}]).encode(), b""
             )
         if args[:2] == ("container", "inspect"):
-            if args[-1] not in storage_labels:
+            # The engine resolves a name or an instance ID, and disposal addresses a
+            # container by ID on purpose, so this fake has to answer both. Its IDs are
+            # `id-<name>`; a real name wins over that shape.
+            selector = args[-1]
+            target = selector if selector in storage_labels else selector.removeprefix("id-")
+            if target not in storage_labels:
                 return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
             return _WslcResult(
                 0,
                 json.dumps(
                     [
                         {
-                            "Id": f"id-{args[-1]}",
+                            "Id": f"id-{target}",
+                            "Name": f"/{target}",
                             "Config": {"User": ""},
                             "Labels": storage_labels.get(
-                                args[-1], {"maf-sandbox.work-dir.v1": work_dir}
+                                target, {"maf-sandbox.work-dir.v1": work_dir}
                             ),
                         }
                     ]
@@ -1651,35 +1688,24 @@ class TestWriteFile:
         assert not _writes(fake) and not _creations(fake)
 
     def test_each_acquire_resolves_the_base_owner_again(self):
-        answers = iter(
-            [
-                _WslcResult(
-                    0,
-                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"}}}]',
-                    b"",
-                ),
-                _WslcResult(
-                    0,
-                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"10001:20001"}}]',
-                    b"",
-                ),
-                _WslcResult(
-                    0,
-                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"10002:20002"}}]',
-                    b"",
-                ),
-            ]
-        )
-        answers = iter([answer for answer in answers for _ in range(2)])
+        # What the image reports, changed between acquires rather than counted out per
+        # inspect: an acquire does not promise how many times it asks the engine.
+        user: str | None = None
         machine = _machine(running=[_NAME])
 
         def respond(args):
-            return next(answers) if args[:2] == ("container", "inspect") else machine(args)
+            if args[:2] != ("container", "inspect"):
+                return machine(args)
+            config: dict[str, object] = {"Labels": {"maf-sandbox.work-dir.v1": "/maf-sandbox/work"}}
+            if user is not None:
+                config["User"] = user
+            return _WslcResult(0, json.dumps([{"Id": "instance", "Config": config}]).encode(), b"")
 
         backend, fake = _backend_with(respond)
         with pytest.raises(SandboxCapabilityNotSupported, match="image user it would belong to"):
             asyncio.run(backend.acquire(_KEY, _SPEC))
         for expected in ("10001:20001", "10002:20002"):
+            user = expected
             asyncio.run(backend.acquire(_KEY, _SPEC))
             owned = _owner_steps(fake)[-1]
             assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 2] == expected

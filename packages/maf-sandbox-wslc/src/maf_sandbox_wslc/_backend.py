@@ -1549,11 +1549,15 @@ class WslcSandboxBackend:
                 # runs privileged commands the host process cannot reach once it is gone.
                 # A cancelled prepare needs this as much as a failed one.
                 try:
-                    failure = await self.dispose(key, kind=spec.kind)
+                    # By instance, not by key: a key-wide sweep selects on labels a
+                    # replacement would carry too, and setup may already have discarded this
+                    # instance on its way out, so the sweep could reach a container another
+                    # host created under the same name. The instance path rechecks the ID
+                    # before removing anything and answers "nothing to do" once it is gone.
+                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
                     if failure is not None:
-                        # Cleanup said it could not remove it, and disposal has already
-                        # dropped the registry entry — so nothing else remembers that this
-                        # container is half-prepared and may still be running setup.
+                        # Cleanup said it could not remove it, and nothing else remembers
+                        # that this container is half-prepared and may still be running setup.
                         self._undiscarded[name] = instance_id
                         logger.warning("sandbox setup cleanup failed: %s", failure)
                 except Exception as failure:
