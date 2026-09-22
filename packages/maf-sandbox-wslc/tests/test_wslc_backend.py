@@ -74,7 +74,7 @@ from maf_sandbox_wslc._backend import (
     _WslcResult,
     _WslcSandbox,
 )
-from maf_sandbox_wslc._probes import SETUP_COMMANDS
+from maf_sandbox_wslc._probes import SETUP_COMMANDS, SETUP_PATH
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -217,13 +217,26 @@ def test_a_base_root_may_not_create_is_created_by_the_image_user():
     [
         (b"mkdir: cannot create directory '/maf-sandbox': Permission denied\n", PermissionError),
         (b"mkdir: cannot create directory '/maf-sandbox': Not a directory\n", NotADirectoryError),
-        (b"sh: mkdir: not found\n", RuntimeError),
+        (b"mkdir: cannot create directory '/maf-sandbox': Input/output error\n", RuntimeError),
     ],
 )
 def test_the_image_users_refusal_to_create_the_base_raises_its_error(stderr, error):
     backend, _ = _backend_with(_left_to_the_guest(_WslcResult(1, b"", stderr)))
     with pytest.raises(error, match="as the image's user"):
         asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+@pytest.mark.parametrize("capabilities", [{Capability.EXEC}, {Capability.FILES_IN}])
+def test_an_image_user_without_mkdir_is_a_typed_refusal(capabilities):
+    """No probe asks for ``mkdir`` on an ``EXEC``-only acquire, so the command does.
+
+    The type is what tells a caller "this image cannot serve that" from a broken engine.
+    """
+    missing = _WslcResult(127, b"", b"maf-setup-missing mkdir\n")
+    backend, _ = _backend_with(_left_to_the_guest(missing))
+    spec = replace(_SPEC, requires=frozenset(capabilities))
+    with pytest.raises(SandboxCapabilityNotSupported, match="mkdir for the image's user"):
+        asyncio.run(backend.acquire(_KEY, spec))
 
 
 @pytest.mark.parametrize("command", ["as root", "as the image's user"])
@@ -2078,10 +2091,11 @@ class TestTheFileCommandsInARealShell:
         existing: Sequence[str],
         missing: Sequence[str],
         env: dict[str, str] | None = None,
+        script: str = _CREATE_DIRECTORIES,
     ):
         """Run setup from ``start``, naming each directory relative to it."""
         return subprocess.run(
-            ["sh", "-c", _CREATE_DIRECTORIES, "sh", _OWNER, str(start)]
+            ["sh", "-c", script, "sh", _OWNER, str(start)]
             + [str(start / name) for name in existing]
             + ["--"]
             + [str(start / name) for name in missing],
@@ -2091,9 +2105,12 @@ class TestTheFileCommandsInARealShell:
         )
 
     @staticmethod
-    def _create_as_the_guest(base: Path):
+    def _create_as_the_guest(base: Path, env: dict[str, str] | None = None):
         return subprocess.run(
-            ["sh", "-c", _CREATE_AS_THE_GUEST, "sh", str(base)], capture_output=True, check=False
+            [_POSIX_SH or "sh", "-c", _CREATE_AS_THE_GUEST, "sh", str(base)],
+            capture_output=True,
+            check=False,
+            env={**os.environ, **(env or {})},
         )
 
     @staticmethod
@@ -2231,6 +2248,24 @@ class TestTheFileCommandsInARealShell:
         assert done.stdout.decode().strip() == _LEFT_TO_THE_GUEST
         assert not (tmp_path / "base").exists()
 
+    @pytest.mark.parametrize("answer", ["exit 1", "echo total 0"])
+    def test_setup_leaves_to_the_guest_a_mode_ls_did_not_report(self, tmp_path, answer):
+        """A mode ``ls`` failed to report, or reported as something else, is not a safe one."""
+        binaries = tmp_path / "bin"
+        binaries.mkdir()
+        (binaries / "ls").write_text(f"#!/bin/sh\n{answer}\n")
+        (binaries / "ls").chmod(0o755)
+        script = _CREATE_DIRECTORIES.replace(
+            f"PATH={SETUP_PATH}", f"PATH={binaries}{os.pathsep}{SETUP_PATH}"
+        )
+        assert script != _CREATE_DIRECTORIES
+        (tmp_path / "start").mkdir()
+        start = self._start(tmp_path / "start")
+        done = self._create(start, [], ["base"], script=script)
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.decode().strip() == _LEFT_TO_THE_GUEST
+        assert not (start / "base").exists()
+
     def test_setup_refuses_a_parent_swapped_for_a_link(self, tmp_path):
         start = self._start(tmp_path)
         protected = start / "protected"
@@ -2265,6 +2300,14 @@ class TestTheFileCommandsInARealShell:
         assert done.returncode == 0, done.stderr
         assert base.is_dir()
         assert stat.S_IMODE((tmp_path / "a").stat().st_mode) == 0o755
+
+    def test_the_guest_command_names_a_missing_mkdir(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        done = self._create_as_the_guest(tmp_path / "base", env={"PATH": str(empty)})
+        assert done.returncode == 127
+        assert done.stderr.decode().strip() == "maf-setup-missing mkdir"
+        assert not (tmp_path / "base").exists()
 
     @pytest.mark.skipif(_AS_ROOT, reason="root writes anywhere")
     def test_the_guest_cannot_create_inside_a_directory_it_cannot_write(self, tmp_path):

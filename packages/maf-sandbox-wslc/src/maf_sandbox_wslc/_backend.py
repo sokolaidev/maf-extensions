@@ -544,6 +544,7 @@ _LEFT_TO_THE_GUEST = "maf-setup-left-to-the-guest"
 #: beside, and a link check cannot tell one real directory from another. At the first directory
 #: that fails, the command prints :data:`_LEFT_TO_THE_GUEST` and stops. Owned means owned by
 #: the shell's own user; a write an ACL grants shows in the group bits, which carry its mask.
+#: A mode ``ls`` did not report as a directory's fails too.
 _CREATE_DIRECTORIES = (
     _PINNED_ENV
     # Its own prerequisites, checked here rather than at acquire: a base that is already
@@ -562,9 +563,10 @@ owner=$1 start=$2
 shift 2
 refuse() { echo "$1 does not resolve to itself any more" >&2; exit 1; }
 host_owned() {
-    [ -O . ] || return 1
-    set -- $(ls -ld .)
-    case $1 in ?????w* | ????????w*) return 1 ;; esac
+    [ -O . ] && mode=$(ls -ld .) || return 1
+    set -- $mode
+    case $1 in ?????w* | ????????w*) return 1 ;; d?????????*) return 0 ;; esac
+    return 1
 }
 cd -P -- "$start" && [ "$(pwd -P)" = "$start" ] || refuse "$start"
 creating=
@@ -580,9 +582,11 @@ chown -- "$owner" .
 
 #: Creates the base as the image's user: ``$1`` the base. Used where root would have to act
 #: inside a directory that is not root's alone, so a swap there reaches only what that user
-#: could reach anyway.
-_CREATE_AS_THE_GUEST = """\
+#: could reach anyway. It checks ``mkdir`` itself, as the root command checks its own: no probe
+#: asks for it on an ``EXEC``-only acquire.
+_CREATE_AS_THE_GUEST = f"""\
 export LC_ALL=C
+command -v mkdir >/dev/null || {{ echo "{SETUP_MISSING} mkdir" >&2; exit 127; }}
 umask 022
 mkdir -p -- "$1"
 """
@@ -847,23 +851,20 @@ class _WslcSandbox:
         )
         missing = self._setup_prerequisite_missing(result)
         if missing is not None:
-            raise SandboxCapabilityNotSupported(
-                f"sandbox backend 'wslc' cannot serve "
-                f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
-                f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
-                f"directory {directories[-1]!r} is missing, and creating it needs {missing} "
-                f"as root, as a shell builtin or on {SETUP_PATH}. Supply an image with it, or "
-                "point work_dir at a directory the image already provides. The next acquire "
-                f"retries. The engine said: {result.stderr_text.strip()}"
+            raise self._setup_refusal(
+                spec,
+                directories[-1],
+                f"{missing} as root, as a shell builtin or on {SETUP_PATH}",
+                result,
             )
         if result.returncode:
             raise RuntimeError(
                 f"wslc could not create the working directory: {result.stderr_text.strip()}"
             )
         if result.stdout_text.strip() == _LEFT_TO_THE_GUEST:
-            await self._create_as_the_guest(directories[-1])
+            await self._create_as_the_guest(directories[-1], spec)
 
-    async def _create_as_the_guest(self, base: str) -> None:
+    async def _create_as_the_guest(self, base: str, spec: SandboxSpec) -> None:
         """Create ``base`` as the image's user, raising the matching ``OSError`` on a refusal."""
         result = await self._run_or_discard(
             "container",
@@ -880,6 +881,15 @@ class _WslcSandbox:
             read_limit=_FILE_COMMAND_STDOUT_LIMIT,
             in_the_guest=True,
         )
+        missing = self._setup_prerequisite_missing(result)
+        if missing is not None:
+            raise self._setup_refusal(
+                spec,
+                base,
+                f"{missing} for the image's user, since a directory on its path is not root's "
+                "alone",
+                result,
+            )
         if result.returncode != 0:
             detail = result.stderr_text.strip()
             refusal = shell_refusal(detail)
@@ -891,6 +901,20 @@ class _WslcSandbox:
                 "Point work_dir at a base that user can create, or at one under directories "
                 "that are root's alone."
             )
+
+    @staticmethod
+    def _setup_refusal(
+        spec: SandboxSpec, base: str, needs: str, result: _WslcResult
+    ) -> SandboxCapabilityNotSupported:
+        """The typed refusal for a setup prerequisite the image lacks; ``needs`` names it."""
+        return SandboxCapabilityNotSupported(
+            f"sandbox backend 'wslc' cannot serve "
+            f"{', '.join(sorted(spec.required_capabilities & _PREPARED_CAPABILITIES))} to "
+            f"{spec.kind!r} from image {spec.image_id or spec.image!r}: the working "
+            f"directory {base!r} is missing, and creating it needs {needs}. Supply an image "
+            "with it, or point work_dir at a directory the image already provides. The next "
+            f"acquire retries. The engine said: {result.stderr_text.strip()}"
+        )
 
     def _refuse_a_base_without_an_owner(self, spec: SandboxSpec, base: str) -> None:
         """Refuse to create a base when the user it would belong to is unresolved.
