@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.3.0...maf-sandbox-hyperlight-v0.4.0) (2026-09-22)
+
+
+### Features
+
+* **hyperlight:** enumerate flat output files through trusted host storage ([#1397](https://github.com/sokolaidev/maf-extensions/issues/1397)) ([5062ca4](https://github.com/sokolaidev/maf-extensions/commit/5062ca46cc90a394d02740f905a9ad4feed3aad7))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.2.0...maf-sandbox-hyperlight-v0.3.0) (2026-09-21)
 
 
