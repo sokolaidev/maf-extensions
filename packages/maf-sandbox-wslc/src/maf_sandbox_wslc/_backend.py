@@ -481,6 +481,10 @@ _STDERR_LIMIT = 64 * 1024
 #: Stdout a file command may return. Both commands below print nothing on success.
 _FILE_COMMAND_STDOUT_LIMIT = 4096
 
+#: Stdout an identity probe may return. ``id -u`` and ``id -g`` print one number; reaching
+#: this cap means the host killed a command that may still be running, not a long answer.
+_IDENTITY_STDOUT_LIMIT = 64
+
 #: One write, run as the image's user: ``$1`` target, ``$2`` its parent, ``$3`` a sibling
 #: named for this call, ``$4`` the byte count. The content arrives on stdin. A host that is
 #: cancelled or times out closes stdin, and ``cat`` then ends as if the file were whole, so
@@ -1463,7 +1467,10 @@ class WslcSandboxBackend:
                         f"short, so it may still be running something: {retried.failure}. "
                         "Remove it, or let the reaper reach it, before acquiring again."
                     )
-                del self._undiscarded[name]
+                # Only the pair this retry removed: a discard running outside this lock may
+                # have quarantined a newer instance under the same name while it ran.
+                if self._undiscarded.get(name) == quarantined:
+                    del self._undiscarded[name]
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -1519,9 +1526,9 @@ class WslcSandboxBackend:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
             _check_storage_base(cast("dict[str, object]", row), spec)
-            guest_uid = await self._probe_guest_uid(name)
+            guest_uid = await self._probe_guest_uid(name, instance_id)
             guest_identity = await self._write_identity(
-                name, guest_uid, cast("dict[str, object]", row)
+                name, instance_id, guest_uid, cast("dict[str, object]", row)
             )
             # No identity check here. Writes run as the image's user and stamp nothing, so
             # only *creating* a base needs to know who to give it to — `_ensure_base_owner`
@@ -1629,7 +1636,13 @@ class WslcSandboxBackend:
         Bounded on this side too: this runs on the path where the engine has already missed
         one deadline, and a removal that hangs would trade a stale container for a stuck
         acquire. What it could not remove is left to the reaper.
+
+        The quarantine goes in **before** the removal is awaited. This runs outside
+        ``_acquire_lock``, so a concurrent acquire during the removal would otherwise find
+        nothing recorded and warm-reuse a container whose guest command is still running.
         """
+        name = quarantine or target
+        self._undiscarded[name] = target
         try:
             async with asyncio.timeout(self._config.command_timeout_seconds):
                 removal = await self._remove(target)
@@ -1637,66 +1650,75 @@ class WslcSandboxBackend:
             removal = _Removal(False, DisposalFailure("timeout", "the removal did not finish"))
         if removal.failure is not None:
             # It may still be running in there, so nothing may reuse it until it goes.
-            self._undiscarded[quarantine or target] = target
             logger.warning("wslc could not discard %s: %s", target, removal.failure)
+            return
+        # Only this pair: a later discard may already have quarantined a different instance
+        # under the same name, and clearing that would hand out what it is holding back.
+        if self._undiscarded.get(name) == target:
+            del self._undiscarded[name]
 
     def _forget_command_probes(self, target: str) -> None:
         for name, (instance_id, _) in list(self._command_probes.items()):
             if target in (name, instance_id):
                 self._command_probes.pop(name, None)
 
+    async def _identity_probe(self, name: str, instance_id: str, *argv: str) -> _WslcResult:
+        """Ask the guest for one identity number, discarding the container if the ask did not end.
+
+        A clean answer this backend cannot use — a non-zero exit, output that is not a number —
+        is an ordinary unresolved identity and keeps the container. An ending the host cannot
+        account for is not, because ``acquire`` is about to hand that container to a caller:
+        killing the ``wslc`` process does not reach the command inside it, and a warm acquire
+        would reuse a container still running one. The same rule as the command probes.
+        """
+        try:
+            result = await self._wslc(
+                "container",
+                "exec",
+                "-w",
+                "/",
+                name,
+                *argv,
+                timeout=self._config.command_timeout_seconds,
+                read_limit=_IDENTITY_STDOUT_LIMIT,
+            )
+        except BaseException:
+            await self._discard_container(instance_id, name)
+            raise
+        if len(result.stdout) >= _IDENTITY_STDOUT_LIMIT:
+            await self._discard_container(instance_id, name)
+            raise RuntimeError(
+                f"wslc stopped the {' '.join(argv)} identity probe after it filled the read "
+                "cap, so it may still be running inside the container, which was discarded"
+            )
+        return result
+
     async def _write_identity(
-        self, name: str, guest_uid: int | None, inspected: dict[str, object]
+        self, name: str, instance_id: str, guest_uid: int | None, inspected: dict[str, object]
     ) -> tuple[int, int] | None:
         """Resolve write ownership from Config.User, using guest ids for named identities."""
-        try:
-            config = inspected.get("Config")
-            if not isinstance(config, dict):
-                return None
-            user = cast("dict[str, object]", config).get("User")
-            if user == "":
-                return (0, 0)
-            if not isinstance(user, str):
-                return None
-            if re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", user):
-                uid, gid = (int(part) for part in user.split(":"))
-                return (uid, gid) if max(uid, gid) < 2**32 - 1 else None
-            if guest_uid is None or guest_uid >= 2**32 - 1:
-                return None
-            result = await self._wslc(
-                "container",
-                "exec",
-                "-w",
-                "/",
-                name,
-                "id",
-                "-g",
-                timeout=self._config.command_timeout_seconds,
-                read_limit=64,
-            )
-            gid = result.stdout_text.strip()
-            if result.returncode == 0 and re.fullmatch(r"[0-9]{1,10}", gid):
-                return (guest_uid, int(gid)) if int(gid) < 2**32 - 1 else None
-        except Exception:
+        config = inspected.get("Config")
+        if not isinstance(config, dict):
             return None
+        user = cast("dict[str, object]", config).get("User")
+        if user == "":
+            return (0, 0)
+        if not isinstance(user, str):
+            return None
+        if re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", user):
+            uid, gid = (int(part) for part in user.split(":"))
+            return (uid, gid) if max(uid, gid) < 2**32 - 1 else None
+        if guest_uid is None or guest_uid >= 2**32 - 1:
+            return None
+        result = await self._identity_probe(name, instance_id, "id", "-g")
+        gid = result.stdout_text.strip()
+        if result.returncode == 0 and re.fullmatch(r"[0-9]{1,10}", gid):
+            return (guest_uid, int(gid)) if int(gid) < 2**32 - 1 else None
         return None
 
-    async def _probe_guest_uid(self, name: str) -> int | None:
+    async def _probe_guest_uid(self, name: str, instance_id: str) -> int | None:
         """Read the image user's announcement; never cache it by a mutable container name."""
-        try:
-            result = await self._wslc(
-                "container",
-                "exec",
-                "-w",
-                "/",
-                name,
-                "id",
-                "-u",
-                timeout=self._config.command_timeout_seconds,
-                read_limit=64,
-            )
-        except Exception:
-            return None
+        result = await self._identity_probe(name, instance_id, "id", "-u")
         uid = result.stdout_text.strip()
         if result.returncode != 0 or re.fullmatch(r"[0-9]{1,10}", uid) is None:
             return None

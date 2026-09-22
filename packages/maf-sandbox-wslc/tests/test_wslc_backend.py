@@ -499,6 +499,52 @@ def test_a_container_a_failed_probe_could_not_remove_is_not_reused():
         asyncio.run(backend.acquire(_KEY, spec))
 
 
+def test_a_discard_quarantines_before_it_awaits_the_removal():
+    """A discard runs outside the acquire lock, so a concurrent acquire has to see it.
+
+    Recording only once the removal returns leaves a window where that acquire finds nothing
+    and warm-reuses a container whose guest command is still running.
+    """
+    machine = _machine(running=[_NAME])
+    during: list[dict[str, str]] = []
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            during.append(dict(backend._undiscarded))
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert during == [{_NAME: f"id-{_NAME}"}], "an acquire during the removal would see nothing"
+    assert not backend._undiscarded, "a removal that succeeded clears it again"
+
+
+def test_a_discard_does_not_clear_a_quarantine_a_later_one_recorded():
+    """Two discards can overlap on one name, and only one of them removed this instance.
+
+    Clearing the entry by name would release a container the other one is still holding back.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            # A second discard, quarantining a different instance under the same name.
+            backend._undiscarded[_NAME] = "id-newer"
+        if _WRITE_AS_THE_GUEST in args:
+            raise TimeoutError("the write did not answer")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    with pytest.raises(TimeoutError):
+        asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+    assert backend._undiscarded == {_NAME: "id-newer"}
+
+
 def test_the_quarantine_retry_removes_the_instance_it_quarantined_not_the_name():
     """Another host sharing the name can replace the instance before the retry runs.
 
@@ -1451,9 +1497,10 @@ class TestGuestPrincipal:
         assert len(fake.calls) == seen
 
     def test_a_failed_probe_is_retried_and_never_cached_by_name(self):
+        """An answer this backend cannot use is an unresolved identity, not a dirty container."""
         answers = iter(
             [
-                TimeoutError("probe timed out"),
+                _WslcResult(1, b"", b"id: cannot find name for user ID"),
                 _WslcResult(0, b"0", b""),
                 _WslcResult(0, b"1000", b""),
             ]
@@ -1461,16 +1508,34 @@ class TestGuestPrincipal:
         machine = _machine(running=[_NAME])
 
         def respond(args):
-            if args[-2:] == ("id", "-u"):
-                answer = next(answers)
-                if isinstance(answer, Exception):
-                    raise answer
-                return answer
-            return machine(args)
+            return next(answers) if args[-2:] == ("id", "-u") else machine(args)
 
-        backend, _ = _backend_with(respond)
+        backend, fake = _backend_with(respond)
         principals = [asyncio.run(backend.acquire(_KEY, _SPEC)).guest_principal for _ in range(3)]
         assert principals == ["unknown", "root", "unprivileged"]
+        assert not fake.matching("container", "remove"), "the container answered and was kept"
+
+    @pytest.mark.parametrize("ending", ["times out", "fills the read cap"])
+    def test_an_identity_probe_that_does_not_end_discards_the_container(self, ending):
+        """`id` runs in the guest, and killing the host process does not reach it.
+
+        Acquire is about to hand this container to a caller and a warm acquire would reuse
+        it, so an ask whose end is unknown takes the container with it.
+        """
+        machine = _machine(running=[_NAME])
+
+        def respond(args):
+            if args[-2:] == ("id", "-u"):
+                if ending == "times out":
+                    raise TimeoutError("the identity probe did not answer")
+                return _WslcResult(0, b"9" * 64, b"")
+            return machine(args)
+
+        backend, fake = _backend_with(respond)
+        with pytest.raises((TimeoutError, RuntimeError)):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("container", "remove")[-1].args[-1] == f"id-{_NAME}"
+        assert not backend._undiscarded, "the removal succeeded, so nothing stays quarantined"
 
 
 # ---------------------------------------------------------------------------
