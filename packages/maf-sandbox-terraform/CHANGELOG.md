@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.4.0...maf-sandbox-terraform-v0.5.0) (2026-09-22)
+
+
+### Features
+
+* **terraform:** expose trusted diagnostic summaries for repair loops ([#1394](https://github.com/sokolaidev/maf-extensions/issues/1394)) ([185f3b0](https://github.com/sokolaidev/maf-extensions/commit/185f3b0df0b05126aee7b27450a403eac241fd8b))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.3.0...maf-sandbox-terraform-v0.4.0) (2026-09-21)
 
 
