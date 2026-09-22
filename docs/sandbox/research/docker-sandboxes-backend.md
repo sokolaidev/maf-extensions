@@ -58,7 +58,7 @@ Measured, on a Windows host:
 
 | Probe | Result |
 |---|---|
-| Guest path | The host path translated, not the same path. `C:\Users\…\maf-probe-ws` appears as `/c/Users/ANTONS~1/…/maf-probe-ws`. It carries the host user's short name into the guest, and `work_dir` is dictated by the host path |
+| Guest path | The host path translated, not the same path. `C:\Users\…\maf-probe-ws` appears as `/c/Users/<SHORTNAME~1>/…/maf-probe-ws`. It carries the host user's short name into the guest, and `work_dir` is dictated by the host path |
 | Guest creates a symlink in the workspace | `ln: Permission denied`. The guest cannot plant links a host-side read could follow |
 | Host junction in the workspace pointing outside it | **Followed.** The guest read a file outside the workspace through it. Docker's "symlinks pointing outside the workspace scope are not followed" does not cover Windows junctions |
 | Host hard link in the workspace to a file outside it | The guest read and rewrote the outside file, as Docker documents |
