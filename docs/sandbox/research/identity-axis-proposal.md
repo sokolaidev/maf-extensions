@@ -8,6 +8,69 @@ Subsequent core decision for [#1168](https://github.com/sokolaidev/maf-extension
 
 Subsequent configuration decision for [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170): ACAS attached identity is a supported sandbox-group configuration owned by the host. The adapter trusts configuration rather than performing ARM verification on every acquisition. This is platform configuration support, not implementation of the core `Capability.ATTACHED_IDENTITY` contract. M1/M7 describe service behavior and limits, and do not make configured identity unsupported. [Sandbox group identity](../backends/acas.md#sandbox-group-identity) owns this decision; the inspection and adoption gates proposed below remain design history.
 
+Subsequent assessment for [#757](https://github.com/sokolaidev/maf-extensions/issues/757), recorded on 22 September 2026: use host tools for user authority today; pursue a credential gateway outside the guest pod when guest HTTP access is needed. The gateway requires backend support for routing, workload binding, and call lifetime. The [gateway experiments below](#credential-gateway-experiments-for-757) support that direction without establishing production backend support. Pillar E's raw-token channel and its wave 2/3 implementation plan remain design history, not the recommended next implementation.
+
+## Credential gateway experiments for #757
+
+The corrected live AKS experiment completed **40 checks with 40 expected outcomes and no skips** on 22 September 2026 (Europe/Amsterdam). The [issue assessment and results](https://github.com/sokolaidev/maf-extensions/issues/757#issuecomment-5768658797) record the same conclusion: the gateway and its upstream or token-minting credentials must stay outside the guest pod, and the backend must enforce the boundary. A guest can read a credential held by another container in some same-pod configurations; the negative control reproduced one such configuration.
+
+This was a standalone Kubernetes prototype using generated canary credentials and a controlled HTTPS upstream. It minted no user OAuth tokens, changed no `maf-extensions` backend implementation, and changed no cluster-level security policy. It does not complete M3's Docker/WSLC environment measurement or M4's ACAS group-secret measurement below.
+
+### Options and direction
+
+| Option | Assessment |
+|---|---|
+| Run user-authorized operations through existing host tools | Use this supported route when the operation can be exposed as a host tool. The host retains the upstream credential. |
+| Let guest HTTP requests use a gateway outside the guest pod | Pursue this for guest HTTP access. The gateway retains the upstream credential; backend support must bind allowed requests to the correct workload, user, call, and lifetime. The experiment tests this shape. |
+| Give the guest a short-lived raw token | Defer. The guest can copy it or give it to a surviving process. Expiry limits future use but does not make the token unreadable or end its validity when a call finishes. Generic `exec(env=...)` is unnecessary for the gateway option. |
+
+A separately configured proxy URL is insufficient. The backend must enforce the permitted network route, establish workload identity from a trusted source, and control session admission and revocation. A backend unable to provide those guarantees must reject the requested gateway capability before user credentials are acquired. These are requirements for future integration, not declarations any backend gained from this experiment.
+
+### Environment and method
+
+The corrected run started at 23:30:31 UTC and finished at 23:32:59 UTC on 21 September 2026. The cluster ran Kubernetes 1.35.7, Cilium `1.18.12-260901`, and Azure Linux kernel `6.6.150.1-1.azl3`. Containers ran Python 3.13.15 and OpenSSL 3.5.7, using the public Python image pinned to `sha256:881d80734ee05dca6f7f42dcb080975652a53c7eda9ba1f03bb8da31aa6a6ec2`.
+
+Five temporary pods containing six containers ran in two namespaces under restricted Pod Security. The trusted namespace held separate gateway and upstream pods. The guest namespace held two independent guest pods and a two-container negative-control pod. Default-deny NetworkPolicies allowed guest-to-gateway TLS on port 8443 and gateway-to-upstream TLS on port 9443. No guest DNS allowance or public listener was configured.
+
+Only the gateway mounted the upstream canaries. The controlled upstream received their hashes for verification. Each ordinary guest held its own TLS client certificate and key and received an opaque session for requests. Guests ran as UID 10001 with dropped capabilities and a read-only root filesystem, without a service-account token, hostPath mount, or host network, PID, or IPC namespace. The negative-control pod deliberately shared a process namespace and UID between its two containers, with a separate canary mounted only in its credential-holder container.
+
+The gateway exposed fixed application routes, rather than intercepting arbitrary HTTPS. A trusted operator activated sessions binding client-certificate identity, current source pod IP, user, call ID, and a monotonic expiry. The gateway ignored guest-supplied identity and forwarding headers when selecting the upstream credential. Issuance and revocation used a loopback-only management listener on port 8444 reached through operator-authorized `kubectl exec`. That management transport was a fixture, not a proposed production backend API. Sessions were held in memory and did not survive gateway replacement.
+
+### Observations
+
+| Experiment | Observed result | What it establishes |
+|---|---|---|
+| Same-pod negative control | The non-root guest read the holder's canary through `/proc/13/root/held/token`, although the canary volume was mounted only in the holder. | Shared process namespace and UID exposed the other container's mount in this configuration. This is not a claim about every sidecar configuration. |
+| Gateway outside the guest pod and namespace | Both guests received HTTP 200 as their own test user. No upstream canary was found in their own environment, readable process environment/arguments, or the specified credential paths. | Placement protected the probed surfaces. This was not an exhaustive memory or escape test. |
+| Network enforcement | Direct guest connections to the upstream and gateway management port timed out. The gateway reached that upstream, and trusted management requests succeeded. Raw-socket creation in the guest failed with `PermissionError`. | The denials had working positive controls. They were not explained by an unavailable upstream. |
+| Session and workload binding | Unknown sessions returned 401. Wrong call IDs, another user's session, and Alice's complete certificate/key/session bundle copied into Bob's pod returned 403. Spoofed forwarding headers did not bypass the source-IP check. A missing client certificate failed TLS. | Binding separated the two live pods. IP reuse, NAT, and identity across rescheduling remain unproven. |
+| Request restrictions | User override queries, arbitrary destinations, traversal and encoded paths returned 403; a Host override returned 400; POST and CONNECT returned 405. An upstream redirect returned 502, and its target received no request. | The fixed-route gateway refused the tested attempts to widen its authority. |
+| Cancellation | A revoked session could not start another request. Revoking a session after the upstream had accepted a request caused its response to be withheld with 401. | Revocation stopped further use and suppressed the tested in-flight response. |
+| Issuer death and expiry | A separate issuer activated a six-second lease and exited with code 17 without cleanup. The lease worked before expiry and returned 401 afterward. A response arriving after expiry was withheld. | The surviving gateway enforced expiry independently of issuer cleanup. |
+| In-flight upstream effects | The upstream counted a request accepted before expiry even though the gateway withheld its response afterward. | Expiry and cancellation do not undo work the upstream already received. |
+| Gateway outage and replacement | Guest requests failed while the gateway was absent, and direct upstream access remained blocked. The replacement rejected old sessions; explicit reauthorization restored access. | This single-gateway fixture failed closed and did not restore sessions from configuration. |
+| Disclosure and upstream accounting | Upstream canaries were absent from collected responses, process logs, and result records. Final upstream counts were five profile requests and one each for redirect, cancellation, and slow-response routes. Denied requests did not reach those routes. | The observed traffic matched the allowed requests, and the collected outputs did not disclose a canary. An upstream that echoes its credential remains outside this protection. |
+
+The 40 expected outcomes include the unsafe same-pod read and the upstream operation that was not rolled back. The count is not a claim of 40 independent security guarantees. The disclosure probe read the guest's own environment, readable `/proc/*/environ` and `/proc/*/cmdline`, and specified credential paths both directly and through `/proc/<pid>/root`; it did not scan all memory or all files.
+
+The first attempt used a certificate fixture missing Authority Key Identifier and related extensions required by Python 3.13's strict verifier. Its HTTPS positive controls failed, so it supplies no successful transport evidence. The corrected fixture supplied the required extensions and kept strict certificate verification enabled. The failed attempt was retained separately from the 40-check run.
+
+### Remaining backend work
+
+The result supports proceeding with a backend-supported gateway contract. Before a backend advertises it, the following still need implementation and conformance evidence:
+
+1. Trusted workload identity that handles Pod UID changes, source-IP reuse, rescheduling, and NAT, rejecting stale bindings. The prototype's current-pod IP binding is only a measured starting point.
+2. Real delegated token acquisition and issuer, audience, scope, and expiry policy. Canary selection measured credential routing, not OAuth delegation.
+3. Backend admission, network enforcement, and call lifecycle integration: bind an approved session, revoke it at call completion, bound it after owner loss, and refuse unsupported configurations before acquiring credentials.
+4. Consistent expiry and revocation across multiple gateway replicas and failover, or an explicit refusal that preserves the boundary. Only one gateway's in-memory state and replacement were tested.
+5. Conformance for the application's actual HTTP operations and outputs. Fixed synthetic routes do not establish arbitrary SDK compatibility, DNS/IPv6 confinement, upstream response safety, or kernel escape resistance.
+
+### Evidence and cleanup
+
+The local experiment bundle retains the gateway, guest probe, runner, per-check observations, environment and source hashes, admitted-manifest audit, collected logs, cleanup evidence, and the failed certificate attempt. The public summary is in the [issue comment](https://github.com/sokolaidev/maf-extensions/issues/757#issuecomment-5768658797). The harness and raw evidence are not included in this documentation change; this record describes the experiment and its limits rather than supplying an executable reproduction. Generated credentials and raw resource snapshots remain local because they include infrastructure identifiers.
+
+All experiment namespaces, pods, Secrets, ConfigMaps, and NetworkPolicies were removed, and namespace disappearance was verified. AKS had provisioned a normal workload node because existing nodes were reserved for system workloads. The existing cluster autoscaler subsequently removed that node and its NodeClaim; both disappearances were verified.
+
 ## The problem is a word
 
 The open issues on this axis do not disagree with each other. They talk past each other, because "identity" names four different things in this repository, and each issue is about a different one.
@@ -175,6 +238,8 @@ class AttachedIdentityRef:               # what an acquired sandbox answers: the
 
 ## Pillar E — material provisioned for one call
 
+Historical proposal: the [22 September 2026 gateway assessment](#credential-gateway-experiments-for-757) supersedes the implementation direction in this section. The raw-token design below is retained as the earlier argument.
+
 [#757](https://github.com/sokolaidev/maf-extensions/issues/757) asks which of four shapes C′ takes. The answer this proposal gives is the first shape with the fourth's honesty: build the vocabulary and the refusals, ship the channel on the backends that can carry it, refuse it by declaration on the one that cannot, and park the second channel behind a measurement.
 
 ```python
@@ -266,6 +331,8 @@ Then, after the core release, one pull request per backend. The work every backe
 
 ### Wave 2 — the authority axis
 
+For #757, the `EXEC_ENV` and raw-token work in this wave and the M4-dependent plan in wave 3 are historical. The [gateway assessment](#credential-gateway-experiments-for-757) describes the next work and what remains unverified.
+
 One core `feat!`: `IdentityScope` and its rank, `AttachedIdentity`, `PrincipalKind`, `PrincipalRef` and `AttachedIdentityRef`, `BackendDeclarations.attached_identity`, `Sandbox.attached_identity`, `SandboxRouter(max_identity_scope=...)`, `SandboxSpec.max_identity_scope`, `SandboxSpec.max_identity_retention_seconds`, `SandboxSpec.provisioned_identity`, check 7 and `SandboxAttachedIdentityNotPermitted`; `Identity.SANDBOX`, `HostToolRegistry(mint_sandbox_identity=...)`, `HostToolRun(sandbox_identity=...)`, the reserved argument; `CredentialChannel`, `CallCredential`, `BackendDeclarations.credential_channels`, `SandboxSpec.call_credential`, check 8, `Sandbox.exec(env=)`, the transport's passthrough; the `also_carries_out` and approval folds; the `EgressRule.authority` leg beside the method-scoped egress work. A `docs:` pull request adds the vocabulary rule to `AGENTS.md` beside the `tier` rule.
 
 Then, after the core release: docker declares `{EXEC_ENV}` and passes the mapping through its name-only form; wslc declares it only where M3 finds a carrier that keeps the value off its argv, and withholds it otherwise; acas takes `credential_factory`, `max_scope_clients` and `attached_identity` in its config, verifies the group on every acquire, declares the identity only where M7 lets it and only when it is user-assigned, turns an `authority` leg into `EgressManagedIdentityRef`, declares `attached_identity.egress_header` for that rule's sake and no `credential_channels` at all, and leaves #313's import credential path to M8; codeact takes `call_credential=` and passes the sandbox's identity ref to its runs, and both kinds expose the `ATTACHED_IDENTITY` opt-in on their factories beside `egress_allow`, since a group with an identity serves nothing that has not opted in. Two samples, each with its live job in the same pull request: a docker sample handing a per-call value to a program that spends it at the one allowed host and showing a second call does not see it; and an acas sample spending the group's identity at one Azure resource through the header rule, which needs the live estate's group to carry an identity with one role assignment, a maintainer decision recorded before the sample is written. `hosts.md` § Identity is rewritten to the decided content, `capabilities.md` and `policy-isolation.md` gain the two checks and the two declarations, and `backends/README.md` goes from six declarations to eight.
@@ -293,7 +360,7 @@ Gated on M4: `EGRESS_HEADER` call credentials on acas, behind the `provision_cal
 |---|---|---|
 | [#567](https://github.com/sokolaidev/maf-extensions/issues/567) | Pillar D in full; Pillar F for the control plane at scope granularity, with a per-call exchanged identity deferred until a host asks for a client per call; `PER_SANDBOX` is vocabulary no platform here offers and stays declared by nobody | 2 |
 | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) | Pillar C, both provisionings: the platform-attached one through `Sandbox.attached_identity`, the static host-configured one through `SandboxSpec.provisioned_identity` | 2 |
-| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) | Pillar E: the first of its four shapes, on docker and wslc; acas refused by declaration until M4 | 2, then 3 |
+| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) | Originally Pillar E on docker and wslc, with acas awaiting M4. Superseded by the [outside-pod gateway assessment and experiments](#credential-gateway-experiments-for-757); production backend integration remains open | Prototype measured; backend contract next |
 | [#741](https://github.com/sokolaidev/maf-extensions/issues/741) | Pillar A, direction one, through the shared refusal | 1 |
 | [#753](https://github.com/sokolaidev/maf-extensions/issues/753) | Pillar B: the per-kind rung, the served-by table, the ledger answer | 1 |
 | [#754](https://github.com/sokolaidev/maf-extensions/issues/754) | Pillar B: the capability, the clean path, the docstring, the suite gate | 1 |
