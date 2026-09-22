@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.23.1...maf-sandbox-wslc-v0.24.0) (2026-09-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **wslc:** leave base creation to the image's user wherever a swap could redirect root ([#1400](https://github.com/sokolaidev/maf-extensions/issues/1400))
+* **wslc:** write files as the image user, and refuse a swapped link while creating the base ([#1380](https://github.com/sokolaidev/maf-extensions/issues/1380))
+
+### Fixes
+
+* **wslc:** leave base creation to the image's user wherever a swap could redirect root ([#1400](https://github.com/sokolaidev/maf-extensions/issues/1400)) ([aa18c19](https://github.com/sokolaidev/maf-extensions/commit/aa18c19b6d27a2b79c7d6946497ac56c482e0558))
+* **wslc:** prevent guest PATH overrides in root path probes ([#1387](https://github.com/sokolaidev/maf-extensions/issues/1387)) ([beaaaf5](https://github.com/sokolaidev/maf-extensions/commit/beaaaf557fb1958f2e7000f9f11d5ed7fbe87303))
+* **wslc:** write files as the image user, and refuse a swapped link while creating the base ([#1380](https://github.com/sokolaidev/maf-extensions/issues/1380)) ([d60ac42](https://github.com/sokolaidev/maf-extensions/commit/d60ac4229ece2f42e567cada97970bf8ed873ab4))
+
 ## [0.23.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.23.0...maf-sandbox-wslc-v0.23.1) (2026-09-21)
 
 
