@@ -17,20 +17,17 @@ _REQUIREMENTS = {
     "sh": frozenset({Capability.EXEC}),
     TEST_COMMAND: frozenset({Capability.FILES_IN}),
     "write": frozenset({Capability.FILES_IN}),
-    # Working-directory setup is *not* probed here. It only runs when the base is missing,
-    # which is not known until `prepare_work_dir` walks it, so probing at acquire refused
-    # images that never reach setup at all. The creation command checks its own
-    # prerequisites instead and exits `_SETUP_MISSING`, which the backend turns into the
-    # same typed refusal — see `SETUP_COMMANDS`.
+    # Working-directory setup is *not* probed here: it runs only when the base is missing,
+    # which is not known until `prepare_work_dir` walks it. The creation command checks its
+    # own prerequisites and marks a missing one with `SETUP_MISSING`, which the backend
+    # turns into the same typed refusal — see `SETUP_COMMANDS`.
 }
 #: What ``write_file`` runs as the image's user, besides ``sh``.
 _WRITE_COMMANDS = ("mkdir", "cat", "wc", "mv", "rm")
-#: What working-directory setup runs as root. Checked by the creation command itself rather
-#: than at acquire, because a base that is already there needs none of them. ``pwd`` is here
-#: because both scripts compare ``pwd -P`` against the path they asked for, and a shell that
-#: does not carry it builtin would fail that comparison rather than answer it — ``command -v``
-#: finds a builtin as readily as something on the pinned ``PATH``, so listing it costs nothing
-#: on an image that has one.
+#: What working-directory setup runs as root, checked by the creation command itself rather
+#: than at acquire, because a base that is already there needs none of them. ``pwd`` counts:
+#: both scripts compare ``pwd -P`` against the path they asked for, and ``command -v`` finds
+#: it as a builtin as readily as on the pinned ``PATH``.
 SETUP_COMMANDS = ("mkdir", "chown", "pwd")
 #: What the creation command prints before it gives up, followed by the command it could not
 #: find. A marker rather than a bare exit status: 126 and 127 are what an engine answers when

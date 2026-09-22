@@ -104,7 +104,7 @@ The backend starts no scheduler. See the [retention example](../../../packages/m
 | Area | State | Tracking |
 |---|---|---|
 | Commands, guest-owned inputs, call scope and disposal | Implemented | [Package README](../../../packages/maf-sandbox-wslc/README.md) |
-| Parent swaps at placement | Bounded for writes by the image's user; link replacement refused for setup, renamed-directory residual stated | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (closed) by [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged) |
+| Parent swaps at placement | partial — writes are bounded by the image's user, and setup refuses a link; a real directory renamed into the same name still receives root creation | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (open), [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged), [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594) (open) |
 | Output reads and listing | Withheld pending an adequate engine interface | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open), [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (open), [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (open) |
 | Delete, reclaim and reset | Withheld | [Cleanup contract](../tool-call.md) |
 | Temporary host disk use during stat | Explicit limit; requires host quotas | [Package README](../../../packages/maf-sandbox-wslc/README.md) |

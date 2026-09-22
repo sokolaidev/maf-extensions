@@ -756,6 +756,9 @@ class _WslcSandbox:
     async def _discard(self) -> None:
         """Force-remove this container, swallowing whatever removal says.
 
+        By instance ID, never by name: a name is reusable, so a discard that arrives after
+        this sandbox was disposed and its key acquired again would remove the replacement.
+
         Through the backend where there is one, so the removal also drops this container's
         cached probe results and, if it will not go, marks it as not to be reused.
         """
@@ -763,7 +766,9 @@ class _WslcSandbox:
             await self._discard_container()
             return
         with contextlib.suppress(Exception):
-            await self._run("container", "remove", "-f", self._name, timeout=self._command_timeout)
+            await self._run(
+                "container", "remove", "-f", self.instance_id, timeout=self._command_timeout
+            )
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base as root, without following links.
@@ -1071,10 +1076,7 @@ class _WslcSandbox:
                 max_output_bytes=max_output_bytes,
             )
         except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run(
-                    "container", "remove", "-f", self._name, timeout=self._command_timeout
-                )
+            await self._discard()
             raise
         return ExecResult(
             stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
@@ -1099,10 +1101,7 @@ class _WslcSandbox:
                 timeout=timeout,
             )
         except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run(
-                    "container", "remove", "-f", self._name, timeout=self._command_timeout
-                )
+            await self._discard()
             raise
         return ExecResult(
             stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
@@ -1529,7 +1528,7 @@ class WslcSandboxBackend:
                 guest_uid,
                 guest_identity,
                 instance_id=instance_id,
-                discard=functools.partial(self._discard_container, name),
+                discard=functools.partial(self._discard_container, instance_id, name),
             )
             logger.info(
                 "sandbox cleanup: container=%s guest_principal=%s guest_uid=%s cleanup=dispose",
@@ -1612,9 +1611,9 @@ class WslcSandboxBackend:
         """Force-remove a container whose in-flight command cannot be accounted for.
 
         ``target`` is what gets removed and ``quarantine`` what the reuse guard will look
-        for — the same thing except on the probe path, which addresses the container by its
-        instance ID while ``acquire`` decides reuse by name. Removing the exact instance is
-        what makes the removal unambiguous; naming it is what makes the guard fire.
+        for. A caller that knows the instance ID passes both: removing the exact instance
+        keeps a discard off whatever holds the name by then, and recording the name is what
+        makes the guard fire, because ``acquire`` decides reuse by name.
 
         Bounded on this side too: this runs on the path where the engine has already missed
         one deadline, and a removal that hangs would trade a stale container for a stuck

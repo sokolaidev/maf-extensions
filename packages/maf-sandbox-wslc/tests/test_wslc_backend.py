@@ -257,10 +257,7 @@ def test_an_exec_only_acquire_that_must_create_a_base_needs_the_image_user():
 
 
 def test_an_existing_base_is_served_without_a_resolved_image_user():
-    """Writes run as the image's user and stamp nothing, so nothing needs its numbers.
-
-    Only creating a base does. Refusing this at acquire turned away an image that works.
-    """
+    """Only creating a base needs the image user's numbers; a write stamps nothing."""
     inspected = {
         "Id": "i",
         "Config": {"User": "worker", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
@@ -375,7 +372,7 @@ def test_a_container_a_discard_could_not_remove_is_not_reused():
     sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
     with pytest.raises(TimeoutError):
         asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-    assert fake.matching("container", "remove"), "the discard was attempted"
+    assert fake.only("container", "remove").args == ("container", "remove", "-f", f"id-{_NAME}")
     # The removal failed, so the next acquire refuses rather than reusing that container.
     with pytest.raises(RuntimeError, match="may still be running something"):
         asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
@@ -430,10 +427,10 @@ def test_a_container_left_half_prepared_by_a_failed_cleanup_is_not_reused():
 
 @pytest.mark.parametrize("command", ["mkdir", "chown", "pwd"])
 def test_every_command_the_root_scripts_run_is_a_checked_prerequisite(command):
-    """A command the scripts use but never check fails late, as a generic error.
+    """A command the scripts run but never check fails late, as a generic error.
 
-    `pwd` is the one that slipped through: both scripts compare `pwd -P` against the path
-    they asked for, and only `mkdir` and `chown` were on the checked list.
+    The prerequisite loop is what turns a missing one into a refusal that names it, so the
+    checked list has to hold every command either script reaches for.
     """
     # Everything but the prerequisite loop itself, which names them all by construction.
     used = chr(10).join(
@@ -1297,13 +1294,14 @@ class TestExecDiscardsATimedOutSandbox:
         return _backend_with(respond)
 
     def test_a_timed_out_exec_removes_the_container(self):
+        """By instance ID: a name is reusable, so a late discard could reach a replacement."""
         backend, fake = self._timing_out()
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
 
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["sleep", "600"], working_directory="/w", timeout=1))
 
-        assert fake.only("container", "remove").args == ("container", "remove", "-f", _NAME)
+        assert fake.only("container", "remove").args == ("container", "remove", "-f", f"id-{_NAME}")
 
     def test_the_timeout_still_reaches_the_caller(self):
         """The workload reports a hang as a diagnostic; swallowing it would report success."""
