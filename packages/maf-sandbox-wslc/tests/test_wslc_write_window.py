@@ -1,12 +1,11 @@
 """The WSLC check/placement boundary, and how far a swap there reaches.
 
 Writes run as the image's user, so a swapped parent redirects them only to where that user
-can write. Working-directory setup runs as root inside directories its shell holds, so a
-parent replaced by a **link** is refused — that is what these tests plant. A real directory
-renamed into the same name is not detected and still receives root's `mkdir` and `chown`;
-that residual is stated in the backend contract and is not covered here. Live measurements
-require MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE. They place the swap at the boundary
-deliberately; they are not probabilistic race controls.
+can write. Working-directory setup runs as root only where every directory it acts inside is
+root's and writable by nobody else; anywhere else the image's user creates the base. Either
+way a swap — a link, or a real directory renamed into the same name — reaches only what that
+user could reach. Live measurements require MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE. They place
+the swap at the boundary deliberately; they are not probabilistic race controls.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from maf_sandbox import Capability, EntryKind, SandboxEntry, SandboxKey, Sandbox
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _CREATE_AS_THE_GUEST,
     _CREATE_DIRECTORIES,
     _WRITE_AS_THE_GUEST,
     _WslcResult,
@@ -37,7 +37,8 @@ _SPEC = SandboxSpec(kind="write-window", image="fixture", requires=frozenset({Ca
 
 def _places(args: tuple[str, ...]) -> bool:
     """Whether a wslc command is the one that places a write or creates a directory."""
-    return _WRITE_AS_THE_GUEST in args or _CREATE_DIRECTORIES in args
+    scripts = (_WRITE_AS_THE_GUEST, _CREATE_DIRECTORIES, _CREATE_AS_THE_GUEST)
+    return any(script in args for script in scripts)
 
 
 async def _operate(sandbox, operation, missing):
@@ -162,8 +163,14 @@ _LIVE = pytest.mark.skipif(
         ("prepare", True, True),
     ],
 )
-@pytest.mark.parametrize("boundary", ["swap", "refuse", "cancel"])
+@pytest.mark.parametrize("boundary", ["swap", "rename", "refuse", "cancel"])
 def test_live_write_window(operation, missing, swap_missing_parent, boundary):
+    """``rename`` swaps in a real root-owned directory, which no link check can tell apart.
+
+    The base's parent sits in the guest-owned base, so setup leaves the base to the image's
+    user as well: its own permission refuses both kinds of swap, for either operation.
+    """
+
     async def scenario():
         live = _Live()
         try:
@@ -171,10 +178,20 @@ def test_live_write_window(operation, missing, swap_missing_parent, boundary):
             if swap_missing_parent:
                 removed = await live.command(f"rmdir {_PARENT}")
                 assert removed.returncode == 0
+            if boundary == "rename":
+                # Root's, and movable by the guest, because it sits in the guest-owned base.
+                made = await live.command(f"mkdir -m 755 {_WORK}/rootowned", root=True)
+                assert made.returncode == 0, made.stderr_text
+            planted = f"mv {_WORK}/rootowned" if boundary == "rename" else "ln -s /protected"
+            swapped = False
 
             async def swap():
+                nonlocal swapped
+                if swapped:
+                    return
+                swapped = True
                 move = "" if swap_missing_parent else f"mv {_PARENT} {_WORK}/saved && "
-                result = await live.command(move + f"ln -s /protected {_PARENT}")
+                result = await live.command(f"{move}{planted} {_PARENT}")
                 assert result.returncode == 0, result.stderr_text
 
             if boundary == "refuse":
@@ -189,7 +206,7 @@ def test_live_write_window(operation, missing, swap_missing_parent, boundary):
                     reached.set()
                     if boundary == "cancel":
                         await asyncio.Event().wait()
-                    elif boundary == "swap":
+                    elif boundary in ("swap", "rename"):
                         await swap()
                 return await live.run(*args, **kwargs)
 
@@ -204,12 +221,17 @@ def test_live_write_window(operation, missing, swap_missing_parent, boundary):
                 with pytest.raises(ValueError):
                     await task
             else:
-                # The guest's own permission refuses a write; held setup refuses the swap.
-                with pytest.raises(PermissionError if operation == "write" else RuntimeError):
+                with pytest.raises(PermissionError):
                     await task
             sandbox._run = live.run
-            assert placements == (0 if boundary == "refuse" else 1)
+            # Setup is two commands here: root's walk stops, and the image's user creates.
+            swapped_placements = 2 if operation == "prepare" else 1
+            expected = {"refuse": 0, "cancel": 1}.get(boundary, swapped_placements)
+            assert placements == expected
             assert await live.protected() == []
+            if boundary == "rename":
+                inside = await live.command(f"find {_PARENT} -mindepth 1 -print", root=True)
+                assert inside.returncode == 0 and inside.stdout_text == ""
             if boundary == "swap" and swap_missing_parent:
                 # Nothing replaced the planted link either: it is still the guest's.
                 kept = await live.command(f"test -L {_PARENT}")
@@ -226,18 +248,18 @@ def test_live_write_window(operation, missing, swap_missing_parent, boundary):
 
 @_LIVE
 @pytest.mark.parametrize(
-    "operation", ["write", "write-missing-parents", "prepare", "write-root-owned"]
+    "operation",
+    ["write", "write-missing-parents", "prepare", "prepare-as-root", "write-root-owned"],
 )
 def test_live_placement_without_a_swap(operation):
     """The control: with nothing swapped, each operation lands where it was asked.
 
-    Writes belong to the image's user because that user wrote them. Setup leaves the new
-    intermediate directory to root and gives the base to the image's user. A write where that
-    user cannot write is refused, even though root could have placed it. The fixture's base
-    is setgid, so a directory created beneath it takes its group and the bit. The base is
-    then chowned, which overwrites that group with the image user's; the fixture cannot show
-    the difference because both are 20001, so a separate control uses a parent whose group
-    differs.
+    Writes belong to the image's user because that user wrote them. Setup under the
+    guest-owned base is left to that user, so everything it creates is the user's. Setup under
+    ``/maf-sandbox``, which is root's alone, leaves the new intermediate directory to root and
+    gives the base to the image's user. A write where that user cannot write is refused, even
+    though root could have placed it. The fixture's base is setgid, so a directory created
+    beneath it takes its group and the bit.
     """
 
     async def scenario():
@@ -247,7 +269,12 @@ def test_live_placement_without_a_swap(operation):
             if operation == "prepare":
                 await sandbox.prepare_work_dir(replace(_SPEC, work_dir=_PARENT + "/child/base"))
                 paths = [f"{_PARENT}/child", f"{_PARENT}/child/base"]
-                expected = ["0:20001:2755", "10001:20001:2755"]
+                expected = ["10001:20001:2755", "10001:20001:2755"]
+            elif operation == "prepare-as-root":
+                rooted = "/maf-sandbox/rooted"
+                await sandbox.prepare_work_dir(replace(_SPEC, work_dir=rooted + "/base"))
+                paths = [rooted, f"{rooted}/base"]
+                expected = ["0:0:755", "10001:20001:755"]
             elif operation == "write-root-owned":
                 with pytest.raises(PermissionError):
                     await sandbox.write_file("landed", b"payload", working_directory="/etc")
@@ -277,11 +304,13 @@ def test_live_placement_without_a_swap(operation):
 
 
 @_LIVE
-def test_live_warm_setup_refuses_a_parent_swapped_after_the_check():
-    """A warm acquire that recreates a missing base holds its parent the same way.
+@pytest.mark.parametrize("planted", ["link", "real directory"])
+def test_live_warm_setup_refuses_a_parent_swapped_after_the_check(planted):
+    """A warm acquire that recreates a missing base is bounded the same way.
 
     The base sits in a directory the guest replaced with its own, so the guest can swap that
-    directory for a link between the check and the setup command.
+    directory between the check and setup — for a link, or for a real directory root owns.
+    Setup leaves that base to the image's user, whose own permission refuses both.
     """
 
     async def scenario():
@@ -293,24 +322,31 @@ def test_live_warm_setup_refuses_a_parent_swapped_after_the_check():
                 f"mv {_WORK}/outer {_WORK}/outer.saved && mkdir {_WORK}/outer"
             )
             assert replaced.returncode == 0, replaced.stderr_text
+            made = await live.command(f"mkdir -m 755 {_WORK}/rootowned", root=True)
+            assert made.returncode == 0, made.stderr_text
+            substitute = "ln -s /protected" if planted == "link" else f"mv {_WORK}/rootowned"
 
-            # A refused setup disposes the container, so read the protected directory while
-            # it is still there: right after the setup command answered.
+            # A refused setup disposes the container, so read what the swap exposed while it
+            # is still there: right after the setup command answered.
             landed: list[str] = []
 
             async def intercept(*args, **kwargs):
-                if _CREATE_DIRECTORIES not in args:
+                if not _places(args):
                     return await live.run(*args, **kwargs)
-                swapped = await live.command(
-                    f"mv {_WORK}/outer {_WORK}/outer.mine && ln -s /protected {_WORK}/outer"
-                )
-                assert swapped.returncode == 0, swapped.stderr_text
+                if _CREATE_DIRECTORIES in args:
+                    swapped = await live.command(
+                        f"mv {_WORK}/outer {_WORK}/outer.mine && {substitute} {_WORK}/outer"
+                    )
+                    assert swapped.returncode == 0, swapped.stderr_text
                 result = await live.run(*args, **kwargs)
-                landed.extend(await live.protected())
+                listed = await live.command(
+                    f"find /protected {_WORK}/outer/ -mindepth 1 -print", root=True
+                )
+                landed.extend(listed.stdout_text.splitlines())
                 return result
 
             live.backend._wslc = intercept
-            with pytest.raises(RuntimeError, match="does not resolve to itself any more"):
+            with pytest.raises(PermissionError):
                 await live.backend.acquire(live.key, spec)
             live.backend._wslc = live.run
             assert landed == []
@@ -326,7 +362,8 @@ def test_live_setup_refuses_a_directory_swapped_right_after_mkdir():
     """The check after each ``mkdir``: a new directory replaced by a link is not entered.
 
     A wrapper stands in for ``mkdir`` in this one container and swaps the directory it just
-    made, which puts the swap between creation and the ``cd -P`` that holds it.
+    made, which puts the swap between creation and the ``cd -P`` that holds it. Only root can
+    make that swap here, since ``/maf-sandbox`` is root's alone; the check holds regardless.
     """
 
     async def scenario():
@@ -343,7 +380,7 @@ def test_live_setup_refuses_a_directory_swapped_right_after_mkdir():
             assert wrapped.returncode == 0, wrapped.stderr_text
             with pytest.raises(RuntimeError, match="does not resolve to itself any more"):
                 await live.sandbox.prepare_work_dir(
-                    replace(_SPEC, work_dir=_PARENT + "/child/base")
+                    replace(_SPEC, work_dir="/maf-sandbox/child/base")
                 )
             assert await live.protected() == []
         finally:
@@ -407,31 +444,33 @@ def test_live_cancelling_after_the_guest_command_started_is_not_a_rollback():
 def test_live_a_created_base_takes_the_image_users_group_not_the_inherited_one():
     """The control the fixture cannot be: a setgid parent whose group is not the image user's.
 
-    `mkdir` gives a new directory its parent's group, and the ownership step then sets
+    `mkdir` gives a new directory its parent's group, and setup then chowns the base to
     `uid:gid` outright — so the base ends up with the image user's group, not the inherited
-    one. The setgid bit survives, because chown clears it only for non-directories.
+    one. The setgid bit survives, because chown clears it only for non-directories. The
+    parent is root's alone, so root creates the base.
     """
 
     async def scenario():
         live = _Live()
-        spec = replace(live.spec, work_dir=f"{_WORK}/inherited/base")
+        inherited = "/maf-sandbox/inherited"
+        spec = replace(live.spec, work_dir=f"{inherited}/base")
         try:
             await live.open(spec)
             # Root's group, deliberately not the image user's 20001, and setgid so a child
             # would inherit it if nothing overwrote it.
             staged = await live.command(
-                f"rm -rf {_WORK}/inherited; mkdir {_WORK}/inherited; "
-                f"chgrp 0 {_WORK}/inherited; chmod 2775 {_WORK}/inherited",
+                f"rm -rf {inherited}; mkdir {inherited}; "
+                f"chgrp 0 {inherited}; chmod 2755 {inherited}",
                 root=True,
             )
             assert staged.returncode == 0, staged.stderr_text
             sandbox = await live.backend.acquire(live.key, spec)
             assert sandbox is not None
             metadata = await live.command(
-                f"stat -c '%u:%g:%a' {_WORK}/inherited {_WORK}/inherited/base", root=True
+                f"stat -c '%u:%g:%a' {inherited} {inherited}/base", root=True
             )
             parent, base = metadata.stdout_text.splitlines()
-            assert parent == "0:0:2775", parent
+            assert parent == "0:0:2755", parent
             # Group 20001 is the image user's, not the 0 it would have inherited.
             assert base == "10001:20001:2755", base
         finally:

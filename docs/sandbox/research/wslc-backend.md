@@ -1,4 +1,4 @@
-> Exploration and live measurements for [#1203](https://github.com/sokolaidev/maf-extensions/issues/1203) and [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338): WSLC input placement authority and the check/placement boundary. The first record below measured the root archive copy. The second records how writes and setup now avoid it. The [backend contract](../backends/wslc.md#write-checkcopy-residual) states the result.
+> Exploration and live measurements for [#1203](https://github.com/sokolaidev/maf-extensions/issues/1203) and [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338): WSLC input placement authority and the check/placement boundary. The first record below measured the root archive copy. The second records how writes and setup avoid it, and the last how setup is kept from acting as root where a swap could reach. The [backend contract](../backends/wslc.md#write-checkcopy-residual) states the result.
 
 # WSLC write placement and parent swaps
 
@@ -90,3 +90,35 @@ Four areas re-examined after the first pass, measured on 2.9.12.0 with bash, Bus
 - **Partial-setup recovery.** Setup was one command that created the base and chowned it. A failure or kill between the two left the base root-owned, and because `ensure_guest_work_dir` only creates a missing suffix, a later acquire found the base present and returned it — `write_file` then failed with `PermissionError`, an unusable base handed back. Reproduced directly. The chown is now a separate held command, `_ensure_base_owner`, run **only for a base the acquire created**: a first attempt to run it on every prepare was withdrawn because it chowned an existing base, and `work_dir=/etc` then handed `/etc` to the image user (measured). What covers the interruption instead is that a timed-out setup removes the container, so the half-prepared base goes with it; a host killed outright still leaves a root-owned base, and the first write says so.
 - **Cancellation and blocked utilities.** A write blocked at a hung `mv`, then cancelled, raised `CancelledError`; the container stayed reusable and a `.maf-<hex>.part` sibling remained (documented). A write blocked at a hung `wc` raised `TimeoutError` at the command deadline. `write_file` did not discard the container on timeout, unlike `exec`; fixed to remove it, since killing the host process does not reliably reach the in-container command. The byte-count check means an interrupted or non-streaming write refuses rather than publishing a short file.
 - **Minimum engine version.** `exec` with `--interactive`, `--user` and `--workdir` is present in the CLI source from the declared [2.9.3](https://github.com/microsoft/WSL/blob/2.9.3/src/windows/wslc/commands/ContainerExecCommand.cpp) minimum. Live evidence is 2.9.12.0 only. The floor is not a silent-correctness risk: a version whose `exec -i` did not stream stdin would fail the write's byte-count check, and a version whose `cd -P`/`pwd -P` differed would fail the setup comparison — both refuse rather than corrupt.
+
+## Setup bounded by the reach rule (#1338)
+
+Measured on 2026-09-22 with WSLC/WSL **2.9.12.0**, kernel **6.18.40.1-1** and Windows **10.0.26220.9492**. microsoft/WSL#41594 was still open with no maintainer reply, and 2.9.12 was still the latest release.
+
+**The residual #1380 left.** The `pwd -P` comparison rules out a link, not a real directory. A guest that can write the directory holding a component can rename a different real directory into that name. Root then created inside the substitute and gave the base away. The live suite shows it: with the check below removed from a copy of the package, a root-owned directory the guest could move — it sat in the guest-owned base — was renamed into the base's parent, and setup created the base inside it without an error.
+
+**The rule.** Root acts inside a directory only when that directory is root's and writable by nobody else. This is the predicate of `path_ancestors_are_host_owned`, and it is enough because a rename needs write permission on the directory that holds the name. The command walks from `/`, holding each directory, and checks the held one before it enters or creates anything inside it. The owner comes from `test -O`, which bash, Debian `dash` and BusyBox `ash` all support. The mode comes from `ls -ld`, and a group or other write bit fails the check. POSIX ACL entries are capped by the mask, and `ls` shows the mask in the group bits, so an ACL granting write reads as group-writable. That last point was not measured, because no fixture image carries `setfacl`.
+
+| Directory, guest-owned fixture | Mode, owner, group | Root may act inside |
+|---|---|---|
+| `/` | `drwxr-xr-x 0 0` | yes |
+| `/maf-sandbox` | `drwxr-xr-x 0 0` | yes |
+| `/maf-sandbox/work` | `drwxrws--- 10001 20001` | no |
+| `/tmp` | `drwxrwxrwt 0 0` | no |
+
+`python:3.13-alpine` answered the same for `/`, `/etc` and `/tmp`.
+
+**Elsewhere, the image user creates the base.** At the first directory that fails, root creates nothing more and prints a marker. A second exec without `--user` then runs `mkdir -p` as the image user, whose permissions bound where a swap can send it. The chown went back into the creating command, still only for a base it created, so the separate ownership command and the window between the two are gone. Costs: the default base, under a missing or root-owned `/maf-sandbox`, takes one setup exec instead of two. A base left to the image user takes two: root's walk, then that user's `mkdir` (a plain exec took 0.11 s). Setup now also needs `ls` on the pinned `PATH`.
+
+| Setup, 2.9.12.0 | Change before placement | Result |
+|---|---|---|
+| Base under the guest-owned base, missing child/base | Parent replaced by a link to `/protected` | `PermissionError` from the image user's `mkdir`; `/protected` stays empty |
+| Same | Parent replaced by a root-owned real directory | `PermissionError`; the substitute stays empty |
+| Warm acquire recreating a missing base | Parent replaced by a link, or by a root-owned real directory | `PermissionError`; nothing lands in either |
+| Base under `/maf-sandbox`, root's alone | A root-installed `mkdir` wrapper swaps the new directory for a link | Refused: it no longer resolves to itself. Only root can make this swap here |
+
+The controls, with nothing swapped: under the guest-owned base, the image user creates both directories, `10001:20001:2755`, keeping the setgid parent's group. Under `/maf-sandbox`, root's intermediate is `0:0:755` and the base `10001:20001:755`. Under a setgid, group-0, `2755` parent, the base is `10001:20001:2755`.
+
+**Behaviour change.** A base under a directory root does not own, or under any group- or world-writable directory, is created by the image user. Where it cannot create it, for example in a root-owned directory beneath such a one, acquisition raises `PermissionError` where root used to create the base. The `/maf-sandbox/work` default changes only for an image that gives `/maf-sandbox` to its user, and that user can then create `work` itself.
+
+**What remains.** Neither writes nor setup reach past the image user. A write is still bounded rather than atomic. The root command trusts the image's `/bin/sh`, `mkdir`, `chown`, `ls` and `test` on the pinned `PATH`, as setup did before. An image whose user can write those can already run code as root through setup. #41594 would let setup act as root under guest-writable directories too, where this leaves the work to the image user.

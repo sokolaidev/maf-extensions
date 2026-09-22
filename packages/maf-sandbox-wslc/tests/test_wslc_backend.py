@@ -28,7 +28,7 @@ import threading
 import time
 import tracemalloc
 import weakref
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -58,8 +58,9 @@ from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _CREATE_AS_THE_GUEST,
     _CREATE_DIRECTORIES,
-    _ENSURE_BASE_OWNER,
+    _LEFT_TO_THE_GUEST,
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
@@ -146,7 +147,7 @@ def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
     backend, fake = _backend_with(machine)
     asyncio.run(backend.acquire(_KEY, _SPEC))
     (created,) = _creations(fake)
-    # Creation is held and owns nothing: parent first, then the missing directories.
+    # One held command: the owner, the walk from `/`, then the missing directories.
     assert created.args == (
         "container",
         "exec",
@@ -159,22 +160,79 @@ def test_acquire_creates_a_missing_base_as_root_in_held_directories(state):
         "-c",
         _CREATE_DIRECTORIES,
         "sh",
+        "10001:20001",
         "/",
+        "--",
         "/maf-sandbox",
         _WORK,
     )
-    # A separate held step gives the base to the image's user.
-    (owned,) = _owner_steps(fake)
-    assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == ("sh", "10001:20001", _WORK)
+    assert not _guest_creations(fake)
     assert not fake.matching("container", "cp", "-")
 
 
+def _left_to_the_guest(
+    guest: _WslcResult | None = None,
+) -> Callable[[tuple[str, ...]], _WslcResult]:
+    """A responder whose root setup stops at a directory the image's user can write."""
+    machine = _machine(
+        running=[_NAME],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _cp_path_not_found(
+                f"{_NAME}:/maf-sandbox"
+            )
+        },
+    )
+
+    def respond(args: tuple[str, ...]) -> _WslcResult:
+        if _CREATE_DIRECTORIES in args:
+            return _WslcResult(0, f"{_LEFT_TO_THE_GUEST}\n".encode(), b"")
+        if _CREATE_AS_THE_GUEST in args:
+            return guest or _WslcResult(0, b"", b"")
+        return machine(args)
+
+    return respond
+
+
+def test_a_base_root_may_not_create_is_created_by_the_image_user():
+    backend, fake = _backend_with(_left_to_the_guest())
+    asyncio.run(backend.acquire(_KEY, _SPEC))
+    (created,) = _guest_creations(fake)
+    # No `--user`: the image's user runs it, so its own permissions bound where it lands.
+    assert created.args == (
+        "container",
+        "exec",
+        "-w",
+        "/",
+        _NAME,
+        "sh",
+        "-c",
+        _CREATE_AS_THE_GUEST,
+        "sh",
+        _WORK,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stderr", "error"),
+    [
+        (b"mkdir: cannot create directory '/maf-sandbox': Permission denied\n", PermissionError),
+        (b"mkdir: cannot create directory '/maf-sandbox': Not a directory\n", NotADirectoryError),
+        (b"sh: mkdir: not found\n", RuntimeError),
+    ],
+)
+def test_the_image_users_refusal_to_create_the_base_raises_its_error(stderr, error):
+    backend, _ = _backend_with(_left_to_the_guest(_WslcResult(1, b"", stderr)))
+    with pytest.raises(error, match="as the image's user"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+@pytest.mark.parametrize("command", ["as root", "as the image's user"])
 @pytest.mark.parametrize("ending", ["fails", "times out", "is cancelled"])
-def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending):
+def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending, command):
     """`acquire` returns no sandbox, so nothing else can dispose the container it made.
 
-    Setup runs privileged commands the host process cannot reach once it is killed, and the
-    container stays registered for warm reuse, so a later acquire could race one.
+    Setup runs commands the host process cannot reach once it is killed, and the container
+    stays registered for warm reuse, so a later acquire could race one.
     """
     machine = _machine(
         running=[],
@@ -184,9 +242,12 @@ def test_a_setup_that_does_not_finish_takes_the_container_with_it(ending):
             )
         },
     )
+    ending_script = _CREATE_DIRECTORIES if command == "as root" else _CREATE_AS_THE_GUEST
 
     def respond(args):
-        if _CREATE_DIRECTORIES in args:
+        if command != "as root" and _CREATE_DIRECTORIES in args:
+            return _WslcResult(0, _LEFT_TO_THE_GUEST.encode(), b"")
+        if ending_script in args:
             if ending == "fails":
                 return _WslcResult(1, b"", b"setup refused")
             raise (
@@ -301,7 +362,7 @@ def test_an_existing_base_is_served_without_a_resolved_image_user():
     overrides[("container", "exec", "-w", "/", _NAME, "id")] = _WslcResult(1, b"", b"no id")
     backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
     sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-    assert not _creations(fake) and not _owner_steps(fake)
+    assert not _creations(fake)
     asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
     assert _only_write(fake).stdin == b"data"
 
@@ -456,20 +517,18 @@ def test_a_container_left_half_prepared_by_a_failed_cleanup_is_not_reused():
         asyncio.run(backend.acquire(_KEY, _SPEC))
 
 
-@pytest.mark.parametrize("command", ["mkdir", "chown", "pwd"])
-def test_every_command_the_root_scripts_run_is_a_checked_prerequisite(command):
-    """A command the scripts run but never check fails late, as a generic error.
+@pytest.mark.parametrize("command", ["mkdir", "chown", "ls", "pwd"])
+def test_every_command_the_root_script_runs_is_a_checked_prerequisite(command):
+    """A command the script runs but never checks fails late, as a generic error.
 
     The prerequisite loop is what turns a missing one into a refusal that names it, so the
-    checked list has to hold every command either script reaches for.
+    checked list has to hold every command the script reaches for.
     """
     # Everything but the prerequisite loop itself, which names them all by construction.
     used = chr(10).join(
-        line
-        for line in (_CREATE_DIRECTORIES + _ENSURE_BASE_OWNER).splitlines()
-        if "command -v" not in line
+        line for line in _CREATE_DIRECTORIES.splitlines() if "command -v" not in line
     )
-    assert f"{command} " in used, f"{command} is not run by either script"
+    assert f"{command} " in used, f"{command} is not run by the script"
     assert command in SETUP_COMMANDS, f"{command} is run but never checked"
 
 
@@ -668,9 +727,9 @@ def _creations(fake: _FakeWslc) -> list[_Recorded]:
     return [call for call in fake.calls if _CREATE_DIRECTORIES in call.args]
 
 
-def _owner_steps(fake: _FakeWslc) -> list[_Recorded]:
-    """Every base-ownership command the fake saw."""
-    return [call for call in fake.calls if _ENSURE_BASE_OWNER in call.args]
+def _guest_creations(fake: _FakeWslc) -> list[_Recorded]:
+    """Every working-directory setup the fake saw run as the image's user."""
+    return [call for call in fake.calls if _CREATE_AS_THE_GUEST in call.args]
 
 
 def _operands(call: _Recorded) -> tuple[str, ...]:
@@ -1753,7 +1812,6 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides, work_dir=work))
         asyncio.run(backend.acquire(_KEY, replace(_SPEC, work_dir=work)))
         assert not _creations(fake)
-        assert not _owner_steps(fake)
 
     def test_a_base_this_acquire_created_goes_to_the_guest(self):
         overrides = {
@@ -1778,14 +1836,12 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         asyncio.run(backend.acquire(_KEY, _SPEC))
         (created,) = _creations(fake)
-        assert created.args[created.args.index(_CREATE_DIRECTORIES) + 2 :] == (
-            "/maf-sandbox",
-            _WORK,
-        )
-        (owned,) = _owner_steps(fake)
-        assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 1 :] == (
+        assert created.args[created.args.index(_CREATE_DIRECTORIES) + 1 :] == (
             "sh",
             "10001:20001",
+            "/",
+            "/maf-sandbox",
+            "--",
             _WORK,
         )
 
@@ -1812,8 +1868,8 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         asyncio.run(backend.acquire(_KEY, _SPEC))
         (created,) = _creations(fake)
-        start = created.args.index(_CREATE_DIRECTORIES) + 2
-        assert created.args[start:] == ("/maf-sandbox", _WORK)
+        start = created.args.index(_CREATE_DIRECTORIES) + 3
+        assert created.args[start:] == ("/", "/maf-sandbox", "--", _WORK)
 
     @pytest.mark.parametrize("gid", [b"", b"-1", b"staff", b"20001\n0", b"4294967295"])
     def test_a_named_user_with_no_valid_group_cannot_write(self, gid):
@@ -1851,8 +1907,8 @@ class TestWriteFile:
         for expected in ("10001:20001", "10002:20002"):
             user = expected
             asyncio.run(backend.acquire(_KEY, _SPEC))
-            owned = _owner_steps(fake)[-1]
-            assert owned.args[owned.args.index(_ENSURE_BASE_OWNER) + 2] == expected
+            created = _creations(fake)[-1]
+            assert created.args[created.args.index(_CREATE_DIRECTORIES) + 2] == expected
 
     def test_working_at_root_writes_beneath_it(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
@@ -1995,10 +2051,11 @@ else:
 
 @pytest.mark.skipif(_POSIX_SH is None, reason="needs a POSIX sh")
 class TestTheFileCommandsInARealShell:
-    """Both commands run as written, in the host's own ``sh``.
+    """The file commands run as written, in the host's own ``sh``.
 
     The live suite runs them in a container. Here, links planted before the command starts
-    stand in for a swap after the check: the command must refuse what it finds.
+    stand in for a swap after the check: the command must refuse what it finds. Setup's walk
+    starts at ``tmp_path`` rather than ``/``, and "root's" means the test's own user.
     """
 
     @staticmethod
@@ -2016,22 +2073,35 @@ class TestTheFileCommandsInARealShell:
         )
 
     @staticmethod
-    def _create(parent: Path, *directories: Path, env: dict[str, str] | None = None):
+    def _create(
+        start: Path,
+        existing: Sequence[str],
+        missing: Sequence[str],
+        env: dict[str, str] | None = None,
+    ):
+        """Run setup from ``start``, naming each directory relative to it."""
         return subprocess.run(
-            ["sh", "-c", _CREATE_DIRECTORIES, "sh", str(parent)]
-            + [str(directory) for directory in directories],
+            ["sh", "-c", _CREATE_DIRECTORIES, "sh", _OWNER, str(start)]
+            + [str(start / name) for name in existing]
+            + ["--"]
+            + [str(start / name) for name in missing],
             capture_output=True,
             check=False,
             env={**os.environ, **(env or {})},
         )
 
     @staticmethod
-    def _own(base: Path):
+    def _create_as_the_guest(base: Path):
         return subprocess.run(
-            ["sh", "-c", _ENSURE_BASE_OWNER, "sh", _OWNER, str(base)],
-            capture_output=True,
-            check=False,
+            ["sh", "-c", _CREATE_AS_THE_GUEST, "sh", str(base)], capture_output=True, check=False
         )
+
+    @staticmethod
+    def _start(tmp_path: Path) -> Path:
+        """A walk's first directory: this user's, and writable by nobody else."""
+        start = tmp_path.resolve()
+        start.chmod(0o755)
+        return start
 
     def test_a_write_creates_its_parents_and_lands_whole(self, tmp_path):
         target = tmp_path / "a" / "b" / "input"
@@ -2104,11 +2174,12 @@ class TestTheFileCommandsInARealShell:
         assert target.is_dir() and list(target.iterdir()) == []
 
     def test_setup_creates_each_missing_directory(self, tmp_path):
-        base = tmp_path.resolve()
-        done = self._create(base, base / "a", base / "a" / "b")
+        start = self._start(tmp_path)
+        done = self._create(start, [], ["a", "a/b"])
         assert done.returncode == 0, done.stderr
-        assert (base / "a" / "b").is_dir()
-        assert stat.S_IMODE((base / "a").stat().st_mode) == 0o755
+        assert done.stdout == b""
+        assert (start / "a" / "b").is_dir()
+        assert stat.S_IMODE((start / "a").stat().st_mode) == 0o755
 
     def test_setup_ignores_an_inherited_cdpath(self, tmp_path):
         """A relative ``cd`` must reach the directory just made, not a same-named decoy.
@@ -2116,55 +2187,95 @@ class TestTheFileCommandsInARealShell:
         ``CDPATH`` is cleared in the script, so an inherited one cannot divert the loop's
         ``cd`` into a directory of the same name that happens to sit under a ``CDPATH`` entry.
         """
-        base = tmp_path.resolve()
-        decoy = base / "decoy"
+        start = self._start(tmp_path)
+        decoy = start / "decoy"
         (decoy / "a").mkdir(parents=True)
-        done = self._create(base, base / "a", base / "a" / "b", env={"CDPATH": str(decoy)})
+        done = self._create(start, [], ["a", "a/b"], env={"CDPATH": str(decoy)})
         assert done.returncode == 0, done.stderr
-        assert (base / "a" / "b").is_dir()
+        assert (start / "a" / "b").is_dir()
         assert not (decoy / "a" / "b").exists()
 
-    def test_ownership_step_holds_the_base_and_refuses_a_swapped_link(self, tmp_path):
-        base = tmp_path.resolve()
-        real = base / "work"
-        real.mkdir()
-        assert self._own(real).returncode == 0
-        # A base swapped for a link after the check is refused, not chowned through it.
-        protected = base / "protected"
-        protected.mkdir(mode=0o700)
-        real.rmdir()
-        real.symlink_to(protected)
-        done = self._own(real)
-        assert done.returncode == 1
-        assert b"does not resolve to itself any more" in done.stderr
+    @pytest.mark.parametrize("mode", [0o775, 0o757, 0o1777])
+    @pytest.mark.parametrize("where", ["the start", "above the parent", "the parent"])
+    def test_setup_leaves_a_directory_others_can_write_to_the_guest(self, tmp_path, mode, where):
+        """Root does not act inside a directory whose entries another user can replace.
+
+        Group and other write bits alike, and sticky too: a sticky directory still lets its
+        writers rename an entry they own into place.
+        """
+        start = self._start(tmp_path)
+        (start / "outer" / "inner").mkdir(parents=True)
+        writable = {
+            "the start": start,
+            "above the parent": start / "outer",
+            "the parent": start / "outer" / "inner",
+        }[where]
+        writable.chmod(mode)
+        try:
+            done = self._create(start, ["outer", "outer/inner"], ["base"])
+        finally:
+            writable.chmod(0o755)
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.decode().strip() == _LEFT_TO_THE_GUEST
+        assert not (start / "outer" / "inner" / "base").exists()
+
+    @pytest.mark.skipif(_AS_ROOT, reason="root owns / and the walk would proceed")
+    def test_setup_leaves_a_directory_another_user_owns_to_the_guest(self, tmp_path):
+        """The walk starts at ``/``, which is not this user's, so nothing is created."""
+        done = subprocess.run(
+            ["sh", "-c", _CREATE_DIRECTORIES, "sh", _OWNER, "/", "--", str(tmp_path / "base")],
+            capture_output=True,
+            check=False,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.decode().strip() == _LEFT_TO_THE_GUEST
+        assert not (tmp_path / "base").exists()
 
     def test_setup_refuses_a_parent_swapped_for_a_link(self, tmp_path):
-        base = tmp_path.resolve()
-        protected = base / "protected"
+        start = self._start(tmp_path)
+        protected = start / "protected"
         protected.mkdir()
-        (base / "parent").symlink_to(protected)
-        done = self._create(base / "parent", base / "parent" / "child")
+        (start / "parent").symlink_to(protected)
+        done = self._create(start, ["parent"], ["parent/child"])
         assert done.returncode == 1
         assert b"does not resolve to itself any more" in done.stderr
         assert list(protected.iterdir()) == []
 
     def test_setup_refuses_a_link_above_the_parent(self, tmp_path):
-        base = tmp_path.resolve()
-        (base / "real" / "parent").mkdir(parents=True)
-        (base / "via").symlink_to(base / "real")
-        done = self._create(base / "via" / "parent", base / "via" / "parent" / "child")
+        start = self._start(tmp_path)
+        (start / "real" / "parent").mkdir(parents=True)
+        (start / "via").symlink_to(start / "real")
+        done = self._create(start, ["via", "via/parent"], ["via/parent/child"])
         assert done.returncode == 1
-        assert list((base / "real" / "parent").iterdir()) == []
+        assert list((start / "real" / "parent").iterdir()) == []
 
     def test_setup_refuses_a_link_planted_where_a_directory_was_missing(self, tmp_path):
-        base = tmp_path.resolve()
-        protected = base / "protected"
+        start = self._start(tmp_path)
+        protected = start / "protected"
         protected.mkdir()
-        (base / "child").symlink_to(protected)
-        done = self._create(base, base / "child", base / "child" / "base")
+        (start / "child").symlink_to(protected)
+        done = self._create(start, [], ["child", "child/base"])
         assert done.returncode == 1
-        assert (base / "child").is_symlink()
+        assert (start / "child").is_symlink()
         assert list(protected.iterdir()) == []
+
+    def test_the_guest_creates_every_missing_directory(self, tmp_path):
+        base = tmp_path / "a" / "b"
+        done = self._create_as_the_guest(base)
+        assert done.returncode == 0, done.stderr
+        assert base.is_dir()
+        assert stat.S_IMODE((tmp_path / "a").stat().st_mode) == 0o755
+
+    @pytest.mark.skipif(_AS_ROOT, reason="root writes anywhere")
+    def test_the_guest_cannot_create_inside_a_directory_it_cannot_write(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir(mode=0o555)
+        try:
+            done = self._create_as_the_guest(locked / "base")
+            assert shell_refusal(done.stderr.decode()) is FileRefusal.PERMISSION_DENIED
+            assert list(locked.iterdir()) == []
+        finally:
+            locked.chmod(0o755)
 
 
 # ---------------------------------------------------------------------------
