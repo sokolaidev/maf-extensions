@@ -1,6 +1,6 @@
 # Hyperlight research
 
-> Consolidated research record, 2026-08-16 through 2026-09-20. It combines the Hyperlight backend design, source exploration, filesystem prerequisite, Azure Container Apps feasibility audit and live ACA probe. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
+> Consolidated research record, 2026-08-16 through 2026-09-22. It combines the Hyperlight backend design, source exploration, filesystem prerequisite and cleanup audit, Azure Container Apps feasibility audit and live ACA probe. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
 
 ## Decision and scope
 
@@ -79,6 +79,29 @@ Runtime execution does not require file channels. The initial backend withholds 
 The released Wasm `run_impl` calls `CapFs.prepare_for_run`, which clears output files before entering the guest; generic restore also prepares the run. This is intentional upstream behavior, not an adapter path bug. Directly removing the clear would also bypass cached quota accounting. A future writable-input mode needs an explicit upstream policy that preserves files across executions, reconciles actual host-side files against count and byte quotas, keeps restore as an explicit clear/reset operation, and tests staging, mutation, deletion, persistence and unsafe entries. A future output mode must collect before any restore because restore removes output files written after the snapshot.
 
 The three file follow-ups are distinct: writable inputs and persistence ([#1218](https://github.com/sokolaidev/maf-extensions/issues/1218)), output collection/listing ([#1219](https://github.com/sokolaidev/maf-extensions/issues/1219)) and file cleanup ([#1220](https://github.com/sokolaidev/maf-extensions/issues/1220)). Copying inputs through a hidden prelude or using a private patched native wheel was rejected because each adds an unverified filesystem lifecycle or abandons an installable dependency set.
+
+### File cleanup follow-up, 2026-09-22
+
+The remaining input cleanup acceptance criteria in [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) depend on writable staging in [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218). Output-only reset and disposal were delivered by [#1344](https://github.com/sokolaidev/maf-extensions/pull/1344), and [#1397](https://github.com/sokolaidev/maf-extensions/pull/1397) added flat listing. This audit did not enable another file channel or close either remaining issue.
+
+PyPI still reported 0.7.0 as the latest release of the [Python SDK](https://pypi.org/project/hyperlight-sandbox/0.7.0/), [Wasm backend](https://pypi.org/project/hyperlight-sandbox-backend-wasm/0.7.0/) and [Python guest](https://pypi.org/project/hyperlight-sandbox-python-guest/0.7.0/). In that release, [`WasmSandbox::run_impl`](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/v0.7.0/src/wasm_sandbox/src/lib.rs) calls `prepare_for_run` before guest execution. At upstream commit `e38f49d149111f66ee2265c6d6c216fab62d018c`, [`CapFs::prepare_for_run`](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/e38f49d149111f66ee2265c6d6c216fab62d018c/src/hyperlight_sandbox/src/cap_fs.rs) still called `clear_output_files`, and the [Python native constructor](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/e38f49d149111f66ee2265c6d6c216fab62d018c/src/sdk/python/wasm_backend/src/lib.rs) exposed no preservation policy. Host-staged writable files therefore remained subject to deletion before the guest could use them.
+
+The next step is an upstream opt-in preservation policy with quota reconciliation, exposed through the native binding and Python facade in a compatible published dependency set. Adapter adoption must distinguish execution preparation from explicit reset: reset clears staging, writable files and handles, then restores the acquired storage base. Admission must cover staging through collection, delivery and cleanup; failed reset must retire the worker, and failed disposal must retain cleanup targets for retry. `RECLAIM` and `FILES_DELETE` remain withheld until their independent reach and link-removal guarantees are established. Whole-worker disposal remains the fallback.
+
+The audit ran against repository commit `d60ac4229ece2f42e567cada97970bf8ed873ab4` on Windows x86-64 with WHP, CPython 3.13.12 and the exact 0.7.0 trio:
+
+| Verification | Result | Evidence boundary |
+| --- | --- | --- |
+| Backend, host file fixtures and offline CodeAct tests | 129 passed, 5 skipped, 13 deselected | Admission, reset, failed cleanup and retry, confinement, output conformance and failed/cancelled sink delivery; skipped probes are not passing evidence |
+| Real flat-output and CodeAct delivery tests | 10 passed, 19 deselected | Binary collection before cleanup, reset and disposal, consecutive calls without stale output delivery, declared and manifest outputs, both router selection modes, with and without monitoring |
+
+```powershell
+uv run pytest -q packages/maf-sandbox-hyperlight/tests/test_hyperlight_backend.py packages/maf-sandbox-hyperlight/tests/test_hyperlight_files.py tests/test_hyperlight_codeact.py -k 'not live'
+$env:MAF_HYPERLIGHT_LIVE = '1'
+uv run pytest -q packages/maf-sandbox-hyperlight/tests/test_hyperlight_live.py tests/test_hyperlight_codeact.py -k 'real_flat_outputs_are_binary_and_reset_before_reuse or live_codeact_delivers_flat_binary_outputs_and_cleans'
+```
+
+These were local output-only measurements, not a CI run or proof of writable-input support. The audit did not repeat the original native input-staging probe or the Linux KVM suite. Input-enabled reset, disposal, deletion/reclaim reach and consecutive input/output CodeAct calls remain unverified until the preservation prerequisite is available.
 
 ## Conformance and environment evidence
 
