@@ -506,11 +506,12 @@ def test_a_discard_quarantines_before_it_awaits_the_removal():
     and warm-reuses a container whose guest command is still running.
     """
     machine = _machine(running=[_NAME])
-    during: list[dict[str, str]] = []
+    during: list[dict[str, set[str]]] = []
 
     def respond(args):
         if args[:3] == ("container", "remove", "-f"):
-            during.append(dict(backend._undiscarded))
+            # Copied a level down: the sets are mutated in place when the entry is released.
+            during.append({held: set(ids) for held, ids in backend._undiscarded.items()})
         if _WRITE_AS_THE_GUEST in args:
             raise TimeoutError("the write did not answer")
         return machine(args)
@@ -519,7 +520,7 @@ def test_a_discard_quarantines_before_it_awaits_the_removal():
     sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
     with pytest.raises(TimeoutError):
         asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-    assert during == [{_NAME: f"id-{_NAME}"}], "an acquire during the removal would see nothing"
+    assert during == [{_NAME: {f"id-{_NAME}"}}], "an acquire during the removal would see nothing"
     assert not backend._undiscarded, "a removal that succeeded clears it again"
 
 
@@ -533,7 +534,7 @@ def test_a_discard_does_not_clear_a_quarantine_a_later_one_recorded():
     def respond(args):
         if args[:3] == ("container", "remove", "-f"):
             # A second discard, quarantining a different instance under the same name.
-            backend._undiscarded[_NAME] = "id-newer"
+            backend._quarantine(_NAME, "id-newer")
         if _WRITE_AS_THE_GUEST in args:
             raise TimeoutError("the write did not answer")
         return machine(args)
@@ -542,7 +543,44 @@ def test_a_discard_does_not_clear_a_quarantine_a_later_one_recorded():
     sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
     with pytest.raises(TimeoutError):
         asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
-    assert backend._undiscarded == {_NAME: "id-newer"}
+    assert backend._undiscarded == {_NAME: {"id-newer"}}
+
+
+def test_two_discards_on_one_name_are_both_held():
+    """An instance and the one that replaced it can be discarded at once under one name.
+
+    A single slot would keep whichever registered last, and the other would be neither
+    retried nor held back — reused on the next acquire with its guest command unaccounted for.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("container", "remove", "-f"):
+            return _WslcResult(1, b"", b"device or resource busy")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    asyncio.run(backend._discard_container("id-first", _NAME))
+    asyncio.run(backend._discard_container("id-second", _NAME))
+    assert backend._undiscarded == {_NAME: {"id-first", "id-second"}}
+
+
+def test_an_instance_quarantined_while_acquire_prepared_it_is_not_handed_back():
+    """The drain is a read, not a fence: a discard can land while the acquire prepares.
+
+    Returning the sandbox anyway hands the caller the container that entry holds back.
+    """
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if _CREATE_DIRECTORIES in args or args[-2:] == ("id", "-u"):
+            # A discard of this very instance, landing after the drain read the name clear.
+            backend._quarantine(_NAME, f"id-{_NAME}")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    with pytest.raises(RuntimeError, match="quarantined while this acquire prepared"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
 
 
 def test_an_acquire_clears_a_quarantine_installed_while_it_cleared_the_last_one():
@@ -558,11 +596,11 @@ def test_an_acquire_clears_a_quarantine_installed_while_it_cleared_the_last_one(
         if args[:3] == ("container", "remove", "-f") and not installed:
             # A concurrent discard, quarantining a different instance under the same name.
             installed.append("id-newer")
-            backend._undiscarded[_NAME] = "id-newer"
+            backend._quarantine(_NAME, "id-newer")
         return machine(args)
 
     backend, fake = _backend_with(respond)
-    backend._undiscarded[_NAME] = f"id-{_NAME}"
+    backend._quarantine(_NAME, f"id-{_NAME}")
     asyncio.run(backend.acquire(_KEY, _SPEC))
     assert [c.args[-1] for c in fake.matching("container", "remove")] == [f"id-{_NAME}", "id-newer"]
     assert not backend._undiscarded
@@ -577,11 +615,11 @@ def test_an_acquire_refuses_a_quarantine_it_cannot_drain():
         nonlocal seen
         if args[:3] == ("container", "remove", "-f"):
             seen += 1
-            backend._undiscarded[_NAME] = f"id-newer-{seen}"
+            backend._quarantine(_NAME, f"id-newer-{seen}")
         return machine(args)
 
     backend, _ = _backend_with(respond)
-    backend._undiscarded[_NAME] = f"id-{_NAME}"
+    backend._quarantine(_NAME, f"id-{_NAME}")
     with pytest.raises(RuntimeError, match="quarantined again every time"):
         asyncio.run(backend.acquire(_KEY, _SPEC))
 
@@ -607,7 +645,7 @@ def test_the_quarantine_retry_removes_the_instance_it_quarantined_not_the_name()
     with pytest.raises(TimeoutError):
         asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
     # Keyed by the name acquire looks up, holding the instance the retry has to remove.
-    assert backend._undiscarded == {_NAME: f"id-{_NAME}"}
+    assert backend._undiscarded == {_NAME: {f"id-{_NAME}"}}
 
     removals_fail = False
     asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))

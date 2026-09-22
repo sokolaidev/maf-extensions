@@ -485,11 +485,11 @@ _FILE_COMMAND_STDOUT_LIMIT = 4096
 #: this cap means the host killed a command that may still be running, not a long answer.
 _IDENTITY_STDOUT_LIMIT = 64
 
-#: How many times one acquire will clear a quarantine that keeps coming back under the same
-#: name. A discard runs outside the acquire lock, so one re-entry is an ordinary overlap;
-#: a name that keeps being quarantined is something this acquire cannot drain, and it says so
-#: rather than spinning.
-_QUARANTINE_DRAIN_ATTEMPTS = 3
+#: How many quarantined instances one acquire will remove for a single name before deciding
+#: the name is contested. A discard runs outside the acquire lock, so a couple of pending
+#: instances is an ordinary overlap; a name that keeps gaining them is something this acquire
+#: cannot drain, and it says so rather than spinning.
+_QUARANTINE_DRAIN_ATTEMPTS = 8
 
 #: One write, run as the image's user: ``$1`` target, ``$2`` its parent, ``$3`` a sibling
 #: named for this call, ``$4`` the byte count. The content arrives on stdin. A host that is
@@ -1243,12 +1243,18 @@ class WslcSandboxBackend:
         # collapse onto one entry here.
         self._registry: dict[tuple[str, str, str, str, str], str] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
-        #: Containers a discard could not remove, as ``name -> instance ID``. Something may
+        #: Containers a discard could not remove, as ``name -> {instance ID}``. Something may
         #: still be running in one, so a warm acquire must not hand it back; the next acquire
         #: retries the removal and refuses if it still will not go. The name is the key
-        #: because that is what ``acquire`` has to look up, and the instance ID is what the
-        #: retry removes: by then the name may belong to something else entirely.
-        self._undiscarded: dict[str, str] = {}
+        #: because that is what ``acquire`` has to look up, and the instance IDs are what the
+        #: retry removes: by then the name may belong to something else entirely. A **set**,
+        #: because two discards can be in flight for one name — one instance and the one that
+        #: replaced it — and a single slot would forget whichever registered first.
+        self._undiscarded: dict[str, set[str]] = {}
+        #: Guards the read-modify-writes on it. A discard registers from whatever loop its
+        #: sandbox call runs on and ``acquire`` drains from its own, so the sets above are
+        #: reached from more than one.
+        self._undiscarded_guard = threading.Lock()
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
@@ -1465,14 +1471,14 @@ class WslcSandboxBackend:
             # and an ID can only ever name the one this backend failed to remove. An ID the
             # engine no longer has is a removal with nothing left to do.
             #
-            # Looped, because a discard runs outside this lock and can quarantine a *newer*
-            # instance under the same name while the removal below is in flight. Clearing
-            # only the pair this iteration removed keeps that entry, and reusing the name
-            # with an entry still standing would hand back exactly what it holds back.
-            attempts = 0
-            while (quarantined := self._undiscarded.get(name)) is not None:
-                attempts += 1
-                if attempts > _QUARANTINE_DRAIN_ATTEMPTS:
+            # Looped, because a discard runs outside this lock and can quarantine another
+            # instance under the same name while the removal below is in flight. Each pass
+            # releases only the instance it removed, so a newer one survives to be drained
+            # too; reusing the name with any still pending would hand back what they hold.
+            drained = 0
+            while (quarantined := self._quarantined(name)) is not None:
+                drained += 1
+                if drained > _QUARANTINE_DRAIN_ATTEMPTS:
                     raise RuntimeError(
                         f"wslc container {name} was quarantined again every time this "
                         "acquire cleared it, so something may still be running in one of "
@@ -1485,8 +1491,7 @@ class WslcSandboxBackend:
                         f"short, so it may still be running something: {retried.failure}. "
                         "Remove it, or let the reaper reach it, before acquiring again."
                     )
-                if self._undiscarded.get(name) == quarantined:
-                    del self._undiscarded[name]
+                self._release_quarantine(name, quarantined)
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -1581,12 +1586,22 @@ class WslcSandboxBackend:
                     if failure is not None:
                         # Cleanup said it could not remove it, and nothing else remembers
                         # that this container is half-prepared and may still be running setup.
-                        self._undiscarded[name] = instance_id
+                        self._quarantine(name, instance_id)
                         logger.warning("sandbox setup cleanup failed: %s", failure)
                 except Exception as failure:
-                    self._undiscarded[name] = instance_id
+                    self._quarantine(name, instance_id)
                     logger.warning("sandbox setup cleanup raised: %s", failure)
                 raise
+            # The drain above is a read, not a fence: a discard runs outside this lock and
+            # can quarantine this very instance while the acquire prepares it. Checked by
+            # instance rather than by name, so a sibling held back under the same name does
+            # not refuse a container this acquire just created.
+            if self._is_quarantined(name, instance_id):
+                raise RuntimeError(
+                    f"wslc instance {instance_id} was quarantined while this acquire "
+                    f"prepared container {name}, so it may still be running something and "
+                    "is not handed back. Acquire again once it has been removed."
+                )
             return sandbox
 
     async def _verify_storage_base(
@@ -1658,7 +1673,7 @@ class WslcSandboxBackend:
         nothing recorded and warm-reuse a container whose guest command is still running.
         """
         name = quarantine or target
-        self._undiscarded[name] = target
+        self._quarantine(name, target)
         try:
             async with asyncio.timeout(self._config.command_timeout_seconds):
                 removal = await self._remove(target)
@@ -1668,10 +1683,33 @@ class WslcSandboxBackend:
             # It may still be running in there, so nothing may reuse it until it goes.
             logger.warning("wslc could not discard %s: %s", target, removal.failure)
             return
-        # Only this pair: a later discard may already have quarantined a different instance
-        # under the same name, and clearing that would hand out what it is holding back.
-        if self._undiscarded.get(name) == target:
-            del self._undiscarded[name]
+        self._release_quarantine(name, target)
+
+    def _quarantine(self, name: str, instance_id: str) -> None:
+        """Hold this instance back from reuse under ``name``, beside any already pending."""
+        with self._undiscarded_guard:
+            self._undiscarded.setdefault(name, set()).add(instance_id)
+
+    def _release_quarantine(self, name: str, instance_id: str) -> None:
+        """Drop one instance. Only this one: another discard's is not this call's to release."""
+        with self._undiscarded_guard:
+            pending = self._undiscarded.get(name)
+            if pending is None:
+                return
+            pending.discard(instance_id)
+            if not pending:
+                del self._undiscarded[name]
+
+    def _quarantined(self, name: str) -> str | None:
+        """One instance still held back under ``name``, or ``None`` when the name is clear."""
+        with self._undiscarded_guard:
+            pending = self._undiscarded.get(name)
+            return next(iter(pending)) if pending else None
+
+    def _is_quarantined(self, name: str, instance_id: str) -> bool:
+        """Whether this exact instance is held back, which is what decides a reuse."""
+        with self._undiscarded_guard:
+            return instance_id in self._undiscarded.get(name, ())
 
     def _forget_command_probes(self, target: str) -> None:
         for name, (instance_id, _) in list(self._command_probes.items()):
