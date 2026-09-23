@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.20.0...maf-sandbox-bicep-v0.21.0) (2026-09-22)
+
+
+### Features
+
+* **bicep:** accept a host Bicep config for validation ([#1405](https://github.com/sokolaidev/maf-extensions/issues/1405)) ([6bb7127](https://github.com/sokolaidev/maf-extensions/commit/6bb712767f599d861c15349d8c379297ef089439))
+
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.19.0...maf-sandbox-bicep-v0.20.0) (2026-09-22)
 
 
