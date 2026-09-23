@@ -102,7 +102,7 @@ Reaping revalidates IDs and refuses unreadable inventory. It removes the proxy, 
 
 ## Measuring a confinement claim
 
-`DockerFingerprintSubject` observes the root filesystem through `docker diff`. A separate trusted Linux observer reads mounted storage and process identities without using guest tools. The observer image needs Python 3.12 and should be pinned by the host.
+`DockerFingerprintSubject` observes the root filesystem through `docker diff`. A separate trusted Linux observer reads mounted storage and process identities without using guest tools. The observer image needs Python 3.12 and should be pinned by the host. Backend-provisioned proxy CAs must match the current trusted proxy on every observation. The observer measures their permissions, ownership, extended attributes and ancestor directories separately, so CA rotation does not hide guest residue.
 
 Measurement requires a quiescent container and a clean baseline. It refuses unsupported mounts, privileged/shared-PID setups, changed inventory and exceeded budgets. It does not prove the absence of transient effects, kernel changes or socket activity. An unsupported result is not a passing measurement.
 

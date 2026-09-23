@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import posixpath
 import stat
 from types import SimpleNamespace
 
@@ -33,6 +34,9 @@ def mounted_file(monkeypatch):
         ),
         during_read=False,
         overmount=False,
+        mounted=True,
+        provisioned=None,
+        attributes={},
     )
 
     class Contents(io.BytesIO):
@@ -47,6 +51,8 @@ def mounted_file(monkeypatch):
     def open_mountinfo(path, *args, **kwargs):
         assert path == "/proc/1/mountinfo"
         mounts = f"2 1 0:1 {state.root} {state.path} rw - ext4 /dev/test rw\n"
+        if not state.mounted:
+            mounts = "1 0 0:1 / / rw - overlay overlay rw\n"
         if state.overmount:
             mounts += f"3 1 0:1 /custom/hosts {state.path} rw - ext4 /dev/test rw\n"
         return io.StringIO(mounts)
@@ -57,6 +63,9 @@ def mounted_file(monkeypatch):
         _observer,
         "os",
         SimpleNamespace(
+            path=posixpath,
+            listxattr=lambda fd: list(state.attributes),
+            getxattr=lambda fd, name: state.attributes[name],
             O_DIRECTORY=1,
             O_NOFOLLOW=2,
             O_NONBLOCK=4,
@@ -73,7 +82,7 @@ def mounted_file(monkeypatch):
 
     def measure(verified=True):
         roots = {"/etc/hosts": f"/{_ID}/hosts"} if verified else {}
-        entries = _observer.measure(1024, 10, roots)["entries"]
+        entries = _observer.measure(1024, 10, roots, state.provisioned)["entries"]
         assert isinstance(entries, dict)
         return entries[state.path]
 
@@ -83,7 +92,8 @@ def mounted_file(monkeypatch):
 def test_network_file_compares_sha256_and_final_metadata_without_ctime(mounted_file):
     state, measure = mounted_file
     before = measure()
-    metadata, digest = json.loads(before)
+    metadata, digest, attributes = json.loads(before)
+    assert attributes == {}
     assert digest == hashlib.sha256(state.content).hexdigest()
     assert metadata == list(state.metadata.values())[:-1]
     state.metadata["st_ctime_ns"] += 1
@@ -136,3 +146,53 @@ def test_ctime_change_during_network_file_read_fails(mounted_file):
     state.during_read = True
     with pytest.raises(RuntimeError, match="entry changed during observation"):
         measure()
+
+
+@pytest.fixture
+def provisioned_file(mounted_file):
+    state, measure = mounted_file
+    state.path = "/proxy-ca.crt"
+    state.mounted = False
+    state.provisioned = {state.path: hashlib.sha256(state.content).hexdigest()}
+    return state, measure
+
+
+def test_rotated_ca_must_match_the_current_trusted_certificate(provisioned_file):
+    state, measure = provisioned_file
+    before = measure()
+    state.content = b"new certificate"
+    state.metadata.update(st_size=len(state.content), st_ino=3, st_mtime_ns=101, st_ctime_ns=201)
+    with pytest.raises(RuntimeError, match="differs from the trusted proxy"):
+        measure()
+    state.provisioned[state.path] = hashlib.sha256(state.content).hexdigest()
+    assert measure() == before
+
+
+@pytest.mark.parametrize("field", ["st_mode", "st_uid", "st_gid"])
+def test_provisioned_ca_retains_mode_and_ownership_changes(provisioned_file, field):
+    state, measure = provisioned_file
+    before = measure()
+    state.metadata[field] += 1
+    assert measure() != before
+
+
+@pytest.mark.parametrize("change", ["symlink", "hardlink", "mount", "during_read"])
+def test_provisioned_ca_refuses_unverifiable_storage(provisioned_file, change):
+    state, measure = provisioned_file
+    if change == "symlink":
+        state.metadata["st_mode"] = stat.S_IFLNK | 0o777
+    elif change == "hardlink":
+        state.metadata["st_nlink"] = 2
+    elif change == "mount":
+        state.mounted = True
+    else:
+        state.during_read = True
+    with pytest.raises(RuntimeError):
+        measure()
+
+
+def test_provisioned_ca_retains_extended_attribute_changes(provisioned_file):
+    state, measure = provisioned_file
+    before = measure()
+    state.attributes["user.residue"] = b"residue"
+    assert measure() != before

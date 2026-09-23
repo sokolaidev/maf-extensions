@@ -916,6 +916,7 @@ class _DockerSandbox:
         self._guest_uid = guest_uid
         self._guest_gid = guest_gid
         self._work_dir = "/maf-sandbox/work"
+        self._proxy_ca_path: str | None = None
         self.instance_id = instance_id
 
     @property
@@ -1980,6 +1981,9 @@ class DockerSandboxBackend:
             raise RuntimeError("docker could not read the egress proxy CA certificate")
         await sandbox.write_file(
             _GUEST_CA_NAME, result.stdout, working_directory=spec.work_dir or "/maf-sandbox/work"
+        )
+        sandbox._proxy_ca_path = posixpath.join(  # pyright: ignore[reportPrivateUsage]
+            spec.work_dir or "/maf-sandbox/work", _GUEST_CA_NAME
         )
 
     async def _verify_storage_base(

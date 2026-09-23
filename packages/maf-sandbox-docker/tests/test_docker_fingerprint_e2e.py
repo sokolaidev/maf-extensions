@@ -6,7 +6,7 @@ import shutil
 import uuid
 
 import pytest
-from maf_sandbox import SandboxKey, SandboxSpec
+from maf_sandbox import Egress, EgressRule, SandboxKey, SandboxSpec
 from maf_sandbox.conformance import ConformanceFailure, assert_nothing_left_behind
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -14,6 +14,7 @@ from maf_sandbox_docker._backend import _DockerSandbox
 from maf_sandbox_docker.conformance import DockerFingerprintSubject
 
 _IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE", "")
+_PROXY = os.environ.get("MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE", "")
 _OBSERVER = os.environ.get("MAF_SANDBOX_DOCKER_OBSERVER_IMAGE", "")
 pytestmark = pytest.mark.skipif(
     not _IMAGE or not _OBSERVER or not shutil.which("docker"),
@@ -165,5 +166,56 @@ def test_host_tmpfs_and_nonroot_workloads(flags, path):
         finally:
             removed = await backend._docker("rm", "-f", name, timeout=30)
             assert removed.returncode == 0, removed.stderr
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _PROXY, reason="needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
+@pytest.mark.parametrize(
+    "script, expected",
+    [
+        ("true", None),
+        ("mkdir call; echo input > call/file; rm -rf call", None),
+        ("echo tampered > .maf-proxy-ca.crt", "differs from the trusted proxy"),
+        ("rm .maf-proxy-ca.crt", "failed"),
+        ("chmod 600 .maf-proxy-ca.crt", ".maf-proxy-ca.crt"),
+        ("chmod 700 .", "/tmp/fingerprint"),
+        ("echo residue > residue", "residue"),
+    ],
+)
+def test_proxy_provisioning_preserves_residue_detection(script, expected):
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=_PROXY))
+        key = SandboxKey(
+            scope="fingerprint-proxy-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
+        )
+        spec = SandboxSpec(
+            kind="fingerprint",
+            image=_IMAGE,
+            work_dir="/tmp/fingerprint",
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("example.com"),),
+        )
+        try:
+            sandbox = await backend.acquire(key, spec)
+            subject = DockerFingerprintSubject(sandbox, observer_image=_OBSERVER)
+
+            async def call():
+                current = await backend.acquire(key, spec)
+                assert current.instance_id == sandbox.instance_id
+                result = await current.exec(
+                    ["sh", "-c", script], working_directory=spec.work_dir, timeout=30
+                )
+                assert result.exit_code == 0, result.stderr
+
+            if expected is None:
+                assert all(
+                    result.passed for result in await assert_nothing_left_behind(subject, call)
+                )
+            else:
+                with pytest.raises(ConformanceFailure, match=expected):
+                    await assert_nothing_left_behind(subject, call)
+        finally:
+            assert await backend.dispose(key) is None
 
     asyncio.run(scenario())

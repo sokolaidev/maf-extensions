@@ -130,6 +130,8 @@ assert all(result.passed for result in results)
 
 `call_and_cleanup` runs the kind and awaits its cleanup on a fresh sandbox. Set `MAF_SANDBOX_DOCKER_E2E_IMAGE` and `MAF_SANDBOX_DOCKER_OBSERVER_IMAGE` to run the repository's live observer tests with your images.
 
+A backend-provisioned proxy CA is verified against the current trusted proxy on every observation. CA rotation is allowed; altered certificate bytes, permissions, ownership, extended attributes and unrelated residue fail the probe. The CA and its ancestor directories are measured separately from the root filesystem diff.
+
 The subject needs a trusted local observer image with Python 3.12 or newer. It measures final filesystem and process state, including mounted storage such as `/dev/shm`. A restored temporary change can leave no measured residue, and the probe does not prove all kernel state is clean.
 
 See the [backend guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/docker.md) for measurement limits and the complete transfer, network and cleanup contract.
