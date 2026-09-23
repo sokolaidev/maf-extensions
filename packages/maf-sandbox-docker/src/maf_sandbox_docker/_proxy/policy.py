@@ -39,7 +39,12 @@ def network_gateways(ipam: object) -> tuple[str, ...]:
         entry = cast("dict[str, object]", item)
         gateway = entry.get("Gateway")
         if gateway is None or gateway == "":
-            continue
+            # Engine 28 omits the gateway it allocated for a subnet the caller named, so deny
+            # the default IPAM pick. An unaddressed bridge only gains a spare deny.
+            subnet = entry.get("Subnet")
+            if not isinstance(subnet, str) or subnet == "":
+                continue
+            gateway = str(next(ipaddress.ip_network(subnet, strict=False).hosts()))
         if not isinstance(gateway, str):
             raise ValueError("network gateway is not an address")
         addresses.append(str(ipaddress.ip_address(gateway)))
