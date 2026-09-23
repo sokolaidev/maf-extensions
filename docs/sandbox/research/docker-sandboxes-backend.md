@@ -243,14 +243,16 @@ Several of these are security-relevant, in both directions. The live suite is th
 
 **A login that can lapse.** A revoked login fails every command until a person completes a browser device flow. A backend needs a clear refusal naming `sbx login`, and CI needs `sbx login --password-stdin` with an access token secret.
 
-**CI.** Read, not run, on 2026-09-23. The answer depends on the runner.
+**CI.** Measured on 2026-09-23 with a throwaway workflow that installed sbx v0.45.1 on each hosted runner, started the daemon, ran `sbx diagnose`, initialized a deny-all policy, and tried a `create`. It had no Docker login, so no VM booted anywhere. The furthest any runner could get was the authentication check.
 
-| Runner | Can it run sbx? | Evidence |
+| Runner | Result | What was measured |
 |---|---|---|
-| `ubuntu-24.04` / `ubuntu-latest`, x64 | **Yes** | Standard Linux runners expose `/dev/kvm` (GitHub changelog, 2024-04-02). Docker's blog (2026-08-21) reports a full run there taking 11 min 16 s. gh-aw's generated setup, in `actions/setup/sh/`, is the working recipe: check that `/dev/kvm` exists, install `docker-sbx` from Docker's apt repository, `sudo chmod 666 /dev/kvm`, start the daemon, log in with a Docker access token, `sbx policy init`, then a create/exec/rm smoke test |
-| `ubuntu-24.04-arm` | Unknown | sbx ships `linux-arm64` `.deb` packages, but GitHub documents no KVM on its arm64 runners |
-| `windows-2022` / `windows-2025` | No, as documented | sbx requires Windows 11 with Windows Hypervisor Platform. GitHub's Windows runners are Windows Server, with Hyper-V installed but not enabled |
-| `macos-*` (Apple silicon) | No | GitHub: "Nested-virtualization is not supported due to the limitation of Apple's Virtualization Framework." |
+| `ubuntu-24.04`, x64 | **Passes everything but sign-in** | AMD CPU with `kvm_amd`, and `/dev/kvm` present, owned by group `kvm`. `docker-sbx` installed from Docker's apt repository in about 17 s. After `sudo chmod 666 /dev/kvm`, `sbx diagnose` reported "Virtualization — supported, /dev/kvm is accessible". The daemon ran, `policy init` worked, and `create` stopped at `401 … not authenticated to Docker`. 4 CPUs, 15 GB of memory and about 86 GB of free disk |
+| `windows-2025` | **Passes everything but sign-in** | Windows Server 2025, with HypervisorPlatform, Hyper-V and VirtualMachinePlatform all enabled. The per-user MSI installed silently, and `sbx diagnose` reported "Virtualization — supported, WHvCapabilityCodeHypervisorPresent is true". The daemon started its engine, and `create` stopped at the same `401`. Docker documents Windows 11 only, so a VM boot here is the open question. A daemon started in one step did not survive into the next; the next `sbx` command restarted it |
+| `ubuntu-24.04-arm` | **No** | No `/dev/kvm`. `sbx diagnose`: "no hypervisor present … nested virtualization" |
+| `macos-15` | **Almost certainly no** | "Apple M1 (Virtual)" with no `kern.hv_support` sysctl, so `sbx diagnose` could not determine virtualization. GitHub documents no nested virtualization on these runners |
+
+Docker's blog (2026-08-21) reports a full agent run on `ubuntu-24.04` taking 11 min 16 s. That run used gh-aw, whose generated setup in `actions/setup/sh/` is the same recipe as the probe, plus a Docker access token. gh-aw has since deprecated its `docker-sbx` runtime in favour of plain Docker, citing setup cost, cold start and platform constraints.
 
 Four constraints follow for a live job on the Linux runner:
 
@@ -259,7 +261,7 @@ Four constraints follow for a live job on the Linux runner:
 - The job changes `/dev/kvm` permissions and runs `sbx policy init` on a machine it throws away, which is fine there and never acceptable in the backend itself.
 - A public-repository runner has 4 CPUs, 16 GB of memory and 14 GB of disk, so every sandbox needs explicit `--cpus` and `--memory`, and the ~600 MB template eats into the disk.
 
-Whether the conformance suites finish in a usable time is still a measurement. So is whether a raw `sbx` job works without gh-aw. gh-aw has since deprecated its `docker-sbx` runtime in favour of plain Docker, citing its setup cost, cold start and platform constraints.
+Whether a VM boots on these runners, and whether the conformance suites finish in a usable time, needs a run with a Docker login.
 
 **Code.** Smaller than the Docker backend (3699 lines of `_backend.py`), because the proxy is Docker's and the file plane is the host filesystem. The new work is the exec wrapper, name-based ownership, the host-name rules for the workspace, and the acquire-time checks on policy, secrets, MCP and SSH.
 
@@ -272,7 +274,7 @@ Whether the conformance suites finish in a usable time is still a measurement. S
 3. What a registered MCP server gives a guest under deny-all: whether its own traffic passes the sandbox's policy.
 4. Clipboard writes from the guest, and whether they are policy-checked like browser-open.
 5. What deleted the engine socket directory, and whether the daemon ever recovers without a restart.
-6. A live run on `ubuntu-24.04` and `ubuntu-24.04-arm` hosted runners: KVM, install, `sbx diagnose`, then the conformance suites and their timing.
+6. A logged-in run on the `ubuntu-24.04` and `windows-2025` hosted runners: does a VM boot, and how long do the conformance suites take?
 7. Whether the host-name rules for the workspace are complete for NTFS, and for APFS in its default case-insensitive mode.
 
 ## Verdict, held loosely
