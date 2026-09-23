@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.4.0...maf-sandbox-hyperlight-v0.5.0) (2026-09-23)
+
+
+### Features
+
+* **hyperlight:** run one sandbox ownership scope per Kubernetes pod ([#1406](https://github.com/sokolaidev/maf-extensions/issues/1406)) ([9784bfe](https://github.com/sokolaidev/maf-extensions/commit/9784bfef7a3dddd4484339783c45873eacaa7849))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.3.0...maf-sandbox-hyperlight-v0.4.0) (2026-09-22)
 
 
