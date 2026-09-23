@@ -7,16 +7,24 @@ mount namespaces; no executable or library from the workload is used for observa
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
 import json
 import re
+import tarfile
 import uuid
 from importlib.resources import files
+from pathlib import PurePosixPath
 from typing import Any, cast
 
 from maf_sandbox import Sandbox
 from maf_sandbox.conformance import SandboxFingerprint
 
-from ._backend import _DockerSandbox  # pyright: ignore[reportPrivateUsage]
+from ._backend import (
+    _PROXY_CA_PATH,  # pyright: ignore[reportPrivateUsage]
+    _DockerSandbox,  # pyright: ignore[reportPrivateUsage]
+    _proxy_name,  # pyright: ignore[reportPrivateUsage]
+)
 
 _OUTPUT_LIMIT = 4 * 1024 * 1024
 
@@ -59,7 +67,9 @@ class DockerFingerprintSubject:
 
     The image must be available locally. It is pinned to its engine image ID on first use.
     Non-Linux engines are unsupported; unreadable storage, shared PID namespaces, writable
-    declared mounts, and exceeded limits fail the probe. Create a new subject per probe.
+    declared mounts, and exceeded limits fail the probe. Backend-provisioned CAs must match
+    the current trusted proxy; their ancestors retain mode and ownership checks. Create a
+    new subject per probe.
     """
 
     def __init__(
@@ -79,6 +89,7 @@ class DockerFingerprintSubject:
             raise ValueError("observer limits must be positive")
         self._run = sandbox._run  # pyright: ignore[reportPrivateUsage]
         self._name = sandbox.container_name
+        self._proxy_ca_path = sandbox._proxy_ca_path  # pyright: ignore[reportPrivateUsage]
         self._image = observer_image
         self._image_id: str | None = None
         self._timeout = timeout
@@ -105,6 +116,22 @@ class DockerFingerprintSubject:
             raise RuntimeError("Docker returned an invalid container inspection")
         return cast(dict[str, Any], item)
 
+    async def _provisioned_files(self) -> dict[str, str]:
+        if self._proxy_ca_path is None:
+            return {}
+        archive = await self._command("cp", f"{_proxy_name(self._name)}:{_PROXY_CA_PATH}", "-")
+        with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+            members = bundle.getmembers()
+            if len(members) != 1 or not members[0].isreg() or members[0].size > 8192:
+                raise RuntimeError("proxy CA archive must contain one bounded regular file")
+            stream = bundle.extractfile(members[0])
+            if stream is None:
+                raise RuntimeError("proxy CA archive is unreadable")
+            certificate = stream.read(8193)
+        if not certificate.startswith(b"-----BEGIN CERTIFICATE-----"):
+            raise RuntimeError("proxy CA archive does not contain a certificate")
+        return {self._proxy_ca_path: hashlib.sha256(certificate).hexdigest()}
+
     async def fingerprint(self) -> SandboxFingerprint | None:
         """Combine rootfs diff with mounted-file contents and kernel process birth identities."""
         engine = (await self._command("version", "--format", "{{.Server.Os}}")).strip()
@@ -130,7 +157,14 @@ class DockerFingerprintSubject:
                 )
         self._container_id = container
         changed = _changed_paths(await self._command("diff", container))
-        # A dirty rootfs can hide another write to the same already-changed path.
+        provisioned = await self._provisioned_files()
+        provisioned_paths = set(provisioned)
+        for path in provisioned:
+            provisioned_paths.update(
+                str(parent) for parent in PurePosixPath(path).parents if str(parent) != "/"
+            )
+        # Provisioned files and their ancestors are also measured by the trusted observer.
+        changed.difference_update(provisioned_paths)
         if self._baseline is None and changed:
             raise RuntimeError(f"sandbox is not pristine: {sorted(changed)!r}")
         if self._image_id is None:
@@ -166,6 +200,7 @@ class DockerFingerprintSubject:
                 str(self._max_bytes),
                 str(self._max_entries),
                 json.dumps(_network_file_roots(inspected)),
+                json.dumps(provisioned),
             )
         finally:
             # Killing the client on timeout/cancellation does not stop its container.
@@ -192,6 +227,8 @@ class DockerFingerprintSubject:
         ):
             raise RuntimeError("observer returned an invalid fingerprint")
         entries = cast(dict[str, str], entries)
+        if not provisioned_paths <= entries.keys():
+            raise RuntimeError("observer omitted a provisioned path")
         programs = cast(list[str], programs)
         if self._baseline is None:
             if tmpfs_entries:
@@ -213,5 +250,5 @@ class DockerFingerprintSubject:
             or after["State"]["StartedAt"] != inspected["State"]["StartedAt"]
         ):
             raise RuntimeError("container changed during observation")
-        changed.update(_changed_paths(await self._command("diff", container)))
+        changed.update(_changed_paths(await self._command("diff", container)) - provisioned_paths)
         return SandboxFingerprint(frozenset(changed), frozenset(programs))

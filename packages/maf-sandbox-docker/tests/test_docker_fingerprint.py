@@ -2,7 +2,10 @@
 
 import asyncio
 import contextlib
+import hashlib
+import io
 import json
+import tarfile
 
 import pytest
 from maf_sandbox.conformance import ConformanceFailure, assert_nothing_left_behind
@@ -12,6 +15,8 @@ from maf_sandbox_docker.conformance import DockerFingerprintSubject
 
 _ID = "a" * 64
 _IMAGE = "sha256:" + "b" * 64
+_CA_PATH = "/maf-sandbox/work/.maf-proxy-ca.crt"
+_CA = b"-----BEGIN CERTIFICATE-----\nfixture\n"
 
 
 class Engine:
@@ -35,6 +40,7 @@ class Engine:
             "tmpfs_entries": [],
         }
         self.observer_error = None
+        self.certificate = _CA
 
     async def __call__(self, *args, **kwargs):
         self.calls.append((args, kwargs))
@@ -45,6 +51,13 @@ class Engine:
                 value = [self.container]
             case "image":
                 value = [{"Id": _IMAGE, "Config": {}}]
+            case "cp":
+                archive = io.BytesIO()
+                with tarfile.open(fileobj=archive, mode="w") as bundle:
+                    member = tarfile.TarInfo("ca.crt")
+                    member.size = len(self.certificate)
+                    bundle.addfile(member, io.BytesIO(self.certificate))
+                return _DockerResult(0, archive.getvalue(), "")
             case "diff":
                 return _DockerResult(0, self.diff, "")
             case "run":
@@ -57,13 +70,13 @@ class Engine:
                 raise AssertionError(args)
         return _DockerResult(0, json.dumps(value).encode(), "")
 
-    def subject(self):
-        return DockerFingerprintSubject(
-            _DockerSandbox(
-                self, "workload", 30, instance_id="fixture-id", freeze=contextlib.nullcontext
-            ),
-            observer_image="trusted-python",
+    def subject(self, *, provisioned=False):
+        sandbox = _DockerSandbox(
+            self, "workload", 30, instance_id="fixture-id", freeze=contextlib.nullcontext
         )
+        if provisioned:
+            sandbox._proxy_ca_path = _CA_PATH
+        return DockerFingerprintSubject(sandbox, observer_image="trusted-python")
 
 
 def test_unchanged_baseline_passes_and_observer_is_separate_and_removed():
@@ -82,7 +95,7 @@ def test_unchanged_baseline_passes_and_observer_is_separate_and_removed():
         assert "--read-only" in args and "--network=none" in args
         assert "--cap-drop=ALL" in args and "--cap-add=SYS_PTRACE" in args
         assert _IMAGE in args and "trusted-python" not in args
-        assert json.loads(args[-1]) == {
+        assert json.loads(args[-2]) == {
             "/etc/hostname": f"/{_ID}/hostname",
             "/etc/hosts": f"/{_ID}/hosts",
             "/etc/resolv.conf": f"/{_ID}/resolv.conf",
@@ -100,7 +113,7 @@ def test_unverified_network_source_keeps_ctime(source):
     engine.container["HostsPath"] = source
     asyncio.run(engine.subject().fingerprint())
     observer = next(args for args, _ in engine.calls if args[0] == "run")
-    assert "/etc/hosts" not in json.loads(observer[-1])
+    assert "/etc/hosts" not in json.loads(observer[-2])
 
 
 @pytest.mark.parametrize("destination", ["/etc/hosts", "/etc", "/"])
@@ -109,7 +122,7 @@ def test_declared_network_mount_keeps_ctime(destination):
     engine.container["Mounts"] = [{"RW": False, "Destination": destination}]
     asyncio.run(engine.subject().fingerprint())
     observer = next(args for args, _ in engine.calls if args[0] == "run")
-    assert "/etc/hosts" not in json.loads(observer[-1])
+    assert "/etc/hosts" not in json.loads(observer[-2])
 
 
 @pytest.mark.parametrize("error", [None, TimeoutError("deadline"), asyncio.CancelledError()])
@@ -197,3 +210,56 @@ def test_unknown_engine_is_an_error():
     engine.os = b""
     with pytest.raises(RuntimeError, match="established Linux"):
         asyncio.run(engine.subject().fingerprint())
+
+
+def test_proxy_ca_is_verified_on_every_observation_and_ancestors_are_measured():
+    engine = Engine()
+    engine.diff = f"C /maf-sandbox\nC /maf-sandbox/work\nA {_CA_PATH}\n".encode()
+    engine.observed["entries"].update(
+        {_CA_PATH: "verified", "/maf-sandbox": "directory", "/maf-sandbox/work": "directory"}
+    )
+
+    async def call():
+        engine.certificate += b"rotated\n"
+
+    results = asyncio.run(assert_nothing_left_behind(engine.subject(provisioned=True), call))
+    assert all(result.passed for result in results)
+    observers = [args for args, _ in engine.calls if args[0] == "run"]
+    assert [json.loads(args[-1]) for args in observers] == [
+        {_CA_PATH: hashlib.sha256(certificate).hexdigest()}
+        for certificate in (_CA, engine.certificate)
+    ]
+
+
+@pytest.mark.parametrize(
+    "path", [_CA_PATH, "/maf-sandbox", "/maf-sandbox/work", "/maf-sandbox/work/residue"]
+)
+def test_provisioned_paths_do_not_hide_residue(path):
+    engine = Engine()
+    engine.diff = f"C /maf-sandbox\nC /maf-sandbox/work\nA {_CA_PATH}\n".encode()
+    engine.observed["entries"].update(
+        {_CA_PATH: "verified", "/maf-sandbox": "directory", "/maf-sandbox/work": "directory"}
+    )
+
+    async def call():
+        if path.endswith("residue"):
+            engine.diff += f"A {path}\n".encode()
+        else:
+            engine.observed["entries"][path] = "changed metadata"
+
+    with pytest.raises(ConformanceFailure):
+        asyncio.run(assert_nothing_left_behind(engine.subject(provisioned=True), call))
+
+
+def test_unprovisioned_ca_file_is_not_exempt_from_pristine_baseline():
+    engine = Engine()
+    engine.diff = f"A {_CA_PATH}\n".encode()
+    with pytest.raises(RuntimeError, match="not pristine"):
+        asyncio.run(engine.subject().fingerprint())
+
+
+def test_observer_cannot_omit_provisioned_storage():
+    engine = Engine()
+    engine.diff = f"A {_CA_PATH}\n".encode()
+    with pytest.raises(RuntimeError, match="omitted a provisioned path"):
+        asyncio.run(engine.subject(provisioned=True).fingerprint())

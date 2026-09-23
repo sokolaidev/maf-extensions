@@ -42,9 +42,13 @@ def _metadata(info: os.stat_result) -> tuple[int, ...]:
 
 
 def measure(
-    max_bytes: int, max_entries: int, network_file_roots: dict[str, str]
+    max_bytes: int,
+    max_entries: int,
+    network_file_roots: dict[str, str],
+    provisioned_files: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Read writable storage and process births through the workload's kernel namespace."""
+    provisioned_files = provisioned_files or {}
     directory_flag: int = getattr(os, "O_DIRECTORY")
     nofollow_flag: int = getattr(os, "O_NOFOLLOW")
     nonblock_flag: int = getattr(os, "O_NONBLOCK")
@@ -89,12 +93,16 @@ def measure(
             os.close(parent)
             raise
 
-    def record(parent: int, name: str, path: str, mount: str) -> None:
+    def record(parent: int, name: str, path: str, mount: str | None) -> None:
         nonlocal remaining
         if len(entries) >= max_entries:
             raise RuntimeError("observer entry limit exceeded")
         info = os.stat(name, dir_fd=parent, follow_symlinks=False)
         metadata = _metadata(info)
+        if path in provisioned_files and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise RuntimeError(f"provisioned file is not a single regular file: {path}")
+        if mount is None and path not in provisioned_files and not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError(f"provisioned file ancestor is not a directory: {path}")
         content = ""
         if stat.S_ISLNK(info.st_mode):
             content = os.readlink(name, dir_fd=parent)
@@ -110,7 +118,7 @@ def measure(
                         raise RuntimeError("observer byte limit exceeded")
                     digest.update(chunk)
                 content = digest.hexdigest()
-        elif stat.S_ISDIR(info.st_mode):
+        elif stat.S_ISDIR(info.st_mode) and mount is not None:
             descriptor = os.open(name, os.O_RDONLY | directory_flag | nofollow_flag, dir_fd=parent)
             try:
                 if _metadata(os.fstat(descriptor)) != metadata:
@@ -121,13 +129,37 @@ def measure(
                         record(descriptor, child, child_path, mount)
             finally:
                 os.close(descriptor)
+        attributes: dict[str, str] = {}
+        if mount is None:
+            descriptor = os.open(name, os.O_RDONLY | nofollow_flag | nonblock_flag, dir_fd=parent)
+            try:
+                if _metadata(os.fstat(descriptor)) != metadata:
+                    raise RuntimeError("provisioned path changed during observation")
+                names: list[str] = getattr(os, "listxattr")(descriptor)
+                for attribute in sorted(names):
+                    value: bytes = getattr(os, "getxattr")(descriptor, attribute)
+                    remaining -= len(attribute.encode()) + len(value)
+                    if remaining < 0:
+                        raise RuntimeError("observer byte limit exceeded")
+                    attributes[attribute] = hashlib.sha256(value).hexdigest()
+            finally:
+                os.close(descriptor)
         if _metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)) != metadata:
             raise RuntimeError("entry changed during observation")
+        if path in provisioned_files:
+            if content != provisioned_files[path]:
+                raise RuntimeError(f"provisioned file differs from the trusted proxy: {path}")
+            # A fresh proxy may rotate the CA between calls; mode and ownership must persist.
+            metadata = (info.st_mode, info.st_nlink, info.st_uid, info.st_gid)
+            content = "verified proxy CA"
+        elif mount is None:
+            # Adding and reclaiming call directories changes ancestor sizes and timestamps.
+            metadata = metadata[:7]
         if path in network_files and stat.S_ISREG(info.st_mode):
             # Docker archive setup chowns these files even when ownership already matches.
             metadata = metadata[:-1]
-        entries[path] = json.dumps([metadata, content], separators=(",", ":"))
-        if mounts[mount][0] == "tmpfs" and path != mount:
+        entries[path] = json.dumps([metadata, content, attributes], separators=(",", ":"))
+        if mount is not None and mounts[mount][0] == "tmpfs" and path != mount:
             if mount != "/dev" or path not in {
                 "/dev/core",
                 "/dev/fd",
@@ -145,6 +177,24 @@ def measure(
                 tmpfs_entries.append(path)
 
     try:
+        provisioned_paths = set(provisioned_files)
+        for path in provisioned_files:
+            ancestor = os.path.dirname(path)
+            while ancestor not in ("", "/"):
+                provisioned_paths.add(ancestor)
+                ancestor = os.path.dirname(ancestor)
+        for path in sorted(provisioned_paths):
+            if any(
+                path == mount or path.startswith(mount.rstrip("/") + "/")
+                for mount in mounts
+                if mount != "/"
+            ):
+                raise RuntimeError(f"provisioned path overlaps a mount: {path}")
+            parent, name = open_parent(path)
+            try:
+                record(parent, name, path, None)
+            finally:
+                os.close(parent)
         for path in roots:
             parent, name = open_parent(path)
             try:
@@ -168,4 +218,10 @@ def measure(
 
 
 if __name__ == "__main__":
-    print(json.dumps(measure(int(sys.argv[1]), int(sys.argv[2]), json.loads(sys.argv[3]))))
+    print(
+        json.dumps(
+            measure(
+                int(sys.argv[1]), int(sys.argv[2]), json.loads(sys.argv[3]), json.loads(sys.argv[4])
+            )
+        )
+    )
