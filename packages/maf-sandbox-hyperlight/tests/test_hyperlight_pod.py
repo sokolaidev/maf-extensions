@@ -869,3 +869,37 @@ def test_bundle_is_not_mounted_into_the_guest_host_process():
     assert initializer["command"][-1] == "b" * 64
     assert initializer["securityContext"]["readOnlyRootFilesystem"] is True
     assert "hyperlight.dev/hypervisor" not in initializer["resources"]["limits"]
+
+
+@pytest.mark.parametrize("stage", ["ledger-read", "receipt-save"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("API unavailable"),
+        subprocess.CalledProcessError(1, ["kubectl"], stderr="connection lost"),
+        subprocess.TimeoutExpired(["kubectl"], 15),
+        ValueError("invalid API response"),
+    ],
+)
+def test_recovery_transport_failure_preserves_retryable_ownership(monkeypatch, stage, error):
+    controller = FakeController()
+    original_api = controller.api
+
+    def unavailable(*arguments, body=None):
+        if (stage == "ledger-read" and arguments[:2] == ("get", "configmap")) or (
+            stage == "receipt-save" and arguments[0] == "replace" and "data" in (body or {})
+        ):
+            raise error
+        return original_api(*arguments, body=body)
+
+    monkeypatch.setattr(controller, "api", unavailable)
+    with pytest.raises(HyperlightPodCleanupPending) as raised:
+        controller.recover(KEY, KIND)
+    assert raised.value.__cause__ is error
+    assert controller.ledger["data"]["state"] == "running"
+    assert controller.pod["metadata"]["finalizers"] == ["sandbox.sokol.ai/confirmed-stop"]
+    assert not any(arguments[0] == "delete" for arguments, _ in controller.calls)
+
+    monkeypatch.setattr(controller, "api", original_api)
+    assert controller.recover(KEY, KIND) == 0
+    assert controller.ledger == {} and controller.pod == {}
