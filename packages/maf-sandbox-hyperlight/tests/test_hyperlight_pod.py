@@ -879,6 +879,7 @@ def test_bundle_is_not_mounted_into_the_guest_host_process():
         subprocess.CalledProcessError(1, ["kubectl"], stderr="connection lost"),
         subprocess.TimeoutExpired(["kubectl"], 15),
         ValueError("invalid API response"),
+        HyperlightWorkerError("Kubernetes returned a non-object response"),
     ],
 )
 def test_recovery_transport_failure_preserves_retryable_ownership(monkeypatch, stage, error):
@@ -902,4 +903,47 @@ def test_recovery_transport_failure_preserves_retryable_ownership(monkeypatch, s
 
     monkeypatch.setattr(controller, "api", original_api)
     assert controller.recover(KEY, KIND) == 0
+    assert controller.ledger == {} and controller.pod == {}
+
+
+@pytest.mark.parametrize(
+    "stage", ["ledger-read", "pod-read", "receipt-save", "rejected-cleanup", "stopped-cleanup"]
+)
+@pytest.mark.parametrize("response", ["[]", "null"])
+def test_recovery_non_object_response_retains_ownership_until_retry(monkeypatch, stage, response):
+    controller = FakeController()
+    if stage == "rejected-cleanup":
+        controller.ledger["data"].update({"state": "rejected", "pod_uid": ""})
+        controller.pod = {}
+    elif stage == "stopped-cleanup":
+        controller.ledger["data"].update({"state": "stopped", "exit_code": "0"})
+    original_api = controller.api
+    ledger = copy.deepcopy(controller.ledger)
+    pod = copy.deepcopy(controller.pod)
+
+    def malformed(*arguments, body=None):
+        if (
+            (stage == "ledger-read" and arguments[:2] == ("get", "configmap"))
+            or (stage == "receipt-save" and arguments[0] == "replace" and "data" in (body or {}))
+            or (
+                stage in {"pod-read", "rejected-cleanup", "stopped-cleanup"}
+                and arguments[:2] == ("get", "pod")
+            )
+        ):
+            return HyperlightPodController.api(controller, *arguments, body=body)
+        return original_api(*arguments, body=body)
+
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, response)
+    )
+    monkeypatch.setattr(controller, "api", malformed)
+    with pytest.raises(HyperlightPodCleanupPending) as raised:
+        controller.recover(KEY, KIND, timeout=0.001)
+    assert type(raised.value.__cause__) is HyperlightWorkerError
+    assert "non-object response" in str(raised.value.__cause__)
+    assert controller.ledger == ledger and controller.pod == pod
+    assert all(arguments[0] == "get" for arguments, _ in controller.calls)
+
+    monkeypatch.setattr(controller, "api", original_api)
+    assert controller.recover(KEY, KIND) == (71 if stage == "rejected-cleanup" else 0)
     assert controller.ledger == {} and controller.pod == {}

@@ -646,7 +646,7 @@ class HyperlightPodController:
         name = ownership_name(key, kind)
         try:
             ledger = self.api("get", "configmap", name, "-o", "json")
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
             raise HyperlightPodCleanupPending(
                 "ownership lookup failed; cleanup is unconfirmed"
             ) from error
@@ -677,7 +677,14 @@ class HyperlightPodController:
                 if retire and not deleted:
                     self._delete("pods", name, uid)
                     deleted = True
-            except (subprocess.SubprocessError, OSError, ValueError) as error:
+            except HyperlightPodCleanupPending:
+                raise
+            except (
+                subprocess.SubprocessError,
+                OSError,
+                ValueError,
+                HyperlightWorkerError,
+            ) as error:
                 if time.monotonic() >= until:
                     raise HyperlightPodCleanupPending(
                         "termination unconfirmed; allocation retained"
@@ -688,7 +695,7 @@ class HyperlightPodController:
         data.update({"state": "stopped", "pod_uid": uid, "exit_code": str(result)})
         try:
             ledger = self._replace(ledger)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
             raise HyperlightPodCleanupPending(
                 "termination receipt is unconfirmed; allocation retained"
             ) from error
@@ -707,7 +714,9 @@ class HyperlightPodController:
                 ledger = self._replace(ledger)
             ledger_uid = str(cast("dict[str, object]", ledger["metadata"])["uid"])
             self._delete("configmaps", name, ledger_uid)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except HyperlightPodCleanupPending:
+            raise
+        except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
             raise HyperlightPodCleanupPending(
                 "rejected allocation cleanup is incomplete; allocation retained"
             ) from error
@@ -735,7 +744,9 @@ class HyperlightPodController:
                     raise HyperlightPodCleanupPending("pod deletion is pending; receipt retained")
             ledger_uid = str(cast("dict[str, object]", ledger["metadata"])["uid"])
             self._delete("configmaps", name, ledger_uid)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except HyperlightPodCleanupPending:
+            raise
+        except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
             raise HyperlightPodCleanupPending(
                 "cleanup is incomplete; termination receipt retained"
             ) from error
