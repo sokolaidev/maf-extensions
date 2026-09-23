@@ -71,7 +71,7 @@ class HyperlightPodTemplate:
 
 @dataclass(frozen=True)
 class HyperlightPodResult:
-    """A runtime-reported exit with confirmed termination and bounded application diagnostics."""
+    """A confirmed pod outcome with bounded application diagnostics."""
 
     pod_uid: str
     exit_code: int
@@ -239,11 +239,13 @@ def pod_manifest(
 
 
 def confirmed_exit(pod: dict[str, object], uid: str) -> int | None:
-    """Accept runtime termination for the exact UID, never API disappearance or NodeLost."""
+    """Accept UID-bound runtime exit or authoritative never-started cleanup proof."""
     metadata = cast("dict[str, object]", pod.get("metadata", {}))
     status = cast("dict[str, object]", pod.get("status", {}))
     if metadata.get("uid") != uid or status.get("reason") in {"NodeLost", "Shutdown"}:
         return None
+    if _never_started(pod):
+        return 71
     containers = cast("list[dict[str, object]]", status.get("containerStatuses", []))
     if len(containers) != 1 or containers[0].get("name") != "sandbox":
         return None
@@ -267,6 +269,76 @@ def confirmed_exit(pod: dict[str, object], uid: str) -> int | None:
             if code is not None and stopped:
                 return code or 71
     return _terminated_exit(state)
+
+
+def _never_started(pod: dict[str, object]) -> bool:
+    """Require a binding fence or kubelet finalization with no container execution history."""
+    metadata = cast("dict[str, object]", pod.get("metadata", {}))
+    spec = cast("dict[str, object]", pod.get("spec", {}))
+    status = cast("dict[str, object]", pod.get("status", {}))
+    containers = cast("list[dict[str, object]]", status.get("containerStatuses", []))
+    initializers = cast("list[dict[str, object]]", status.get("initContainerStatuses", []))
+    declared = cast("list[dict[str, object]]", spec.get("containers", []))
+    if (
+        [item.get("name") for item in declared] != ["sandbox"]
+        or spec.get("ephemeralContainers")
+        or status.get("ephemeralContainerStatuses")
+    ):
+        return False
+    if not spec.get("nodeName"):
+        # The API server rejects binding a pod once deletion is recorded.
+        return bool(metadata.get("deletionTimestamp")) and (
+            not containers and not initializers and status.get("phase") in {"Pending", "Failed"}
+        )
+    conditions = cast("list[dict[str, object]]", status.get("conditions", []))
+    if (
+        status.get("phase") != "Failed"
+        or not any(
+            item.get("type") == "PodReadyToStartContainers" and item.get("status") == "False"
+            for item in conditions
+        )
+        or len(containers) != 1
+        or containers[0].get("name") != "sandbox"
+        or not _no_container_history(containers[0])
+    ):
+        return False
+    declared_init = cast("list[dict[str, object]]", spec.get("initContainers", []))
+    if [item.get("name") for item in declared_init] != [item.get("name") for item in initializers]:
+        return False
+    if any(
+        _terminated_exit(cast("dict[str, object]", item.get("state", {}))) is None
+        and not _never_started_terminal(item)
+        for item in initializers
+    ):
+        return False
+    state = cast("dict[str, object]", containers[0].get("state", {}))
+    return _never_started_terminal(containers[0]) or (
+        bool(initializers) and state == {"waiting": {"reason": "PodInitializing"}}
+    )
+
+
+def _no_container_history(container: dict[str, object]) -> bool:
+    return (
+        type(container.get("restartCount")) is int
+        and container.get("restartCount") == 0
+        and container.get("started") is False
+        and container.get("ready") is False
+        and not any(container.get(field) for field in ("containerID", "imageID", "lastState"))
+    )
+
+
+def _never_started_terminal(container: dict[str, object]) -> bool:
+    """Only kubelet's finalization default qualifies; other unknown states retain ownership."""
+    state = cast("dict[str, object]", container.get("state", {}))
+    ended = cast("dict[str, object]", state.get("terminated", {}))
+    return (
+        _no_container_history(container)
+        and set(state) == {"terminated"}
+        and ended.get("reason") == "ContainerStatusUnknown"
+        and ended.get("message") == "The container could not be located when the pod was terminated"
+        and ended.get("exitCode") == 137
+        and not any(ended.get(field) for field in ("containerID", "startedAt", "finishedAt"))
+    )
 
 
 def _terminated_exit(state: dict[str, object]) -> int | None:
@@ -340,7 +412,7 @@ class HyperlightPodController:
             },
         )
 
-    def run(
+    def supervise(
         self,
         key: SandboxKey,
         kind: str,
@@ -348,7 +420,7 @@ class HyperlightPodController:
         *,
         cleanup_timeout: float = 45,
     ) -> HyperlightPodResult:
-        """Start one scoped application and retain its allocation until termination is confirmed."""
+        """Supervise a scoped application through confirmed cleanup."""
         if not math.isfinite(cleanup_timeout) or cleanup_timeout <= 0:
             raise ValueError("cleanup_timeout must be positive and finite")
         name = ownership_name(key, kind)

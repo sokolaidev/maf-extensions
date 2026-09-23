@@ -450,6 +450,8 @@ class FakeController(HyperlightPodController):
                 self.ledger = copy.deepcopy(body)
             else:
                 self.pod = copy.deepcopy(body)
+                if body["metadata"].get("deletionTimestamp") and not body["metadata"]["finalizers"]:
+                    self.pod = {}
             return copy.deepcopy(body)
         if arguments[0] == "delete":
             assert body is not None
@@ -504,7 +506,7 @@ def test_definitive_create_rejection_releases_only_the_reserved_ledger(message):
     controller = RejectingController(rejected_create(message))
     for _ in range(2):
         with pytest.raises(subprocess.CalledProcessError):
-            controller.run(KEY, KIND, TEMPLATE)
+            controller.supervise(KEY, KIND, TEMPLATE)
         assert not controller.ledger
     deletes = [(args, body) for args, body in controller.calls if args[0] == "delete"]
     assert len(deletes) == 2
@@ -526,7 +528,7 @@ def test_definitive_create_rejection_releases_only_the_reserved_ledger(message):
 def test_ambiguous_create_failure_keeps_the_scope_reserved(error):
     controller = RejectingController(error)
     with pytest.raises(HyperlightPodCleanupPending, match="allocation retained"):
-        controller.run(KEY, KIND, TEMPLATE)
+        controller.supervise(KEY, KIND, TEMPLATE)
     assert controller.ledger["data"]["state"] == "allocating"
     assert not any(args[0] == "delete" for args, _ in controller.calls)
 
@@ -535,7 +537,7 @@ def test_rejection_cannot_release_a_scope_with_an_existing_pod():
     controller = RejectingController(rejected_create(QUOTA_REJECTION))
     controller.pod = terminal_pod()
     with pytest.raises(HyperlightPodCleanupPending, match="allocation retained"):
-        controller.run(KEY, KIND, TEMPLATE)
+        controller.supervise(KEY, KIND, TEMPLATE)
     assert controller.ledger["data"]["state"] == "allocating"
     assert not any(args[0] == "delete" for args, _ in controller.calls)
 
@@ -551,7 +553,7 @@ def test_rejection_with_unavailable_pod_lookup_retains_allocation(monkeypatch):
 
     monkeypatch.setattr(controller, "api", unavailable)
     with pytest.raises(HyperlightPodCleanupPending):
-        controller.run(KEY, KIND, TEMPLATE)
+        controller.supervise(KEY, KIND, TEMPLATE)
     assert controller.ledger["data"]["state"] == "allocating"
     assert not any(args[0] == "delete" for args, _ in controller.calls)
 
@@ -583,7 +585,7 @@ def test_running_ledger_update_failure_still_attempts_confirmed_cleanup(monkeypa
 
     monkeypatch.setattr(controller, "api", fail_running_update)
     with pytest.raises(OSError, match="running update failed"):
-        controller.run(KEY, KIND, TEMPLATE)
+        controller.supervise(KEY, KIND, TEMPLATE)
     assert not controller.ledger and not controller.pod
 
 
@@ -596,7 +598,7 @@ def test_rejection_receipt_allows_retry_after_ledger_delete_fails(monkeypatch):
 
     monkeypatch.setattr(controller, "_delete", unavailable)
     with pytest.raises(HyperlightPodCleanupPending):
-        controller.run(KEY, KIND, TEMPLATE)
+        controller.supervise(KEY, KIND, TEMPLATE)
     assert controller.ledger["data"]["state"] == "rejected"
     monkeypatch.setattr(controller, "_delete", remove)
     assert controller.recover(KEY, KIND) == 71
@@ -611,7 +613,7 @@ def test_manifest_failure_does_not_reserve_the_scope(monkeypatch):
 
     monkeypatch.setattr(kubernetes, "pod_manifest", unavailable)
     with pytest.raises(OSError, match="bootstrap source"):
-        controller.run(KEY, KIND, TEMPLATE)
+        controller.supervise(KEY, KIND, TEMPLATE)
     assert not controller.calls
 
 
@@ -648,6 +650,170 @@ def test_stale_recovery_never_deletes_a_replacement():
         controller.recover(KEY, KIND)
     assert controller.ledger and controller.pod
     assert all(args[0] == "get" for args, _ in controller.calls)
+
+
+def never_started_pod(*, scheduled: bool = True, bootstrap: bool = False) -> dict[str, Any]:
+    pod = terminal_pod()
+    pod["metadata"].update({"deletionTimestamp": "2026-09-23T06:00:00Z", "generation": 2})
+    pod["spec"] = {"containers": [{"name": "sandbox"}]}
+    pod["status"] = {"phase": "Failed", "observedGeneration": 2}
+    if not scheduled:
+        pod["status"]["phase"] = "Pending"
+        return pod
+    pod["spec"]["nodeName"] = "node"
+    pod["status"]["conditions"] = [
+        {"type": "PodReadyToStartContainers", "status": "False", "observedGeneration": 2}
+    ]
+    container = {
+        "name": "sandbox",
+        "restartCount": 0,
+        "started": False,
+        "ready": False,
+        "imageID": "",
+        "lastState": {},
+        "state": {
+            "terminated": {
+                "reason": "ContainerStatusUnknown",
+                "exitCode": 137,
+                "message": "The container could not be located when the pod was terminated",
+                "startedAt": None,
+                "finishedAt": None,
+            }
+        },
+    }
+    pod["status"]["containerStatuses"] = [container]
+    if bootstrap:
+        pod["spec"]["initContainers"] = [{"name": "bootstrap"}]
+        initializer = copy.deepcopy(container)
+        initializer["name"] = "bootstrap"
+        pod["status"]["initContainerStatuses"] = [initializer]
+        container["state"] = {"waiting": {"reason": "PodInitializing"}}
+    return pod
+
+
+@pytest.mark.parametrize("mode", ["unscheduled", "image-pull", "init-image-pull"])
+def test_never_started_cleanup_records_failure_before_releasing_ownership(mode):
+    pod = never_started_pod(scheduled=mode != "unscheduled", bootstrap=mode == "init-image-pull")
+    assert confirmed_exit(pod, "pod-uid") == 71
+    assert confirmed_exit(pod, "other-uid") is None
+    controller = FakeController(pod)
+    assert controller.recover(KEY, KIND, retire=True) == 71
+    mutations = [(args[0], body) for args, body in controller.calls if args[0] != "get"]
+    assert mutations[0][1]["data"]["state"] == "stopped"
+    assert mutations[0][1]["data"]["exit_code"] == "71"
+    assert controller.pod == controller.ledger == {}
+
+
+def test_unscheduled_pod_requires_a_deletion_fence():
+    pod = never_started_pod(scheduled=False)
+    del pod["metadata"]["deletionTimestamp"]
+    assert confirmed_exit(pod, "pod-uid") is None
+
+
+@pytest.mark.parametrize("bootstrap", [False, True])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("containerID", "containerd://old"),
+        ("imageID", "sha256:old"),
+        ("restartCount", 1),
+        ("restartCount", False),
+        ("started", True),
+        ("ready", True),
+        ("lastState", {"terminated": {"exitCode": 137}}),
+    ],
+)
+def test_container_history_is_not_never_started_proof(bootstrap, field, value):
+    pod = never_started_pod(bootstrap=bootstrap)
+    statuses = pod["status"]["initContainerStatuses" if bootstrap else "containerStatuses"]
+    statuses[0][field] = value
+    assert confirmed_exit(pod, "pod-uid") is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("message", "container disappeared"),
+        ("exitCode", 0),
+        ("containerID", "containerd://old"),
+        ("startedAt", "2026-09-23T05:59:00Z"),
+        ("finishedAt", "2026-09-23T06:00:00Z"),
+    ],
+)
+def test_unknown_container_status_alone_is_not_termination_proof(field, value):
+    pod = never_started_pod()
+    pod["status"]["containerStatuses"][0]["state"]["terminated"][field] = value
+    assert confirmed_exit(pod, "pod-uid") is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "node-lost",
+        "shutdown",
+        "not-failed",
+        "runtime-ready",
+        "condition-missing",
+        "init-missing",
+        "init-running",
+    ],
+)
+def test_ambiguous_scheduled_pod_retains_ownership(change):
+    pod = never_started_pod()
+    status = pod["status"]
+    if change in {"node-lost", "shutdown"}:
+        status["reason"] = "NodeLost" if change == "node-lost" else "Shutdown"
+    elif change == "not-failed":
+        status["phase"] = "Pending"
+    elif change == "runtime-ready":
+        status["conditions"][0]["status"] = "True"
+    elif change == "condition-missing":
+        status["conditions"] = []
+    elif change in {"init-missing", "init-running"}:
+        pod["spec"]["initContainers"] = [{"name": "bootstrap"}]
+        if change == "init-running":
+            status["initContainerStatuses"] = [{"name": "bootstrap", "state": {"running": {}}}]
+    assert confirmed_exit(pod, "pod-uid") is None
+    controller = FakeController(pod)
+    with pytest.raises(HyperlightPodCleanupPending, match="termination unconfirmed"):
+        controller.recover(KEY, KIND, timeout=0.001)
+    assert controller.ledger and controller.pod
+    assert all(args[0] == "get" for args, _ in controller.calls)
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_kubelet_finalization_survives_later_metadata_generation_changes(deleted):
+    pod = never_started_pod()
+    pod["metadata"]["generation"] = 3
+    pod["status"]["reason"] = "DeadlineExceeded"
+    if not deleted:
+        del pod["metadata"]["deletionTimestamp"]
+    assert confirmed_exit(pod, "pod-uid") == 71
+
+
+def test_waiting_status_with_failed_phase_is_not_kubelet_finalization():
+    pod = never_started_pod()
+    pod["status"]["containerStatuses"][0]["state"] = {"waiting": {"reason": "ImagePullBackOff"}}
+    assert confirmed_exit(pod, "pod-uid") is None
+
+
+def test_assignment_racing_deletion_requires_node_termination_proof(monkeypatch):
+    controller = FakeController(never_started_pod(scheduled=False))
+    del controller.pod["metadata"]["deletionTimestamp"]
+    remove = controller._delete
+
+    def raced_assignment(plural, name, uid):
+        if plural == "pods":
+            controller.pod["spec"]["nodeName"] = "node"
+            controller.pod["metadata"]["deletionTimestamp"] = "2026-09-23T06:00:00Z"
+        else:
+            remove(plural, name, uid)
+
+    monkeypatch.setattr(controller, "_delete", raced_assignment)
+    with pytest.raises(HyperlightPodCleanupPending):
+        controller.recover(KEY, KIND, timeout=0.001, retire=True)
+    assert controller.ledger and controller.pod
+    assert controller.ledger["data"]["state"] == "running"
 
 
 def test_failed_initialization_requires_runtime_exit_and_stopped_pod_sandbox():

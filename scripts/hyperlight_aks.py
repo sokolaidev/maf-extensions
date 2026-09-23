@@ -60,7 +60,7 @@ def render_plugin(source: str, *, namespace: str, image: str = PLUGIN_IMAGE, cou
 def main() -> None:
     """Kubernetes authentication stays with the operator or host controller's kubeconfig."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plugin", "run", "recover"))
+    parser.add_argument("action", choices=("plugin", "supervise", "recover"))
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--kubeconfig")
     parser.add_argument("--context")
@@ -90,7 +90,9 @@ def main() -> None:
         )
         return
     if not all((args.kubeconfig, args.context, args.scope, args.thread, args.agent)):
-        parser.error("run/recover require kubeconfig, context and the complete host-owned scope")
+        parser.error(
+            "supervise/recover require kubeconfig, context and the complete host-owned scope"
+        )
     controller = HyperlightPodController(
         kubeconfig=args.kubeconfig, context=args.context, namespace=args.namespace
     )
@@ -99,8 +101,8 @@ def main() -> None:
         print(json.dumps({"exit_code": controller.recover(key, args.kind, retire=True)}))
         return
     if not args.image:
-        parser.error("run requires the built application image digest")
-    result = controller.run(
+        parser.error("supervise requires the built application image digest")
+    result = controller.supervise(
         key,
         args.kind,
         HyperlightPodTemplate(
