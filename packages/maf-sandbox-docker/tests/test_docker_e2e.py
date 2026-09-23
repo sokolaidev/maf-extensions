@@ -2077,6 +2077,8 @@ class TestAllowlistEgress:
                 "linklocal.test",
                 "metadata.test",
                 "interface.test",
+                "gateway4.test",
+                "gateway6.test",
             ),
         )
         subprocess.run(
@@ -2146,6 +2148,14 @@ class TestAllowlistEgress:
                 "metadata.test": "fd00:ec2::254",
                 "interface.test": v6_address(proxy),
             }
+            ipam = json.loads(subprocess.check_output(["docker", "network", "inspect", network]))[
+                0
+            ]["IPAM"]["Config"]
+            gateways = {
+                ipaddress.ip_address(entry["Gateway"]).version: entry["Gateway"] for entry in ipam
+            }
+            entries["gateway4.test"] = gateways[4]
+            entries["gateway6.test"] = gateways[6]
             subprocess.run(
                 ["docker", "exec", "-i", "-u", "0", proxy, "/bin/sh", "-c", "cat >> /etc/hosts"],
                 input="".join(f"{address} {host}\n" for host, address in entries.items()),
@@ -2158,7 +2168,14 @@ class TestAllowlistEgress:
                 "200",
             )
             assert self._curl_status(sandbox, "https://mcr.microsoft.com:8443/v2/") == (0, "200")
-            for host in ("loopback.test", "linklocal.test", "metadata.test", "interface.test"):
+            for host in (
+                "loopback.test",
+                "linklocal.test",
+                "metadata.test",
+                "interface.test",
+                "gateway4.test",
+                "gateway6.test",
+            ):
                 assert (
                     self._curl_status(sandbox, f"http://{host}:8080/", force_proxy=True)[1] == "502"
                 )
@@ -2174,6 +2191,8 @@ class TestAllowlistEgress:
             ("DENY", "linklocal.test"),
             ("DENY", "metadata.test"),
             ("DENY", "interface.test"),
+            ("DENY", "gateway4.test"),
+            ("DENY", "gateway6.test"),
         }
 
     def test_private_http_exception_is_rechecked_after_dns_changes(self):

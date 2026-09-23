@@ -81,7 +81,7 @@ from ._probes import (
     probe_commands,
 )
 from ._proxy import build_context
-from ._proxy.policy import encoded_policy, read_decisions
+from ._proxy.policy import encoded_policy, network_gateways, read_decisions
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
 logger = logging.getLogger(__name__)
@@ -2489,8 +2489,9 @@ class WslcSandboxBackend:
         if (await self._remove(proxy)).failure is None:
             self._report_proxy_drain(event)
 
+        control_addresses = await self._control_addresses(_network_name(name))
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec)}"]
+        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec, control_addresses=control_addresses)}"]
         args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
@@ -2522,6 +2523,40 @@ class WslcSandboxBackend:
                 f"{connect.stderr_text.strip()}"
             )
         await self._await_listening(proxy)
+
+    async def _control_addresses(self, internal_network: str) -> tuple[str, ...]:
+        """Read gateways on both networks the proxy will join."""
+        addresses: list[str] = []
+        for network in (internal_network, "bridge"):
+            result = await self._wslc(
+                "network", "inspect", network, timeout=self._config.command_timeout_seconds
+            )
+            if result.returncode != 0:
+                detail = result.stderr_text.strip()
+                raise RuntimeError(f"wslc could not inspect proxy network {network!r}: {detail}")
+            try:
+                parsed: object = json.loads(result.stdout_text)
+                if not isinstance(parsed, list):
+                    raise ValueError("network inspection did not return one network")
+                inspected = cast("list[object]", parsed)
+                if len(inspected) != 1:
+                    raise ValueError("network inspection did not return one network")
+                item = inspected[0]
+                if not isinstance(item, dict):
+                    raise ValueError("network inspection returned no details")
+                detail = cast("dict[str, object]", item)
+                if detail.get("Name") != network:
+                    raise ValueError("network inspection returned the wrong network")
+                ipam_data = detail.get("IPAM")
+                if not isinstance(ipam_data, dict):
+                    raise ValueError("network inspection omitted IPAM")
+                ipam = cast("dict[str, object]", ipam_data)
+                addresses.extend(network_gateways(ipam.get("Config")))
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError(
+                    f"wslc proxy network {network!r} has unreadable gateway addresses"
+                ) from exc
+        return tuple(dict.fromkeys(addresses))
 
     async def _await_listening(self, proxy: str) -> None:
         """Wait for the patched policy contract and listener before serving.

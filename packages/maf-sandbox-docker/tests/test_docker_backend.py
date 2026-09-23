@@ -481,6 +481,10 @@ def _machine(
             return _DockerResult(0, b"", "")
         if args[:2] == ("network", "inspect"):
             net = args[-1]
+            if args[3] == "{{json .IPAM.Config}}":
+                return _DockerResult(
+                    0, b'[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]\n', ""
+                )
             modes = live_networks.get(net)
             if modes is None:
                 return _DockerResult(1, b"", f"Error response from daemon: network {net} not found")
@@ -4722,8 +4726,24 @@ class TestAllowlistTopology:
             "mcr.microsoft.com",
             "*.data.mcr.microsoft.com",
         ]
+        assert "172.17.0.1/32" in policy["proxy"]["upstream_deny_cidrs"]
         labels = [args[i + 1] for i, a in enumerate(args) if a == "--label"]
         assert "maf-sandbox.role=proxy" in labels
+
+    def test_an_unreadable_outbound_gateway_refuses_the_proxy(self):
+        backend, fake = _backend_with(
+            _machine(
+                overrides={
+                    ("network", "inspect", "-f", "{{json .IPAM.Config}}"): _DockerResult(
+                        0, b"not-json", ""
+                    )
+                }
+            ),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="unreadable gateway addresses"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
 
     @pytest.mark.parametrize("allowed", [False, True])
     def test_the_proxy_gets_the_hosts_plaintext_setting(self, allowed):

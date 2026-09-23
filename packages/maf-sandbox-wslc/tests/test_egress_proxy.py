@@ -8,7 +8,7 @@ import json
 from maf_sandbox import Egress, EgressRule, SandboxSpec
 
 from maf_sandbox_wslc._proxy import build_context
-from maf_sandbox_wslc._proxy.policy import encoded_policy, read_decisions
+from maf_sandbox_wslc._proxy.policy import encoded_policy, network_gateways, read_decisions
 
 
 def test_scoped_rules_are_serialized_for_iron_proxy() -> None:
@@ -36,6 +36,16 @@ def test_scoped_rules_are_serialized_for_iron_proxy() -> None:
     assert "100.100.100.200/32" in policy["proxy"]["upstream_deny_cidrs"]
     assert "168.63.129.16/32" in policy["proxy"]["upstream_deny_cidrs"]
     assert "::1/128" in policy["proxy"]["upstream_deny_cidrs"]
+
+
+def test_inspected_gateways_are_denied_without_denying_all_private_addresses() -> None:
+    addresses = network_gateways([{"Gateway": "172.17.0.1"}, {"Gateway": "fd42:1407::1"}])
+    spec = SandboxSpec(kind="test", image="image", egress=Egress.ALLOWLIST)
+    policy = json.loads(base64.b64decode(encoded_policy(spec, control_addresses=addresses)))
+    denied = policy["proxy"]["upstream_deny_cidrs"]
+    assert "172.17.0.1/32" in denied
+    assert "fd42:1407::1/128" in denied
+    assert "172.17.0.0/16" not in denied
 
 
 def test_public_plaintext_error_is_a_denial() -> None:

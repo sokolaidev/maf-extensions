@@ -1116,11 +1116,27 @@ class TestAllowlistEgress:
             kind="e2e",
             image=_IMAGE,
             egress=Egress.ALLOWLIST,
-            egress_allow=tuple(addresses),
+            egress_allow=(*addresses, "bridge-gateway.test", "internal-gateway.test"),
         )
         sandbox = asyncio.run(backend.acquire(_key(scope), spec))
         try:
             proxy = sandbox.container_name + "-proxy"
+            for network, host in (
+                ("bridge", "bridge-gateway.test"),
+                (sandbox.container_name + "-net", "internal-gateway.test"),
+            ):
+                inspected = json.loads(
+                    subprocess.check_output(["wslc", "network", "inspect", network])
+                )[0]
+                gateways = [
+                    entry["Gateway"]
+                    for entry in inspected["IPAM"]["Config"]
+                    if entry.get("Gateway")
+                ]
+                if network == "bridge":
+                    assert gateways
+                if gateways:
+                    addresses[host] = gateways[0]
             subprocess.run(
                 [
                     "wslc",

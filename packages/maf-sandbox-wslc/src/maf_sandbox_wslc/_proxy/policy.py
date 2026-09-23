@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
+from collections.abc import Sequence
 from typing import cast
 
 from maf_sandbox import EgressDecision, EgressDecisionCode, SandboxSpec
 
-__all__ = ["encoded_policy", "read_decisions"]
+__all__ = ["encoded_policy", "network_gateways", "read_decisions"]
 
 _UPSTREAM_DENY_CIDRS = (
     "0.0.0.0/8",
@@ -26,8 +28,30 @@ _UPSTREAM_DENY_CIDRS = (
 )
 
 
-def encoded_policy(spec: SandboxSpec) -> str:
+def network_gateways(ipam: object) -> tuple[str, ...]:
+    """Read the gateway addresses from an inspected network's IPAM configuration."""
+    if not isinstance(ipam, list):
+        raise ValueError("network IPAM configuration is not a list")
+    addresses: list[str] = []
+    for item in cast("list[object]", ipam):
+        if not isinstance(item, dict):
+            raise ValueError("network IPAM entry is not an object")
+        entry = cast("dict[str, object]", item)
+        gateway = entry.get("Gateway")
+        if gateway is None or gateway == "":
+            continue
+        if not isinstance(gateway, str):
+            raise ValueError("network gateway is not an address")
+        addresses.append(str(ipaddress.ip_address(gateway)))
+    return tuple(addresses)
+
+
+def encoded_policy(spec: SandboxSpec, *, control_addresses: Sequence[str] = ()) -> str:
     """Return the per-sandbox default-deny policy as base64 encoded JSON."""
+    control_cidrs = tuple(
+        str(ipaddress.ip_network(f"{address}/{ipaddress.ip_address(address).max_prefixlen}"))
+        for address in control_addresses
+    )
     domains: list[str] = []
     rules: list[dict[str, object]] = []
     for entry in spec.egress_allow:
@@ -48,7 +72,7 @@ def encoded_policy(spec: SandboxSpec) -> str:
             "http_listen": "127.0.0.1:18080",
             "https_listen": "127.0.0.1:18443",
             "tunnel_listen": ":3128",
-            "upstream_deny_cidrs": _UPSTREAM_DENY_CIDRS,
+            "upstream_deny_cidrs": (*_UPSTREAM_DENY_CIDRS, *control_cidrs),
         },
         "tls": {
             "mode": "mitm",

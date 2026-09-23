@@ -102,7 +102,7 @@ from maf_sandbox.paths import (
 from ._config import DockerSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
-from ._proxy.policy import encoded_policy, read_decisions
+from ._proxy.policy import encoded_policy, network_gateways, read_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,7 @@ _BRIDGE_DRIVER = "bridge"
 #: the request echoed back whether or not the daemon acted on it, and so cannot tell a bridge
 #: that ended up unaddressed from one that did not.
 _NETWORK_EFFECT_FORMAT = "{{.Driver}}|{{.Internal}}|{{json .IPAM.Config}}"
+_NETWORK_GATEWAY_FORMAT = "{{json .IPAM.Config}}"
 #: What the engine says for a network or container that is not there — read only alongside
 #: that target's own name, never on its own.  Absence is the one answer a caller may treat as
 #: safe, and unrelated failures use these words too: a missing context reports `context not
@@ -3538,8 +3539,9 @@ class DockerSandboxBackend:
         if (await self._remove(proxy)).failure is None:
             self._report_proxy_drain(event)
 
+        control_addresses = await self._outbound_control_addresses()
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec)}"]
+        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec, control_addresses=control_addresses)}"]
         args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
@@ -3576,6 +3578,28 @@ class DockerSandboxBackend:
                 f"{self._config.outbound_network!r}: {connect.stderr.strip()}"
             )
         await self._await_listening(proxy)
+
+    async def _outbound_control_addresses(self) -> tuple[str, ...]:
+        """Read gateway addresses that the outbound proxy leg can reach."""
+        network = self._config.outbound_network
+        result = await self._docker(
+            "network",
+            "inspect",
+            "-f",
+            _NETWORK_GATEWAY_FORMAT,
+            network,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"docker could not inspect outbound network {network!r}: {result.stderr.strip()}"
+            )
+        try:
+            return network_gateways(json.loads(result.stdout))
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(
+                f"docker outbound network {network!r} has unreadable gateway addresses"
+            ) from exc
 
     async def _await_listening(self, proxy: str) -> None:
         """Wait for the patched policy contract and listener before serving.

@@ -906,6 +906,11 @@ def _machine(
             )
         if args[:2] == ("container", "logs"):
             return _WslcResult(0, b"maf-sandbox egress contract v1\ntunnel proxy starting\n", b"")
+        if args[:2] == ("network", "inspect"):
+            network = args[-1]
+            gateway = "172.17.0.1" if network == "bridge" else "172.20.0.1"
+            detail = {"Name": network, "IPAM": {"Config": [{"Gateway": gateway}]}}
+            return _WslcResult(0, json.dumps([detail]).encode(), b"")
         if args[:2] == ("container", "exec") and args[-2:] == (
             "cat",
             "/run/maf-proxy/ca.crt",
@@ -3880,9 +3885,20 @@ class TestAllowlistTopology:
             "mcr.microsoft.com",
             "*.data.mcr.microsoft.com",
         ]
+        assert "172.17.0.1/32" in policy["proxy"]["upstream_deny_cidrs"]
+        assert "172.20.0.1/32" in policy["proxy"]["upstream_deny_cidrs"]
         labels = [args[i + 1] for i, a in enumerate(args) if a == "-l"]
         assert "maf-sandbox.role=proxy" in labels
         assert args[-1] == "maf-egress-proxy:local"
+
+    def test_an_unreadable_bridge_gateway_refuses_the_proxy(self):
+        backend, fake = _backend_with(
+            _machine(overrides={("network", "inspect", "bridge"): _WslcResult(0, b"[]", b"")}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="unreadable gateway addresses"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("container", "run", "-d", "--name", _AL_PROXY) == []
 
     @pytest.mark.parametrize("allowed", [False, True])
     def test_the_proxy_gets_the_hosts_plaintext_setting(self, allowed):
