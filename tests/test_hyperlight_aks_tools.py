@@ -40,6 +40,9 @@ def test_bundle_build_accepts_uv_metadata_and_hashes_the_exact_payload(tmp_path,
         else:
             Path(command[command.index("--output-file") + 1]).write_text("# locked dependencies")
 
+    monkeypatch.setattr(
+        build_hyperlight_aks_image, "source_record", lambda **kwargs: {"dirty": True}
+    )
     monkeypatch.setattr(subprocess, "run", execute)
     build_hyperlight_aks_image.prepare(tmp_path)
     bundle = json.loads(gzip.decompress((tmp_path / "bundle.json.gz").read_bytes()))

@@ -4,3 +4,7 @@
 !probe.py
 !wheels/
 !wheels/*.whl
+!build-inputs.json
+!source.json
+!verify.py
+!.dockerignore
