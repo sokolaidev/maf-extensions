@@ -181,25 +181,43 @@ Arbitrary images change two things. `RUN_CODE` stays withheld, because the runti
 
 ## What it could declare
 
+Measured against sbx v0.45.1 on Windows. Tracked as [#1412](https://github.com/sokolaidev/maf-extensions/issues/1412).
+
+**Isolation: `MICROVM`.** Each sandbox gets its own hypervisor partition. Conditions 2 and 4 hold only while three host facts hold. The backend checks all three at every acquire and refuses if any fails:
+
+- SSH agent forwarding is off (`ssh.agentForwardingEnabled=false`). It is on by default, so the host operator has to change it.
+- No MCP server is registered on the host (`sbx mcp ls` is empty). The MCP gateway is reachable under deny-all.
+- No allowed host overlaps a stored secret's domains (`sbx secret ls`).
+
+**Capabilities:**
+
 | Member | Verdict | What it rests on |
 |---|---|---|
-| `isolation` | `MICROVM` | One hypervisor partition per sandbox. Conditions 2 and 4 hold only with SSH forwarding off, no MCP server registered, and no allowlisted host overlapping a stored secret, all checked at every acquire |
-| `EXEC` | Declare | Argv form, separate byte-exact streams, faithful exit codes. Through a `setsid` wrapper for runtime errors, deadlines and the no-sandbox case, with argv encoded |
-| `FILES_IN` | Declare | A host-side write into the private workspace, owned by the guest user, with every name checked against the host filesystem's rules |
-| `FILES_OUT` | Declare | A host-side `lstat` and read. The guest cannot make links there, which is proven on Windows only |
-| `FILES_LIST` | Declare | A host-side listing with `lstat`: the first backend for which a listing is cheap and not guest-answered |
+| `EXEC` | Declare | Argv passes verbatim; streams come back separate and byte-exact, with faithful exit codes. A `setsid` wrapper does four things: kills the whole process group at the deadline, moves runtime errors to stderr, tells a missing sandbox from a failing command, and decodes argv (sbx refuses an empty argument) |
+| `FILES_IN` | Declare | A host-side write into the private workspace, owned by the guest user. Names the host filesystem would change, hide or merge are refused |
+| `FILES_OUT` | Declare | A host-side `lstat`, then a read |
+| `FILES_LIST` | Declare | A host-side listing with `lstat`: the first backend where a listing is cheap and not answered by the guest |
 | `FILES_DELETE` | Declare | A host-side unlink inside the workspace |
 | `RECLAIM` | Declare | A host-side delete of a directory the guest cannot plant links in |
 | `HOST_TOOLS` | Declare | Follows from `EXEC`, `FILES_IN` and `FILES_OUT` |
-| `SNAPSHOT` | Open | Delete and recreate from a baseline template meets the contract; worth it only when the baseline is expensive |
-| `RUN_CODE` | Withhold | The runtime is the image's |
-| `ATTACHED_IDENTITY` | Withhold | Proxy-injected secrets are the right shape, but the core contract is not built, and today they are host-wide rather than per sandbox |
-| `EGRESS_METHODS` | Withhold | No method rules |
-| `egress_modes` | `{CLOSED}`, plus `ALLOWLIST` as a checked host posture | See [the egress section](#egress-closed-holds-the-allowlist-is-shared) |
-| `os_families` | `{POSIX}` | Linux guest |
-| `observes_egress` | `False` | The log is aggregated and keyed by a reusable name |
+| `SNAPSHOT` | Withhold for now | Delete and recreate from a template saved before the first workload resets files and processes both. It costs about 4 s, the same as a fresh create, so it earns a declaration only when the baseline is expensive |
+| `RUN_CODE` | Withhold | Any image is accepted, so the runtime is the image's |
+| `ATTACHED_IDENTITY` | Withhold | Proxy-injected secrets are the right shape, but they are host-wide rather than per sandbox, and the core contract is not built |
+| `EGRESS_METHODS` | Withhold | No rules by HTTP method |
 
-The workspace rows assume a Windows host. On macOS and Linux they wait on one probe: whether the guest can create a symlink in the workspace. If it can, those rows fall back to the `cp` route and guest-answered checks, and `FILES_LIST` is withheld.
+**The other declarations:**
+
+| Field | Value | What it rests on |
+|---|---|---|
+| `egress_modes` | `{CLOSED}` | A per-sandbox `--deny-network "**"` beats every global allow and every later allow, measured by content. `ALLOWLIST` is possible only as a host posture checked at acquire: deny each global allow per sandbox, and accept that a global rule added later widens a running sandbox. `UNRESTRICTED` is not worth declaring |
+| `os_families` | `{POSIX}` | Linux guest |
+| `isolation_scopes` | `{CONVERSATION}` | `CALL` is possible, at about 4.5 s per call for a create and a delete |
+| `observes_egress` | `False` | The policy log is aggregated, keyed by a name that can be reused, and outlives `rm` |
+| `attached_identity` | `NO_ATTACHED_IDENTITY` | As above |
+
+**The Windows-only dependency.** The five file capabilities and `RECLAIM` all rest on one measured fact: the guest cannot create links in its workspace. On Windows, `ln -s` exits 0 and creates nothing. On macOS and Linux this is not measured. If the guest can create links there, those rows fall back to `sbx cp` with checks the guest answers, and `FILES_LIST` is withheld.
+
+**A first version** declares `MICROVM`, `EXEC`, the workspace file capabilities, `RECLAIM`, `HOST_TOOLS` and `CLOSED` only, after the macOS and Linux link probe.
 
 ## What the package would cost
 
