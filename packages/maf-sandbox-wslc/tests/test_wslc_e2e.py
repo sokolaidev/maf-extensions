@@ -10,6 +10,7 @@ becomes a committed one; any Linux image with ``sh`` and ``sleep`` will do.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import shutil
@@ -1098,6 +1099,149 @@ class TestAllowlistEgress:
                 ["wslc", "container", "remove", "-f", service], check=False, capture_output=True
             )
             subprocess.run(["wslc", "network", "remove", network], check=False, capture_output=True)
+
+    @pytest.mark.parametrize("allow_private_http", [False, True], ids=["tls-only", "dev-http"])
+    def test_selected_private_ipv6_enforces_transport_methods_paths_and_isolation(
+        self, allow_private_http
+    ):
+        assert _PROXY_IMAGE is not None
+        suffix = uuid.uuid4().hex[:12]
+        supplied_network = os.environ.get("MAF_SANDBOX_WSLC_E2E_IPV6_NETWORK")
+        network = supplied_network or f"maf-ipv6-{suffix}"
+        service = f"maf-ipv6-service-{suffix}"
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(
+            WslcSandboxConfig(
+                egress_proxy_image=_PROXY_IMAGE, allow_private_http=allow_private_http
+            )
+        )
+        events = []
+        backend.observe_egress(events.append)
+
+        def command(*args, **kwargs):
+            return subprocess.run(
+                ["wslc", *args], check=True, capture_output=True, text=True, timeout=60, **kwargs
+            )
+
+        if not supplied_network:
+            command("network", "create", "--subnet", f"fd42:1407:{suffix[:4]}::/64", network)
+        service_created = False
+        try:
+            inspected = json.loads(command("network", "inspect", network).stdout)[0]
+            if not supplied_network and inspected.get("EnableIPv6") is False:
+                version = command("--version").stdout.strip()
+                pytest.skip(
+                    f"{version} created the IPv6 subnet with EnableIPv6=false; "
+                    "private IPv6 HTTP/TLS is unverified (#1407)"
+                )
+            assert inspected.get("EnableIPv6") is True, inspected
+            upstream = socket.gethostbyname("mcr.microsoft.com")
+            relay = (
+                f"printf '#!/bin/sh\\nexec /bin/busybox nc {upstream} 443\\n' >/tmp/relay; "
+                "chmod +x /tmp/relay; "
+                "/bin/busybox nc -lk -p 8443 -s :: -e /tmp/relay & "
+                'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" '
+                "| /bin/busybox nc -l -p 8080 -s ::; done"
+            )
+            command(
+                "container",
+                "run",
+                "-d",
+                "--name",
+                service,
+                "--network",
+                network,
+                "--entrypoint",
+                "/bin/sh",
+                _PROXY_IMAGE,
+                "-c",
+                relay,
+            )
+            service_created = True
+
+            def ipv6_address(name):
+                inspected = json.loads(command("network", "inspect", network).stdout)[0]
+                endpoints = [e for e in inspected["Containers"].values() if e["Name"] == name]
+                assert len(endpoints) == 1, inspected
+                address = endpoints[0].get("IPv6Address")
+                assert address, endpoints[0]
+                ip = ipaddress.ip_interface(address).ip
+                assert ip in ipaddress.ip_network("fc00::/7")
+                return str(ip)
+
+            address = ipv6_address(service)
+            spec = SandboxSpec(
+                kind="e2e",
+                image=_IMAGE,
+                egress=Egress.ALLOWLIST,
+                egress_allow=(
+                    EgressRule("private.test", methods=("GET",), paths=("/allowed",)),
+                    EgressRule("mcr.microsoft.com", methods=("GET",), paths=("/v2/",)),
+                    "interface.test",
+                ),
+            )
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            proxy = sandbox.container_name + "-proxy"
+            command("network", "connect", network, proxy)
+            proxy_address = ipv6_address(proxy)
+            command(
+                "container",
+                "exec",
+                "-i",
+                "-u",
+                "0",
+                proxy,
+                "/bin/sh",
+                "-c",
+                "cat >> /etc/hosts",
+                input=f"{address} private.test mcr.microsoft.com\n{proxy_address} interface.test\n",
+            )
+            assert self._curl_status(
+                sandbox, "http://private.test:8080/allowed", force_proxy=True
+            ) == (0, "200" if allow_private_http else "502")
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com:8443/v2/") == (0, "200")
+            for url in ("http://private.test:8080/other", "https://mcr.microsoft.com:8443/other"):
+                assert self._curl_status(sandbox, url, force_proxy=True) == (0, "403")
+            assert self._curl_status(
+                sandbox, "https://mcr.microsoft.com:8443/v2/", method="POST"
+            ) == (0, "403")
+            assert self._curl_status(sandbox, "http://interface.test:8080/", force_proxy=True) == (
+                0,
+                "502",
+            )
+            direct = asyncio.run(
+                sandbox.exec(
+                    [
+                        "curl",
+                        "-s",
+                        "--noproxy",
+                        "*",
+                        "--max-time",
+                        "3",
+                        f"http://[{address}]:8080/allowed",
+                    ],
+                    working_directory=_WORK,
+                    timeout=15,
+                )
+            )
+            assert direct.exit_code != 0, direct
+        finally:
+            try:
+                assert asyncio.run(backend.dispose_scope(scope, "thread-1")).undisposed is None
+            finally:
+                try:
+                    if service_created:
+                        command("container", "remove", "-f", service)
+                finally:
+                    if not supplied_network:
+                        command("network", "remove", network)
+        decisions = {(d.decision, d.host) for event in events for d in event.decisions}
+        assert decisions >= {
+            ("ALLOW", "mcr.microsoft.com"),
+            ("DENY", "mcr.microsoft.com"),
+            ("ALLOW" if allow_private_http else "DENY", "private.test"),
+            ("DENY", "interface.test"),
+        }
 
     def test_ipv6_loopback_link_local_and_metadata_addresses_are_denied(self):
         assert _PROXY_IMAGE is not None
