@@ -6,7 +6,7 @@
 
 Add `maf-sandbox-docker` as a backend that drives a Docker-compatible CLI against a Docker-API-compatible socket. It runs Linux containers on a developer machine or Linux CI runner, declares `Isolation.CONTAINER`, uses `EXEC`, `FILES_IN` and named-file `FILES_OUT`, and withholds `FILES_LIST`. Egress is `CLOSED` by default or `ALLOWLIST` through an internal-network plus dual-homed CONNECT proxy. The backend adds no runtime dependency beyond `maf-sandbox`.
 
-This is deliberately not Docker Sandboxes, Docker's separate micro-VM product. Docker Sandboxes deserves a distinct `maf-sandbox-docker-sbx` backend at the `MICROVM` rung because it has a different boundary, CLI and lifecycle. A configuration flag must not change the isolation claim of the plain-container backend.
+This is deliberately not Docker Sandboxes, Docker's separate micro-VM product. Docker Sandboxes deserves a distinct `maf-sandbox-docker-sbx` backend at the `MICROVM` rung because it has a different boundary, CLI and lifecycle. A configuration flag must not change the isolation claim of the plain-container backend. What that backend could claim is explored in [`docker-sandboxes-backend.md`](docker-sandboxes-backend.md).
 
 The backend closes the local/CI gap left by ACA Sandboxes and WSLC: macOS, Linux and Windows with WSL can run a real sandbox without an Azure subscription, while `ubuntu-latest` can run live backend tests using its preinstalled Docker engine. Windows without WSL is deferred because the Hyper-V route is not the default and is not validated in this repository.
 
