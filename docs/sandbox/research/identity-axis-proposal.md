@@ -12,6 +12,30 @@ Subsequent assessment for [#757](https://github.com/sokolaidev/maf-extensions/is
 
 ## Credential gateway experiments for #757
 
+### Docker and WSLC adapter validation, 24 September 2026
+
+The external gateway is now implemented in the Docker and WSLC adapters, with a host provider in `maf_sandbox.credentials` and an explicit CodeAct opt-in. The decided configuration and ownership contract are in [host responsibilities](../hosts.md#credentials-for-guest-http-requests). The earlier raw-token proposal and Kubernetes experiment below remain historical evidence.
+
+The packaged iron-proxy build adds a per-request grant gate. The host installs one immutable grant over runtime stdin after identifying the actual workload container. Each acquisition uses a fresh 128-bit generation, workload container, private network and proxy. The grant binds the guest address and proxy boot identity; it carries only that generation's tokens, exact HTTPS origins and method/path rules. Fixed proxy and token deadlines stop further requests and cancel active upstream streams independently of host cleanup. There is no shared grant cache, refresh channel or ownership takeover between replicas.
+
+The opt-in suite is [test_credential_gateway_e2e.py](../../../tests/test_credential_gateway_e2e.py). It passed all eight parameterized scenarios against Docker Engine 29.8.0 and WSLC 2.9.12.0, using the same built proxy image `sha256:81b42b91919635992eeb1a71eb13ed53152a6ee44cf4fe10b20ad6ecadca518a`. All credentials were synthetic. A local TLS upstream on port 8443 returned a digest of the received Authorization header instead of the credential.
+
+| Runtime validation | Result on both backends |
+|---|---|
+| Concurrent users, agents and calls | Five concurrent acquisitions received distinct containers and grants, including two independent backend instances acquiring the same call key. |
+| Copied guest header | Each guest received only its own grant's upstream result; a supplied foreign placeholder could not select another principal. |
+| Network bypass | Direct guest connections to the upstream and both network interfaces of another gateway failed. The authorized proxied request succeeded. |
+| Path and method boundaries | Requests outside `/v1/*` and POST requests returned 403. |
+| Placement | Tokens were absent from guest and proxy container metadata; gateway grant and private-key paths were absent from guests. This is not a memory or kernel-escape audit. |
+| Disposal and replacement | Disposing one runtime instance left a sibling host's same-key grant usable. Restarting a gateway did not restore its previous grant. |
+| Cancelled acquisition | Cancellation while the provider was awaiting authorization removed the generation's containers. |
+| Abrupt owner exit | A separate host process acquired a 15-second grant and exited with `os._exit` without cleanup. Requests succeeded before expiry and failed afterward on both an actively reused TLS connection and a fresh connection. |
+| CodeAct lifecycle | Concurrent calls through the existing tool factory received distinct trusted call IDs, runtime instances and grants. Successful call completion removed their containers. |
+
+The first WSLC expiry attempt let the connection idle beyond iron-proxy's idle timeout, so that attempt did not establish the existing-connection claim. The final harness keeps the connection active across expiry and verifies that its local TCP port is unchanged. The packaged Go tests separately cover peer-address spoofing, exact port and TLS restrictions, malformed or absent grants, boot replacement, stream cancellation and credential noninjection at another host.
+
+Reproduce with the packaged proxy built and loaded into each engine, then set `MAF_CREDENTIAL_E2E=docker,wslc` and run `uv run pytest tests/test_credential_gateway_e2e.py -q`. `MAF_CREDENTIAL_PROXY_IMAGE` selects the built image. Fixtures create and remove their own local upstream and sandbox resources. These runs do not establish OAuth delegation correctness, arbitrary SDK compatibility, guest-side IPv6 identity binding, Kubernetes placement, distributed business-operation fencing or resistance to kernel escapes. Real authorization and upstream non-disclosure remain host responsibilities.
+
 The corrected live AKS experiment completed **40 checks with 40 expected outcomes and no skips** on 22 September 2026 (Europe/Amsterdam). The [issue assessment and results](https://github.com/sokolaidev/maf-extensions/issues/757#issuecomment-5768658797) record the same conclusion: the gateway and its upstream or token-minting credentials must stay outside the guest pod, and the backend must enforce the boundary. A guest can read a credential held by another container in some same-pod configurations; the negative control reproduced one such configuration.
 
 This was a standalone Kubernetes prototype using generated canary credentials and a controlled HTTPS upstream. It minted no user OAuth tokens, changed no `maf-extensions` backend implementation, and changed no cluster-level security policy. It does not complete M3's Docker/WSLC environment measurement or M4's ACAS group-secret measurement below.
@@ -57,7 +81,7 @@ The first attempt used a certificate fixture missing Authority Key Identifier an
 
 ### Remaining backend work
 
-The result supports proceeding with a backend-supported gateway contract. Before a backend advertises it, the following still need implementation and conformance evidence:
+After the Kubernetes prototype, the following work remained. The Docker/WSLC validation above now supplies its own adapter evidence; Kubernetes identity and placement still require separate backend support.
 
 1. Trusted workload identity that handles Pod UID changes, source-IP reuse, rescheduling, and NAT, rejecting stale bindings. The prototype's current-pod IP binding is only a measured starting point.
 2. Real delegated token acquisition and issuer, audience, scope, and expiry policy. Canary selection measured credential routing, not OAuth delegation.
@@ -358,9 +382,9 @@ Gated on M4: `EGRESS_HEADER` call credentials on acas, behind the `provision_cal
 
 | Issue | What this proposal does with it | Wave |
 |---|---|---|
-| [#567](https://github.com/sokolaidev/maf-extensions/issues/567) | Pillar D in full; Pillar F for the control plane at scope granularity, with a per-call exchanged identity deferred until a host asks for a client per call; `PER_SANDBOX` is vocabulary no platform here offers and stays declared by nobody | 2 |
+| [#567](https://github.com/sokolaidev/maf-extensions/issues/567) | Core admission is implemented; Docker and WSLC now declare `PER_SANDBOX` for explicitly configured credential gateways. Broader principal and control-plane identity work remains separate | Partially implemented |
 | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) | Pillar C, both provisionings: the platform-attached one through `Sandbox.attached_identity`, the static host-configured one through `SandboxSpec.provisioned_identity` | 2 |
-| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) | Originally Pillar E on docker and wslc, with acas awaiting M4. Superseded by the [outside-pod gateway assessment and experiments](#credential-gateway-experiments-for-757); production backend integration remains open | Prototype measured; backend contract next |
+| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) | Raw-token delivery superseded by [external gateways and adapter validation](#credential-gateway-experiments-for-757). Docker/WSLC and CodeAct support fresh per-call grants with independent expiry; other backends remain unsupported | Implemented |
 | [#741](https://github.com/sokolaidev/maf-extensions/issues/741) | Pillar A, direction one, through the shared refusal | 1 |
 | [#753](https://github.com/sokolaidev/maf-extensions/issues/753) | Pillar B: the per-kind rung, the served-by table, the ledger answer | 1 |
 | [#754](https://github.com/sokolaidev/maf-extensions/issues/754) | Pillar B: the capability, the clean path, the docstring, the suite gate | 1 |

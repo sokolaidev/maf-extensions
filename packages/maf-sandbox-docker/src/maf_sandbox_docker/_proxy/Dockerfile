@@ -6,6 +6,8 @@ RUN git clone --depth 1 --branch v0.50.0 https://github.com/paradigmxyz/iron-pro
     && test "$(git rev-parse HEAD)" = 5bd11abeb95ca734c767cfc992ea9be862700614
 COPY iron.patch /tmp/iron.patch
 RUN git apply --check /tmp/iron.patch && git apply /tmp/iron.patch
+COPY credential_gate.go credential_gate_test.go /src/internal/proxy/
+RUN go test ./internal/proxy -run '^TestMAFCredential' -count=1
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /iron-proxy ./cmd/iron-proxy
 
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0

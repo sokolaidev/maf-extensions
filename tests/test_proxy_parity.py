@@ -7,7 +7,14 @@ import pathlib
 import pytest
 from maf_sandbox_docker import proxy_build_context
 
-_FILES = ("Dockerfile", "entrypoint.sh", "iron.patch", "policy.py")
+_FILES = (
+    "Dockerfile",
+    "entrypoint.sh",
+    "iron.patch",
+    "policy.py",
+    "credential_gate.go",
+    "credential_gate_test.go",
+)
 
 
 def _wslc_context() -> pathlib.Path | None:

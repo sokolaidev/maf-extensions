@@ -23,15 +23,20 @@ index 53da084..3acc24b 100644
  	matched, _ := path.Match(pattern, name)
  	return matched
 diff --git a/internal/hostmatch/rule.go b/internal/hostmatch/rule.go
+index a75ada2..aeb09a7 100644
 --- a/internal/hostmatch/rule.go
 +++ b/internal/hostmatch/rule.go
-@@ -85,3 +85,3 @@
+@@ -83,7 +83,7 @@ func CompileRules(configs []RuleConfig, prefix string) ([]Rule, error) {
+ }
+ 
  func isWildcard(methods []string) bool {
 -	return len(methods) == 0 || (len(methods) == 1 && methods[0] == "*")
 +	return len(methods) == 0
  }
+ 
+ // MatchAnyRule returns true if the request matches any rule in the list.
 diff --git a/internal/proxy/proxy.go b/internal/proxy/proxy.go
-index 73bde1f..761cbc6 100644
+index 73bde1f..ae5404e 100644
 --- a/internal/proxy/proxy.go
 +++ b/internal/proxy/proxy.go
 @@ -14,10 +14,13 @@ import (
@@ -48,31 +53,37 @@ index 73bde1f..761cbc6 100644
  	"time"
  
  	"github.com/ironsh/iron-proxy/internal/certcache"
-@@ -52,6 +55,7 @@ type Proxy struct {
+@@ -52,6 +55,8 @@ type Proxy struct {
  	mcpGateway           *mcpgateway.Holder
  	responseRetryHandler *responseretry.Handler
  	logger               *slog.Logger
 +	allowPrivateHTTP     bool
++	credentials          *mafCredentials
  
  	// shutdownCtx is canceled by Shutdown to unblock in-flight TCP-passthrough
  	// connections that would otherwise sit on blocking Reads.
-@@ -125,6 +129,7 @@ func New(opts Options) *Proxy {
+@@ -125,6 +130,8 @@ func New(opts Options) *Proxy {
  		mcpGateway:           opts.MCPGateway,
  		responseRetryHandler: opts.ResponseRetryHandler,
  		logger:               opts.Logger,
 +		allowPrivateHTTP:     os.Getenv("MAF_SANDBOX_PRIVATE_HTTP") == "1",
++		credentials:          newMAFCredentials(),
  		shutdownCtx:          shutdownCtx,
  		shutdownCancel:       shutdownCancel,
  	}
-@@ -144,6 +149,7 @@ func New(opts Options) *Proxy {
- 	// Enable HTTP/2 on the HTTPS listener (adds h2 to the TLS ALPN and serves
+@@ -145,6 +152,8 @@ func New(opts Options) *Proxy {
  	// negotiated conns through the existing handler); zero config never errors.
  	_ = http2.ConfigureServer(p.httpsServer, &http2.Server{})
  
 +	fmt.Fprintln(os.Stdout, "maf-sandbox egress contract v1")
++	fmt.Fprintln(os.Stdout, "maf-sandbox credential contract v1")
  	return p
  }
-@@ -431,7 +437,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *transform.TunnelInfo) {
+ 
+@@ -428,11 +437,11 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *t
+ 		}
+ 	}
+ 
 -	// WebSocket upgrade: hijack and proxy bidirectionally
 +	// WebSocket upgrades bypass the upstream transport checks.
  	if isWebSocketUpgrade(r) {
@@ -84,7 +95,16 @@ index 73bde1f..761cbc6 100644
 +		http.Error(w, "WebSocket egress is not supported", http.StatusForbidden)
  		return
  	}
-@@ -937,7 +943,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+ 
+@@ -491,6 +500,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *t
+ 		http.Error(w, "bad gateway", http.StatusBadGateway)
+ 		return
+ 	}
++	upstreamReq = upstreamReq.WithContext(context.WithValue(upstreamReq.Context(), mafPeerKey{}, r.RemoteAddr))
+ 	copyHeaders(upstreamReq.Header, r.Header)
+ 	sanitizeUpstreamHeaders(upstreamReq.Header)
+ 	// If a transform buffered the request body, set ContentLength so the
+@@ -937,7 +947,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  		Timeout:   30 * time.Second,
  		KeepAlive: 30 * time.Second,
  		Resolver:  resolver,
@@ -106,10 +126,11 @@ index 73bde1f..761cbc6 100644
  	}
  	if responseHeaderTimeout <= 0 {
  		responseHeaderTimeout = config.DefaultUpstreamResponseHeaderTimeout
-@@ -959,9 +978,69 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -959,7 +982,77 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  }
  
  func (p *Proxy) doUpstream(req *http.Request) (*http.Response, error) {
+-	return p.transport.RoundTrip(req)
 +	if req.URL.Scheme == "http" {
 +		if !p.allowPrivateHTTP {
 +			return nil, fmt.Errorf("plaintext HTTP is disabled")
@@ -118,9 +139,19 @@ index 73bde1f..761cbc6 100644
 +	} else if req.URL.Scheme != "https" {
 +		return nil, fmt.Errorf("unsupported upstream scheme %q", req.URL.Scheme)
 +	}
- 	return p.transport.RoundTrip(req)
- }
- 
++	req, cancel, err := p.credentials.authorize(req)
++	if err != nil {
++		return nil, err
++	}
++	resp, err := p.transport.RoundTrip(req)
++	if err != nil {
++		cancel()
++		return nil, err
++	}
++	resp.Body = &mafResponseBody{ReadCloser: resp.Body, cancel: cancel}
++	return resp, nil
++}
++
 +type privateHTTPKey struct{}
 +
 +var privatePrefixes = []netip.Prefix{
@@ -171,13 +202,11 @@ index 73bde1f..761cbc6 100644
 +		}
 +	}
 +	return false, nil
-+}
-+
+ }
+ 
  // markIfClientCancel records a client-initiated cancellation on result and
- // returns true; callers should then return without writing a 502. The wrapped
- // errors.Is on err catches transforms that report context.Canceled without
 diff --git a/internal/transform/allowlist/allowlist.go b/internal/transform/allowlist/allowlist.go
-index f85a39c..6b830db 100644
+index f85a39c..ebade0b 100644
 --- a/internal/transform/allowlist/allowlist.go
 +++ b/internal/transform/allowlist/allowlist.go
 @@ -79,6 +79,16 @@ func New(domains []string, cidrs []string) (*Allowlist, error) {

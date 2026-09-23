@@ -56,6 +56,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
 from maf_sandbox import (
+    AttachedIdentity,
     BackendDeclarations,
     Capability,
     DisposalFailure,
@@ -84,6 +85,7 @@ from maf_sandbox.bounded_exec import (
     SandboxExecOutputLimitExceeded,
     read_bounded_process_output,
 )
+from maf_sandbox.credentials import GatewayLease
 from maf_sandbox.guest_access import refuse_capabilities_the_guest_cannot_back
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
@@ -102,7 +104,7 @@ from maf_sandbox.paths import (
 from ._config import DockerSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
-from ._proxy.policy import encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -1468,6 +1470,8 @@ class DockerSandboxBackend:
             config.allow_private_http and not config.egress_proxy_image
         ):
             raise ValueError("allow_private_http requires a configured egress proxy image")
+        if config.credential_gateway is not None and not config.egress_proxy_image:
+            raise ValueError("credential_gateway requires a configured egress proxy image")
         self._config = config
         self._client_env = dict(os.environ)
         self._context_args: tuple[str, ...] = ()
@@ -1491,7 +1495,14 @@ class DockerSandboxBackend:
         capabilities: frozenset[Capability] = _CAPABILITIES
         if config.egress_proxy_image:
             capabilities |= frozenset({Capability.EGRESS_METHODS, Capability.EGRESS_PATHS})
+        if config.credential_gateway is not None:
+            capabilities |= frozenset({Capability.ATTACHED_IDENTITY})
         self._declarations = BackendDeclarations(
+            attached_identity=(
+                config.credential_gateway.attached_identity
+                if config.credential_gateway is not None
+                else AttachedIdentity()
+            ),
             capabilities=capabilities,
             limits=_LIMITS,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
@@ -1831,8 +1842,33 @@ class DockerSandboxBackend:
                 holds no host address — the engine will not build one, or one that is already
                 there could not be removed.
         """
+        lease = GatewayLease.start(self._config.credential_gateway, key, spec)
         egress_id = self._egress_id(spec)
-        name = _container_name(key, spec.kind, egress_id)
+        # A cryptographic generation is part of the name on every credential acquisition.
+        # Hosts sharing keys or runtime engines cannot adopt or overwrite each other's grants.
+        name = (
+            _container_name(key, spec.kind, egress_id)
+            if lease is None
+            else f"{_NAME_PREFIX}{lease.generation}"
+        )
+        try:
+            return await self._acquire_generation(key, spec, name, egress_id, lease)
+        except BaseException:
+            if lease is not None:
+                # Only this unguessable generation, including failures before an instance ID.
+                await self._remove(_proxy_name(name))
+                await self._remove(name)
+                await self._remove_network(_network_name(name))
+            raise
+
+    async def _acquire_generation(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        name: str,
+        egress_id: str,
+        lease: GatewayLease | None,
+    ) -> _DockerSandbox:
         async with self._acquire_lock(key, spec.kind):
             await self._bind_daemon()
             freeze_key = self._freeze_key(name)
@@ -1922,7 +1958,7 @@ class DockerSandboxBackend:
                     raise RuntimeError("docker did not establish the sandbox instance ID")
             except BaseException:
                 try:
-                    failure = await self.dispose(key, kind=spec.kind)
+                    failure = await self.dispose(key, kind=spec.kind) if lease is None else None
                     if failure is not None:
                         logger.warning("sandbox identity refusal cleanup failed: %s", failure)
                 except Exception as failure:
@@ -1955,6 +1991,8 @@ class DockerSandboxBackend:
                 await sandbox.prepare_work_dir(spec)
                 if egress_id:
                     await self._install_proxy_ca(name, sandbox, spec)
+                if lease is not None:
+                    await self._install_credentials(name, key, spec, instance_id, lease)
             except BaseException:
                 try:
                     failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
@@ -1964,6 +2002,66 @@ class DockerSandboxBackend:
                     logger.warning("sandbox setup cleanup raised: %s", failure)
                 raise
             return sandbox
+
+    async def _install_credentials(
+        self,
+        name: str,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        instance_id: str,
+        lease: GatewayLease,
+    ) -> None:
+        """Deliver one grant through the host's engine channel to this exact proxy instance."""
+        gateway = self._config.credential_gateway
+        assert gateway is not None
+        workload = await self._inspect_disposal_target(instance_id)
+        proxy = await self._inspect_disposal_target(_proxy_name(name))
+        if workload is None or workload.get("Id") != instance_id or proxy is None:
+            raise RuntimeError("credential gateway runtime identity is unavailable")
+        settings = workload.get("NetworkSettings")
+        networks = (
+            cast("dict[str, object]", settings).get("Networks")
+            if isinstance(settings, dict)
+            else None
+        )
+        network = (
+            cast("dict[str, object]", networks).get(_network_name(name))
+            if isinstance(networks, dict)
+            else None
+        )
+        peer = (
+            cast("dict[str, object]", network).get("IPAddress")
+            if isinstance(network, dict)
+            else None
+        )
+        proxy_id = proxy.get("Id")
+        if not isinstance(peer, str) or not peer or not isinstance(proxy_id, str) or not proxy_id:
+            raise RuntimeError("credential gateway private network identity is unavailable")
+        boot = await self._docker(
+            "exec",
+            "-i",
+            proxy_id,
+            "cat",
+            "/run/maf-proxy/boot",
+            timeout=self._config.command_timeout_seconds,
+        )
+        if boot.returncode:
+            raise RuntimeError("credential gateway boot identity is unavailable")
+        payload = await lease.payload(
+            gateway, key, spec, instance_id, peer, boot.stdout.decode().strip()
+        )
+        installed = await self._docker(
+            "exec",
+            "-i",
+            proxy_id,
+            "sh",
+            "-c",
+            INSTALL_GRANT,
+            stdin=payload,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if installed.returncode:
+            raise RuntimeError("credential gateway refused its one-time grant installation")
 
     async def _install_proxy_ca(
         self, name: str, sandbox: _DockerSandbox, spec: SandboxSpec
@@ -3545,8 +3643,23 @@ class DockerSandboxBackend:
 
         control_addresses = await self._outbound_control_addresses()
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec, control_addresses=control_addresses)}"]
+        args += [
+            "-e",
+            f"{_CONFIG_ENV}="
+            + encoded_policy(
+                spec,
+                control_addresses=control_addresses,
+                credentials=self._config.credential_gateway is not None,
+            ),
+        ]
         args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
+        args += ["-e", f"MAF_SANDBOX_CREDENTIALS={int(bool(spec.authority_channels))}"]
+        if self._config.credential_gateway is not None:
+            args += [
+                "-e",
+                "MAF_SANDBOX_CREDENTIAL_MAX_SECONDS="
+                + str(self._config.credential_gateway.max_lifetime_seconds),
+            ]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         attribution = _key_label(key)
@@ -3618,6 +3731,10 @@ class DockerSandboxBackend:
                 result.returncode == 0
                 and _PROXY_READY_MARKER in logs
                 and _PROXY_CONTRACT_MARKER in logs
+                and (
+                    self._config.credential_gateway is None
+                    or "maf-sandbox credential contract v1" in logs
+                )
             ):
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)

@@ -45,6 +45,8 @@ from maf_sandbox import (
     EgressRule,
     ExecResult,
     HostToolRun,
+    IdentityScope,
+    IsolationScope,
     ListedFile,
     NameNormalization,
     OutputSink,
@@ -198,11 +200,16 @@ def codeact_sandbox_spec(
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,
     takes_files: bool = False,
+    credential_retention_seconds: int | None = None,
 ) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
 
     ``runtime`` selects ``run_code`` instead of exec. ``takes_files`` declares the file-store
     channel that ``make_codeact_tools`` derives from its ``file_store`` argument.
+
+    ``credential_retention_seconds`` opts into external gateway authority for the audiences
+    in ``egress_allow``. It requires per-sandbox identity and call isolation with that hard
+    retention ceiling; the host separately configures and authorizes the credential provider.
 
     No ``min_isolation`` is deliberate: this kind runs only what the model wrote, so the
     host's floor governs.
@@ -256,6 +263,7 @@ def codeact_sandbox_spec(
         egress_allow=egress_allow,
         runtime=runtime,
         takes_files=takes_files,
+        credential_retention_seconds=credential_retention_seconds,
     )
 
 
@@ -277,6 +285,7 @@ def make_codeact_tools(
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,
+    credential_retention_seconds: int | None = None,
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -285,6 +294,9 @@ def make_codeact_tools(
     never shown a parameter this deployment cannot honour.
 
     Args:
+        credential_retention_seconds: Hard lifetime ceiling for external gateway credentials.
+            Requires authority rules in ``egress_allow`` and a capable, opted-in router.
+            Forces a fresh sandbox per call and makes this tool approval-gated.
         runtime: The verified Python runtime contract, selecting ``run_code`` instead of exec.
             File channels require its ``guest_work_dir``. Native host tools are not supported.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
@@ -520,10 +532,13 @@ def make_codeact_tools(
         egress_allow=egress_allow if configured else (),
         runtime=runtime if configured else None,
         takes_files=file_store is not None,
+        credential_retention_seconds=credential_retention_seconds if configured else None,
     )
     # A single host-tool call may exercise the user's delegated authority, and which one does
     # is not knowable before the program runs, so one such tool raises the whole surface.
-    approval_gated = surface is not None and surface.requires_approval
+    approval_gated = credential_retention_seconds is not None or (
+        surface is not None and surface.requires_approval
+    )
     # A registry can carry something out with no landing artifact to say so — a tool with a
     # declared sink, or an unstamped one that might have one — the one flow neither
     # `egress_allow` nor an `output_sink` reveals. `also_carries_out` folds that fact, which
@@ -665,6 +680,7 @@ def _codeact_spec(
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,
     takes_files: bool = False,
+    credential_retention_seconds: int | None = None,
 ) -> SandboxSpec:
     """:func:`codeact_sandbox_spec`, over a host-tool surface the caller has already derived."""
     _validate_runtime(runtime, takes_files=takes_files, outputs=outputs)
@@ -687,6 +703,15 @@ def _codeact_spec(
     # one is CLOSED — so there is no way to express the open posture that would make unconfined
     # model code an exfiltration surface.
     effective_egress = _effective_egress(egress_allow)
+    authority = any(
+        isinstance(rule, EgressRule) and rule.authority is not None for rule in effective_egress
+    )
+    if authority != (credential_retention_seconds is not None):
+        raise ValueError(
+            "credential_retention_seconds and egress authority rules require each other"
+        )
+    if authority:
+        requires.add(Capability.ATTACHED_IDENTITY)
     egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED
     return SandboxSpec(
         kind=CODEACT_KIND,
@@ -694,6 +719,9 @@ def _codeact_spec(
         image_id=image_id,
         egress=egress,
         egress_allow=effective_egress,
+        isolation_scope=IsolationScope.CALL if authority else IsolationScope.CONVERSATION,
+        max_identity_scope=IdentityScope.PER_SANDBOX if authority else None,
+        max_identity_retention_seconds=credential_retention_seconds,
         work_dir=runtime.guest_work_dir if runtime is not None else None,
         execution_contract=runtime_contract(runtime),
         # Model-written code can write outside the call path and leave processes running.

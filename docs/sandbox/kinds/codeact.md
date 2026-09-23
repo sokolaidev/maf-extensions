@@ -68,6 +68,8 @@ Entries must follow the [network rule syntax](../network.md#method-scoped-allow-
 
 The router requires a backend that enforces the selected mode. It does not quietly replace an allowlist with closed access.
 
+For [external gateway credentials](../hosts.md#credentials-for-guest-http-requests), pass `credential_retention_seconds=300` and concrete `EgressRule(..., authority="audience")` entries to `make_codeact_tools` or `codeact_sandbox_spec`. These options require each other. The spec requires `ATTACHED_IDENTITY`, per-sandbox sharing, the stated retention ceiling and a fresh sandbox per call. The tool requires approval. The host separately configures the Docker/WSLC credential provider and permits `max_identity_scope=IdentityScope.PER_SANDBOX` on the router. No credential or user selector is exposed as a model tool argument.
+
 ## Host tools
 
 No host function is callable until the host supplies a nonempty registry. Reading the registry seals it, so finish registration before building the spec or tools.
