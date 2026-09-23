@@ -3955,9 +3955,10 @@ class TestAllowlistTopology:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
     @pytest.mark.parametrize("logs", [b"starting up\n", b"tunnel proxy starting\n"])
-    def test_a_proxy_without_readiness_or_contract_fails_the_acquire(self, logs: bytes):
+    def test_a_proxy_without_readiness_or_contract_fails_the_acquire(
+        self, logs: bytes, monkeypatch: pytest.MonkeyPatch
+    ):
         """Better to fail than hand back a sandbox whose egress is not actually up."""
-        import maf_sandbox_wslc._backend as backend_mod
 
         def respond(args):
             if args[:2] == ("container", "logs"):
@@ -3965,13 +3966,10 @@ class TestAllowlistTopology:
             return _machine()(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
-        original = backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S
-        backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = 2, 0.0
-        try:
-            with pytest.raises(RuntimeError, match="required policy contract"):
-                asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        finally:
-            backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = original
+        monkeypatch.setattr("maf_sandbox_wslc._backend._PROXY_READY_ATTEMPTS", 2)
+        monkeypatch.setattr("maf_sandbox_wslc._backend._PROXY_READY_DELAY_S", 0.0)
+        with pytest.raises(RuntimeError, match="required policy contract"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         # The network it created on the way in must be reclaimed on the failure.
         assert fake.matching("network", "remove")[-1].args[-1] == _AL_NET
 

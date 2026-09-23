@@ -4667,10 +4667,8 @@ class TestAllowlistTopology:
         assert order == sorted(order)
 
     def test_an_unverified_proxy_is_not_served(self, monkeypatch: pytest.MonkeyPatch):
-        import maf_sandbox_docker._backend as backend_mod
-
-        monkeypatch.setattr(backend_mod, "_PROXY_READY_ATTEMPTS", 1)
-        monkeypatch.setattr(backend_mod, "_PROXY_READY_DELAY_S", 0.0)
+        monkeypatch.setattr("maf_sandbox_docker._backend._PROXY_READY_ATTEMPTS", 1)
+        monkeypatch.setattr("maf_sandbox_docker._backend._PROXY_READY_DELAY_S", 0.0)
         backend, fake = _backend_with(
             _machine(overrides={("logs",): _DockerResult(0, b"tunnel proxy starting\n", "")}),
             config=_ALLOW_CONFIG,
