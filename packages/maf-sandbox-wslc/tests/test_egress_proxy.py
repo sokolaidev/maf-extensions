@@ -48,6 +48,12 @@ def test_inspected_gateways_are_denied_without_denying_all_private_addresses() -
     assert "172.17.0.0/16" not in denied
 
 
+def test_a_named_subnet_without_a_reported_gateway_denies_its_default_gateway() -> None:
+    # Engine 28.0.4 reports a caller-named subnet without the gateway its bridge holds.
+    ipam = [{"Subnet": "fd42:1407:abcd::/64"}, {"Subnet": "172.19.0.0/16", "Gateway": "172.19.0.1"}]
+    assert network_gateways(ipam) == ("fd42:1407:abcd::1", "172.19.0.1")
+
+
 def test_public_plaintext_error_is_a_denial() -> None:
     record = {
         "msg": "request",

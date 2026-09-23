@@ -2148,14 +2148,12 @@ class TestAllowlistEgress:
                 "metadata.test": "fd00:ec2::254",
                 "interface.test": v6_address(proxy),
             }
-            ipam = json.loads(subprocess.check_output(["docker", "network", "inspect", network]))[
-                0
-            ]["IPAM"]["Config"]
-            gateways = {
-                ipaddress.ip_address(entry["Gateway"]).version: entry["Gateway"] for entry in ipam
-            }
-            entries["gateway4.test"] = gateways[4]
-            entries["gateway6.test"] = gateways[6]
+            # The endpoint, not IPAM: Engine 28 leaves a named subnet's gateway out of IPAM.
+            endpoint = json.loads(subprocess.check_output(["docker", "inspect", proxy]))[0][
+                "NetworkSettings"
+            ]["Networks"][network]
+            entries["gateway4.test"] = endpoint["Gateway"]
+            entries["gateway6.test"] = endpoint["IPv6Gateway"]
             subprocess.run(
                 ["docker", "exec", "-i", "-u", "0", proxy, "/bin/sh", "-c", "cat >> /etc/hosts"],
                 input="".join(f"{address} {host}\n" for host, address in entries.items()),
