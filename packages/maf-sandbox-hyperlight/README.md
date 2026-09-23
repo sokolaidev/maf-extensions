@@ -151,6 +151,7 @@ Requests originate on the host network. Allowing an internal or loopback hostnam
 | `max_output_bytes` | 1 MiB combined stdout/stderr; maximum 16 MiB |
 | `max_worker_memory_bytes` | 1.5 GiB on Windows, 3 GiB on Linux; maximum 16 GiB |
 | `linux_cgroup_root` | `None`, selecting the default delegated path |
+| `pod` | `None`; explicitly selects supervised aggregate container containment when set |
 | `file_outputs` | `False` |
 
 Guest heap and stack are fixed at 400 MiB and 200 MiB. Native output is buffered before the byte check; the worker's kernel memory limit and execution deadline bound that work. Retained worker diagnostics are separately limited to 64 KiB.
@@ -158,6 +159,8 @@ Guest heap and stack are fixed at 400 MiB and 200 MiB. Native output is buffered
 Execution and reset deadlines include queue time. `SandboxQueuedTimeout` means nothing was submitted, so the worker remains usable. An active timeout, cancellation, native-output overflow or worker failure retires the sandbox. Cleanup can add `cleanup_timeout` to the response time.
 
 ## Ownership and shutdown
+
+For the upstream Kubernetes deployment, run one `(scope, thread_id, agent_id, kind)` per pod, with the application and adapter together. Read `HyperlightPodConfig.from_environment()` inside the supervisor's application process and pass it as `pod`, together with `max_worker_memory_bytes=None`. This mode uses the whole container's budget and retires the whole pod on active failure. It does not promise that the application survives worker OOM. The default local containment remains unchanged. See the [AKS deployment instructions](https://github.com/sokolaidev/maf-extensions/blob/main/images/hyperlight-sandbox/README.md) for the required controller, image and permissions.
 
 One host process owns the backend within its shared ownership namespace. Backend objects in that process share the key/kind registry. Route acquisition, execution and purge to that owner.
 

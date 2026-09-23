@@ -1,6 +1,6 @@
 # Hyperlight research
 
-> Consolidated research record, 2026-08-16 through 2026-09-22. It combines the Hyperlight backend design, source exploration, filesystem prerequisite and cleanup audit, Azure Container Apps feasibility audit and live ACA probe. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
+> Consolidated research record, 2026-08-16 through 2026-09-23. It combines the Hyperlight backend design, source exploration, filesystem prerequisite and cleanup audit, Azure Container Apps feasibility audit and live ACA probe, and the AKS upstream audit and measurements. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
 
 ## Decision and scope
 
@@ -114,6 +114,92 @@ The pull-surface conformance probes do not exercise `EXEC`, so they can be reuse
 The source investigation measured the matched 0.4.0 stack on Windows WHP and found the micro-VM bar: the Hyper-V platform library loaded, no host filesystem was exposed, the metadata endpoint was unreachable even when allowlisted, egress defaulted to deny with a strict per-entry allowlist, and only declared guest-host channels were observable. The later 0.7.0 filesystem probe confirmed the file-specific behavior above. Linux KVM and MSHV remain separate family validations.
 
 The shipped backend guide records the later adapter evidence: Windows WHP, WSL2/KVM and native Linux KVM suites cover stream separation, ordinary exceptions, warm state, reset, environment isolation, guest writes, timeout/cancellation worker reaping, output limits, exact-host HTTP policy, selective disposal, scope purge, CodeAct routing and lifecycle controls. Those are environment-specific measurements, not a universal claim for MSHV, AKS or arbitrary guests.
+
+## AKS upstream basis and evidence, 2026-09-22
+
+The selected direction was to reuse upstream's Kubernetes deployment and add the suite's session lifecycle above it. The [AKS deployment design](../backends/hyperlight.md#aks-deployment-design) records that decision and its implementation status. The parent [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) retains the detailed Automatic and Standard probe reports; this section records what supports the design and what remains unproven.
+
+### What upstream supplied
+
+The source audit pinned `hyperlight-dev/hyperlight-on-kubernetes` at `fc71b4501d23977fcc54f7be144d884fc8210667`, still its default-branch head when checked. Its [architecture](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/blob/fc71b4501d23977fcc54f7be144d884fc8210667/docs/architecture.md) uses a node device-plugin DaemonSet, CDI and an extended resource. Its [Azure guide](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/blob/fc71b4501d23977fcc54f7be144d884fc8210667/docs/azure-deployment.md) provisions infrastructure, builds/pushes the plugin and deploys a sample application. Existing clusters need the reusable deployment pieces, not an unmodified provisioning script that also creates pools outside the intended KVM scope.
+
+The [plugin manifest](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/blob/fc71b4501d23977fcc54f7be144d884fc8210667/deploy/manifests/device-plugin.yaml) runs as root with `privileged: false`, writes the kubelet device-plugin and CDI directories, and reads the host device directory. Its source registers `hyperlight.dev/hypervisor` and emits a CDI mapping with configurable UID/GID. It exposes an existing device; it does not create an Azure VM or require changing the host device's ownership or mode. Node labels are an operator/setup responsibility; the audited plugin does not perform the auto-labeling described in the architecture prose. The default 2,000 advertised allocations share the same device and establish no safe VM count or memory capacity.
+
+The [KVM application manifest](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/blob/fc71b4501d23977fcc54f7be144d884fc8210667/hyperlight-app/k8s/deployment-kvm.yaml) requests one hypervisor allocation and runs non-root with container CPU/memory limits. Its 128 MiB limit belongs to the small [Rust sample](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/blob/fc71b4501d23977fcc54f7be144d884fc8210667/hyperlight-app/host/src/main.rs), not the Python guest. The inspected repository supplied no delegated-cgroup helper or per-worker resource/owner supervisor.
+
+The deployment addition therefore pins upstream source and image digests, renders all placeholders, validates device permissions and uses a small overlay for node selection, resource budgets and security settings. Reusable plugin defects belong upstream; there is no independent plugin implementation in the design. The initial device count is one allocation per enabled node, increased only with measured admission and node headroom. The application explicitly disables service-account token mounting; plugin capabilities, seccomp and host-path access need their own validation under the cluster's admission policy.
+
+### Measured Standard AKS evidence
+
+The rerun used Kubernetes 1.35.7, Ubuntu 24.04.4, kernel 6.8.0-1067-azure, containerd 2.3.3-2, x86-64 Standard_D2ads_v5 nodes and Python 3.13.12 with the exact 0.7.0 SDK/backend/guest trio. Both nodes exposed KVM and cgroup v2; execution used one. The non-root application opened KVM, created a VM and executed Python. An otherwise matching pod without the device failed. The host KVM device's ownership and mode were unchanged.
+
+| Probe | Result | Boundary |
+|---|---|---|
+| Existing live guest/Linux adapter suite | 31 passed, no skips, 108.35 seconds | Local containment revision `1aaa4612`, trusted cgroup-delegation helper; not the proposed container integration |
+| Additional operator/timing/replacement checks | Five successful executions, including one repeated operator check | 36 executions overall, not 36 distinct tests |
+| Pod creation to main-container start | 6–8 seconds across three raw-SDK pods | Cached base image, running node; includes a 6–7-second dependency init container; one-second timestamps |
+| Full adapter acquire in an already-running delegated container | 3.61–3.88 seconds across five fresh workers | Includes process startup and baseline snapshot; excludes pod creation and delegation handshake |
+| Raw SDK fresh VM plus first code | Median 109.62 ms at 25/35 MiB heap/stack; 1,179.33 ms at 400/200 MiB | 30 samples each in an initialized process; different from full adapter acquire |
+| Raw SDK restore plus code | Median 2.07 ms at 25/35 MiB; 5.45 ms at 400/200 MiB | 30 samples each; separate first-restore cost |
+| Default adapter worker memory | RSS 1,337.13 MiB; worker cgroup peak 1,743.84 MiB | 400/200 MiB guest configuration, 3 GiB worker limit; RSS and cgroup accounting differ |
+| Full containment suite container peak | 3,154.52 MiB under a 4 GiB limit | Includes deliberate worker OOM tests; not a single idle VM's requirement |
+| 404-node/669-edge CAF diagram at 50/100 MiB | RSS 171.28 MiB; container peak 221.01 MiB | DOT generation through the raw-SDK bridge; no Graphviz process in the guest |
+| Same diagram with retained snapshot and five restores | Final RSS 330.19 MiB; container peak 391.32 MiB | Snapshot/reuse materially changes sizing; not adapter capacity proof |
+| Delete pod while an infinite guest ran | API deletion 12.52 seconds with 10-second grace; independent observation confirmed the exact container cgroup disappeared | Healthy node/control plane; not a hard deadline or partition result |
+
+These results support KVM feasibility and workload-specific sizing. They do not establish a production memory minimum. The first container integration must measure its own application overhead, startup, snapshot, output and failure peaks, with declared headroom and one resident VM. Copying either upstream's small Rust limit or the raw SDK diagram's steady RSS would omit costs demonstrated by the other measurements.
+
+The Standard cluster admitted the experiment but its Audit/Warn policies flagged trusted helper authority, image registries and resource thresholds. Earlier Automatic probes required a temporary infrastructure exception. Neither result established default baseline compliance. Experiment resources and host-side artifacts were removed, original workloads remained healthy, and the configured admission policies were preserved. The custom helper established a separate per-worker containment proof; packaging it is not a prerequisite of the selected upstream-based container design.
+
+### Additions and validation still required
+
+[#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) owns the thin upstream deployment overlay, reproducible images and device lifecycle. Its remaining checks include plugin/kubelet restarts, stale CDI, unusable-device health, eligible node images, admission requirements and teardown. MSHV remains outside the first deployment.
+
+[#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) owns explicit container containment and one authenticated session per pod. The application stays with its local adapter; the host's pod controller retains ownership and cleanup state outside the failing pod. This needs a distinct lifecycle implementation and protocol error mapping. Removing the current cgroup checks would not implement it. The earlier remote-worker proposal [#1236](https://github.com/sokolaidev/maf-extensions/issues/1236) was closed as not planned and is not a delivered dependency or reopened by this design.
+
+The validation must cover actual Python `RUN_CODE`/`SNAPSHOT` and CodeAct reset; pre-submission queue expiry versus active cancellation; infinite guest and native hang; worker/owner OOM and abrupt death; verified whole-pod retirement; no surviving worker or stale state on replacement; cross-user rejection; exact-instance disposal and retryable failed purge; output delivery/cleanup; and `CLOSED`/`ALLOWLIST` behavior. Pod deletion, node drain/reboot, controller restart, API outage and network partition need explicit evidence. If shutdown cannot be confirmed, the safe result is pending cleanup with replacement refused, not successful disposal. Generic distributed owner routing/purge remains conditional work in [#1239](https://github.com/sokolaidev/maf-extensions/issues/1239).
+
+The initial design update delivered no container-containment implementation or new live probe. The following implementation and measurements supersede that status; they do not replace the historical delegated-cgroup evidence above.
+
+### Explicit scoped-pod implementation and probe, 2026-09-23
+
+The implementation adds `HyperlightPodConfig`, a non-root namespace PID 1 supervisor, `HyperlightPodController`, an image builder and a thin overlay of the pinned upstream plugin. One `(scope, thread_id, agent_id, kind)` owns each pod. A tool call does not allocate a new pod unless the host deliberately chooses that lifetime. The application and adapter remain colocated; there is no remote execution API, node cgroup helper or silent weakening of local containment. The [deployment instructions](../../../images/hyperlight-sandbox/README.md) describe the operational contract.
+
+The Standard AKS probe used the same Kubernetes, Ubuntu, kernel, containerd, node family, Python and pinned 0.7.0 trio listed above. The upstream image was `ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98`, with one advertised allocation on one verified node. Application pods passed Restricted admission with no host mounts, capabilities, privilege escalation or service-account token. The actual container had finite CPU/memory/PID controls and swap disabled. The cluster still warned about public registries and root infrastructure; this is not blanket Microsoft-baseline compliance. No policy or RBAC exception was added for this run.
+
+A prebuilt application image was built locally. Live pods used the documented registry-free path: a pinned Python base, immutable digest-verified wheel bundle and hash-locked dependency init container. Consequently, startup numbers include dependency installation and do not measure a prebuilt application's cold image pull.
+
+| Live check | Result |
+|---|---|
+| Guest execution and snapshot reset | Passed; globals cleared, instance changed, ordinary exceptions allowed reuse |
+| Ownership and admission | Cross-scope/thread/agent and changed policy refused; stale-instance disposal preserved the current worker; queued expiry preserved it |
+| CodeAct | Fixed and per-spec routes passed with reset between calls |
+| Files and limits | Binary delivery, listing, bounded reads and reset cleanup passed; oversized source refused before execution; oversized native output retired the pod |
+| Network | CLOSED refused HTTP; ALLOWLIST reached only the named loopback host and survived reset |
+| Active failure | Infinite guest timeout, cancellation, stopped native worker, worker SIGKILL and owner SIGKILL all retired the pod with exit 70 |
+| Aggregate OOM | Host allocation pressure with a resident VM reached the 4 GiB limit; runtime reported `OOMKilled`, exit 137; cleanup confirmed termination |
+| Controller death | Killing the controller during active execution retired the workload without first requesting pod deletion; replacement admission was refused while its reservation existed |
+| Recovery | Live cleanup remained pending; a fresh controller confirmed termination and released the reservation in 11.07 seconds after controller death |
+| Same-scope replacement | After confirmed cleanup, the recovered scope received a different pod UID and passed the positive guest/reset checks |
+| Device-plugin restart | Replacement plugin became ready and a fresh positive workload passed |
+
+These are 12 application modes plus the controller-death/recovery experiment, not 13 adapter conformance tests. Every selected mode used a real KVM guest; expected failure modes passed by producing the required retirement and exact-UID runtime termination. No skipped test is counted as a live pass. Init and attach startup defects found during the work were corrected and rerun. Failed initialization cleanup has a distinct runtime-proof path.
+
+| Measurement | Observed value | Scope |
+|---|---|---|
+| Pod creation to main-container start | 12–13 seconds across the 12 selected modes | Cached Python image; includes 10–12 seconds of dependency bootstrap; one-second Kubernetes timestamps |
+| Full adapter acquisition | 2.71 seconds in the final positive run; 2.65–3.52 seconds across measured modes | Running container; worker, default 400/200 MiB heap/stack, baseline snapshot and controller acknowledgement |
+| First trivial code after acquisition | 52.8 ms in the final positive run | Includes remote lifecycle acknowledgement; not raw SDK latency |
+| Snapshot reset | 207.1 ms in that run | Includes controller transport; not a warmed in-process SDK benchmark |
+| Worker RSS | 1,130.13 MiB | One resident VM after execution and reset |
+| Application RSS | 34.93 MiB | Owning Python process, excluding the worker and PID 1 |
+| Main-container memory | Current 1,163.82 MiB; peak 1,833.93 MiB | Cgroup accounting, not RSS; 4 GiB container limit |
+
+This measured small program leaves roughly 2.2 GiB below the chosen ceiling, not a production sizing guarantee. Larger application state, output buffers, dependency imports and workloads still require their own peak measurements. Controller API calls and verified deletion added substantial time to complete probe runs; the 32–37-second end-to-end durations are not VM startup times.
+
+Teardown removed the application pods and reservations, test namespaces, plugin DaemonSet and exact test-created CDI/socket artifacts. Guarded node cleanup verified the host KVM ownership and mode were unchanged. Original node labels were restored; all 34 baseline pods retained their UIDs and restart counts. Admission policy and cluster RBAC were unchanged.
+
+Remaining acceptance includes kubelet restart, node drain/reboot or reimage, API outage and network partition, unusable-device health, registry/provenance policy, production networking, and application-specific sizing. Runtime termination is the live cleanup proof; no independent host process/cgroup observer or production node fencing service was added. Synthetic terminal states and missing pods without a saved receipt retain ownership in unit tests, but those tests do not substitute for a live partition exercise. Individual worker-only OOM and every existing local file/egress conformance variant were not rerun under this mode. [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230), [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) and [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) remain open for that work; generic distributed routing remains [#1239](https://github.com/sokolaidev/maf-extensions/issues/1239).
 
 ## Azure Container Apps
 

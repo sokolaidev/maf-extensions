@@ -23,6 +23,13 @@ class Lifetime(Protocol):
 
 def create_job(config: HyperlightSandboxConfig) -> Lifetime:
     """Require kernel memory enforcement and owner-death cleanup on each host."""
+    if config.pod is not None:
+        if sys.platform != "linux":
+            raise ValueError("pod containment requires Linux")
+        from ._pod import PodJob
+
+        return PodJob(config.pod, config.cleanup_timeout)
+    assert config.max_worker_memory_bytes is not None
     if sys.platform == "linux":
         from ._linux import DEFAULT_CGROUP_ROOT, Job
 
