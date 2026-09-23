@@ -11,6 +11,7 @@ from typing import BinaryIO, cast
 
 from ._config import HyperlightSandboxConfig
 from ._lifetime import create_job
+from ._pod import PodJob
 from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError, decode, encode
 
 _STDERR_LIMIT = 64 * 1024
@@ -76,6 +77,8 @@ class Worker:
             raise HyperlightWorkerError("a forked process cannot use another owner's worker")
         self._job.ready(deadline=deadline)
         try:
+            if isinstance(self._job, PodJob):
+                self._job.begin(deadline)
             self._input.write(encode(message))
             self._input.flush()
             response = decode(self._output.readline(6 * self._config.max_output_bytes + 32768))
@@ -89,7 +92,14 @@ class Worker:
             raise HyperlightOutputLimitExceeded("guest stdout/stderr exceeded max_output_bytes")
         if "error" in response:
             raise HyperlightWorkerError(f"native worker failed: {response.get('detail', '')}")
+        if isinstance(self._job, PodJob):
+            self._job.end()
         return response
+
+    def abort(self) -> None:
+        """Escalate an active failure to the configured pod boundary."""
+        if isinstance(self._job, PodJob):
+            self._job.abort()
 
     def close(self) -> None:
         """Terminate, reap and close all pipes within the configured cleanup allowance."""

@@ -12,13 +12,13 @@ Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas
 | `icu` | Without it the CLI aborts at startup: `Couldn't find a valid ICU package`. It is not optional for a .NET single-file binary unless you set the invariant-globalization switch |
 | `ca-certificates` | Module restore is HTTPS to MCR. Without them every `br/public:` reference fails to restore |
 | Bicep CLI, pinned to `v0.46.1` | The pin is the point. Diagnostic wording, built-in rule levels and the API-version cut-off all follow the compiler, so an unpinned image would let a sample's documented output drift underneath it |
-| `bicepconfig.json` at `/maf-sandbox/work` | Fallback policy for clients that do not stage a packaged configuration |
+| `bicepconfig.json` at `/maf-sandbox/work` | Fallback policy for clients that do not stage a configuration |
 
 ## Configuration discovery
 
-The Bicep kind uploads its [packaged configuration](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) into each call directory before staging sources. Bicep finds that file by walking up from the source directory. This policy travels with the Python package and takes precedence over the image's fallback config, including for nested sources and reused sandboxes.
+The Bicep kind uploads its selected configuration into each call directory before staging sources. It uses the [packaged configuration](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) by default, or the host's `config` argument. Bicep finds that file by walking up from the source directory. The selected policy takes precedence over the image's fallback config, including for nested sources and reused sandboxes.
 
-Clients without packaged configuration depend on the fallback at `/maf-sandbox/work`. The pinned CLI has no `--config-file` flag. Compiling outside that directory uses built-in defaults, which changes these sample diagnostics:
+Clients that do not stage a configuration depend on the fallback at `/maf-sandbox/work`. The pinned CLI has no `--config-file` flag. Compiling outside that directory uses built-in defaults, which changes these sample diagnostics:
 
 | | Compiled under `/maf-sandbox/work` | Compiled elsewhere |
 |---|---|---|
@@ -103,7 +103,7 @@ Build time is a different question and a different machine: the `Dockerfile` dow
 
 ## Changing the rule set
 
-Edit the [package's `bicepconfig.json`](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) to change the policy staged by the Bicep kind. It retains two overrides: `no-unused-params` is `error`, and `use-recent-api-versions` is `warning` with `maxAgeInDays: 730`. [Catalog maintenance](../../docs/maintainers.md#updating-bicep-diagnostic-catalogs) describes the automated proposals for new rules and compiler codes.
+Edit the [package's `bicepconfig.json`](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) to change the default policy staged by the Bicep kind. A host can instead pass its own JSON text as `config` at attachment. The packaged policy retains two overrides: `no-unused-params` is `error`, and `use-recent-api-versions` is `warning` with `maxAgeInDays: 730`. [Catalog maintenance](../../docs/maintainers.md#updating-bicep-diagnostic-catalogs) describes the automated proposals for new rules and compiler codes.
 
 The image's [`bicepconfig.json`](bicepconfig.json) remains a fallback for older clients. Changing that fallback requires rebuilding, pushing and importing under a new image revision. A packaged policy change requires updating the Python package and needs no image rebuild.
 

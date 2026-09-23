@@ -9,6 +9,7 @@ from ._backend import (
     HyperlightSandboxBackend,
 )
 from ._config import HyperlightSandboxConfig
+from ._pod_config import HyperlightPodConfig
 from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "FILE_RUNTIME_INSTRUCTIONS",
     "HyperlightSandboxBackend",
     "HyperlightSandboxConfig",
+    "HyperlightPodConfig",
     "HyperlightOutputLimitExceeded",
     "HyperlightWorkerError",
     "MafSandboxHyperlightExperimentalWarning",
