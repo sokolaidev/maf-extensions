@@ -41,6 +41,7 @@ from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     Artifact,
     EgressRule,
+    HttpMethod,
     Isolation,
     LandedArtifact,
     OutputSink,
@@ -147,7 +148,10 @@ async def run() -> int:
         output_sink=make_recording_sink(OUTPUT_DIR, delivered),
         outputs=CodeactOutputs.DECLARED,
         image=CODEACT_IMAGE,
-        egress_allow=(EgressRule("pypi.org", methods=("GET",)),),
+        egress_allow=(
+            EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+            EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+        ),
     )
     if not tools:
         # Unreachable given the checks above; printed because the `[]` contract is worth stating.

@@ -7,7 +7,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-[`agent.py`](agent.py) uses sample 03's computational task, model wiring and result check on Docker. It also permits GET requests to `pypi.org`, demonstrating a method-scoped egress requirement. The sandbox image, proxy configuration and `Isolation.CONTAINER` floor belong to this Docker deployment.
+[`agent.py`](agent.py) uses sample 03's computational task, model wiring and result check on Docker. It also permits GET requests to `pypi.org` and `files.pythonhosted.org`, demonstrating a method-scoped egress requirement that supports package downloads from PyPI. The sandbox image, proxy configuration and `Isolation.CONTAINER` floor belong to this Docker deployment.
 
 The completion and verdict lines in the example describe the current workspace. A numbered sample resolving an older published CodeAct release can still show the earlier report-only result.
 
@@ -21,7 +21,7 @@ A developer without Azure runs it locally by making sample 04's one-line client 
 
 **`DockerSandboxBackend` declares `Isolation.CONTAINER`**, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — this sample has to opt the floor down explicitly to `min_isolation=Isolation.CONTAINER`, and the default would refuse this backend outright. A Docker Desktop or Colima VM does not lift that rung: one shared VM kernel serves every container. A shared kernel is a reasonable place to run a short, disposable program on a machine you already trust, and the wrong thing to put next to a deployment's credentials; the router draws that line for you and will not be argued out of it without saying so in code, at construction time.
 
-**Guest egress permits GET requests to `pypi.org` only.** `egress_allow=(EgressRule("pypi.org", methods=("GET",)),)` derives `Capability.EGRESS_METHODS` into the workload requirements. A Docker backend without method enforcement refuses the sample before calling the model. The packaged iron-proxy inspects HTTPS methods and supplies the guest's CA trust. POST, other methods and other hosts are denied; `files.pythonhosted.org` is not allowed, so this is access to PyPI metadata, not permission to install packages. The Fibonacci task still computes locally and does not need to make a request.
+**Guest egress permits GET requests to `pypi.org` and `files.pythonhosted.org` only.** Both hosts have an `EgressRule` with `methods=(HttpMethod.GET,)`, which derives `Capability.EGRESS_METHODS` into the workload requirements. A Docker backend without method enforcement refuses the sample before calling the model. The packaged iron-proxy inspects HTTPS methods and supplies the guest's CA trust. These hosts serve the package index and distribution files needed for installing packages from PyPI with pip. POST, other methods and other hosts are denied. The Fibonacci task still computes locally and does not need to make a request.
 
 ## Build the egress proxy
 

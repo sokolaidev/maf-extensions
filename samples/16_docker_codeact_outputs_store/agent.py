@@ -53,6 +53,7 @@ from maf_sandbox import (
     Artifact,
     EgressRule,
     FileStoreProvenance,
+    HttpMethod,
     Isolation,
     LandedArtifact,
     SandboxRouter,
@@ -205,7 +206,10 @@ async def run() -> int:
             # reply cannot have come from `stdout`.
             withhold_guest_output=True,
             image=CODEACT_IMAGE,
-            egress_allow=(EgressRule("pypi.org", methods=("GET",)),),
+            egress_allow=(
+                EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+                EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+            ),
         )
     )
     if not tools:

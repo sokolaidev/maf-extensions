@@ -22,7 +22,7 @@ The mode is not optional once a sink is passed. `outputs` defaults to `CodeactOu
 ValueError: execute_code: an output sink was supplied with outputs='none', so nothing would ever be landed in it. Pass an outputs mode, or drop the sink.
 ```
 
-The image, backend, `Isolation.CONTAINER` floor, GET-only `pypi.org` rule and model authentication match sample 06. The method rule requires `EGRESS_METHODS`; unsupported backends refuse it. Other methods and hosts, including `files.pythonhosted.org`, are denied. The CSV task does not need a network request.
+The image, backend, `Isolation.CONTAINER` floor, GET-only rules for `pypi.org` and `files.pythonhosted.org`, and model authentication match sample 06. The method rules require `EGRESS_METHODS`; unsupported backends refuse them. Both the PyPI index and package downloads are accessible; other methods and hosts are denied. The CSV task does not need a network request.
 
 ## What to watch
 

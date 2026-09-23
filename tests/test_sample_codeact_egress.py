@@ -13,6 +13,7 @@ from maf_sandbox import (
     Capability,
     Egress,
     EgressRule,
+    HttpMethod,
     SandboxCapabilityNotSupported,
     SandboxRouter,
 )
@@ -81,7 +82,10 @@ def test_sample_admits_only_a_backend_enforcing_get_on_pypi(name, supports_metho
     assert config.egress_proxy_image == "sample-proxy:test"
     assert not config.allow_private_http
     assert spec.egress is Egress.ALLOWLIST
-    assert spec.egress_allow == (EgressRule("pypi.org", methods=("GET",)),)
+    assert spec.egress_allow == (
+        EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+        EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+    )
     assert Capability.EGRESS_METHODS in spec.required_capabilities
 
 

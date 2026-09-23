@@ -13,7 +13,7 @@ AutoGen is in maintenance mode — its README says it will not receive new featu
 ## What the router keeps
 
 - **The floor.** `DockerSandboxBackend` declares `Isolation.CONTAINER`, below the router's default `microvm` floor, so the router is constructed with `min_isolation=Isolation.CONTAINER` explicitly. Leave that out and construction refuses the backend before any agent exists.
-- **Egress.** `EgressRule("pypi.org", methods=("GET",))` permits GET requests to PyPI and derives `EGRESS_METHODS` into the spec's requirements. The router refuses an unsupported backend before constructing the model client. The packaged iron-proxy enforces the method after terminating guest TLS; clients use its injected proxy and CA settings. Other methods and hosts, including `files.pythonhosted.org`, are denied. The Fibonacci task still computes locally.
+- **Egress.** An `EgressRule` with `methods=(HttpMethod.GET,)` for each of `pypi.org` and `files.pythonhosted.org` permits PyPI index access and package downloads and derives `EGRESS_METHODS` into the spec's requirements. The router refuses an unsupported backend before constructing the model client. The packaged iron-proxy enforces the method after terminating guest TLS; clients use its injected proxy and CA settings. Other methods and hosts are denied. The Fibonacci task still computes locally.
 - **Keying and disposal.** The sandbox is keyed by scope, thread and agent id, acquired on the first tool call and reused warm after it, and purged at the end by `dispose_scope` — the same call every other sample makes.
 
 ## What the executor gives up, said out loud

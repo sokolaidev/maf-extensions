@@ -48,6 +48,7 @@ from maf_sandbox import (
     Egress,
     EgressRule,
     ExecResult,
+    HttpMethod,
     Isolation,
     SandboxExecOutputLimitExceeded,
     SandboxKey,
@@ -430,7 +431,10 @@ async def run() -> int:
         image=CODEACT_IMAGE,
         requires=frozenset({Capability.EXEC}),
         egress=Egress.ALLOWLIST,
-        egress_allow=(EgressRule("pypi.org", methods=("GET",)),),
+        egress_allow=(
+            EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+            EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+        ),
     )
     router.ensure_can_serve(spec)
 

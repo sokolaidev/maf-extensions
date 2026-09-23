@@ -29,7 +29,7 @@ For contributors, [adding a sample](../CONTRIBUTING.md#adding-a-sample) covers d
 
 ## How these are meant to be read
 
-Docker CodeAct samples 06, 08, 16 and 19 permit only GET requests to `pypi.org`. They require a method-enforcing iron-proxy image through `MAF_EGRESS_PROXY_IMAGE`; [sample 06](06_docker_codeact/README.md#build-the-egress-proxy) has the build instructions. The rule derives `EGRESS_METHODS`, so an older backend refuses instead of serving a host-wide allowlist. Their computation and file tasks do not depend on fetching data, and package downloads from other hosts remain denied.
+Docker CodeAct samples 06, 08, 16 and 19 permit only GET requests to `pypi.org` and `files.pythonhosted.org`, covering the PyPI index and package downloads. They require a method-enforcing iron-proxy image through `MAF_EGRESS_PROXY_IMAGE`; [sample 06](06_docker_codeact/README.md#build-the-egress-proxy) has the build instructions. The rules derive `EGRESS_METHODS`, so an older backend refuses instead of serving a host-wide allowlist. Their computation and file tasks do not depend on fetching data; other methods and hosts remain denied.
 
 The [experimental Hyperlight/ACAS CodeAct sample](experimental/hyperlight_acas_codeact/) selects Hyperlight for `APP_ENV=DEV`, `APP_ENV=CI`, or `CI=true`, and ACAS for other configured environments. DEV uses the native Windows WHP or Linux KVM implementation; its model-free CI smoke runs on Linux KVM. Because Hyperlight is unreleased, this source-only example runs from the locked workspace; the numbered samples retain their PyPI installation contract. The rest of this page describes that numbered set.
 

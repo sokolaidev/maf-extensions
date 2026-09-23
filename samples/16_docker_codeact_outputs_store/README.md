@@ -53,7 +53,7 @@ That is the trade the composition is for, and it is a different promise from the
 
 ## Prerequisites
 
-Guest egress permits GET requests to `pypi.org` only, through `EgressRule("pypi.org", methods=("GET",))`. This requires `EGRESS_METHODS`; an unsupported backend refuses the sample. Other methods and hosts, including package downloads from `files.pythonhosted.org`, are denied. The file-processing task does not need a network request.
+Guest egress permits GET requests to `pypi.org` and `files.pythonhosted.org`, using an `EgressRule` with `methods=(HttpMethod.GET,)` for each host. This requires `EGRESS_METHODS`; an unsupported backend refuses the sample. Both the PyPI index and package downloads are accessible; other methods and hosts are denied. The file-processing task does not need a network request.
 
 - A Docker-compatible engine (Docker Desktop, colima, podman with the Docker socket).
 - An Azure OpenAI deployment. No key: authentication is `DefaultAzureCredential`, so an `az login` session or a federated CI credential is enough.
