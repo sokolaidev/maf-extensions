@@ -243,25 +243,25 @@ Several of these are security-relevant, in both directions. The live suite is th
 
 **A login that can lapse.** A revoked login fails every command until a person completes a browser device flow. A backend needs a clear refusal naming `sbx login`, and CI needs `sbx login --password-stdin` with an access token secret.
 
-**CI.** Measured on 2026-09-23 with a throwaway workflow that installed sbx v0.45.1 on each hosted runner, started the daemon, ran `sbx diagnose`, initialized a deny-all policy, and tried a `create`. It had no Docker login, so no VM booted anywhere. The furthest any runner could get was the authentication check.
+**CI.** Measured on 2026-09-23 and 2026-09-24 with a throwaway workflow on each hosted runner. It installed sbx v0.45.1, started the daemon, logged in with a Docker access token, initialized a deny-all policy, and created a mountless sandbox with `--deny-network "**"`. It then ran exec and network checks and deleted the sandbox.
 
 | Runner | Result | What was measured |
 |---|---|---|
-| `ubuntu-24.04`, x64 | **Passes everything but sign-in** | AMD CPU with `kvm_amd`, and `/dev/kvm` present, owned by group `kvm`. `docker-sbx` installed from Docker's apt repository in about 17 s. After `sudo chmod 666 /dev/kvm`, `sbx diagnose` reported "Virtualization — supported, /dev/kvm is accessible". The daemon ran, `policy init` worked, and `create` stopped at `401 … not authenticated to Docker`. 4 CPUs, 15 GB of memory and about 86 GB of free disk |
-| `windows-2025` | **Passes everything but sign-in** | Windows Server 2025, with HypervisorPlatform, Hyper-V and VirtualMachinePlatform all enabled. The per-user MSI installed silently, and `sbx diagnose` reported "Virtualization — supported, WHvCapabilityCodeHypervisorPresent is true". The daemon started its engine, and `create` stopped at the same `401`. Docker documents Windows 11 only, so a VM boot here is the open question. A daemon started in one step did not survive into the next; the next `sbx` command restarted it |
+| `ubuntu-24.04`, x64 | **Yes, a VM boots** | AMD CPU with `kvm_amd`, and `/dev/kvm` owned by group `kvm`, so the job runs `sudo chmod 666 /dev/kvm`. `docker-sbx` installed from Docker's apt repository in about 17 s. `create` took 19 to 20 s, including the first template pull. Inside: kernel 7.0.12, user `agent`, 2 CPUs and 2 GB as requested. Streams stayed separate, exit code 3 came back, the bytes `ff 00 41` came back exact, and `https://example.com/` returned 403. Five execs took about 1 s, and `rm` under 1 s. 4 CPUs, 15 GB of memory and about 86 GB of free disk |
+| `windows-2025` | **Yes, a VM boots** | Windows Server 2025, with HypervisorPlatform, Hyper-V and VirtualMachinePlatform all enabled. That is despite Docker documenting Windows 11 only. The per-user MSI installed silently. `create` took 49.5 s, including the first pull. The first exec took 0.3 s and five more 1.3 s. Streams stayed separate, exit code 3 came back, the network returned 403, and `rm` took 0.5 s. A daemon started in one step did not survive into the next, but the next `sbx` command restarted it |
 | `ubuntu-24.04-arm` | **No** | No `/dev/kvm`. `sbx diagnose`: "no hypervisor present … nested virtualization" |
-| `macos-15` | **Almost certainly no** | "Apple M1 (Virtual)" with no `kern.hv_support` sysctl, so `sbx diagnose` could not determine virtualization. GitHub documents no nested virtualization on these runners |
+| `macos-15` | **No** | "Apple M1 (Virtual)" with no `kern.hv_support` sysctl. Login and policy worked, then `create` failed with `500 … failed to run sandbox container`. GitHub documents no nested virtualization on these runners |
 
 Docker's blog (2026-08-21) reports a full agent run on `ubuntu-24.04` taking 11 min 16 s. That run used gh-aw, whose generated setup in `actions/setup/sh/` is the same recipe as the probe, plus a Docker access token. gh-aw has since deprecated its `docker-sbx` runtime in favour of plain Docker, citing setup cost, cold start and platform constraints.
 
 Four constraints follow for a live job on the Linux runner:
 
-- It needs a Docker account's access token as a secret, and `sbx login --password-stdin`. This repository has none today.
+- It needs a Docker account's access token as a secret, and `sbx login --password-stdin`. A read-only token was enough for the probe.
 - Secrets are not passed to pull requests from forks, so the job runs after merge or by dispatch, as the Docker live job already does.
 - The job changes `/dev/kvm` permissions and runs `sbx policy init` on a machine it throws away, which is fine there and never acceptable in the backend itself.
 - A public-repository runner has 4 CPUs, 16 GB of memory and 14 GB of disk, so every sandbox needs explicit `--cpus` and `--memory`, and the ~600 MB template eats into the disk.
 
-Whether a VM boots on these runners, and whether the conformance suites finish in a usable time, needs a run with a Docker login.
+So a live job can run on `ubuntu-24.04` and `windows-2025` with a Docker access token secret. Whether the full conformance suites finish in a usable time is still a measurement.
 
 **Code.** Smaller than the Docker backend (3699 lines of `_backend.py`), because the proxy is Docker's and the file plane is the host filesystem. The new work is the exec wrapper, name-based ownership, the host-name rules for the workspace, and the acquire-time checks on policy, secrets, MCP and SSH.
 
@@ -274,7 +274,7 @@ Whether a VM boots on these runners, and whether the conformance suites finish i
 3. What a registered MCP server gives a guest under deny-all: whether its own traffic passes the sandbox's policy.
 4. Clipboard writes from the guest, and whether they are policy-checked like browser-open.
 5. What deleted the engine socket directory, and whether the daemon ever recovers without a restart.
-6. A logged-in run on the `ubuntu-24.04` and `windows-2025` hosted runners: does a VM boot, and how long do the conformance suites take?
+6. How long the conformance suites take on the `ubuntu-24.04` and `windows-2025` hosted runners.
 7. Whether the host-name rules for the workspace are complete for NTFS, and for APFS in its default case-insensitive mode.
 
 ## Verdict, held loosely
