@@ -53,15 +53,18 @@ That is the trade the composition is for, and it is a different promise from the
 
 ## Prerequisites
 
+Guest egress permits GET requests to `pypi.org` only, through `EgressRule("pypi.org", methods=("GET",))`. This requires `EGRESS_METHODS`; an unsupported backend refuses the sample. Other methods and hosts, including package downloads from `files.pythonhosted.org`, are denied. The file-processing task does not need a network request.
+
 - A Docker-compatible engine (Docker Desktop, colima, podman with the Docker socket).
 - An Azure OpenAI deployment. No key: authentication is `DefaultAzureCredential`, so an `az login` session or a federated CI credential is enough.
 
-Nothing is built. The image is `mcr.microsoft.com/devcontainers/python:3.13-bookworm`, pulled the way any `docker run` pulls it.
+The guest image is `mcr.microsoft.com/devcontainers/python:3.13-bookworm`, pulled by the backend. Also [build the packaged iron-proxy](../06_docker_codeact/README.md#build-the-egress-proxy) and configure its local tag. Guest HTTPS clients use the injected proxy and CA settings.
 
 ## Environment
 
 | Variable | What it is |
 |---|---|
+| `MAF_EGRESS_PROXY_IMAGE` | Required local tag of the packaged iron-proxy image, e.g. `maf-egress-proxy:local` |
 | `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
 

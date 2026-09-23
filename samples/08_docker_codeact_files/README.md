@@ -22,7 +22,7 @@ The mode is not optional once a sink is passed. `outputs` defaults to `CodeactOu
 ValueError: execute_code: an output sink was supplied with outputs='none', so nothing would ever be landed in it. Pass an outputs mode, or drop the sink.
 ```
 
-Everything else is sample 06 unchanged: the same image, the same backend, the same `Isolation.CONTAINER` floor, the same model reached with `DefaultAzureCredential`.
+The image, backend, `Isolation.CONTAINER` floor, GET-only `pypi.org` rule and model authentication match sample 06. The method rule requires `EGRESS_METHODS`; unsupported backends refuse it. Other methods and hosts, including `files.pythonhosted.org`, are denied. The CSV task does not need a network request.
 
 ## What to watch
 
@@ -51,12 +51,13 @@ That matters more here than for any other kind, because these bytes were authore
 - A Docker-compatible engine (Docker Desktop, colima, podman with the Docker socket).
 - An Azure OpenAI deployment. No key: authentication is `DefaultAzureCredential`, so an `az login` session or a federated CI credential is enough.
 
-Nothing is built. The image is `mcr.microsoft.com/devcontainers/python:3.13-bookworm`, pulled the way any `docker run` pulls it — a convenience for a sample, and bulkier than this workload needs. A production deployment supplies a hardened image of its own through the same `image` field; nothing else in the wiring changes.
+The guest image is `mcr.microsoft.com/devcontainers/python:3.13-bookworm`, pulled by the backend. Also [build the packaged iron-proxy](../06_docker_codeact/README.md#build-the-egress-proxy) and configure its local tag. It must support method enforcement and supplies the CA trust used by guest HTTPS clients.
 
 ## Environment
 
 | Variable | What it is |
 |---|---|
+| `MAF_EGRESS_PROXY_IMAGE` | Required local tag of the packaged iron-proxy image, e.g. `maf-egress-proxy:local` |
 | `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
 

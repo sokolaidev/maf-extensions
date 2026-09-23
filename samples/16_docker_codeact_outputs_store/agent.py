@@ -49,7 +49,14 @@ from _scaffold import MEASURED, evidence, installed_versions, quoted, require_en
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from maf_sandbox import Artifact, FileStoreProvenance, Isolation, LandedArtifact, SandboxRouter
+from maf_sandbox import (
+    Artifact,
+    EgressRule,
+    FileStoreProvenance,
+    Isolation,
+    LandedArtifact,
+    SandboxRouter,
+)
 from maf_sandbox.maf import (
     list_all_files,
     make_caller_context,
@@ -150,11 +157,13 @@ def make_recording_sink(store: object, record: FileStoreProvenance, landed: list
 
 async def run() -> int:
     """Wire the two stores, run one turn, and take the container down again."""
-    env = require_env_vars(MODEL_VARS)
+    env = require_env_vars((*MODEL_VARS, "MAF_EGRESS_PROXY_IMAGE"))
     if env is None:
         return 2
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
+    backend = DockerSandboxBackend(
+        DockerSandboxConfig(egress_proxy_image=env["MAF_EGRESS_PROXY_IMAGE"])
+    )
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
     # The **working** store: what the program is given. Nothing model-facing is wired over it,
@@ -196,6 +205,7 @@ async def run() -> int:
             # reply cannot have come from `stdout`.
             withhold_guest_output=True,
             image=CODEACT_IMAGE,
+            egress_allow=(EgressRule("pypi.org", methods=("GET",)),),
         )
     )
     if not tools:
