@@ -25,6 +25,9 @@ def _spec(*rules: EgressRule) -> SandboxSpec:
         "/a*",
         "/a/*/b",
         "/a b",
+        "/a\u00a0b",
+        "/a\u2003b",
+        "/a\x80b",
         "/v1/\\secret",
     ],
 )

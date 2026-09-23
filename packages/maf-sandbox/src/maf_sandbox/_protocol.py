@@ -350,6 +350,10 @@ class AttachedIdentity:
 NO_ATTACHED_IDENTITY = AttachedIdentity()
 
 
+def _has_whitespace_or_control(value: str) -> bool:
+    return any(char.isspace() or ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in value)
+
+
 @dataclass(frozen=True)
 class EgressRule:
     """Allow a host for named HTTP methods and paths, or all with ``None``.
@@ -386,7 +390,7 @@ class EgressRule:
                     raise ValueError(f"egress path {path!r} contains unsupported pattern syntax")
                 if any(segment in (".", "..") for segment in path.split("/")):
                     raise ValueError(f"egress path {path!r} contains a dot segment")
-                if any(ord(char) < 33 or ord(char) == 127 for char in path):
+                if _has_whitespace_or_control(path):
                     raise ValueError(f"egress path {path!r} contains whitespace or control text")
             if len(set(self.paths)) != len(self.paths):
                 raise ValueError("egress paths must not contain duplicates")
@@ -394,10 +398,7 @@ class EgressRule:
             if (
                 not isinstance(cast("object", self.authority), str)
                 or not self.authority
-                or any(
-                    char.isspace() or ord(char) < 32 or 0x7F <= ord(char) <= 0x9F
-                    for char in self.authority
-                )
+                or _has_whitespace_or_control(self.authority)
             ):
                 raise ValueError(
                     "egress authority must be a nonempty audience "
