@@ -4009,24 +4009,38 @@ class TestAllowlistTopology:
         with pytest.raises(RuntimeError, match="outbound leg"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
+    @pytest.mark.parametrize("warm", [False, True])
     @pytest.mark.parametrize("logs", [b"starting up\n", b"tunnel proxy starting\n"])
     def test_a_proxy_without_readiness_or_contract_fails_the_acquire(
-        self, logs: bytes, monkeypatch: pytest.MonkeyPatch
+        self, logs: bytes, warm: bool, monkeypatch: pytest.MonkeyPatch
     ):
         """Better to fail than hand back a sandbox whose egress is not actually up."""
+        machine = _machine(running=[_AL] if warm else [])
 
         def respond(args):
             if args[:2] == ("container", "logs"):
                 return _WslcResult(0, logs, b"")
-            return _machine()(args)
+            return machine(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
         monkeypatch.setattr("maf_sandbox_wslc._backend._PROXY_READY_ATTEMPTS", 2)
         monkeypatch.setattr("maf_sandbox_wslc._backend._PROXY_READY_DELAY_S", 0.0)
         with pytest.raises(RuntimeError, match="required policy contract"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        # The network it created on the way in must be reclaimed on the failure.
-        assert fake.matching("network", "remove")[-1].args[-1] == _AL_NET
+        started = fake.calls.index(_run_named(fake, _AL_PROXY))
+        proxy_removed = [
+            i
+            for i, call in enumerate(fake.calls)
+            if i > started and call.args == ("container", "remove", "-f", _AL_PROXY)
+        ]
+        assert len(proxy_removed) == 1
+        assert fake.matching("container", "remove", "-f", _AL) == []
+        network_removed = fake.matching("network", "remove", _AL_NET)
+        if warm:
+            assert network_removed == []
+        else:
+            assert len(network_removed) == 1
+            assert proxy_removed[0] < fake.calls.index(network_removed[0])
 
     def test_closed_mode_issues_no_network_commands_at_all(self):
         backend, fake = _backend_with(_machine())

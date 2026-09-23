@@ -4686,16 +4686,35 @@ class TestAllowlistTopology:
         ]
         assert order == sorted(order)
 
-    def test_an_unverified_proxy_is_not_served(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.parametrize("warm", [False, True])
+    def test_an_unverified_proxy_is_not_served(self, monkeypatch: pytest.MonkeyPatch, warm: bool):
         monkeypatch.setattr("maf_sandbox_docker._backend._PROXY_READY_ATTEMPTS", 1)
         monkeypatch.setattr("maf_sandbox_docker._backend._PROXY_READY_DELAY_S", 0.0)
         backend, fake = _backend_with(
-            _machine(overrides={("logs",): _DockerResult(0, b"tunnel proxy starting\n", "")}),
+            _machine(
+                running=[_AL] if warm else [],
+                networks={_AL_NET: _UNADDRESSED} if warm else None,
+                overrides={("logs",): _DockerResult(0, b"tunnel proxy starting\n", "")},
+            ),
             config=_ALLOW_CONFIG,
         )
         with pytest.raises(RuntimeError, match="required policy contract"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("run", "-d", "--name", _AL) == []
+        started = fake.calls.index(_run_named(fake, _AL_PROXY))
+        proxy_removed = [
+            i
+            for i, call in enumerate(fake.calls)
+            if i > started and call.args == ("rm", "-f", _AL_PROXY)
+        ]
+        assert len(proxy_removed) == 1
+        assert fake.matching("rm", "-f", _AL) == []
+        network_removed = fake.matching("network", "rm", _AL_NET)
+        if warm:
+            assert network_removed == []
+        else:
+            assert len(network_removed) == 1
+            assert proxy_removed[0] < fake.calls.index(network_removed[0])
 
     def test_the_network_is_internal_and_labelled(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)

@@ -3326,8 +3326,8 @@ class DockerSandboxBackend:
         try:
             await self._ensure_proxy(name, key, spec)
         except BaseException:
+            await self._remove(_proxy_name(name))
             if fresh:
-                await self._remove(_proxy_name(name))
                 await self._remove_network(net)
             raise
 
