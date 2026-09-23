@@ -384,7 +384,7 @@ Gated on M4: `EGRESS_HEADER` call credentials on acas, behind the `provision_cal
 |---|---|---|
 | [#567](https://github.com/sokolaidev/maf-extensions/issues/567) | Core admission is implemented; Docker and WSLC now declare `PER_SANDBOX` for explicitly configured credential gateways. Broader principal and control-plane identity work remains separate | Partially implemented |
 | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) | Pillar C, both provisionings: the platform-attached one through `Sandbox.attached_identity`, the static host-configured one through `SandboxSpec.provisioned_identity` | 2 |
-| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) | Raw-token delivery superseded by [external gateways and adapter validation](#credential-gateway-experiments-for-757). Docker/WSLC and CodeAct support fresh per-call grants with independent expiry; other backends remain unsupported | Implemented |
+| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (closed) by [#1427](https://github.com/sokolaidev/maf-extensions/pull/1427) (merged) | Raw-token delivery superseded by [external gateways and adapter validation](#credential-gateway-experiments-for-757). Docker/WSLC and CodeAct support fresh per-call grants with independent expiry; other backends remain unsupported | Implemented |
 | [#741](https://github.com/sokolaidev/maf-extensions/issues/741) | Pillar A, direction one, through the shared refusal | 1 |
 | [#753](https://github.com/sokolaidev/maf-extensions/issues/753) | Pillar B: the per-kind rung, the served-by table, the ledger answer | 1 |
 | [#754](https://github.com/sokolaidev/maf-extensions/issues/754) | Pillar B: the capability, the clean path, the docstring, the suite gate | 1 |

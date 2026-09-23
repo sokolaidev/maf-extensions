@@ -217,7 +217,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | Core attached-authority admission | Implemented; Docker and WSLC support bounded egress headers | [#1168](https://github.com/sokolaidev/maf-extensions/issues/1168) (closed); [#1192](https://github.com/sokolaidev/maf-extensions/pull/1192) (merged); [#567](https://github.com/sokolaidev/maf-extensions/issues/567) (open) |
 | ACAS group-configured identity | Supported outside the core attached-authority contract | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
 | Principal references | Unimplemented | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) (open) |
-| Credentials for guest HTTP | Docker and WSLC external gateways implemented | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (open) |
+| Credentials for guest HTTP | Docker and WSLC external gateways implemented | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (closed) by [#1427](https://github.com/sokolaidev/maf-extensions/pull/1427) (merged) |
 | File-store provenance and result labels | Implemented with the read/write interval limits above | [Information-flow status](information-flow.md#status) |
 | Cross-conversation host storage paths | Host-owned partitioning; no automatic callback inspection | [#793](https://github.com/sokolaidev/maf-extensions/issues/793) (closed) |
 | Storage-base preparation and allocation | Implemented | [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (closed); [#1086](https://github.com/sokolaidev/maf-extensions/pull/1086) (merged); [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |
