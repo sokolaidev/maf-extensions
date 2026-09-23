@@ -903,7 +903,7 @@ def _machine(
                 b"",
             )
         if args[:2] == ("container", "logs"):
-            return _WslcResult(0, b"tunnel proxy starting\n", b"")
+            return _WslcResult(0, b"maf-sandbox egress contract v1\ntunnel proxy starting\n", b"")
         if args[:2] == ("container", "exec") and args[-2:] == (
             "cat",
             "/run/maf-proxy/ca.crt",
@@ -3954,20 +3954,21 @@ class TestAllowlistTopology:
         with pytest.raises(RuntimeError, match="outbound leg"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
-    def test_a_proxy_that_never_listens_fails_the_acquire(self):
+    @pytest.mark.parametrize("logs", [b"starting up\n", b"tunnel proxy starting\n"])
+    def test_a_proxy_without_readiness_or_contract_fails_the_acquire(self, logs: bytes):
         """Better to fail than hand back a sandbox whose egress is not actually up."""
         import maf_sandbox_wslc._backend as backend_mod
 
         def respond(args):
             if args[:2] == ("container", "logs"):
-                return _WslcResult(0, b"starting up\n", b"")  # never the readiness marker
+                return _WslcResult(0, logs, b"")
             return _machine()(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
         original = backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S
         backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = 2, 0.0
         try:
-            with pytest.raises(RuntimeError, match="never reported listening"):
+            with pytest.raises(RuntimeError, match="required policy contract"):
                 asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         finally:
             backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = original
@@ -4292,7 +4293,8 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
         seen: list[EgressObserved] = []
-        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES
+        record = _audit("allow", "h.example:443").encode()
+        page = record * (_PROXY_LOG_BYTES // len(record) + 1)
         backend, _fake = _backend_with(
             _machine(overrides={("container", "logs", "--tail"): _WslcResult(0, page, b"")}),
             config=_ALLOW_CONFIG,
@@ -4307,7 +4309,8 @@ class TestTheProxysOwnDecisionsReachARecord:
         `test_a_bounded_read_caps_stdout_and_reaps_the_process` pins that code.
         """
         seen: list[EgressObserved] = []
-        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES
+        record = _audit("allow", "h.example:443").encode()
+        page = record * (_PROXY_LOG_BYTES // len(record) + 1)
         overrides = {("container", "logs", "--tail"): _WslcResult(137, page, b"killed at limit")}
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)

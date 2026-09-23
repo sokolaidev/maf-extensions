@@ -51,6 +51,8 @@ class DockerSandboxConfig:
     :func:`maf_sandbox_docker.proxy_build_context`); when set, a sandbox whose spec allows
     egress gets its own internal network and a dual-homed filtering proxy enforcing that
     allowlist by topology, while a spec that allows nothing still gets ``--network none``.
+    Each acquisition checks a policy-contract signal from the patched proxy before serving a
+    workload, so an older proxy image fails closed.
     Left ``None`` — or ``""``, which is what an unset environment variable becomes — the backend
     stays ``CLOSED`` and every container gets ``--network none``.  Both spellings of "no proxy
     configured" behave identically, deliberately: a host writing

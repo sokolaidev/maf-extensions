@@ -33,6 +33,8 @@ class WslcSandboxConfig:
     internal network and a dual-homed filtering proxy enforcing the spec's allowlist by
     topology.  Left ``None``, the backend stays ``CLOSED`` and containers get no network at
     all.
+    Each acquisition checks a policy-contract signal from the patched proxy before serving a
+    workload, so an older proxy image fails closed.
 
     ``allow_private_http`` permits plaintext HTTP only to listed hosts whose selected address
     is private. It requires the proxy image and is intended for development or test workloads.

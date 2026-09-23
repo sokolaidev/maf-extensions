@@ -113,8 +113,6 @@ def read_decisions(text: str, limit: int) -> tuple[tuple[EgressDecision, ...], b
         else:
             code = "UNREACHABLE"
         decisions.append(
-            EgressDecision(
-                decision=cast("EgressDecisionCode", code), host=host, port=int(port_text)
-            )
+            EgressDecision(decision=cast(EgressDecisionCode, code), host=host, port=int(port_text))
         )
     return tuple(decisions[-limit:]), len(lines) > limit

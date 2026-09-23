@@ -535,7 +535,7 @@ def _machine(
             names = [*live_running, *live_stopped] if "-a" in args else list(live_running)
             return _DockerResult(0, "".join(f"{n}\n" for n in names).encode(), "")
         if args[0] == "logs":
-            return _DockerResult(0, b"tunnel proxy starting\n", "")
+            return _DockerResult(0, b"maf-sandbox egress contract v1\ntunnel proxy starting\n", "")
         if (
             args[:1] == ("exec",)
             and args[1].endswith("-proxy")
@@ -4666,6 +4666,19 @@ class TestAllowlistTopology:
         ]
         assert order == sorted(order)
 
+    def test_an_unverified_proxy_is_not_served(self, monkeypatch: pytest.MonkeyPatch):
+        import maf_sandbox_docker._backend as backend_mod
+
+        monkeypatch.setattr(backend_mod, "_PROXY_READY_ATTEMPTS", 1)
+        monkeypatch.setattr(backend_mod, "_PROXY_READY_DELAY_S", 0.0)
+        backend, fake = _backend_with(
+            _machine(overrides={("logs",): _DockerResult(0, b"tunnel proxy starting\n", "")}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="required policy contract"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
     def test_the_network_is_internal_and_labelled(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -5330,8 +5343,8 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert {d.port for d in decisions} == {443}
 
     def test_the_readiness_line_is_not_a_decision(self):
-        """The one line an acquire itself waits for, and it names no target."""
-        assert _egress_decisions("tunnel proxy starting\n")[0] == ()
+        """Startup signals name no destination."""
+        assert _egress_decisions("maf-sandbox egress contract v1\ntunnel proxy starting\n")[0] == ()
 
     def test_an_ipv6_literal_keeps_its_own_colons(self):
         decisions, _ = _egress_decisions(_audit("allow", "[::1]:443"))
@@ -5546,7 +5559,8 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
         seen: list[EgressObserved] = []
-        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES
+        record = _audit("allow", "h.example:443").encode()
+        page = record * (_PROXY_LOG_BYTES // len(record) + 1)
         backend, _fake = _backend_with(
             _machine(overrides={("logs", "--tail"): _DockerResult(0, page, "")}),
             config=_ALLOW_CONFIG,
@@ -5560,7 +5574,8 @@ class TestTheProxysOwnDecisionsReachARecord:
         cap, so the exit code says nothing about the bytes already in hand and the decisions
         in them still count."""
         seen: list[EgressObserved] = []
-        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES
+        record = _audit("allow", "h.example:443").encode()
+        page = record * (_PROXY_LOG_BYTES // len(record) + 1)
         overrides = {("logs", "--tail"): _DockerResult(137, page, "killed after the read limit")}
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)
@@ -5571,7 +5586,8 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_a_capped_read_discards_the_line_the_cap_cut_in_half(self):
         seen: list[EgressObserved] = []
-        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES + b'{"msg":"request"'
+        record = _audit("allow", "h.example:443").encode()
+        page = record * (_PROXY_LOG_BYTES // len(record) + 1) + b'{"msg":"request"'
         overrides = {("logs", "--tail"): _DockerResult(137, page, "")}
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)

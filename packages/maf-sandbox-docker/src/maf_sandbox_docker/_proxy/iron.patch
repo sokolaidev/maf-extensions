@@ -56,7 +56,15 @@ index 73bde1f..761cbc6 100644
  		shutdownCtx:          shutdownCtx,
  		shutdownCancel:       shutdownCancel,
  	}
-@@ -304,6 +309,10 @@ func (p *Proxy) handleDirectHTTP(w http.ResponseWriter, r *http.Request) {
+@@ -144,6 +149,7 @@ func New(opts Options) *Proxy {
+ 	// Enable HTTP/2 on the HTTPS listener (adds h2 to the TLS ALPN and serves
+ 	// negotiated conns through the existing handler); zero config never errors.
+ 	_ = http2.ConfigureServer(p.httpsServer, &http2.Server{})
+ 
++	fmt.Fprintln(os.Stdout, "maf-sandbox egress contract v1")
+ 	return p
+ }
+@@ -304,6 +310,10 @@ func (p *Proxy) handleDirectHTTP(w http.ResponseWriter, r *http.Request) {
  // handleHTTP is the core HTTP request handler. tunnelInfo is non-nil only
  // when r originated inside a CONNECT/SOCKS5 tunnel.
  func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *transform.TunnelInfo) {
@@ -67,7 +75,7 @@ index 73bde1f..761cbc6 100644
  	scheme := "http"
  	if r.TLS != nil {
  		scheme = "https"
-@@ -937,7 +946,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -937,7 +947,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  		Timeout:   30 * time.Second,
  		KeepAlive: 30 * time.Second,
  		Resolver:  resolver,
@@ -89,7 +97,7 @@ index 73bde1f..761cbc6 100644
  	}
  	if responseHeaderTimeout <= 0 {
  		responseHeaderTimeout = config.DefaultUpstreamResponseHeaderTimeout
-@@ -959,9 +981,69 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -959,9 +982,69 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  }
  
  func (p *Proxy) doUpstream(req *http.Request) (*http.Response, error) {

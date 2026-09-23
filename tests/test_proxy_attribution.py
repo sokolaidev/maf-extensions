@@ -84,7 +84,11 @@ class _Engine:
                 ).encode()
                 + b"\n"
             )
-            return self.result(decision if "--tail" in command else b"tunnel proxy starting\n")
+            return self.result(
+                decision
+                if "--tail" in command
+                else b"maf-sandbox egress contract v1\ntunnel proxy starting\n"
+            )
         if command[0] == "ps":
             return self.result("\n".join(r["Name"] for r in self.rows.values()).encode())
         if command[0] == "list":

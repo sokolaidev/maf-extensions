@@ -179,6 +179,7 @@ _KEY_LABEL_MAX = 4096
 _PROXY_PORT = 3128
 _CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
 _PROXY_READY_MARKER = "tunnel proxy starting"
+_PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
 _PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
 _GUEST_CA_NAME = ".maf-proxy-ca.crt"
 
@@ -2489,21 +2490,25 @@ class WslcSandboxBackend:
         await self._await_listening(proxy)
 
     async def _await_listening(self, proxy: str) -> None:
-        """Wait for the proxy's listening line; fail the acquire if it never comes.
+        """Wait for the patched policy contract and listener before serving.
 
-        A proxy that has not bound its port yet would let the workload's first request through to
-        nothing and read as a network error. Rather than hand back a sandbox whose egress is not
-        actually up, the acquire fails here and the caller can retry — the network is reclaimed on
-        the way out when this was a fresh create.
+        A listening proxy without the contract may forward opaque HTTPS tunnels. A proxy that
+        has not bound its port leaves the first request unanswered. Both fail the acquire.
         """
         for _ in range(_PROXY_READY_ATTEMPTS):
             result = await self._wslc(
                 "container", "logs", proxy, timeout=self._config.command_timeout_seconds
             )
-            if result.returncode == 0 and _PROXY_READY_MARKER in result.stdout_text:
+            if (
+                result.returncode == 0
+                and _PROXY_READY_MARKER in result.stdout_text
+                and _PROXY_CONTRACT_MARKER in result.stdout_text
+            ):
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
-        raise RuntimeError(f"egress proxy {proxy} never reported listening")
+        raise RuntimeError(
+            f"egress proxy {proxy} did not report the required policy contract and listening"
+        )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.

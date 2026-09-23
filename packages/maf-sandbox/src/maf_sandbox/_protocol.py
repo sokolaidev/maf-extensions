@@ -380,7 +380,7 @@ class EgressRule:
             for path in self.paths:
                 if not isinstance(cast("object", path), str) or not path.startswith("/"):
                     raise ValueError(f"egress path {path!r} must start with /")
-                if any(char in path for char in "?#[]") or path.count("*") > int(
+                if any(char in path for char in "?#[]\\") or path.count("*") > int(
                     path.endswith("/*")
                 ):
                     raise ValueError(f"egress path {path!r} contains unsupported pattern syntax")
@@ -1123,7 +1123,7 @@ class SandboxSpec:
             )
         entries: dict[str, str | EgressRule] = {}
         policy_by_host: dict[
-            str, tuple[frozenset[str] | None, str | None, tuple[str, ...] | None]
+            str, tuple[frozenset[str] | None, str | None, frozenset[str] | None]
         ] = {}
         for entry in self.egress_allow:
             if (
@@ -1143,7 +1143,7 @@ class SandboxSpec:
             policy = (
                 methods,
                 entry.authority if isinstance(entry, EgressRule) else None,
-                entry.paths if isinstance(entry, EgressRule) else None,
+                frozenset(entry.paths) if isinstance(entry, EgressRule) and entry.paths else None,
             )
             if folded in entries:
                 if policy_by_host[folded] != policy:

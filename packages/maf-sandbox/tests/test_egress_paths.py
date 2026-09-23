@@ -15,7 +15,18 @@ def _spec(*rules: EgressRule) -> SandboxSpec:
 
 @pytest.mark.parametrize(
     "path",
-    ["", "relative", "/a?x=1", "/a#fragment", "/a/../b", "/a/./b", "/a*", "/a/*/b", "/a b"],
+    [
+        "",
+        "relative",
+        "/a?x=1",
+        "/a#fragment",
+        "/a/../b",
+        "/a/./b",
+        "/a*",
+        "/a/*/b",
+        "/a b",
+        "/v1/\\secret",
+    ],
 )
 def test_invalid_path_patterns_are_refused(path: str) -> None:
     with pytest.raises(ValueError, match="egress path"):
@@ -42,6 +53,12 @@ def test_conflicting_paths_for_one_host_are_refused() -> None:
             EgressRule("EXAMPLE.com", paths=("/v1/*",)),
             EgressRule("example.com", paths=("/v2/*",)),
         )
+
+
+def test_equivalent_paths_collapse_without_changing_the_first_rule() -> None:
+    first = EgressRule("EXAMPLE.com", paths=("/a", "/b"))
+    second = EgressRule("example.com", paths=("/b", "/a"))
+    assert _spec(first, second).egress_allow == (first,)
 
 
 def test_duplicate_paths_are_refused() -> None:
