@@ -243,7 +243,23 @@ Several of these are security-relevant, in both directions. The live suite is th
 
 **A login that can lapse.** A revoked login fails every command until a person completes a browser device flow. A backend needs a clear refusal naming `sbx login`, and CI needs `sbx login --password-stdin` with an access token secret.
 
-**CI.** Whether the hosted `ubuntu-24.04` runner runs the conformance suite at a usable speed is a measurement. Docker's own CI example went through gh-aw, not raw `sbx`.
+**CI.** Read, not run, on 2026-09-23. The answer depends on the runner.
+
+| Runner | Can it run sbx? | Evidence |
+|---|---|---|
+| `ubuntu-24.04` / `ubuntu-latest`, x64 | **Yes** | Standard Linux runners expose `/dev/kvm` (GitHub changelog, 2024-04-02). Docker's blog (2026-08-21) reports a full run there taking 11 min 16 s. gh-aw's generated setup, in `actions/setup/sh/`, is the working recipe: check that `/dev/kvm` exists, install `docker-sbx` from Docker's apt repository, `sudo chmod 666 /dev/kvm`, start the daemon, log in with a Docker access token, `sbx policy init`, then a create/exec/rm smoke test |
+| `ubuntu-24.04-arm` | Unknown | sbx ships `linux-arm64` `.deb` packages, but GitHub documents no KVM on its arm64 runners |
+| `windows-2022` / `windows-2025` | No, as documented | sbx requires Windows 11 with Windows Hypervisor Platform. GitHub's Windows runners are Windows Server, with Hyper-V installed but not enabled |
+| `macos-*` (Apple silicon) | No | GitHub: "Nested-virtualization is not supported due to the limitation of Apple's Virtualization Framework." |
+
+Four constraints follow for a live job on the Linux runner:
+
+- It needs a Docker account's access token as a secret, and `sbx login --password-stdin`. This repository has none today.
+- Secrets are not passed to pull requests from forks, so the job runs after merge or by dispatch, as the Docker live job already does.
+- The job changes `/dev/kvm` permissions and runs `sbx policy init` on a machine it throws away, which is fine there and never acceptable in the backend itself.
+- A public-repository runner has 4 CPUs, 16 GB of memory and 14 GB of disk, so every sandbox needs explicit `--cpus` and `--memory`, and the ~600 MB template eats into the disk.
+
+Whether the conformance suites finish in a usable time is still a measurement. So is whether a raw `sbx` job works without gh-aw. gh-aw has since deprecated its `docker-sbx` runtime in favour of plain Docker, citing its setup cost, cold start and platform constraints.
 
 **Code.** Smaller than the Docker backend (3699 lines of `_backend.py`), because the proxy is Docker's and the file plane is the host filesystem. The new work is the exec wrapper, name-based ownership, the host-name rules for the workspace, and the acquire-time checks on policy, secrets, MCP and SSH.
 
@@ -256,7 +272,7 @@ Several of these are security-relevant, in both directions. The live suite is th
 3. What a registered MCP server gives a guest under deny-all: whether its own traffic passes the sandbox's policy.
 4. Clipboard writes from the guest, and whether they are policy-checked like browser-open.
 5. What deleted the engine socket directory, and whether the daemon ever recovers without a restart.
-6. Timing on `ubuntu-24.04` hosted runners.
+6. A live run on `ubuntu-24.04` and `ubuntu-24.04-arm` hosted runners: KVM, install, `sbx diagnose`, then the conformance suites and their timing.
 7. Whether the host-name rules for the workspace are complete for NTFS, and for APFS in its default case-insensitive mode.
 
 ## Verdict, held loosely
