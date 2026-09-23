@@ -31,13 +31,13 @@ PROBE_COMMAND = [
 def source_record(*, require_clean: bool = False) -> dict[str, object]:
     """Record public source identity without exporting local paths or remote configuration."""
     revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True
     ).stdout.strip()
     status = subprocess.run(
         ["git", "status", "--porcelain", "--untracked-files=normal"],
         cwd=ROOT,
         check=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
         text=True,
     ).stdout
     if require_clean and status:
@@ -164,7 +164,7 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
         subprocess.run(
             ["docker", "image", "inspect", image_id],
             check=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
             text=True,
         ).stdout
     )[0]
@@ -205,7 +205,7 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
             "/opt/verify.py",
         ],
         check=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
         text=True,
     )
     smoke = json.loads(result.stdout)

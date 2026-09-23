@@ -58,9 +58,15 @@ def main() -> None:
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("the AKS runtime requires Linux x86-64")
     report = verify_payload(Path("/opt"))
-    subprocess.run(
-        ["python", "-I", "-m", "pip", "check"], check=True, capture_output=True, text=True
+    result = subprocess.run(
+        ["python", "-I", "-m", "pip", "check"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
+    if result.returncode:
+        raise RuntimeError(f"pip check failed (exit {result.returncode}):\n{result.stdout}")
     for name in (*PACKAGES, "hyperlight-sandbox"):
         importlib.import_module(name.replace("-", "_"))
     report.update(

@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
@@ -99,9 +100,13 @@ def test_source_record_rejects_dirty_release_and_does_not_export_local_paths(tmp
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "smoke", "digest", "root", "platform", "command", "entrypoint"]
+    "failure", [None, "smoke", "inspect", "digest", "root", "platform", "command", "entrypoint"]
 )
-def test_build_verifies_exact_image_and_never_keeps_stale_success(tmp_path, monkeypatch, failure):
+def test_build_verifies_exact_image_and_never_keeps_stale_success(
+    tmp_path, monkeypatch, capfd, failure
+):
+    run = subprocess.run
+    diagnostic = "build input hash mismatch: probe.py"
     commands = []
     (tmp_path / "build-inputs.json").write_text("{}")
     record = tmp_path / "image-verification.json"
@@ -109,6 +114,15 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(tmp_path, monk
 
     def execute(command, **kwargs):
         commands.append(command)
+        if (failure, command[1]) in {("smoke", "run"), ("inspect", "image")}:
+            return run(
+                [
+                    sys.executable,
+                    "-c",
+                    f"import sys; sys.stderr.write({diagnostic!r}); sys.exit(1)",
+                ],
+                **kwargs,
+            )
         if command[1] == "build":
             assert not record.exists()
             Path(command[command.index("--iidfile") + 1]).write_text(IMAGE_ID)
@@ -133,8 +147,6 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(tmp_path, monk
                 ),
             )
         assert command[1] == "run"
-        if failure == "smoke":
-            raise subprocess.CalledProcessError(1, command, stderr="invalid payload")
         return subprocess.CompletedProcess(
             command,
             0,
@@ -153,6 +165,8 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(tmp_path, monk
         with pytest.raises((ValueError, subprocess.CalledProcessError)):
             builder.build_and_verify(tmp_path, "mutable:tag")
         assert not record.exists()
+        if failure in {"smoke", "inspect"}:
+            assert diagnostic in capfd.readouterr().err
         return
     result = builder.build_and_verify(tmp_path, "mutable:tag")
     assert json.loads(record.read_bytes()) == result
@@ -184,3 +198,63 @@ def test_dirty_rebuild_removes_previous_success_before_refusing_source(tmp_path,
     with pytest.raises(ValueError, match="clean source"):
         builder.prepare(tmp_path, require_clean=True)
     assert not record.exists()
+
+
+@pytest.mark.parametrize("failure", ["rev-parse", "status"])
+def test_source_command_failures_preserve_stderr(monkeypatch, capfd, failure):
+    run = subprocess.run
+    diagnostic = "fatal: cannot read repository metadata"
+
+    def execute(command, **kwargs):
+        if command[1] != failure:
+            return subprocess.CompletedProcess(command, 0, "a" * 40)
+        return run(
+            [sys.executable, "-c", f"import sys; sys.stderr.write({diagnostic!r}); sys.exit(1)"],
+            **kwargs,
+        )
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    with pytest.raises(subprocess.CalledProcessError):
+        builder.source_record()
+    assert diagnostic in capfd.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    [
+        (0, "No broken requirements found.\n", ""),
+        (1, "example 1 requires dependency<2, but you have dependency 3.\n", ""),
+        (1, "", "ERROR: cannot read installed metadata\n"),
+        (1, "example 1 requires missing-package.\n", "WARNING: invalid distribution\n"),
+    ],
+)
+def test_pip_check_preserves_failures_and_keeps_json_clean(
+    monkeypatch, capfd, returncode, stdout, stderr
+):
+    run = subprocess.run
+    monkeypatch.setattr(smoke.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(smoke.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(smoke, "verify_payload", lambda root: {})
+    monkeypatch.setattr(smoke, "importlib", SimpleNamespace(import_module=lambda name: None))
+    monkeypatch.setattr(smoke, "distributions", lambda: [])
+
+    def execute(command, **kwargs):
+        assert command == ["python", "-I", "-m", "pip", "check"]
+        code = (
+            f"import sys; sys.stdout.write({stdout!r}); "
+            f"sys.stderr.write({stderr!r}); sys.exit({returncode})"
+        )
+        return run([sys.executable, "-c", code], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    if returncode:
+        with pytest.raises(RuntimeError, match="pip check failed") as error:
+            smoke.main()
+        for diagnostic in (stdout, stderr):
+            if diagnostic:
+                assert diagnostic.strip() in str(error.value)
+        assert not capfd.readouterr().out
+    else:
+        smoke.main()
+        report = json.loads(capfd.readouterr().out)
+        assert "pip-check" in report["checks"]
