@@ -77,7 +77,6 @@ class DockerSandboxConfig:
 
     docker_path: str = _DEFAULT_DOCKER_PATH
     egress_proxy_image: str | None = None
-    allow_private_http: bool = False
     outbound_network: str = _DEFAULT_OUTBOUND_NETWORK
     command_timeout_seconds: float = _DEFAULT_COMMAND_TIMEOUT_S
     image_pull_timeout_seconds: float = _DEFAULT_IMAGE_PULL_TIMEOUT_S
@@ -85,3 +84,4 @@ class DockerSandboxConfig:
     memory: str | None = None
     cpus: float | None = None
     cap_drop_all: bool = False
+    allow_private_http: bool = False

@@ -90,6 +90,22 @@ _WORK = "/maf-sandbox/work"
 _METHOD_SPEC = replace(_SPEC, requires=frozenset())
 
 
+def test_existing_positional_config_arguments_keep_their_meaning():
+    assert DockerSandboxConfig(
+        "docker", "proxy:local", "custom-net", 30.0, 300.0, 128, "1g", 2.0, True
+    ) == DockerSandboxConfig(
+        docker_path="docker",
+        egress_proxy_image="proxy:local",
+        outbound_network="custom-net",
+        command_timeout_seconds=30.0,
+        image_pull_timeout_seconds=300.0,
+        pids_limit=128,
+        memory="1g",
+        cpus=2.0,
+        cap_drop_all=True,
+    )
+
+
 def _audit(action: str, host: str, *, error: str = "", method: str = "GET") -> str:
     return (
         json.dumps(

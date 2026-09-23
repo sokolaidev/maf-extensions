@@ -845,6 +845,46 @@ class TestAllowlistEgress:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
+    def test_websocket_refusal_is_observed_as_a_denial(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        events = []
+        backend.observe_egress(events.append)
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("mcr.microsoft.com", methods=("GET",), paths=("/v2/",)),),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            result = asyncio.run(
+                sandbox.exec(
+                    [
+                        "curl",
+                        "--http1.1",
+                        "-s",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "-H",
+                        "Connection: Upgrade",
+                        "-H",
+                        "Upgrade: websocket",
+                        "https://mcr.microsoft.com/v2/",
+                    ],
+                    working_directory=_WORK,
+                    timeout=45,
+                )
+            )
+            assert result.exit_code == 0 and result.stdout.strip() == "403"
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+        assert [(d.decision, d.host, d.port) for e in events for d in e.decisions] == [
+            ("DENY", "mcr.microsoft.com", 443)
+        ]
+
     def test_public_tls_on_another_port_and_overlapping_wildcard_rules(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(self._config())
@@ -994,6 +1034,56 @@ class TestAllowlistEgress:
                 ["wslc", "container", "remove", "-f", service], check=False, capture_output=True
             )
             subprocess.run(["wslc", "network", "remove", network], check=False, capture_output=True)
+
+    def test_ipv6_loopback_link_local_and_metadata_addresses_are_denied(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(
+            WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE, allow_private_http=True)
+        )
+        events = []
+        backend.observe_egress(events.append)
+        addresses = {
+            "loopback.test": "::1",
+            "linklocal.test": "fe80::1",
+            "metadata.test": "fd00:ec2::254",
+        }
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=tuple(addresses),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            proxy = sandbox.container_name + "-proxy"
+            subprocess.run(
+                [
+                    "wslc",
+                    "container",
+                    "exec",
+                    "-i",
+                    "-u",
+                    "0",
+                    proxy,
+                    "/bin/sh",
+                    "-c",
+                    "cat >> /etc/hosts",
+                ],
+                input="".join(f"{address} {host}\n" for host, address in addresses.items()),
+                text=True,
+                check=True,
+                capture_output=True,
+            )
+            for host in addresses:
+                assert (
+                    self._curl_status(sandbox, f"http://{host}:8080/", force_proxy=True)[1] == "502"
+                )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+        assert {(d.decision, d.host) for e in events for d in e.decisions} >= {
+            ("DENY", host) for host in addresses
+        }
 
     def test_private_http_exception_is_rechecked_after_dns_changes(self):
         assert _PROXY_IMAGE is not None

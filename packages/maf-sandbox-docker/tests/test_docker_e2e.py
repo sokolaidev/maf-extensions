@@ -1833,6 +1833,44 @@ class TestAllowlistEgress:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
+    def test_websocket_refusal_is_observed_as_a_denial(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(self._config())
+        events = []
+        backend.observe_egress(events.append)
+        spec = _spec(
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("mcr.microsoft.com", methods=("GET",), paths=("/v2/",)),),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            result = asyncio.run(
+                sandbox.exec(
+                    [
+                        "curl",
+                        "--http1.1",
+                        "-s",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "-H",
+                        "Connection: Upgrade",
+                        "-H",
+                        "Upgrade: websocket",
+                        "https://mcr.microsoft.com/v2/",
+                    ],
+                    working_directory=_WORK,
+                    timeout=45,
+                )
+            )
+            assert result.exit_code == 0 and result.stdout.strip() == "403"
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+        assert [(d.decision, d.host, d.port) for e in events for d in e.decisions] == [
+            ("DENY", "mcr.microsoft.com", 443)
+        ]
+
     def test_public_tls_on_another_port_and_overlapping_wildcard_rules(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(self._config())
@@ -1969,6 +2007,135 @@ class TestAllowlistEgress:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
             subprocess.run(["docker", "rm", "-f", service], check=False, capture_output=True)
             subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True)
+
+    def test_selected_ipv6_addresses_allow_private_http_and_tls_but_deny_special_ranges(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        suffix = uuid.uuid4().hex[:12]
+        network = f"maf-ipv6-{suffix}"
+        http_service = f"maf-http-{suffix}"
+        tls_service = f"maf-tls-{suffix}"
+        upstream = socket.gethostbyname("mcr.microsoft.com")
+        relay = (
+            f"printf '#!/bin/sh\\nexec /bin/busybox nc {upstream} 443\\n' >/tmp/relay; "
+            "chmod +x /tmp/relay; exec /bin/busybox nc -lk -p 8443 -s :: -e /tmp/relay"
+        )
+        backend = DockerSandboxBackend(
+            DockerSandboxConfig(
+                egress_proxy_image=_PROXY_IMAGE,
+                outbound_network=network,
+                allow_private_http=True,
+            )
+        )
+        events = []
+        backend.observe_egress(events.append)
+        spec = _spec(
+            egress=Egress.ALLOWLIST,
+            egress_allow=(
+                "private.test",
+                "mcr.microsoft.com",
+                "loopback.test",
+                "linklocal.test",
+                "metadata.test",
+                "interface.test",
+            ),
+        )
+        subprocess.run(
+            [
+                "docker",
+                "network",
+                "create",
+                "--ipv6",
+                "--subnet",
+                f"fd42:1407:{suffix[:4]}::/64",
+                network,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    http_service,
+                    "--network",
+                    network,
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" | /bin/busybox nc -l -p 8080 -s ::; done',
+                ],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    tls_service,
+                    "--network",
+                    network,
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    relay,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            proxy = sandbox.container_name + "-proxy"
+
+            def v6_address(name: str) -> str:
+                inspected = json.loads(subprocess.check_output(["docker", "inspect", name]))
+                address = inspected[0]["NetworkSettings"]["Networks"][network]["GlobalIPv6Address"]
+                assert ipaddress.ip_address(address).version == 6
+                return address
+
+            entries = {
+                "private.test": v6_address(http_service),
+                "mcr.microsoft.com": v6_address(tls_service),
+                "loopback.test": "::1",
+                "linklocal.test": "fe80::1",
+                "metadata.test": "fd00:ec2::254",
+                "interface.test": v6_address(proxy),
+            }
+            subprocess.run(
+                ["docker", "exec", "-i", "-u", "0", proxy, "/bin/sh", "-c", "cat >> /etc/hosts"],
+                input="".join(f"{address} {host}\n" for host, address in entries.items()),
+                text=True,
+                check=True,
+                capture_output=True,
+            )
+            assert self._curl_status(sandbox, "http://private.test:8080/", force_proxy=True) == (
+                0,
+                "200",
+            )
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com:8443/v2/") == (0, "200")
+            for host in ("loopback.test", "linklocal.test", "metadata.test", "interface.test"):
+                assert (
+                    self._curl_status(sandbox, f"http://{host}:8080/", force_proxy=True)[1] == "502"
+                )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            for service in (http_service, tls_service):
+                subprocess.run(["docker", "rm", "-f", service], check=False, capture_output=True)
+            subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True)
+        assert {(d.decision, d.host) for e in events for d in e.decisions} >= {
+            ("ALLOW", "private.test"),
+            ("ALLOW", "mcr.microsoft.com"),
+            ("DENY", "loopback.test"),
+            ("DENY", "linklocal.test"),
+            ("DENY", "metadata.test"),
+            ("DENY", "interface.test"),
+        }
 
     def test_private_http_exception_is_rechecked_after_dns_changes(self):
         assert _PROXY_IMAGE is not None
