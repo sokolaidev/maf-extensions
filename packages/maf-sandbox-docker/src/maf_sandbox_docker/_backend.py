@@ -15,7 +15,7 @@ utility VM, which the ladder classifies at ``container`` — and no configuratio
 Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — every container is created
 ``--network none`` — and :data:`~maf_sandbox.Egress.ALLOWLIST` when a proxy image is
 configured: an internal network whose bridge holds no host address, carrying a dual-homed
-CONNECT proxy that is then the workload's only route out.  That bridge needs Docker Engine
+iron-proxy that is then the workload's only route out. That bridge needs Docker Engine
 28.0.0, and only a sandbox that builds one does — ``CLOSED``, and an ``ALLOWLIST`` spec naming no
 hosts, both get ``--network none`` and no such engine.
 
@@ -61,7 +61,6 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     EgressDecision,
-    EgressDecisionCode,
     EgressObserved,
     EgressReporter,
     ExecResult,
@@ -103,6 +102,7 @@ from maf_sandbox.paths import (
 from ._config import DockerSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
+from ._proxy.policy import encoded_policy, read_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -345,8 +345,10 @@ async def _freeze_lock(name: str) -> AsyncGenerator[None]:
 
 
 _PROXY_PORT = 3128
-_ALLOW_ENV = "MAF_SANDBOX_ALLOW"
-_PROXY_READY_MARKER = "listening"
+_CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
+_PROXY_READY_MARKER = "tunnel proxy starting"
+_PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
+_GUEST_CA_NAME = ".maf-proxy-ca.crt"
 _PROXY_READY_ATTEMPTS = 20
 _PROXY_READY_DELAY_S = 0.25
 
@@ -363,14 +365,6 @@ _PROXY_LOG_TAIL = 2000
 #: much the host allocates on a path every acquire waits on.  A well-formed decision is a
 #: verb, a host of at most 253 bytes and a port, so this is ample per line and still a cap.
 _PROXY_LOG_BYTES = _PROXY_LOG_TAIL * 512
-
-#: One decision as the proxy writes it: a verb, a space, and the target it was asked for.  The
-#: host half is greedy so that an IPv6 literal keeps its own colons and only the trailing
-#: `:port` is taken.  **This grammar is owed to the wslc backend too** — the proxy is duplicated
-#: there rather than shared, so a change to one of them is a change to both.
-_EGRESS_DECISION = re.compile(
-    r"^(?P<decision>ALLOW|DENY-NONGLOBAL|DENY|UNREACHABLE) (?P<host>.+):(?P<port>\d+)$"
-)
 
 _NAME_PREFIX = "maf-sandbox-docker-"
 _NET_SUFFIX = "-net"
@@ -688,37 +682,8 @@ def _proxy_name(container: str) -> str:
 
 
 def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
-    """The decisions in a proxy's output, oldest first, and whether the window may be short.
-
-    A line that is not a decision is skipped rather than counted.  This reads a stream it does
-    not own: the readiness line an acquire waits for is in it, and a later proxy may write more
-    — and a line this cannot parse is not evidence of a decision it missed.
-
-    The host in a decision is whatever the guest put in its ``CONNECT`` target, so it is
-    guest-chosen text.  It cannot forge a line: the proxy takes the target from the first
-    request line split on whitespace, so a host holds no newline and no space, and a decision
-    verb can only be one this proxy wrote.  It can still hold anything else a byte can be, which
-    is why the recorder holds it to the rule an artifact name is held to.
-
-    ``truncated`` says the window **may** have run past the bound, never that it did.  The read
-    asks the engine for one line more than the bound, so a full answer means there was more to
-    give — but the extra line may have been the readiness line rather than a decision.  It is
-    wrong only towards "there may be more", which is the safe way for a record to be wrong.
-    """
-    lines = text.splitlines()
-    parsed = tuple(
-        EgressDecision(
-            decision=cast("EgressDecisionCode", found["decision"]),
-            host=found["host"],
-            port=int(found["port"]),
-        )
-        for line in lines
-        if (found := _EGRESS_DECISION.match(line.strip()))
-    )
-    # The bound is on decisions, so a readiness line does not spend one of them. `truncated`
-    # stays keyed on the *lines*, because that is the only thing that says the engine had more
-    # to give: it answers a bounded read, so a full page back means there was a page after it.
-    return parsed[-_PROXY_LOG_TAIL:], len(lines) > _PROXY_LOG_TAIL
+    """The iron-proxy audit decisions, oldest first, and whether the window may be short."""
+    return read_decisions(text, _PROXY_LOG_TAIL)
 
 
 def _reads_as_absent(stderr: str, target: str) -> bool:
@@ -1496,6 +1461,10 @@ class DockerSandboxBackend:
     """Hands out container-isolated sandboxes from a Docker-compatible engine."""
 
     def __init__(self, config: DockerSandboxConfig) -> None:
+        if type(config.allow_private_http) is not bool or (
+            config.allow_private_http and not config.egress_proxy_image
+        ):
+            raise ValueError("allow_private_http requires a configured egress proxy image")
         self._config = config
         self._client_env = dict(os.environ)
         self._context_args: tuple[str, ...] = ()
@@ -1516,14 +1485,18 @@ class DockerSandboxBackend:
         # the decisions are written in a container this backend owns and can read back; without
         # one there is no allowlist to decide anything, and claiming to watch an enforcement
         # that never runs would put a truthful-looking `True` on every closed sandbox.
+        capabilities: frozenset[Capability] = _CAPABILITIES
+        if config.egress_proxy_image:
+            capabilities |= frozenset({Capability.EGRESS_METHODS, Capability.EGRESS_PATHS})
         self._declarations = BackendDeclarations(
-            capabilities=_CAPABILITIES,
+            capabilities=capabilities,
             limits=_LIMITS,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
             isolation_scopes=_ISOLATION_SCOPES,
             observes_egress=bool(config.egress_proxy_image),
+            egress_method_tokens=None if config.egress_proxy_image else frozenset(),
         )
         # Where egress decisions go once a router with an observer hands over a reporter. `None`
         # until then, and that is what keeps an uninstrumented host from paying for the read:
@@ -1975,8 +1948,37 @@ class DockerSandboxBackend:
                 instance_id=instance_id,
                 freeze=self._freeze(name),
             )
-            await sandbox.prepare_work_dir(spec)
+            try:
+                await sandbox.prepare_work_dir(spec)
+                if egress_id:
+                    await self._install_proxy_ca(name, sandbox, spec)
+            except BaseException:
+                try:
+                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                    if failure is not None:
+                        logger.warning("sandbox setup cleanup failed: %s", failure)
+                except Exception as failure:
+                    logger.warning("sandbox setup cleanup raised: %s", failure)
+                raise
             return sandbox
+
+    async def _install_proxy_ca(
+        self, name: str, sandbox: _DockerSandbox, spec: SandboxSpec
+    ) -> None:
+        """Make this proxy's public CA available to the guest before serving it."""
+        result = await self._docker(
+            "exec",
+            _proxy_name(name),
+            "cat",
+            _PROXY_CA_PATH,
+            timeout=self._config.command_timeout_seconds,
+            read_limit=8192,
+        )
+        if result.returncode or not result.stdout.startswith(b"-----BEGIN CERTIFICATE-----"):
+            raise RuntimeError("docker could not read the egress proxy CA certificate")
+        await sandbox.write_file(
+            _GUEST_CA_NAME, result.stdout, working_directory=spec.work_dir or "/maf-sandbox/work"
+        )
 
     async def _verify_storage_base(
         self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
@@ -3096,7 +3098,8 @@ class DockerSandboxBackend:
         """
         if not self._config.egress_proxy_image or not spec.egress_allow:
             return ""
-        return "allow:" + ",".join(sorted(map(str, spec.egress_allow)))
+        policy = ",".join(sorted(map(str, spec.egress_allow)))
+        return f"allow:{policy}:private-http={self._config.allow_private_http}"
 
     @contextlib.asynccontextmanager
     async def _acquire_lock(self, key: SandboxKey, kind: str) -> AsyncGenerator[None]:
@@ -3285,6 +3288,9 @@ class DockerSandboxBackend:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
             args += ["-e", f"HTTPS_PROXY={proxy_url}", "-e", f"HTTP_PROXY={proxy_url}"]
+            ca_path = posixpath.join(spec.work_dir or "/maf-sandbox/work", _GUEST_CA_NAME)
+            args += ["-e", f"SSL_CERT_FILE={ca_path}", "-e", f"CURL_CA_BUNDLE={ca_path}"]
+            args += ["-e", f"REQUESTS_CA_BUNDLE={ca_path}"]
         else:
             args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
@@ -3532,7 +3538,9 @@ class DockerSandboxBackend:
             self._report_proxy_drain(event)
 
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_ALLOW_ENV}={','.join(map(str, spec.egress_allow))}"]
+        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec)}"]
+        if self._config.allow_private_http:
+            args += ["-e", "MAF_SANDBOX_PRIVATE_HTTP=1"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         attribution = _key_label(key)

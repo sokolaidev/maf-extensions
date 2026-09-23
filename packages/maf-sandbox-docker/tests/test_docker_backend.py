@@ -12,6 +12,7 @@ listing this file invented agrees with the code that reads it by construction.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import gc
 import io
@@ -87,6 +88,19 @@ _FREEZE_NAME = json.dumps(("unix:///fake.sock", _NAME))
 _WORK = "/maf-sandbox/work"
 # Method tests prepare their own paths; lifecycle tests exercise the acquire contract.
 _METHOD_SPEC = replace(_SPEC, requires=frozenset())
+
+
+def _audit(action: str, host: str, *, error: str = "", method: str = "GET") -> str:
+    return (
+        json.dumps(
+            {
+                "msg": "request",
+                "audit": {"action": action, "host": host, "method": method},
+                "error": error,
+            }
+        )
+        + "\n"
+    )
 
 
 @pytest.mark.parametrize("state", ["cold", "warm", "stopped"])
@@ -521,7 +535,17 @@ def _machine(
             names = [*live_running, *live_stopped] if "-a" in args else list(live_running)
             return _DockerResult(0, "".join(f"{n}\n" for n in names).encode(), "")
         if args[0] == "logs":
-            return _DockerResult(0, b"listening on 3128\n", "")
+            return _DockerResult(0, b"tunnel proxy starting\n", "")
+        if (
+            args[:1] == ("exec",)
+            and args[1].endswith("-proxy")
+            and args[2:]
+            == (
+                "cat",
+                "/run/maf-proxy/ca.crt",
+            )
+        ):
+            return _DockerResult(0, b"-----BEGIN CERTIFICATE-----\nTEST\n", "")
         if args[0] == "cp" and args[1] != "-":
             container, _, guest = args[1].partition(":")
             return _not_in_the_container(guest, container)
@@ -4610,7 +4634,7 @@ _ALLOW_SPEC = SandboxSpec(
     egress=Egress.ALLOWLIST,
     egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
 )
-_ALLOW_ID = "allow:" + ",".join(sorted(map(str, _ALLOW_SPEC.egress_allow)))
+_ALLOW_ID = "allow:" + ",".join(sorted(map(str, _ALLOW_SPEC.egress_allow))) + ":private-http=False"
 #: What `os.environ.get("MAF_EGRESS_PROXY_IMAGE", "")` hands the constructor when nothing is set.
 _EMPTY_PROXY_CONFIG = DockerSandboxConfig(egress_proxy_image="")
 _AL = _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID)
@@ -4665,7 +4689,12 @@ class TestAllowlistTopology:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         args = _run_named(fake, _AL_PROXY).args
         allow = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
-        assert any("MAF_SANDBOX_ALLOW=" in v for v in allow)
+        encoded = next(v.split("=", 1)[1] for v in allow if v.startswith("MAF_SANDBOX_CONFIG_B64="))
+        policy = json.loads(base64.b64decode(encoded))
+        assert policy["transforms"][0]["config"]["domains"] == [
+            "mcr.microsoft.com",
+            "*.data.mcr.microsoft.com",
+        ]
         labels = [args[i + 1] for i, a in enumerate(args) if a == "--label"]
         assert "maf-sandbox.role=proxy" in labels
 
@@ -5290,30 +5319,29 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_it_parses_each_verb_the_proxy_writes(self):
         decisions, truncated = _egress_decisions(
-            "listening on 3128; allowing: example.com\n"
-            "ALLOW example.com:443\n"
-            "DENY evil.example:443\n"
-            "DENY-NONGLOBAL inside.example:443\n"
-            "UNREACHABLE gone.example:443\n"
+            _audit("allow", "example.com:443")
+            + _audit("reject", "evil.example:443")
+            + _audit("error", "inside.example:443", error="upstream_deny_cidrs")
+            + _audit("error", "gone.example:443", error="dial failed")
         )
         assert not truncated
-        assert [d.decision for d in decisions] == ["ALLOW", "DENY", "DENY-NONGLOBAL", "UNREACHABLE"]
+        assert [d.decision for d in decisions] == ["ALLOW", "DENY", "DENY", "UNREACHABLE"]
         assert decisions[1].host == "evil.example"
         assert {d.port for d in decisions} == {443}
 
     def test_the_readiness_line_is_not_a_decision(self):
         """The one line an acquire itself waits for, and it names no target."""
-        assert _egress_decisions("listening on 3128; allowing: nothing\n")[0] == ()
+        assert _egress_decisions("tunnel proxy starting\n")[0] == ()
 
     def test_an_ipv6_literal_keeps_its_own_colons(self):
-        decisions, _ = _egress_decisions("ALLOW ::1:443\n")
+        decisions, _ = _egress_decisions(_audit("allow", "[::1]:443"))
         assert (decisions[0].host, decisions[0].port) == ("::1", 443)
 
     def test_a_log_past_the_bound_is_cut_to_the_bound_and_says_so(self):
         """The bound is on what the drain hands over, not only on what it asks the engine
         for. Reading one line past it is how the cut is detected; keeping that line would
         hand back the *oldest* decision of an over-long window while claiming the newest."""
-        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL + 1))
+        text = "".join(_audit("allow", f"h{n}.example:443") for n in range(_PROXY_LOG_TAIL + 1))
         decisions, truncated = _egress_decisions(text)
         assert truncated is True
         assert len(decisions) == _PROXY_LOG_TAIL
@@ -5322,7 +5350,7 @@ class TestTheProxysOwnDecisionsReachARecord:
     def test_a_log_exactly_on_the_bound_is_handed_over_whole(self):
         """`truncated` is exact rather than cautious: the read asks for one line past the
         bound, so getting only the bound back proves nothing was cut."""
-        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL))
+        text = "".join(_audit("allow", f"h{n}.example:443") for n in range(_PROXY_LOG_TAIL))
         decisions, truncated = _egress_decisions(text)
         assert truncated is False
         assert len(decisions) == _PROXY_LOG_TAIL
@@ -5338,7 +5366,9 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend, _fake = _backend_with(
             _machine(
                 overrides={
-                    ("logs", "--tail"): _DockerResult(0, b"ALLOW mcr.microsoft.com:443\n", "")
+                    ("logs", "--tail"): _DockerResult(
+                        0, _audit("allow", "mcr.microsoft.com:443").encode(), ""
+                    )
                 }
             ),
             config=_ALLOW_CONFIG,
@@ -5385,7 +5415,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         so a purge that drained nothing lost the last window of every sandbox on the ordinary
         path, while `observes_egress` told a reader the sandbox was watched."""
         seen: list[EgressObserved] = []
-        drained = _DockerResult(0, b"DENY evil.example:443", "")
+        drained = _DockerResult(0, _audit("reject", "evil.example:443").encode(), "")
         backend, _fake = _backend_with(
             _machine(overrides={("logs", "--tail"): drained}), config=_ALLOW_CONFIG
         )
@@ -5401,8 +5431,12 @@ class TestTheProxysOwnDecisionsReachARecord:
         proxy is reached by the label sweep, and its decisions go with it unless drained."""
         seen: list[EgressObserved] = []
         other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
-        first = _container_name(_KEY, other.kind, "allow:" + ",".join(map(str, other.egress_allow)))
-        drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
+        first = _container_name(
+            _KEY,
+            other.kind,
+            "allow:" + ",".join(map(str, other.egress_allow)) + ":private-http=False",
+        )
+        drained = _DockerResult(0, _audit("allow", "example.invalid:443").encode(), "")
         backend, _fake = _backend_with(
             _machine(running=[first], overrides={("logs", "--tail"): drained}),
             config=_ALLOW_CONFIG,
@@ -5418,8 +5452,8 @@ class TestTheProxysOwnDecisionsReachARecord:
         """The read is bounded in lines, so a full page back cannot say whether the line past
         the bound was a decision or the readiness marker. The flag therefore means *may be
         short*, and a window that kept every decision can still set it."""
-        text = "listening on 3128; allowing: nothing\n" + "".join(
-            f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL)
+        text = "tunnel proxy starting\n" + "".join(
+            _audit("allow", f"h{n}.example:443") for n in range(_PROXY_LOG_TAIL)
         )
         decisions, truncated = _egress_decisions(text)
         assert len(decisions) == _PROXY_LOG_TAIL
@@ -5430,7 +5464,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         """A sweep can return a proxy whose workload was removed independently. Filtering the
         proxy out and then removing it deletes exactly the record the drain exists to read."""
         seen: list[EgressObserved] = []
-        drained = _DockerResult(0, b"DENY orphan.example:443", "")
+        drained = _DockerResult(0, _audit("reject", "orphan.example:443").encode(), "")
         backend, _fake = _backend_with(
             _machine(
                 running=[_AL_PROXY],
@@ -5447,8 +5481,12 @@ class TestTheProxysOwnDecisionsReachARecord:
         kind replaces the registry entry — and the first container is still swept."""
         seen: list[EgressObserved] = []
         other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
-        first = _container_name(_KEY, other.kind, "allow:" + ",".join(map(str, other.egress_allow)))
-        drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
+        first = _container_name(
+            _KEY,
+            other.kind,
+            "allow:" + ",".join(map(str, other.egress_allow)) + ":private-http=False",
+        )
+        drained = _DockerResult(0, _audit("allow", "example.invalid:443").encode(), "")
         backend, _fake = _backend_with(
             _machine(running=[first], overrides={("logs", "--tail"): drained}),
             config=_ALLOW_CONFIG,
@@ -5476,7 +5514,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         seen: list[EgressObserved] = []
         overrides = {
             ("stop",): _DockerResult(1, b"", "daemon refused to stop the container"),
-            ("logs", "--tail"): _DockerResult(0, b"ALLOW pypi.org:443", ""),
+            ("logs", "--tail"): _DockerResult(0, _audit("allow", "pypi.org:443").encode(), ""),
         }
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)
@@ -5489,7 +5527,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         seen: list[EgressObserved] = []
         overrides = {
             ("stop",): _DockerResult(1, b"", f"Error: No such container: {_AL_PROXY}"),
-            ("logs", "--tail"): _DockerResult(0, b"ALLOW pypi.org:443", ""),
+            ("logs", "--tail"): _DockerResult(0, _audit("allow", "pypi.org:443").encode(), ""),
         }
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)
@@ -5508,7 +5546,7 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
         seen: list[EgressObserved] = []
-        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES
         backend, _fake = _backend_with(
             _machine(overrides={("logs", "--tail"): _DockerResult(0, page, "")}),
             config=_ALLOW_CONFIG,
@@ -5522,7 +5560,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         cap, so the exit code says nothing about the bytes already in hand and the decisions
         in them still count."""
         seen: list[EgressObserved] = []
-        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES
         overrides = {("logs", "--tail"): _DockerResult(137, page, "killed after the read limit")}
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)
@@ -5533,7 +5571,7 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_a_capped_read_discards_the_line_the_cap_cut_in_half(self):
         seen: list[EgressObserved] = []
-        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20) + b"ALLOW half.exam"
+        page = _audit("allow", "h.example:443").encode() * _PROXY_LOG_BYTES + b'{"msg":"request"'
         overrides = {("logs", "--tail"): _DockerResult(137, page, "")}
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend.observe_egress(seen.append)
@@ -5611,7 +5649,11 @@ class TestTheProxysOwnDecisionsReachARecord:
         seen: list[EgressObserved] = []
         backend, _fake = _backend_with(
             _machine(
-                overrides={("logs", "--tail"): _DockerResult(0, b"DENY evil.example:443\n", "")}
+                overrides={
+                    ("logs", "--tail"): _DockerResult(
+                        0, _audit("reject", "evil.example:443").encode(), ""
+                    )
+                }
             ),
             config=_ALLOW_CONFIG,
         )
@@ -5649,7 +5691,9 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
         if args[:2] == ("logs", "--tail"):
             if unreadable:
                 return _DockerResult(1, b"", "engine refused")
-            return _DockerResult(0, b"ALLOW example.com:443\n" * (1 if failed else 2), "")
+            return _DockerResult(
+                0, _audit("allow", "example.com:443").encode() * (1 if failed else 2), ""
+            )
         if args[:1] == ("rm",) and args[-1] in (_AL_PROXY, "proxy-id"):
             assert seen == []
             if failed:

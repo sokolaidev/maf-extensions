@@ -455,7 +455,11 @@ def test_reap_reports_only_after_proxy_removal_succeeds(failure):
         if args[:2] == ("container", "stop"):
             return _WslcResult(0, b"", b"")
         if args[:2] == ("container", "logs"):
-            return _WslcResult(0, b"ALLOW example.com:443\n", b"")
+            return _WslcResult(
+                0,
+                b'{"msg":"request","audit":{"host":"example.com:443","method":"GET","action":"allow"}}\n',
+                b"",
+            )
         if args[:2] == ("container", "remove") and args[-1] == "b" * 64:
             assert events == []
             if failed:

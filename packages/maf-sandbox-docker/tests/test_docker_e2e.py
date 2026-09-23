@@ -31,6 +31,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -39,6 +40,7 @@ import pytest
 from maf_sandbox import (
     Capability,
     Egress,
+    EgressRule,
     EntryKind,
     HostToolRegistry,
     HostToolRun,
@@ -1746,10 +1748,28 @@ class TestAllowlistEgress:
 
         asyncio.run(scenario())
 
-    def _curl_status(self, sandbox, url: str) -> tuple[int, str]:
+    def _curl_status(
+        self,
+        sandbox,
+        url: str,
+        *,
+        method: str | None = None,
+        force_proxy: bool = False,
+        follow_redirects: bool = False,
+    ) -> tuple[int, str]:
+        args = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "25"]
+        if follow_redirects:
+            args.append("--location")
+        if method == "HEAD":
+            args.append("--head")
+        elif method is not None:
+            args += ["-X", method]
+        if force_proxy:
+            args += ["--noproxy", "", "--proxy", f"http://{sandbox.container_name}-proxy:3128"]
+        args.append(url)
         result = asyncio.run(
             sandbox.exec(
-                ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {url}"],
+                args,
                 working_directory=_WORK,
                 timeout=45,
             )
@@ -1779,8 +1799,7 @@ class TestAllowlistEgress:
                     denied_url="https://pypi.org/simple/",
                 )
             )
-            # Docker-specific, and stronger than the shared contract: the deny is L3, so curl
-            # cannot even open the tunnel and reports `000` — not an L7 proxy's HTTP answer.
+            # A rejected CONNECT has no origin HTTP response for curl to report.
             _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
             assert denied_status == "000", denied_status
         finally:
@@ -1788,6 +1807,252 @@ class TestAllowlistEgress:
         assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
+
+    def test_tls_method_path_and_plaintext_controls(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(self._config())
+        spec = _spec(
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("mcr.microsoft.com", methods=("GET",), paths=("/v2/",)),),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            allowed_code, allowed_status = self._curl_status(
+                sandbox, "https://mcr.microsoft.com/v2/"
+            )
+            assert allowed_code == 0 and allowed_status == "200"
+            assert (
+                self._curl_status(sandbox, "https://mcr.microsoft.com/v2/", method="POST")[1]
+                == "403"
+            )
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com/other")[1] == "403"
+            assert (
+                self._curl_status(sandbox, "http://mcr.microsoft.com/v2/", force_proxy=True)[1]
+                == "502"
+            )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_public_tls_on_another_port_and_overlapping_wildcard_rules(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(self._config())
+        spec = _spec(
+            egress=Egress.ALLOWLIST,
+            egress_allow=(
+                EgressRule("*.badssl.com", methods=("GET",), paths=("/",)),
+                EgressRule("tls-v1-2.badssl.com", methods=("HEAD",), paths=("/",)),
+            ),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            url = "https://tls-v1-2.badssl.com:1012/"
+            assert self._curl_status(sandbox, url) == (0, "200")
+            assert self._curl_status(sandbox, url, method="HEAD") == (0, "200")
+            assert self._curl_status(sandbox, url, method="POST")[1] == "403"
+            assert self._curl_status(sandbox, "https://badssl.com/")[1] == "000"
+            assert self._curl_status(sandbox, "https://self-signed.badssl.com/")[1] == "502"
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_private_plaintext_requires_the_host_opt_in_and_private_address(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        network = f"maf-private-{uuid.uuid4().hex[:12]}"
+        service = f"maf-private-service-{uuid.uuid4().hex[:12]}"
+        subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
+        allowed = DockerSandboxBackend(
+            DockerSandboxConfig(
+                egress_proxy_image=_PROXY_IMAGE,
+                outbound_network=network,
+                allow_private_http=True,
+            )
+        )
+        default = DockerSandboxBackend(
+            DockerSandboxConfig(egress_proxy_image=_PROXY_IMAGE, outbound_network=network)
+        )
+        key = _key(scope)
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("private.test", "mcr.microsoft.com"))
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    service,
+                    "--network",
+                    network,
+                    "--network-alias",
+                    "private.test",
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" | /bin/busybox nc -l -p 8080; done & while :; do printf "HTTP/1.1 302 Found\\r\\nLocation: http://mcr.microsoft.com/v2/\\r\\nContent-Length: 0\\r\\n\\r\\n" | /bin/busybox nc -l -p 8081; done',
+                ],
+                check=True,
+                capture_output=True,
+            )
+            sandbox = asyncio.run(allowed.acquire(key, spec))
+            assert self._curl_status(
+                sandbox, "http://private.test:8080/entrypoint.sh", force_proxy=True
+            ) == (0, "200")
+            assert (
+                self._curl_status(sandbox, "http://mcr.microsoft.com/v2/", force_proxy=True)[1]
+                == "502"
+            )
+            assert (
+                self._curl_status(sandbox, "http://mcr.microsoft.com:443/v2/", force_proxy=True)[1]
+                == "502"
+            )
+            assert (
+                self._curl_status(
+                    sandbox,
+                    "http://private.test:8081/",
+                    force_proxy=True,
+                    follow_redirects=True,
+                )[1]
+                == "502"
+            )
+            sandbox = asyncio.run(default.acquire(key, spec))
+            assert (
+                self._curl_status(
+                    sandbox, "http://private.test:8080/entrypoint.sh", force_proxy=True
+                )[1]
+                == "502"
+            )
+        finally:
+            asyncio.run(allowed.dispose_scope(scope, "thread-1"))
+            asyncio.run(default.dispose_scope(scope, "thread-1"))
+            subprocess.run(["docker", "rm", "-f", service], check=False, capture_output=True)
+            subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True)
+
+    def test_private_tls_validates_the_upstream_certificate(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        network = f"maf-private-{uuid.uuid4().hex[:12]}"
+        service = f"maf-tls-relay-{uuid.uuid4().hex[:12]}"
+        upstream = socket.gethostbyname("mcr.microsoft.com")
+        relay = (
+            f"printf '#!/bin/sh\\nexec /bin/busybox nc {upstream} 443\\n' >/tmp/relay; "
+            "chmod +x /tmp/relay; exec /bin/busybox nc -lk -p 8443 -e /tmp/relay"
+        )
+        subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
+        backend = DockerSandboxBackend(
+            DockerSandboxConfig(egress_proxy_image=_PROXY_IMAGE, outbound_network=network)
+        )
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",))
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    service,
+                    "--network",
+                    network,
+                    "--network-alias",
+                    "mcr.microsoft.com",
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    relay,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com:8443/v2/") == (0, "200")
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            subprocess.run(["docker", "rm", "-f", service], check=False, capture_output=True)
+            subprocess.run(["docker", "network", "rm", network], check=False, capture_output=True)
+
+    def test_private_http_exception_is_rechecked_after_dns_changes(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        private_network = f"maf-private-{uuid.uuid4().hex[:12]}"
+        other_network = f"maf-rebind-{uuid.uuid4().hex[:12]}"
+        first_service = f"maf-private-service-{uuid.uuid4().hex[:12]}"
+        second_service = f"maf-rebound-service-{uuid.uuid4().hex[:12]}"
+        response = (
+            'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" '
+            "| /bin/busybox nc -l -p 8080; done"
+        )
+
+        def start_service(name: str, network: str) -> None:
+            assert _PROXY_IMAGE is not None
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    name,
+                    "--network",
+                    network,
+                    "--network-alias",
+                    "private.test",
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    response,
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+        backend = DockerSandboxBackend(
+            DockerSandboxConfig(
+                egress_proxy_image=_PROXY_IMAGE,
+                outbound_network=private_network,
+                allow_private_http=True,
+            )
+        )
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("private.test",))
+        try:
+            subprocess.run(
+                ["docker", "network", "create", private_network], check=True, capture_output=True
+            )
+            subprocess.run(
+                ["docker", "network", "create", "--subnet", "203.0.113.0/24", other_network],
+                check=True,
+                capture_output=True,
+            )
+            start_service(first_service, private_network)
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            assert self._curl_status(sandbox, "http://private.test:8080/", force_proxy=True) == (
+                0,
+                "200",
+            )
+            proxy = sandbox.container_name + "-proxy"
+            subprocess.run(
+                ["docker", "network", "connect", other_network, proxy],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(["docker", "rm", "-f", first_service], check=True, capture_output=True)
+            start_service(second_service, other_network)
+            for _ in range(5):
+                status = self._curl_status(sandbox, "http://private.test:8080/", force_proxy=True)
+                logs = subprocess.check_output(["docker", "logs", proxy]).decode()
+                if "plaintext HTTP requires a private upstream address" in logs:
+                    assert status[1] == "502"
+                    break
+                time.sleep(1)
+            else:
+                pytest.fail("the proxy did not classify the newly resolved address")
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            for service in (first_service, second_service):
+                subprocess.run(["docker", "rm", "-f", service], check=False, capture_output=True)
+            for network in (private_network, other_network):
+                subprocess.run(
+                    ["docker", "network", "rm", network], check=False, capture_output=True
+                )
 
     def test_the_bridge_holds_no_host_address_so_neither_direction_crosses(self):
         """The allowlist is only the workload's whole egress if the bridge has no host address.

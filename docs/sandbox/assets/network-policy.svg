@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 649" width="1180" height="649" role="img" aria-labelledby="network-policy-title network-policy-desc" font-family="ui-sans-serif, system-ui, -apple-system, &apos;Segoe UI&apos;, Roboto, Helvetica, Arial, sans-serif">
   <title id="network-policy-title">Serve the requested network mode exactly, or refuse</title>
-  <desc id="network-policy-desc">The host chooses a policy accepted by the kind. The router matches the exact mode against the backend&#x27;s enforceable modes. CLOSED denies outbound network destinations. ALLOWLIST permits only listed hosts; an empty list permits none. UNRESTRICTED promises no destination restriction. Method-limited rules additionally require EGRESS_METHODS and supported method tokens. Artifact sinks, host-tool calls and attached authority are separate channels with their own checks.</desc>
+  <desc id="network-policy-desc">The host chooses a policy accepted by the kind. The router matches the exact mode against the backend&#x27;s enforceable modes. CLOSED denies outbound network destinations. ALLOWLIST permits only listed hosts; an empty list permits none. UNRESTRICTED promises no destination restriction. Method and path rules require EGRESS_METHODS and EGRESS_PATHS. Docker and WSLC enforce them through iron-proxy. Artifact sinks, host-tool calls and attached authority are separate channels with their own checks.</desc>
   <defs>
     <marker id="network-policy-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/></marker>
   </defs>
@@ -26,9 +26,9 @@
   <text x="820" y="344" font-size="16" font-weight="400" fill="#526072">No destination restriction</text>
   <text x="820" y="370" font-size="16" font-weight="400" fill="#526072">Require explicit kind support</text>
   <rect x="32" y="460" width="536" height="131" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
-  <text x="52" y="493" font-size="21" font-weight="600" fill="#243040">Method-limited rules</text>
-  <text x="52" y="524" font-size="16" font-weight="400" fill="#526072">Need EGRESS_METHODS + supported tokens.</text>
-  <text x="52" y="550" font-size="16" font-weight="400" fill="#526072">No real backend advertises enforcement.</text>
+  <text x="52" y="493" font-size="21" font-weight="600" fill="#243040">Method and path rules</text>
+  <text x="52" y="524" font-size="16" font-weight="400" fill="#526072">Need EGRESS_METHODS / EGRESS_PATHS.</text>
+  <text x="52" y="550" font-size="16" font-weight="400" fill="#526072">Docker / WSLC enforce with iron-proxy.</text>
   <rect x="612" y="460" width="536" height="131" rx="12" fill="#f3f0fb" stroke="#8b7fd4" stroke-width="1.5"/>
   <text x="632" y="493" font-size="21" font-weight="600" fill="#243040">Check other outbound channels separately</text>
   <text x="632" y="524" font-size="16" font-weight="400" fill="#526072">Artifact delivery • host tools • attached authority</text>

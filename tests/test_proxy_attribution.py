@@ -75,9 +75,16 @@ class _Engine:
                     del self.rows[instance]
             return self.result()
         if command[0] == "logs":
-            return self.result(
-                b"ALLOW example.com:443\n" if "--tail" in command else b"listening on 3128\n"
+            decision = (
+                json.dumps(
+                    {
+                        "msg": "request",
+                        "audit": {"host": "example.com:443", "method": "GET", "action": "allow"},
+                    }
+                ).encode()
+                + b"\n"
             )
+            return self.result(decision if "--tail" in command else b"tunnel proxy starting\n")
         if command[0] == "ps":
             return self.result("\n".join(r["Name"] for r in self.rows.values()).encode())
         if command[0] == "list":

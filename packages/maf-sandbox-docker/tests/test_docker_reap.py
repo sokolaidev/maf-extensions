@@ -63,7 +63,11 @@ class _Engine:
                 return _DockerResult(0, args[-1].encode(), "")
             return _DockerResult(0, json.dumps(self.resources[args[-1]]).encode(), "")
         if args[0] == "logs":
-            return _DockerResult(0, b"ALLOW example.com:443\n", "")
+            return _DockerResult(
+                0,
+                b'{"msg":"request","audit":{"host":"example.com:443","method":"GET","action":"allow"}}\n',
+                "",
+            )
         if args[:2] == ("rm", "-f") or args[:2] == ("network", "rm"):
             self.before_remove()
             if self.resources.pop(args[-1], None) is None:

@@ -58,6 +58,9 @@ class DockerSandboxConfig:
     and for a while it instead got a declaration of ``CLOSED`` and a failed ``docker run`` of the
     empty string (#407).
 
+    ``allow_private_http`` permits plaintext HTTP only to listed hosts whose selected address
+    is private. It requires the proxy image and is intended for development or test workloads.
+
     ``outbound_network`` is the network that gives the proxy its egress leg.  It exists because
     the default one is not called the same thing everywhere: ``"bridge"`` on Docker, ``"podman"``
     on Podman. A Podman socket reached through the Docker CLI is best effort and is not
@@ -72,6 +75,7 @@ class DockerSandboxConfig:
 
     docker_path: str = _DEFAULT_DOCKER_PATH
     egress_proxy_image: str | None = None
+    allow_private_http: bool = False
     outbound_network: str = _DEFAULT_OUTBOUND_NETWORK
     command_timeout_seconds: float = _DEFAULT_COMMAND_TIMEOUT_S
     image_pull_timeout_seconds: float = _DEFAULT_IMAGE_PULL_TIMEOUT_S

@@ -75,7 +75,7 @@ print(f"wslc build -t maf-egress-proxy:local {proxy_build_context()}")
 config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 ```
 
-Each allowlisted sandbox gets an internal network and a filtering proxy. The proxy is its only route out and permits only the spec's hosts. TLS is not decrypted. Unrestricted access and method-scoped rules are unsupported.
+Each allowlisted sandbox gets an internal network and a filtering proxy. The proxy is its only route out. The packaged image builds pinned iron-proxy with a policy patch. It terminates guest TLS to enforce host, method and path rules, validates upstream certificates, and supplies a per-sandbox CA certificate through the guest work directory. Its CA key stays in the proxy. Clients must honor the injected CA environment or configure trust explicitly. Public destinations require TLS on every port. Private destinations require TLS by default; `WslcSandboxConfig(allow_private_http=True, egress_proxy_image=...)` permits plaintext only when the listed host resolves to a private address. Use that option only for development or test workloads. Unrestricted access remains unavailable.
 
 The router's observer can receive proxy decisions after confirmed removal. Failed removal can leave a window unreported. See [observability](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md).
 

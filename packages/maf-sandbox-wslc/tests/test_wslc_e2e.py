@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,7 @@ from maf_sandbox import (
     Capability,
     Cleanup,
     Egress,
+    EgressRule,
     Isolation,
     OsFamily,
     SandboxCapabilityNotSupported,
@@ -754,10 +756,28 @@ class TestAllowlistEgress:
 
         asyncio.run(scenario())
 
-    def _curl_status(self, sandbox, url: str) -> tuple[int, str]:
+    def _curl_status(
+        self,
+        sandbox,
+        url: str,
+        *,
+        method: str | None = None,
+        force_proxy: bool = False,
+        follow_redirects: bool = False,
+    ) -> tuple[int, str]:
+        args = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "25"]
+        if follow_redirects:
+            args.append("--location")
+        if method == "HEAD":
+            args.append("--head")
+        elif method is not None:
+            args += ["-X", method]
+        if force_proxy:
+            args += ["--noproxy", "", "--proxy", f"http://{sandbox.container_name}-proxy:3128"]
+        args.append(url)
         result = asyncio.run(
             sandbox.exec(
-                ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {url}"],
+                args,
                 working_directory="/maf-sandbox/work",
                 timeout=45,
             )
@@ -789,8 +809,7 @@ class TestAllowlistEgress:
                     denied_url="https://pypi.org/simple/",
                 )
             )
-            # wslc-specific, stronger than the shared contract: the deny is L3, so curl cannot
-            # open the tunnel and reports `000`, not an L7 proxy's HTTP answer.
+            # A rejected CONNECT has no origin HTTP response for curl to report.
             _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
             assert denied_status == "000", denied_status
         finally:
@@ -798,6 +817,282 @@ class TestAllowlistEgress:
         assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
+
+    def test_tls_method_path_and_plaintext_controls(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("mcr.microsoft.com", methods=("GET",), paths=("/v2/",)),),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            allowed_code, allowed_status = self._curl_status(
+                sandbox, "https://mcr.microsoft.com/v2/"
+            )
+            assert allowed_code == 0 and allowed_status == "200"
+            assert (
+                self._curl_status(sandbox, "https://mcr.microsoft.com/v2/", method="POST")[1]
+                == "403"
+            )
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com/other")[1] == "403"
+            assert (
+                self._curl_status(sandbox, "http://mcr.microsoft.com/v2/", force_proxy=True)[1]
+                == "502"
+            )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_public_tls_on_another_port_and_overlapping_wildcard_rules(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(
+                EgressRule("*.badssl.com", methods=("GET",), paths=("/",)),
+                EgressRule("tls-v1-2.badssl.com", methods=("HEAD",), paths=("/",)),
+            ),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            url = "https://tls-v1-2.badssl.com:1012/"
+            assert self._curl_status(sandbox, url) == (0, "200")
+            assert self._curl_status(sandbox, url, method="HEAD") == (0, "200")
+            assert self._curl_status(sandbox, url, method="POST")[1] == "403"
+            assert self._curl_status(sandbox, "https://badssl.com/")[1] == "000"
+            assert self._curl_status(sandbox, "https://self-signed.badssl.com/")[1] == "502"
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_private_plaintext_requires_the_host_opt_in_and_private_address(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        service = f"maf-private-service-{uuid.uuid4().hex[:12]}"
+        allowed = WslcSandboxBackend(
+            WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE, allow_private_http=True)
+        )
+        default = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE))
+        key = _key(scope)
+        try:
+            subprocess.run(
+                [
+                    "wslc",
+                    "container",
+                    "run",
+                    "-d",
+                    "--name",
+                    service,
+                    "--network",
+                    "bridge",
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" | /bin/busybox nc -l -p 8080; done & while :; do printf "HTTP/1.1 302 Found\\r\\nLocation: http://mcr.microsoft.com/v2/\\r\\nContent-Length: 0\\r\\n\\r\\n" | /bin/busybox nc -l -p 8081; done',
+                ],
+                check=True,
+                capture_output=True,
+            )
+            inspected = json.loads(
+                subprocess.check_output(["wslc", "container", "inspect", service])
+            )
+            private_ip = inspected[0]["NetworkSettings"]["Networks"]["bridge"]["IPAddress"]
+            spec = SandboxSpec(
+                kind="e2e",
+                image=_IMAGE,
+                egress=Egress.ALLOWLIST,
+                egress_allow=(private_ip, "mcr.microsoft.com"),
+            )
+            sandbox = asyncio.run(allowed.acquire(key, spec))
+            assert self._curl_status(sandbox, f"http://{private_ip}:8080/", force_proxy=True) == (
+                0,
+                "200",
+            )
+            assert (
+                self._curl_status(sandbox, "http://mcr.microsoft.com/v2/", force_proxy=True)[1]
+                == "502"
+            )
+            assert (
+                self._curl_status(sandbox, "http://mcr.microsoft.com:443/v2/", force_proxy=True)[1]
+                == "502"
+            )
+            assert (
+                self._curl_status(
+                    sandbox,
+                    f"http://{private_ip}:8081/",
+                    force_proxy=True,
+                    follow_redirects=True,
+                )[1]
+                == "502"
+            )
+            sandbox = asyncio.run(default.acquire(key, spec))
+            assert (
+                self._curl_status(sandbox, f"http://{private_ip}:8080/", force_proxy=True)[1]
+                == "502"
+            )
+        finally:
+            asyncio.run(allowed.dispose_scope(scope, "thread-1"))
+            asyncio.run(default.dispose_scope(scope, "thread-1"))
+            subprocess.run(
+                ["wslc", "container", "remove", "-f", service], check=False, capture_output=True
+            )
+
+    def test_private_tls_validates_the_upstream_certificate(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        network = f"maf-private-{uuid.uuid4().hex[:12]}"
+        service = f"maf-tls-relay-{uuid.uuid4().hex[:12]}"
+        upstream = socket.gethostbyname("mcr.microsoft.com")
+        relay = (
+            f"printf '#!/bin/sh\\nexec /bin/busybox nc {upstream} 443\\n' >/tmp/relay; "
+            "chmod +x /tmp/relay; exec /bin/busybox nc -lk -p 8443 -e /tmp/relay"
+        )
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=("mcr.microsoft.com",),
+        )
+        subprocess.run(["wslc", "network", "create", network], check=True, capture_output=True)
+        try:
+            subprocess.run(
+                [
+                    "wslc",
+                    "container",
+                    "run",
+                    "-d",
+                    "--name",
+                    service,
+                    "--network",
+                    network,
+                    "--network-alias",
+                    "mcr.microsoft.com",
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    relay,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            subprocess.run(
+                ["wslc", "network", "connect", network, sandbox.container_name + "-proxy"],
+                check=True,
+                capture_output=True,
+            )
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com:8443/v2/") == (0, "200")
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            subprocess.run(
+                ["wslc", "container", "remove", "-f", service], check=False, capture_output=True
+            )
+            subprocess.run(["wslc", "network", "remove", network], check=False, capture_output=True)
+
+    def test_private_http_exception_is_rechecked_after_dns_changes(self):
+        assert _PROXY_IMAGE is not None
+        scope = f"e2e-{uuid.uuid4()}"
+        private_network = f"maf-private-{uuid.uuid4().hex[:12]}"
+        other_network = f"maf-rebind-{uuid.uuid4().hex[:12]}"
+        first_service = f"maf-private-service-{uuid.uuid4().hex[:12]}"
+        second_service = f"maf-rebound-service-{uuid.uuid4().hex[:12]}"
+        response = (
+            'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" '
+            "| /bin/busybox nc -l -p 8080; done"
+        )
+
+        def start_service(name: str, network: str) -> None:
+            assert _PROXY_IMAGE is not None
+            subprocess.run(
+                [
+                    "wslc",
+                    "container",
+                    "run",
+                    "-d",
+                    "--name",
+                    name,
+                    "--network",
+                    network,
+                    "--network-alias",
+                    "private.test",
+                    "--entrypoint",
+                    "/bin/sh",
+                    _PROXY_IMAGE,
+                    "-c",
+                    response,
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+        backend = WslcSandboxBackend(
+            WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE, allow_private_http=True)
+        )
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=("private.test",),
+        )
+        try:
+            subprocess.run(
+                ["wslc", "network", "create", private_network], check=True, capture_output=True
+            )
+            subprocess.run(
+                ["wslc", "network", "create", "--subnet", "203.0.113.0/24", other_network],
+                check=True,
+                capture_output=True,
+            )
+            start_service(first_service, private_network)
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            proxy = sandbox.container_name + "-proxy"
+            subprocess.run(
+                ["wslc", "network", "connect", private_network, proxy],
+                check=True,
+                capture_output=True,
+            )
+            assert self._curl_status(sandbox, "http://private.test:8080/", force_proxy=True) == (
+                0,
+                "200",
+            )
+            subprocess.run(
+                ["wslc", "network", "connect", other_network, proxy],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["wslc", "container", "remove", "-f", first_service],
+                check=True,
+                capture_output=True,
+            )
+            start_service(second_service, other_network)
+            for _ in range(5):
+                status = self._curl_status(sandbox, "http://private.test:8080/", force_proxy=True)
+                logs = subprocess.check_output(["wslc", "container", "logs", proxy]).decode()
+                if "plaintext HTTP requires a private upstream address" in logs:
+                    assert status[1] == "502"
+                    break
+                time.sleep(1)
+            else:
+                pytest.fail("the proxy did not classify the newly resolved address")
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            for service in (first_service, second_service):
+                subprocess.run(
+                    ["wslc", "container", "remove", "-f", service],
+                    check=False,
+                    capture_output=True,
+                )
+            for network in (private_network, other_network):
+                subprocess.run(
+                    ["wslc", "network", "remove", network], check=False, capture_output=True
+                )
 
 
 class TestTheSharedConformanceSuites:

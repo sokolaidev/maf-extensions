@@ -352,7 +352,7 @@ NO_ATTACHED_IDENTITY = AttachedIdentity()
 
 @dataclass(frozen=True)
 class EgressRule:
-    """Allow a host for the uppercase HTTP methods named, or for all of them with ``None``.
+    """Allow a host for named HTTP methods and paths, or all with ``None``.
 
     Method scope narrows a channel; it does not close it. GET can still send data through
     URLs, headers and request content.
@@ -370,9 +370,26 @@ class EgressRule:
     host: str
     methods: tuple[HttpMethod | str, ...] | None = None
     authority: str | None = None
+    paths: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         _validated_egress_host(self.host)
+        if self.paths is not None:
+            if not isinstance(cast("object", self.paths), tuple) or not self.paths:
+                raise ValueError("egress paths must be a nonempty tuple or None")
+            for path in self.paths:
+                if not isinstance(cast("object", path), str) or not path.startswith("/"):
+                    raise ValueError(f"egress path {path!r} must start with /")
+                if any(char in path for char in "?#[]") or path.count("*") > int(
+                    path.endswith("/*")
+                ):
+                    raise ValueError(f"egress path {path!r} contains unsupported pattern syntax")
+                if any(segment in (".", "..") for segment in path.split("/")):
+                    raise ValueError(f"egress path {path!r} contains a dot segment")
+                if any(ord(char) < 33 or ord(char) == 127 for char in path):
+                    raise ValueError(f"egress path {path!r} contains whitespace or control text")
+            if len(set(self.paths)) != len(self.paths):
+                raise ValueError("egress paths must not contain duplicates")
         if self.authority is not None:
             if (
                 not isinstance(cast("object", self.authority), str)
@@ -402,9 +419,14 @@ class EgressRule:
         object.__setattr__(self, "methods", methods)
 
     def __str__(self) -> str:
-        if self.methods is None:
+        if self.methods is None and self.paths is None:
             return self.host
-        return f"{self.host} ({', '.join(self.methods)})"
+        scope: list[str] = []
+        if self.methods is not None:
+            scope.append(", ".join(self.methods))
+        if self.paths is not None:
+            scope.append(", ".join(self.paths))
+        return f"{self.host} ({'; '.join(scope)})"
 
 
 class Capability(StrEnum):
@@ -445,6 +467,8 @@ class Capability(StrEnum):
     RECLAIM = "reclaim"
     #: Enforce the HTTP methods an allowlist entry names, within ``egress_method_tokens``.
     EGRESS_METHODS = "egress_methods"
+    #: Enforce the HTTP paths an allowlist entry names.
+    EGRESS_PATHS = "egress_paths"
 
 
 #: What every :class:`Sandbox` already obligates.
@@ -1033,12 +1057,14 @@ class SandboxSpec:
     @property
     def required_capabilities(self) -> frozenset[Capability]:
         """Explicit requirements plus capabilities needed to enforce the current policy."""
-        if any(
-            isinstance(entry, EgressRule) and entry.methods is not None
-            for entry in self.egress_allow
-        ):
-            return self.requires | {Capability.EGRESS_METHODS}
-        return self.requires
+        required = set(self.requires)
+        for entry in self.egress_allow:
+            if isinstance(entry, EgressRule):
+                if entry.methods is not None:
+                    required.add(Capability.EGRESS_METHODS)
+                if entry.paths is not None:
+                    required.add(Capability.EGRESS_PATHS)
+        return frozenset(required)
 
     @property
     def authority_channels(self) -> frozenset[AuthorityChannel]:
@@ -1096,9 +1122,16 @@ class SandboxSpec:
                 "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
             )
         entries: dict[str, str | EgressRule] = {}
-        policy_by_host: dict[str, tuple[frozenset[str] | None, str | None]] = {}
+        policy_by_host: dict[
+            str, tuple[frozenset[str] | None, str | None, tuple[str, ...] | None]
+        ] = {}
         for entry in self.egress_allow:
-            if isinstance(entry, EgressRule) and entry.methods is None and entry.authority is None:
+            if (
+                isinstance(entry, EgressRule)
+                and entry.methods is None
+                and entry.authority is None
+                and entry.paths is None
+            ):
                 entry = entry.host
             host = entry.host if isinstance(entry, EgressRule) else _validated_egress_host(entry)
             methods = (
@@ -1107,7 +1140,11 @@ class SandboxSpec:
                 else None
             )
             folded = host.lower()
-            policy = (methods, entry.authority if isinstance(entry, EgressRule) else None)
+            policy = (
+                methods,
+                entry.authority if isinstance(entry, EgressRule) else None,
+                entry.paths if isinstance(entry, EgressRule) else None,
+            )
             if folded in entries:
                 if policy_by_host[folded] != policy:
                     raise ValueError(f"conflicting egress rules for host {host!r}")
