@@ -147,6 +147,22 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: uv sync --locked --python 3.13
 
+      - name: Build and verify the Hyperlight runtime image
+        if: needs.changes.outputs.code == 'true'
+        run: uv run python scripts/build_hyperlight_aks_image.py --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag hyperlight-sandbox:ci
+
+      - name: Retain Hyperlight image verification records
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hyperlight-image-verification
+          path: |
+            ${{ runner.temp }}/hyperlight-image/source.json
+            ${{ runner.temp }}/hyperlight-image/build-inputs.json
+            ${{ runner.temp }}/hyperlight-image/image-verification.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Worker pipes, cgroups and lifetime
         if: needs.changes.outputs.code == 'true'
         # These real kernel checks require delegation, but no hypervisor.

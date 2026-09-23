@@ -14,7 +14,15 @@ uv run python scripts/build_hyperlight_aks_image.py --output /tmp/hyperlight-bui
 uv run python scripts/hyperlight_aks.py plugin --namespace hyperlight-system > /tmp/hyperlight-plugin.json
 ```
 
-The builder uses the lockfile, builds three workspace wheels and limits the Docker context to those wheels, hashed requirements and the probe application. Use an empty output directory initially. Publish the resulting application image to an approved registry and pass its immutable digest to the controller. The included image runs the verification application; an embedding application supplies its own code and command with the same pinned dependencies and supervisor.
+The builder uses the lockfile, builds three workspace wheels and limits the Docker context to those wheels, hashed requirements, the probe and build metadata. Use an empty output directory outside the checkout initially. `--tag` builds locally and verifies the immutable image ID returned by Docker. A failed build or smoke check leaves no `image-verification.json` success record. Add `--require-clean` for a release candidate; local development builds record whether the checkout has uncommitted changes.
+
+`source.json` records the public repository, source commit, dirty flag and lockfile hash. `build-inputs.json` hashes the prepared inputs, including the Dockerfile, verifier and wheels. The image retains these files. `image-verification.json` binds that input manifest to the local image ID, installed package versions and smoke results. Its registry digest remains unset: a local Docker ID is not evidence that an image was published. These are unsigned build records, not authenticated source provenance; retain the context and verification record with the candidate, and verify your approved publisher's identity and provenance before promotion.
+
+The Linux Hyperlight CI job builds from a clean checkout and retains the three JSON records in the `hyperlight-image-verification` artifact for 14 days. It does not publish an image or sign these records.
+
+The smoke check runs as the image's non-root user with no network, a read-only root filesystem, dropped capabilities, no privilege escalation and finite CPU, memory and PID limits. It checks payload hashes, workspace versions, dependency consistency and imports. It opens no hypervisor device. Its 256 MiB limit is only for packaging verification; it does not size a Hyperlight VM or establish AKS containment.
+
+Publish the verified image ID to an approved registry and retain the registry's immutable manifest digest. Configure pull authorization outside application containers, verify the published artifact and its provenance through the approved registry workflow, then pass that digest to the controller. Registry publishing and provenance verification are separate deployment gates; the builder does not push images. The included image runs the verification application; an embedding application supplies its own code and command with the same pinned dependencies and supervisor.
 
 Inspect the rendered plugin before applying it with an explicit kubeconfig/context. It pins the upstream revision and image digest, drops capabilities, disables the service-account token and uses `OnDelete` upgrades. It preserves upstream discovery, device allocation and CDI generation. The default `DEVICE_COUNT=1` advertises one allocation per eligible node; it is a scheduling choice, not measured VM capacity. Label only verified nodes with `hyperlight.dev/enabled=true` and `hyperlight.dev/hypervisor=kvm`. A cluster operator installs the plugin separately from application controllers. Restart, node replacement and stale-CDI recovery require operational validation before production use.
 
@@ -37,6 +45,14 @@ uv run python scripts/hyperlight_aks.py supervise --namespace scoped-agents --ku
 ```
 
 For registry-free development verification, the builder also emits `bundle.json.gz` and its SHA-256. Create an immutable ConfigMap with that exact binary file. Pass `--bundle-configmap NAME --bundle-sha256 DIGEST` and the pinned Python base image digest from the Dockerfile. An unprivileged init container verifies the bundle and installs hash-locked dependencies into the private volume. This path downloads packages during startup and is slower than a prebuilt application image; its measured bootstrap time is not Hyperlight initialization time.
+
+## Upgrade and rollback
+
+Keep the previous runtime digest, its build record, the application command, template settings and plugin manifest until a replacement passes acceptance. Validate each new digest with a fresh ownership scope on the intended node pool: run positive execution/reset, files, allowlist and failure probes, then measure the actual application's image pull, startup and memory/storage peaks. The packaging smoke check cannot replace those probes.
+
+Change the trusted host's template for newly created pods. Let existing owners finish or retire them through the controller and confirm termination before reusing their scopes. An image update does not transfer a running VM's state. Roll back by restoring the previous digest and compatible template for new pods; an unresolved cleanup ledger still blocks replacement after rollback.
+
+Treat device-plugin upgrades separately. The rendered DaemonSet uses `OnDelete`, so changing its manifest does not restart existing plugin pods. Cordon and drain affected nodes under the operator's maintenance process, confirm owner cleanup, then replace plugin pods and verify registration, CDI contents and actual VM creation before returning nodes to service. Restore the prior manifest and repeat verification to roll back. A healthy device count alone does not establish device usability: the pinned upstream plugin checks device-path presence and does not repair missing or stale CDI during its health loop.
 
 ## Failure and recovery
 

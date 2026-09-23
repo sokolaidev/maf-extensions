@@ -6,5 +6,6 @@ RUN python -m pip install --no-cache-dir --require-hashes -r /opt/requirements.t
     && python -m pip install --no-cache-dir --no-deps /opt/wheels/*.whl \
     && python -m pip check
 COPY probe.py /opt/hyperlight-probe.py
+COPY .dockerignore Dockerfile build-inputs.json source.json verify.py /opt/
 USER 65534:65534
 CMD ["python", "-I", "-u", "-m", "maf_sandbox_hyperlight._pod_supervisor", "python", "-I", "-u", "/opt/hyperlight-probe.py"]
