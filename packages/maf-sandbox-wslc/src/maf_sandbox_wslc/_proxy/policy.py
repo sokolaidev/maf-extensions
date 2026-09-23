@@ -85,10 +85,10 @@ def read_decisions(text: str, limit: int) -> tuple[tuple[EgressDecision, ...], b
         action, method, target = audit.get("action"), audit.get("method"), audit.get("host")
         if not isinstance(target, str) or not target or action not in ("allow", "reject", "error"):
             continue
-        if method == "CONNECT" and action == "allow":
-            continue
         tunnel_data = record.get("tunnel")
         tunnel = cast("dict[str, object]", tunnel_data) if isinstance(tunnel_data, dict) else {}
+        if method == "CONNECT" and action == "allow" and not isinstance(tunnel_data, dict):
+            continue
         tunnel_target = tunnel.get("target")
         if target.startswith("[") and "]:" in target:
             host, port_text = target[1:].rsplit("]:", 1)

@@ -61,6 +61,8 @@ from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
     _CREATE_AS_THE_GUEST,
     _CREATE_DIRECTORIES,
+    _GUEST_CA_PATH,
+    _INSTALL_PROXY_CA,
     _LEFT_TO_THE_GUEST,
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
@@ -3881,6 +3883,43 @@ class TestAllowlistTopology:
         labels = [args[i + 1] for i, a in enumerate(args) if a == "-l"]
         assert "maf-sandbox.role=proxy" in labels
         assert args[-1] == "maf-egress-proxy:local"
+
+    @pytest.mark.parametrize("allowed", [False, True])
+    def test_the_proxy_gets_the_hosts_plaintext_setting(self, allowed):
+        config = replace(_ALLOW_CONFIG, allow_private_http=allowed)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        proxy = next(
+            call
+            for call in fake.matching("container", "run")
+            if call.args[call.args.index("--name") + 1].endswith("-proxy")
+        )
+        env = [proxy.args[i + 1] for i, arg in enumerate(proxy.args) if arg == "-e"]
+        assert f"MAF_SANDBOX_PRIVATE_HTTP={int(allowed)}" in env
+
+    def test_proxy_ca_is_installed_outside_an_existing_read_only_work_dir(self):
+        existing = {
+            ("container", "cp", f"{_AL}:{path}"): _cp_is_a_directory()
+            for path in ("/", "/maf-sandbox", _WORK)
+        }
+        machine = _machine(overrides=existing)
+
+        def respond(args):
+            if _WRITE_AS_THE_GUEST in args:
+                return _WslcResult(1, b"", b"Permission denied")
+            return machine(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert not _writes(fake)
+        install = next(call for call in fake.calls if _INSTALL_PROXY_CA in call.args)
+        assert install.args[install.args.index("--user") + 1] == "0"
+        assert install.args[-2] == _GUEST_CA_PATH
+        assert install.stdin.startswith(b"-----BEGIN CERTIFICATE-----")
+        workload = _run_named(fake, _AL)
+        assert f"SSL_CERT_FILE={_GUEST_CA_PATH}" in workload.args
 
     def test_the_workload_joins_the_network_with_the_proxy_in_its_environment(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)

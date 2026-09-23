@@ -1825,10 +1825,49 @@ class TestAllowlistEgress:
                 self._curl_status(sandbox, "https://mcr.microsoft.com/v2/", method="POST")[1]
                 == "403"
             )
+            inner_connect = asyncio.run(
+                sandbox.exec(
+                    [
+                        "curl",
+                        "--http1.1",
+                        "-s",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "--max-time",
+                        "25",
+                        "-X",
+                        "CONNECT",
+                        "--request-target",
+                        "mcr.microsoft.com:443",
+                        "https://mcr.microsoft.com/v2/",
+                    ],
+                    working_directory=_WORK,
+                    timeout=45,
+                )
+            )
+            assert inner_connect.stdout.strip() == "403", inner_connect
             assert self._curl_status(sandbox, "https://mcr.microsoft.com/other")[1] == "403"
             assert (
                 self._curl_status(sandbox, "http://mcr.microsoft.com/v2/", force_proxy=True)[1]
                 == "502"
+            )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_literal_star_method_does_not_allow_get(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(self._config())
+        spec = _spec(
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("mcr.microsoft.com", methods=("*",), paths=("/v2/",)),),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")[1] == "403"
+            assert (
+                self._curl_status(sandbox, "https://mcr.microsoft.com/v2/", method="*")[1] != "403"
             )
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))

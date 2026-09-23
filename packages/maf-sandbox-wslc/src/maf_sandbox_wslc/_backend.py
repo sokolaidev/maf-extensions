@@ -181,7 +181,7 @@ _CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
 _PROXY_READY_MARKER = "tunnel proxy starting"
 _PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
 _PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
-_GUEST_CA_NAME = ".maf-proxy-ca.crt"
+_GUEST_CA_PATH = "/maf-sandbox-proxy-ca.crt"
 
 #: How many of the proxy's own lines one drain reads back.  A guest chooses how many requests
 #: it makes, so an unbounded read is a guest-sized allocation on a path an acquire waits on.
@@ -488,6 +488,15 @@ mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
 }
 """
 
+_INSTALL_PROXY_CA = f"""\
+export LC_ALL=C PATH={SETUP_PATH} CDPATH=
+rm -f -- "$1" || exit 1
+umask 022
+cat > "$1" || exit 1
+chmod 0644 "$1" || exit 1
+[ "$(wc -c < "$1")" -eq "$2" ]
+"""
+
 #: The environment the root setup command runs under. ``PATH`` is pinned so a directory the
 #: image's user can write cannot supply a command that runs as root, and ``CDPATH`` is cleared
 #: so an inherited one cannot divert a relative ``cd`` to a same-named directory elsewhere.
@@ -736,6 +745,34 @@ class _WslcSandbox:
                 "so the container was discarded"
             )
         return result
+
+    async def install_proxy_ca(self, certificate: bytes) -> None:
+        """Place the proxy's public CA at a readable backend-owned guest path."""
+        installed = await self._run_or_discard(
+            "container",
+            "exec",
+            "-i",
+            "--user",
+            "0",
+            "-w",
+            "/",
+            self._name,
+            SETUP_SHELL,
+            "-c",
+            _INSTALL_PROXY_CA,
+            "sh",
+            _GUEST_CA_PATH,
+            str(len(certificate)),
+            stdin=certificate,
+            timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
+        )
+        if installed.returncode:
+            raise RuntimeError(
+                "wslc could not install the egress proxy CA certificate: "
+                f"{installed.stderr_text.strip()}"
+            )
 
     async def _discard(self) -> None:
         """Force-remove this container, swallowing whatever removal says.
@@ -1576,7 +1613,7 @@ class WslcSandboxBackend:
             try:
                 await sandbox.prepare_work_dir(spec)
                 if egress_id:
-                    await self._install_proxy_ca(name, sandbox, spec)
+                    await self._install_proxy_ca(name, sandbox)
             except BaseException:
                 # Nothing is returned, so no caller can dispose this container — and setup
                 # runs privileged commands the host process cannot reach once it is gone.
@@ -1609,7 +1646,7 @@ class WslcSandboxBackend:
                 )
             return sandbox
 
-    async def _install_proxy_ca(self, name: str, sandbox: _WslcSandbox, spec: SandboxSpec) -> None:
+    async def _install_proxy_ca(self, name: str, sandbox: _WslcSandbox) -> None:
         """Make this proxy's public CA available to the guest before serving it."""
         result = await self._wslc(
             "container",
@@ -1624,9 +1661,7 @@ class WslcSandboxBackend:
         )
         if result.returncode or not result.stdout.startswith(b"-----BEGIN CERTIFICATE-----"):
             raise RuntimeError("wslc could not read the egress proxy CA certificate")
-        await sandbox.write_file(
-            _GUEST_CA_NAME, result.stdout, working_directory=spec.work_dir or "/maf-sandbox/work"
-        )
+        await sandbox.install_proxy_ca(result.stdout)
 
     async def _verify_storage_base(
         self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
@@ -2377,9 +2412,9 @@ class WslcSandboxBackend:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
             args += ["-e", f"HTTPS_PROXY={proxy_url}", "-e", f"HTTP_PROXY={proxy_url}"]
-            ca_path = posixpath.join(spec.work_dir or "/maf-sandbox/work", _GUEST_CA_NAME)
-            args += ["-e", f"SSL_CERT_FILE={ca_path}", "-e", f"CURL_CA_BUNDLE={ca_path}"]
-            args += ["-e", f"REQUESTS_CA_BUNDLE={ca_path}"]
+            args += ["-e", f"SSL_CERT_FILE={_GUEST_CA_PATH}"]
+            args += ["-e", f"CURL_CA_BUNDLE={_GUEST_CA_PATH}"]
+            args += ["-e", f"REQUESTS_CA_BUNDLE={_GUEST_CA_PATH}"]
         else:
             args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
@@ -2456,8 +2491,7 @@ class WslcSandboxBackend:
 
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
         args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec)}"]
-        if self._config.allow_private_http:
-            args += ["-e", "MAF_SANDBOX_PRIVATE_HTTP=1"]
+        args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
         attribution = _key_label(key)

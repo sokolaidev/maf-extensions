@@ -837,11 +837,75 @@ class TestAllowlistEgress:
                 self._curl_status(sandbox, "https://mcr.microsoft.com/v2/", method="POST")[1]
                 == "403"
             )
+            inner_connect = asyncio.run(
+                sandbox.exec(
+                    [
+                        "curl",
+                        "--http1.1",
+                        "-s",
+                        "-o",
+                        "/dev/null",
+                        "-w",
+                        "%{http_code}",
+                        "--max-time",
+                        "25",
+                        "-X",
+                        "CONNECT",
+                        "--request-target",
+                        "mcr.microsoft.com:443",
+                        "https://mcr.microsoft.com/v2/",
+                    ],
+                    working_directory=_WORK,
+                    timeout=45,
+                )
+            )
+            assert inner_connect.stdout.strip() == "403", inner_connect
             assert self._curl_status(sandbox, "https://mcr.microsoft.com/other")[1] == "403"
             assert (
                 self._curl_status(sandbox, "http://mcr.microsoft.com/v2/", force_proxy=True)[1]
                 == "502"
             )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_literal_star_method_does_not_allow_get(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_IMAGE,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("mcr.microsoft.com", methods=("*",), paths=("/v2/",)),),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")[1] == "403"
+            assert (
+                self._curl_status(sandbox, "https://mcr.microsoft.com/v2/", method="*")[1] != "403"
+            )
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    @pytest.mark.skipif(not _NONROOT_IMAGE, reason="needs a non-root WSLC E2E image")
+    def test_existing_root_owned_work_dir_accepts_the_proxy_ca(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(
+            kind="e2e",
+            image=_NONROOT_IMAGE,
+            work_dir="/",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+            egress_allow=("mcr.microsoft.com",),
+        )
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        try:
+            result = asyncio.run(
+                sandbox.exec(
+                    ["test", "-r", "/maf-sandbox-proxy-ca.crt"], working_directory="/", timeout=30
+                )
+            )
+            assert result.exit_code == 0, result.stderr
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 

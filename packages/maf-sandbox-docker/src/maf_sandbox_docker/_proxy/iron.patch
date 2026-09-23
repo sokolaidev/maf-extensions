@@ -22,6 +22,14 @@ index 53da084..3acc24b 100644
  	}
  	matched, _ := path.Match(pattern, name)
  	return matched
+diff --git a/internal/hostmatch/rule.go b/internal/hostmatch/rule.go
+--- a/internal/hostmatch/rule.go
++++ b/internal/hostmatch/rule.go
+@@ -85,3 +85,3 @@
+ func isWildcard(methods []string) bool {
+-	return len(methods) == 0 || (len(methods) == 1 && methods[0] == "*")
++	return len(methods) == 0
+ }
 diff --git a/internal/proxy/proxy.go b/internal/proxy/proxy.go
 index 73bde1f..761cbc6 100644
 --- a/internal/proxy/proxy.go
@@ -178,7 +186,7 @@ index f85a39c..6b830db 100644
  func (a *Allowlist) TransformRequest(_ context.Context, tctx *transform.TransformContext, req *http.Request) (*transform.TransformResult, error) {
 +	// A CONNECT only establishes the tunnel. The inner HTTP request must satisfy
 +	// the method and path constraints after TLS termination.
-+	if req.Method == http.MethodConnect && tctx.Mode == transform.ModeMITM {
++	if req.Method == http.MethodConnect && tctx.Mode == transform.ModeMITM && tctx.Tunnel == nil {
 +		host := hostmatch.StripPort(req.Host)
 +		for _, rule := range a.rules {
 +			if rule.Matcher.Matches(host) {

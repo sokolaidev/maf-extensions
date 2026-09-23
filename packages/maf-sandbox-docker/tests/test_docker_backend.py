@@ -4725,6 +4725,20 @@ class TestAllowlistTopology:
         labels = [args[i + 1] for i, a in enumerate(args) if a == "--label"]
         assert "maf-sandbox.role=proxy" in labels
 
+    @pytest.mark.parametrize("allowed", [False, True])
+    def test_the_proxy_gets_the_hosts_plaintext_setting(self, allowed):
+        config = replace(_ALLOW_CONFIG, allow_private_http=allowed)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        proxy = next(
+            call
+            for call in fake.matching("run")
+            if call.args[call.args.index("--name") + 1].endswith("-proxy")
+        )
+        env = [proxy.args[i + 1] for i, arg in enumerate(proxy.args) if arg == "-e"]
+        assert f"MAF_SANDBOX_PRIVATE_HTTP={int(allowed)}" in env
+
     def test_the_outbound_leg_uses_the_configured_network(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))

@@ -75,6 +75,29 @@ def test_audit_reader_keeps_request_ports_and_classifies_address_denials() -> No
     assert not truncated
 
 
+def test_audit_reader_keeps_inner_connect_but_skips_tunnel_setup() -> None:
+    records = [
+        {
+            "msg": "request",
+            "audit": {"host": "example.com:443", "method": "CONNECT", "action": "allow"},
+        },
+        {
+            "msg": "request",
+            "audit": {"host": "example.com:443", "method": "CONNECT", "action": "allow"},
+            "tunnel": {"target": "example.com:443"},
+        },
+        {
+            "msg": "request",
+            "audit": {"host": "other.test:443", "method": "CONNECT", "action": "reject"},
+        },
+    ]
+    decisions, _ = read_decisions("\n".join(map(json.dumps, records)), 10)
+    assert [(item.decision, item.host, item.port) for item in decisions] == [
+        ("ALLOW", "example.com", 443),
+        ("DENY", "other.test", 443),
+    ]
+
+
 def test_packaged_context_pins_the_proxy_and_carries_its_patch() -> None:
     context = build_context()
     dockerfile = (context / "Dockerfile").read_text(encoding="utf-8")

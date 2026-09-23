@@ -3540,8 +3540,7 @@ class DockerSandboxBackend:
 
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
         args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec)}"]
-        if self._config.allow_private_http:
-            args += ["-e", "MAF_SANDBOX_PRIVATE_HTTP=1"]
+        args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         attribution = _key_label(key)
