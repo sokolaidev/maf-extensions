@@ -47,7 +47,7 @@ The backend captures the client environment and binds its context, endpoint and 
 | Transfer ceiling | 64 MiB per file, 256 MiB total, 256 files in each direction |
 | Cleanup | Disposal by default; reclaim requires explicit host opt-in |
 
-Directory listing, runtime `run_code`, snapshots, method-level network rules and core attached identity are unavailable.
+Directory listing, runtime `run_code`, snapshots and core attached identity are unavailable. Method and path network rules require the configured proxy.
 
 Acquisition checks the guest commands needed by the requested capabilities. `EXEC` needs `sh`, even for an argv-only workload. Deletion needs `rm`; host tools also need `mkdir`, `mv` and `nohup`. File transfer itself needs no guest command.
 
@@ -90,7 +90,7 @@ config = DockerSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 
 A nonempty allowlist needs Docker Engine 28.0.0 or newer. The workload joins an isolated internal network with no bridge address. Its only route out is a filtering proxy that permits the spec's hosts. Proxy environment variables help clients find it; the network topology enforces the restriction.
 
-TLS is not decrypted. Unrestricted access and method-scoped rules are refused. An empty allowlist uses `--network none`.
+The packaged image builds pinned iron-proxy with a policy patch. It terminates guest TLS to check the host, method and path, validates upstream certificates, and supplies a per-sandbox CA certificate through the guest work directory. Its CA key stays in the proxy. Clients must honor the injected CA environment or configure trust explicitly. Public destinations require TLS on every port. Private destinations require TLS by default; `DockerSandboxConfig(allow_private_http=True, egress_proxy_image=...)` permits plaintext only when the listed host resolves to a private address. Use that option only for development or test workloads. Unrestricted access remains unavailable. An empty allowlist uses `--network none`.
 
 Proxy decisions can be reported through the router's observer after confirmed proxy removal. Failed removal can leave a window unreported; missing events do not prove no traffic occurred. See [egress observation](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md).
 

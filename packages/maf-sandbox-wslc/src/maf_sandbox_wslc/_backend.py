@@ -11,10 +11,9 @@ down explicitly with ``min_isolation=Isolation.CONTAINER``; with nothing passed,
 raises :class:`~maf_sandbox.SandboxBackendNotPermitted`.  That refusal is the point of the
 declaration, not a limitation to work around — there is no flag left to forget.
 
-Egress is :data:`~maf_sandbox.Egress.CLOSED` — every container is created ``--network none``.
-The CLI cannot allow one host and deny the rest, and confining *more* than a spec asks only
-makes a workload fail loudly at whatever it could not fetch, which is why the router permits
-it with a warning.
+Egress is :data:`~maf_sandbox.Egress.CLOSED` by default. A configured iron-proxy enforces
+:data:`~maf_sandbox.Egress.ALLOWLIST` for a workload on an internal network. The workload has
+no direct outbound route; the proxy also joins the outbound bridge.
 """
 
 from __future__ import annotations
@@ -44,7 +43,6 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     EgressDecision,
-    EgressDecisionCode,
     EgressObserved,
     EgressReporter,
     EntryKind,
@@ -83,6 +81,7 @@ from ._probes import (
     probe_commands,
 )
 from ._proxy import build_context
+from ._proxy.policy import encoded_policy, network_gateways, read_decisions
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
 logger = logging.getLogger(__name__)
@@ -178,8 +177,11 @@ _LABEL_WORK_DIR = "maf-sandbox.work-dir.v1"
 _KEY_LABEL_MAX = 4096
 
 _PROXY_PORT = 3128
-_ALLOW_ENV = "MAF_SANDBOX_ALLOW"
-_PROXY_READY_MARKER = "listening"
+_CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
+_PROXY_READY_MARKER = "tunnel proxy starting"
+_PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
+_PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
+_GUEST_CA_PATH = "/maf-sandbox-proxy-ca.crt"
 
 #: How many of the proxy's own lines one drain reads back.  A guest chooses how many requests
 #: it makes, so an unbounded read is a guest-sized allocation on a path an acquire waits on.
@@ -195,12 +197,6 @@ _PROXY_LOG_TAIL = 2000
 _PROXY_LOG_BYTES = _PROXY_LOG_TAIL * 512
 
 #: One decision as the proxy writes it: a verb, a space, and the target it was asked for.  The
-#: host half is greedy so an IPv6 literal keeps its own colons and only the trailing `:port` is
-#: taken.  **This grammar is owed to the docker backend too** — the proxy is duplicated there
-#: rather than shared, so a change to one of them is a change to both.
-_EGRESS_DECISION = re.compile(
-    r"^(?P<decision>ALLOW|DENY-NONGLOBAL|DENY|UNREACHABLE) (?P<host>.+):(?P<port>\d+)$"
-)
 _PROXY_READY_ATTEMPTS = 20
 _PROXY_READY_DELAY_S = 0.25
 
@@ -434,39 +430,8 @@ def _reads_as_absent(stderr: str) -> bool:
 
 
 def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
-    """The decisions in a proxy's output, oldest first, and whether the window may be short.
-
-    A line that is not a decision is skipped rather than counted.  This reads a stream it does
-    not own: the readiness line an acquire waits for is in it, and a later proxy may write more
-    — and a line this cannot parse is not evidence of a decision it missed.
-
-    The host in a decision is whatever the guest put in its ``CONNECT`` target, so it is
-    guest-chosen text.  It cannot forge a line: the proxy takes the target from the first
-    request line split on whitespace, so a host holds no newline and no space, and a decision
-    verb can only be one this proxy wrote.
-
-    ``truncated`` says the window **may** have run past the bound, never that it did.  The read
-    asks the engine for one line more than the bound, so a full answer means there was more to
-    give — but the extra line may have been the readiness line rather than a decision.  It is
-    wrong only towards "there may be more", which is the safe way for a record to be wrong.
-
-    **The docker backend carries its own copy of this**, as it carries its own proxy — a change
-    to the grammar in one of them is owed to the other.
-    """
-    lines = text.splitlines()
-    parsed = tuple(
-        EgressDecision(
-            decision=cast("EgressDecisionCode", found["decision"]),
-            host=found["host"],
-            port=int(found["port"]),
-        )
-        for line in lines
-        if (found := _EGRESS_DECISION.match(line.strip()))
-    )
-    # The bound is on decisions, so a readiness line does not spend one of them. `truncated`
-    # stays keyed on the *lines*, because that is the only thing that says the engine had more
-    # to give: it answers a bounded read, so a full page back means there was a page after it.
-    return parsed[-_PROXY_LOG_TAIL:], len(lines) > _PROXY_LOG_TAIL
+    """The iron-proxy audit decisions, oldest first, and whether the window may be short."""
+    return read_decisions(text, _PROXY_LOG_TAIL)
 
 
 def _proxy_name(container: str) -> str:
@@ -521,6 +486,15 @@ mv -f -- "$staged" "$target" || { rm -f -- "$staged"; exit 1; }
     rm -f -- "$target/${staged##*/}"
     echo 'Is a directory' >&2; exit 1
 }
+"""
+
+_INSTALL_PROXY_CA = f"""\
+export LC_ALL=C PATH={SETUP_PATH} CDPATH=
+rm -f -- "$1" || exit 1
+umask 022
+cat > "$1" || exit 1
+chmod 0644 "$1" || exit 1
+[ "$(wc -c < "$1")" -eq "$2" ]
 """
 
 #: The environment the root setup command runs under. ``PATH`` is pinned so a directory the
@@ -771,6 +745,34 @@ class _WslcSandbox:
                 "so the container was discarded"
             )
         return result
+
+    async def install_proxy_ca(self, certificate: bytes) -> None:
+        """Place the proxy's public CA at a readable backend-owned guest path."""
+        installed = await self._run_or_discard(
+            "container",
+            "exec",
+            "-i",
+            "--user",
+            "0",
+            "-w",
+            "/",
+            self._name,
+            SETUP_SHELL,
+            "-c",
+            _INSTALL_PROXY_CA,
+            "sh",
+            _GUEST_CA_PATH,
+            str(len(certificate)),
+            stdin=certificate,
+            timeout=self._command_timeout,
+            read_limit=_FILE_COMMAND_STDOUT_LIMIT,
+            in_the_guest=True,
+        )
+        if installed.returncode:
+            raise RuntimeError(
+                "wslc could not install the egress proxy CA certificate: "
+                f"{installed.stderr_text.strip()}"
+            )
 
     async def _discard(self) -> None:
         """Force-remove this container, swallowing whatever removal says.
@@ -1237,6 +1239,10 @@ class WslcSandboxBackend:
     """Hands out container-isolated sandboxes from the WSL container CLI (``wslc``)."""
 
     def __init__(self, config: WslcSandboxConfig) -> None:
+        if type(config.allow_private_http) is not bool or (
+            config.allow_private_http and not config.egress_proxy_image
+        ):
+            raise ValueError("allow_private_http requires a configured egress proxy image")
         self._config = config
         # Built once: every input is fixed here, and the router reads the object on each
         # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
@@ -1252,14 +1258,18 @@ class WslcSandboxBackend:
         # backend can *watch* is what it enforces itself, in a proxy container it owns. Without
         # one there is no allowlist deciding anything, and a `True` there would put a
         # watched-looking record on every closed sandbox.
+        capabilities: frozenset[Capability] = _CAPABILITIES
+        if config.egress_proxy_image:
+            capabilities |= frozenset({Capability.EGRESS_METHODS, Capability.EGRESS_PATHS})
         self._declarations = BackendDeclarations(
-            capabilities=_CAPABILITIES,
+            capabilities=capabilities,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
             os_families=frozenset({OsFamily.POSIX}),
             isolation_scopes=_ISOLATION_SCOPES,
             observes_egress=bool(config.egress_proxy_image),
+            egress_method_tokens=None if config.egress_proxy_image else frozenset(),
         )
         # Where egress decisions go once a router with an observer hands over a reporter. `None`
         # until then, which is what keeps an uninstrumented host from paying for the read: every
@@ -1602,6 +1612,8 @@ class WslcSandboxBackend:
             )
             try:
                 await sandbox.prepare_work_dir(spec)
+                if egress_id:
+                    await self._install_proxy_ca(name, sandbox)
             except BaseException:
                 # Nothing is returned, so no caller can dispose this container — and setup
                 # runs privileged commands the host process cannot reach once it is gone.
@@ -1633,6 +1645,23 @@ class WslcSandboxBackend:
                     "is not handed back. Acquire again once it has been removed."
                 )
             return sandbox
+
+    async def _install_proxy_ca(self, name: str, sandbox: _WslcSandbox) -> None:
+        """Make this proxy's public CA available to the guest before serving it."""
+        result = await self._wslc(
+            "container",
+            "exec",
+            "-w",
+            "/",
+            _proxy_name(name),
+            "cat",
+            _PROXY_CA_PATH,
+            timeout=self._config.command_timeout_seconds,
+            read_limit=8192,
+        )
+        if result.returncode or not result.stdout.startswith(b"-----BEGIN CERTIFICATE-----"):
+            raise RuntimeError("wslc could not read the egress proxy CA certificate")
+        await sandbox.install_proxy_ca(result.stdout)
 
     async def _verify_storage_base(
         self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
@@ -2341,7 +2370,8 @@ class WslcSandboxBackend:
         """
         if self._config.egress_proxy_image is None or not spec.egress_allow:
             return ""
-        return "allow:" + ",".join(sorted(map(str, spec.egress_allow)))
+        policy = ",".join(sorted(map(str, spec.egress_allow)))
+        return f"allow:{policy}:private-http={self._config.allow_private_http}"
 
     @contextlib.asynccontextmanager
     async def _acquire_lock(self, key: SandboxKey, kind: str) -> AsyncGenerator[None]:
@@ -2382,6 +2412,9 @@ class WslcSandboxBackend:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
             args += ["-e", f"HTTPS_PROXY={proxy_url}", "-e", f"HTTP_PROXY={proxy_url}"]
+            args += ["-e", f"SSL_CERT_FILE={_GUEST_CA_PATH}"]
+            args += ["-e", f"CURL_CA_BUNDLE={_GUEST_CA_PATH}"]
+            args += ["-e", f"REQUESTS_CA_BUNDLE={_GUEST_CA_PATH}"]
         else:
             args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
@@ -2424,6 +2457,7 @@ class WslcSandboxBackend:
         try:
             await self._ensure_proxy(name, key, spec)
         except BaseException:
+            await self._remove(_proxy_name(name))
             if fresh:
                 await self._remove_network(net)
             raise
@@ -2456,8 +2490,10 @@ class WslcSandboxBackend:
         if (await self._remove(proxy)).failure is None:
             self._report_proxy_drain(event)
 
+        control_addresses = await self._control_addresses(_network_name(name))
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_ALLOW_ENV}={','.join(map(str, spec.egress_allow))}"]
+        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec, control_addresses=control_addresses)}"]
+        args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
         attribution = _key_label(key)
@@ -2489,22 +2525,60 @@ class WslcSandboxBackend:
             )
         await self._await_listening(proxy)
 
-    async def _await_listening(self, proxy: str) -> None:
-        """Wait for the proxy's listening line; fail the acquire if it never comes.
+    async def _control_addresses(self, internal_network: str) -> tuple[str, ...]:
+        """Read gateways on both networks the proxy will join."""
+        addresses: list[str] = []
+        for network in (internal_network, "bridge"):
+            result = await self._wslc(
+                "network", "inspect", network, timeout=self._config.command_timeout_seconds
+            )
+            if result.returncode != 0:
+                detail = result.stderr_text.strip()
+                raise RuntimeError(f"wslc could not inspect proxy network {network!r}: {detail}")
+            try:
+                parsed: object = json.loads(result.stdout_text)
+                if not isinstance(parsed, list):
+                    raise ValueError("network inspection did not return one network")
+                inspected = cast("list[object]", parsed)
+                if len(inspected) != 1:
+                    raise ValueError("network inspection did not return one network")
+                item = inspected[0]
+                if not isinstance(item, dict):
+                    raise ValueError("network inspection returned no details")
+                detail = cast("dict[str, object]", item)
+                if detail.get("Name") != network:
+                    raise ValueError("network inspection returned the wrong network")
+                ipam_data = detail.get("IPAM")
+                if not isinstance(ipam_data, dict):
+                    raise ValueError("network inspection omitted IPAM")
+                ipam = cast("dict[str, object]", ipam_data)
+                addresses.extend(network_gateways(ipam.get("Config")))
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError(
+                    f"wslc proxy network {network!r} has unreadable gateway addresses"
+                ) from exc
+        return tuple(dict.fromkeys(addresses))
 
-        A proxy that has not bound its port yet would let the workload's first request through to
-        nothing and read as a network error. Rather than hand back a sandbox whose egress is not
-        actually up, the acquire fails here and the caller can retry — the network is reclaimed on
-        the way out when this was a fresh create.
+    async def _await_listening(self, proxy: str) -> None:
+        """Wait for the patched policy contract and listener before serving.
+
+        A listening proxy without the contract may forward opaque HTTPS tunnels. A proxy that
+        has not bound its port leaves the first request unanswered. Both fail the acquire.
         """
         for _ in range(_PROXY_READY_ATTEMPTS):
             result = await self._wslc(
                 "container", "logs", proxy, timeout=self._config.command_timeout_seconds
             )
-            if result.returncode == 0 and _PROXY_READY_MARKER in result.stdout_text:
+            if (
+                result.returncode == 0
+                and _PROXY_READY_MARKER in result.stdout_text
+                and _PROXY_CONTRACT_MARKER in result.stdout_text
+            ):
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
-        raise RuntimeError(f"egress proxy {proxy} never reported listening")
+        raise RuntimeError(
+            f"egress proxy {proxy} did not report the required policy contract and listening"
+        )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.

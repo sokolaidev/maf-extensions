@@ -308,20 +308,16 @@ class ScopeDisposed(SandboxEvent):
         observer.scope_disposed(self)
 
 
-#: What an egress enforcer did with one CONNECT.  Both refusals are kept apart because they
-#: refuse different things.  ``"DENY"`` is the target refused on the enforcer's own terms — a
-#: host absent from the spec's allowlist **or** a port outside the ones it permits, so a
-#: permitted host on a forbidden port lands here too and a reader must not take it for a host
-#: verdict.  ``"DENY-NONGLOBAL"`` is an allowlisted host that resolved to a private address —
-#: the shape a guest reaching back at the host's own services takes, which an allowlist alone
-#: does not catch.  ``"UNREACHABLE"`` *allowed* the tunnel and then failed to open it, so it
-#: belongs with the permitted attempts rather than the refused ones.
+#: What an egress enforcer did with one attempted connection or HTTP request. ``"DENY"``
+#: covers a refused host, method, path or address. ``"DENY-NONGLOBAL"`` remains for older
+#: enforcers that report non-global addresses separately. ``"UNREACHABLE"`` passed policy
+#: but failed to reach or validate the upstream destination.
 EgressDecisionCode = Literal["ALLOW", "DENY", "DENY-NONGLOBAL", "UNREACHABLE"]
 
 
 @dataclass(frozen=True)
 class EgressDecision:
-    """One CONNECT an egress enforcer answered.
+    """One outbound attempt an egress enforcer answered.
 
     ``host`` is what the *guest* asked for rather than what the spec allowed — on a ``DENY`` it
     is a name the guest chose, and a recorder holds it to the same rule an artifact name is
@@ -339,10 +335,11 @@ class EgressObserved(SandboxEvent):
 
     This is the event that separates what a spec *allowed* from what a guest *attempted*.
     :class:`SandboxAcquired` carries the mode and the allowlist a sandbox was served under;
-    this carries every ``CONNECT`` the enforcer answered and how it answered.  Only an
-    ``ALLOW`` opened a tunnel — a ``DENY`` names a host the guest asked for and did not get
-    — so a reader counting reached destinations filters on the verb rather than on the
-    presence of a decision.
+    this carries the outbound attempts the enforcer observed and how it answered. A backend
+    that inspects TLS may report an HTTP request inside an allowed CONNECT without reporting
+    that successful handshake separately. A ``DENY`` names a destination or request the guest
+    asked for and did not get. ``ALLOW`` records policy admission, not proof that the remote
+    service processed the request.
 
     **It arrives in batches, after the fact.**  A backend enforcing egress in a proxy of its own
     reads that proxy's record when it takes the proxy down, so one event covers a window rather

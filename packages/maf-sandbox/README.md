@@ -77,7 +77,7 @@ Kinds use the protocol and never import backends. See the [architecture guide](h
 
 The isolation order is `none < runtime < os_process < container < hardened_container < microvm < vm`. These are backend declarations. Core does not create or independently verify the underlying boundary.
 
-Network access defaults to `Egress.CLOSED`. An allowlist requires `Egress.ALLOWLIST` and `egress_allow`. Method rules such as `EgressRule("api.example.com", ("GET",))` additionally require `EGRESS_METHODS`. No shipped backend declares that capability. GET requests can still carry data.
+Network access defaults to `Egress.CLOSED`. An allowlist requires `Egress.ALLOWLIST` and `egress_allow`. Method rules such as `EgressRule("api.example.com", ("GET",))` require `EGRESS_METHODS`; path rules require `EGRESS_PATHS`. Docker and WSLC can enforce these rules with their configured TLS proxy. GET requests can still carry data.
 
 The default transfer limits in each direction are 8 MiB per file, 32 MiB total and 64 files. They bound accepted transfers; they do not promise an SDK memory ceiling.
 

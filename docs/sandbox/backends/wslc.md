@@ -75,11 +75,11 @@ These methods raise `NotImplementedError`. Their capabilities, including `HOST_T
 
 ## Network policy
 
-![A CLOSED workload has no network. A nonempty ALLOWLIST connects the workload to an internal network and a CONNECT proxy; the proxy also joins an outbound network. Allowed hosts and destination addresses are checked there. Proxy decisions are attributed to the sandbox when the proxy is removed. Docker's additional unaddressed-bridge check belongs to Docker, while WSLC uses its own engine network behavior.](../assets/container-egress.svg)
+![A CLOSED workload has no network. A nonempty ALLOWLIST connects the workload to an internal network and iron-proxy; the proxy also joins an outbound network. Allowed hosts, HTTP methods, paths and resolved addresses are checked there. Proxy decisions are attributed to the sandbox when the proxy is removed. Docker's additional unaddressed-bridge check belongs to Docker, while WSLC uses its own engine network behavior.](../assets/container-egress.svg)
 
-With no proxy image, only `CLOSED` is available. With one, `ALLOWLIST` uses an internal network and a proxy connected to the outbound network. An empty allowlist uses the closed setup. The proxy checks hostnames and refuses non-global destination addresses.
+With no proxy image, only `CLOSED` is available. With one, `ALLOWLIST` uses an internal network and a proxy connected to the outbound network. An empty allowlist uses the closed setup. The proxy terminates guest TLS, checks host, method and path, and validates the upstream certificate. Its per-sandbox CA certificate is installed at the fixed guest path `/maf-sandbox-proxy-ca.crt` and named in `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`; its key stays in the proxy. Public HTTP is denied on every port. Listed private endpoints use TLS unless `allow_private_http=True` is set for development or test. The outbound dial checks the resolved address and denies loopback, link-local, metadata, gateway and proxy interface addresses. See [network policy](../network.md) for the full contract.
 
-Every acquire rebuilds the proxy. Before removing a proxy, the backend reads its `ALLOW` and `DENY` log lines. Persistent labels carry the exact key for attribution, including call identity, up to 4,096 encoded bytes.
+Every acquire rebuilds the proxy. Before removing a proxy, the backend reads its JSON audit records. Persistent labels carry the exact key for attribution, including call identity, up to 4,096 encoded bytes.
 
 Larger keys still work, but scope sweeps cannot recover their attribution. Key-addressed operations can use the caller's key when ownership labels agree. Invalid labels emit no event. Failed removal emits none; overlapping cleanup can duplicate a window. Observation is therefore incomplete. See [network policy](../network.md) and [observability](../observability.md).
 

@@ -51,6 +51,15 @@ class _Engine:
                 if row
                 else self.result(error=f"No such container: {args[-1]}")
             )
+        if args[:2] == ("network", "inspect"):
+            if self.name == "docker":
+                return self.result(b'[{"Gateway":"172.17.0.1"}]')
+            network = args[-1]
+            return self.result(
+                json.dumps(
+                    [{"Name": network, "IPAM": {"Config": [{"Gateway": "172.17.0.1"}]}}]
+                ).encode()
+            )
         if args[:2] == ("network", "connect"):
             return self.result(error="connect failed" if self.connect_error else "")
         command = args[1:] if args[0] == "container" else args
@@ -75,8 +84,19 @@ class _Engine:
                     del self.rows[instance]
             return self.result()
         if command[0] == "logs":
+            decision = (
+                json.dumps(
+                    {
+                        "msg": "request",
+                        "audit": {"host": "example.com:443", "method": "GET", "action": "allow"},
+                    }
+                ).encode()
+                + b"\n"
+            )
             return self.result(
-                b"ALLOW example.com:443\n" if "--tail" in command else b"listening on 3128\n"
+                decision
+                if "--tail" in command
+                else b"maf-sandbox egress contract v1\ntunnel proxy starting\n"
             )
         if command[0] == "ps":
             return self.result("\n".join(r["Name"] for r in self.rows.values()).encode())

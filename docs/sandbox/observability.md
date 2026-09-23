@@ -124,12 +124,12 @@ This is not an exactly-once log. Overlapping removals can duplicate a window. Ho
 
 | Decision | Meaning |
 |---|---|
-| `ALLOW` | Proxy opened a CONNECT tunnel; does not prove application-level success |
-| `DENY` | Destination refused by policy |
-| `DENY-NONGLOBAL` | Resolved address refused by address policy |
-| `UNREACHABLE` | Proxy could not connect |
+| `ALLOW` | Proxy admitted an HTTP request; does not prove application-level success |
+| `DENY` | Host, method, path, TLS requirement or resolved address refused by policy |
+| `DENY-NONGLOBAL` | Legacy proxy's refusal of a non-global address |
+| `UNREACHABLE` | Proxy could not connect or validate the upstream TLS peer |
 
-Windows are bounded in lines and bytes. `truncated` means the window may be incomplete. Unreadable logs are reported as such. Target strings are guest-chosen and require the OpenTelemetry sensitive-data opt-in, including allowed targets.
+Windows are bounded in lines and bytes. `truncated` means the window may be incomplete. Unreadable logs are reported as such. A successful CONNECT preflight is omitted when the proxy inspects the HTTP request inside it; rejected CONNECTs are reported. Target strings are guest-chosen and require the OpenTelemetry sensitive-data opt-in, including allowed targets.
 
 `observes_egress=False` means the backend reports no decisions. `True` means it can report attributable windows; it does not promise complete traffic coverage. ACAS and Hyperlight emit no egress decisions. Absence of an event does not mean absence of traffic.
 

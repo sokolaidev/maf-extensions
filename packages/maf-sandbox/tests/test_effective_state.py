@@ -23,6 +23,7 @@ from maf_sandbox import (
     DeclaredOutput,
     EffectiveState,
     Egress,
+    EgressRule,
     HostToolRegistry,
     Identity,
     Isolation,
@@ -265,6 +266,14 @@ class TestTheJsonRendering:
     def test_it_survives_a_round_trip_through_json(self):
         (state,) = _served()
         assert json.loads(json.dumps(state.as_dict())) == state.as_dict()
+
+    def test_path_scoped_egress_is_preserved_in_json(self):
+        rule = EgressRule("example.com", methods=("GET",), paths=("/v1/*", "/health"))
+        state = EffectiveState.of(_acquired(spec=_spec(egress_allow=(rule,))))
+        assert state is not None
+        assert json.loads(json.dumps(state.as_dict()))["egress_allow"] == [
+            {"host": "example.com", "methods": ["GET"], "paths": ["/v1/*", "/health"]}
+        ]
 
     def test_every_key_is_present_even_where_the_value_is_unset(self):
         """A fixed shape is what makes a record queryable a month later."""

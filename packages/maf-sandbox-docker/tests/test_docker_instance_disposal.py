@@ -134,7 +134,11 @@ def test_proxy_failure_preserves_instance_for_retry(failure, observed):
     async def command(*args, **kwargs):
         calls.append(args)
         if args[0] in ("stop", "logs"):
-            return _DockerResult(0, b"ALLOW example.com:443\n", "")
+            return _DockerResult(
+                0,
+                b'{"msg":"request","audit":{"host":"example.com:443","method":"GET","action":"allow"}}\n',
+                "",
+            )
         if args[0] == "rm" and args[-1] == proxy_id and failed:
             if failure == "exception":
                 raise RuntimeError("engine unavailable")

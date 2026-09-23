@@ -176,6 +176,7 @@ class EffectiveState:
                     "host": entry.host,
                     "methods": None if entry.methods is None else list(entry.methods),
                     **({"authority": entry.authority} if entry.authority is not None else {}),
+                    **({"paths": list(entry.paths)} if entry.paths is not None else {}),
                 }
                 if isinstance(entry, EgressRule)
                 else entry

@@ -78,15 +78,15 @@ Root removal is allowed only when engine metadata establishes that every relevan
 
 ## Network policy
 
-![With CLOSED, the workload has no network. With a nonempty ALLOWLIST, the workload joins an internal network and reaches destinations only through a CONNECT proxy. The proxy also joins an outbound network and checks allowed hosts and destination addresses. Proxy ALLOW and DENY logs are attributed to the sandbox before removal. Docker additionally requires an unaddressed internal bridge. The model's content labels remain a separate host-policy check.](../assets/container-egress.svg)
+![With CLOSED, the workload has no network. With a nonempty ALLOWLIST, the workload joins an internal network and reaches destinations only through iron-proxy. The proxy also joins an outbound network and checks allowed hosts, HTTP methods, paths and resolved addresses. Proxy audit records are attributed to the sandbox before removal. Docker additionally requires an unaddressed internal bridge. The model's content labels remain a separate host-policy check.](../assets/container-egress.svg)
 
 `CLOSED`, including an empty allowlist, uses `--network none`. A nonempty allowlist uses an internal network and a proxy connected to both internal and outbound networks. Proxy environment variables configure clients; network separation enforces the route.
 
 This setup requires Docker Engine 28 or later. The backend verifies that the internal bridge has no host address in either address family. It checks actual driver, internal-network and IPAM state. An invalid adopted network is replaced with its workload; an invalid new network is removed before use.
 
-The proxy checks allowed hosts and rejects non-global destination addresses. It does not decrypt TLS. Docker's embedded DNS forwarding is a separate limit not covered by the proxy's host checks. See [network policy](../network.md) for the full contract.
+The proxy terminates guest TLS, checks host, method and path, and validates the upstream certificate. Its per-sandbox CA certificate is written to the guest work directory and named in `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`; its key stays in the proxy. Public HTTP is denied on every port. Listed private endpoints use TLS unless `allow_private_http=True` is set for development or test. The outbound dial checks the resolved address and denies loopback, link-local, metadata, gateway and proxy interface addresses. Docker's embedded DNS forwarding is a separate limit not covered by these proxy checks. See [network policy](../network.md) for the full contract.
 
-Every acquire rebuilds the proxy. Before removal, the backend drains attributable `ALLOW` and `DENY` records. Engine labels allow recovery after host restart. Missing or invalid attribution produces no event, not a clean audit result. Failed removal publishes no event; overlapping cleanup can duplicate a window. See [egress observation](../observability.md).
+Every acquire rebuilds the proxy. Before removal, the backend drains attributable JSON audit records. Engine labels allow recovery after host restart. Missing or invalid attribution produces no event, not a clean audit result. Failed removal publishes no event; overlapping cleanup can duplicate a window. See [egress observation](../observability.md).
 
 ## Lifecycle and retention
 

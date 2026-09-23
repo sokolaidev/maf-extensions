@@ -1,0 +1,199 @@
+diff --git a/internal/hostmatch/hostmatch.go b/internal/hostmatch/hostmatch.go
+index 53da084..3acc24b 100644
+--- a/internal/hostmatch/hostmatch.go
++++ b/internal/hostmatch/hostmatch.go
+@@ -57,8 +57,8 @@ func (m *Matcher) Matches(host string) bool {
+ }
+ 
+ // MatchGlob matches a domain against a glob pattern.
+-// "*" matches any host. "*.example.com" matches any subdomain depth and
+-// "example.com" itself. Matching is case-insensitive per RFC 4343.
++// "*" matches any host. "*.example.com" matches subdomains, excluding the apex.
++// Matching is case-insensitive per RFC 4343.
+ func MatchGlob(pattern, name string) bool {
+ 	pattern = strings.ToLower(pattern)
+ 	name = strings.ToLower(name)
+@@ -67,7 +67,7 @@ func MatchGlob(pattern, name string) bool {
+ 	}
+ 	if strings.HasPrefix(pattern, "*.") {
+ 		suffix := pattern[1:] // ".example.com"
+-		return strings.HasSuffix(name, suffix) || name == pattern[2:]
++		return strings.HasSuffix(name, suffix) && len(name) > len(suffix)
+ 	}
+ 	matched, _ := path.Match(pattern, name)
+ 	return matched
+diff --git a/internal/hostmatch/rule.go b/internal/hostmatch/rule.go
+--- a/internal/hostmatch/rule.go
++++ b/internal/hostmatch/rule.go
+@@ -85,3 +85,3 @@
+ func isWildcard(methods []string) bool {
+-	return len(methods) == 0 || (len(methods) == 1 && methods[0] == "*")
++	return len(methods) == 0
+ }
+diff --git a/internal/proxy/proxy.go b/internal/proxy/proxy.go
+index 73bde1f..761cbc6 100644
+--- a/internal/proxy/proxy.go
++++ b/internal/proxy/proxy.go
+@@ -14,10 +14,13 @@ import (
+ 	"log/slog"
+ 	"net"
+ 	"net/http"
++	"net/netip"
+ 	"net/url"
++	"os"
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"syscall"
+ 	"time"
+ 
+ 	"github.com/ironsh/iron-proxy/internal/certcache"
+@@ -52,6 +55,7 @@ type Proxy struct {
+ 	mcpGateway           *mcpgateway.Holder
+ 	responseRetryHandler *responseretry.Handler
+ 	logger               *slog.Logger
++	allowPrivateHTTP     bool
+ 
+ 	// shutdownCtx is canceled by Shutdown to unblock in-flight TCP-passthrough
+ 	// connections that would otherwise sit on blocking Reads.
+@@ -125,6 +129,7 @@ func New(opts Options) *Proxy {
+ 		mcpGateway:           opts.MCPGateway,
+ 		responseRetryHandler: opts.ResponseRetryHandler,
+ 		logger:               opts.Logger,
++		allowPrivateHTTP:     os.Getenv("MAF_SANDBOX_PRIVATE_HTTP") == "1",
+ 		shutdownCtx:          shutdownCtx,
+ 		shutdownCancel:       shutdownCancel,
+ 	}
+@@ -144,6 +149,7 @@ func New(opts Options) *Proxy {
+ 	// Enable HTTP/2 on the HTTPS listener (adds h2 to the TLS ALPN and serves
+ 	// negotiated conns through the existing handler); zero config never errors.
+ 	_ = http2.ConfigureServer(p.httpsServer, &http2.Server{})
+ 
++	fmt.Fprintln(os.Stdout, "maf-sandbox egress contract v1")
+ 	return p
+ }
+@@ -431,7 +437,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *transform.TunnelInfo) {
+-	// WebSocket upgrade: hijack and proxy bidirectionally
++	// WebSocket upgrades bypass the upstream transport checks.
+ 	if isWebSocketUpgrade(r) {
+-		result.Action = transform.ActionContinue
+-		result.StatusCode = http.StatusSwitchingProtocols
+-		p.handleWebSocket(w, r, scheme, host)
++		result.Action = transform.ActionReject
++		result.StatusCode = http.StatusForbidden
++		http.Error(w, "WebSocket egress is not supported", http.StatusForbidden)
+ 		return
+ 	}
+@@ -937,7 +943,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+ 		Timeout:   30 * time.Second,
+ 		KeepAlive: 30 * time.Second,
+ 		Resolver:  resolver,
+-		Control:   guard.DialControl,
++		ControlContext: func(ctx context.Context, network, address string, conn syscall.RawConn) error {
++			if err := guard.DialControl(network, address, conn); err != nil {
++				return err
++			}
++			if local, err := localAddress(address); err != nil {
++				return err
++			} else if local {
++				return fmt.Errorf("proxy interface address is not an upstream: %s", address)
++			}
++			if ctx.Value(privateHTTPKey{}) != nil && !privateAddress(address) {
++				return fmt.Errorf("plaintext HTTP requires a private upstream address: %s", address)
++			}
++			return nil
++		},
+ 	}
+ 	if responseHeaderTimeout <= 0 {
+ 		responseHeaderTimeout = config.DefaultUpstreamResponseHeaderTimeout
+@@ -959,9 +978,69 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+ }
+ 
+ func (p *Proxy) doUpstream(req *http.Request) (*http.Response, error) {
++	if req.URL.Scheme == "http" {
++		if !p.allowPrivateHTTP {
++			return nil, fmt.Errorf("plaintext HTTP is disabled")
++		}
++		req = req.WithContext(context.WithValue(req.Context(), privateHTTPKey{}, true))
++	} else if req.URL.Scheme != "https" {
++		return nil, fmt.Errorf("unsupported upstream scheme %q", req.URL.Scheme)
++	}
+ 	return p.transport.RoundTrip(req)
+ }
+ 
++type privateHTTPKey struct{}
++
++var privatePrefixes = []netip.Prefix{
++	netip.MustParsePrefix("10.0.0.0/8"),
++	netip.MustParsePrefix("172.16.0.0/12"),
++	netip.MustParsePrefix("192.168.0.0/16"),
++	netip.MustParsePrefix("fc00::/7"),
++}
++
++func privateAddress(address string) bool {
++	host, _, err := net.SplitHostPort(address)
++	if err != nil {
++		return false
++	}
++	ip, err := netip.ParseAddr(host)
++	if err != nil {
++		return false
++	}
++	ip = ip.Unmap()
++	for _, prefix := range privatePrefixes {
++		if prefix.Contains(ip) {
++			return true
++		}
++	}
++	return false
++}
++
++func localAddress(address string) (bool, error) {
++	host, _, err := net.SplitHostPort(address)
++	if err != nil {
++		return false, err
++	}
++	upstream, err := netip.ParseAddr(host)
++	if err != nil {
++		return false, err
++	}
++	interfaces, err := net.InterfaceAddrs()
++	if err != nil {
++		return false, err
++	}
++	for _, addr := range interfaces {
++		assigned, ok := addr.(*net.IPNet)
++		if !ok {
++			continue
++		}
++		if ip, ok := netip.AddrFromSlice(assigned.IP); ok && ip.Unmap() == upstream.Unmap() {
++			return true, nil
++		}
++	}
++	return false, nil
++}
++
+ // markIfClientCancel records a client-initiated cancellation on result and
+ // returns true; callers should then return without writing a 502. The wrapped
+ // errors.Is on err catches transforms that report context.Canceled without
+diff --git a/internal/transform/allowlist/allowlist.go b/internal/transform/allowlist/allowlist.go
+index f85a39c..6b830db 100644
+--- a/internal/transform/allowlist/allowlist.go
++++ b/internal/transform/allowlist/allowlist.go
+@@ -79,6 +79,16 @@ func New(domains []string, cidrs []string) (*Allowlist, error) {
+ func (a *Allowlist) Name() string { return "allowlist" }
+ 
+ func (a *Allowlist) TransformRequest(_ context.Context, tctx *transform.TransformContext, req *http.Request) (*transform.TransformResult, error) {
++	// A CONNECT only establishes the tunnel. The inner HTTP request must satisfy
++	// the method and path constraints after TLS termination.
++	if req.Method == http.MethodConnect && tctx.Mode == transform.ModeMITM && tctx.Tunnel == nil {
++		host := hostmatch.StripPort(req.Host)
++		for _, rule := range a.rules {
++			if rule.Matcher.Matches(host) {
++				return &transform.TransformResult{Action: transform.ActionContinue}, nil
++			}
++		}
++	}
+ 	if hostmatch.MatchAnyRule(a.rules, req) {
+ 		return &transform.TransformResult{Action: transform.ActionContinue}, nil
+ 	}

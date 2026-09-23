@@ -1,189 +1,117 @@
-"""The filtering CONNECT proxy that turns this backend's egress from CLOSED into ALLOWLIST.
-
-These tests run the proxy in-process against real sockets on the loopback interface — no
-wslc, no containers. What the container adds is placement, not behaviour: the same server
-listens dual-homed there, and `test_wslc_e2e.py` covers that half.
-"""
+"""The policy handed to the pinned iron-proxy image."""
 
 from __future__ import annotations
 
-import asyncio
+import base64
+import json
 
-import pytest
+from maf_sandbox import Egress, EgressRule, SandboxSpec
 
 from maf_sandbox_wslc._proxy import build_context
-from maf_sandbox_wslc._proxy.proxy import ProxyServer, host_allowed
+from maf_sandbox_wslc._proxy.policy import encoded_policy, network_gateways, read_decisions
 
 
-class TestHostAllowed:
-    def test_an_exact_name_matches(self):
-        assert host_allowed("mcr.microsoft.com", ("mcr.microsoft.com",))
-
-    def test_matching_ignores_case(self):
-        assert host_allowed("MCR.Microsoft.COM", ("mcr.microsoft.com",))
-        assert host_allowed("mcr.microsoft.com", ("MCR.MICROSOFT.COM",))
-
-    def test_a_wildcard_matches_a_subdomain(self):
-        assert host_allowed("eastus.data.mcr.microsoft.com", ("*.data.mcr.microsoft.com",))
-
-    def test_a_wildcard_does_not_match_the_bare_domain(self):
-        assert not host_allowed("data.mcr.microsoft.com", ("*.data.mcr.microsoft.com",))
-
-    def test_an_unlisted_host_is_denied(self):
-        assert not host_allowed("pypi.org", ("mcr.microsoft.com", "*.data.mcr.microsoft.com"))
-
-    def test_an_empty_allowlist_denies_everything(self):
-        assert not host_allowed("mcr.microsoft.com", ())
-
-    def test_a_listed_name_does_not_match_its_own_subdomains(self):
-        assert not host_allowed("evil.mcr.microsoft.com", ("mcr.microsoft.com",))
-
-    @pytest.mark.parametrize("pattern", ["*", "?cr.microsoft.com", "[m]cr.microsoft.com"])
-    def test_a_glob_that_is_not_a_leading_wildcard_label_matches_nothing(self, pattern: str):
-        """The allowlist is matched literally, so the proxy honours only what a spec can ask
-        for: `*` alone would be the open posture served under the allowlist's name."""
-        assert not host_allowed("mcr.microsoft.com", (pattern,))
-        assert not host_allowed("evil.example", (pattern,))
-
-    def test_a_wildcard_does_not_match_a_name_that_merely_ends_with_the_suffix(self):
-        assert not host_allowed("notdata.mcr.microsoft.com", ("*.data.mcr.microsoft.com",))
+def test_scoped_rules_are_serialized_for_iron_proxy() -> None:
+    spec = SandboxSpec(
+        kind="test",
+        image="image",
+        egress=Egress.ALLOWLIST,
+        egress_allow=(
+            "mcr.microsoft.com",
+            EgressRule("api.example.com", methods=("GET",), paths=("/v1/*",)),
+        ),
+    )
+    policy = json.loads(base64.b64decode(encoded_policy(spec)))
+    allowlist = policy["transforms"][0]["config"]
+    assert allowlist == {
+        "domains": ["mcr.microsoft.com"],
+        "rules": [{"host": "api.example.com", "methods": ["GET"], "paths": ["/v1/*"]}],
+    }
+    assert policy["tls"] == {
+        "mode": "mitm",
+        "ca_cert": "/run/maf-proxy/ca.crt",
+        "ca_key": "/run/maf-proxy/ca.key",
+    }
+    assert "169.254.0.0/16" in policy["proxy"]["upstream_deny_cidrs"]
+    assert "100.100.100.200/32" in policy["proxy"]["upstream_deny_cidrs"]
+    assert "168.63.129.16/32" in policy["proxy"]["upstream_deny_cidrs"]
+    assert "::1/128" in policy["proxy"]["upstream_deny_cidrs"]
 
 
-async def _echo_server() -> tuple[asyncio.Server, int]:
-    """A loopback TCP server that echoes whatever it receives — the tunnel's far end."""
-
-    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        data = await reader.read(1024)
-        writer.write(b"echo:" + data)
-        await writer.drain()
-        writer.close()
-
-    server = await asyncio.start_server(echo, "127.0.0.1", 0)
-    return server, server.sockets[0].getsockname()[1]
+def test_inspected_gateways_are_denied_without_denying_all_private_addresses() -> None:
+    addresses = network_gateways([{"Gateway": "172.17.0.1"}, {"Gateway": "fd42:1407::1"}])
+    spec = SandboxSpec(kind="test", image="image", egress=Egress.ALLOWLIST)
+    policy = json.loads(base64.b64decode(encoded_policy(spec, control_addresses=addresses)))
+    denied = policy["proxy"]["upstream_deny_cidrs"]
+    assert "172.17.0.1/32" in denied
+    assert "fd42:1407::1/128" in denied
+    assert "172.17.0.0/16" not in denied
 
 
-async def _request(port: int, payload: bytes) -> bytes:
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.write(payload)
-    await writer.drain()
-    data = await reader.read(4096)
-    writer.close()
-    return data
+def test_public_plaintext_error_is_a_denial() -> None:
+    record = {
+        "msg": "request",
+        "audit": {"host": "example.com", "method": "GET", "action": "error"},
+        "error": "plaintext HTTP is disabled",
+    }
+    decisions, truncated = read_decisions(json.dumps(record), 10)
+    assert [(item.decision, item.host, item.port) for item in decisions] == [
+        ("DENY", "example.com", 80)
+    ]
+    assert not truncated
 
 
-class TestConnectProxy:
-    def test_an_allowed_connect_tunnels_bytes_both_ways(self):
-        async def scenario() -> None:
-            echo, echo_port = await _echo_server()
-            proxy = ProxyServer(("127.0.0.1",), ports=(echo_port,), allow_private=True)
-            await proxy.start()
-            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
-            writer.write(f"CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n".encode())
-            await writer.drain()
-            status = await reader.readuntil(b"\r\n\r\n")
-            assert b"200" in status
-            writer.write(b"ping")
-            await writer.drain()
-            assert await reader.read(1024) == b"echo:ping"
-            writer.close()
-            await proxy.aclose()
-            echo.close()
-
-        asyncio.run(scenario())
-
-    def test_a_denied_host_gets_403_and_no_connection(self):
-        async def scenario() -> None:
-            proxy = ProxyServer(("allowed.example",), ports=(443,))
-            await proxy.start()
-            reply = await _request(proxy.bound_port, b"CONNECT pypi.org:443 HTTP/1.1\r\n\r\n")
-            assert reply.startswith(b"HTTP/1.1 403")
-            await proxy.aclose()
-
-        asyncio.run(scenario())
-
-    def test_an_allowed_host_on_a_denied_port_gets_403(self):
-        async def scenario() -> None:
-            proxy = ProxyServer(("allowed.example",), ports=(443,))
-            await proxy.start()
-            reply = await _request(proxy.bound_port, b"CONNECT allowed.example:22 HTTP/1.1\r\n\r\n")
-            assert reply.startswith(b"HTTP/1.1 403")
-            await proxy.aclose()
-
-        asyncio.run(scenario())
-
-    def test_anything_but_connect_gets_405(self):
-        async def scenario() -> None:
-            proxy = ProxyServer(("allowed.example",), ports=(443,))
-            await proxy.start()
-            reply = await _request(
-                proxy.bound_port, b"GET http://allowed.example/ HTTP/1.1\r\n\r\n"
-            )
-            assert reply.startswith(b"HTTP/1.1 405")
-            await proxy.aclose()
-
-        asyncio.run(scenario())
-
-    def test_a_malformed_request_gets_400(self):
-        async def scenario() -> None:
-            proxy = ProxyServer(("allowed.example",), ports=(443,))
-            await proxy.start()
-            reply = await _request(proxy.bound_port, b"not-a-request\r\n\r\n")
-            assert reply.startswith(b"HTTP/1.1 400")
-            await proxy.aclose()
-
-        asyncio.run(scenario())
-
-    def test_an_unreachable_target_gets_502(self):
-        async def scenario() -> None:
-            # Port 1 on loopback: nothing listens there, so the dial fails fast.
-            proxy = ProxyServer(("127.0.0.1",), ports=(1,))
-            await proxy.start()
-            reply = await _request(proxy.bound_port, b"CONNECT 127.0.0.1:1 HTTP/1.1\r\n\r\n")
-            assert reply.startswith(b"HTTP/1.1 502")
-            await proxy.aclose()
-
-        asyncio.run(scenario())
-
-    def test_an_allowed_name_resolving_to_a_private_address_is_refused(self):
-        """Defence in depth: even a listed host is denied if it lands on a non-global address."""
-
-        async def scenario() -> None:
-            echo, echo_port = await _echo_server()
-            proxy = ProxyServer(("127.0.0.1",), ports=(echo_port,))  # allow_private defaults off
-            await proxy.start()
-            reply = await _request(
-                proxy.bound_port, f"CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n".encode()
-            )
-            assert reply.startswith(b"HTTP/1.1 403")
-            await proxy.aclose()
-            echo.close()
-
-        asyncio.run(scenario())
-
-    def test_a_client_that_sends_nothing_is_answered_and_released(self):
-        """A half-open client must not pin a handler forever — the header read is bounded."""
-
-        async def scenario() -> None:
-            proxy = ProxyServer(("allowed.example",), ports=(443,))
-            proxy._header_timeout = 0.2  # keep the test quick  # type: ignore[attr-defined]
-            await proxy.start()
-            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
-            reply = await reader.read(4096)  # never send a request line
-            assert reply.startswith(b"HTTP/1.1 400")
-            writer.close()
-            await proxy.aclose()
-
-        asyncio.run(scenario())
+def test_audit_reader_keeps_request_ports_and_classifies_address_denials() -> None:
+    records = [
+        {
+            "msg": "request",
+            "audit": {"host": "example.com:1012", "method": "CONNECT", "action": "allow"},
+        },
+        {
+            "msg": "request",
+            "audit": {"host": "example.com:1012", "method": "GET", "action": "allow"},
+        },
+        {
+            "msg": "request",
+            "audit": {"host": "private.test:8443", "method": "GET", "action": "error"},
+            "error": "proxy interface address is not an upstream",
+        },
+    ]
+    decisions, truncated = read_decisions("\n".join(map(json.dumps, records)), 10)
+    assert [(item.decision, item.host, item.port) for item in decisions] == [
+        ("ALLOW", "example.com", 1012),
+        ("DENY", "private.test", 8443),
+    ]
+    assert not truncated
 
 
-class TestBuildContext:
-    def test_the_packaged_context_carries_the_dockerfile_and_the_script(self):
-        context = build_context()
-        assert (context / "Dockerfile").is_file()
-        assert (context / "proxy.py").is_file()
+def test_audit_reader_keeps_inner_connect_but_skips_tunnel_setup() -> None:
+    records = [
+        {
+            "msg": "request",
+            "audit": {"host": "example.com:443", "method": "CONNECT", "action": "allow"},
+        },
+        {
+            "msg": "request",
+            "audit": {"host": "example.com:443", "method": "CONNECT", "action": "allow"},
+            "tunnel": {"target": "example.com:443"},
+        },
+        {
+            "msg": "request",
+            "audit": {"host": "other.test:443", "method": "CONNECT", "action": "reject"},
+        },
+    ]
+    decisions, _ = read_decisions("\n".join(map(json.dumps, records)), 10)
+    assert [(item.decision, item.host, item.port) for item in decisions] == [
+        ("ALLOW", "example.com", 443),
+        ("DENY", "other.test", 443),
+    ]
 
-    def test_the_dockerfile_pins_its_base_by_digest_and_copies_the_script(self):
-        dockerfile = (build_context() / "Dockerfile").read_text(encoding="utf-8")
-        from_line = next(li for li in dockerfile.splitlines() if li.startswith("FROM "))
-        assert "mcr.microsoft.com/azurelinux/base/core@sha256:" in from_line
-        assert "COPY proxy.py" in dockerfile
+
+def test_packaged_context_pins_the_proxy_and_carries_its_patch() -> None:
+    context = build_context()
+    dockerfile = (context / "Dockerfile").read_text(encoding="utf-8")
+    assert "5bd11abeb95ca734c767cfc992ea9be862700614" in dockerfile
+    assert "COPY iron.patch" in dockerfile
+    assert (context / "iron.patch").is_file()
+    assert (context / "entrypoint.sh").is_file()
