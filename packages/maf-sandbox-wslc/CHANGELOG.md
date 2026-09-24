@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.25.0...maf-sandbox-wslc-v0.25.1) (2026-09-24)
+
+
+### Fixes
+
+* say why an egress proxy never became ready, and wait 15 seconds for it instead of 5 ([#1442](https://github.com/sokolaidev/maf-extensions/issues/1442)) ([d16b429](https://github.com/sokolaidev/maf-extensions/commit/d16b429b5f7963ab99479339c9d86b0011c2a711))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.24.0...maf-sandbox-wslc-v0.25.0) (2026-09-24)
 
 
