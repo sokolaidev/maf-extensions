@@ -443,9 +443,11 @@ def test_direct_access_requires_call_scope_and_reset_cleans(backend):
     assert backend.declarations.capabilities == {
         Capability.RUN_CODE,
         Capability.SNAPSHOT,
+        Capability.EGRESS_METHODS,
         Capability.FILES_OUT,
         Capability.FILES_LIST,
     }
+    assert backend.declarations.egress_method_tokens == _backend.METHOD_TOKENS
 
     async def check():
         with pytest.raises(RuntimeError, match="call_admission"):
