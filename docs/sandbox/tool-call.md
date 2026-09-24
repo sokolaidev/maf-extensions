@@ -6,8 +6,6 @@ The application attaches a kind's tools to its MAF agent, so an ordinary tool ca
 
 ![The agent calls a sandboxed tool, whose kind and wrapper use the router and backend to send work to the sandbox. Output returns along the same path, and the wrapper completes cleanup before returning the tool result to the agent.](assets/tool-call-overview.svg)
 
-The router defaults to disposal. A host must explicitly enable reuse. Sharing scope and cleanup are separate settings: conversation scope permits sharing, while the cleanup policy decides what remains after active calls finish.
-
 ## Four lifetimes
 
 ```
@@ -45,6 +43,8 @@ A child task inherits the call context. It cannot keep using that record after t
 `run` means the supervised transport program. These framework concepts live in `maf.py`; the backend protocol does not require a kind-specific call object.
 
 ## Cleanup, as a consequence
+
+The router defaults to disposal. A host must explicitly enable reuse. Sharing scope and cleanup are separate settings: conversation scope permits sharing, while the cleanup policy decides what remains after active calls finish.
 
 | Operation | Effect | Backend requirement |
 |---|---|---|
