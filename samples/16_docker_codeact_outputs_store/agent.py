@@ -33,7 +33,7 @@ the read-back tools are not a second `FileAccessProvider`.  Read it first.
 #     "azure-identity",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.42",
+#     "maf-sandbox>=0.43",
 # ]
 # ///
 

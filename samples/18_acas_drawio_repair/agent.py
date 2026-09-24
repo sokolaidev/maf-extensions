@@ -11,7 +11,7 @@ See README.md for the prebuilt image and host credentials; the guest has no allo
 #     "azure-identity",
 #     "maf-sandbox-acas",
 #     "maf-sandbox-drawio",
-#     "maf-sandbox>=0.42",
+#     "maf-sandbox>=0.43",
 # ]
 # ///
 
