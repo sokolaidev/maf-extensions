@@ -21,7 +21,7 @@ here is that the router is configured at run() and the sandbox is disposed there
 #     # reason: without it the Azure path fails on import, before the model is ever reached.
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-docker>=0.23.0",
 #     "maf-sandbox>=0.43",
 # ]
 # ///

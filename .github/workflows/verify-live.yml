@@ -678,7 +678,7 @@ jobs:
           if [ "$SOURCE" = branch ]; then
             context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
           else
-            context="$(uv run --no-project --with maf-sandbox-docker python -c \
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
               'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
           fi
           docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
@@ -886,7 +886,7 @@ jobs:
           if [ "$SOURCE" = branch ]; then
             context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
           else
-            context="$(uv run --no-project --with maf-sandbox-docker python -c \
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
               'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
           fi
           docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
@@ -1841,7 +1841,7 @@ jobs:
           if [ "$SOURCE" = branch ]; then
             context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
           else
-            context="$(uv run --no-project --with maf-sandbox-docker python -c \
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
               'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
           fi
           docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
@@ -2236,7 +2236,7 @@ jobs:
           if [ "$SOURCE" = branch ]; then
             context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
           else
-            context="$(uv run --no-project --with maf-sandbox-docker python -c \
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
               'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
           fi
           docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"

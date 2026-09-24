@@ -30,8 +30,8 @@ not.  Read it, along with the prerequisites and the environment variables, first
 #     "agent-framework-openai",
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox-codeact",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-codeact>=0.21.0",
+#     "maf-sandbox-docker>=0.23.0",
 #     "maf-sandbox>=0.43",
 # ]
 # ///

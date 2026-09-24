@@ -25,10 +25,10 @@ A developer without Azure runs it locally by making sample 04's one-line client 
 
 ## Build the egress proxy
 
-Use a published Docker backend that includes iron-proxy method enforcement. An older host-only proxy cannot serve this sample. Build the proxy from that package, then set `MAF_EGRESS_PROXY_IMAGE`:
+Use `maf-sandbox-docker>=0.23.0`, which includes iron-proxy method enforcement. An older host-only proxy cannot serve this sample. Build the proxy from that package, then set `MAF_EGRESS_PROXY_IMAGE`:
 
 ```bash
-context="$(uv run --no-project --with maf-sandbox-docker python -c 'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c 'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
 docker build -t maf-egress-proxy:local "$context"
 export MAF_EGRESS_PROXY_IMAGE=maf-egress-proxy:local
 ```

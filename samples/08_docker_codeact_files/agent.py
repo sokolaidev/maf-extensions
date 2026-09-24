@@ -21,8 +21,8 @@ sink should point, which is the security-relevant decision here.  Read it first.
 #     "agent-framework-openai",
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox-codeact",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-codeact>=0.21.0",
+#     "maf-sandbox-docker>=0.23.0",
 #     "maf-sandbox>=0.43",
 # ]
 # ///
