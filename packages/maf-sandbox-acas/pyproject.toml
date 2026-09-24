@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-acas"
-version = "0.27.0"
+version = "0.27.1"
 description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -43,7 +43,7 @@ dependencies = [
     # older and the clean-env wheel smoke resolves it and dies on ImportError. The number
     # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
     # release the floor is for, never which release that is.
-    "maf-sandbox>=0.42.0,<0.43",
+    "maf-sandbox>=0.43.0,<0.44",
     # The retry observer subclasses and replaces Azure Core's private pipeline policy. Keep the
     # clean-install resolver on the minor line validated with that internal shape.
     "azure-core>=1.41.0,<1.42",

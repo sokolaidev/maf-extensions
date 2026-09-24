@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.22.1...maf-sandbox-docker-v0.23.0) (2026-09-24)
+
+
+### Features
+
+* enforce TLS, methods and paths for Docker and WSLC egress ([#1409](https://github.com/sokolaidev/maf-extensions/issues/1409)) ([dff4d77](https://github.com/sokolaidev/maf-extensions/commit/dff4d77c9035b74d35ea5bdda91d5a20cb1981c2))
+* keep guest HTTP credentials in isolated per-call gateways ([#1427](https://github.com/sokolaidev/maf-extensions/issues/1427)) ([e51eb13](https://github.com/sokolaidev/maf-extensions/commit/e51eb13fa43ad6aa737aa64ffc599efc5ce441ec))
+
+
+### Fixes
+
+* **docker:** verify provisioned proxy CAs in confinement probes ([#1421](https://github.com/sokolaidev/maf-extensions/issues/1421)) ([6906875](https://github.com/sokolaidev/maf-extensions/commit/690687599e03d809c0d1a4983314fab7edd4a46a))
+* **egress:** deny a named subnet's default gateway on Engine 28 ([#1418](https://github.com/sokolaidev/maf-extensions/issues/1418)) ([6c434a2](https://github.com/sokolaidev/maf-extensions/commit/6c434a23ab57fbacfe9bfbcccdaf1b30182ba05a))
+
 ## [0.22.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.22.0...maf-sandbox-docker-v0.22.1) (2026-09-21)
 
 
