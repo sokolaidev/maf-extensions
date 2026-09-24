@@ -669,11 +669,19 @@ jobs:
       # deliberately not exported here, so DefaultAzureCredential resolves through the CLI.
       - name: Run sample 06 and assert the computed answer came back
         env:
+          MAF_EGRESS_PROXY_IMAGE: maf-egress-proxy:ci
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
           source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/06_docker_codeact --source "$SOURCE")"
+          if [ "$SOURCE" = branch ]; then
+            context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          else
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
+              'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+          fi
+          docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
           uv run --no-project $source_args samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
           # The same assertion as sample 03: same task, same one right answer, same printed shape.
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
@@ -865,6 +873,7 @@ jobs:
 
       - name: Run sample 08 and assert a file went in and a file came out
         env:
+          MAF_EGRESS_PROXY_IMAGE: maf-egress-proxy:ci
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
@@ -874,6 +883,13 @@ jobs:
           # this run having landed a thing.
           rm -rf samples/08_docker_codeact_files/out
           source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/08_docker_codeact_files --source "$SOURCE")"
+          if [ "$SOURCE" = branch ]; then
+            context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          else
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
+              'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+          fi
+          docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
           uv run --no-project $source_args samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
           # Two halves, and the second is the point: the right total in stdout, and the declared
           # summary actually on disk under its declared name.
@@ -1813,6 +1829,7 @@ jobs:
 
       - name: Run sample 16 and assert the answer came back out of the outputs store
         env:
+          MAF_EGRESS_PROXY_IMAGE: maf-egress-proxy:ci
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
@@ -1821,6 +1838,13 @@ jobs:
           # in-memory store that lives and dies with the process, so there is nothing an
           # earlier run could have left for this one to pass on.
           source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/16_docker_codeact_outputs_store --source "$SOURCE")"
+          if [ "$SOURCE" = branch ]; then
+            context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          else
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
+              'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+          fi
+          docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
           uv run --no-project $source_args samples/16_docker_codeact_outputs_store/agent.py | tee /tmp/sample16-out.txt
           # Two halves, and neither carries it alone: a read whose result was the bytes landed
           # under this call's folder, and the grand total in the reply. The exit bit a withheld
@@ -2203,11 +2227,19 @@ jobs:
       # deliberately not exported here, so DefaultAzureCredential resolves through the CLI.
       - name: Run sample 19 and assert the computed answer came back
         env:
+          MAF_EGRESS_PROXY_IMAGE: maf-egress-proxy:ci
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
           source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/19_autogen_docker_codeact --source "$SOURCE")"
+          if [ "$SOURCE" = branch ]; then
+            context=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          else
+            context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c \
+              'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+          fi
+          docker build -t "$MAF_EGRESS_PROXY_IMAGE" "$context"
           uv run --no-project $source_args samples/19_autogen_docker_codeact/agent.py | tee /tmp/sample19-out.txt
           # Sample 03's and 06's assertion, unchanged: same task, same one right answer, same
           # printed shape — under AutoGen's tool name, which the checker's heading accepts.

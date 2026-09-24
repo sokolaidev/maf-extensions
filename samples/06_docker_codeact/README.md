@@ -7,7 +7,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, and the image reference. That is the tightest diff in the whole set — [sample 04](../04_wslc_codeact/) also swapped sample 03's Azure model for a local one, and this keeps it, because keeping it is exactly what lets this sample be verified in CI.
+[`agent.py`](agent.py) uses sample 03's computational task, model wiring and result check on Docker. It also permits GET requests to `pypi.org` and `files.pythonhosted.org`, demonstrating a method-scoped egress requirement that supports package downloads from PyPI. The sandbox image, proxy configuration and `Isolation.CONTAINER` floor belong to this Docker deployment.
 
 The completion and verdict lines in the example describe the current workspace. A numbered sample resolving an older published CodeAct release can still show the earlier report-only result.
 
@@ -21,7 +21,19 @@ A developer without Azure runs it locally by making sample 04's one-line client 
 
 **`DockerSandboxBackend` declares `Isolation.CONTAINER`**, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — this sample has to opt the floor down explicitly to `min_isolation=Isolation.CONTAINER`, and the default would refuse this backend outright. A Docker Desktop or Colima VM does not lift that rung: one shared VM kernel serves every container. A shared kernel is a reasonable place to run a short, disposable program on a machine you already trust, and the wrong thing to put next to a deployment's credentials; the router draws that line for you and will not be argued out of it without saying so in code, at construction time.
 
-**Egress is not a second downgrade here**, unlike the Bicep pair. `codeact_sandbox_spec()`'s `egress_allow` is empty on every backend this kind runs on — the program computes, it does not fetch — so the docker backend's closed-by-default network (every container runs `--network none`) asks for exactly what this workload already wanted. There is no allowlist to fall short of.
+**Guest egress permits GET requests to `pypi.org` and `files.pythonhosted.org` only.** Both hosts have an `EgressRule` with `methods=(HttpMethod.GET,)`, which derives `Capability.EGRESS_METHODS` into the workload requirements. A Docker backend without method enforcement refuses the sample before calling the model. The packaged iron-proxy inspects HTTPS methods and supplies the guest's CA trust. These hosts serve the package index and distribution files needed for installing packages from PyPI with pip. POST, other methods and other hosts are denied. GET requests can still send data through URLs, headers and request bodies; this allowlist does not guarantee read-only behavior or confidentiality. The Fibonacci task still computes locally and does not need to make a request.
+
+## Build the egress proxy
+
+Use `maf-sandbox-docker>=0.23.0`, which includes iron-proxy method enforcement. An older host-only proxy cannot serve this sample. Build the proxy from that package, then set `MAF_EGRESS_PROXY_IMAGE`:
+
+```bash
+context="$(uv run --no-project --with 'maf-sandbox-docker>=0.23.0' python -c 'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+docker build -t maf-egress-proxy:local "$context"
+export MAF_EGRESS_PROXY_IMAGE=maf-egress-proxy:local
+```
+
+In PowerShell, assign the command output to `$context` and set `$env:MAF_EGRESS_PROXY_IMAGE = "maf-egress-proxy:local"`. Clients inside the guest must honor the injected proxy and CA settings. The backend's isolated network prevents direct outbound access around the proxy.
 
 ## Prerequisites
 
@@ -46,10 +58,11 @@ uv run agent.py
 
 | Variable | What it is |
 |---|---|
+| `MAF_EGRESS_PROXY_IMAGE` | Required local tag of the packaged iron-proxy image, e.g. `maf-egress-proxy:local` |
 | `AZURE_OPENAI_ENDPOINT` | `https://<resource>.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | Deployment name of the chat model — a reasoning model, per the prerequisites |
 
-There are no sandbox variables at all: the docker backend runs the local engine and reads nothing from the environment. With either model variable unset the program says which and exits non-zero, rather than running. That is deliberate: `make_codeact_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
+With the proxy or either model variable unset, the program reports the missing configuration and exits before running.
 
 ## Run
 
