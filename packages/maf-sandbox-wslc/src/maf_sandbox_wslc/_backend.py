@@ -2074,9 +2074,9 @@ class WslcSandboxBackend:
                 return proxy_removal.failure
             self._report_proxy_drain(event)
         removal = await self._remove(instance_id)
-        if removal.failure is None and await self._remove_network(
-            _network_name(name), missing_ok=True
-        ):
+        if removal.failure is None:
+            if not await self._remove_network(_network_name(name), missing_ok=True):
+                return DisposalFailure("unknown", f"could not remove network {_network_name(name)}")
             with self._disposal_guard:
                 for entry, registered in list(self._registry.items()):
                     # Credential names cannot be adopted by a replacement acquisition.

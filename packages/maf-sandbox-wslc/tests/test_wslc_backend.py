@@ -994,7 +994,9 @@ def test_fallback_disposes_every_credential_generation(monkeypatch, selection, l
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("outcome", ["success", "proxy", "workload", "network", "foreign"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "proxy", "workload", "network", "network-exception", "absent", "foreign"]
+)
 def test_instance_disposal_forgets_only_the_cleaned_credential_generation(monkeypatch, outcome):
     async def check():
         spec = replace(
@@ -1043,6 +1045,11 @@ def test_instance_disposal_forgets_only_the_cleaned_credential_generation(monkey
         machine = _machine()
 
         def respond(args):
+            if args[:2] == ("network", "remove"):
+                if outcome == "network-exception":
+                    raise OSError("engine unavailable")
+                if outcome == "absent":
+                    return _WslcResult(1, b"", f"network {args[-1]} not found".encode())
             if (
                 (outcome == "proxy" and args[-1] == "proxy-id")
                 or (outcome == "workload" and args[-1] == "workload-id")
@@ -1055,8 +1062,13 @@ def test_instance_disposal_forgets_only_the_cleaned_credential_generation(monkey
         fake._responder = respond
         fake.calls.clear()
         failure = await backend.dispose(key, kind=spec.kind, instance_id="workload-id")
-        assert (failure is not None) == (outcome in {"proxy", "workload"})
-        assert set(backend._registry.values()) == set(names[1:] if outcome == "success" else names)
+        assert (failure is not None) == (
+            outcome in {"proxy", "workload", "network", "network-exception"}
+        )
+        if outcome in {"network", "network-exception"}:
+            assert failure is not None and names[0] + "-net" in failure.detail
+        cleaned = outcome in {"success", "absent"}
+        assert set(backend._registry.values()) == set(names[1:] if cleaned else names)
         if outcome == "foreign":
             assert not fake.matching(*("container", "remove"))
         elif outcome in {"proxy", "workload"}:

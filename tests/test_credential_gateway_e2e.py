@@ -599,6 +599,101 @@ def test_failed_infrastructure_cleanup_retries_without_listing(
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("selection", ["key", "scope"])
+def test_failed_instance_network_cleanup_reports_failure_and_allows_sweep(
+    upstream, monkeypatch, selection
+):
+    engine, _, ip, cert = upstream
+
+    async def provider(request):
+        return [
+            CredentialGrant(
+                "api-audience",
+                "https://api.example.com:8443",
+                "synthetic-instance-retry",
+                request.expires_at,
+            )
+        ]
+
+    async def check():
+        backend = make_backend(engine, provider)
+        router = SandboxRouter(
+            [backend], min_isolation=backend.isolation, max_identity_scope=IdentityScope.PER_SANDBOX
+        )
+        key = SandboxKey("instance-retry-" + uuid.uuid4().hex, "thread", "agent", "call")
+        owners = [key, key, replace(key, scope=key.scope + "-other-user")]
+        sandboxes = []
+        try:
+            results = await asyncio.gather(
+                *(backend.acquire(owner, spec()) for owner in owners), return_exceptions=True
+            )
+            sandboxes = [result for result in results if not isinstance(result, BaseException)]
+            assert len(sandboxes) == len(owners), [type(result).__name__ for result in results]
+            name, sibling, foreign = [sandbox.container_name for sandbox in sandboxes]
+            for target in (sibling, foreign):
+                trust_fixture(engine, target, ip, cert)
+            row = inspect(engine, name)
+            instance_id = row["Id"]
+            network_id = (
+                row["NetworkSettings"]["Networks"][name + "-net"]["NetworkID"]
+                if engine == "docker"
+                else name + "-net"
+            )
+            method = "_docker" if engine == "docker" else "_wslc"
+            command = getattr(backend, method)
+            refusing = True
+
+            async def refuse_network(*args, **kwargs):
+                if (
+                    refusing
+                    and args[:2] == ("network", "rm" if engine == "docker" else "remove")
+                    and args[-1] in {network_id, name + "-net"}
+                ):
+                    return (
+                        _DockerResult(1, b"", "injected removal refusal")
+                        if engine == "docker"
+                        else _WslcResult(1, b"", b"injected removal refusal")
+                    )
+                return await command(*args, **kwargs)
+
+            monkeypatch.setattr(backend, method, refuse_network)
+            assert not await router.dispose_kind(
+                key, spec().kind, instance_id=instance_id, timeout=30
+            )
+            assert not router._pending_for(key)
+            assert set(backend._registry.values()) == {name, sibling, foreign}
+            assert container(engine, "inspect", name, check=False).returncode != 0
+            assert container(engine, "inspect", name + "-proxy", check=False).returncode != 0
+            assert cli(engine, "network", "inspect", name + "-net").returncode == 0
+            for target in (sibling, foreign):
+                assert probe(engine, target)[0] == 200
+
+            refusing = False
+            monkeypatch.setattr(backend, "_list_names_by_labels", AsyncMock(return_value=None))
+            retry = (
+                (await backend.dispose_scope(key.scope, key.thread_id)).undisposed
+                if selection == "scope"
+                else await backend.dispose(key)
+            )
+            assert retry is not None and retry.code == "unlisted"
+            assert set(backend._registry.values()) == {foreign}
+            assert not backend._undeleted and not backend._undeleted_kinds
+            for target in (name, sibling):
+                assert container(engine, "inspect", target, check=False).returncode != 0
+                assert container(engine, "inspect", target + "-proxy", check=False).returncode != 0
+                assert (
+                    cli(engine, "network", "inspect", target + "-net", check=False).returncode != 0
+                )
+            assert probe(engine, foreign)[0] == 200
+        finally:
+            for sandbox in sandboxes:
+                name = sandbox.container_name
+                container(engine, "rm", "-f", name + "-proxy", name, check=False)
+                cli(engine, "network", "rm", name + "-net", check=False)
+
+    asyncio.run(check())
+
+
 def test_host_process_exit_expires_an_existing_tls_connection(upstream):
     engine, _, ip, cert = upstream
     child = subprocess.run(
