@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.43.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.42.0...maf-sandbox-v0.43.0) (2026-09-24)
+
+
+### Features
+
+* enforce TLS, methods and paths for Docker and WSLC egress ([#1409](https://github.com/sokolaidev/maf-extensions/issues/1409)) ([dff4d77](https://github.com/sokolaidev/maf-extensions/commit/dff4d77c9035b74d35ea5bdda91d5a20cb1981c2))
+* keep guest HTTP credentials in isolated per-call gateways ([#1427](https://github.com/sokolaidev/maf-extensions/issues/1427)) ([e51eb13](https://github.com/sokolaidev/maf-extensions/commit/e51eb13fa43ad6aa737aa64ffc599efc5ce441ec))
+
 ## [0.42.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.41.0...maf-sandbox-v0.42.0) (2026-09-21)
 
 
