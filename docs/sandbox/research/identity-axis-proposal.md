@@ -18,7 +18,7 @@ The external gateway is now implemented in the Docker and WSLC adapters, with a 
 
 The packaged iron-proxy build adds a per-request grant gate. The host installs one immutable grant over runtime stdin after identifying the actual workload container. Each acquisition uses a fresh 128-bit generation, workload container, private network and proxy. The grant binds the guest address and proxy boot identity; it carries only that generation's tokens, exact HTTPS origins and method/path rules. Fixed proxy and token deadlines stop further requests and cancel active upstream streams independently of host cleanup. There is no shared grant cache, refresh channel or ownership takeover between replicas.
 
-The opt-in suite is [test_credential_gateway_e2e.py](../../../tests/test_credential_gateway_e2e.py). After review fixes, it passed all eight parameterized scenarios in 117.82 seconds against Docker Engine 29.8.0 and WSLC 2.9.12.0, using the same rebuilt proxy image `sha256:f6edc68c17732b5ecfdb0de0b6a6ad9e3725594ed78ac2fa722eaad6453591b4`. All credentials were synthetic. A local TLS upstream on port 8443 returned a digest of the received Authorization header instead of the credential.
+The opt-in suite is [test_credential_gateway_e2e.py](../../../tests/test_credential_gateway_e2e.py). After review fixes, it passed all twelve parameterized scenarios in 211.85 seconds against Docker Engine 29.8.0 and WSLC 2.9.12.0, using the same rebuilt proxy image `sha256:f6edc68c17732b5ecfdb0de0b6a6ad9e3725594ed78ac2fa722eaad6453591b4`. All credentials were synthetic. A local TLS upstream on port 8443 returned a digest of the received Authorization header instead of the credential.
 
 | Runtime validation | Result on both backends |
 |---|---|
@@ -29,6 +29,7 @@ The opt-in suite is [test_credential_gateway_e2e.py](../../../tests/test_credent
 | Placement | Tokens were absent from guest and proxy container metadata; gateway grant and private-key paths were absent from guests. This is not a memory or kernel-escape audit. |
 | Disposal and replacement | Disposing one runtime instance left a sibling host's same-key grant usable. Restarting a gateway did not restore its previous grant. |
 | Cancelled acquisition | Cancellation while the provider was awaiting authorization removed the generation's containers. |
+| Failed label lookup | With the adapter's label lookup forced to fail, kind- and scope-level disposal removed every selected same-key generation, including proxies and networks. Unselected kinds and another user's sandbox remained usable. Cleanup still reported `unlisted`, since another host's resources could not be verified. |
 | Abrupt owner exit | A separate host process acquired a 15-second grant and exited with `os._exit` without cleanup. Requests succeeded before expiry and returned 403 afterward on both an actively reused TLS connection and a fresh connection. The audit reported `DENY`, with no `UNREACHABLE` decisions. |
 | CodeAct lifecycle | Concurrent calls through the existing tool factory received distinct trusted call IDs, runtime instances and grants. Successful call completion removed their containers. |
 

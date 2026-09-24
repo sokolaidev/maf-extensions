@@ -1286,12 +1286,11 @@ class WslcSandboxBackend:
         # until then, which is what keeps an uninstrumented host from paying for the read: every
         # drain is a `container logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_id, call_id, kind) -> name: a purge fallback for when the
-        # listing fails, never the truth. Holds the last name acquired per key and kind, which
-        # is enough to reclaim them, and `call_id` is part of that key — empty for a
-        # conversation, naming one tool call at `IsolationScope.CALL`, so two calls never
-        # collapse onto one entry here.
-        self._registry: dict[tuple[str, str, str, str, str], str] = {}
+        # Label-query fallback. Credential entries append their generation so repeated
+        # acquisitions under one ownership key remain independently reachable.
+        self._registry: dict[
+            tuple[str, str, str, str, str] | tuple[str, str, str, str, str, str], str
+        ] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
         #: Containers a discard could not remove, as ``name -> {instance ID}``. Something may
         #: still be running in one, so a warm acquire must not hand it back; the next acquire
@@ -1597,7 +1596,9 @@ class WslcSandboxBackend:
                     key.agent_id,
                 )
 
-            self._registry[(*_key_prefix(key), spec.kind)] = name
+            identity = (*_key_prefix(key), spec.kind)
+            with self._disposal_guard:
+                self._registry[identity if lease is None else (*identity, lease.generation)] = name
             try:
                 inspected = await self._wslc(
                     "container", "inspect", name, timeout=self._config.command_timeout_seconds

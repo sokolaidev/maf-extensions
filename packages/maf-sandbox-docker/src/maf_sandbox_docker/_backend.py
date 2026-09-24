@@ -1516,11 +1516,11 @@ class DockerSandboxBackend:
         # until then, and that is what keeps an uninstrumented host from paying for the read:
         # every drain is a `docker logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_id, call_id, kind) -> name: a purge fallback for when the
-        # listing fails, never the truth. Holds the last name acquired per key and kind, and
-        # `call_id` is part of that key — empty for a conversation, naming one tool call at
-        # `IsolationScope.CALL`, so two calls never collapse onto one entry here.
-        self._registry: dict[tuple[str, str, str, str, str], str] = {}
+        # Label-query fallback. Credential entries append their generation so repeated
+        # acquisitions under one ownership key remain independently reachable.
+        self._registry: dict[
+            tuple[str, str, str, str, str] | tuple[str, str, str, str, str, str], str
+        ] = {}
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
@@ -1948,7 +1948,9 @@ class DockerSandboxBackend:
             # Before the facts read, which is several awaited calls and can raise: the container
             # is running by now, and a name the registry never saw is one the disposal fallback
             # cannot reach when a label listing fails.
-            self._registry[(*_key_prefix(key), spec.kind)] = name
+            identity = (*_key_prefix(key), spec.kind)
+            with self._disposal_guard:
+                self._registry[identity if lease is None else (*identity, lease.generation)] = name
             try:
                 inspected = await self._docker(
                     "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds

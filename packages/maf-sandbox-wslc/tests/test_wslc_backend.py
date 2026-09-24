@@ -33,6 +33,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from maf_sandbox import (
@@ -41,8 +42,10 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     EgressObserved,
+    EgressRule,
     EntryKind,
     ExecResult,
+    IdentityScope,
     Isolation,
     IsolationScope,
     OsFamily,
@@ -55,6 +58,7 @@ from maf_sandbox import (
     SandboxSpec,
     ScopePurge,
 )
+from maf_sandbox.credentials import CredentialGateway
 from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
@@ -925,6 +929,69 @@ def _machine(
 
 def _explodes(args: tuple[str, ...]) -> _WslcResult:
     raise RuntimeError("wslc is not installed")
+
+
+@pytest.mark.parametrize("selection", ["kind", "key", "scope"])
+@pytest.mark.parametrize("listing", ["failed", "partial"])
+def test_fallback_disposes_every_credential_generation(monkeypatch, selection, listing):
+    async def check():
+        spec = replace(
+            _SPEC,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("api.example.com", authority="api"),),
+            requires=frozenset({Capability.ATTACHED_IDENTITY}),
+            isolation_scope=IsolationScope.CALL,
+            max_identity_scope=IdentityScope.PER_SANDBOX,
+            max_identity_retention_seconds=300,
+        )
+        key = replace(_KEY, call_id="call")
+        config = WslcSandboxConfig(
+            egress_proxy_image="proxy",
+            credential_gateway=CredentialGateway(AsyncMock()),
+        )
+        backend, fake = _backend_with(_machine(), config)
+        for method in ("_ensure_egress", "_install_proxy_ca", "_install_credentials"):
+            monkeypatch.setattr(backend, method, AsyncMock())
+        assignments = [
+            (key, spec),
+            (key, spec),
+            (key, spec),
+            (key, replace(spec, kind="other-kind")),
+            (replace(key, call_id="other-call"), spec),
+            (replace(key, agent_id="other-agent"), spec),
+            (replace(key, scope="other-user"), spec),
+            (replace(key, thread_id="other-thread"), spec),
+        ]
+        sandboxes = await asyncio.gather(
+            *(backend.acquire(owner, workload) for owner, workload in assignments)
+        )
+        names = [sandbox.container_name for sandbox in sandboxes]
+        assert len(set(names)) == len(names)
+        count = {"kind": 3, "key": 4, "scope": 6}[selection]
+        selected = set(names[:count])
+        monkeypatch.setattr(
+            backend,
+            "_list_names_by_labels",
+            AsyncMock(return_value=None if listing == "failed" else [names[count - 1]]),
+        )
+        fake.calls.clear()
+        if selection == "scope":
+            report = await backend.dispose_scope(key.scope, key.thread_id)
+            assert report.disposed == count
+            failure = report.undisposed
+        else:
+            failure = await backend.dispose(key, kind=spec.kind if selection == "kind" else None)
+        assert (failure is not None) == (listing == "failed")
+        if failure is not None:
+            assert failure.code == "unlisted"
+        removed = {call.args[-1] for call in fake.matching("container", "remove")}
+        assert removed == selected | {name + "-proxy" for name in selected}
+        assert {call.args[-1] for call in fake.matching("network", "remove")} == {
+            name + "-net" for name in selected
+        }
+        assert set(backend._registry.values()) == set(names[count:])
+
+    asyncio.run(check())
 
 
 def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _FakeWslc]:

@@ -16,8 +16,10 @@ import sys
 import tarfile
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from cryptography import x509
@@ -354,6 +356,65 @@ def test_cancellation_during_authorization_removes_only_its_generation(upstream)
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             await backend.dispose(key, kind=spec().kind)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("selection", ["kind", "scope"])
+def test_failed_listing_cleans_all_same_key_generations(upstream, monkeypatch, selection):
+    engine, _, ip, cert = upstream
+
+    async def provider(request):
+        return [
+            CredentialGrant(
+                "api-audience",
+                "https://api.example.com:8443",
+                "synthetic-" + request.generation,
+                request.expires_at,
+            )
+        ]
+
+    async def check():
+        backend = make_backend(engine, provider)
+        key = SandboxKey("fallback-" + uuid.uuid4().hex, "thread", "agent", "call")
+        assignments = [
+            (key, spec()),
+            (key, spec()),
+            (key, replace(spec(), kind="credential-other-kind")),
+            (replace(key, scope=key.scope + "-other-user"), spec()),
+        ]
+        sandboxes = []
+        try:
+            results = await asyncio.gather(
+                *(backend.acquire(owner, workload) for owner, workload in assignments),
+                return_exceptions=True,
+            )
+            sandboxes = [result for result in results if not isinstance(result, BaseException)]
+            assert len(sandboxes) == len(assignments), [type(result).__name__ for result in results]
+            for sandbox in sandboxes:
+                trust_fixture(engine, sandbox.container_name, ip, cert)
+                assert probe(engine, sandbox.container_name)[0] == 200
+            monkeypatch.setattr(backend, "_list_names_by_labels", AsyncMock(return_value=None))
+            count = 2 if selection == "kind" else 3
+            if selection == "kind":
+                failure = await backend.dispose(key, kind=spec().kind)
+            else:
+                report = await backend.dispose_scope(key.scope, key.thread_id)
+                assert report.disposed == count
+                failure = report.undisposed
+            assert failure is not None and failure.code == "unlisted"
+            for sandbox in sandboxes[:count]:
+                name = sandbox.container_name
+                assert container(engine, "inspect", name, check=False).returncode != 0
+                assert container(engine, "inspect", name + "-proxy", check=False).returncode != 0
+                assert cli(engine, "network", "inspect", name + "-net", check=False).returncode != 0
+            for sandbox in sandboxes[count:]:
+                assert probe(engine, sandbox.container_name)[0] == 200
+        finally:
+            for sandbox in sandboxes:
+                name = sandbox.container_name
+                container(engine, "rm", "-f", name + "-proxy", name, check=False)
+                cli(engine, "network", "rm", name + "-net", check=False)
 
     asyncio.run(check())
 
