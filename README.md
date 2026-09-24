@@ -4,26 +4,26 @@
 
 Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramework), maintained by [SOKOLAI BV](https://www.sokol.ai). **Not affiliated with or endorsed by Microsoft.** Everything here is experimental (0.x): each package warns on import, and every release before 1.0.0 may include breaking changes.
 
-## maf-sandbox
+## The maf-sandbox family — the first extension suite
 
-Sandboxed tool execution for MAF agents: validate infrastructure, create diagrams, process files or run generated code. These packages separate what a tool does from where its work runs. Tool calls still pass through the framework's middleware for approvals, information-flow policy and budgets. The suite is the reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568).
+Sandboxed code execution for MAF agents, and the first extension suite this repository publishes — the reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568). An agent that writes code should not be the thing that runs it; these packages give the work somewhere else to run, reached as an ordinary tool call so the framework's middleware (approvals, information-flow policy, budgets) still sees it.
 
-See the [sandbox documentation](docs/sandbox/README.md) for concepts, setup and supported workloads.
+[`docs/sandbox/README.md`](docs/sandbox/README.md) is the introduction — what the suite is, how it attaches to a MAF agent, what it buys and what it deliberately is not — written for a reader who does not already know the framework. The table below is the map.
 
 | Package | Released | What it is | Depends on |
 |---|---|---|---|
-| [`maf-sandbox`](packages/maf-sandbox/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox)](https://pypi.org/project/maf-sandbox/) | Shared sandbox protocol, routing, policy and MAF integration | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
-| [`maf-sandbox-acas`](packages/maf-sandbox-acas/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-acas)](https://pypi.org/project/maf-sandbox-acas/) | MicroVM backend using Azure Container Apps Sandboxes | `maf-sandbox`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
-| [`maf-sandbox-bicep`](packages/maf-sandbox-bicep/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-bicep)](https://pypi.org/project/maf-sandbox-bicep/) | Bicep compilation and linting | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-codeact`](packages/maf-sandbox-codeact/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-codeact)](https://pypi.org/project/maf-sandbox-codeact/) | Python execution with optional files and host tools | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-deepagents`](packages/maf-sandbox-deepagents/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-deepagents)](https://pypi.org/project/maf-sandbox-deepagents/) | Sandbox integration for LangChain Deep Agents | `maf-sandbox`, `deepagents` |
-| [`maf-sandbox-docker`](packages/maf-sandbox-docker/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) | Container backend for Docker-compatible engines | `maf-sandbox` |
-| [`maf-sandbox-drawio`](packages/maf-sandbox-drawio/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-drawio)](https://pypi.org/project/maf-sandbox-drawio/) | Validation and layout of editable draw.io diagrams | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-hyperlight`](packages/maf-sandbox-hyperlight/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-hyperlight)](https://pypi.org/project/maf-sandbox-hyperlight/) | Python microVM backend for Windows and Linux | `maf-sandbox`, the matched Hyperlight 0.7.0 Python SDK, Wasm backend and guest |
-| [`maf-sandbox-otel`](packages/maf-sandbox-otel/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) | OpenTelemetry logs, traces and metrics for sandbox activity | `maf-sandbox`, `opentelemetry-api` |
-| [`maf-sandbox-terraform`](packages/maf-sandbox-terraform/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-terraform)](https://pypi.org/project/maf-sandbox-terraform/) | Offline Terraform and OpenTofu validation and formatting | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-tui`](packages/maf-sandbox-tui/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-tui)](https://pypi.org/project/maf-sandbox-tui/) | Terminal console to inspect and dispose application sandboxes | `maf-sandbox`, `textual` |
-| [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | Local container backend using WSL's container CLI | `maf-sandbox` |
+| [`maf-sandbox`](packages/maf-sandbox/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox)](https://pypi.org/project/maf-sandbox/) | The backend-neutral protocol (`Sandbox`, `SandboxBackend`, `SandboxSpec`, `SandboxKey`, `Isolation`, `IsolationScope`, `Capability`), the router with its minimum-isolation-floor, capability-match and isolation-scope policy, the thread-delete purge participant, a public in-process `testing` backend, and the optional MAF glue module | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
+| [`maf-sandbox-acas`](packages/maf-sandbox-acas/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-acas)](https://pypi.org/project/maf-sandbox-acas/) | [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) as a backend: microVM isolation, Deny-default egress, label-based lifecycle that survives multi-replica hosts | `maf-sandbox`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
+| [`maf-sandbox-bicep`](packages/maf-sandbox-bicep/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-bicep)](https://pypi.org/project/maf-sandbox-bicep/) | The first workload *kind*: `bicep_validate` — compiler-truth validation of agent-authored Bicep, on any backend | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-terraform`](packages/maf-sandbox-terraform/) | not yet released | Offline Terraform or OpenTofu validation and formatting checks in a disposable sandbox | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-codeact`](packages/maf-sandbox-codeact/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-codeact)](https://pypi.org/project/maf-sandbox-codeact/) | The CodeAct *kind*: `execute_code` — the model writes a short Python program, it runs in a closed sandbox, and what it printed comes back | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-drawio`](packages/maf-sandbox-drawio/) | not yet released | The draw.io *kind*: `create_drawio` validates model XML, preserves supplied geometry or automatically lays out flat graphs, and lands an editable `.drawio` file | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-docker`](packages/maf-sandbox-docker/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) | Plain Docker containers as a backend: container isolation, Closed or Allowlisted egress, and reading declared outputs back out — for a sandbox on any machine with a Docker-compatible engine, and on CI | `maf-sandbox` |
+| [`maf-sandbox-hyperlight`](packages/maf-sandbox-hyperlight/) | not yet released | Hyperlight's packaged Python guest on Windows WHP: microVM execution, snapshot reset, bounded worker lifetime, Closed or Allowlisted HTTP, and CodeAct without file channels | `maf-sandbox`, the matched Hyperlight 0.7.0 Python SDK, Wasm backend and guest |
+| [`maf-sandbox-tui`](packages/maf-sandbox-tui/) | not yet released | MST, a local operator console for listing, inspecting and disposing exact physical sandbox generations owned by MAF applications that explicitly enable its loopback control endpoint | `maf-sandbox`, `textual` |
+| [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | `wslc` (the container CLI that ships with WSL) as a backend: container isolation, Closed egress, for validating on the developer's own machine | `maf-sandbox` |
+| [`maf-sandbox-deepagents`](packages/maf-sandbox-deepagents/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-deepagents)](https://pypi.org/project/maf-sandbox-deepagents/) | An *adapter* in the other direction: a router behind [Deep Agents](https://docs.langchain.com/oss/python/deepagents/sandboxes)' `BaseSandbox`, so a LangChain or LangGraph agent gets Deep Agents' own `execute` and file tools over any backend the router admits, with the isolation floor, the egress mode and purge-by-conversation still the router's | `maf-sandbox`, `deepagents` |
+| [`maf-sandbox-otel`](packages/maf-sandbox-otel/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) | An *observer* rather than a kind or a backend: it registers on the router and the host-tool registry and turns what a sandbox did — the posture it was served under, host-tool calls, file crossings, per-key disposals — into OpenTelemetry log records, spans and metrics, under the application's providers or a security pipeline's own | `maf-sandbox`, `opentelemetry-api` |
 
 ```
 app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  ->  the sandbox
@@ -34,9 +34,9 @@ app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  -
                    the router and the host-tool registry, and only reads what already happened
 ```
 
-### Samples
+## Samples
 
-See the [samples README](samples/README.md) for runnable examples and their requirements.
+[`samples/`](samples/) holds small, self-contained programs that show the pieces wired together — the `app` box above, which the package READMEs describe but never show. [`01_acas_bicep`](samples/01_acas_bicep/) is a one-turn agent that validates a deliberately flawed Bicep file: an ACAS backend behind a router, a caller context built the way that keeps one conversation out of another's sandbox, and `bicep_validate` attached to a MAF agent. Samples install from PyPI rather than from this workspace. They are linted and type-checked on every pull request, and most of them are also *run* — against the published wheels, on demand and once after a release, never on a pull request, because three of those runs create a billable Azure sandbox. [`images/bicep-sandbox/`](images/bicep-sandbox/) is the image they validate in — a pinned Bicep CLI and its lint config, with the build, push and disk-image import commands that get it into a sandbox group.
 
 ## Development
 
@@ -53,4 +53,4 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow and what the boun
 
 ## Provenance
 
-Extracted, with their history, from a production agent application where they run today: an advisor that delegates infrastructure work to sub-agents, and needed somewhere safe for those agents' tools to run. Everything here was shaped by that use — the minimum-isolation-floor rule, the label-based purge that survives a multi-replica host, and the compiler-truth validation loop are all answers to problems that showed up in production rather than in design.
+Extracted, with their history, from a production agent application where they run today: an advisor that delegates infrastructure work to sub-agents, and needed somewhere safe for those agents' code to execute. Everything here was shaped by that use — the minimum-isolation-floor rule, the label-based purge that survives a multi-replica host, and the compiler-truth validation loop are all answers to problems that showed up in production rather than in design.

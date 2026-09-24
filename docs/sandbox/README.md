@@ -4,12 +4,6 @@
 
 ## Introduction
 
-`maf-sandbox` was built for Microsoft Agent Framework (MAF). Other frameworks can use it through adapters, such as the [LangChain Deep Agents adapter](../../packages/maf-sandbox-deepagents/README.md), or by calling the router directly, as the [AutoGen sample](../../samples/19_autogen_docker_codeact/README.md) does through its own executor.
-
-### Microsoft Agent Framework (MAF)
-
-[MAF](https://github.com/microsoft/agent-framework) is an open-source framework for building AI agents and multi-agent workflows. An [agent](https://github.com/microsoft/agent-framework/blob/main/python/README.md) combines a model, instructions and conversation context to carry out a task. [Tools](https://github.com/microsoft/agent-framework/blob/main/python/README.md#4-build-an-agent-with-tools-and-functions) expose functions the agent can call to retrieve information or perform actions. Its optional [FIDES security middleware](https://github.com/microsoft/agent-framework/blob/main/python/samples/02-agents/security/FIDES_DEVELOPER_GUIDE.md) tracks content's integrity and confidentiality labels and checks tool calls against the application's information-flow policy, controlling how untrusted or confidential data may be used.
-
 ### The problem
 
 Agents can write code, but checking it needs real execution. A compiler can find an invalid template. A Python runtime can test a calculation or process a file.
@@ -32,25 +26,14 @@ These approaches overlap. Shared APIs reduce provider-specific code. An applicat
 
 ### What maf-sandbox adds
 
-`maf-sandbox` connects an application's agent tools to compatible execution environments. The application wires these components together:
+`maf-sandbox` supplies that integration for MAF. A **kind** defines the workload. A **backend** supplies the execution environment. Their shared contract covers four concerns:
 
-![A MAF application calls a kind through the framework adapter. The kind uses the router, which delegates to a backend that manages the sandbox. The kind declares a spec containing the requirements the router checks. Kinds and the router use the shared protocol, which backends implement. An optional observer receives router events.](assets/component-types.svg)
+- **Workload reuse.** [Kinds](kinds/README.md) use one protocol and contain no backend imports. A workload can move between compatible backends without provider-specific code in the kind.
+- **Checks before execution.** The [router](policy-isolation.md) checks required operations, the host's minimum isolation and network rules. It refuses an unsupported combination.
+- **Host control.** Outer tool calls pass through framework policy. [Identity](architecture.md#keys-and-storage) comes from trusted request context. [File access](hosts.md) and [cleanup](tool-call.md) follow shared rules.
+- **Useful, labelled results.** The [result contract](information-flow.md#the-result-contract) separates completion and a declared answer from raw workload output. The model can read the answer while untrusted text stays separately labelled.
 
-- **Application.** Owns the MAF agent, middleware, trusted request [identity](architecture.md#keys-and-storage), credentials, storage and cleanup policy.
-- **Adapter.** Connects a framework to the suite. The [MAF adapter](architecture.md#framework-adapter) exposes kinds as ordinary tools and coordinates call lifetime and [result labels](information-flow.md#the-result-contract). Other adapters, such as Deep Agents, connect their framework's own tools to the router.
-- **Kind.** Defines a [workload](kinds/README.md), such as Bicep validation or diagram creation. It declares requirements, performs guest operations through the protocol and builds the result.
-- **Spec.** Describes the workload's requirements in a [SandboxSpec](architecture.md#vocabulary): runtime or image, required operations, network access, limits and lifecycle rules.
-- **Protocol.** Defines the shared [interfaces](capabilities.md) for acquiring sandboxes, executing work, transferring files and disposal. Kinds use these interfaces and backends implement them, so neither imports the other.
-- **Router.** Checks the spec against the [host's policy and backend capabilities](policy-isolation.md), routes work to a compatible backend and coordinates lifecycle operations. It refuses unsupported combinations.
-- **Backend.** Connects to an [execution provider](backends/README.md), creates and disposes sandboxes, and enforces its declared isolation, file and network boundaries.
-- **Sandbox.** Is the acquired execution environment where guest commands or code run and workload files live. Its available operations depend on the backend's capabilities.
-- **Observer.** Receives [execution and lifecycle events](observability.md) without running workloads. The OpenTelemetry observer turns them into logs, traces and metrics.
-
-For example:
-
-- **CodeAct: calculate an answer.** An agent writes a short Python program to compare repayment schedules. The CodeAct kind runs it in a sandbox and returns the calculated results. The application chooses the backend and controls access to files and the network.
-- **Bicep: check infrastructure before deployment.** An agent drafts a Bicep template. The Bicep kind runs the compiler in a sandbox and returns errors the agent can use to fix it. The same kind can use Docker locally or Azure Container Apps Sandboxes (ACAS), with a suitable image and host policy.
-- **draw.io: create an editable diagram.** An agent describes an architecture as diagram XML. The draw.io kind checks it and applies the configured layout in a sandbox, then delivers an editable diagram file to the application's storage.
+A Bicep tool can use Docker locally or Azure Container Apps Sandboxes (ACAS). Each setup must satisfy the workload requirements and its host's policy. Hyperlight cannot run the Bicep compiler, so the router refuses it for this kind.
 
 The suite connects sandbox implementations; it does not provide isolation by itself. A backend must establish the boundary and behavior it declares.
 
@@ -98,20 +81,9 @@ The [result contract](information-flow.md#the-result-contract) defines separate 
 
 ## Connect to a MAF agent
 
-Wire the tools, per-call request context and disposal. Set `OPENAI_API_KEY` and `OPENAI_CHAT_MODEL_ID` for the model client. This host scaffold assumes the backend configuration, request scope and thread, and image are already configured:
+Wire the tools, per-call request context and disposal. This host scaffold assumes the client, store, request identifiers, image and logger are already configured:
 
 ```python
-import os
-
-from agent_framework import Agent, InMemoryAgentFileStore
-from agent_framework.openai import OpenAIChatClient
-
-client = OpenAIChatClient(
-    model=os.environ["OPENAI_CHAT_MODEL_ID"],
-    api_key=os.environ["OPENAI_API_KEY"],
-)
-agent_id = "bicep-validator"
-store = InMemoryAgentFileStore()
 router = SandboxRouter([AcasSandboxBackend(config)])
 record = FileStoreProvenance()  # what the host knows about the bytes in `store`
 context = make_caller_context(
@@ -131,11 +103,14 @@ agent = Agent(
 # Dispose this conversation when the block ends.
 async with router.scope(scope, thread_id) as disposal:
     response = await agent.run(prompt)
+# Inspect the outcome from a host finally block when the turn can raise.
+logger.info("reclaimed %d, still there: %s", disposal.disposed, disposal.undisposed)
+
+# Also wire the host's conversation-delete path.
+await SandboxPurger(router).purge_scoped_thread(scope, thread_id)
 ```
 
-Populate `store` with the files the tool will validate before running the agent. An application can replace this in-memory store with its own persistent file store.
-
-`make_bicep_tools(...)` creates the Bicep kind's MAF tools and returns them in the `tools` list. Passing that list to `Agent(..., tools=tools)` makes them available to the agent. If no router is supplied (`router=None`), the function returns an empty list. A configured backend that cannot serve the spec raises instead of attaching an unusable tool.
+The kind factory returns ordinary MAF tools. With no backend configured, it returns an empty list. A configured backend that cannot serve the spec raises instead of attaching an unusable tool.
 
 Scope and thread accessors are read for each call. They must use trusted request context, not model input or values captured for one conversation when building a shared agent.
 
