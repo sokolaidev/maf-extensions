@@ -33,6 +33,7 @@ _PACKAGES = {
     "maf-sandbox-codeact": "maf_sandbox_codeact",
     "maf-sandbox-deepagents": "maf_sandbox_deepagents",
     "maf-sandbox-docker": "maf_sandbox_docker",
+    "maf-sandbox-docker-sbx": "maf_sandbox_docker_sbx",
     "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
@@ -481,6 +482,22 @@ def _smoke_maf_sandbox_otel() -> str:
     return "the recorder registers as an observer and records against no-op providers"
 
 
+def _smoke_maf_sandbox_docker_sbx() -> str:
+    from maf_sandbox import Capability, Egress, Isolation
+    from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
+
+    # Constructed, not called: CI runners here have no `sbx`, and reaching it would not test
+    # packaging.
+    backend = SbxSandboxBackend(SbxSandboxConfig())
+    if backend.isolation != Isolation.MICROVM:
+        raise SystemExit(f"FAIL: docker-sbx declares {backend.isolation!r}, expected microvm")
+    if backend.declarations.egress_modes != frozenset({Egress.CLOSED}):
+        raise SystemExit(f"FAIL: docker-sbx egress {backend.declarations.egress_modes!r}")
+    if Capability.FILES_LIST not in backend.declarations.capabilities:
+        raise SystemExit("FAIL: docker-sbx lost its host-side listing")
+    return "the backend constructs at the microVM rung with CLOSED egress"
+
+
 def _smoke_maf_sandbox_wslc() -> str:
     from maf_sandbox import Egress, Isolation
     from maf_sandbox_wslc import (
@@ -811,6 +828,7 @@ _SMOKES = {
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-deepagents": _smoke_maf_sandbox_deepagents,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
+    "maf-sandbox-docker-sbx": _smoke_maf_sandbox_docker_sbx,
     "maf-sandbox-drawio": _smoke_maf_sandbox_drawio,
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,

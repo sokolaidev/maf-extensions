@@ -14,6 +14,7 @@ members = [
     "maf-sandbox-codeact",
     "maf-sandbox-deepagents",
     "maf-sandbox-docker",
+    "maf-sandbox-docker-sbx",
     "maf-sandbox-drawio",
     "maf-sandbox-hyperlight",
     "maf-sandbox-otel",
@@ -1340,6 +1341,17 @@ requires-dist = [
 name = "maf-sandbox-docker"
 version = "0.23.1"
 source = { editable = "packages/maf-sandbox-docker" }
+dependencies = [
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
+
+[[package]]
+name = "maf-sandbox-docker-sbx"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-docker-sbx" }
 dependencies = [
     { name = "maf-sandbox" },
 ]

@@ -78,6 +78,7 @@ _SIBLING_DISTRIBUTIONS = (
     "maf-sandbox-bicep",
     "maf-sandbox-codeact",
     "maf-sandbox-docker",
+    "maf-sandbox-docker-sbx",
     "maf-sandbox-otel",
     "maf-sandbox-tui",
     "maf-sandbox-wslc",

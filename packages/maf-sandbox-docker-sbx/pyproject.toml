@@ -1,0 +1,81 @@
+[project]
+name = "maf-sandbox-docker-sbx"
+version = "0.0.0"
+description = "Docker Sandboxes (sbx) microVMs as a local sandbox backend for Microsoft Agent Framework agents."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "docker",
+    "microvm",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+    "isolation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    # The backend protocol and the router this backend registers with — the only dependency
+    # there is. Everything else is the standard library driving `sbx`. Upper-bounded
+    # because maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may
+    # include breaking changes (see its CHANGELOG); moving either end of this range has an
+    # order to it — see RELEASING.md. This package imports `Capability` at module scope, so a
+    # ceiling excluding the in-tree wheel resolves PyPI's older release in the clean-env wheel
+    # smoke and dies on ImportError.
+    "maf-sandbox>=0.43.0,<0.44",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_docker_sbx"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+# The length rules join the docstring pair: test fixtures are hand-shaped strings, not drift.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes
+# for the sbx seam, not signal for a strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

@@ -85,6 +85,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-docker-sbx": {
+      "package-name": "maf-sandbox-docker-sbx",
+      "exclude-paths": ["packages/maf-sandbox-docker-sbx/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-docker-sbx')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-drawio": {
       "package-name": "maf-sandbox-drawio",
       "exclude-paths": ["packages/maf-sandbox-drawio/tests"],
