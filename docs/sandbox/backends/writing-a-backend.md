@@ -146,6 +146,6 @@ Some file suites verify through `exec`, and delete probes also use uploads. They
 | Area | State | Reference |
 |---|---|---|
 | Protocol methods, path helpers and named probes | Implemented | [Capabilities](../capabilities.md) |
-| Provider path-replacement races | Backend-specific; ACAS reads retain limits, WSLC writes and setup reach nothing past the image's user | [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (open), [ACAS](acas.md), [WSLC](wslc.md) |
+| Provider path-replacement races | Backend-specific; Docker closes the race by pausing the container, WSLC writes and setup reach nothing past the image's user, ACAS reads retain limits | [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (closed) by [#1445](https://github.com/sokolaidev/maf-extensions/pull/1445) (merged); ACAS reads handed off to [#1336](https://github.com/sokolaidev/maf-extensions/issues/1336) (open); [ACAS](acas.md), [WSLC](wslc.md) |
 | Shared runtime and reset suites | Not implemented; Hyperlight has provider-specific tests | [Hyperlight](hyperlight.md) |
 | File suites without exec/upload dependencies | Harness gap | untracked |
