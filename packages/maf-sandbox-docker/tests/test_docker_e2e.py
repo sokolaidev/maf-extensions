@@ -1602,6 +1602,33 @@ def _network_present(name: str) -> bool:
     return name in out.splitlines()
 
 
+def _service_listening(container: str, *ports: int) -> None:
+    """Wait until ``container`` listens on every one of ``ports``.
+
+    Reads the kernel's socket tables instead of connecting: a one-shot ``nc -l`` would spend
+    itself answering the probe.
+    """
+    wanted = {f"{port:04X}" for port in ports}
+    deadline = time.monotonic() + 30
+    while True:
+        tables = subprocess.run(
+            ["docker", "exec", container, "/bin/busybox", "cat", "/proc/net/tcp", "/proc/net/tcp6"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+        listening = {
+            fields[1].rsplit(":", 1)[-1]
+            for fields in (line.split() for line in tables.splitlines())
+            if len(fields) > 3 and fields[3] == "0A"
+        }
+        if wanted <= listening:
+            return
+        if time.monotonic() > deadline:
+            pytest.fail(f"{container} is not listening on {sorted(ports)}")
+        time.sleep(0.2)
+
+
 def _inspected(kind: str, name: str, template: str) -> str:
     return subprocess.run(
         ["docker", *([] if kind == "container" else [kind]), "inspect", "-f", template, name],
@@ -1970,6 +1997,7 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(service, 8080, 8081)
             sandbox = asyncio.run(allowed.acquire(key, spec))
             assert self._curl_status(
                 sandbox, "http://private.test:8080/entrypoint.sh", force_proxy=True
@@ -2040,6 +2068,7 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(service, 8443)
             sandbox = asyncio.run(backend.acquire(_key(scope), spec))
             assert self._curl_status(sandbox, "https://mcr.microsoft.com:8443/v2/") == (0, "200")
         finally:
@@ -2131,6 +2160,8 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(http_service, 8080)
+            _service_listening(tls_service, 8443)
             sandbox = asyncio.run(backend.acquire(_key(scope), spec))
             proxy = sandbox.container_name + "-proxy"
 
@@ -2227,6 +2258,7 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(name, 8080)
 
         backend = DockerSandboxBackend(
             DockerSandboxConfig(
