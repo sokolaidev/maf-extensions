@@ -143,7 +143,7 @@ class _PosixDirectory:
             if not create:
                 raise FileNotFoundError(errno.ENOENT, "no such directory", name)
             try:
-                os.mkdir(name, 0o755, dir_fd=self._fd)
+                os.mkdir(name, 0o700, dir_fd=self._fd)
             except FileExistsError:
                 pass
         try:
@@ -179,7 +179,7 @@ class _PosixDirectory:
     def write(self, name: str, content: bytes) -> None:
         part = f"{_PART_PREFIX}{secrets.token_hex(8)}.part"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC
-        fd = os.open(part, flags, 0o644, dir_fd=self._fd)
+        fd = os.open(part, flags, 0o600, dir_fd=self._fd)
         try:
             try:
                 _write_all(fd, content)
