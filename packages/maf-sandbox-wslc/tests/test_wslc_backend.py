@@ -4283,6 +4283,31 @@ class TestAllowlistTopology:
             assert len(network_removed) == 1
             assert proxy_removed[0] < fake.calls.index(network_removed[0])
 
+    def test_an_unverified_proxy_names_what_it_lacked_and_quotes_its_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        machine = _machine()
+        forged = b"".join(b"CONNECT \x1b[2J" + b"x" * 500 + b"\n" for _ in range(50))
+
+        def respond(args):
+            if args[:2] == ("container", "logs"):
+                return _WslcResult(
+                    0, b"tunnel proxy starting\n" + forged, b"listen tcp :3128: bind\n"
+                )
+            return machine(args)
+
+        backend, _ = _backend_with(respond, config=_ALLOW_CONFIG)
+        monkeypatch.setattr("maf_sandbox_wslc._backend._PROXY_READY_ATTEMPTS", 1)
+        monkeypatch.setattr("maf_sandbox_wslc._backend._PROXY_READY_DELAY_S", 0.0)
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        message = str(raised.value)
+        assert "missing ['maf-sandbox egress contract v1']" in message
+        assert "'listen tcp :3128: bind'" in message
+        assert message.isprintable()
+        assert message.count("CONNECT") == 10
+        assert len(message) < 4000
+
     def test_closed_mode_issues_no_network_commands_at_all(self):
         backend, fake = _backend_with(_machine())
         asyncio.run(backend.acquire(_KEY, _SPEC))
