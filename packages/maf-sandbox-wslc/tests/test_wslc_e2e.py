@@ -181,6 +181,42 @@ def test_write_checks_remove_private_host_copies(tmp_path, monkeypatch):
     assert not _names_on_the_machine(_container_name(key, _spec().kind))
 
 
+def _service_listening(container: str, *ports: int) -> None:
+    """Wait until ``container`` listens on every one of ``ports``.
+
+    Reads the kernel's socket tables instead of connecting: a one-shot ``nc -l`` would spend
+    itself answering the probe.
+    """
+    wanted = {f"{port:04X}" for port in ports}
+    deadline = time.monotonic() + 30
+    while True:
+        tables = subprocess.run(
+            [
+                "wslc",
+                "container",
+                "exec",
+                container,
+                "/bin/busybox",
+                "cat",
+                "/proc/net/tcp",
+                "/proc/net/tcp6",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+        listening = {
+            fields[1].rsplit(":", 1)[-1]
+            for fields in (line.split() for line in tables.splitlines())
+            if len(fields) > 3 and fields[3] == "0A"
+        }
+        if wanted <= listening:
+            return
+        if time.monotonic() > deadline:
+            pytest.fail(f"{container} is not listening on {sorted(ports)}")
+        time.sleep(0.2)
+
+
 def _listed_name(row: dict) -> str:
     """The name a listing row carries, under either field the CLI has used for it.
 
@@ -1002,6 +1038,7 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(service, 8080, 8081)
             inspected = json.loads(
                 subprocess.check_output(["wslc", "container", "inspect", service])
             )
@@ -1086,6 +1123,7 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(service, 8443)
             sandbox = asyncio.run(backend.acquire(_key(scope), spec))
             subprocess.run(
                 ["wslc", "network", "connect", network, sandbox.container_name + "-proxy"],
@@ -1158,6 +1196,7 @@ class TestAllowlistEgress:
                 relay,
             )
             service_created = True
+            _service_listening(service, 8080, 8443)
 
             def ipv6_address(name):
                 inspected = json.loads(command("network", "inspect", network).stdout)[0]
@@ -1344,6 +1383,7 @@ class TestAllowlistEgress:
                 check=True,
                 capture_output=True,
             )
+            _service_listening(name, 8080)
 
         backend = WslcSandboxBackend(
             WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE, allow_private_http=True)
