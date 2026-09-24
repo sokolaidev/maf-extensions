@@ -134,7 +134,7 @@ The broader metadata, private-network, host-path and host-socket isolation probe
 |---|---|---|
 | Execution, files, call scope and disposal | Implemented with the limits above | [Package README](../../../packages/maf-sandbox-acas/README.md) |
 | Group-configured identity | Supported through trusted host configuration | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
-| Native read/stat/list path race | Open; no atomic service primitive | [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) (open) |
+| Native read/stat/list path race | Open; no atomic service primitive | [#1336](https://github.com/sokolaidev/maf-extensions/issues/1336) (open), waiting on [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) (open) |
 | Typed SDK file metadata | Open; adapter requires raw flags | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) (open) |
 | Special-file classification | Open; regular files cannot be distinguished reliably | [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) (open) |
 | Working-directory preparation authority | Bounded; setup creates missing directories as the guest and refuses if that creation fails | [#1339](https://github.com/sokolaidev/maf-extensions/issues/1339) (closed) by [#1379](https://github.com/sokolaidev/maf-extensions/pull/1379) (merged) |
