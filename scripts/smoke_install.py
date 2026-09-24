@@ -583,6 +583,7 @@ def _smoke_maf_sandbox_hyperlight() -> str:
     from maf_sandbox import (
         Capability,
         Egress,
+        EgressRule,
         Isolation,
         SandboxBackend,
         SandboxCapabilityNotSupported,
@@ -594,8 +595,22 @@ def _smoke_maf_sandbox_hyperlight() -> str:
     backend = HyperlightSandboxBackend()
     if not isinstance(backend, SandboxBackend) or backend.isolation is not Isolation.MICROVM:
         raise SystemExit("FAIL: Hyperlight does not implement the microVM backend protocol")
-    if backend.declarations.capabilities != {Capability.RUN_CODE, Capability.SNAPSHOT}:
+    if backend.declarations.capabilities != {
+        Capability.RUN_CODE,
+        Capability.SNAPSHOT,
+        Capability.EGRESS_METHODS,
+    }:
         raise SystemExit("FAIL: Hyperlight advertises an unvalidated channel")
+    if backend.declarations.egress_method_tokens != {
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+    }:
+        raise SystemExit("FAIL: Hyperlight declares methods its runtime does not enforce")
     if backend.declarations.egress_modes != {Egress.CLOSED, Egress.ALLOWLIST}:
         raise SystemExit("FAIL: Hyperlight does not declare its enforced network policies")
     if not RUNTIME_INSTRUCTIONS:
@@ -608,7 +623,20 @@ def _smoke_maf_sandbox_hyperlight() -> str:
         pass
     else:
         raise SystemExit("FAIL: Hyperlight admitted EXEC/FILES_IN")
-    return "constructs without WHP, declares runtime/reset and refuses shell/file workloads before starting a worker"
+    custom = SandboxSpec(
+        kind="python",
+        work_dir=None,
+        requires=frozenset({Capability.RUN_CODE}),
+        egress=Egress.ALLOWLIST,
+        egress_allow=(EgressRule("example.com", methods=("PROPFIND",)),),
+    )
+    try:
+        asyncio.run(backend.acquire(SandboxKey("smoke", "thread", "agent"), custom))
+    except SandboxCapabilityNotSupported:
+        pass
+    else:
+        raise SystemExit("FAIL: Hyperlight admitted a method its runtime cannot enforce")
+    return "constructs without WHP, declares runtime/reset and standard-method egress, and refuses shell/file workloads and custom methods before starting a worker"
 
 
 def _smoke_maf_sandbox_terraform() -> str:
