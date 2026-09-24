@@ -39,6 +39,7 @@ from maf_sandbox import (
 from maf_sandbox.credentials import CredentialGateway, CredentialGrant
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker._proxy.policy import read_decisions
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
 PROXY = os.environ.get("MAF_CREDENTIAL_PROXY_IMAGE", "maf-credentials:757")
@@ -371,11 +372,15 @@ def test_host_process_exit_expires_an_existing_tls_connection(upstream):
         trust_fixture(engine, name, ip, cert)
         responses = probe(engine, name, delay=max(0, record["expires_at"] - time.time() + 0.2))
         assert responses[0][0] == 200, responses
-        assert responses[1][0] == 502, responses
+        assert responses[1][0] == 403, responses
         assert responses[0][2] == responses[1][2], (
             "the expiry check must reuse the same TLS connection"
         )
-        assert probe(engine, name)[0] == 502
+        assert probe(engine, name)[0] == 403
+        logs = container(engine, "logs", name + "-proxy")
+        decisions, _ = read_decisions((logs.stdout + logs.stderr).decode(), 1000)
+        assert any(item.host == "api.example.com" and item.decision == "DENY" for item in decisions)
+        assert not any(item.decision == "UNREACHABLE" for item in decisions)
     finally:
         container(engine, "rm", "-f", name + "-proxy", name, check=False)
         cli(engine, "network", "rm", name + "-net", check=False)

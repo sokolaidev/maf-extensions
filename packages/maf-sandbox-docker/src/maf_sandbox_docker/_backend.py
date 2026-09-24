@@ -2831,7 +2831,9 @@ class DockerSandboxBackend:
                 if scope is not None and owned[_LABEL_SCOPE] != _label_value(scope):
                     continue
                 suffix = _NET_SUFFIX if resource == "network" else f"(?:{_PROXY_SUFFIX})?"
-                if not re.fullmatch(rf"{_NAME_PREFIX}[0-9a-f]{{12}}{suffix}", name):
+                if not re.fullmatch(
+                    rf"{_NAME_PREFIX}(?:[0-9a-f]{{12}}|[0-9a-f]{{32}}){suffix}", name
+                ):
                     continue
                 if resource == "container" and owned.get(_LABEL_ROLE) != (
                     "proxy" if name.endswith(_PROXY_SUFFIX) else None

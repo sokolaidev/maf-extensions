@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ironsh/iron-proxy/internal/transform"
 )
 
 func mafFixture(t *testing.T, lifetime time.Duration) *mafCredentials {
@@ -68,7 +72,7 @@ func TestMAFCredentialBoundaries(t *testing.T) {
 	}
 }
 
-func TestMAFCredentialExpiredConnectionAndStream(t *testing.T) {
+func TestMAFCredentialExpiredConnection(t *testing.T) {
 	g := mafFixture(t, 180*time.Millisecond)
 	// A single downstream connection repeatedly passes through the same gate.
 	var connections atomic.Int32
@@ -107,7 +111,7 @@ func TestMAFCredentialExpiredConnectionAndStream(t *testing.T) {
 	select {
 	case <-r.Context().Done():
 	case <-time.After(time.Second):
-		t.Fatal("active stream outlived grant")
+		t.Fatal("request context outlived grant")
 	}
 	resp, err = client.Get(s.URL)
 	if err != nil {
@@ -117,6 +121,107 @@ func TestMAFCredentialExpiredConnectionAndStream(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 403 || connections.Load() != 1 {
 		t.Fatalf("status=%d connections=%d", resp.StatusCode, connections.Load())
+	}
+}
+
+func TestMAFCredentialActiveUpstreamStreamExpiry(t *testing.T) {
+	for _, bound := range []string{"generation", "token"} {
+		t.Run(bound, func(t *testing.T) {
+			cancelled := make(chan struct{})
+			release := make(chan struct{})
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer user-alice-secret" {
+					t.Error("upstream did not receive the bound credential")
+				}
+				w.Write([]byte("first chunk\n"))
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+					close(cancelled)
+				case <-release:
+				}
+			}))
+			defer upstream.Close()
+			defer close(release)
+			transport := upstream.Client().Transport.(*http.Transport).Clone()
+			transport.TLSClientConfig.ServerName = "127.0.0.1"
+			transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+			}
+			defer transport.CloseIdleConnections()
+			g := mafFixture(t, time.Minute)
+			grant, err := g.load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(time.Second)
+			if bound == "generation" {
+				grant.deadline = deadline
+				grant.Entries[0].deadline = deadline
+			} else {
+				grant.Entries[0].deadline = deadline
+			}
+			p := &Proxy{credentials: g, transport: transport}
+			resp, err := p.doUpstream(mafRequest("GET", "https://api.example.com:8443/v1/items", "172.22.1.4:1234"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			chunk := make([]byte, len("first chunk\n"))
+			if _, err := io.ReadFull(resp.Body, chunk); err != nil || string(chunk) != "first chunk\n" {
+				t.Fatalf("initial streaming read: %q, %v", chunk, err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := io.Copy(io.Discard, resp.Body)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("stream ended without deadline cancellation: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("active upstream body outlived credential deadline")
+			}
+			select {
+			case <-cancelled:
+			case <-time.After(time.Second):
+				t.Fatal("upstream did not observe stream cancellation")
+			}
+		})
+	}
+}
+
+func TestMAFCredentialRefusalIsAuditedAsDenial(t *testing.T) {
+	for _, reason := range []string{"missing", "expired", "peer", "origin"} {
+		t.Run(reason, func(t *testing.T) {
+			g := mafFixture(t, time.Minute)
+			r := mafRequest("GET", "https://api.example.com:8443/v1/items", "172.22.1.4:1234")
+			r.RemoteAddr = "172.22.1.4:1234"
+			r.TLS = &tls.ConnectionState{ServerName: "api.example.com"}
+			switch reason {
+			case "missing":
+				os.Remove(g.path)
+			case "expired":
+				g.deadline = time.Now().Add(-time.Second)
+			case "peer":
+				r.RemoteAddr = "172.22.2.4:1234"
+			case "origin":
+				r.URL.Host = "api.example.com:443"
+				r.Host = r.URL.Host
+			}
+			pipeline := transform.NewPipeline(nil, transform.BodyLimits{}, testLogger())
+			var result *transform.PipelineResult
+			pipeline.SetAuditFunc(func(r *transform.PipelineResult) { result = r })
+			p := New(Options{Pipeline: transform.NewPipelineHolder(pipeline), Logger: testLogger()})
+			p.credentials = g
+			w := httptest.NewRecorder()
+			p.handleHTTP(w, r, nil)
+			if w.Code != http.StatusForbidden || result == nil || result.Action != transform.ActionReject || result.Err != nil {
+				t.Fatalf("credential refusal: status=%d result=%+v", w.Code, result)
+			}
+		})
 	}
 }
 

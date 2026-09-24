@@ -13,7 +13,9 @@ from maf_sandbox import DisposalCode, DisposalFailure, error_detail
 
 NETWORK_CREATED_LABEL = "maf-sandbox.network-created-at"
 _IDENTITY_LABELS = tuple(f"maf-sandbox.{part}" for part in ("scope", "thread", "agent", "kind"))
-_NAME = re.compile(r"(?P<workload>maf-sandbox-wslc-[0-9a-f]{12})(?P<suffix>-proxy|-net)?")
+_NAME = re.compile(
+    r"(?P<workload>maf-sandbox-wslc-(?:[0-9a-f]{12}|[0-9a-f]{32}))(?P<suffix>-proxy|-net)?"
+)
 _ID = re.compile(r"[0-9a-f]{64}")
 _Resource = Literal["container", "network"]
 

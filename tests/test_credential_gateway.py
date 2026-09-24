@@ -54,6 +54,33 @@ def test_empty_ownership_is_refused_before_provider(field):
 
 
 @pytest.mark.parametrize(
+    "backend_type,config_type",
+    [(DockerSandboxBackend, DockerSandboxConfig), (WslcSandboxBackend, WslcSandboxConfig)],
+)
+def test_duplicate_audience_is_refused_before_provisioning(backend_type, config_type):
+    async def check():
+        provider = AsyncMock()
+        backend = backend_type(
+            config_type(egress_proxy_image="proxy", credential_gateway=CredentialGateway(provider))
+        )
+        backend._acquire_generation = AsyncMock()
+        spec = credential_spec()
+        spec = replace(
+            spec,
+            egress_allow=(
+                *spec.egress_allow,
+                EgressRule("other.example.com", authority="api-audience"),
+            ),
+        )
+        with pytest.raises(ValueError, match="unique audience"):
+            await backend.acquire(SandboxKey("user", "thread", "agent", "call"), spec)
+        backend._acquire_generation.assert_not_awaited()
+        provider.assert_not_awaited()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
     "changes",
     [
         {"origin": "http://api.example.com"},

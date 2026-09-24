@@ -10,7 +10,7 @@ from typing import cast
 
 from maf_sandbox import EgressDecision, EgressDecisionCode, SandboxSpec
 
-__all__ = ["encoded_policy", "network_gateways", "read_decisions"]
+__all__ = ["INSTALL_GRANT", "encoded_policy", "network_gateways", "read_decisions"]
 
 _UPSTREAM_DENY_CIDRS = (
     "0.0.0.0/8",

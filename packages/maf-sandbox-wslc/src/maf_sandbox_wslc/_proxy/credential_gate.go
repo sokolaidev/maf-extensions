@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ironsh/iron-proxy/internal/hostmatch"
+	"github.com/ironsh/iron-proxy/internal/transform"
 )
 
 // Each process accepts one immutable grant, installed over the host engine's stdin
@@ -48,6 +49,16 @@ type mafCredential struct {
 type mafPeerKey struct{}
 
 var errMAFCredential = errors.New("credential gateway authorization refused")
+
+func rejectMAFCredential(w http.ResponseWriter, err error, result *transform.PipelineResult) bool {
+	if !errors.Is(err, errMAFCredential) {
+		return false
+	}
+	result.Action = transform.ActionReject
+	result.StatusCode = http.StatusForbidden
+	http.Error(w, errMAFCredential.Error(), http.StatusForbidden)
+	return true
+}
 
 func newMAFCredentials() *mafCredentials {
 	boot, _ := os.ReadFile("/run/maf-proxy/boot")

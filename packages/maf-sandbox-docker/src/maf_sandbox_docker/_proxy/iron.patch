@@ -36,7 +36,7 @@ index a75ada2..aeb09a7 100644
  
  // MatchAnyRule returns true if the request matches any rule in the list.
 diff --git a/internal/proxy/proxy.go b/internal/proxy/proxy.go
-index 73bde1f..ae5404e 100644
+index 73bde1f..22e5ea6 100644
 --- a/internal/proxy/proxy.go
 +++ b/internal/proxy/proxy.go
 @@ -14,10 +14,13 @@ import (
@@ -104,7 +104,36 @@ index 73bde1f..ae5404e 100644
  	copyHeaders(upstreamReq.Header, r.Header)
  	sanitizeUpstreamHeaders(upstreamReq.Header)
  	// If a transform buffered the request body, set ContentLength so the
-@@ -937,7 +947,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -525,6 +535,9 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *t
+ 
+ 	resp, err := p.doUpstream(upstreamReq)
+ 	if err != nil {
++		if rejectMAFCredential(w, err, result) {
++			return
++		}
+ 		if markIfClientCancel(r, err, result) {
+ 			return
+ 		}
+@@ -544,7 +557,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *t
+ 		}
+ 		if replay {
+ 			_ = resp.Body.Close() // The 402 body is never returned after authorization.
+-			replayReq := upstreamReq.Clone(r.Context())
++			replayReq := upstreamReq.Clone(upstreamReq.Context())
+ 			replayReq.Body = io.NopCloser(bytes.NewReader(replayBody))
+ 			replayReq.ContentLength = int64(len(replayBody))
+ 			replayReq.Header = upstreamReq.Header.Clone()
+@@ -573,6 +586,9 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request, tunnelInfo *t
+ 					time.Since(replayStarted),
+ 					time.Since(chargeStarted),
+ 				)
++				if rejectMAFCredential(w, err, result) {
++					return
++				}
+ 				if markIfClientCancel(r, err, result) {
+ 					return
+ 				}
+@@ -937,7 +953,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  		Timeout:   30 * time.Second,
  		KeepAlive: 30 * time.Second,
  		Resolver:  resolver,
@@ -126,7 +155,7 @@ index 73bde1f..ae5404e 100644
  	}
  	if responseHeaderTimeout <= 0 {
  		responseHeaderTimeout = config.DefaultUpstreamResponseHeaderTimeout
-@@ -959,7 +982,77 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -959,7 +988,77 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  }
  
  func (p *Proxy) doUpstream(req *http.Request) (*http.Response, error) {

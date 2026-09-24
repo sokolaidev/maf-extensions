@@ -84,8 +84,9 @@ class CredentialGateway:
     """Opt a backend into host-issued bearer credentials with a hard orphan lifetime.
 
     The provider authorizes each user, agent, call, audience, and runtime instance afresh.
-    It returns exactly one grant per requested audience. No cache, refresh credential, or
-    cross-replica grant store is shared by this library. Expiry requires a new tool call.
+    Each authority rule needs a unique audience, with exactly one grant per audience.
+    No cache, refresh credential, or cross-replica grant store is shared by this library.
+    Expiry requires a new tool call.
     """
 
     provider: Callable[[CredentialRequest], Awaitable[Sequence[CredentialGrant]]] = field(
@@ -123,6 +124,13 @@ class GatewayLease:
         """Refuse unsupported authority before provisioning any resources."""
         if not spec.authority_channels:
             return None
+        audiences = [
+            entry.authority
+            for entry in spec.egress_allow
+            if isinstance(entry, EgressRule) and entry.authority is not None
+        ]
+        if len(set(audiences)) != len(audiences):
+            raise ValueError("credential authority rules require a unique audience per rule")
         if gateway is None:
             raise ValueError("attached egress authority requires a credential gateway")
         if not all((key.scope, key.thread_id, key.agent_id, key.call_id)):

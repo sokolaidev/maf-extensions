@@ -23,8 +23,8 @@ _KEY = SandboxKey(scope="app", thread_id="thread", agent_id="agent")
 _SPEC = SandboxSpec(kind="test", image="alpine:3")
 
 
-@pytest.fixture(autouse=True)
-def clock(monkeypatch):
+@pytest.fixture(autouse=True, params=[_NAME, "maf-sandbox-wslc-" + "a" * 32])
+def clock(monkeypatch, request):
 
     class Clock(datetime):
         @classmethod
@@ -32,9 +32,11 @@ def clock(monkeypatch):
             return _NOW
 
     monkeypatch.setattr(_reap, "datetime", Clock)
+    monkeypatch.setattr(__name__ + "._NAME", request.param)
 
 
-def _container(*, name=_NAME, id="a" * 64, status="exited", finished=_OLD, created=_OLD):
+def _container(*, name=None, id="a" * 64, status="exited", finished=_OLD, created=_OLD):
+    name = _NAME if name is None else name
     labels = _sandbox_labels(_KEY, _SPEC)
     if name.endswith("-proxy"):
         labels["maf-sandbox.role"] = "proxy"
@@ -120,6 +122,16 @@ def test_stopped_workload_removes_young_infrastructure_without_registry():
         ("network", "remove", _NAME + "-net"),
     ]
     assert asyncio.run(backend.reap(_PERIOD)) == WslcReapResult()
+
+
+@pytest.mark.parametrize("generation", ["a" * 13, "a" * 31, "a" * 33, "g" * 32])
+def test_malformed_generation_names_are_not_owned(generation):
+    workload, proxy, network = _container(), _proxy(), _network()
+    for row in (workload, proxy, network):
+        row["Name"] = row["Name"].replace(_NAME, "maf-sandbox-wslc-" + generation)
+    engine = _Engine([workload, proxy], [network])
+    assert asyncio.run(_backend(engine).reap(_PERIOD)) == WslcReapResult()
+    assert not engine.removals
 
 
 @pytest.mark.parametrize("status", ["running", "restarting", "paused", "dead", "unknown"])
@@ -367,8 +379,8 @@ def test_proxy_failure_is_reported_and_preserves_network():
 
 
 @pytest.mark.parametrize(
-    ("resource", "identity", "suffix"),
-    [("container", "b" * 64, "-proxy"), ("network", _NAME + "-net", "-net")],
+    ("resource", "suffix"),
+    [("container", "-proxy"), ("network", "-net")],
 )
 @pytest.mark.parametrize(
     ("operation", "failure", "code"),
@@ -380,8 +392,9 @@ def test_proxy_failure_is_reported_and_preserves_network():
     ],
 )
 def test_late_infrastructure_failure_names_the_current_resource(
-    resource, identity, suffix, operation, failure, code
+    resource, suffix, operation, failure, code
 ):
+    identity = "b" * 64 if resource == "container" else _NAME + "-net"
     engine = _Engine([_container(), _proxy()], [_network()])
 
     def fail(args):
