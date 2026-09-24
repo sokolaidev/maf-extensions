@@ -13,7 +13,7 @@ AutoGen is in maintenance mode — its README says it will not receive new featu
 ## What the router keeps
 
 - **The floor.** `DockerSandboxBackend` declares `Isolation.CONTAINER`, below the router's default `microvm` floor, so the router is constructed with `min_isolation=Isolation.CONTAINER` explicitly. Leave that out and construction refuses the backend before any agent exists.
-- **Egress.** The spec names no host, so the container is created with `--network none`. The program computes, it does not fetch.
+- **Egress.** An `EgressRule` with `methods=(HttpMethod.GET,)` for each of `pypi.org` and `files.pythonhosted.org` permits PyPI index access and package downloads and derives `EGRESS_METHODS` into the spec's requirements. The router refuses an unsupported backend before constructing the model client. The packaged iron-proxy enforces the method after terminating guest TLS; clients use its injected proxy and CA settings. Other methods and hosts are denied. The Fibonacci task still computes locally.
 - **Keying and disposal.** The sandbox is keyed by scope, thread and agent id, acquired on the first tool call and reused warm after it, and purged at the end by `dispose_scope` — the same call every other sample makes.
 
 ## What the executor gives up, said out loud
@@ -32,6 +32,8 @@ Both roads pass a `model_info`, because AutoGen only knows OpenAI's model names:
 
 ## Prerequisites
 
+[Build the packaged iron-proxy](../06_docker_codeact/README.md#build-the-egress-proxy) and set `MAF_EGRESS_PROXY_IMAGE` to its local tag. A host-only proxy cannot serve the method-scoped rule.
+
 - **A Docker-compatible engine, reachable through the `docker` client.** Same as sample 06.
 - **`mcr.microsoft.com/devcontainers/python:3.13-bookworm`**. Nothing to build; the backend pulls an absent image before it creates the container. Same reasoning as sample 06's for why a full dev-container image is a prototyping convenience and production replaces it.
 - **A model that can call a tool.** Either an Azure OpenAI deployment of a reasoning model — sample 06's prerequisite applies unchanged, encrypted reasoning content included — or an OpenAI-compatible endpoint: OpenAI itself, a router such as OpenRouter, or a local server (Ollama, vLLM, LM Studio).
@@ -48,6 +50,7 @@ uv run agent.py
 
 | Variable | What it is |
 |---|---|
+| `MAF_EGRESS_PROXY_IMAGE` | Required local tag of the packaged iron-proxy image, e.g. `maf-egress-proxy:local` |
 | `AZURE_OPENAI_ENDPOINT` | Optional. Set it and the Azure road is taken; e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name. Required on the Azure road; the same string is passed as both the deployment and the model name, the way sample 06's client reads its one variable |
 | `OPENAI_CHAT_MODEL` | The model name the endpoint serves. Defaults to Ollama's `minimax-m3:cloud` |

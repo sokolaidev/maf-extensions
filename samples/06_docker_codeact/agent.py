@@ -5,9 +5,9 @@ Sample 03 with its CodeAct workload, task, and model wiring unchanged, running o
     app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
                   ^ maf_sandbox_codeact calls the router
 
-The workload, the task and the model wiring are identical to sample 03's; what
-differs is the configuration around them — the backend and its isolation floor,
-and the image it runs in (a registry pull, not the service-provided
+The task and model wiring are identical to sample 03's; the Docker workload permits
+GET requests to pypi.org and files.pythonhosted.org through the packaged proxy.
+The backend, isolation floor and image also differ (a registry pull, not the service-provided
 `python-3.13`).  That is the tightest "one line lower" in the set: sample 04 also
 swapped sample 03's Azure model for a local one, and this keeps it, because
 keeping it is what lets this sample be verified in CI with no stored secret and
@@ -30,8 +30,8 @@ not.  Read it, along with the prerequisites and the environment variables, first
 #     "agent-framework-openai",
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox-codeact",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-codeact>=0.21.0",
+#     "maf-sandbox-docker>=0.23.0",
 #     "maf-sandbox>=0.43",
 # ]
 # ///
@@ -46,7 +46,7 @@ from _scaffold import MEASURED, evidence, installed_versions, quoted, require_en
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from maf_sandbox import Isolation, SandboxRouter
+from maf_sandbox import EgressRule, HttpMethod, Isolation, SandboxRouter
 from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -77,19 +77,18 @@ CODEACT_TOOL = "execute_code"
 #: exited 0 carries none of them either, and this task is not answered by one.
 _RAN = re.compile(r"^(stdout|stderr|exit code):", re.MULTILINE)
 
-#: The Docker backend reads no environment — it drives the local `docker` client —
-#: so the only variables here are the model's. Auth is `DefaultAzureCredential`,
-#: so there is no key: `az login` (or a federated CI credential) is enough.
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_env_vars(MODEL_VARS)
+    env = require_env_vars((*MODEL_VARS, "MAF_EGRESS_PROXY_IMAGE"))
     if env is None:
         return 2
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
+    backend = DockerSandboxBackend(
+        DockerSandboxConfig(egress_proxy_image=env["MAF_EGRESS_PROXY_IMAGE"])
+    )
 
     # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
@@ -105,6 +104,10 @@ async def run() -> int:
         AGENT_DIR,
         context,
         image=CODEACT_IMAGE,
+        egress_allow=(
+            EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+            EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+        ),
     )
     if not tools:
         # Unreachable given the checks above; printed because the `[]` contract is worth stating.

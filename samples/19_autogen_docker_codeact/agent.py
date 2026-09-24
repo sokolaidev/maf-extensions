@@ -21,7 +21,7 @@ here is that the router is configured at run() and the sandbox is disposed there
 #     # reason: without it the Azure path fails on import, before the model is ever reached.
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-docker>=0.23.0",
 #     "maf-sandbox>=0.43",
 # ]
 # ///
@@ -45,7 +45,10 @@ from autogen_ext.tools.code_execution import PythonCodeExecutionTool
 from maf_sandbox import (
     BoundedExec,
     Capability,
+    Egress,
+    EgressRule,
     ExecResult,
+    HttpMethod,
     Isolation,
     SandboxExecOutputLimitExceeded,
     SandboxKey,
@@ -415,20 +418,32 @@ def final_reply(result: TaskResult) -> str:
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
+    env = require_env_vars(("MAF_EGRESS_PROXY_IMAGE",))
+    if env is None:
+        return 2
+
+    backend = DockerSandboxBackend(
+        DockerSandboxConfig(egress_proxy_image=env["MAF_EGRESS_PROXY_IMAGE"])
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    spec = SandboxSpec(
+        kind=KIND,
+        image=CODEACT_IMAGE,
+        requires=frozenset({Capability.EXEC}),
+        egress=Egress.ALLOWLIST,
+        egress_allow=(
+            EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+            EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+        ),
+    )
+    router.ensure_can_serve(spec)
+
     configured = build_model()
     if configured is None:
         return 2
     model, credential = configured
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
-    # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
-
     key = SandboxKey(scope=SCOPE, thread_id=THREAD_ID, agent_id=AGENT_ID)
-    # Closed egress: the spec names no host, and the program computes, so the container runs
-    # with no network. `EXEC` alone: the program travels in argv, so nothing is written in.
-    spec = SandboxSpec(kind=KIND, image=CODEACT_IMAGE, requires=frozenset({Capability.EXEC}))
-
     executor = SandboxCodeExecutor(router, key, spec)
     try:
         agent = AssistantAgent(

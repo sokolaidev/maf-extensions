@@ -21,8 +21,8 @@ sink should point, which is the security-relevant decision here.  Read it first.
 #     "agent-framework-openai",
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox-codeact",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-codeact>=0.21.0",
+#     "maf-sandbox-docker>=0.23.0",
 #     "maf-sandbox>=0.43",
 # ]
 # ///
@@ -40,6 +40,8 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     Artifact,
+    EgressRule,
+    HttpMethod,
     Isolation,
     LandedArtifact,
     OutputSink,
@@ -104,11 +106,13 @@ def make_recording_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_env_vars(MODEL_VARS)
+    env = require_env_vars((*MODEL_VARS, "MAF_EGRESS_PROXY_IMAGE"))
     if env is None:
         return 2
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
+    backend = DockerSandboxBackend(
+        DockerSandboxConfig(egress_proxy_image=env["MAF_EGRESS_PROXY_IMAGE"])
+    )
 
     # Below the router's default `microvm` floor; opted down explicitly, as sample 06 does.
     # Worth re-reading that decision here rather than copying it: with a store wired, the
@@ -144,6 +148,10 @@ async def run() -> int:
         output_sink=make_recording_sink(OUTPUT_DIR, delivered),
         outputs=CodeactOutputs.DECLARED,
         image=CODEACT_IMAGE,
+        egress_allow=(
+            EgressRule("pypi.org", methods=(HttpMethod.GET,)),
+            EgressRule("files.pythonhosted.org", methods=(HttpMethod.GET,)),
+        ),
     )
     if not tools:
         # Unreachable given the checks above; printed because the `[]` contract is worth stating.
