@@ -4968,6 +4968,31 @@ class TestAllowlistTopology:
             assert len(network_removed) == 1
             assert proxy_removed[0] < fake.calls.index(network_removed[0])
 
+    def test_an_unverified_proxy_names_what_it_lacked_and_quotes_its_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr("maf_sandbox_docker._backend._PROXY_READY_ATTEMPTS", 1)
+        monkeypatch.setattr("maf_sandbox_docker._backend._PROXY_READY_DELAY_S", 0.0)
+        forged = b"".join(b"CONNECT \x1b[2J" + b"x" * 500 + b"\n" for _ in range(50))
+        backend, _ = _backend_with(
+            _machine(
+                overrides={
+                    ("logs",): _DockerResult(
+                        0, b"tunnel proxy starting\n" + forged, "listen tcp :3128: bind\n"
+                    )
+                },
+            ),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        message = str(raised.value)
+        assert "missing ['maf-sandbox egress contract v1']" in message
+        assert "'listen tcp :3128: bind'" in message
+        assert message.isprintable()
+        assert message.count("CONNECT") == 10
+        assert len(message) < 4000
+
     def test_the_network_is_internal_and_labelled(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))

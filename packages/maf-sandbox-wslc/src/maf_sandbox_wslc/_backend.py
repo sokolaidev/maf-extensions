@@ -199,8 +199,13 @@ _PROXY_LOG_TAIL = 2000
 _PROXY_LOG_BYTES = _PROXY_LOG_TAIL * 512
 
 #: One decision as the proxy writes it: a verb, a space, and the target it was asked for.  The
-_PROXY_READY_ATTEMPTS = 20
+_PROXY_READY_ATTEMPTS = 60
 _PROXY_READY_DELAY_S = 0.25
+
+#: How much of the proxy's log a readiness failure quotes.  A warm guest can already reach the
+#: proxy and choose what its lines say, so each quoted line is escaped and cut short.
+_PROXY_FAILURE_LINES = 10
+_PROXY_FAILURE_LINE_CHARS = 200
 
 
 def _label_value(raw: str) -> str:
@@ -434,6 +439,12 @@ def _reads_as_absent(stderr: str) -> bool:
 def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
     """The iron-proxy audit decisions, oldest first, and whether the window may be short."""
     return read_decisions(text, _PROXY_LOG_TAIL)
+
+
+def _quoted_tail(text: str) -> str:
+    """The last lines of ``text``, escaped and bounded, for quoting in an error."""
+    lines = [line for line in text.splitlines() if line.strip()][-_PROXY_FAILURE_LINES:]
+    return " | ".join(ascii(line[:_PROXY_FAILURE_LINE_CHARS]) for line in lines) or "(empty)"
 
 
 def _proxy_name(container: str) -> str:
@@ -2700,23 +2711,31 @@ class WslcSandboxBackend:
         A listening proxy without the contract may forward opaque HTTPS tunnels. A proxy that
         has not bound its port leaves the first request unanswered. Both fail the acquire.
         """
+        markers = [_PROXY_READY_MARKER, _PROXY_CONTRACT_MARKER]
+        if self._config.credential_gateway is not None:
+            markers.append("maf-sandbox credential contract v1")
+        missing = markers
+        result = None
         for _ in range(_PROXY_READY_ATTEMPTS):
             result = await self._wslc(
                 "container", "logs", proxy, timeout=self._config.command_timeout_seconds
             )
-            if (
-                result.returncode == 0
-                and _PROXY_READY_MARKER in result.stdout_text
-                and _PROXY_CONTRACT_MARKER in result.stdout_text
-                and (
-                    self._config.credential_gateway is None
-                    or "maf-sandbox credential contract v1" in result.stdout_text
-                )
-            ):
+            logs = result.stdout_text
+            missing = markers if result.returncode else [m for m in markers if m not in logs]
+            if not missing:
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
+        budget = _PROXY_READY_ATTEMPTS * _PROXY_READY_DELAY_S
+        detail = f"missing {missing}"
+        if result is not None:
+            detail += (
+                f"; wslc container logs exited {result.returncode}"
+                f"; stdout: {_quoted_tail(result.stdout_text)}"
+                f"; stderr: {_quoted_tail(result.stderr_text)}"
+            )
         raise RuntimeError(
-            f"egress proxy {proxy} did not report the required policy contract and listening"
+            f"egress proxy {proxy} did not report the required policy contract and listening "
+            f"within {budget:g}s: {detail}"
         )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
