@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.5.0...maf-sandbox-hyperlight-v0.5.1) (2026-09-24)
+
+
+### Fixes
+
+* **hyperlight:** report API recovery failures as pending cleanup ([#1411](https://github.com/sokolaidev/maf-extensions/issues/1411)) ([0e19592](https://github.com/sokolaidev/maf-extensions/commit/0e195926ea003053f64bea570074033149108d1d))
+* require maf-sandbox 0.43.0 in the dependents, and admit the 0.43 line ([#1431](https://github.com/sokolaidev/maf-extensions/issues/1431)) ([3fb4272](https://github.com/sokolaidev/maf-extensions/commit/3fb4272bc047b35de34fd05e523d15ee7fb70be3))
+
 ## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.4.0...maf-sandbox-hyperlight-v0.5.0) (2026-09-23)
 
 
