@@ -25,7 +25,6 @@ import stat as stat_module
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
 
 from maf_sandbox import EntryKind, SandboxEntry, SandboxTransferCapExceeded
 from maf_sandbox.paths import guest_path_relative_to
@@ -93,19 +92,6 @@ def _linked(name: str) -> ValueError:
         f"{name!r} is a link rather than a real directory, so a path through it "
         "does not stay inside the workspace"
     )
-
-
-class _Directory(Protocol):
-    """One open directory of the plane, and the operations the plane performs inside it."""
-
-    def lstat(self, name: str) -> os.stat_result | None: ...
-    def names(self) -> list[str]: ...
-    def child(self, name: str, *, create: bool) -> _Directory: ...
-    def close(self) -> None: ...
-    def __enter__(self) -> _Directory: ...
-    def __exit__(self, *exc: object) -> None: ...
-    def read(self, name: str, max_bytes: int) -> bytes: ...
-    def write(self, name: str, content: bytes) -> None: ...
 
 
 def _refuse_an_alias(directory: _Directory, name: str, found: os.stat_result | None) -> None:
@@ -283,6 +269,10 @@ class _WindowsDirectory:
                 # Best effort: the write's own failure is the one to report.
                 pass
             raise
+
+
+#: One open directory of the plane: by descriptor on POSIX, by path on Windows.
+type _Directory = _PosixDirectory | _WindowsDirectory
 
 
 def _read_capped(fd: int, name: str, max_bytes: int) -> bytes:
