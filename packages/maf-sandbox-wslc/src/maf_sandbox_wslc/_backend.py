@@ -1523,9 +1523,15 @@ class WslcSandboxBackend:
         except BaseException:
             if lease is not None:
                 # Only this unguessable generation, including failures before an instance ID.
-                await self._remove(_proxy_name(name))
-                await self._remove(name)
-                await self._remove_network(_network_name(name))
+                proxy = await self._remove(_proxy_name(name))
+                workload = await self._remove(name)
+                network_gone = await self._remove_network(_network_name(name), missing_ok=True)
+                entry = (*_key_prefix(key), spec.kind, lease.generation)
+                with self._disposal_guard:
+                    if proxy.failure is None and workload.failure is None and network_gone:
+                        self._registry.pop(entry, None)
+                    else:
+                        self._registry[entry] = name
             raise
 
     async def _acquire_generation(
@@ -1663,7 +1669,11 @@ class WslcSandboxBackend:
                     # instance on its way out, so the sweep could reach a container another
                     # host created under the same name. The instance path rechecks the ID
                     # before removing anything and answers "nothing to do" once it is gone.
-                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                    failure = (
+                        await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                        if lease is None
+                        else None
+                    )
                     if failure is not None:
                         # Cleanup said it could not remove it, and nothing else remembers
                         # that this container is half-prepared and may still be running setup.
@@ -2064,7 +2074,9 @@ class WslcSandboxBackend:
                 return proxy_removal.failure
             self._report_proxy_drain(event)
         removal = await self._remove(instance_id)
-        if removal.failure is None and await self._remove_network(_network_name(name)):
+        if removal.failure is None and await self._remove_network(
+            _network_name(name), missing_ok=True
+        ):
             with self._disposal_guard:
                 for entry, registered in list(self._registry.items()):
                     # Credential names cannot be adopted by a replacement acquisition.
@@ -2782,8 +2794,8 @@ class WslcSandboxBackend:
             logger.warning("wslc backend: could not list containers to purge: %s", exc)
             return None
 
-    async def _remove_network(self, net: str) -> bool:
-        """Remove an unused network. Returns whether it removed one; never raises.
+    async def _remove_network(self, net: str, *, missing_ok: bool = False) -> bool:
+        """Remove an unused network; optionally count confirmed absence as success.
 
         A network that was never there is a no-op, not a failure — an allowlisting backend's
         purge tries a workload's network whether or not that workload turns out to have had one.
@@ -2801,7 +2813,7 @@ class WslcSandboxBackend:
             logger.warning(
                 "wslc backend: failed to remove network %s: %s", net, result.stderr_text.strip()
             )
-        return False
+        return missing_ok and _NETWORK_NOT_FOUND in result.stderr_text.lower()
 
 
 # The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only

@@ -1067,6 +1067,95 @@ def test_instance_disposal_forgets_only_the_cleaned_credential_generation(monkey
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("stage", ["inspect", "provider", "cancel", "early"])
+@pytest.mark.parametrize("cleanup", ["success", "absent", "proxy", "workload", "network"])
+def test_failed_credential_acquire_retains_only_unfinished_cleanup(monkeypatch, stage, cleanup):
+    async def check():
+        spec = replace(
+            _SPEC,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("api.example.com", authority="api"),),
+            requires=frozenset({Capability.ATTACHED_IDENTITY}),
+            isolation_scope=IsolationScope.CALL,
+            max_identity_scope=IdentityScope.PER_SANDBOX,
+            max_identity_retention_seconds=300,
+        )
+        key = replace(_KEY, call_id="call")
+        backend, fake = _backend_with(
+            _machine(),
+            WslcSandboxConfig(
+                egress_proxy_image="proxy", credential_gateway=CredentialGateway(AsyncMock())
+            ),
+        )
+        for method in ("_ensure_egress", "_install_proxy_ca", "_install_credentials"):
+            monkeypatch.setattr(backend, method, AsyncMock())
+        siblings = await asyncio.gather(
+            backend.acquire(key, spec),
+            backend.acquire(replace(key, scope="other-user"), spec),
+            backend.acquire(key, replace(spec, kind="other-kind")),
+        )
+        original = set(sandbox.container_name for sandbox in siblings)
+        acquired = []
+
+        async def ensure(name, *args, **kwargs):
+            acquired.append(name)
+            if stage == "early":
+                raise RuntimeError("setup failed")
+
+        monkeypatch.setattr(backend, "_ensure_egress", ensure)
+        if stage in {"provider", "cancel"}:
+            monkeypatch.setattr(
+                backend,
+                "_install_credentials",
+                AsyncMock(
+                    side_effect=asyncio.CancelledError
+                    if stage == "cancel"
+                    else RuntimeError("setup failed")
+                ),
+            )
+        machine = _machine()
+
+        def respond(args):
+            if (
+                stage == "inspect"
+                and acquired
+                and (args[:2] == ("container", "inspect") and args[-1] == acquired[-1])
+                and acquired[-1] in backend._registry.values()
+            ):
+                return _WslcResult(1, b"", b"engine refused")
+            if args[:2] == ("network", "remove"):
+                if cleanup == "absent":
+                    return _WslcResult(1, b"", b"network not found")
+                return (
+                    _WslcResult(1, b"", b"engine refused")
+                    if cleanup == "network"
+                    else _WslcResult(0, b"", b"")
+                )
+            if args[:2] == ("container", "remove"):
+                if cleanup == "absent":
+                    return _WslcResult(1, b"", _NOT_FOUND.encode())
+                target = acquired[-1] + ("-proxy" if cleanup == "proxy" else "")
+                if cleanup in {"proxy", "workload"} and args[-1] == target:
+                    return _WslcResult(1, b"", b"engine refused")
+            return machine(args)
+
+        fake._responder = respond
+        fake.calls.clear()
+        with pytest.raises(asyncio.CancelledError if stage == "cancel" else RuntimeError):
+            await backend.acquire(key, spec)
+        name = acquired[-1]
+        retained = set(backend._registry.values())
+        assert retained == original | (
+            {name} if cleanup in {"proxy", "workload", "network"} else set()
+        )
+        removed = {call.args[-1] for call in fake.matching(*("container", "remove"))}
+        assert name in removed and name + "-proxy" in removed
+        assert not removed.intersection(original)
+        assert fake.matching(*("network", "remove"))
+
+    asyncio.run(check())
+
+
 def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _FakeWslc]:
     """A backend whose every wslc invocation goes to the fake, via the one protected seam."""
     backend = WslcSandboxBackend(config or WslcSandboxConfig())

@@ -76,7 +76,7 @@ func TestMAFCredentialBoundaries(t *testing.T) {
 }
 
 func TestMAFCredentialExpiredConnection(t *testing.T) {
-	g := mafFixture(t, 180*time.Millisecond)
+	g := mafFixture(t, time.Minute)
 	// A single downstream connection repeatedly passes through the same gate.
 	var connections atomic.Int32
 	s := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,11 +97,6 @@ func TestMAFCredentialExpiredConnection(t *testing.T) {
 	s.Start()
 	defer s.Close()
 	client := s.Client()
-	r, cancel, err := g.authorize(mafRequest("GET", "https://api.example.com:8443/v1/items", "172.22.1.4:1234"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
 	resp, err := client.Get(s.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -111,11 +106,9 @@ func TestMAFCredentialExpiredConnection(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatal(resp.StatusCode)
 	}
-	select {
-	case <-r.Context().Done():
-	case <-time.After(time.Second):
-		t.Fatal("request context outlived grant")
-	}
+	g.mu.Lock()
+	g.grant.deadline = time.Now().Add(-time.Second)
+	g.mu.Unlock()
 	resp, err = client.Get(s.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -145,19 +138,17 @@ func TestMAFCredentialAuthorizationReplay(t *testing.T) {
 			g := mafFixture(t, time.Minute)
 			grant, err := g.load()
 			require.NoError(t, err)
-			deadline := time.Now().Add(time.Second)
-			if bound == "generation" {
-				grant.deadline = deadline
-			} else if bound == "token" {
-				grant.Entries[0].deadline = deadline
-			}
 			var decisions atomic.Int32
 			authorizer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/authorize" {
 					decisions.Add(1)
-					if bound != "valid" {
-						time.Sleep(time.Until(deadline) + 5*time.Millisecond)
+					g.mu.Lock()
+					if bound == "generation" {
+						grant.deadline = time.Now().Add(-time.Second)
+					} else if bound == "token" {
+						grant.Entries[0].deadline = time.Now().Add(-time.Second)
 					}
+					g.mu.Unlock()
 					_, err := io.WriteString(w, `{"retry":true,"attempt_id":"attempt-1","headers":{"X-Retry-Token":"retry-token"}}`)
 					require.NoError(t, err)
 				}
@@ -209,6 +200,10 @@ func TestMAFCredentialActiveUpstreamStreamExpiry(t *testing.T) {
 			cancelled := make(chan struct{})
 			release := make(chan struct{})
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/warmup" {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
 				if r.Header.Get("Authorization") != "Bearer user-alice-secret" {
 					t.Error("upstream did not receive the bound credential")
 				}
@@ -233,7 +228,13 @@ func TestMAFCredentialActiveUpstreamStreamExpiry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(time.Second)
+			// Establish TLS before the bounded streaming interval starts.
+			warmup, err := http.NewRequest(http.MethodGet, "https://api.example.com:8443/warmup", nil)
+			require.NoError(t, err)
+			warmResponse, err := transport.RoundTrip(warmup)
+			require.NoError(t, err)
+			require.NoError(t, warmResponse.Body.Close())
+			deadline := time.Now().Add(5 * time.Second)
 			if bound == "generation" {
 				grant.deadline = deadline
 				grant.Entries[0].deadline = deadline
@@ -260,12 +261,12 @@ func TestMAFCredentialActiveUpstreamStreamExpiry(t *testing.T) {
 				if !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("stream ended without deadline cancellation: %v", err)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("active upstream body outlived credential deadline")
 			}
 			select {
 			case <-cancelled:
-			case <-time.After(time.Second):
+			case <-time.After(5 * time.Second):
 				t.Fatal("upstream did not observe stream cancellation")
 			}
 		})

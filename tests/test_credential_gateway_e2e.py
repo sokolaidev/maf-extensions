@@ -311,6 +311,59 @@ def test_users_agents_calls_containers_and_host_replicas(upstream):
     asyncio.run(check())
 
 
+def test_failed_instance_inspection_cleans_only_its_generation(upstream, monkeypatch):
+    engine, _, ip, cert = upstream
+
+    async def check():
+        async def provider(request):
+            return [
+                CredentialGrant(
+                    "api-audience",
+                    "https://api.example.com:8443",
+                    "synthetic-sibling",
+                    request.expires_at,
+                )
+            ]
+
+        backend = make_backend(engine, provider)
+        key = SandboxKey("inspection-" + uuid.uuid4().hex, "thread", "agent", "call")
+        names = []
+        try:
+            sibling = await backend.acquire(key, spec())
+            names.append(sibling.container_name)
+            trust_fixture(engine, sibling.container_name, ip, cert)
+            method = "_docker" if engine == "docker" else "_wslc"
+            run = getattr(backend, method)
+
+            async def failed_inspection(*args, **kwargs):
+                result = await run(*args, **kwargs)
+                inspection = (
+                    args[:3] == ("inspect", "-f", "{{.Id}}")
+                    if engine == "docker"
+                    else args[:2] == ("container", "inspect")
+                )
+                if inspection and args[-1] in backend._registry.values() and args[-1] not in names:
+                    names.append(args[-1])
+                    return replace(result, returncode=1)
+                return result
+
+            monkeypatch.setattr(backend, method, failed_inspection)
+            with pytest.raises(RuntimeError, match="sandbox instance ID"):
+                await backend.acquire(key, spec())
+            assert len(names) == 2
+            assert set(backend._registry.values()) == {sibling.container_name}
+            assert container(engine, "inspect", names[1], check=False).returncode != 0
+            assert container(engine, "inspect", names[1] + "-proxy", check=False).returncode != 0
+            assert cli(engine, "network", "inspect", names[1] + "-net", check=False).returncode != 0
+            assert probe(engine, sibling.container_name)[0] == 200
+        finally:
+            for name in names:
+                container(engine, "rm", "-f", name + "-proxy", name, check=False)
+                cli(engine, "network", "rm", name + "-net", check=False)
+
+    asyncio.run(check())
+
+
 def test_cancellation_during_authorization_removes_only_its_generation(upstream):
     engine, _, ip, cert = upstream
 
@@ -330,6 +383,7 @@ def test_cancellation_during_authorization_removes_only_its_generation(upstream)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            assert not backend._registry
             listed = container(
                 engine, "list", "-a", "--filter", "label=maf-sandbox.scope=" + key.scope
             )
@@ -423,6 +477,7 @@ def test_host_process_exit_expires_an_existing_tls_connection(upstream):
     engine, _, ip, cert = upstream
     child = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), engine],
+        input=json.dumps({"ip": ip, "cert": cert.decode()}).encode(),
         capture_output=True,
         check=True,
         timeout=90,
@@ -430,7 +485,6 @@ def test_host_process_exit_expires_an_existing_tls_connection(upstream):
     record = json.loads(child.stdout)
     name = record["name"]
     try:
-        trust_fixture(engine, name, ip, cert)
         responses = probe(engine, name, delay=max(0, record["expires_at"] - time.time() + 0.2))
         assert responses[0][0] == 200, responses
         assert responses[1][0] == 403, responses
@@ -523,21 +577,27 @@ def test_codeact_calls_receive_distinct_grants_and_dispose_them(upstream):
 if __name__ == "__main__":
 
     async def owner():
+        fixture = json.load(sys.stdin)
+        expires_at = 0.0
+
         async def issue(request):
+            nonlocal expires_at
+            name = inspect(sys.argv[1], request.instance_id)["Name"].removeprefix("/")
+            trust_fixture(sys.argv[1], name, fixture["ip"], fixture["cert"].encode())
+            expires_at = min(request.expires_at, time.time() + 15)
             return [
                 CredentialGrant(
                     "api-audience",
                     "https://api.example.com:8443",
                     "synthetic-orphan",
-                    request.expires_at,
+                    expires_at,
                 )
             ]
 
-        backend = make_backend(sys.argv[1], issue, 15)
+        backend = make_backend(sys.argv[1], issue, 120)
         key = SandboxKey("orphan-" + uuid.uuid4().hex, "thread", "agent", "call")
-        started = time.time()
-        sandbox = await backend.acquire(key, spec(15))
-        print(json.dumps({"name": sandbox.container_name, "expires_at": started + 15}), flush=True)
+        sandbox = await backend.acquire(key, spec(120))
+        print(json.dumps({"name": sandbox.container_name, "expires_at": expires_at}), flush=True)
         os._exit(0)
 
     asyncio.run(owner())

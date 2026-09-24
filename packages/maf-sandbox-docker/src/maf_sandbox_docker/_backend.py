@@ -1856,9 +1856,15 @@ class DockerSandboxBackend:
         except BaseException:
             if lease is not None:
                 # Only this unguessable generation, including failures before an instance ID.
-                await self._remove(_proxy_name(name))
-                await self._remove(name)
-                await self._remove_network(_network_name(name))
+                proxy = await self._remove(_proxy_name(name))
+                workload = await self._remove(name)
+                network_gone = await self._remove_network(_network_name(name), missing_ok=True)
+                entry = (*_key_prefix(key), spec.kind, lease.generation)
+                with self._disposal_guard:
+                    if proxy.failure is None and workload.failure is None and network_gone:
+                        self._registry.pop(entry, None)
+                    else:
+                        self._registry[entry] = name
             raise
 
     async def _acquire_generation(
@@ -1997,7 +2003,11 @@ class DockerSandboxBackend:
                     await self._install_credentials(name, key, spec, instance_id, lease)
             except BaseException:
                 try:
-                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                    failure = (
+                        await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                        if lease is None
+                        else None
+                    )
                     if failure is not None:
                         logger.warning("sandbox setup cleanup failed: %s", failure)
                 except Exception as failure:
@@ -2549,7 +2559,7 @@ class DockerSandboxBackend:
                 else None
             )
             if isinstance(network_id, str) and network_id:
-                if not await self._remove_network(network_id):
+                if not await self._remove_network(network_id, missing_ok=True):
                     return removal.failure
             with self._disposal_guard:
                 for entry, registered in list(self._registry.items()):
@@ -3832,8 +3842,8 @@ class DockerSandboxBackend:
             return None
         return [line for line in result.stdout.decode("utf-8", "replace").splitlines() if line]
 
-    async def _remove_network(self, net: str) -> bool:
-        """Force-remove a network. Returns whether it removed one; never raises.
+    async def _remove_network(self, net: str, *, missing_ok: bool = False) -> bool:
+        """Force-remove a network; optionally count confirmed absence as success.
 
         A network that was never there is a no-op, not a failure — an allowlisting backend's
         purge tries a workload's network whether or not that workload turns out to have had one.
@@ -3852,7 +3862,7 @@ class DockerSandboxBackend:
             logger.warning(
                 "docker backend: failed to remove network %s: %s", net, result.stderr.strip()
             )
-        return False
+        return missing_ok and _reads_as_absent(result.stderr, net)
 
 
 # The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` tests
