@@ -30,7 +30,8 @@ def _link(link: Path, target: Path) -> None:
             pytest.skip("this host cannot create the link")
         import _winapi
 
-        _winapi.CreateJunction(str(target), str(link))
+        # Windows-only, so absent from the stubs a Linux type check reads.
+        getattr(_winapi, "CreateJunction")(str(target), str(link))
 
 
 class TestMapping:

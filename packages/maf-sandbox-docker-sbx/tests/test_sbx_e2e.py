@@ -123,7 +123,8 @@ class SbxSubject(PosixGuestSubject):
                 raise
             import _winapi
 
-            _winapi.CreateJunction(str(destination), str(host))
+            # Windows-only, so absent from the stubs a Linux type check reads.
+            getattr(_winapi, "CreateJunction")(str(destination), str(host))
 
 
 def _subject(backend: SbxSandboxBackend, sandbox, links: list[bool]) -> SbxSubject:

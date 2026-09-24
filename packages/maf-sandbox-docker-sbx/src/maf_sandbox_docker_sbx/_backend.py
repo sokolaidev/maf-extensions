@@ -794,7 +794,6 @@ def _make_private(root: Path, directory: Path, workspace: Path) -> None:
         path.mkdir(mode=0o700, exist_ok=True)
     if os.name == "posix":
         os.chmod(root, 0o700)
-        os.chmod(workspace, 0o777)
 
 
 def _empty(workspace: Path) -> None:
