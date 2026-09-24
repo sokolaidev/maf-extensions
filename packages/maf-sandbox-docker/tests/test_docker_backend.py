@@ -4375,7 +4375,13 @@ class TestDispose:
 
     def test_scope_purge_does_not_count_a_silent_already_absent_removal(self):
         backend, _ = _backend_with(
-            _machine(running=[_NAME], overrides={("rm",): _DockerResult(0, b"", "")})
+            _machine(
+                running=[_NAME],
+                overrides={
+                    ("rm",): _DockerResult(0, b"", ""),
+                    ("network", "rm"): _DockerResult(0, b"", ""),
+                },
+            )
         )
         result = asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
         assert result.disposed == 0
@@ -4482,7 +4488,13 @@ class TestDispose:
         assert backend._undeleted == {}  # noqa: SLF001
 
     def test_a_container_docker_does_not_have_is_not_a_failure(self):
-        overrides = {("rm",): _DockerResult(1, b"", f"Error: No such container: {_NAME}")}
+        overrides = {
+            ("rm", "-f", _NAME): _DockerResult(1, b"", f"Error: No such container: {_NAME}"),
+            ("rm", "-f", _NAME + "-proxy"): _DockerResult(
+                1, b"", f"Error: No such container: {_NAME}-proxy"
+            ),
+            ("network", "rm"): _DockerResult(0, b"", ""),
+        }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert asyncio.run(backend.dispose(_KEY)) is None

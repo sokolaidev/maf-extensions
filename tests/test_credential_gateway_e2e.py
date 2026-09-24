@@ -41,8 +41,10 @@ from maf_sandbox import (
 from maf_sandbox.credentials import CredentialGateway, CredentialGrant
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker._backend import _DockerResult
 from maf_sandbox_docker._proxy.policy import read_decisions
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc._backend import _WslcResult
 
 PROXY = os.environ.get("MAF_CREDENTIAL_PROXY_IMAGE", "maf-credentials:757")
 GUEST = "python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0"
@@ -499,6 +501,95 @@ def test_failed_listing_cleans_all_same_key_generations(upstream, monkeypatch, s
                 assert cli(engine, "network", "inspect", name + "-net", check=False).returncode != 0
             for sandbox in sandboxes[count:]:
                 assert probe(engine, sandbox.container_name)[0] == 200
+        finally:
+            for sandbox in sandboxes:
+                name = sandbox.container_name
+                container(engine, "rm", "-f", name + "-proxy", name, check=False)
+                cli(engine, "network", "rm", name + "-net", check=False)
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("selection", ["key", "scope"])
+@pytest.mark.parametrize("resource", ["proxy", "network"])
+def test_failed_infrastructure_cleanup_retries_without_listing(
+    upstream, monkeypatch, selection, resource
+):
+    engine, _, ip, cert = upstream
+
+    async def provider(request):
+        return [
+            CredentialGrant(
+                "api-audience",
+                "https://api.example.com:8443",
+                "synthetic-retry",
+                request.expires_at,
+            )
+        ]
+
+    async def check():
+        backend = make_backend(engine, provider)
+        key = SandboxKey("retry-" + uuid.uuid4().hex, "thread", "agent", "call")
+        owners = [key, key, replace(key, scope=key.scope + "-other-user")]
+        sandboxes = []
+        try:
+            results = await asyncio.gather(
+                *(backend.acquire(owner, spec()) for owner in owners), return_exceptions=True
+            )
+            sandboxes = [result for result in results if not isinstance(result, BaseException)]
+            assert len(sandboxes) == len(owners), [type(result).__name__ for result in results]
+            name = sandboxes[0].container_name
+            foreign = sandboxes[2].container_name
+            trust_fixture(engine, foreign, ip, cert)
+            method = "_docker" if engine == "docker" else "_wslc"
+            command = getattr(backend, method)
+            refusing = True
+
+            async def refuse_removal(*args, **kwargs):
+                removal = (
+                    args[:2] == ("rm", "-f")
+                    if engine == "docker"
+                    else args[:3] == ("container", "remove", "-f")
+                )
+                network_removal = args[:2] == ("network", "rm" if engine == "docker" else "remove")
+                if refusing and (
+                    (resource == "proxy" and removal and args[-1] == name + "-proxy")
+                    or (resource == "network" and network_removal and args[-1] == name + "-net")
+                ):
+                    return (
+                        _DockerResult(1, b"", "injected removal refusal")
+                        if engine == "docker"
+                        else _WslcResult(1, b"", b"injected removal refusal")
+                    )
+                return await command(*args, **kwargs)
+
+            monkeypatch.setattr(backend, method, refuse_removal)
+
+            async def dispose():
+                if selection == "scope":
+                    return (await backend.dispose_scope(key.scope, key.thread_id)).undisposed
+                return await backend.dispose(key)
+
+            assert await dispose() is not None
+            prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
+            assert backend._undeleted == {prefix: {name}}
+            assert container(engine, "inspect", name, check=False).returncode != 0
+            assert cli(engine, "network", "inspect", name + "-net").returncode == 0
+            assert probe(engine, foreign)[0] == 200
+
+            refusing = False
+            monkeypatch.setattr(backend, "_list_names_by_labels", AsyncMock(return_value=None))
+            retry = await dispose()
+            assert retry is not None and retry.code == "unlisted"
+            assert not backend._undeleted and not backend._undeleted_kinds
+            for sandbox in sandboxes[:2]:
+                target = sandbox.container_name
+                assert container(engine, "inspect", target + "-proxy", check=False).returncode != 0
+                assert (
+                    cli(engine, "network", "inspect", target + "-net", check=False).returncode != 0
+                )
+            assert set(backend._registry.values()) == {foreign}
+            assert probe(engine, foreign)[0] == 200
         finally:
             for sandbox in sandboxes:
                 name = sandbox.container_name

@@ -161,6 +161,8 @@ Only the trusted runtime management channel installs grants. Tokens enter the ga
 
 The gateway checks authority on every HTTP request, including requests over existing TLS connections. It enforces the earlier of the grant expiry and its fixed lifetime, using a monotonic deadline once loaded. Active upstream streams are cancelled at that deadline. The lifetime is independently capped from proxy startup, before the workload container is created. No heartbeat or host cleanup is needed for this bound. Normal call cleanup removes the gateway before the workload; if cleanup cannot reach the runtime, the independent expiry still applies. Effects already accepted by an upstream cannot be undone.
 
+Key, kind and scope cleanup report proxy or network removal failures as incomplete cleanup, even when the workload container is already gone. The creating backend retains the workload name for a later retry if label listing fails. Other users, calls and generations remain separate. A failed listing still reports `unlisted`, since the local fallback cannot prove cleanup of resources created by another host.
+
 Credential injection always requires verified upstream TLS, including private destinations. `allow_private_http` does not relax this requirement. Allowed upstream services receive the bearer token and must be trusted not to disclose it in responses or through their own features. The gateway does not prevent misuse of the permissions that the host granted at an allowed service.
 
 <a id="file-store-provenance--what-a-kind-reads-and-what-it-is-worth"></a>

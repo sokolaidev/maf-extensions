@@ -20,7 +20,9 @@ from maf_sandbox import (
 )
 from maf_sandbox.credentials import CredentialGateway, CredentialGrant, GatewayLease
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker._backend import _DockerResult
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc._backend import _WslcResult
 
 
 def credential_spec(lifetime=300):
@@ -44,6 +46,121 @@ def grant():
     return CredentialGrant(
         "api-audience", "https://api.example.com:8443", "synthetic-secret", time.time() + 300
     )
+
+
+@pytest.mark.parametrize("engine", ["docker", "wslc"])
+@pytest.mark.parametrize("selection", ["kind", "key", "scope"])
+@pytest.mark.parametrize("listing", ["full", "workload-only", "failed"])
+@pytest.mark.parametrize("resource", ["workload", "proxy", "network"])
+def test_incomplete_generation_purge_retries_without_listing(
+    monkeypatch, engine, selection, listing, resource
+):
+    async def check():
+        gateway = CredentialGateway(AsyncMock())
+        backend = (
+            DockerSandboxBackend(
+                DockerSandboxConfig(egress_proxy_image="proxy", credential_gateway=gateway)
+            )
+            if engine == "docker"
+            else WslcSandboxBackend(
+                WslcSandboxConfig(egress_proxy_image="proxy", credential_gateway=gateway)
+            )
+        )
+        key = SandboxKey("user", "thread", "agent", "call")
+        owners = [
+            (key, "work"),
+            (key, "work"),
+            (key, "other-kind"),
+            (replace(key, agent_id="other-agent"), "work"),
+            (replace(key, call_id="other-call"), "work"),
+            (replace(key, scope="other-user"), "work"),
+            (replace(key, thread_id="other-thread"), "work"),
+        ]
+        names = [f"maf-sandbox-{engine}-{i:032x}" for i in range(len(owners))]
+        for i, (owner, kind) in enumerate(owners):
+            backend._registry[
+                (owner.scope, owner.thread_id, owner.agent_id, owner.call_id, kind, f"{i:032x}")
+            ] = names[i]
+        count = {"kind": 2, "key": 3, "scope": 5}[selection]
+        selected = names[:count]
+        inventory = [item for name in selected for item in (name, name + "-proxy")]
+        if listing == "workload-only":
+            inventory = selected
+        monkeypatch.setattr(
+            backend,
+            "_list_names_by_labels",
+            AsyncMock(return_value=None if listing == "failed" else inventory),
+        )
+        monkeypatch.setattr(backend, "_drain_attributed_proxy", AsyncMock(return_value=None))
+        remaining = {item for name in names for item in (name, name + "-proxy", name + "-net")}
+        failed_target = names[0] + {"workload": "", "proxy": "-proxy", "network": "-net"}[resource]
+        refusing = True
+        calls = []
+
+        async def command(*args, **kwargs):
+            target = args[-1]
+            assert args[:2] in {
+                ("rm", "-f"),
+                ("network", "rm"),
+                ("container", "remove"),
+                ("network", "remove"),
+            }
+            calls.append(target)
+            if target == failed_target and refusing:
+                code, stdout, stderr = 1, b"", "engine refused"
+            elif target in remaining:
+                remaining.remove(target)
+                code, stdout, stderr = 0, target.encode(), ""
+            else:
+                code, stdout = 1, b""
+                if engine == "docker":
+                    stderr = (
+                        f"No such {'network' if args[0] == 'network' else 'container'}: {target}"
+                    )
+                else:
+                    stderr = (
+                        f"network {target} not found"
+                        if args[0] == "network"
+                        else "WSLC_E_CONTAINER_NOT_FOUND"
+                    )
+            return (
+                _DockerResult(code, stdout, stderr)
+                if engine == "docker"
+                else _WslcResult(code, stdout, stderr.encode())
+            )
+
+        monkeypatch.setattr(backend, "_docker" if engine == "docker" else "_wslc", command)
+
+        async def dispose():
+            if selection == "scope":
+                report = await backend.dispose_scope(key.scope, key.thread_id)
+                return report.undisposed
+            return await backend.dispose(key, kind="work" if selection == "kind" else None)
+
+        first = await dispose()
+        assert first is not None
+        assert failed_target in first.detail
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
+        assert backend._undeleted == {prefix: {names[0]}}
+        assert backend._undeleted_kinds == {prefix: {names[0]: "work"}}
+        untouched = {
+            item for name in names[count:] for item in (name, name + "-proxy", name + "-net")
+        }
+        assert remaining == untouched | {failed_target}
+        assert set(backend._registry.values()) == set(names[count:])
+
+        refusing = False
+        calls.clear()
+        monkeypatch.setattr(backend, "_list_names_by_labels", AsyncMock(return_value=None))
+        second = await dispose()
+        assert second is not None and second.code == "unlisted"
+        assert set(calls) == {names[0], names[0] + "-proxy", names[0] + "-net"}
+        assert remaining == untouched
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not backend._disposal_tokens
+        assert set(backend._registry.values()) == set(names[count:])
+
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize("field", ["scope", "thread_id", "agent_id", "call_id"])

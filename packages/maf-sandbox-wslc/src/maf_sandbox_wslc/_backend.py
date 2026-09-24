@@ -641,10 +641,10 @@ class _Removal:
 
 @dataclass(frozen=True)
 class _Sweep:
-    """What one label sweep did: sandboxes removed, and the workload containers still there.
+    """What one label sweep did: sandboxes removed, and workload groups still needing cleanup.
 
-    ``undeleted`` maps a container name to why its removal failed, so a caller can report the
-    reason and remember the name to try again.  ``unlisted`` is the one thing with no name
+    ``undeleted`` maps a workload name to a failed container, proxy or network removal, so a
+    caller can retain the whole group's retry target. ``unlisted`` is the one thing with no name
     behind it: the label query itself failed, so the sweep cannot claim to have covered
     containers another replica created.
     """
@@ -2159,9 +2159,8 @@ class WslcSandboxBackend:
         """Delete every container labelled ``(scope, thread_id)``: how many, and what stayed.
 
         The labels are the source of truth, because a conversation delete has to reach
-        containers this process never created. The registry is the fallback for when the listing
-        fails, and its entries are dropped either way: an entry pointing at a container that may
-        already be gone is worse than no entry.
+        containers this process never created. Registered names move to the retry ledger until
+        the workload, proxy and network are all removed or confirmed absent.
         """
         with self._disposal_guard:
             mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
@@ -2290,10 +2289,8 @@ class WslcSandboxBackend:
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
-            # Workload containers only. A proxy and a network carry no guest data, so one left
-            # behind is an infrastructure leak to log rather than a reason to refuse the key.
-            if removal.failure is not None and not target.endswith(_PROXY_SUFFIX):
-                undeleted[target] = removal.failure
+            if removal.failure is not None:
+                undeleted.setdefault(target.removesuffix(_PROXY_SUFFIX), removal.failure)
 
         networks = {
             _network_name(n.removesuffix(_PROXY_SUFFIX))
@@ -2306,9 +2303,15 @@ class WslcSandboxBackend:
                     removed = await self._remove(_proxy_name(workload))
                     if removed.failure is None:
                         self._report_proxy_drain(drained.pop(workload, None))
+                    else:
+                        undeleted.setdefault(workload, removed.failure)
                 networks.add(_network_name(workload))
         for net in networks:
-            await self._remove_network(net)
+            if not await self._remove_network(net, missing_ok=True):
+                undeleted.setdefault(
+                    net.removesuffix(_NET_SUFFIX),
+                    DisposalFailure("unknown", f"could not remove network {net}"),
+                )
         return _Sweep(count, undeleted, unlisted)
 
     # -- internals ----------------------------------------------------------------
