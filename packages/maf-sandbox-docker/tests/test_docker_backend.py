@@ -27,6 +27,7 @@ import weakref
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import pytest
 from maf_sandbox import (
@@ -34,7 +35,9 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     EgressObserved,
+    EgressRule,
     EntryKind,
+    IdentityScope,
     Isolation,
     IsolationScope,
     OsFamily,
@@ -49,6 +52,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     ScopePurge,
 )
+from maf_sandbox.credentials import CredentialGateway
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
@@ -576,6 +580,242 @@ def _machine(
 
 def _explodes(args: tuple[str, ...]) -> _DockerResult:
     raise RuntimeError("docker is not installed")
+
+
+@pytest.mark.parametrize("selection", ["kind", "key", "scope"])
+@pytest.mark.parametrize("listing", ["failed", "partial"])
+def test_fallback_disposes_every_credential_generation(monkeypatch, selection, listing):
+    async def check():
+        spec = replace(
+            _SPEC,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("api.example.com", authority="api"),),
+            requires=frozenset({Capability.ATTACHED_IDENTITY}),
+            isolation_scope=IsolationScope.CALL,
+            max_identity_scope=IdentityScope.PER_SANDBOX,
+            max_identity_retention_seconds=300,
+        )
+        key = replace(_KEY, call_id="call")
+        config = DockerSandboxConfig(
+            egress_proxy_image="proxy",
+            credential_gateway=CredentialGateway(AsyncMock()),
+        )
+        backend, fake = _backend_with(_machine(), config)
+        for method in ("_ensure_egress", "_install_proxy_ca", "_install_credentials"):
+            monkeypatch.setattr(backend, method, AsyncMock())
+        assignments = [
+            (key, spec),
+            (key, spec),
+            (key, spec),
+            (key, replace(spec, kind="other-kind")),
+            (replace(key, call_id="other-call"), spec),
+            (replace(key, agent_id="other-agent"), spec),
+            (replace(key, scope="other-user"), spec),
+            (replace(key, thread_id="other-thread"), spec),
+        ]
+        sandboxes = await asyncio.gather(
+            *(backend.acquire(owner, workload) for owner, workload in assignments)
+        )
+        names = [sandbox.container_name for sandbox in sandboxes]
+        assert len(set(names)) == len(names)
+        count = {"kind": 3, "key": 4, "scope": 6}[selection]
+        selected = set(names[:count])
+        monkeypatch.setattr(
+            backend,
+            "_list_names_by_labels",
+            AsyncMock(return_value=None if listing == "failed" else [names[count - 1]]),
+        )
+        fake.calls.clear()
+        if selection == "scope":
+            report = await backend.dispose_scope(key.scope, key.thread_id)
+            assert report.disposed == count
+            failure = report.undisposed
+        else:
+            failure = await backend.dispose(key, kind=spec.kind if selection == "kind" else None)
+        assert (failure is not None) == (listing == "failed")
+        if failure is not None:
+            assert failure.code == "unlisted"
+        removed = {call.args[-1] for call in fake.matching("rm", "-f")}
+        assert removed == selected | {name + "-proxy" for name in selected}
+        assert {call.args[-1] for call in fake.matching("network", "rm")} == {
+            name + "-net" for name in selected
+        }
+        assert set(backend._registry.values()) == set(names[count:])
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "proxy", "workload", "network", "network-exception", "absent", "foreign"]
+)
+def test_instance_disposal_forgets_only_the_cleaned_credential_generation(monkeypatch, outcome):
+    async def check():
+        spec = replace(
+            _SPEC,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("api.example.com", authority="api"),),
+            requires=frozenset({Capability.ATTACHED_IDENTITY}),
+            isolation_scope=IsolationScope.CALL,
+            max_identity_scope=IdentityScope.PER_SANDBOX,
+            max_identity_retention_seconds=300,
+        )
+        key = replace(_KEY, call_id="call")
+        backend, fake = _backend_with(
+            _machine(),
+            DockerSandboxConfig(
+                egress_proxy_image="proxy", credential_gateway=CredentialGateway(AsyncMock())
+            ),
+        )
+        for method in ("_ensure_egress", "_install_proxy_ca", "_install_credentials"):
+            monkeypatch.setattr(backend, method, AsyncMock())
+        sandboxes = await asyncio.gather(
+            backend.acquire(key, spec),
+            backend.acquire(key, spec),
+            backend.acquire(replace(key, scope="other-user"), spec),
+            backend.acquire(key, replace(spec, kind="other-kind")),
+        )
+        names = [sandbox.container_name for sandbox in sandboxes]
+        labels = _sandbox_labels(key, spec)
+
+        async def inspect(target):
+            if target == names[0] + "-proxy":
+                return {
+                    "Id": "proxy-id",
+                    "Name": target,
+                    "Labels": {**labels, "maf-sandbox.role": "proxy"},
+                }
+            return {
+                "Id": "workload-id",
+                "Name": names[0],
+                "Labels": _sandbox_labels(replace(key, scope="foreign"), spec)
+                if outcome == "foreign"
+                else labels,
+                "NetworkSettings": {"Networks": {names[0] + "-net": {"NetworkID": "network-id"}}},
+            }
+
+        machine = _machine(networks={"network-id": _UNADDRESSED})
+
+        def respond(args):
+            if args[:2] == ("network", "rm"):
+                if outcome == "network-exception":
+                    raise OSError("engine unavailable")
+                if outcome == "absent":
+                    return _DockerResult(1, b"", f"No such network: {args[-1]}")
+            if (
+                (outcome == "proxy" and args[-1] == "proxy-id")
+                or (outcome == "workload" and args[-1] == "workload-id")
+                or (outcome == "network" and args[:2] == ("network", "rm"))
+            ):
+                return _DockerResult(1, b"", "engine refused")
+            return machine(args)
+
+        monkeypatch.setattr(backend, "_inspect_disposal_target", inspect)
+        fake._responder = respond
+        fake.calls.clear()
+        failure = await backend.dispose(key, kind=spec.kind, instance_id="workload-id")
+        assert (failure is not None) == (
+            outcome in {"proxy", "workload", "network", "network-exception"}
+        )
+        if outcome in {"network", "network-exception"}:
+            assert failure is not None and "network-id" in failure.detail
+        cleaned = outcome in {"success", "absent"}
+        assert set(backend._registry.values()) == set(names[1:] if cleaned else names)
+        if outcome == "foreign":
+            assert not fake.matching(*("rm", "-f"))
+        elif outcome in {"proxy", "workload"}:
+            fake._responder = machine
+            assert await backend.dispose(key, kind=spec.kind, instance_id="workload-id") is None
+            assert set(backend._registry.values()) == set(names[1:])
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("stage", ["inspect", "provider", "cancel", "early"])
+@pytest.mark.parametrize("cleanup", ["success", "absent", "proxy", "workload", "network"])
+def test_failed_credential_acquire_retains_only_unfinished_cleanup(monkeypatch, stage, cleanup):
+    async def check():
+        spec = replace(
+            _SPEC,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("api.example.com", authority="api"),),
+            requires=frozenset({Capability.ATTACHED_IDENTITY}),
+            isolation_scope=IsolationScope.CALL,
+            max_identity_scope=IdentityScope.PER_SANDBOX,
+            max_identity_retention_seconds=300,
+        )
+        key = replace(_KEY, call_id="call")
+        backend, fake = _backend_with(
+            _machine(),
+            DockerSandboxConfig(
+                egress_proxy_image="proxy", credential_gateway=CredentialGateway(AsyncMock())
+            ),
+        )
+        for method in ("_ensure_egress", "_install_proxy_ca", "_install_credentials"):
+            monkeypatch.setattr(backend, method, AsyncMock())
+        siblings = await asyncio.gather(
+            backend.acquire(key, spec),
+            backend.acquire(replace(key, scope="other-user"), spec),
+            backend.acquire(key, replace(spec, kind="other-kind")),
+        )
+        original = set(sandbox.container_name for sandbox in siblings)
+        acquired = []
+
+        async def ensure(name, *args, **kwargs):
+            acquired.append(name)
+            if stage == "early":
+                raise RuntimeError("setup failed")
+
+        monkeypatch.setattr(backend, "_ensure_egress", ensure)
+        if stage in {"provider", "cancel"}:
+            monkeypatch.setattr(
+                backend,
+                "_install_credentials",
+                AsyncMock(
+                    side_effect=asyncio.CancelledError
+                    if stage == "cancel"
+                    else RuntimeError("setup failed")
+                ),
+            )
+        machine = _machine()
+
+        def respond(args):
+            if (
+                stage == "inspect"
+                and (args[:3] == ("inspect", "-f", "{{.Id}}"))
+                and acquired[-1] in backend._registry.values()
+            ):
+                return _DockerResult(1, b"", "engine refused")
+            if args[:2] == ("network", "rm"):
+                if cleanup == "absent":
+                    return _DockerResult(1, b"", f"network {args[-1]} not found")
+                return (
+                    _DockerResult(1, b"", "engine refused")
+                    if cleanup == "network"
+                    else _DockerResult(0, b"", "")
+                )
+            if args[:2] == ("rm", "-f"):
+                if cleanup == "absent":
+                    return _DockerResult(1, b"", f"No such container: {args[-1]}")
+                target = acquired[-1] + ("-proxy" if cleanup == "proxy" else "")
+                if cleanup in {"proxy", "workload"} and args[-1] == target:
+                    return _DockerResult(1, b"", "engine refused")
+            return machine(args)
+
+        fake._responder = respond
+        fake.calls.clear()
+        with pytest.raises(asyncio.CancelledError if stage == "cancel" else RuntimeError):
+            await backend.acquire(key, spec)
+        name = acquired[-1]
+        retained = set(backend._registry.values())
+        assert retained == original | (
+            {name} if cleanup in {"proxy", "workload", "network"} else set()
+        )
+        removed = {call.args[-1] for call in fake.matching(*("rm", "-f"))}
+        assert name in removed and name + "-proxy" in removed
+        assert not removed.intersection(original)
+        assert fake.matching(*("network", "rm"))
+
+    asyncio.run(check())
 
 
 def _backend_with(responder=None, config=None) -> tuple[DockerSandboxBackend, _FakeDocker]:
@@ -4147,7 +4387,13 @@ class TestDispose:
 
     def test_scope_purge_does_not_count_a_silent_already_absent_removal(self):
         backend, _ = _backend_with(
-            _machine(running=[_NAME], overrides={("rm",): _DockerResult(0, b"", "")})
+            _machine(
+                running=[_NAME],
+                overrides={
+                    ("rm",): _DockerResult(0, b"", ""),
+                    ("network", "rm"): _DockerResult(0, b"", ""),
+                },
+            )
         )
         result = asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
         assert result.disposed == 0
@@ -4254,7 +4500,13 @@ class TestDispose:
         assert backend._undeleted == {}  # noqa: SLF001
 
     def test_a_container_docker_does_not_have_is_not_a_failure(self):
-        overrides = {("rm",): _DockerResult(1, b"", f"Error: No such container: {_NAME}")}
+        overrides = {
+            ("rm", "-f", _NAME): _DockerResult(1, b"", f"Error: No such container: {_NAME}"),
+            ("rm", "-f", _NAME + "-proxy"): _DockerResult(
+                1, b"", f"Error: No such container: {_NAME}-proxy"
+            ),
+            ("network", "rm"): _DockerResult(0, b"", ""),
+        }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert asyncio.run(backend.dispose(_KEY)) is None

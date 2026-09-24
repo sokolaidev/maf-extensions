@@ -34,6 +34,8 @@ from maf_sandbox import (
     SHIM_MODULE,
     WORK_DIRECTORY,
     Artifact,
+    AttachedIdentity,
+    AuthorityChannel,
     CallerContext,
     Capability,
     Cleanup,
@@ -44,6 +46,8 @@ from maf_sandbox import (
     HostToolCalled,
     HostToolRegistry,
     Identity,
+    IdentityScope,
+    IsolationScope,
     LandedArtifact,
     ListedFile,
     MafSandboxHostToolsWarning,
@@ -501,6 +505,44 @@ def _tool(
     )
     assert len(tools) == 1
     return tools[0]
+
+
+def test_credential_rules_require_opt_in_and_force_call_isolation():
+    rule = EgressRule("api.example.com", authority="api-audience")
+    with pytest.raises(ValueError, match="require each other"):
+        codeact_sandbox_spec(egress_allow=(rule,))
+    with pytest.raises(ValueError, match="require each other"):
+        codeact_sandbox_spec(credential_retention_seconds=30)
+    spec = codeact_sandbox_spec(egress_allow=(rule,), credential_retention_seconds=30)
+    assert spec.isolation_scope is IsolationScope.CALL
+    assert spec.max_identity_scope is IdentityScope.PER_SANDBOX
+    assert spec.max_identity_retention_seconds == 30
+    assert Capability.ATTACHED_IDENTITY in spec.requires
+
+
+def test_credential_tools_require_approval_and_keep_unconfigured_hosts_quiet():
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS,
+        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.ATTACHED_IDENTITY},
+        attached_identity=AttachedIdentity(
+            IdentityScope.PER_SANDBOX, 30, frozenset({AuthorityChannel.EGRESS_HEADER})
+        ),
+        isolation_scopes=frozenset({IsolationScope.CALL}),
+    )
+    backend = InProcessSandboxBackend(declarations=declarations)
+    router = SandboxRouter(
+        [backend], min_isolation=backend.isolation, max_identity_scope=IdentityScope.PER_SANDBOX
+    )
+    tools = make_codeact_tools(
+        router,
+        "agent",
+        _context(),
+        image="python:3.13",
+        egress_allow=(EgressRule("api.example.com", authority="api-audience"),),
+        credential_retention_seconds=30,
+    )
+    assert tools[0].approval_mode == "always_require"
+    assert make_codeact_tools(None, "agent", _context(), credential_retention_seconds=0) == []
 
 
 def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_written(monkeypatch):

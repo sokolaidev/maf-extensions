@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from maf_sandbox.credentials import CredentialGateway
+
 __all__ = ["DockerSandboxConfig"]
 
 _DEFAULT_DOCKER_PATH = "docker"
@@ -63,6 +65,11 @@ class DockerSandboxConfig:
     ``allow_private_http`` permits plaintext HTTP only to listed hosts whose selected address
     is private. It requires the proxy image and is intended for development or test workloads.
 
+    ``credential_gateway`` enables host-issued bearer grants in the external proxy. It requires
+    a rebuilt packaged proxy image and attached-authority opt-ins in the host and workload.
+    Each acquisition requires a trusted call key and creates a fresh workload and gateway.
+    Credentials always require upstream TLS, including when private HTTP is enabled.
+
     ``outbound_network`` is the network that gives the proxy its egress leg.  It exists because
     the default one is not called the same thing everywhere: ``"bridge"`` on Docker, ``"podman"``
     on Podman. A Podman socket reached through the Docker CLI is best effort and is not
@@ -85,3 +92,4 @@ class DockerSandboxConfig:
     cpus: float | None = None
     cap_drop_all: bool = False
     allow_private_http: bool = False
+    credential_gateway: CredentialGateway | None = None

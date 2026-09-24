@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from maf_sandbox.credentials import CredentialGateway
+
 __all__ = ["WslcSandboxConfig"]
 
 
@@ -38,9 +40,15 @@ class WslcSandboxConfig:
 
     ``allow_private_http`` permits plaintext HTTP only to listed hosts whose selected address
     is private. It requires the proxy image and is intended for development or test workloads.
+
+    ``credential_gateway`` enables host-issued bearer grants in the external proxy. It requires
+    a rebuilt packaged proxy image and attached-authority opt-ins in the host and workload.
+    Each acquisition requires a trusted call key and creates a fresh workload and gateway.
+    Credentials always require upstream TLS, including when private HTTP is enabled.
     """
 
     wslc_path: str = "wslc"
     command_timeout_seconds: float = 60.0
     egress_proxy_image: str | None = None
     allow_private_http: bool = False
+    credential_gateway: CredentialGateway | None = None

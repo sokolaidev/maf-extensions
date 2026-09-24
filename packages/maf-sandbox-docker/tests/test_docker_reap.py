@@ -82,14 +82,15 @@ class _Engine:
         return [c for c in self.calls if c[0] == "rm" or c[:2] == ("network", "rm")]
 
 
-@pytest.fixture(autouse=True)
-def _clock(monkeypatch):
+@pytest.fixture(autouse=True, params=[_NAME, "maf-sandbox-docker-" + "a" * 32])
+def _clock(monkeypatch, request):
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
             return _NOW
 
     monkeypatch.setattr("maf_sandbox_docker._backend.datetime", Clock)
+    monkeypatch.setattr(__name__ + "._NAME", request.param)
 
 
 def _backend(engine: _Engine) -> DockerSandboxBackend:
@@ -122,6 +123,16 @@ def test_infrastructure_without_a_workload_is_reachable(suffix):
     assert result.proxies_removed + result.networks_removed == 1
     assert result.failures == ()
     assert engine.resources == {}
+
+
+@pytest.mark.parametrize("suffix", ["", "-proxy", "-net"])
+@pytest.mark.parametrize("generation", ["a" * 13, "a" * 31, "a" * 33, "g" * 32])
+def test_malformed_generation_names_are_not_owned(suffix, generation):
+    resource = _resource(1, suffix=suffix)
+    resource["Name"] = "maf-sandbox-docker-" + generation + suffix
+    engine = _Engine(resource)
+    assert asyncio.run(_backend(engine).reap(timedelta(days=1))) == DockerReapResult()
+    assert engine.removals == []
 
 
 @pytest.mark.parametrize("age", [timedelta(hours=1), timedelta(days=1), -timedelta(days=1)])

@@ -10,7 +10,7 @@ from typing import cast
 
 from maf_sandbox import EgressDecision, EgressDecisionCode, SandboxSpec
 
-__all__ = ["encoded_policy", "network_gateways", "read_decisions"]
+__all__ = ["INSTALL_GRANT", "encoded_policy", "network_gateways", "read_decisions"]
 
 _UPSTREAM_DENY_CIDRS = (
     "0.0.0.0/8",
@@ -51,7 +51,9 @@ def network_gateways(ipam: object) -> tuple[str, ...]:
     return tuple(addresses)
 
 
-def encoded_policy(spec: SandboxSpec, *, control_addresses: Sequence[str] = ()) -> str:
+def encoded_policy(
+    spec: SandboxSpec, *, control_addresses: Sequence[str] = (), credentials: bool = False
+) -> str:
     """Return the per-sandbox default-deny policy as base64 encoded JSON."""
     control_cidrs = tuple(
         str(ipaddress.ip_network(f"{address}/{ipaddress.ip_address(address).max_prefixlen}"))
@@ -63,7 +65,7 @@ def encoded_policy(spec: SandboxSpec, *, control_addresses: Sequence[str] = ()) 
         if isinstance(entry, str):
             domains.append(entry)
             continue
-        if entry.authority is not None:
+        if entry.authority is not None and not credentials:
             raise ValueError("this backend cannot enforce attached egress authority")
         rule: dict[str, object] = {"host": entry.host}
         if entry.methods is not None:
@@ -145,3 +147,10 @@ def read_decisions(text: str, limit: int) -> tuple[tuple[EgressDecision, ...], b
             EgressDecision(decision=cast(EgressDecisionCode, code), host=host, port=int(port_text))
         )
     return tuple(decisions[-limit:]), len(lines) > limit
+
+
+# A private, one-time file in the external proxy. Secrets enter only through engine stdin.
+INSTALL_GRANT = (
+    "umask 077; p=$(mktemp /run/maf-proxy/grant.XXXXXX) || exit 1; "
+    'trap \'rm -f "$p"\' EXIT; cat > "$p" && ln "$p" /run/maf-proxy/grant.json'
+)

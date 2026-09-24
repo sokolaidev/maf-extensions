@@ -56,6 +56,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
 from maf_sandbox import (
+    AttachedIdentity,
     BackendDeclarations,
     Capability,
     DisposalFailure,
@@ -84,6 +85,7 @@ from maf_sandbox.bounded_exec import (
     SandboxExecOutputLimitExceeded,
     read_bounded_process_output,
 )
+from maf_sandbox.credentials import GatewayLease
 from maf_sandbox.guest_access import refuse_capabilities_the_guest_cannot_back
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
@@ -102,7 +104,7 @@ from maf_sandbox.paths import (
 from ._config import DockerSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
-from ._proxy.policy import encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
 
 logger = logging.getLogger(__name__)
 
@@ -833,10 +835,10 @@ class _BridgeState:
 
 @dataclass(frozen=True)
 class _Sweep:
-    """What one label sweep did: sandboxes removed, and the workload containers still there.
+    """What one label sweep did: sandboxes removed, and workload groups still needing cleanup.
 
-    ``undeleted`` maps a container name to why its removal failed, so a caller can report the
-    reason and remember the name to try again.  ``unlisted`` is the one thing with no name
+    ``undeleted`` maps a workload name to a failed container, proxy or network removal, so a
+    caller can retain the whole group's retry target. ``unlisted`` is the one thing with no name
     behind it: the label query itself failed, so the sweep cannot claim to have covered
     containers another replica created.
     """
@@ -1468,6 +1470,8 @@ class DockerSandboxBackend:
             config.allow_private_http and not config.egress_proxy_image
         ):
             raise ValueError("allow_private_http requires a configured egress proxy image")
+        if config.credential_gateway is not None and not config.egress_proxy_image:
+            raise ValueError("credential_gateway requires a configured egress proxy image")
         self._config = config
         self._client_env = dict(os.environ)
         self._context_args: tuple[str, ...] = ()
@@ -1491,7 +1495,14 @@ class DockerSandboxBackend:
         capabilities: frozenset[Capability] = _CAPABILITIES
         if config.egress_proxy_image:
             capabilities |= frozenset({Capability.EGRESS_METHODS, Capability.EGRESS_PATHS})
+        if config.credential_gateway is not None:
+            capabilities |= frozenset({Capability.ATTACHED_IDENTITY})
         self._declarations = BackendDeclarations(
+            attached_identity=(
+                config.credential_gateway.attached_identity
+                if config.credential_gateway is not None
+                else AttachedIdentity()
+            ),
             capabilities=capabilities,
             limits=_LIMITS,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
@@ -1505,11 +1516,11 @@ class DockerSandboxBackend:
         # until then, and that is what keeps an uninstrumented host from paying for the read:
         # every drain is a `docker logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_id, call_id, kind) -> name: a purge fallback for when the
-        # listing fails, never the truth. Holds the last name acquired per key and kind, and
-        # `call_id` is part of that key — empty for a conversation, naming one tool call at
-        # `IsolationScope.CALL`, so two calls never collapse onto one entry here.
-        self._registry: dict[tuple[str, str, str, str, str], str] = {}
+        # Label-query fallback. Credential entries append their generation so repeated
+        # acquisitions under one ownership key remain independently reachable.
+        self._registry: dict[
+            tuple[str, str, str, str, str] | tuple[str, str, str, str, str, str], str
+        ] = {}
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
@@ -1831,8 +1842,39 @@ class DockerSandboxBackend:
                 holds no host address — the engine will not build one, or one that is already
                 there could not be removed.
         """
+        lease = GatewayLease.start(self._config.credential_gateway, key, spec)
         egress_id = self._egress_id(spec)
-        name = _container_name(key, spec.kind, egress_id)
+        # A cryptographic generation is part of the name on every credential acquisition.
+        # Hosts sharing keys or runtime engines cannot adopt or overwrite each other's grants.
+        name = (
+            _container_name(key, spec.kind, egress_id)
+            if lease is None
+            else f"{_NAME_PREFIX}{lease.generation}"
+        )
+        try:
+            return await self._acquire_generation(key, spec, name, egress_id, lease)
+        except BaseException:
+            if lease is not None:
+                # Only this unguessable generation, including failures before an instance ID.
+                proxy = await self._remove(_proxy_name(name))
+                workload = await self._remove(name)
+                network_gone = await self._remove_network(_network_name(name), missing_ok=True)
+                entry = (*_key_prefix(key), spec.kind, lease.generation)
+                with self._disposal_guard:
+                    if proxy.failure is None and workload.failure is None and network_gone:
+                        self._registry.pop(entry, None)
+                    else:
+                        self._registry[entry] = name
+            raise
+
+    async def _acquire_generation(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        name: str,
+        egress_id: str,
+        lease: GatewayLease | None,
+    ) -> _DockerSandbox:
         async with self._acquire_lock(key, spec.kind):
             await self._bind_daemon()
             freeze_key = self._freeze_key(name)
@@ -1912,7 +1954,9 @@ class DockerSandboxBackend:
             # Before the facts read, which is several awaited calls and can raise: the container
             # is running by now, and a name the registry never saw is one the disposal fallback
             # cannot reach when a label listing fails.
-            self._registry[(*_key_prefix(key), spec.kind)] = name
+            identity = (*_key_prefix(key), spec.kind)
+            with self._disposal_guard:
+                self._registry[identity if lease is None else (*identity, lease.generation)] = name
             try:
                 inspected = await self._docker(
                     "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds
@@ -1922,7 +1966,7 @@ class DockerSandboxBackend:
                     raise RuntimeError("docker did not establish the sandbox instance ID")
             except BaseException:
                 try:
-                    failure = await self.dispose(key, kind=spec.kind)
+                    failure = await self.dispose(key, kind=spec.kind) if lease is None else None
                     if failure is not None:
                         logger.warning("sandbox identity refusal cleanup failed: %s", failure)
                 except Exception as failure:
@@ -1955,15 +1999,81 @@ class DockerSandboxBackend:
                 await sandbox.prepare_work_dir(spec)
                 if egress_id:
                     await self._install_proxy_ca(name, sandbox, spec)
+                if lease is not None:
+                    await self._install_credentials(name, key, spec, instance_id, lease)
             except BaseException:
                 try:
-                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                    failure = (
+                        await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                        if lease is None
+                        else None
+                    )
                     if failure is not None:
                         logger.warning("sandbox setup cleanup failed: %s", failure)
                 except Exception as failure:
                     logger.warning("sandbox setup cleanup raised: %s", failure)
                 raise
             return sandbox
+
+    async def _install_credentials(
+        self,
+        name: str,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        instance_id: str,
+        lease: GatewayLease,
+    ) -> None:
+        """Deliver one grant through the host's engine channel to this exact proxy instance."""
+        gateway = self._config.credential_gateway
+        assert gateway is not None
+        workload = await self._inspect_disposal_target(instance_id)
+        proxy = await self._inspect_disposal_target(_proxy_name(name))
+        if workload is None or workload.get("Id") != instance_id or proxy is None:
+            raise RuntimeError("credential gateway runtime identity is unavailable")
+        settings = workload.get("NetworkSettings")
+        networks = (
+            cast("dict[str, object]", settings).get("Networks")
+            if isinstance(settings, dict)
+            else None
+        )
+        network = (
+            cast("dict[str, object]", networks).get(_network_name(name))
+            if isinstance(networks, dict)
+            else None
+        )
+        peer = (
+            cast("dict[str, object]", network).get("IPAddress")
+            if isinstance(network, dict)
+            else None
+        )
+        proxy_id = proxy.get("Id")
+        if not isinstance(peer, str) or not peer or not isinstance(proxy_id, str) or not proxy_id:
+            raise RuntimeError("credential gateway private network identity is unavailable")
+        boot = await self._docker(
+            "exec",
+            "-i",
+            proxy_id,
+            "cat",
+            "/run/maf-proxy/boot",
+            timeout=self._config.command_timeout_seconds,
+        )
+        if boot.returncode:
+            raise RuntimeError("credential gateway boot identity is unavailable")
+        payload = await lease.payload(
+            gateway, key, spec, instance_id, peer, boot.stdout.decode().strip()
+        )
+        installed = await self._docker(
+            "exec",
+            "-i",
+            proxy_id,
+            "sh",
+            "-c",
+            INSTALL_GRANT,
+            stdin=payload,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if installed.returncode:
+            raise RuntimeError("credential gateway refused its one-time grant installation")
 
     async def _install_proxy_ca(
         self, name: str, sandbox: _DockerSandbox, spec: SandboxSpec
@@ -2449,7 +2559,13 @@ class DockerSandboxBackend:
                 else None
             )
             if isinstance(network_id, str) and network_id:
-                await self._remove_network(network_id)
+                if not await self._remove_network(network_id, missing_ok=True):
+                    return DisposalFailure("unknown", f"could not remove network {network_id}")
+            with self._disposal_guard:
+                for entry, registered in list(self._registry.items()):
+                    # Credential names cannot be adopted by a replacement acquisition.
+                    if len(entry) == 6 and entry[:4] == _key_prefix(key) and registered == name:
+                        self._registry.pop(entry)
         return removal.failure
 
     async def dispose(
@@ -2527,8 +2643,8 @@ class DockerSandboxBackend:
         """Delete every container labelled ``(scope, thread_id)``: how many, and what stayed.
 
         The labels are the source of truth, because a conversation delete has to reach
-        containers this process never created. The registry is the fallback for when the listing
-        fails, and its entries are dropped either way.
+        containers this process never created. Registered names move to the retry ledger until
+        the workload, proxy and network are all removed or confirmed absent.
         """
         with self._disposal_guard:
             mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
@@ -2733,7 +2849,9 @@ class DockerSandboxBackend:
                 if scope is not None and owned[_LABEL_SCOPE] != _label_value(scope):
                     continue
                 suffix = _NET_SUFFIX if resource == "network" else f"(?:{_PROXY_SUFFIX})?"
-                if not re.fullmatch(rf"{_NAME_PREFIX}[0-9a-f]{{12}}{suffix}", name):
+                if not re.fullmatch(
+                    rf"{_NAME_PREFIX}(?:[0-9a-f]{{12}}|[0-9a-f]{{32}}){suffix}", name
+                ):
                     continue
                 if resource == "container" and owned.get(_LABEL_ROLE) != (
                     "proxy" if name.endswith(_PROXY_SUFFIX) else None
@@ -2800,10 +2918,8 @@ class DockerSandboxBackend:
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
-            # Workload containers only. A proxy and a network carry no guest data, so one left
-            # behind is an infrastructure leak to log rather than a reason to refuse the key.
-            if removal.failure is not None and not target.endswith(_PROXY_SUFFIX):
-                undeleted[target] = removal.failure
+            if removal.failure is not None:
+                undeleted.setdefault(target.removesuffix(_PROXY_SUFFIX), removal.failure)
 
         networks = {
             _network_name(n.removesuffix(_PROXY_SUFFIX))
@@ -2812,11 +2928,18 @@ class DockerSandboxBackend:
         }
         for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
             if _proxy_name(workload) not in listed_set:
-                if (await self._remove(_proxy_name(workload))).failure is None:
+                removed = await self._remove(_proxy_name(workload))
+                if removed.failure is None:
                     self._report_proxy_drain(drained.pop(workload, None))
+                else:
+                    undeleted.setdefault(workload, removed.failure)
             networks.add(_network_name(workload))
         for net in networks:
-            await self._remove_network(net)
+            if not await self._remove_network(net, missing_ok=True):
+                undeleted.setdefault(
+                    net.removesuffix(_NET_SUFFIX),
+                    DisposalFailure("unknown", f"could not remove network {net}"),
+                )
         return _Sweep(count, undeleted, unlisted)
 
     # -- internals ----------------------------------------------------------------
@@ -3545,8 +3668,23 @@ class DockerSandboxBackend:
 
         control_addresses = await self._outbound_control_addresses()
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec, control_addresses=control_addresses)}"]
+        args += [
+            "-e",
+            f"{_CONFIG_ENV}="
+            + encoded_policy(
+                spec,
+                control_addresses=control_addresses,
+                credentials=self._config.credential_gateway is not None,
+            ),
+        ]
         args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
+        args += ["-e", f"MAF_SANDBOX_CREDENTIALS={int(bool(spec.authority_channels))}"]
+        if self._config.credential_gateway is not None:
+            args += [
+                "-e",
+                "MAF_SANDBOX_CREDENTIAL_MAX_SECONDS="
+                + str(self._config.credential_gateway.max_lifetime_seconds),
+            ]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         attribution = _key_label(key)
@@ -3618,6 +3756,10 @@ class DockerSandboxBackend:
                 result.returncode == 0
                 and _PROXY_READY_MARKER in logs
                 and _PROXY_CONTRACT_MARKER in logs
+                and (
+                    self._config.credential_gateway is None
+                    or "maf-sandbox credential contract v1" in logs
+                )
             ):
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
@@ -3705,8 +3847,8 @@ class DockerSandboxBackend:
             return None
         return [line for line in result.stdout.decode("utf-8", "replace").splitlines() if line]
 
-    async def _remove_network(self, net: str) -> bool:
-        """Force-remove a network. Returns whether it removed one; never raises.
+    async def _remove_network(self, net: str, *, missing_ok: bool = False) -> bool:
+        """Force-remove a network; optionally count confirmed absence as success.
 
         A network that was never there is a no-op, not a failure — an allowlisting backend's
         purge tries a workload's network whether or not that workload turns out to have had one.
@@ -3725,7 +3867,7 @@ class DockerSandboxBackend:
             logger.warning(
                 "docker backend: failed to remove network %s: %s", net, result.stderr.strip()
             )
-        return False
+        return missing_ok and _reads_as_absent(result.stderr, net)
 
 
 # The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` tests

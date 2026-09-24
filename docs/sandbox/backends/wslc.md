@@ -1,5 +1,7 @@
 # WSLC
 
+With `credential_gateway=CredentialGateway(provider, max_lifetime_seconds=300)` and a rebuilt packaged proxy image, WSLC supports [credentials for guest HTTP](../hosts.md#credentials-for-guest-http-requests). Each acquisition gets a fresh container and gateway bound to the trusted user scope, agent, call and runtime generation. The gateway holds the bearer tokens and enforces exact HTTPS origins, method/path rules and independent expiry. This requires the attached-authority opt-ins and a call-scoped workload; credential-bearing containers are never reused.
+
 WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with WSL. It supports command execution and file upload. Use the [package README](../../../packages/maf-sandbox-wslc/README.md) for setup.
 
 ## Supported contract

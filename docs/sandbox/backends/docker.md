@@ -1,5 +1,7 @@
 # Docker
 
+With `credential_gateway=CredentialGateway(provider, max_lifetime_seconds=300)` and a rebuilt packaged proxy image, Docker supports [credentials for guest HTTP](../hosts.md#credentials-for-guest-http-requests). Each acquisition gets a fresh container and gateway bound to the trusted user scope, agent, call and runtime generation. The gateway holds the bearer tokens and enforces exact HTTPS origins, method/path rules and independent expiry. This requires the attached-authority opt-ins and a call-scoped workload; credential-bearing containers are never reused.
+
 Docker runs image-based workloads through the Docker CLI and Engine. It supports command execution, file upload and collection, host tools, and optional directory reclamation.
 
 Use the [package README](../../../packages/maf-sandbox-docker/README.md) for installation and configuration. Docker Desktop and Docker Engine are supported. Other compatible engines are best effort; this adapter does not invoke the Podman CLI.

@@ -100,6 +100,8 @@ Any path-limited rule adds `Capability.EGRESS_PATHS` to `required_capabilities`.
 
 A rule with authority and `methods=None` does not require `EGRESS_METHODS`. Header authority and HTTP methods are separate checks. [The host identity contract](hosts.md#identity--whose-authority-sandbox-work-carries) defines the complete admission rules.
 
+Docker and WSLC implement this through a [host-configured credential gateway](hosts.md#credentials-for-guest-http-requests). Each grant adds an exact HTTPS origin and expiry to the rule. It cannot widen the rule's methods or paths. Public and private credential destinations both require verified TLS; the private HTTP development exception applies only to requests without gateway credentials.
+
 ## Verify enforcement
 
 An allowlist conformance test needs both a permitted destination that responds successfully and a denied destination. Cutting off all networking is not proof of a working allowlist.
@@ -127,5 +129,5 @@ Egress is not an ingress policy. It does not promise that guest code cannot list
 | Method and path rules | Core, Docker and WSLC implemented; other backend adoption remains open | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged) |
 | IPv6 upstream addresses | Docker private HTTP/TLS and denials measured; WSLC denials measured, private IPv6 blocked by engine network support | [#1407](https://github.com/sokolaidev/maf-extensions/issues/1407) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged) |
 | Deployment default allowlists | Unimplemented | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) |
-| Attached-authority destinations | Core admission implemented; backend enforcement remains open | [Host identity status](hosts.md#status) |
+| Attached-authority destinations | Core admission and Docker/WSLC external gateways implemented | [Host identity status](hosts.md#status) |
 | Egress conformance and observations | Implemented; evidence is limited to measured cases and attributable windows | [Backend conformance](backends/writing-a-backend.md); [observability](observability.md#status) |

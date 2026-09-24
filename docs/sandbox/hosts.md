@@ -127,7 +127,7 @@ The guest cannot supply `user_identity`; that reserved argument is refused befor
 
 Any registered `USER` tool makes the outer surface require approval. The host still owns credential scope and expiry. Returning the same long-lived credential for every run satisfies the callback shape but provides no per-run restriction.
 
-There is no implemented per-exec credential channel for handing a provisioned user token into the guest. `Identity.USER` is not an attached workload identity. Keep this separate from the host-tool mechanism above.
+Guest HTTP workloads on Docker and WSLC can use the external credential gateway below. `Identity.USER` remains a host-tool identity; it does not configure that gateway.
 
 ### Core attached-authority contract
 
@@ -145,7 +145,25 @@ The backend must inject the configured principal's bearer header only for those 
 
 An idle timeout, token lifetime or [operator retention sweep](operations.md) alone is insufficient. A shared principal can outlive a sandbox, but the sandbox's use of it must end within the bound. `PER_SCOPE` also requires principal exclusivity across that whole scope.
 
-No real backend currently advertises this core contract. ACAS supports managed identity through group configuration without ARM discovery or drift polling. Ordinary ACAS specs can reach that configured identity without core opt-in, audience or retention checks. See [sandbox group identity](backends/acas.md#sandbox-group-identity).
+Docker and WSLC advertise this contract when configured with `credential_gateway`. ACAS supports managed identity through group configuration without ARM discovery or drift polling. Ordinary ACAS specs can reach that configured identity without core opt-in, audience or retention checks. See [sandbox group identity](backends/acas.md#sandbox-group-identity).
+
+### Credentials for guest HTTP requests
+
+Configure `CredentialGateway(provider, max_lifetime_seconds=300)` from `maf_sandbox.credentials` on `DockerSandboxConfig` or `WslcSandboxConfig`, together with a rebuilt packaged `egress_proxy_image`. The lifetime accepts integer seconds from 1 to 3600. The backend declares `ATTACHED_IDENTITY`, `PER_SANDBOX`, and the configured retention bound. The host must permit `max_identity_scope=IdentityScope.PER_SANDBOX`; the workload must request that capability, scope and retention explicitly, with `isolation_scope=IsolationScope.CALL` and concrete `EgressRule(..., authority=...)` destinations. Ordinary workloads need a backend without a credential gateway.
+
+The async provider receives a `CredentialRequest` containing the trusted `SandboxKey`, workload kind, actual runtime instance ID, fresh generation, exact audience set, and Unix expiry deadline. Each authority rule must use a unique audience; duplicate audiences are refused before provisioning. The provider must authorize all of that context and return exactly one `CredentialGrant(audience, origin, token, expires_at)` for each audience. `origin` is an exact HTTPS origin, including a nondefault port where needed. Its hostname must match the rule. The token is a bearer value; the expiry is a Unix timestamp. Neither a requested audience nor a sandbox key proves business authorization.
+
+The host must obtain `scope`, conversation, agent and call identifiers from trusted request context. Include both tenant and user in `scope` when they are separate boundaries. Do not use a tenant-wide scope for user-specific credentials. Do not return a shared token from a provider intended to authorize individual users.
+
+Every credential acquisition creates a fresh workload container, private network and external gateway, including acquisitions with the same key on competing hosts. There is no shared credential cache, gateway adoption, ownership transfer or refresh operation. A copied guest header cannot select another principal: the gateway removes guest-supplied `Authorization` and injects its own authorized credential only at the configured origin, method and path. Plain allowlisted hosts without a grant receive no `Authorization` header. This header policy applies only when the credential gateway is enabled. A fresh call must obtain a fresh grant. Applications requiring a single business operation across replicas must enforce that in their authorization or idempotency service.
+
+Only the trusted runtime management channel installs grants. Tokens enter the gateway through stdin and a private one-time file; they do not enter guest mounts, environment variables or process arguments. The gateway's private CA key also stays outside the guest. The gateway verifies the guest's private network address and its own boot identity. A restart rejects the previous grant. Each generation has separate runtime resources, so an old process or recycled address in another generation cannot reach a new grant.
+
+The gateway checks authority on every HTTP request, including requests over existing TLS connections. It enforces the earlier of the grant expiry and its fixed lifetime, using a monotonic deadline once loaded. Active upstream streams are cancelled at that deadline. The lifetime is independently capped from proxy startup, before the workload container is created. No heartbeat or host cleanup is needed for this bound. Normal call cleanup removes the gateway before the workload; if cleanup cannot reach the runtime, the independent expiry still applies. Effects already accepted by an upstream cannot be undone.
+
+Instance, key, kind and scope cleanup report proxy or network removal failures as incomplete cleanup, even when the workload container is already gone. The creating backend retains the workload name for a later key, kind or scope sweep if label listing fails. After an instance disposal removes the workload but cannot remove its network, use one of those sweeps: inspecting the deleted instance alone cannot rediscover the network. Coordinate active calls before a sweep, which removes all generations within its selected boundary. A failed listing still reports `unlisted`, since the local fallback cannot prove cleanup of resources created by another host.
+
+Credential injection always requires verified upstream TLS, including private destinations. `allow_private_http` does not relax this requirement. Allowed upstream services receive the bearer token and must be trusted not to disclose it in responses or through their own features. The gateway does not prevent misuse of the permissions that the host granted at an allowed service.
 
 <a id="file-store-provenance--what-a-kind-reads-and-what-it-is-worth"></a>
 
@@ -198,9 +216,10 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | Atomic batch delivery | Unimplemented | untracked |
 | Host-tool registry, declarations and transport | Implemented | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (closed); [#410](https://github.com/sokolaidev/maf-extensions/pull/410) (merged); [#417](https://github.com/sokolaidev/maf-extensions/issues/417) (closed) |
 | Host-tool identity admission and per-run minting | Implemented | [#396](https://github.com/sokolaidev/maf-extensions/issues/396) (closed); [#568](https://github.com/sokolaidev/maf-extensions/issues/568) (closed); [#446](https://github.com/sokolaidev/maf-extensions/issues/446) (closed); [#593](https://github.com/sokolaidev/maf-extensions/pull/593) (merged) |
-| Core attached-authority admission | Implemented; real backend adoption remains open | [#1168](https://github.com/sokolaidev/maf-extensions/issues/1168) (closed); [#1192](https://github.com/sokolaidev/maf-extensions/pull/1192) (merged); [#567](https://github.com/sokolaidev/maf-extensions/issues/567) (open) |
+| Core attached-authority admission | Implemented; Docker and WSLC support bounded egress headers | [#1168](https://github.com/sokolaidev/maf-extensions/issues/1168) (closed); [#1192](https://github.com/sokolaidev/maf-extensions/pull/1192) (merged); [#567](https://github.com/sokolaidev/maf-extensions/issues/567) (open) |
 | ACAS group-configured identity | Supported outside the core attached-authority contract | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
-| Principal references and in-guest provisioned credentials | Unimplemented | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) (open); [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (open) |
+| Principal references | Unimplemented | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) (open) |
+| Credentials for guest HTTP | Docker and WSLC external gateways implemented | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (closed) by [#1427](https://github.com/sokolaidev/maf-extensions/pull/1427) (merged) |
 | File-store provenance and result labels | Implemented with the read/write interval limits above | [Information-flow status](information-flow.md#status) |
 | Cross-conversation host storage paths | Host-owned partitioning; no automatic callback inspection | [#793](https://github.com/sokolaidev/maf-extensions/issues/793) (closed) |
 | Storage-base preparation and allocation | Implemented | [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (closed); [#1086](https://github.com/sokolaidev/maf-extensions/pull/1086) (merged); [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |

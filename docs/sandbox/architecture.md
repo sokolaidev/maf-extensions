@@ -103,6 +103,7 @@ Some modules require an explicit import because their dependency or use needs ca
 | `maf_sandbox.maf` | Depends on framework types |
 | `maf_sandbox.paths` | Guest path checks are lexical and are not safe host-filesystem checks; tar helpers fix decoding choices |
 | `maf_sandbox.guest_access` | Refuses operations when the backend has not established guest access to transferred files |
+| `maf_sandbox.credentials` | Trusted host providers and finite external gateway grants; a guest cannot select a principal |
 | `maf_sandbox.testing`, `maf_sandbox.conformance` | Test fixtures and probes, not production containment |
 
 The shared operational package remains deferred. The existing helpers and backend contracts do not depend on it.

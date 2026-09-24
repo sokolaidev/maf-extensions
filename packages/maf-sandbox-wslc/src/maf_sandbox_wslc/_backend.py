@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
+    AttachedIdentity,
     BackendDeclarations,
     Capability,
     DisposalFailure,
@@ -61,6 +62,7 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.bounded_exec import read_bounded_process_output
+from maf_sandbox.credentials import GatewayLease
 from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
@@ -81,7 +83,7 @@ from ._probes import (
     probe_commands,
 )
 from ._proxy import build_context
-from ._proxy.policy import encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
 logger = logging.getLogger(__name__)
@@ -639,10 +641,10 @@ class _Removal:
 
 @dataclass(frozen=True)
 class _Sweep:
-    """What one label sweep did: sandboxes removed, and the workload containers still there.
+    """What one label sweep did: sandboxes removed, and workload groups still needing cleanup.
 
-    ``undeleted`` maps a container name to why its removal failed, so a caller can report the
-    reason and remember the name to try again.  ``unlisted`` is the one thing with no name
+    ``undeleted`` maps a workload name to a failed container, proxy or network removal, so a
+    caller can retain the whole group's retry target. ``unlisted`` is the one thing with no name
     behind it: the label query itself failed, so the sweep cannot claim to have covered
     containers another replica created.
     """
@@ -1243,6 +1245,8 @@ class WslcSandboxBackend:
             config.allow_private_http and not config.egress_proxy_image
         ):
             raise ValueError("allow_private_http requires a configured egress proxy image")
+        if config.credential_gateway is not None and not config.egress_proxy_image:
+            raise ValueError("credential_gateway requires a configured egress proxy image")
         self._config = config
         # Built once: every input is fixed here, and the router reads the object on each
         # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
@@ -1261,7 +1265,14 @@ class WslcSandboxBackend:
         capabilities: frozenset[Capability] = _CAPABILITIES
         if config.egress_proxy_image:
             capabilities |= frozenset({Capability.EGRESS_METHODS, Capability.EGRESS_PATHS})
+        if config.credential_gateway is not None:
+            capabilities |= frozenset({Capability.ATTACHED_IDENTITY})
         self._declarations = BackendDeclarations(
+            attached_identity=(
+                config.credential_gateway.attached_identity
+                if config.credential_gateway is not None
+                else AttachedIdentity()
+            ),
             capabilities=capabilities,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
@@ -1275,12 +1286,11 @@ class WslcSandboxBackend:
         # until then, which is what keeps an uninstrumented host from paying for the read: every
         # drain is a `container logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_id, call_id, kind) -> name: a purge fallback for when the
-        # listing fails, never the truth. Holds the last name acquired per key and kind, which
-        # is enough to reclaim them, and `call_id` is part of that key — empty for a
-        # conversation, naming one tool call at `IsolationScope.CALL`, so two calls never
-        # collapse onto one entry here.
-        self._registry: dict[tuple[str, str, str, str, str], str] = {}
+        # Label-query fallback. Credential entries append their generation so repeated
+        # acquisitions under one ownership key remain independently reachable.
+        self._registry: dict[
+            tuple[str, str, str, str, str] | tuple[str, str, str, str, str, str], str
+        ] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
         #: Containers a discard could not remove, as ``name -> {instance ID}``. Something may
         #: still be running in one, so a warm acquire must not hand it back; the next acquire
@@ -1499,8 +1509,39 @@ class WslcSandboxBackend:
         than leaving a sandbox that declares an allowlist and enforces nothing. Reused, restarted
         and created are logged at INFO — the difference is a warm exec versus a fresh image start.
         """
+        lease = GatewayLease.start(self._config.credential_gateway, key, spec)
         egress_id = self._egress_id(spec)
-        name = _container_name(key, spec.kind, egress_id)
+        # A cryptographic generation is part of the name on every credential acquisition.
+        # Hosts sharing keys or runtime engines cannot adopt or overwrite each other's grants.
+        name = (
+            _container_name(key, spec.kind, egress_id)
+            if lease is None
+            else f"maf-sandbox-wslc-{lease.generation}"
+        )
+        try:
+            return await self._acquire_generation(key, spec, name, egress_id, lease)
+        except BaseException:
+            if lease is not None:
+                # Only this unguessable generation, including failures before an instance ID.
+                proxy = await self._remove(_proxy_name(name))
+                workload = await self._remove(name)
+                network_gone = await self._remove_network(_network_name(name), missing_ok=True)
+                entry = (*_key_prefix(key), spec.kind, lease.generation)
+                with self._disposal_guard:
+                    if proxy.failure is None and workload.failure is None and network_gone:
+                        self._registry.pop(entry, None)
+                    else:
+                        self._registry[entry] = name
+            raise
+
+    async def _acquire_generation(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        name: str,
+        egress_id: str,
+        lease: GatewayLease | None,
+    ) -> _WslcSandbox:
         async with self._acquire_lock(key, spec.kind):
             await self._verify_storage_base(name, spec, missing_ok=True)
             # A discard could not remove this one, so something may still be running in it.
@@ -1561,7 +1602,9 @@ class WslcSandboxBackend:
                     key.agent_id,
                 )
 
-            self._registry[(*_key_prefix(key), spec.kind)] = name
+            identity = (*_key_prefix(key), spec.kind)
+            with self._disposal_guard:
+                self._registry[identity if lease is None else (*identity, lease.generation)] = name
             try:
                 inspected = await self._wslc(
                     "container", "inspect", name, timeout=self._config.command_timeout_seconds
@@ -1579,7 +1622,7 @@ class WslcSandboxBackend:
                     raise ValueError("wslc did not return the sandbox instance ID")
             except BaseException:
                 try:
-                    failure = await self.dispose(key, kind=spec.kind)
+                    failure = await self.dispose(key, kind=spec.kind) if lease is None else None
                     if failure is not None:
                         logger.warning("sandbox identity refusal cleanup failed: %s", failure)
                 except Exception as failure:
@@ -1614,6 +1657,8 @@ class WslcSandboxBackend:
                 await sandbox.prepare_work_dir(spec)
                 if egress_id:
                     await self._install_proxy_ca(name, sandbox)
+                if lease is not None:
+                    await self._install_credentials(name, key, spec, instance_id, lease)
             except BaseException:
                 # Nothing is returned, so no caller can dispose this container — and setup
                 # runs privileged commands the host process cannot reach once it is gone.
@@ -1624,7 +1669,11 @@ class WslcSandboxBackend:
                     # instance on its way out, so the sweep could reach a container another
                     # host created under the same name. The instance path rechecks the ID
                     # before removing anything and answers "nothing to do" once it is gone.
-                    failure = await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                    failure = (
+                        await self.dispose(key, kind=spec.kind, instance_id=instance_id)
+                        if lease is None
+                        else None
+                    )
                     if failure is not None:
                         # Cleanup said it could not remove it, and nothing else remembers
                         # that this container is half-prepared and may still be running setup.
@@ -1645,6 +1694,68 @@ class WslcSandboxBackend:
                     "is not handed back. Acquire again once it has been removed."
                 )
             return sandbox
+
+    async def _install_credentials(
+        self,
+        name: str,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        instance_id: str,
+        lease: GatewayLease,
+    ) -> None:
+        """Deliver one grant through the host's engine channel to this exact proxy instance."""
+        gateway = self._config.credential_gateway
+        assert gateway is not None
+        workload = await self._inspect_disposal_target(instance_id)
+        proxy = await self._inspect_disposal_target(_proxy_name(name))
+        if workload is None or workload.get("Id") != instance_id or proxy is None:
+            raise RuntimeError("credential gateway runtime identity is unavailable")
+        settings = workload.get("NetworkSettings")
+        networks = (
+            cast("dict[str, object]", settings).get("Networks")
+            if isinstance(settings, dict)
+            else None
+        )
+        network = (
+            cast("dict[str, object]", networks).get(_network_name(name))
+            if isinstance(networks, dict)
+            else None
+        )
+        peer = (
+            cast("dict[str, object]", network).get("IPAddress")
+            if isinstance(network, dict)
+            else None
+        )
+        proxy_id = proxy.get("Id")
+        if not isinstance(peer, str) or not peer or not isinstance(proxy_id, str) or not proxy_id:
+            raise RuntimeError("credential gateway private network identity is unavailable")
+        boot = await self._wslc(
+            "container",
+            "exec",
+            "-i",
+            proxy_id,
+            "cat",
+            "/run/maf-proxy/boot",
+            timeout=self._config.command_timeout_seconds,
+        )
+        if boot.returncode:
+            raise RuntimeError("credential gateway boot identity is unavailable")
+        payload = await lease.payload(
+            gateway, key, spec, instance_id, peer, boot.stdout_text.strip()
+        )
+        installed = await self._wslc(
+            "container",
+            "exec",
+            "-i",
+            proxy_id,
+            "sh",
+            "-c",
+            INSTALL_GRANT,
+            stdin=payload,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if installed.returncode:
+            raise RuntimeError("credential gateway refused its one-time grant installation")
 
     async def _install_proxy_ca(self, name: str, sandbox: _WslcSandbox) -> None:
         """Make this proxy's public CA available to the guest before serving it."""
@@ -1964,7 +2075,13 @@ class WslcSandboxBackend:
             self._report_proxy_drain(event)
         removal = await self._remove(instance_id)
         if removal.failure is None:
-            await self._remove_network(_network_name(name))
+            if not await self._remove_network(_network_name(name), missing_ok=True):
+                return DisposalFailure("unknown", f"could not remove network {_network_name(name)}")
+            with self._disposal_guard:
+                for entry, registered in list(self._registry.items()):
+                    # Credential names cannot be adopted by a replacement acquisition.
+                    if len(entry) == 6 and entry[:4] == _key_prefix(key) and registered == name:
+                        self._registry.pop(entry)
         return removal.failure
 
     async def dispose(
@@ -2042,9 +2159,8 @@ class WslcSandboxBackend:
         """Delete every container labelled ``(scope, thread_id)``: how many, and what stayed.
 
         The labels are the source of truth, because a conversation delete has to reach
-        containers this process never created. The registry is the fallback for when the listing
-        fails, and its entries are dropped either way: an entry pointing at a container that may
-        already be gone is worse than no entry.
+        containers this process never created. Registered names move to the retry ledger until
+        the workload, proxy and network are all removed or confirmed absent.
         """
         with self._disposal_guard:
             mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
@@ -2173,10 +2289,8 @@ class WslcSandboxBackend:
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
-            # Workload containers only. A proxy and a network carry no guest data, so one left
-            # behind is an infrastructure leak to log rather than a reason to refuse the key.
-            if removal.failure is not None and not target.endswith(_PROXY_SUFFIX):
-                undeleted[target] = removal.failure
+            if removal.failure is not None:
+                undeleted.setdefault(target.removesuffix(_PROXY_SUFFIX), removal.failure)
 
         networks = {
             _network_name(n.removesuffix(_PROXY_SUFFIX))
@@ -2189,9 +2303,15 @@ class WslcSandboxBackend:
                     removed = await self._remove(_proxy_name(workload))
                     if removed.failure is None:
                         self._report_proxy_drain(drained.pop(workload, None))
+                    else:
+                        undeleted.setdefault(workload, removed.failure)
                 networks.add(_network_name(workload))
         for net in networks:
-            await self._remove_network(net)
+            if not await self._remove_network(net, missing_ok=True):
+                undeleted.setdefault(
+                    net.removesuffix(_NET_SUFFIX),
+                    DisposalFailure("unknown", f"could not remove network {net}"),
+                )
         return _Sweep(count, undeleted, unlisted)
 
     # -- internals ----------------------------------------------------------------
@@ -2492,8 +2612,23 @@ class WslcSandboxBackend:
 
         control_addresses = await self._control_addresses(_network_name(name))
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_CONFIG_ENV}={encoded_policy(spec, control_addresses=control_addresses)}"]
+        args += [
+            "-e",
+            f"{_CONFIG_ENV}="
+            + encoded_policy(
+                spec,
+                control_addresses=control_addresses,
+                credentials=self._config.credential_gateway is not None,
+            ),
+        ]
         args += ["-e", f"MAF_SANDBOX_PRIVATE_HTTP={int(self._config.allow_private_http)}"]
+        args += ["-e", f"MAF_SANDBOX_CREDENTIALS={int(bool(spec.authority_channels))}"]
+        if self._config.credential_gateway is not None:
+            args += [
+                "-e",
+                "MAF_SANDBOX_CREDENTIAL_MAX_SECONDS="
+                + str(self._config.credential_gateway.max_lifetime_seconds),
+            ]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
         attribution = _key_label(key)
@@ -2573,6 +2708,10 @@ class WslcSandboxBackend:
                 result.returncode == 0
                 and _PROXY_READY_MARKER in result.stdout_text
                 and _PROXY_CONTRACT_MARKER in result.stdout_text
+                and (
+                    self._config.credential_gateway is None
+                    or "maf-sandbox credential contract v1" in result.stdout_text
+                )
             ):
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
@@ -2658,8 +2797,8 @@ class WslcSandboxBackend:
             logger.warning("wslc backend: could not list containers to purge: %s", exc)
             return None
 
-    async def _remove_network(self, net: str) -> bool:
-        """Remove an unused network. Returns whether it removed one; never raises.
+    async def _remove_network(self, net: str, *, missing_ok: bool = False) -> bool:
+        """Remove an unused network; optionally count confirmed absence as success.
 
         A network that was never there is a no-op, not a failure — an allowlisting backend's
         purge tries a workload's network whether or not that workload turns out to have had one.
@@ -2677,7 +2816,7 @@ class WslcSandboxBackend:
             logger.warning(
                 "wslc backend: failed to remove network %s: %s", net, result.stderr_text.strip()
             )
-        return False
+        return missing_ok and _NETWORK_NOT_FOUND in result.stderr_text.lower()
 
 
 # The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only
