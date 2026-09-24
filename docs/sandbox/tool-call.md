@@ -1,6 +1,10 @@
 # Tool-call lifetime and cleanup
 
-The tool wrapper owns per-call state and cleanup. A kind asks for a guest path, runs its workload and collects its outputs. The wrapper cleans up in a `finally`, including after refusals, exceptions and cancellation.
+A **tool call** is one execution of a tool function with a particular set of arguments. For example, each time an agent asks the Bicep tool to validate a file, it makes a separate call, even if the same tool or sandbox is used again.
+
+The application attaches a kind's tools to its MAF agent, so an ordinary tool call enters the `maf-sandbox` wrapper. The kind sends its work through the router and a backend to the sandbox; the wrapper returns the result after cleanup.
+
+![The agent calls a sandboxed tool, whose kind and wrapper use the router and backend to send work to the sandbox. Output returns along the same path, and the wrapper completes cleanup before returning the tool result to the agent.](assets/tool-call-overview.svg)
 
 The router defaults to disposal. A host must explicitly enable reuse. Sharing scope and cleanup are separate settings: conversation scope permits sharing, while the cleanup policy decides what remains after active calls finish.
 
@@ -28,6 +32,8 @@ One binding can serve many conversations. Several tools can use the same convers
 
 ## Binding and call state
 
+The tool wrapper owns per-call state and cleanup. A kind asks for a guest path, runs its workload and collects its outputs. The wrapper cleans up in a `finally`, including after refusals, exceptions and cancellation.
+
 The binding stores only host configuration. Scope, thread and file listing come from host callables when the tool runs. The model never supplies the sandbox key.
 
 `guest_call_path()` allocates and remembers a relative path for the current call. Repeated requests in that call return the same path. Asking outside a call or after it closes raises a wiring error.
@@ -36,7 +42,7 @@ Private `ContextVar` state keeps concurrent calls separate. It records the bindi
 
 A child task inherits the call context. It cannot keep using that record after the wrapper has closed the call. Do not store caller state on the shared binding or expose a call object in the tool's JSON arguments.
 
-`call` means one tool-function execution. `run` means the supervised transport program. These framework concepts live in `maf.py`; the backend protocol does not require a kind-specific call object.
+`run` means the supervised transport program. These framework concepts live in `maf.py`; the backend protocol does not require a kind-specific call object.
 
 ## Cleanup, as a consequence
 
