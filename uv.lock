@@ -1323,7 +1323,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-deepagents"
-version = "0.4.1"
+version = "0.4.2"
 source = { editable = "packages/maf-sandbox-deepagents" }
 dependencies = [
     { name = "deepagents" },
