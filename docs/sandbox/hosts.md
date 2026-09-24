@@ -1,5 +1,7 @@
 # Host responsibilities
 
+The **host** is the application that runs the agent and integrates `maf-sandbox`, providing the configuration and services that sandboxed tools use.
+
 The host chooses storage, credentials, tool registrations and information-flow policy. Core checks declared contracts and controls when data crosses the sandbox boundary.
 
 Source tools return content to the model. Destination tools accept data from it. Tool declarations describe those roles; labels on individual content items describe the returned data. The host's middleware reads both.

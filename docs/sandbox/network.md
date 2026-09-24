@@ -1,5 +1,13 @@
 # Network policy
 
+This page covers network access by the workload running inside a sandbox, such as a Python program calling an API or a compiler downloading a module. The backend enforces the workload's network policy. The application's model requests and the backend's management connections are separate host traffic.
+
+**Egress** means connections initiated from the sandbox to other services. **Ingress** means connections initiated from outside to a service listening inside the sandbox; the egress settings described here do not define an ingress policy. Sending commands and files through the backend uses its control channel, so a sandbox can still receive work and return results with guest egress closed.
+
+The CodeAct example below places guest networking alongside the other parts of a tool call. The network arrow represents requests and responses for guest-initiated connections.
+
+![The model calls CodeAct through agent policy. Inside the admitted call, the guest receives selected file-store inputs, exchanges data with allowed network destinations under backend enforcement, can call separately registered host functions, and returns artifacts through the host output sink. The guest network route has its own controls, separate from these other channels.](assets/codeact-data-routes.svg)
+
 `SandboxSpec.egress` states the workload's required outbound network policy. The kind defines which policies it accepts. The backend declares which policies it can enforce. The router requires an exact match.
 
 ## Three modes

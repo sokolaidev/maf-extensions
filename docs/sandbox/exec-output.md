@@ -1,5 +1,7 @@
 # Execution output
 
+When a tool runs a command or program in the sandbox, the backend returns its captured output and available exit status to the tool in the host application as an `ExecResult`.
+
 `ExecResult` keeps returned stdout and stderr as bytes. Its text properties provide safe display views. Use bytes for storage and byte counts; use text for messages to the model.
 
 ![A program produces stdout and stderr bytes. ExecResult stores the captured bytes unchanged in stdout_bytes and stderr_bytes. UTF-8 replacement decoding produces stdout_text and stderr_text for display, with stdout and stderr as aliases. Binary storage uses the byte fields directly. Decoding can lose information, so encoding a display view cannot recover the original bytes. Caps and producer diagnostics remain explicit.](assets/exec-output-bytes.svg)
