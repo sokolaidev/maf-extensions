@@ -9,6 +9,6 @@
   "packages/maf-sandbox-otel": "0.7.2",
   "packages/maf-sandbox-terraform": "0.5.1",
   "packages/maf-sandbox-wslc": "0.25.0",
-  "packages/maf-sandbox-drawio": "0.3.0",
+  "packages/maf-sandbox-drawio": "0.3.1",
   "packages/maf-sandbox-tui": "0.3.0"
 }
