@@ -56,5 +56,5 @@ The image needs `sh`, `base64`, `setsid`, `mount`, `cat` and `rm`.
 | Area | State | Reference |
 |---|---|---|
 | Backend at the `MICROVM` floor, `CLOSED` only | Implemented; live suite green on Windows with `sbx` v0.45.1, and run on `ubuntu-24.04` by `sbx-live.yml` after merge | [#1412](https://github.com/sokolaidev/maf-extensions/issues/1412) (open) |
-| macOS and Linux link behaviour in the workspace | Measured by the CI run on Linux; macOS not measured | [research record](../research/docker-sandboxes-backend.md) |
+| macOS and Linux link behaviour in the workspace | Not measured; the first `sbx-live.yml` run after merge records Linux, and nothing covers macOS | [research record](../research/docker-sandboxes-backend.md) |
 | `ALLOWLIST`, `HOST_TOOLS`, `SNAPSHOT` | Not implemented | untracked |

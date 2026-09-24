@@ -349,7 +349,9 @@ class _SbxSandbox:
             return
         if entry.kind is EntryKind.DIRECTORY and not recursive:
             raise IsADirectoryError(errno.EISDIR, "a directory needs recursive=True", guest)
-        await self._remove_as_the_guest(guest, self._backend.config.command_timeout_seconds)
+        await self._remove_as_the_guest(
+            guest, self._backend.config.command_timeout_seconds, recursive=recursive
+        )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         cwd = self._cwd(working_directory)
@@ -361,14 +363,19 @@ class _SbxSandbox:
                 raise ValueError(f"refusing to reclaim the working directory itself: {guest!r}")
         if self._plane.parts(guest) in (None, ()):
             raise ValueError(f"refusing to reclaim {guest!r}, which is not inside the workspace")
-        await self._remove_as_the_guest(guest, timeout)
+        await self._remove_as_the_guest(guest, timeout, recursive=True)
 
-    async def _remove_as_the_guest(self, guest: str, timeout: float) -> None:
+    async def _remove_as_the_guest(self, guest: str, timeout: float, *, recursive: bool) -> None:
         # In the guest rather than on the host: a guest that looked a name up keeps seeing it
         # for seconds after the host deletes it.  The guest's authority reaches only its own
         # VM and this workspace, so a swapped component redirects nothing it could not delete.
         result = await self._backend.run_in_guest(
-            self._name, ["rm", "-rf", "--", guest], cwd="/", timeout=timeout, mount=self._mount
+            # `-f` alone refuses a directory, so one swapped in after the host's stat survives.
+            self._name,
+            ["rm", "-rf" if recursive else "-f", "--", guest],
+            cwd="/",
+            timeout=timeout,
+            mount=self._mount,
         )
         if result.exit_code != 0:
             raise OSError(
@@ -391,7 +398,9 @@ class SbxSandboxBackend:
             isolation_scopes=frozenset({IsolationScope.CONVERSATION}),
             observes_egress=False,
         )
-        self._locks: dict[tuple[int, str], asyncio.Lock] = {}
+        # Per loop, because an asyncio.Lock binds to the loop that first waits on it; counted, so
+        # the last caller out drops the entry and the table holds only names in use.
+        self._locks: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
         self._locks_guard = threading.Lock()
 
     @property
@@ -445,22 +454,29 @@ class SbxSandboxBackend:
         deadline = loop.time() + timeout
         encoded = (_encode(cwd), *(_encode(arg) for arg in argv))
         marker = posixpath.join(mount.parent, _MARKER)
+        expired = f"the command did not finish within {timeout} seconds"
         for attempt in range(2):
             nonce = secrets.token_hex(12)
             pid_file = f"/tmp/maf-sbx-{nonce}.pgid"
             args = ("exec", name, "sh", "-c", _EXEC_SCRIPT, "maf-sbx", nonce, pid_file, marker)
+            left = deadline - loop.time()
+            if left <= 0:
+                raise TimeoutError(expired)
             try:
-                left = deadline - loop.time()
-                if left <= 0:
-                    raise TimeoutError
                 result = await self._sbx(*args, *encoded, timeout=left)
             except TimeoutError:
                 await self._kill_group(name, pid_file)
-                raise TimeoutError(f"the command did not finish within {timeout} seconds") from None
+                raise TimeoutError(expired) from None
             if f"{nonce}-unmounted\n".encode() in result.stderr:
                 if attempt:
                     break
-                await self._bind_workspace(name, mount, create=False)
+                left = deadline - loop.time()
+                if left <= 0:
+                    raise TimeoutError(expired)
+                try:
+                    await self._bind_workspace(name, mount, create=False, timeout=left)
+                except TimeoutError:
+                    raise TimeoutError(expired) from None
                 continue
             stderr = _guest_stderr(result.stderr, nonce)
             if stderr is None:
@@ -470,7 +486,9 @@ class SbxSandboxBackend:
             )
         raise SbxError(f"the workspace is still not mounted at {mount.parent!r} in {name}")
 
-    async def _bind_workspace(self, name: str, mount: _Mount, *, create: bool) -> None:
+    async def _bind_workspace(
+        self, name: str, mount: _Mount, *, create: bool, timeout: float | None = None
+    ) -> None:
         bound = await self._sbx(
             "exec",
             "-u",
@@ -483,6 +501,7 @@ class SbxSandboxBackend:
             mount.parent,
             mount.guest_mount,
             "create" if create else "again",
+            timeout=timeout,
         )
         if bound.returncode == _PARENT_EXISTS and create:
             raise ValueError(
@@ -552,9 +571,19 @@ class SbxSandboxBackend:
     async def _locked(self, name: str) -> AsyncGenerator[None]:
         key = (id(asyncio.get_running_loop()), name)
         with self._locks_guard:
-            lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            yield
+            held = self._locks.get(key)
+            lock = held[0] if held is not None else asyncio.Lock()
+            self._locks[key] = (lock, (held[1] if held is not None else 0) + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            with self._locks_guard:
+                _, callers = self._locks[key]
+                if callers > 1:
+                    self._locks[key] = (lock, callers - 1)
+                else:
+                    del self._locks[key]
 
     def _directory(self, name: str) -> Path:
         return self._config.resolved_workspace_root / name

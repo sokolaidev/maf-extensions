@@ -41,6 +41,8 @@ class TestMapping:
 
     def test_an_ancestor_is_above_and_anything_else_is_outside(self, plane):
         assert plane.parts("/") is None
+        with pytest.raises(ValueError, match="above"):
+            plane.list("/")
         entry = plane.lstat("/")
         assert entry is not None and entry.kind is EntryKind.DIRECTORY
         for outside in ("/etc/passwd", "/maf-sandbox-outside/x"):

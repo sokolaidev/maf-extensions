@@ -384,7 +384,12 @@ class WorkspacePlane:
 
     def list(self, guest_path: str) -> list[tuple[str, SandboxEntry]]:
         """Each child's name and entry; the entry's ``path`` is left for the caller to set."""
-        parts = self.parts(guest_path) or ()
+        parts = self.parts(guest_path)
+        if parts is None:
+            raise ValueError(
+                f"{guest_path!r} is above {self._guest_root!r}, the only guest directory this "
+                "backend's file plane reaches"
+            )
         with self._walk(parts) as directory:
             listed: list[tuple[str, SandboxEntry]] = []
             for name in sorted(directory.names()):

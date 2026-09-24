@@ -61,6 +61,7 @@ class FakeSbx:
     def __init__(self, backend: SbxSandboxBackend) -> None:
         self.backend = backend
         self.calls: list[tuple[str, ...]] = []
+        self.timeouts: list[float | None] = []
         self.sandboxes: dict[str, str] = {}
         self.forwarding = b"false\n"
         self.servers: list[object] = []
@@ -72,6 +73,7 @@ class FakeSbx:
 
     async def __call__(self, *args: str, timeout: float | None = None) -> _Result:
         self.calls.append(args)
+        self.timeouts.append(timeout)
         match args:
             case ("settings", "get", "ssh.agentForwardingEnabled"):
                 return _ok(self.forwarding)
@@ -308,6 +310,71 @@ class TestExec:
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
         assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+
+
+class TestRemoval:
+    def _removal_argv(self, sbx: FakeSbx) -> list[str]:
+        call = next(call for call in reversed(sbx.calls) if _EXEC_SCRIPT in call)
+        return [_decode(item) for item in call[10:]]
+
+    def test_a_non_recursive_removal_never_recurses_in_the_guest(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("f", b"x", working_directory="."))
+        asyncio.run(sandbox.remove("f", working_directory="."))
+        assert self._removal_argv(sbx) == ["rm", "-f", "--", "/maf-sandbox/work/f"]
+
+    def test_recursive_removal_and_reclaim_recurse(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("d/f", b"x", working_directory="."))
+        asyncio.run(sandbox.remove("d", working_directory=".", recursive=True))
+        assert self._removal_argv(sbx) == ["rm", "-rf", "--", "/maf-sandbox/work/d"]
+        asyncio.run(sandbox.reclaim("d", working_directory=".", timeout=10))
+        assert self._removal_argv(sbx) == ["rm", "-rf", "--", "/maf-sandbox/work/d"]
+
+
+class TestDeadlines:
+    def test_a_remount_spends_the_callers_deadline(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unmounted_once = True
+        before = len(sbx.calls)
+        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
+        remount = next(
+            index for index in range(before, len(sbx.calls)) if _MOUNT_SCRIPT in sbx.calls[index]
+        )
+        bound = sbx.timeouts[remount]
+        assert bound is not None and bound <= 5
+
+    def test_a_remount_that_overruns_the_deadline_is_the_callers_timeout(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unmounted_once = True
+        real = sbx.__call__
+
+        async def slow_mount(*args: str, timeout: float | None = None) -> _Result:
+            if _MOUNT_SCRIPT in args:
+                raise TimeoutError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = slow_mount  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError, match="within 5 seconds"):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
+
+
+class TestLocks:
+    def test_the_lock_table_holds_only_names_in_use(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert asyncio.run(backend.dispose(KEY)) is None
+        assert backend._locks == {}
+
+    def test_concurrent_acquires_of_one_name_create_once(self, backend, sbx):
+        async def both():
+            return await asyncio.gather(
+                backend.acquire(KEY, _spec()), backend.acquire(KEY, _spec())
+            )
+
+        first, second = asyncio.run(both())
+        assert first.instance_id == second.instance_id
+        assert sum(call[0] == "create" for call in sbx.calls) == 1
+        assert backend._locks == {}
 
 
 class TestDisposal:
