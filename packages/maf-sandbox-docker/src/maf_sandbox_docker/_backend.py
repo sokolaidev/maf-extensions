@@ -2549,7 +2549,13 @@ class DockerSandboxBackend:
                 else None
             )
             if isinstance(network_id, str) and network_id:
-                await self._remove_network(network_id)
+                if not await self._remove_network(network_id):
+                    return removal.failure
+            with self._disposal_guard:
+                for entry, registered in list(self._registry.items()):
+                    # Credential names cannot be adopted by a replacement acquisition.
+                    if len(entry) == 6 and entry[:4] == _key_prefix(key) and registered == name:
+                        self._registry.pop(entry)
         return removal.failure
 
     async def dispose(

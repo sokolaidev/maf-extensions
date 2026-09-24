@@ -509,6 +509,7 @@ def test_codeact_calls_receive_distinct_grants_and_dispose_them(upstream):
             assert all(
                 request.key.scope == scope and request.key.agent_id == "agent" for request in seen
             )
+            assert not backend._registry
             for request in seen:
                 assert (
                     container(engine, "inspect", request.instance_id, check=False).returncode != 0

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ironsh/iron-proxy/internal/responseretry"
 	"github.com/ironsh/iron-proxy/internal/transform"
+	"github.com/stretchr/testify/require"
 )
 
 func mafFixture(t *testing.T, lifetime time.Duration) *mafCredentials {
@@ -121,6 +124,82 @@ func TestMAFCredentialExpiredConnection(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 403 || connections.Load() != 1 {
 		t.Fatalf("status=%d connections=%d", resp.StatusCode, connections.Load())
+	}
+}
+
+func TestMAFCredentialAuthorizationReplay(t *testing.T) {
+	for _, bound := range []string{"valid", "token", "generation"} {
+		t.Run(bound, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "Bearer user-alice-secret", r.Header.Get("Authorization"))
+				if upstreamCalls.Add(1) == 1 {
+					w.WriteHeader(http.StatusPaymentRequired)
+					return
+				}
+				require.Equal(t, "retry-token", r.Header.Get("X-Retry-Token"))
+				_, err := w.Write([]byte("replayed"))
+				require.NoError(t, err)
+			}))
+			defer upstream.Close()
+			g := mafFixture(t, time.Minute)
+			grant, err := g.load()
+			require.NoError(t, err)
+			deadline := time.Now().Add(time.Second)
+			if bound == "generation" {
+				grant.deadline = deadline
+			} else if bound == "token" {
+				grant.Entries[0].deadline = deadline
+			}
+			var decisions atomic.Int32
+			authorizer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/authorize" {
+					decisions.Add(1)
+					if bound != "valid" {
+						time.Sleep(time.Until(deadline) + 5*time.Millisecond)
+					}
+					_, err := io.WriteString(w, `{"retry":true,"attempt_id":"attempt-1","headers":{"X-Retry-Token":"retry-token"}}`)
+					require.NoError(t, err)
+				}
+			}))
+			defer authorizer.Close()
+			handler, err := responseretry.New(responseretry.Options{
+				AuthorizeEndpoint: authorizer.URL + "/authorize", CompleteEndpoint: authorizer.URL + "/complete",
+				Token: "proxy-token", SandboxID: "sandbox-1", Statuses: []int{http.StatusPaymentRequired},
+				Client: authorizer.Client(),
+			})
+			require.NoError(t, err)
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			p := New(Options{
+				Pipeline: transform.NewPipelineHolder(transform.NewPipeline(nil, transform.BodyLimits{
+					MaxRequestBodyBytes: 1 << 20, MaxResponseBodyBytes: 1 << 20,
+				}, logger)),
+				Logger: logger, ResponseRetryHandler: handler,
+			})
+			p.credentials = g
+			transport := upstream.Client().Transport.(*http.Transport).Clone()
+			transport.TLSClientConfig.ServerName = "127.0.0.1"
+			transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+			}
+			defer transport.CloseIdleConnections()
+			p.transport = transport
+			r := httptest.NewRequest(http.MethodGet, "https://api.example.com:8443/v1/items", nil)
+			r.RemoteAddr = "172.22.1.4:1234"
+			r.TLS = &tls.ConnectionState{ServerName: "api.example.com"}
+			recorder := httptest.NewRecorder()
+			p.handleHTTP(recorder, r, nil)
+			require.EqualValues(t, 1, decisions.Load())
+			if bound == "valid" {
+				require.Equal(t, http.StatusOK, recorder.Code)
+				require.Equal(t, "replayed", recorder.Body.String())
+				require.EqualValues(t, 2, upstreamCalls.Load())
+			} else {
+				require.Equal(t, http.StatusForbidden, recorder.Code)
+				require.EqualValues(t, 1, upstreamCalls.Load())
+			}
+			require.NoError(t, r.Context().Err())
+		})
 	}
 }
 
