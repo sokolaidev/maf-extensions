@@ -22,7 +22,7 @@ here is that the router is configured at run() and the sandbox is disposed there
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.42",
+#     "maf-sandbox>=0.43",
 # ]
 # ///
 
