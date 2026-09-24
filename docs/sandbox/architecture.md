@@ -17,9 +17,20 @@ app  ->  maf_sandbox (protocol + router)  ->  a backend  ->  the sandbox
 | Backend | Provider access, sandbox creation, execution, transfer and disposal |
 | Guest | Runs the workload with the authority and channels provided to it |
 
-![The model calls a kind through host middleware. The kind's wrapper derives a key from trusted request context, checks the spec through the router and sends operations through one backend to the guest. Guest bytes return to the kind, which builds labelled content items. Declared artifacts go to the host's sink. An explicitly enabled guest-to-host tool channel goes through the host-tool registry and its own gates, bypassing the inward framework middleware. The host owns credentials and storage; the backend provides the execution boundary.](assets/architecture-map.svg)
-
 Kinds use the core protocol and do not import backends. Backends do not import kinds. Protocol modules use only the standard library. Tests enforce these import boundaries and each package's declared dependencies.
+
+## Protocol
+
+The protocol is the shared Python contract between workloads, the router and sandbox providers. It defines the operations and data they exchange, so a kind can run on different compatible backends without knowing their provider APIs.
+
+Two interfaces define the core responsibilities:
+
+- **`SandboxBackend`** acquires sandboxes and disposes resources by owner or conversation.
+- **`Sandbox`** represents an acquired instance and provides command or code execution, file operations and cleanup.
+
+Both use Python's `Protocol`: an implementation supplies the required attributes and methods without inheriting from a shared implementation. `SandboxKey` identifies the owner, `SandboxSpec` describes the workload's requirements, and result types such as `ExecResult` carry the response. Capabilities declare which operations a backend supports; unsupported methods remain part of the interface but must refuse execution.
+
+The interfaces and shared types are defined in [`_protocol.py`](../../packages/maf-sandbox/src/maf_sandbox/_protocol.py) and exported through [`maf_sandbox`](../../packages/maf-sandbox/src/maf_sandbox/__init__.py). The [capabilities contract](capabilities.md) documents operation support and file rules, and [execution output](exec-output.md) defines returned bytes, diagnostics and timeouts. [Writing a backend](backends/writing-a-backend.md) describes each method's obligations and the conformance checks.
 
 ## Vocabulary
 
@@ -37,11 +48,11 @@ Kinds use the core protocol and do not import backends. Backends do not import k
 | `ExecResult` | Returned byte streams, display views, exit status and diagnostic ownership |
 | `SandboxObserver` | Synchronous callbacks for selected execution, transfer and lifecycle events |
 
-The protocol defines methods even where a backend must refuse them. Optional behavior is selected through declared capabilities. See [capabilities](capabilities.md) for the complete surface.
-
 ## Keys and storage
 
-The full logical sandbox identity is `(key, spec.kind)`. Agents in one conversation have separate `agent_id` values. Different kinds do not share one sandbox. Call-scoped work also carries the framework's call ID.
+Within a backend, the logical sandbox identity is `(key, spec.kind)`. The key contains `scope`, `thread_id`, `agent_id` and `call_id`. Conversation-scoped work leaves `call_id` empty; call-scoped work uses the framework's call ID. Different agents and kinds have separate identities.
+
+The backend's `instance_id` identifies the physical generation serving that logical identity. It changes after replacement or reset, so the same key and kind do not imply the same physical instance or preserved state.
 
 Every key component comes from trusted host context. Scope and thread accessors are called for each tool call, rather than captured when building the agent. An unbound conversation is refused; there is no shared fallback key.
 
@@ -63,6 +74,8 @@ Conversation purge asks every registered backend, including one that no longer s
 
 ## Two directions across the boundary
 
+![The model calls a kind through host middleware. The kind's wrapper derives a key from trusted request context, checks the spec through the router and sends operations through one backend to the guest. Guest bytes return to the kind, which builds labelled content items. Declared artifacts go to the host's sink. An explicitly enabled guest-to-host tool channel goes through the host-tool registry and its own gates, bypassing the inward framework middleware. The host owns credentials and storage; the backend provides the execution boundary.](assets/architecture-map.svg)
+
 | Direction | Control point |
 |---|---|
 | Model calls a sandboxed tool | Framework middleware checks the call; the host-side wrapper runs the kind |
@@ -73,6 +86,8 @@ Conversation purge asks every registered backend, including one that no longer s
 Guest-to-host tools bypass the middleware that admitted the outer call. Nothing is registered by default. The host must deliberately provide that authority and enforce the registry's gates.
 
 ## Framework adapter
+
+The framework adapter exposes sandbox workloads as ordinary MAF tools and connects their calls, cleanup and result labels to the agent framework.
 
 `maf_sandbox.maf` is the module that imports `agent_framework`. It is reached explicitly and is not re-exported by `import maf_sandbox`.
 
