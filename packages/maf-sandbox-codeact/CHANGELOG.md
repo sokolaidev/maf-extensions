@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.20.0...maf-sandbox-codeact-v0.21.0) (2026-09-24)
+
+
+### Features
+
+* keep guest HTTP credentials in isolated per-call gateways ([#1427](https://github.com/sokolaidev/maf-extensions/issues/1427)) ([e51eb13](https://github.com/sokolaidev/maf-extensions/commit/e51eb13fa43ad6aa737aa64ffc599efc5ce441ec))
+
+
+### Fixes
+
+* require maf-sandbox 0.43.0 in the dependents, and admit the 0.43 line ([#1431](https://github.com/sokolaidev/maf-extensions/issues/1431)) ([3fb4272](https://github.com/sokolaidev/maf-extensions/commit/3fb4272bc047b35de34fd05e523d15ee7fb70be3))
+
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.19.0...maf-sandbox-codeact-v0.20.0) (2026-09-21)
 
 
