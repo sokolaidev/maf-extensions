@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-drawio"
-version = "0.3.0"
+version = "0.3.1"
 description = "Create editable draw.io files from XML with sandboxed validation and automatic layout."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.3.0...maf-sandbox-drawio-v0.3.1) (2026-09-24)
+
+
+### Fixes
+
+* require maf-sandbox 0.43.0 in the dependents, and admit the 0.43 line ([#1431](https://github.com/sokolaidev/maf-extensions/issues/1431)) ([3fb4272](https://github.com/sokolaidev/maf-extensions/commit/3fb4272bc047b35de34fd05e523d15ee7fb70be3))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.2.0...maf-sandbox-drawio-v0.3.0) (2026-09-21)
 
 
