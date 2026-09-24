@@ -111,6 +111,7 @@ AKS probes cover both the historical delegated-cgroup path and this explicit con
 | Area | State | Tracking |
 |---|---|---|
 | Packaged runtime, reset and worker containment | Implemented on the supported WHP/KVM family | [Package README](../../../packages/maf-sandbox-hyperlight/README.md) |
+| Method-scoped egress | Implemented for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; path rules not declared | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged) |
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Feasibility measured; deployment work remains open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Upstream AKS device deployment | Pinned overlay implemented; production operational validation remains | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open) |
