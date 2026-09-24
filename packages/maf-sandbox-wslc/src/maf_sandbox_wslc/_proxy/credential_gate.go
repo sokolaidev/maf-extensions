@@ -152,6 +152,9 @@ func (g *mafCredentials) authorize(req *http.Request) (*http.Request, context.Ca
 	if port == "" {
 		port = "443"
 	}
+	// Only the transport copy may carry an upstream credential, selected by this grant.
+	req = req.Clone(req.Context())
+	req.Header.Del("Authorization")
 	for _, entry := range grant.Entries {
 		if !strings.EqualFold(host, entry.Host) {
 			continue
@@ -161,7 +164,6 @@ func (g *mafCredentials) authorize(req *http.Request) (*http.Request, context.Ca
 			return nil, noop, errMAFCredential
 		}
 		deadline = entry.deadline
-		// A guest value never chooses a principal, including another guest's placeholder.
 		req.Header.Set("Authorization", "Bearer "+entry.Token)
 		break
 	}

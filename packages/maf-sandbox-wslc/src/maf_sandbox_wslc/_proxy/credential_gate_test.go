@@ -19,6 +19,7 @@ import (
 
 	"github.com/ironsh/iron-proxy/internal/responseretry"
 	"github.com/ironsh/iron-proxy/internal/transform"
+	"github.com/ironsh/iron-proxy/internal/transform/allowlist"
 	"github.com/stretchr/testify/require"
 )
 
@@ -72,6 +73,74 @@ func TestMAFCredentialBoundaries(t *testing.T) {
 				t.Fatal("wrong credential")
 			}
 		})
+	}
+}
+
+func TestMAFCredentialHeaderIsolation(t *testing.T) {
+	cases := []struct {
+		name, target, want string
+		enabled            bool
+	}{
+		{"grant", "https://api.example.com:8443/v1/items", "Bearer user-alice-secret", true},
+		{"other-tls", "https://other.example.com/", "", true},
+		{"other-http", "http://other.example.com/", "", true},
+		{"disabled", "https://other.example.com/", "Bearer copied-from-another-user", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := mafFixture(t, time.Minute)
+			g.enabled = tc.enabled
+			r := mafRequest("GET", tc.target, "172.22.1.4:1234")
+			r.Header.Set("X-Request-ID", "request-1")
+			original := r.Header.Clone()
+			got, cancel, err := g.authorize(r)
+			defer cancel()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got.Header.Get("Authorization"))
+			require.Equal(t, "request-1", got.Header.Get("X-Request-ID"))
+			require.Equal(t, original, r.Header, "transport credentials must not enter the caller's request")
+		})
+	}
+}
+
+func TestMAFCredentialMixedAllowlist(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	transport := upstream.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "127.0.0.1"
+	transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+	}
+	defer transport.CloseIdleConnections()
+	rules, err := allowlist.New([]string{"api.example.com", "other.example.com"}, nil)
+	require.NoError(t, err)
+	p := New(Options{
+		Pipeline: transform.NewPipelineHolder(transform.NewPipeline([]transform.Transformer{rules}, transform.BodyLimits{}, testLogger())),
+		Logger:   testLogger(),
+	})
+	p.credentials = mafFixture(t, time.Minute)
+	p.transport = transport
+	for _, host := range []string{"api.example.com", "other.example.com", "api.example.com"} {
+		r := httptest.NewRequest(http.MethodGet, "https://"+host+":8443/v1/items", nil)
+		r.RemoteAddr = "172.22.1.4:1234"
+		r.TLS = &tls.ConnectionState{ServerName: host}
+		r.Header.Add("authorization", "Bearer copied-from-another-user")
+		r.Header.Add("Authorization", "Basic guest-value")
+		r.Header.Set("X-Request-ID", "request-1")
+		w := httptest.NewRecorder()
+		p.handleHTTP(w, r, nil)
+		require.Equal(t, http.StatusNoContent, w.Code)
+		headers := <-seen
+		require.Equal(t, "request-1", headers.Get("X-Request-ID"))
+		if host == "api.example.com" {
+			require.Equal(t, []string{"Bearer user-alice-secret"}, headers.Values("Authorization"))
+		} else {
+			require.Empty(t, headers.Values("Authorization"))
+		}
 	}
 }
 
@@ -327,7 +396,6 @@ func TestMAFCredentialMissingMalformedRestartAndOtherHost(t *testing.T) {
 	other := mafRequest("GET", "https://other.example.com/", "172.22.1.4:1234")
 	got, cancel, err := g.authorize(other)
 	defer cancel()
-	if err != nil || got.Header.Get("Authorization") == "Bearer user-alice-secret" {
-		t.Fatal("credential leaked to another origin")
-	}
+	require.NoError(t, err)
+	require.Empty(t, got.Header.Values("Authorization"))
 }

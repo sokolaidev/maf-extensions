@@ -65,15 +65,15 @@ PROBE = """import http.client, json, os, ssl, sys, time
 from urllib.parse import urlsplit
 p = urlsplit(os.environ["HTTPS_PROXY"])
 c = http.client.HTTPSConnection(p.hostname, p.port, context=ssl.create_default_context(), timeout=5)
-c.set_tunnel("api.example.com", 8443)
+c.set_tunnel(sys.argv[3], 8443)
 def request():
  try:
   c.request(sys.argv[1], sys.argv[2], headers={"Authorization": "Bearer copied-foreign-placeholder"})
   r=c.getresponse(); body=r.read().decode(); return [r.status, body, c.sock.getsockname()[1] if c.sock else None]
  except Exception as exc: return [0, type(exc).__name__, None]
 first=request()
-if len(sys.argv)>3:
- end=time.monotonic()+float(sys.argv[3])
+if len(sys.argv)>4:
+ end=time.monotonic()+float(sys.argv[4])
  while time.monotonic()<end:
   time.sleep(min(0.5, max(0, end-time.monotonic())))
   if time.monotonic()<end: request()
@@ -135,7 +135,10 @@ def certificate():
         .not_valid_after(datetime.now(UTC) + timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName("api.example.com")]), critical=False
+            x509.SubjectAlternativeName(
+                [x509.DNSName("api.example.com"), x509.DNSName("other.example.com")]
+            ),
+            critical=False,
         )
         .sign(key, hashes.SHA256())
     )
@@ -207,16 +210,48 @@ def trust_fixture(engine, name, ip, cert):
         "sh",
         "-c",
         "cat >> /etc/hosts",
-        data=f"{ip} api.example.com\n".encode(),
+        data=f"{ip} api.example.com other.example.com\n".encode(),
     )
 
 
-def probe(engine, name, method="GET", path="/v1/who", delay=None):
-    args = ["exec", name, "python", "-c", PROBE, method, path]
+def probe(engine, name, method="GET", path="/v1/who", delay=None, host="api.example.com"):
+    args = ["exec", name, "python", "-c", PROBE, method, path, host]
     if delay is not None:
         args.append(str(delay))
     result = container(engine, *args)
     return json.loads(result.stdout)
+
+
+def test_mixed_allowlist_strips_guest_authorization(upstream):
+    engine, _, ip, cert = upstream
+    token = "synthetic-bound-credential"
+
+    async def provider(request):
+        return [
+            CredentialGrant(
+                "api-audience", "https://api.example.com:8443", token, request.expires_at
+            )
+        ]
+
+    async def check():
+        backend = make_backend(engine, provider)
+        key = SandboxKey("mixed-" + uuid.uuid4().hex, "thread", "agent", "call")
+        mixed = replace(
+            spec(), egress_allow=(*spec().egress_allow, EgressRule("other.example.com"))
+        )
+        try:
+            sandbox = await backend.acquire(key, mixed)
+            trust_fixture(engine, sandbox.container_name, ip, cert)
+            for host in ("api.example.com", "other.example.com", "api.example.com"):
+                authorization = "Bearer " + token if host == "api.example.com" else ""
+                assert probe(engine, sandbox.container_name, host=host)[:2] == [
+                    200,
+                    hashlib.sha256(authorization.encode()).hexdigest(),
+                ]
+        finally:
+            await backend.dispose(key, kind=mixed.kind)
+
+    asyncio.run(check())
 
 
 def test_users_agents_calls_containers_and_host_replicas(upstream):
