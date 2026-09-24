@@ -142,3 +142,37 @@ class TestNames:
         with pytest.raises(ValueError, match="verbatim"):
             plane.lstat("/maf-sandbox/upper")
         assert plane.read("/maf-sandbox/Upper", 10) == b"x"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor-relative plane")
+class TestDescriptors:
+    def test_every_operation_returns_its_descriptors(self, plane, tmp_path):
+        if not Path("/proc/self/fd").is_dir():
+            pytest.skip("needs /proc/self/fd to count descriptors")
+        (tmp_path / "outside").mkdir()
+        os.symlink(tmp_path / "outside", plane.host_root / "link")
+        before = len(os.listdir("/proc/self/fd"))
+        for _ in range(20):
+            plane.write("/maf-sandbox/a/b/c", b"x")
+            plane.read("/maf-sandbox/a/b/c", 10)
+            plane.list("/maf-sandbox/a/b")
+            plane.lstat("/maf-sandbox/a/missing/deeper")
+            with pytest.raises(ValueError):
+                plane.read("/maf-sandbox/link/x", 10)
+        assert len(os.listdir("/proc/self/fd")) == before
+
+    def test_a_failing_close_is_not_retried_on_the_same_descriptor(self, plane, monkeypatch):
+        plane.make_directories("/maf-sandbox/a")
+        closed: list[int] = []
+        real_close = os.close
+
+        def close(fd: int) -> None:
+            closed.append(fd)
+            real_close(fd)
+            if len(closed) == 1:
+                raise OSError("close reported an error after releasing the descriptor")
+
+        monkeypatch.setattr(os, "close", close)
+        with pytest.raises(OSError, match="close reported"):
+            plane.lstat("/maf-sandbox/a/x")
+        assert len(closed) == len(set(closed)), closed

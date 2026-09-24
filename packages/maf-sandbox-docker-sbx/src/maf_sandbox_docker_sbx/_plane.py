@@ -102,6 +102,8 @@ class _Directory(Protocol):
     def names(self) -> list[str]: ...
     def child(self, name: str, *, create: bool) -> _Directory: ...
     def close(self) -> None: ...
+    def __enter__(self) -> _Directory: ...
+    def __exit__(self, *exc: object) -> None: ...
     def read(self, name: str, max_bytes: int) -> bytes: ...
     def write(self, name: str, content: bytes) -> None: ...
 
@@ -145,6 +147,7 @@ class _PosixDirectory:
             try:
                 os.mkdir(name, 0o700, dir_fd=self._fd)
             except FileExistsError:
+                # Created between the stat and here; the no-follow open below still checks it.
                 pass
         try:
             fd = os.open(name, self._FLAGS | _O_CLOEXEC, dir_fd=self._fd)
@@ -160,6 +163,12 @@ class _PosixDirectory:
 
     def close(self) -> None:
         os.close(self._fd)
+
+    def __enter__(self) -> _PosixDirectory:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     def read(self, name: str, max_bytes: int) -> bytes:
         flags = os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC
@@ -191,6 +200,7 @@ class _PosixDirectory:
             try:
                 os.unlink(part, dir_fd=self._fd)
             except OSError:
+                # Best effort: the write's own failure is the one to report.
                 pass
             raise
 
@@ -237,6 +247,12 @@ class _WindowsDirectory:
     def close(self) -> None:
         return None
 
+    def __enter__(self) -> _WindowsDirectory:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     def read(self, name: str, max_bytes: int) -> bytes:
         found = self.lstat(name)
         if found is None:
@@ -264,6 +280,7 @@ class _WindowsDirectory:
             try:
                 os.unlink(part)
             except OSError:
+                # Best effort: the write's own failure is the one to report.
                 pass
             raise
 
@@ -328,14 +345,10 @@ class WorkspacePlane:
 
     def _walk(self, parts: Sequence[str], *, create: bool = False) -> _Directory:
         directory: _Directory = self._directory.open_root(self._host_root)
-        try:
-            for name in parts:
+        for name in parts:
+            with directory:
                 child = directory.child(name, create=create)
-                directory.close()
-                directory = child
-        except BaseException:
-            directory.close()
-            raise
+            directory = child
         return directory
 
     def _leaf(self, guest_path: str, *, create: bool = False) -> tuple[_Directory, str]:
@@ -353,11 +366,9 @@ class WorkspacePlane:
             directory = self._walk(parts[:-1])
         except FileNotFoundError:
             return None
-        try:
+        with directory:
             found = directory.lstat(parts[-1])
             _refuse_an_alias(directory, parts[-1], found)
-        finally:
-            directory.close()
         if found is None:
             return None
         kind = _kind(found)
@@ -366,29 +377,25 @@ class WorkspacePlane:
 
     def read(self, guest_path: str, max_bytes: int) -> bytes:
         directory, name = self._leaf(guest_path)
-        try:
+        with directory:
             return directory.read(name, max_bytes)
-        finally:
-            directory.close()
 
     def write(self, guest_path: str, content: bytes) -> None:
         directory, name = self._leaf(guest_path, create=True)
-        try:
+        with directory:
             _refuse_an_alias(directory, name, directory.lstat(name))
             directory.write(name, content)
-        finally:
-            directory.close()
 
     def make_directories(self, guest_path: str) -> None:
         parts = self.parts(guest_path)
         if parts:
-            self._walk(parts, create=True).close()
+            with self._walk(parts, create=True):
+                pass
 
     def list(self, guest_path: str) -> list[tuple[str, SandboxEntry]]:
         """Each child's name and entry; the entry's ``path`` is left for the caller to set."""
         parts = self.parts(guest_path) or ()
-        directory = self._walk(parts)
-        try:
+        with self._walk(parts) as directory:
             listed: list[tuple[str, SandboxEntry]] = []
             for name in sorted(directory.names()):
                 found = directory.lstat(name)
@@ -398,5 +405,3 @@ class WorkspacePlane:
                 size = found.st_size if kind is EntryKind.FILE else None
                 listed.append((name, SandboxEntry(path=name, kind=kind, size_bytes=size)))
             return listed
-        finally:
-            directory.close()
