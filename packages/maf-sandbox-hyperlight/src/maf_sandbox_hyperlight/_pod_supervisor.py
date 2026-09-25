@@ -23,6 +23,7 @@ from ._pod import (
     FRAME_LIMIT,
     PLATFORM_EXIT,
     PLATFORM_REFUSAL,
+    REASON_LIMIT,
     TERMINATION_LOG,
     frame,
     unframe,
@@ -84,11 +85,11 @@ def make_undumpable() -> None:
 
 
 def _refuse_platform(reason: str) -> None:
-    """Kubelet copies this file into the pod status, where the controller reads it."""
-    message = (PLATFORM_REFUSAL + reason)[:4000]
-    print(message, file=sys.stderr, flush=True)
-    with suppress(OSError), open(TERMINATION_LOG, "w", encoding="utf-8") as target:
-        target.write(message)
+    """Kubelet copies the termination message into the pod status, where the controller reads it."""
+    message = PLATFORM_REFUSAL + reason
+    with suppress(OSError, ValueError):
+        print(message, file=sys.stderr, flush=True)
+    record_reason(message)
 
 
 class Supervisor:
@@ -382,8 +383,15 @@ class Supervisor:
         return 70
 
 
+def record_reason(reason: str) -> None:
+    """The kubelet copies this file into pod status, which outlives the pod's log."""
+    with suppress(OSError), open(TERMINATION_LOG, "w", encoding="utf-8") as target:
+        target.write(reason[:REASON_LIMIT])
+
+
 def main() -> None:
     """Run an application as the sole owner under the controller's immutable pod binding."""
+    reason = ""
     try:
         fields = json.loads(os.environ["MAF_HYPERLIGHT_POD_BINDING"])
         launch = PodLaunch(
@@ -408,11 +416,13 @@ def main() -> None:
         signal.signal(signal.SIGTERM, terminate)
         signal.signal(signal.SIGINT, terminate)
         status = supervisor.run()
-        if supervisor.reason:
-            print(supervisor.reason, file=sys.stderr, flush=True)
+        reason = supervisor.reason
     except BaseException as error:
-        print(f"pod supervisor refused startup: {error}", file=sys.stderr, flush=True)
+        reason = f"pod supervisor refused startup: {error}"
         status = 71
+    if reason:
+        print(reason, file=sys.stderr, flush=True)
+        record_reason(reason)
     # Python shutdown can wait on application-owned resources; namespace exit must not.
     os._exit(status if 0 <= status <= 255 else 70)
 

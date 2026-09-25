@@ -16,6 +16,7 @@ from ._pod_config import POD_SOCKET, HyperlightPodConfig
 from ._wire import HyperlightWorkerError
 
 FRAME_LIMIT = 8192
+REASON_LIMIT = 1024
 PLATFORM_EXIT = 78
 PLATFORM_REFUSAL = "maf-hyperlight: unsupported platform: "
 TERMINATION_LOG = "/dev/termination-log"

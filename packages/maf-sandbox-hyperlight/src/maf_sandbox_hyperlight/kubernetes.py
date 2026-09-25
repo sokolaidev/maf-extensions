@@ -17,7 +17,7 @@ from typing import BinaryIO, cast
 
 from maf_sandbox import SandboxKey
 
-from ._pod import FRAME_LIMIT, PLATFORM_EXIT, PLATFORM_REFUSAL, frame, unframe
+from ._pod import FRAME_LIMIT, PLATFORM_EXIT, PLATFORM_REFUSAL, REASON_LIMIT, frame, unframe
 from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
@@ -82,6 +82,15 @@ class HyperlightPodResult:
     elapsed: float
     diagnostics: str
     platform: dict[str, str] = field(default_factory=dict[str, str])
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class HyperlightPodExit:
+    """A confirmed exit code and the reason the pod supervisor recorded, empty if none."""
+
+    exit_code: int
+    reason: str
 
 
 def pod_manifest(
@@ -148,6 +157,8 @@ def pod_manifest(
                     "stdin": True,
                     "stdinOnce": True,
                     "tty": False,
+                    "terminationMessagePath": "/dev/termination-log",
+                    "terminationMessagePolicy": "File",
                     "securityContext": {
                         "allowPrivilegeEscalation": False,
                         "readOnlyRootFilesystem": True,
@@ -336,6 +347,16 @@ def _never_started_terminal(container: dict[str, object]) -> bool:
     )
 
 
+def _termination_reason(pod: dict[str, object]) -> str:
+    status = cast("dict[str, object]", pod.get("status", {}))
+    containers = cast("list[dict[str, object]]", status.get("containerStatuses", []))
+    if len(containers) != 1 or containers[0].get("name") != "sandbox":
+        return ""
+    state = cast("dict[str, object]", containers[0].get("state", {}))
+    message = cast("dict[str, object]", state.get("terminated", {})).get("message")
+    return message[:REASON_LIMIT] if isinstance(message, str) else ""
+
+
 def _terminated_exit(state: dict[str, object]) -> int | None:
     """Synthetic kubelet statuses cannot certify that a container exited."""
     ended = cast("dict[str, object]", state.get("terminated", {}))
@@ -518,11 +539,16 @@ class HyperlightPodController:
                     if pipe is not None:
                         with suppress(OSError):
                             pipe.close()
-            result, refusal = self._recover(key, kind, timeout=cleanup_timeout, retire=True)
-        if result == PLATFORM_EXIT and refusal:
-            raise HyperlightPodPlatformError(refusal)
+            outcome = self.recover_exit(key, kind, timeout=cleanup_timeout, retire=True)
+        if outcome.exit_code == PLATFORM_EXIT and outcome.reason.startswith(PLATFORM_REFUSAL):
+            raise HyperlightPodPlatformError(outcome.reason)
         return HyperlightPodResult(
-            uid, result, time.monotonic() - started, diagnostics.decode(errors="replace"), platform
+            uid,
+            outcome.exit_code,
+            time.monotonic() - started,
+            diagnostics.decode(errors="replace"),
+            platform,
+            outcome.reason,
         )
 
     def _await_running(self, name: str, uid: str, deadline: float) -> bool:
@@ -672,12 +698,12 @@ class HyperlightPodController:
         self, key: SandboxKey, kind: str, *, timeout: float = 45, retire: bool = False
     ) -> int:
         """Release a stopped or rejected allocation; confirmed rejection returns code 71."""
-        return self._recover(key, kind, timeout=timeout, retire=retire)[0]
+        return self.recover_exit(key, kind, timeout=timeout, retire=retire).exit_code
 
-    def _recover(
-        self, key: SandboxKey, kind: str, *, timeout: float, retire: bool
-    ) -> tuple[int, str]:
-        """Also return PID 1's platform refusal, which the pod status carries until deletion."""
+    def recover_exit(
+        self, key: SandboxKey, kind: str, *, timeout: float = 45, retire: bool = False
+    ) -> HyperlightPodExit:
+        """Like `recover`, and also return the reason saved with the termination receipt."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         name = ownership_name(key, kind)
@@ -690,10 +716,10 @@ class HyperlightPodController:
         data = cast("dict[str, str]", ledger["data"])
         if data.get("state") == "rejected" and not data.get("pod_uid"):
             self._release_rejected(name, ledger)
-            return 71, ""
+            return HyperlightPodExit(71, "")
         if data.get("state") == "stopped" and data.get("pod_uid"):
             self._finish_cleanup(name, ledger)
-            return int(data["exit_code"]), data.get("refusal", "")
+            return HyperlightPodExit(int(data["exit_code"]), data.get("reason", ""))
         until = time.monotonic() + timeout
         deleted = False
         while True:
@@ -710,7 +736,6 @@ class HyperlightPodController:
                     raise HyperlightPodCleanupPending("pod UID differs; allocation retained")
                 result = confirmed_exit(pod, uid)
                 if result is not None:
-                    refusal = _platform_refusal(pod) if result == PLATFORM_EXIT else ""
                     break
                 if retire and not deleted:
                     self._delete("pods", name, uid)
@@ -730,9 +755,10 @@ class HyperlightPodController:
             if time.monotonic() >= until:
                 raise HyperlightPodCleanupPending("termination unconfirmed; allocation retained")
             time.sleep(0.2)
-        data.update({"state": "stopped", "pod_uid": uid, "exit_code": str(result)})
-        if refusal:
-            data["refusal"] = refusal
+        reason = _termination_reason(pod)
+        data.update(
+            {"state": "stopped", "pod_uid": uid, "exit_code": str(result), "reason": reason}
+        )
         try:
             ledger = self._replace(ledger)
         except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
@@ -740,7 +766,7 @@ class HyperlightPodController:
                 "termination receipt is unconfirmed; allocation retained"
             ) from error
         self._finish_cleanup(name, ledger)
-        return result, refusal
+        return HyperlightPodExit(result, reason)
 
     def _release_rejected(
         self, name: str, ledger: dict[str, object], *, record: bool = False
@@ -790,22 +816,6 @@ class HyperlightPodController:
             raise HyperlightPodCleanupPending(
                 "cleanup is incomplete; termination receipt retained"
             ) from error
-
-
-def _platform_refusal(pod: dict[str, object]) -> str:
-    """PID 1 writes this prefix before starting the application, which can only mislabel itself."""
-    status = cast("dict[str, object]", pod.get("status", {}))
-    for container in cast("list[dict[str, object]]", status.get("containerStatuses", [])):
-        state = cast("dict[str, object]", container.get("state", {}))
-        ended = cast("dict[str, object]", state.get("terminated", {}))
-        message = ended.get("message")
-        if (
-            container.get("name") == "sandbox"
-            and isinstance(message, str)
-            and message.startswith(PLATFORM_REFUSAL)
-        ):
-            return message[:4096]
-    return ""
 
 
 def _startup_blocker(pod: dict[str, object]) -> str:

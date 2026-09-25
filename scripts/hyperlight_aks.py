@@ -187,7 +187,7 @@ def main() -> None:
     )
     key = SandboxKey(args.scope, args.thread, args.agent)
     if args.action == "recover":
-        print(json.dumps({"exit_code": controller.recover(key, args.kind, retire=True)}))
+        print(json.dumps(dataclasses.asdict(controller.recover_exit(key, args.kind, retire=True))))
         return
     if not args.image:
         parser.error("supervise requires the built application image digest")
