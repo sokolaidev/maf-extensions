@@ -76,7 +76,7 @@ Stats, reads, listings and writes act on the host side of the mount. No path che
 - On macOS and Linux each path component is opened relative to its parent with `O_NOFOLLOW`, so a link the guest creates between a check and an operation makes the operation fail rather than follow it.
 - On Windows there are no descriptor-relative calls. The backend refuses reparse points, and relies on the guest being unable to create a link in its workspace, measured with `sbx` v0.45.1.
 - Writes land in a temporary file and are renamed into place, so a write never goes through what stood at the destination.
-- `remove` and `reclaim` check the path on the host side, then run `rm -rf` in the guest at the guest's own authority. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
+- `remove` and `reclaim` check the path on the host side, then remove it in the guest at the guest's own authority: `rm -f` for `remove(recursive=False)`, which refuses a directory swapped in after the check, and `rm -rf` for a recursive `remove` and for `reclaim`. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
 - Names the host would change, hide or merge are refused: a name that stats but is not listed verbatim, such as a case variant on a case-insensitive host. On Windows, reserved characters, reserved device names and a trailing dot or space are refused too.
 
 File methods reach only paths under the storage base's parent. Any other absolute path is refused with `ValueError`. `work_dir` must have a parent other than `/`, and that parent must not already exist in the image.
@@ -85,7 +85,7 @@ File methods reach only paths under the storage base's parent. Any other absolut
 
 ## Commands
 
-`exec` runs argv verbatim, with separate, byte-exact streams and the command's own exit code. Every command runs through a small `sh` wrapper. The image needs `sh`, `base64`, `setsid`, `mount`, `cat` and `rm`:
+`exec` runs argv verbatim, with separate, byte-exact streams and the command's own exit code. Every command runs through a small `sh` wrapper. The image needs `sh`, `base64`, `setsid`, `mount`, `mkdir`, `cat`, `rm` and `sleep`, and acquire checks for all of them:
 
 - argv is base64-encoded, because `sbx` refuses an empty argument;
 - a nonce on stderr marks where the command's own stderr starts, so a missing sandbox is never read as a command that exited 1;

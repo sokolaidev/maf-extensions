@@ -92,6 +92,8 @@ _WORKSPACE = "ws"
 _META = "meta.json"
 _META_VERSION = 1
 _PROBE_PREFIX = ".maf-sbx-probe-"
+#: The instance id of a sandbox still being set up; never returned from acquire.
+_SETTING_UP = "setting-up"
 #: Kept at the workspace root; its absence in the guest means the bind mount is gone.
 _MARKER = ".maf-sbx-workspace"
 
@@ -222,11 +224,12 @@ def sandbox_name(prefix: str, key: SandboxKey, kind: str) -> str:
 def _storage_base(spec: SandboxSpec) -> str:
     base = spec.work_dir if spec.work_dir is not None else _DEFAULT_BASE
     posix_work_dir_ancestors(base)
-    base = posixpath.normpath(base)
+    # normpath keeps a leading `//`, which the ancestor walk spells `/`; Linux reads both as `/`.
+    base = "/" + posixpath.normpath(base).lstrip("/")
     if posixpath.dirname(base) == "/":
         raise ValueError(
-            f"work_dir {base!r} sits directly under '/'; this backend links the base's parent "
-            "to the workspace, so the base needs a parent of its own"
+            f"work_dir {base!r} sits directly under '/'; this backend mounts the workspace at "
+            "the base's parent, so the base needs a parent of its own"
         )
     return base
 
@@ -671,10 +674,14 @@ class SbxSandboxBackend:
     def _sandbox(
         self, name: str, row: dict[str, object], base: str, guest_mount: str
     ) -> _SbxSandbox:
+        instance_id = row.get("id")
+        if not isinstance(instance_id, str) or not instance_id:
+            raise SbxError(
+                f"`sbx ls` gives sandbox {name} no id, so it could not be disposed exactly; the "
+                "daemon may have lost its engine. Run `sbx daemon restart`."
+            )
         mount = _Mount(guest_mount, posixpath.dirname(base), self._directory(name) / _WORKSPACE)
-        return _SbxSandbox(
-            self, name, str(row.get("id") or name), base, self._plane(name, base), mount
-        )
+        return _SbxSandbox(self, name, instance_id, base, self._plane(name, base), mount)
 
     async def _create(
         self, name: str, key: SandboxKey, spec: SandboxSpec, base: str
@@ -718,6 +725,7 @@ class SbxSandboxBackend:
         if created.returncode != 0:
             if _ALREADY_EXISTS in created.stderr_text:
                 return await self._adopt_the_winner(name, spec, base)
+            await self._discard(name)
             raise _failure(f"sbx create {name}", created)
         try:
             # The create proved nothing held this name, so anything in the workspace is stale.
@@ -728,14 +736,15 @@ class SbxSandboxBackend:
                 raise SbxError(f"the guest reported {guest_mount!r} as its workspace mount")
             meta["guest_mount"] = guest_mount
             await asyncio.to_thread((directory / _META).write_text, json.dumps(meta), "utf-8")
-            sandbox = self._sandbox(name, {}, base, guest_mount)
+            sandbox = self._sandbox(name, {"id": _SETTING_UP}, base, guest_mount)
             await self._bind_workspace(name, sandbox.mount, create=True)
             await self._prove_the_mount(sandbox)
             row = (await self._listing()).get(name) or {}
+            served = self._sandbox(name, row, base, guest_mount)
         except BaseException:
             await self._discard(name)
             raise
-        return self._sandbox(name, row, base, guest_mount)
+        return served
 
     async def _adopt_the_winner(self, name: str, spec: SandboxSpec, base: str) -> _SbxSandbox:
         """Serve the sandbox a concurrent create made, which the conflict proved exists."""
@@ -768,7 +777,8 @@ class SbxSandboxBackend:
         if probe.exit_code != 0 or probe.stdout != token:
             raise SbxError(
                 f"the guest could not read the workspace at {mount.parent!r}; the image needs sh, "
-                f"base64, setsid, mount, cat, rm and sleep for this backend: {probe.stderr.strip()}"
+                "base64, setsid, mount, mkdir, cat, rm and sleep for this backend: "
+                f"{probe.stderr.strip()}"
             )
 
     async def _discard(self, name: str) -> None:

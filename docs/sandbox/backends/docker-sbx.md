@@ -25,7 +25,7 @@ Stats, reads, listings and writes act on the host side of the mount, so no path 
 
 Names the host would change, hide or merge are refused. That covers a name that stats but is not listed verbatim, such as a case variant on a case-insensitive host. On Windows it also covers reserved characters, reserved device names, and a trailing dot or space.
 
-`remove` and `reclaim` check the path on the host side and then run `rm -rf` in the guest, at the guest's own authority. A guest that has looked a name up can keep seeing it for several seconds after a host-side delete, which broke the `FILES_DELETE` suite. The guest's authority reaches only its own VM and this workspace, so a swapped component cannot redirect a removal to anything the guest could not delete itself.
+`remove` and `reclaim` check the path on the host side and then remove it in the guest, at the guest's own authority: `rm -f` for `remove(recursive=False)`, which refuses a directory swapped in after the check, and `rm -rf` for a recursive `remove` and for `reclaim`. A guest that has looked a name up can keep seeing it for several seconds after a host-side delete, which broke the `FILES_DELETE` suite. The guest's authority reaches only its own VM and this workspace, so a swapped component cannot redirect a removal to anything the guest could not delete itself.
 
 ## Commands
 
@@ -35,7 +35,7 @@ Names the host would change, hide or merge are refused. That covers a name that 
 - a nonce on stderr marks where the command's own stderr begins, and its absence means the wrapper never ran;
 - the command runs under `setsid`, and an expired `timeout` kills its process group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`.
 
-The image needs `sh`, `base64`, `setsid`, `mount`, `cat` and `rm`.
+The image needs `sh`, `base64`, `setsid`, `mount`, `mkdir`, `cat`, `rm` and `sleep`. Acquire checks for all of them.
 
 ## Ownership and disposal
 

@@ -70,6 +70,7 @@ class FakeSbx:
         self.rm_result: _Result | None = None
         self.mount_exit = 0
         self.unmounted_once = False
+        self.unlisted: set[str] = set()
         backend._sbx = self  # type: ignore[method-assign]
 
     async def __call__(self, *args: str, timeout: float | None = None) -> _Result:
@@ -84,6 +85,7 @@ class FakeSbx:
                 rows = [
                     {"name": name, "id": f"id-{name}", "workspaces": [workspace]}
                     for name, workspace in self.sandboxes.items()
+                    if name not in self.unlisted
                 ]
                 return _ok(json.dumps({"sandboxes": rows}).encode())
             case ("create", "shell", "--name", name, *_rest):
@@ -256,6 +258,32 @@ class TestAcquire:
         assert sum(call[0] == "create" for call in sbx.calls) == creates
         with pytest.raises(ValueError, match="dispose it"):
             asyncio.run(backend.acquire(KEY, _spec(work_dir="/srv/other")))
+
+    def test_a_double_slash_base_is_the_single_root_path(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec(work_dir="//maf-sandbox/work")))
+        assert sandbox.base == "/maf-sandbox/work"
+        mount = next(call for call in sbx.calls if _MOUNT_SCRIPT in call)
+        assert mount[-3] == "/maf-sandbox"
+
+    def test_a_sandbox_the_listing_gives_no_id_is_refused_and_removed(self, backend, sbx, tmp_path):
+        sbx.unlisted.add(sandbox_name("maf", KEY, "kind"))
+        with pytest.raises(SbxError, match="no id"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+        assert list((tmp_path / "root").iterdir()) == []
+
+    def test_a_refused_create_leaves_no_workspace(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+
+        async def refused(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                return _Result(1, b"", b"error: pull access denied for example/missing\n")
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = refused  # type: ignore[method-assign]
+        with pytest.raises(SbxError, match="pull access denied"):
+            asyncio.run(backend.acquire(KEY, _spec(image="example/missing")))
+        assert list((tmp_path / "root").iterdir()) == []
 
     def test_a_create_conflict_the_listing_missed_is_a_daemon_fault(self, backend, sbx):
         async def conflicted(*args: str, timeout: float | None = None) -> _Result:

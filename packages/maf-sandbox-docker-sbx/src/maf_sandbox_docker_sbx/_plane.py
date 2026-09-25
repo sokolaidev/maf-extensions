@@ -368,6 +368,7 @@ class WorkspacePlane:
     def read(self, guest_path: str, max_bytes: int) -> bytes:
         directory, name = self._leaf(guest_path)
         with directory:
+            _refuse_an_alias(directory, name, directory.lstat(name))
             return directory.read(name, max_bytes)
 
     def write(self, guest_path: str, content: bytes) -> None:

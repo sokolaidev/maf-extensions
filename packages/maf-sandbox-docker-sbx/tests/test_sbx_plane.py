@@ -143,6 +143,8 @@ class TestNames:
             plane.write("/maf-sandbox/upper", b"y")
         with pytest.raises(ValueError, match="verbatim"):
             plane.lstat("/maf-sandbox/upper")
+        with pytest.raises(ValueError, match="verbatim"):
+            plane.read("/maf-sandbox/upper", 10)
         assert plane.read("/maf-sandbox/Upper", 10) == b"x"
 
 
