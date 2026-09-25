@@ -146,6 +146,14 @@ mkdir -p "$1" && mount --bind "$2" "$1"
 """
 _PARENT_EXISTS = 3
 
+#: Run once at create: checks the commands the wrapper, the deadline and removals use beyond
+#: the ones this script already needs to run, then reads the host's probe file.
+_PROBE_SCRIPT = r"""for c in rm sleep; do
+  command -v "$c" >/dev/null || { echo "maf-sbx: the image has no $c" >&2; exit 127; }
+done
+exec cat "$1"
+"""
+
 _NOT_FOUND = "not found"
 _ALREADY_EXISTS = "already exists"
 _UNAVAILABLE = "backend unavailable"
@@ -467,6 +475,10 @@ class SbxSandboxBackend:
             except TimeoutError:
                 await self._kill_group(name, pid_file)
                 raise TimeoutError(expired) from None
+            except asyncio.CancelledError:
+                # Killing the client leaves the guest's command running in a reusable sandbox.
+                await asyncio.shield(self._kill_group(name, pid_file))
+                raise
             if f"{nonce}-unmounted\n".encode() in result.stderr:
                 if attempt:
                     break
@@ -636,7 +648,12 @@ class SbxSandboxBackend:
     ) -> _SbxSandbox:
         meta = self._read_meta(name)
         workspace = str(self._directory(name) / _WORKSPACE)
-        if meta is None or row.get("workspaces") != [workspace]:
+        if meta is None:
+            raise SbxError(
+                f"sandbox {name} has no record in {self._directory(name)}; it was created by "
+                "another backend or its create was interrupted. Dispose it."
+            )
+        if row.get("workspaces") != [workspace]:
             raise SbxError(
                 f"sandbox {name} exists but its workspace is not {workspace}; it was created "
                 "with a different workspace_root. Dispose it or use the same root."
@@ -673,7 +690,6 @@ class SbxSandboxBackend:
             "work_dir": base,
             "image": spec.image,
         }
-        await asyncio.to_thread((directory / _META).write_text, json.dumps(meta), "utf-8")
         args = [
             "create",
             "shell",
@@ -691,15 +707,17 @@ class SbxSandboxBackend:
         ]
         if spec.image:
             args += ["--template", spec.image]
-        created = await self._sbx(
-            *args, str(workspace), timeout=self._config.create_timeout_seconds
-        )
+        try:
+            created = await self._sbx(
+                *args, str(workspace), timeout=self._config.create_timeout_seconds
+            )
+        except BaseException:
+            # The daemon may finish a create whose client was stopped.
+            await self._discard(name)
+            raise
         if created.returncode != 0:
             if _ALREADY_EXISTS in created.stderr_text:
-                raise SbxDaemonFault(
-                    f"sandbox {name} already exists although `sbx ls` did not list it; the "
-                    "daemon may have lost its engine. Run `sbx daemon restart`."
-                )
+                return await self._adopt_the_winner(name, spec, base)
             raise _failure(f"sbx create {name}", created)
         try:
             # The create proved nothing held this name, so anything in the workspace is stale.
@@ -719,6 +737,20 @@ class SbxSandboxBackend:
             raise
         return self._sandbox(name, row, base, guest_mount)
 
+    async def _adopt_the_winner(self, name: str, spec: SandboxSpec, base: str) -> _SbxSandbox:
+        """Serve the sandbox a concurrent create made, which the conflict proved exists."""
+        row = (await self._listing()).get(name)
+        if row is None:
+            raise SbxDaemonFault(
+                f"sandbox {name} already exists although `sbx ls` does not list it; the daemon "
+                "may have lost its engine. Run `sbx daemon restart`."
+            )
+        if self._read_meta(name) is None:
+            raise SbxError(
+                f"sandbox {name} is being created by another process; acquire again once it is up"
+            )
+        return self._adopt(name, row, spec, base)
+
     async def _prove_the_mount(self, sandbox: _SbxSandbox) -> None:
         """Have the guest read, through the mount and the wrapper, a file the host just wrote."""
         mount = sandbox.mount
@@ -727,14 +759,16 @@ class SbxSandboxBackend:
         await asyncio.to_thread((mount.host / probe_name).write_text, token, "ascii")
         try:
             probe = await sandbox.exec(
-                ["cat", posixpath.join(mount.parent, probe_name)], working_directory="/", timeout=60
+                ["sh", "-c", _PROBE_SCRIPT, "maf-sbx", posixpath.join(mount.parent, probe_name)],
+                working_directory="/",
+                timeout=60,
             )
         finally:
             await asyncio.to_thread((mount.host / probe_name).unlink, True)
         if probe.exit_code != 0 or probe.stdout != token:
             raise SbxError(
                 f"the guest could not read the workspace at {mount.parent!r}; the image needs sh, "
-                f"base64, setsid, mount and cat for this backend: {probe.stderr.strip()}"
+                f"base64, setsid, mount, cat, rm and sleep for this backend: {probe.stderr.strip()}"
             )
 
     async def _discard(self, name: str) -> None:

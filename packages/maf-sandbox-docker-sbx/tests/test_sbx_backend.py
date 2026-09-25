@@ -35,6 +35,7 @@ from maf_sandbox_docker_sbx._backend import (
     _KILL_SCRIPT,
     _MARKER,
     _MOUNT_SCRIPT,
+    _PROBE_SCRIPT,
     _Result,
     sandbox_name,
 )
@@ -110,14 +111,16 @@ class FakeSbx:
                     self.unmounted_once = False
                     return _Result(1, b"", f"{nonce}-unmounted\n".encode())
                 argv = [_decode(item) for item in encoded[1:]]
+                if argv[:2] == ["sh", "-c"] and "exec cat" in argv[2]:
+                    host = self._host(name, argv[4])
+                    return _Result(0, host.read_bytes(), f"{nonce}\n".encode())
                 if argv[0] == "cat":
                     host = self._host(name, argv[1])
                     return _Result(0, host.read_bytes(), f"{nonce}\n".encode())
                 return _Result(0, b"ran", f"{nonce}\n".encode())
             case ("exec", _name, "sh", "-c", script, "maf-sbx", _pid) if script == _KILL_SCRIPT:
                 return _ok()
-            case _:
-                raise AssertionError(f"unexpected sbx call {args}")
+        raise AssertionError(f"unexpected sbx call {args}")
 
     def _host(self, name: str, guest: str) -> Path:
         workspace = Path(self.sandboxes[name])
@@ -359,6 +362,66 @@ class TestDeadlines:
             asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
 
 
+class TestCancellation:
+    def test_a_cancelled_exec_kills_the_guest_process_group(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def cancelled(_args: tuple[str, ...]) -> _Result:
+            raise asyncio.CancelledError
+
+        sbx.exec_hook = cancelled
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=30))
+        assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+
+    def test_a_create_stopped_part_way_is_removed(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+
+        async def stopped(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await real(*args, timeout=timeout)  # the daemon finishes it
+                raise asyncio.CancelledError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = stopped  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+        assert list((tmp_path / "root").iterdir()) == []
+
+
+class TestCreateRace:
+    def _race(self, backend, sbx, tmp_path, *, winner_is_up: bool) -> None:
+        real = sbx.__call__
+        name = sandbox_name("maf", KEY, "kind")
+
+        async def lost(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                sbx.sandboxes[name] = args[-1]
+                if winner_is_up:
+                    meta = {"work_dir": "/maf-sandbox/work", "image": None}
+                    meta["guest_mount"] = GUEST_MOUNT
+                    (tmp_path / "root" / name / "meta.json").write_text(json.dumps(meta))
+                return _Result(1, b"", f"error: sandbox '{name}' already exists\n".encode())
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = lost  # type: ignore[method-assign]
+
+    def test_a_lost_create_serves_the_winners_sandbox(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True)
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        assert sandbox.instance_id == f"id-{sandbox.name}"
+        assert sandbox.name in sbx.sandboxes
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_winner_still_creating_is_named_and_left_alone(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=False)
+        with pytest.raises(SbxError, match="another process"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+
 class TestLocks:
     def test_the_lock_table_holds_only_names_in_use(self, backend, sbx):
         asyncio.run(backend.acquire(KEY, _spec()))
@@ -445,6 +508,28 @@ class TestTheWrapperInARealShell:
     def test_a_missing_working_directory_exits_125(self, tmp_path):
         result = self._run(tmp_path, ["pwd"], cwd=str(tmp_path / "absent"))
         assert result.returncode == 125 and result.stderr.startswith(b"NONCE\n")
+
+    def test_the_create_probe_refuses_an_image_without_rm(self, tmp_path):
+        tools = tmp_path / "bin"
+        tools.mkdir()
+        for tool in ("cat", "sleep"):
+            (tools / tool).symlink_to(shutil.which(tool) or tool)
+        probed = tmp_path / "probed"
+        probed.write_text("token")
+
+        def probe() -> subprocess.CompletedProcess[bytes]:
+            return subprocess.run(
+                [_SH or "sh", "-c", _PROBE_SCRIPT, "maf-sbx", str(probed)],
+                capture_output=True,
+                env={"PATH": str(tools)},
+                timeout=30,
+            )
+
+        missing = probe()
+        assert missing.returncode == 127 and b"no rm" in missing.stderr
+        (tools / "rm").symlink_to(shutil.which("rm") or "rm")
+        found = probe()
+        assert (found.returncode, found.stdout) == (0, b"token")
 
     def test_nothing_runs_while_the_mount_is_missing(self, tmp_path):
         result = self._run(tmp_path, ["touch", str(tmp_path / "ran")], mounted=False)
