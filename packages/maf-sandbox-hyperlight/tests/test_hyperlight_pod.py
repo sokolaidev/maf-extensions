@@ -33,6 +33,7 @@ from maf_sandbox_hyperlight import (
     kubernetes,
 )
 from maf_sandbox_hyperlight._pod import FRAME_LIMIT, frame, unframe, verify_container
+from maf_sandbox_hyperlight._pod_config import PodLaunch
 from maf_sandbox_hyperlight._pod_supervisor import Supervisor
 from maf_sandbox_hyperlight.kubernetes import (
     HyperlightPodCleanupPending,
@@ -46,6 +47,8 @@ from maf_sandbox_hyperlight.kubernetes import (
 KEY = SandboxKey("tenant:user", "conversation", "agent")
 KIND = "codeact"
 BINDING = HyperlightPodConfig(KEY, KIND, "pod-uid", "generation", 4 * 1024**3)
+LAUNCH = PodLaunch(ownership_name(KEY, KIND), "pod-uid", "generation", 4 * 1024**3)
+IDENTITY = {"scope": KEY.scope, "thread_id": KEY.thread_id, "agent_id": KEY.agent_id, "kind": KIND}
 TEMPLATE = HyperlightPodTemplate(
     "registry.example/runtime@sha256:" + "a" * 64, ("python", "app.py")
 )
@@ -120,9 +123,12 @@ def test_wrong_scope_refuses_before_host_or_worker_access(monkeypatch):
 
 
 def test_manifest_uses_upstream_resource_with_private_container_limits():
-    pod = json.loads(
-        json.dumps(pod_manifest(KEY, KIND, TEMPLATE, namespace="scoped-agents", generation="gen"))
+    key = SandboxKey("tenant-7f3a:user-91c2", "thread-5c2e0b", "analyst-b41d")
+    kind = "kind-e83f"
+    serialized = json.dumps(
+        pod_manifest(key, kind, TEMPLATE, namespace="scoped-agents", generation="gen")
     )
+    pod = json.loads(serialized)
     spec = pod["spec"]
     assert spec["restartPolicy"] == "Never"
     assert spec["automountServiceAccountToken"] is False
@@ -138,13 +144,9 @@ def test_manifest_uses_upstream_resource_with_private_container_limits():
     assert all("hostPath" not in volume for volume in spec["volumes"])
     assert container["stdinOnce"] is True and container["tty"] is False
     env = {item["name"]: item.get("value") for item in container["env"]}
-    identity = json.loads(env["MAF_HYPERLIGHT_POD_BINDING"])
-    assert [identity[name] for name in ("scope", "thread_id", "agent_id", "kind")] == [
-        KEY.scope,
-        KEY.thread_id,
-        KEY.agent_id,
-        KIND,
-    ]
+    launch = json.loads(env["MAF_HYPERLIGHT_POD_BINDING"])
+    assert launch["owner"] == pod["metadata"]["name"] == ownership_name(key, kind)
+    assert all(value not in serialized for value in (key.scope, key.thread_id, key.agent_id, kind))
     assert pod["metadata"]["finalizers"]
 
 
@@ -223,7 +225,7 @@ def test_lifecycle_frames_cannot_be_truncated_or_unbounded(raw):
 @pytest.fixture
 def supervisor(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
-    subject = Supervisor(BINDING, ["application"])
+    subject = Supervisor(LAUNCH, ["application"])
     subject.connected = True
     subject.lease = time.monotonic() + 10
     subject.worker = 100
@@ -294,6 +296,66 @@ def test_late_heartbeat_cannot_revive_an_expired_lease(supervisor):
     assert supervisor.retired.is_set()
 
 
+def hello(**changes: object) -> dict[str, object]:
+    return {"op": "hello", "pod_uid": "pod-uid", "generation": "generation", **IDENTITY, **changes}
+
+
+def test_hello_binds_the_identity_the_pod_is_named_for(supervisor, monkeypatch):
+    started = []
+    monkeypatch.setattr(supervisor, "start_owner", started.append)
+    supervisor.connected = False
+    supervisor.controller_message(hello())
+    assert started == [BINDING] and supervisor.connected
+
+
+@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_id", "kind"])
+def test_hello_for_another_identity_cannot_bind_the_pod(supervisor, monkeypatch, field):
+    started = []
+    monkeypatch.setattr(supervisor, "start_owner", started.append)
+    supervisor.connected = False
+    with pytest.raises(HyperlightWorkerError, match="does not name this pod"):
+        supervisor.controller_message(hello(**{field: "other"}))
+    with pytest.raises(ValueError, match="ownership fields"):
+        supervisor.controller_message(hello(**{field: None}))
+    assert not started and not supervisor.connected
+
+
+@pytest.mark.parametrize(
+    "field,value", [("owner", None), ("pod_uid", ""), ("memory_limit_bytes", True)]
+)
+def test_invalid_pod_launch_is_refused(field, value):
+    with pytest.raises(ValueError):
+        replace(LAUNCH, **{field: value})
+
+
+def test_controller_hello_carries_the_identity_the_supervisor_binds(supervisor, monkeypatch):
+    stopped = threading.Event()
+    stream = SimpleNamespace(
+        stdout=io.BytesIO(),
+        stderr=io.BytesIO(),
+        stdin=io.BytesIO(),
+        poll=lambda: 0 if stopped.is_set() else None,
+    )
+    readers = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    try:
+        controller._supervise(
+            stream, "pod-uid", "generation", IDENTITY, time.monotonic() + 2, bytearray(), readers
+        )
+        written = time.monotonic() + 2
+        while not stream.stdin.getvalue() and time.monotonic() < written:
+            time.sleep(0.01)
+    finally:
+        stopped.set()
+        for reader in readers:
+            reader.join(timeout=2)
+    started = []
+    monkeypatch.setattr(supervisor, "start_owner", started.append)
+    supervisor.connected = False
+    supervisor.controller_message(unframe(stream.stdin.getvalue().splitlines(True)[0]))
+    assert started == [BINDING]
+
+
 @pytest.mark.parametrize(
     "payload,reason", [(b"", "stream closed"), (b"not-json\n", "JSONDecodeError")]
 )
@@ -315,12 +377,15 @@ def test_controller_input_overflow_retires_with_diagnostic(supervisor, monkeypat
 
 @pytest.mark.parametrize("error", ["SystemExit(0)", "KeyboardInterrupt()"])
 def test_init_forces_failure_exit_without_waiting_for_python_threads(error):
+    launch = {"owner": LAUNCH.owner, "generation": "generation", "memory_limit_bytes": 1}
     program = f"""
 import json, os, threading
+import sys
 from maf_sandbox_hyperlight import _pod_supervisor
-os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(BINDING.mapping())!r}
+os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(launch)!r}
 os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
-def refuse(binding):
+def refuse(launch):
+    print('verifying init', file=sys.stderr, flush=True)
     threading.Thread(target=threading.Event().wait, daemon=False).start()
     raise {error}
 _pod_supervisor.verify_init = refuse
@@ -330,6 +395,7 @@ _pod_supervisor.main()
         [sys.executable, "-c", program], capture_output=True, timeout=10, check=False
     )
     assert result.returncode == 71
+    assert b"verifying init" in result.stderr
     assert b"pod supervisor refused startup" in result.stderr
 
 
@@ -371,7 +437,7 @@ def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
         controller._supervise(
-            stream, "pod-uid", "generation", time.monotonic() + 2, bytearray(), readers
+            stream, "pod-uid", "generation", IDENTITY, time.monotonic() + 2, bytearray(), readers
         )
     finally:
         stopped.set()
@@ -614,6 +680,17 @@ def test_manifest_failure_does_not_reserve_the_scope(monkeypatch):
     monkeypatch.setattr(kubernetes, "pod_manifest", unavailable)
     with pytest.raises(OSError, match="bootstrap source"):
         controller.supervise(KEY, KIND, TEMPLATE)
+    assert not controller.calls
+
+
+@pytest.mark.parametrize(
+    "scope,match",
+    [("x" * 1025, "bounded strings"), ("\U0001f600" * 1024, "lifecycle frame")],
+)
+def test_identity_the_pod_cannot_receive_reserves_nothing(scope, match):
+    controller = FakeController()
+    with pytest.raises(ValueError, match=match):
+        controller.supervise(replace(KEY, scope=scope), KIND, TEMPLATE)
     assert not controller.calls
 
 
