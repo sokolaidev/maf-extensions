@@ -5086,6 +5086,35 @@ class TestAllowlistTopology:
         labels = [args[i + 1] for i, a in enumerate(args) if a == "--label"]
         assert "maf-sandbox.role=proxy" in labels
 
+    def test_the_proxy_drops_every_capability_while_the_workload_keeps_its_default(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = _run_named(fake, _AL_PROXY).args
+        assert args[args.index("--security-opt") + 1] == "no-new-privileges"
+        assert args[args.index("--pids-limit") + 1] == "512"
+        assert args[args.index("--cap-drop") + 1] == "ALL"
+        assert "--memory" not in args and "--cpus" not in args
+        assert "--cap-drop" not in _run_named(fake, _AL).args
+
+    def test_the_proxy_gets_the_workloads_configured_limits(self):
+        config = replace(_ALLOW_CONFIG, pids_limit=64, memory="256m", cpus=0.5)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        for name in (_AL_PROXY, _AL):
+            args = _run_named(fake, name).args
+            assert args[args.index("--pids-limit") + 1] == "64"
+            assert args[args.index("--memory") + 1] == "256m"
+            assert args[args.index("--cpus") + 1] == "0.5"
+
+    def test_an_unreadable_proxy_ca_names_the_engines_reason(self):
+        refused = "OCI runtime exec failed: unable to start container process: procReady"
+        backend, _ = _backend_with(
+            _machine(overrides={("exec", _AL_PROXY, "cat"): _DockerResult(126, b"", refused)}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match=f"CA certificate: {refused}"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
     def test_an_unreadable_outbound_gateway_refuses_the_proxy(self):
         backend, fake = _backend_with(
             _machine(

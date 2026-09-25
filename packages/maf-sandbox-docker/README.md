@@ -52,7 +52,7 @@ Directory listing, runtime `run_code`, snapshots and core attached identity are 
 
 Acquisition checks the guest commands needed by the requested capabilities. `EXEC` needs `sh`, even for an argv-only workload. Deletion needs `rm`; host tools also need `mkdir`, `mv` and `nohup`. File transfer itself needs no guest command.
 
-The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration.
+The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration. The egress proxy gets the workload's PID, memory and CPU limits and always drops all capabilities.
 
 ## File transfer
 
