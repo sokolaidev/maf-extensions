@@ -75,3 +75,16 @@ def test_dependabot_moves_the_action_pins_under_a_title_that_releases_nothing():
     assert len(updates) == 1, f"expected one github-actions update, got {updates}"
     assert updates[0]["directory"] == "/"
     assert updates[0]["commit-message"]["prefix"] == "ci"
+
+
+def test_no_dependabot_group_is_limited_by_update_type():
+    # Such a group takes every dependency its patterns match, proposing none of the updates it
+    # excludes (dependabot-core#14202).
+    config = yaml.safe_load(_DEPENDABOT.read_text("utf-8"))
+    limited = [
+        f"{entry['package-ecosystem']}:{name}"
+        for entry in config["updates"]
+        for name, group in entry.get("groups", {}).items()
+        if "update-types" in group
+    ]
+    assert limited == []

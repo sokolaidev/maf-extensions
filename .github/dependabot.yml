@@ -36,8 +36,9 @@ updates:
     # Two distributions, so two is every proposal this can have open at once.
     open-pull-requests-limit: 2
 
-  # Every `uses:` is a commit with its version in a trailing comment, and this moves both. A
-  # major arrives alone because it carries its own breaking notes; minors and patches share one.
+  # Every `uses:` is a commit with its version in a trailing comment, and this moves both, one
+  # pull request per action. Ungrouped: a group limited to minor and patch also takes the majors
+  # its patterns match and proposes none of them (dependabot-core#14202).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -47,11 +48,6 @@ updates:
     # A release has a week to be found bad before it is proposed. Security updates skip this.
     cooldown:
       default-days: 7
-    groups:
-      actions:
-        update-types:
-          - "minor"
-          - "patch"
     commit-message:
       prefix: "ci"
       include: "scope"
