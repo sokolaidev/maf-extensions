@@ -13,6 +13,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -215,6 +216,20 @@ def _service_listening(container: str, *ports: int) -> None:
         if time.monotonic() > deadline:
             pytest.fail(f"{container} is not listening on {sorted(ports)}")
         time.sleep(0.2)
+
+
+def _http_stub(port: int, response: str, *, ipv6: bool = False) -> str:
+    """Shell serving ``response`` (``printf`` escapes) on ``port`` once each request head is read.
+
+    Answering before the request arrives lets the proxy's Go transport discard the reply as
+    unsolicited on a fresh connection and return 502.
+    """
+    handler = (
+        'cr=$(printf "\\r"); while IFS= read -r line && [ "$line" != "$cr" ]; do :; done; '
+        f"printf {shlex.quote(response)}"
+    )
+    bind = " -s ::" if ipv6 else ""
+    return f"/bin/busybox nc -lk -p {port}{bind} -e /bin/sh -c {shlex.quote(handler)}"
 
 
 def _listed_name(row: dict) -> str:
@@ -1126,7 +1141,13 @@ class TestAllowlistEgress:
                     "/bin/sh",
                     _PROXY_IMAGE,
                     "-c",
-                    'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" | /bin/busybox nc -l -p 8080; done & while :; do printf "HTTP/1.1 302 Found\\r\\nLocation: http://mcr.microsoft.com/v2/\\r\\nContent-Length: 0\\r\\n\\r\\n" | /bin/busybox nc -l -p 8081; done',
+                    _http_stub(8080, "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok")
+                    + " & "
+                    + _http_stub(
+                        8081,
+                        "HTTP/1.1 302 Found\\r\\nLocation: http://mcr.microsoft.com/v2/\\r\\n"
+                        "Content-Length: 0\\r\\n\\r\\n",
+                    ),
                 ],
                 check=True,
                 capture_output=True,
@@ -1271,8 +1292,9 @@ class TestAllowlistEgress:
                 f"printf '#!/bin/sh\\nexec /bin/busybox nc {upstream} 443\\n' >/tmp/relay; "
                 "chmod +x /tmp/relay; "
                 "/bin/busybox nc -lk -p 8443 -s :: -e /tmp/relay & "
-                'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" '
-                "| /bin/busybox nc -l -p 8080 -s ::; done"
+                + _http_stub(
+                    8080, "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok", ipv6=True
+                )
             )
             command(
                 "container",
@@ -1448,10 +1470,7 @@ class TestAllowlistEgress:
         other_network = f"maf-rebind-{uuid.uuid4().hex[:12]}"
         first_service = f"maf-private-service-{uuid.uuid4().hex[:12]}"
         second_service = f"maf-rebound-service-{uuid.uuid4().hex[:12]}"
-        response = (
-            'while :; do printf "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok" '
-            "| /bin/busybox nc -l -p 8080; done"
-        )
+        response = _http_stub(8080, "HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok")
 
         def start_service(name: str, network: str) -> None:
             assert _PROXY_IMAGE is not None
