@@ -104,7 +104,13 @@ from maf_sandbox.paths import (
 from ._config import DockerSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
-from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import (
+    INSTALL_GRANT,
+    encoded_policy,
+    ipv4_subnets,
+    network_gateways,
+    read_decisions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +187,7 @@ _BRIDGE_DRIVER = "bridge"
 #: the request echoed back whether or not the daemon acted on it, and so cannot tell a bridge
 #: that ended up unaddressed from one that did not.
 _NETWORK_EFFECT_FORMAT = "{{.Driver}}|{{.Internal}}|{{json .IPAM.Config}}"
-_NETWORK_GATEWAY_FORMAT = "{{json .IPAM.Config}}"
+_NETWORK_IPAM_FORMAT = "{{json .IPAM.Config}}"
 #: What the engine says for a network or container that is not there — read only alongside
 #: that target's own name, never on its own.  Absence is the one answer a caller may treat as
 #: safe, and unrelated failures use these words too: a missing context reports `context not
@@ -349,6 +355,7 @@ async def _freeze_lock(name: str) -> AsyncGenerator[None]:
 
 _PROXY_PORT = 3128
 _CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
+_TUNNEL_SUBNETS_ENV = "MAF_SANDBOX_TUNNEL_SUBNETS"
 _PROXY_READY_MARKER = "tunnel proxy starting"
 _PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
 _PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
@@ -3686,10 +3693,12 @@ class DockerSandboxBackend:
             self._report_proxy_drain(event)
 
         control_addresses = await self._outbound_control_addresses()
+        subnets = await self._tunnel_subnets(_network_name(name))
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
         # The packaged image runs unprivileged on an unprivileged port, so it needs no
         # capability whatever `cap_drop_all` says about the workload.
         args += self._hardening(drop_capabilities=True)
+        args += ["-e", f"{_TUNNEL_SUBNETS_ENV}={' '.join(subnets)}"]
         args += [
             "-e",
             f"{_CONFIG_ENV}="
@@ -3750,7 +3759,7 @@ class DockerSandboxBackend:
             "network",
             "inspect",
             "-f",
-            _NETWORK_GATEWAY_FORMAT,
+            _NETWORK_IPAM_FORMAT,
             network,
             timeout=self._config.command_timeout_seconds,
         )
@@ -3764,6 +3773,28 @@ class DockerSandboxBackend:
             raise RuntimeError(
                 f"docker outbound network {network!r} has unreadable gateway addresses"
             ) from exc
+
+    async def _tunnel_subnets(self, net: str) -> tuple[str, ...]:
+        """Read the IPv4 subnets of the sandbox's network, the only leg the proxy listens on."""
+        result = await self._docker(
+            "network",
+            "inspect",
+            "-f",
+            _NETWORK_IPAM_FORMAT,
+            net,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"docker could not inspect network {net!r}: {result.stderr.strip()}")
+        try:
+            subnets = ipv4_subnets(json.loads(result.stdout))
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(f"docker network {net!r} has unreadable subnets") from exc
+        if not subnets:
+            raise RuntimeError(
+                f"docker network {net!r} has no IPv4 subnet for the proxy to listen on"
+            )
+        return subnets
 
     async def _await_listening(self, proxy: str) -> None:
         """Wait for the patched policy contract and listener before serving.
@@ -3793,7 +3824,9 @@ class DockerSandboxBackend:
             )
         raise RuntimeError(
             f"egress proxy {proxy} did not report the required policy contract and listening "
-            f"within {budget:g}s: {detail}"
+            f"within {budget:g}s: {detail} — an image built from an older build context fails "
+            f"this check; rebuild it: docker build -t {self._config.egress_proxy_image} "
+            f"{build_context()}"
         )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:

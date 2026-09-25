@@ -901,6 +901,52 @@ class TestAllowlistEgress:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
+    def test_a_container_on_the_outbound_network_cannot_use_the_proxy(self):
+        """The tunnel listens on the sandbox network only; its outbound address refuses."""
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(
+            kind="e2e", image=_IMAGE, egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",)
+        )
+
+        def wslc(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["wslc", *args], capture_output=True, text=True, timeout=120, check=False
+            )
+
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        proxy = sandbox.container_name + "-proxy"
+        try:
+            inspected = json.loads(wslc("container", "inspect", proxy).stdout)[0]
+            legs = inspected["NetworkSettings"]["Networks"]
+            internal = legs[sandbox.container_name + "-net"]["IPAddress"]
+            outbound = legs["bridge"]["IPAddress"]
+            logs = wslc("container", "logs", proxy)
+            assert f'"addr":"{internal}:3128"' in logs.stdout + logs.stderr
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com/v2/") == (0, "200")
+            # A refusal rather than a timeout: the probe reaches the proxy and nothing listens.
+            probe = wslc(
+                "container",
+                "run",
+                "--rm",
+                "--network",
+                "bridge",
+                "--entrypoint",
+                "curl",
+                _IMAGE,
+                "-sv",
+                "-o",
+                "/dev/null",
+                "--max-time",
+                "10",
+                "--proxy",
+                f"http://{outbound}:3128",
+                "https://mcr.microsoft.com/v2/",
+            )
+            assert probe.returncode == 7 and "Connection refused" in probe.stderr, probe
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
     def test_tls_method_path_and_plaintext_controls(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(self._config())

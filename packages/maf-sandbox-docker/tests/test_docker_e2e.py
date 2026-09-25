@@ -1835,6 +1835,51 @@ class TestAllowlistEgress:
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
 
+    def test_a_container_on_the_outbound_network_cannot_use_the_proxy(self):
+        """The tunnel listens on the sandbox network only; its outbound address refuses."""
+        scope = f"e2e-{uuid.uuid4()}"
+        config = self._config()
+        backend = DockerSandboxBackend(config)
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",))
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        proxy = sandbox.container_name + "-proxy"
+        try:
+            legs = json.loads(_inspected("container", proxy, "{{json .NetworkSettings.Networks}}"))
+            internal = legs[sandbox.container_name + "-net"]["IPAddress"]
+            outbound = legs[config.outbound_network]["IPAddress"]
+            logs = subprocess.run(
+                ["docker", "logs", proxy], capture_output=True, text=True, timeout=60, check=True
+            )
+            assert f'"addr":"{internal}:3128"' in logs.stdout + logs.stderr
+            assert self._curl_status(sandbox, "https://mcr.microsoft.com/v2/") == (0, "200")
+            # A refusal rather than a timeout: the probe reaches the proxy and nothing listens.
+            probe = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network",
+                    config.outbound_network,
+                    "--entrypoint",
+                    "curl",
+                    _IMAGE,
+                    "-sv",
+                    "-o",
+                    "/dev/null",
+                    "--max-time",
+                    "10",
+                    "--proxy",
+                    f"http://{outbound}:3128",
+                    "https://mcr.microsoft.com/v2/",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            assert probe.returncode == 7 and "Connection refused" in probe.stderr, probe
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
     def test_tls_method_path_and_plaintext_controls(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(self._config())

@@ -85,6 +85,8 @@ _ADDRESSED = 'bridge|true|[{"Subnet":"172.20.0.0/16","Gateway":"172.20.0.1"}]'
 _ADDRESSED_ON_THE_SECOND_FAMILY = (
     'bridge|true|[{"Subnet":"172.20.0.0/16"},{"Subnet":"fd00::/64","Gateway":"fd00::1"}]'
 )
+#: The IPAM entries of the outbound network, which is not one this backend creates.
+_OUTBOUND_IPAM = '[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]'
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -499,11 +501,10 @@ def _machine(
             return _DockerResult(0, b"", "")
         if args[:2] == ("network", "inspect"):
             net = args[-1]
-            if args[3] == "{{json .IPAM.Config}}":
-                return _DockerResult(
-                    0, b'[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]\n', ""
-                )
             modes = live_networks.get(net)
+            if args[3] == "{{json .IPAM.Config}}":
+                ipam = modes.split("|", 2)[-1] if modes else _OUTBOUND_IPAM
+                return _DockerResult(0, ipam.encode() + b"\n", "")
             if modes is None:
                 return _DockerResult(1, b"", f"Error response from daemon: network {net} not found")
             return _DockerResult(0, modes.encode() + b"\n", "")
@@ -5049,6 +5050,7 @@ class TestAllowlistTopology:
         message = str(raised.value)
         assert "missing ['maf-sandbox egress contract v1']" in message
         assert "'listen tcp :3128: bind'" in message
+        assert "rebuild it: docker build -t maf-egress-proxy:local" in message
         assert message.isprintable()
         assert message.count("CONNECT") == 10
         assert len(message) < 4000
@@ -5127,6 +5129,28 @@ class TestAllowlistTopology:
             config=_ALLOW_CONFIG,
         )
         with pytest.raises(RuntimeError, match="unreadable gateway addresses"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
+
+    def test_the_proxy_listens_only_on_the_sandbox_networks_subnet(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = _run_named(fake, _AL_PROXY).args
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert "MAF_SANDBOX_TUNNEL_SUBNETS=172.20.0.0/16" in env
+        encoded = next(v.split("=", 1)[1] for v in env if v.startswith("MAF_SANDBOX_CONFIG_B64="))
+        assert "tunnel_listen" not in json.loads(base64.b64decode(encoded))["proxy"]
+
+    @pytest.mark.parametrize(
+        ("ipam", "match"),
+        [(b'[{"Subnet":"fd00::/64"}]', "no IPv4 subnet"), (b"not-json", "unreadable subnets")],
+    )
+    def test_a_sandbox_network_without_a_readable_ipv4_subnet_refuses_the_proxy(self, ipam, match):
+        inspect = ("network", "inspect", "-f", "{{json .IPAM.Config}}", _AL_NET)
+        backend, fake = _backend_with(
+            _machine(overrides={inspect: _DockerResult(0, ipam, "")}), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match=match):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
 

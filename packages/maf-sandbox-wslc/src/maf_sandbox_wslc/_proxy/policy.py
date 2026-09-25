@@ -10,7 +10,7 @@ from typing import cast
 
 from maf_sandbox import EgressDecision, EgressDecisionCode, SandboxSpec
 
-__all__ = ["INSTALL_GRANT", "encoded_policy", "network_gateways", "read_decisions"]
+__all__ = ["INSTALL_GRANT", "encoded_policy", "ipv4_subnets", "network_gateways", "read_decisions"]
 
 _UPSTREAM_DENY_CIDRS = (
     "0.0.0.0/8",
@@ -51,6 +51,23 @@ def network_gateways(ipam: object) -> tuple[str, ...]:
     return tuple(addresses)
 
 
+def ipv4_subnets(ipam: object) -> tuple[str, ...]:
+    """Read the IPv4 subnets from an inspected network's IPAM configuration."""
+    if not isinstance(ipam, list):
+        raise ValueError("network IPAM configuration is not a list")
+    subnets: list[str] = []
+    for item in cast("list[object]", ipam):
+        if not isinstance(item, dict):
+            raise ValueError("network IPAM entry is not an object")
+        subnet = cast("dict[str, object]", item).get("Subnet")
+        if not isinstance(subnet, str):
+            raise ValueError("network subnet is not a prefix")
+        network = ipaddress.ip_network(subnet, strict=False)
+        if network.version == 4:
+            subnets.append(str(network))
+    return tuple(subnets)
+
+
 def encoded_policy(
     spec: SandboxSpec, *, control_addresses: Sequence[str] = (), credentials: bool = False
 ) -> str:
@@ -78,7 +95,6 @@ def encoded_policy(
         "proxy": {
             "http_listen": "127.0.0.1:18080",
             "https_listen": "127.0.0.1:18443",
-            "tunnel_listen": ":3128",
             "upstream_deny_cidrs": (*_UPSTREAM_DENY_CIDRS, *control_cidrs),
         },
         "tls": {

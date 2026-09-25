@@ -922,8 +922,9 @@ def _machine(
             return _WslcResult(0, b"maf-sandbox egress contract v1\ntunnel proxy starting\n", b"")
         if args[:2] == ("network", "inspect"):
             network = args[-1]
-            gateway = "172.17.0.1" if network == "bridge" else "172.20.0.1"
-            detail = {"Name": network, "IPAM": {"Config": [{"Gateway": gateway}]}}
+            octet = 17 if network == "bridge" else 20
+            config = [{"Subnet": f"172.{octet}.0.0/16", "Gateway": f"172.{octet}.0.1"}]
+            detail = {"Name": network, "IPAM": {"Config": config}}
             return _WslcResult(0, json.dumps([detail]).encode(), b"")
         if args[:2] == ("container", "exec") and args[-2:] == (
             "cat",
@@ -4215,7 +4216,32 @@ class TestAllowlistTopology:
             _machine(overrides={("network", "inspect", "bridge"): _WslcResult(0, b"[]", b"")}),
             config=_ALLOW_CONFIG,
         )
-        with pytest.raises(RuntimeError, match="unreadable gateway addresses"):
+        with pytest.raises(RuntimeError, match="unreadable addressing"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("container", "run", "-d", "--name", _AL_PROXY) == []
+
+    def test_the_proxy_listens_only_on_the_sandbox_networks_subnet(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = _run_named(fake, _AL_PROXY).args
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert "MAF_SANDBOX_TUNNEL_SUBNETS=172.20.0.0/16" in env
+        encoded = next(v.split("=", 1)[1] for v in env if v.startswith("MAF_SANDBOX_CONFIG_B64="))
+        assert "tunnel_listen" not in json.loads(base64.b64decode(encoded))["proxy"]
+
+    @pytest.mark.parametrize(
+        ("config", "match"),
+        [([{"Subnet": "fd00::/64"}], "no IPv4 subnet"), ([{}], "unreadable addressing")],
+    )
+    def test_a_sandbox_network_without_a_readable_ipv4_subnet_refuses_the_proxy(
+        self, config, match
+    ):
+        inspected = json.dumps([{"Name": _AL_NET, "IPAM": {"Config": config}}]).encode()
+        backend, fake = _backend_with(
+            _machine(overrides={("network", "inspect", _AL_NET): _WslcResult(0, inspected, b"")}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match=match):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("container", "run", "-d", "--name", _AL_PROXY) == []
 
@@ -4382,6 +4408,7 @@ class TestAllowlistTopology:
         message = str(raised.value)
         assert "missing ['maf-sandbox egress contract v1']" in message
         assert "'listen tcp :3128: bind'" in message
+        assert "rebuild it: wslc build -t maf-egress-proxy:local" in message
         assert message.isprintable()
         assert message.count("CONNECT") == 10
         assert len(message) < 4000
