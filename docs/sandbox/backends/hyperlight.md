@@ -11,14 +11,14 @@ Use the [package README](../../../packages/maf-sandbox-hyperlight/README.md) for
 | Host | x86-64 Windows with WHP, or x86-64 Linux with KVM, including suitable WSL2 hosts |
 | Isolation | `MICROVM` |
 | Runtime | SDK, Wasm backend and Python guest pinned together at 0.7.0 |
-| Capabilities | `RUN_CODE`, `SNAPSHOT`; `FILES_OUT`, `FILES_LIST` when `file_outputs=True` |
-| Network | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443 |
+| Capabilities | `RUN_CODE`, `SNAPSHOT`, `EGRESS_METHODS`; `FILES_OUT`, `FILES_LIST` when `file_outputs=True` |
+| Network | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443; GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS method rules |
 | Guest OS | None declared; this is a language runtime |
 | Sharing | `CONVERSATION`; one owning host process, optionally one scoped pod |
 | Admission | One call per sandbox through execution, delivery and cleanup |
 | Cleanup | Restore the original baseline; dispose on failure |
 
-Custom guests, custom images, ARM64 and Linux MSHV are refused. The adapter declares no `EXEC`, `FILES_IN`, `FILES_DELETE`, `RECLAIM`, `HOST_TOOLS`, `EGRESS_METHODS` or `ATTACHED_IDENTITY`. It makes no egress observation claim.
+Custom guests, custom images, ARM64 and Linux MSHV are refused. The adapter declares no `EXEC`, `FILES_IN`, `FILES_DELETE`, `RECLAIM`, `HOST_TOOLS` or `ATTACHED_IDENTITY`. It makes no egress observation claim.
 
 The guest is CPython 3.14 with a reduced standard library. It supports statements, persistent globals and separate stdout/stderr. `json`, `math` and `re` are available; `datetime`, `statistics`, `pickle` and `__future__` are absent. This is not the full desktop Python environment.
 
@@ -71,7 +71,7 @@ Execution and restore clear previous outputs. Collection and delivery must finis
 
 ## Network boundary
 
-Native HTTP helpers enforce scheme, exact host, port and path. The adapter grants HTTP port 80 and HTTPS port 443 for each allowed hostname. Wildcards, other ports and narrower method or authority requirements are unsupported. CONNECT and TRACE are blocked by the pinned runtime.
+The runtime's HTTP boundary enforces scheme, exact host, port, path and method before connecting. It covers the guest's raw wasi-http requests as well as its helpers. The adapter grants HTTP port 80 and HTTPS port 443 for each allowed hostname. `EGRESS_METHODS` is declared for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS. The runtime refuses TRACE, CONNECT and custom methods even under an all-methods rule, so a rule naming one is refused. Redirects are returned to the guest rather than followed, so each hop is checked again. Wildcards, other ports, path rules and authority rules are unsupported.
 
 HTTP uses the host network. An allowed internal or loopback hostname grants access there; hostname policy does not filter resolved IP addresses. Application credentials and proxy settings are not forwarded. The host must choose destinations accordingly.
 
@@ -111,6 +111,7 @@ AKS probes cover both the historical delegated-cgroup path and this explicit con
 | Area | State | Tracking |
 |---|---|---|
 | Packaged runtime, reset and worker containment | Implemented on the supported WHP/KVM family | [Package README](../../../packages/maf-sandbox-hyperlight/README.md) |
+| Method-scoped egress | Implemented for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; path rules not declared | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged) |
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Feasibility measured; deployment work remains open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Upstream AKS device deployment | Pinned overlay implemented; production operational validation remains | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open) |

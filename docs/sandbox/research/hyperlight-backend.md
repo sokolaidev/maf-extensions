@@ -51,9 +51,9 @@ The guest has additional sharp edges at the pinned versions: `time.sleep` can pa
 
 ### Egress
 
-Hyperlight's native wasi-http boundary enforces an exact per-entry allowlist. The default is deny-all; `allow_domain` permits a selected host and still rejects an unlisted host. The adapter translates a core hostname into HTTP and HTTPS root permissions because the native API requires scheme-qualified targets. The current contract does not expose method-scoped rules, arbitrary ports, wildcards, raw sockets, CONNECT or TRACE.
+Hyperlight's native wasi-http boundary enforces an exact per-entry allowlist. The default is deny-all; `allow_domain` permits a selected host and still rejects an unlisted host. The adapter translates a core hostname into HTTP and HTTPS root permissions because the native API requires scheme-qualified targets. The same boundary enforces the seven standard methods named in `allow_domain(target, methods)`, measured live on 2026-09-25; the adapter declares `EGRESS_METHODS` for them. The contract does not expose arbitrary ports, wildcards, raw sockets, CONNECT, TRACE or custom methods.
 
-HTTP runs on the host network. Allowing an internal hostname or loopback therefore grants access to the host-side network, and hostname policy does not filter resolved IP addresses. Application credentials and proxy settings are not forwarded, and the backend attaches no identity. The host owns destination authorization. Method-scoped egress remains a possible additive capability, not a current Hyperlight declaration.
+HTTP runs on the host network. Allowing an internal hostname or loopback therefore grants access to the host-side network, and hostname policy does not filter resolved IP addresses. Application credentials and proxy settings are not forwarded, and the backend attaches no identity. The host owns destination authorization. Custom method tokens make the next run fail, so the adapter refuses them before they reach the runtime.
 
 ### Host tools
 
@@ -272,6 +272,6 @@ A Windows worker can use the validated WHP family. A Linux worker depends on rea
 - `RUN_CODE` timeout and cancellation require a killable process boundary; restore cannot reach a stuck thread. Memory and returned-output limits must be enforced before native aborts become uncatchable.
 - Filesystem channels remain withheld until upstream persistence, quota reconciliation, collection order, safe cleanup and conformance are complete.
 - Native host tools remain withheld until the transport is integrated with core caps, deadlines, JSON response limits, identity and approval policy.
-- Method-scoped egress, resolved-IP filtering and attached identity are not current Hyperlight claims.
+- Resolved-IP filtering, path rules and attached identity are not current Hyperlight claims.
 - Direct ACA hosting remains unsupported by the inspected platform contract and measured profiles. The separate-worker route is a new remote integration, not a backend configuration switch.
 - The pinned Hyperlight distributions and guest artifacts have licenses and notices independent of the Python package; dependency upgrades must retain the exact matched-version and conformance discipline.

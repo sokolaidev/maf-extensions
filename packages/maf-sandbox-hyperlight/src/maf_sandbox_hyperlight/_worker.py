@@ -24,7 +24,7 @@ class _NativeSandbox(Protocol):
     def run(self, code: str) -> _NativeResult: ...
     def snapshot(self) -> object: ...
     def restore(self, snapshot: object) -> None: ...
-    def allow_domain(self, target: str) -> None: ...
+    def allow_domain(self, target: str, methods: list[str] | None = None) -> None: ...
 
 
 def main() -> None:
@@ -72,10 +72,19 @@ def main() -> None:
             targets = request["targets"]
             if not isinstance(targets, list):
                 raise ValueError("targets must be a list")
-            for target in cast("list[object]", targets):
+            for entry in cast("list[object]", targets):
+                if not isinstance(entry, list) or len(cast("list[object]", entry)) != 2:
+                    raise ValueError("targets must be [target, methods] pairs")
+                target, methods = cast("list[object]", entry)
                 if not isinstance(target, str):
                     raise ValueError("targets must be strings")
-                sandbox.allow_domain(target)
+                if methods is not None and not (
+                    isinstance(methods, list)
+                    and methods
+                    and all(isinstance(method, str) for method in cast("list[object]", methods))
+                ):
+                    raise ValueError("target methods must be a nonempty list of strings or null")
+                sandbox.allow_domain(target, cast("list[str] | None", methods))
             output_limit = request["output_limit"]
             if type(output_limit) is not int or not 0 < output_limit <= MAX_OUTPUT_BYTES:
                 raise ValueError("invalid output limit")

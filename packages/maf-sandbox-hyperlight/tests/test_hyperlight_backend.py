@@ -122,8 +122,21 @@ def test_declarations_and_worker_free_construction(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(_backend, "Worker", unexpected)
     backend = HyperlightSandboxBackend()
     assert backend.isolation is Isolation.MICROVM
-    assert backend.declarations.capabilities == {Capability.RUN_CODE, Capability.SNAPSHOT}
+    assert backend.declarations.capabilities == {
+        Capability.RUN_CODE,
+        Capability.SNAPSHOT,
+        Capability.EGRESS_METHODS,
+    }
     assert backend.declarations.egress_modes == {Egress.CLOSED, Egress.ALLOWLIST}
+    assert backend.declarations.egress_method_tokens == {
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+    }
     assert backend.declarations.os_families == frozenset()
 
 
@@ -132,7 +145,13 @@ def test_declarations_and_worker_free_construction(monkeypatch: pytest.MonkeyPat
     [
         capability
         for capability in Capability
-        if capability not in {Capability.RUN_CODE, Capability.SNAPSHOT, Capability.RECLAIM}
+        if capability
+        not in {
+            Capability.RUN_CODE,
+            Capability.SNAPSHOT,
+            Capability.RECLAIM,
+            Capability.EGRESS_METHODS,
+        }
     ],
 )
 def test_unsupported_capabilities_refuse_before_worker(backend, capability):
@@ -160,10 +179,18 @@ def test_unsupported_capabilities_refuse_before_worker(backend, capability):
         replace(SPEC, isolation_scope=IsolationScope.CALL),
         replace(SPEC, egress=Egress.UNRESTRICTED),
         replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("*.example.com",)),
+        *(
+            replace(
+                SPEC,
+                egress=Egress.ALLOWLIST,
+                egress_allow=(EgressRule("example.com", methods=("GET", method)),),
+            )
+            for method in ("TRACE", "CONNECT", "PROPFIND")
+        ),
         replace(
             SPEC,
             egress=Egress.ALLOWLIST,
-            egress_allow=(EgressRule("example.com", methods=("GET",)),),
+            egress_allow=(EgressRule("example.com", paths=("/only/",)),),
         ),
     ],
 )
@@ -180,7 +207,10 @@ def test_exact_hosts_translate_both_schemes_and_policy_cannot_change(backend):
         )
         sandbox = cast("_backend._HyperlightSandbox", await backend.acquire(KEY, spec))
         worker = cast("FakeWorker", sandbox.worker)
-        assert worker.calls[0]["targets"] == ("http://example.com/", "https://example.com/")
+        assert worker.calls[0]["targets"] == (
+            ("http://example.com/", None),
+            ("https://example.com/", None),
+        )
         assert await backend.acquire(KEY, spec) is sandbox
         with pytest.raises(ValueError, match="changing its execution policy"):
             await backend.acquire(KEY, SPEC)
@@ -188,6 +218,48 @@ def test_exact_hosts_translate_both_schemes_and_policy_cannot_change(backend):
             await backend.acquire(KEY, replace(spec, execution_contract="different"))
 
     asyncio.run(check())
+
+
+def test_method_rules_reach_both_schemes_and_are_part_of_the_policy(backend):
+    async def check():
+        spec = replace(
+            SPEC,
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("example.com", methods=("POST", "GET")), "other.example"),
+        )
+        sandbox = cast("_backend._HyperlightSandbox", await backend.acquire(KEY, spec))
+        worker = cast("FakeWorker", sandbox.worker)
+        assert worker.calls[0]["targets"] == (
+            ("http://example.com/", ("GET", "POST")),
+            ("https://example.com/", ("GET", "POST")),
+            ("http://other.example/", None),
+            ("https://other.example/", None),
+        )
+        reordered = replace(
+            spec,
+            egress_allow=("other.example", EgressRule("example.com", methods=("GET", "POST"))),
+        )
+        assert await backend.acquire(KEY, reordered) is sandbox
+        widened = replace(spec, egress_allow=("example.com", "other.example"))
+        with pytest.raises(ValueError, match="changing its execution policy"):
+            await backend.acquire(KEY, widened)
+
+    asyncio.run(check())
+
+
+def test_method_rules_route_to_hyperlight_only_within_its_tokens():
+    router = SandboxRouter([HyperlightSandboxBackend()])
+    scoped = replace(
+        SPEC, egress=Egress.ALLOWLIST, egress_allow=(EgressRule("example.com", methods=("GET",)),)
+    )
+    router.ensure_can_serve(scoped)
+    custom = replace(
+        SPEC,
+        egress=Egress.ALLOWLIST,
+        egress_allow=(EgressRule("example.com", methods=("PROPFIND",)),),
+    )
+    with pytest.raises(SandboxCapabilityNotSupported, match="PROPFIND"):
+        router.ensure_can_serve(custom)
 
 
 def test_backend_objects_and_event_loops_share_the_full_key(backend):
