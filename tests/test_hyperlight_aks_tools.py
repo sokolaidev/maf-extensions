@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_hyperlight_aks_image
-from hyperlight_aks import PLUGIN_IMAGE, render_plugin
+from hyperlight_aks import PLUGIN_IMAGE, node_report, render_plugin
 
 
 @pytest.mark.parametrize("namespace", ["", "-a", "a-", "a.b", "A", "a" * 64])
@@ -89,3 +89,43 @@ def test_overlay_keeps_upstream_devices_without_adding_node_delegation(namespace
     assert daemon["spec"]["updateStrategy"] == {"type": "OnDelete"}
     with pytest.raises(ValueError, match="digest"):
         render_plugin(json.dumps(source), namespace="trusted-infra", image="plugin:latest")
+
+
+def labelled_node(**info: str) -> dict[str, Any]:
+    return {
+        "metadata": {
+            "name": "node",
+            "labels": {"node.kubernetes.io/instance-type": info.pop("size", "Standard_D4ads_v5")},
+        },
+        "status": {
+            "allocatable": {"hyperlight.dev/hypervisor": info.pop("allocatable", "1")},
+            "nodeInfo": {
+                "osImage": "Microsoft Azure Linux 3.0",
+                "kernelVersion": "6.6.150.1-1.azl3",
+                "containerRuntimeVersion": "containerd://2.2.4",
+                "kubeletVersion": "v1.35.7",
+                "architecture": "amd64",
+                **info,
+            },
+        },
+    }
+
+
+def test_a_measured_node_platform_is_verified():
+    assert node_report(labelled_node())["verified"]
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"kubeletVersion": "v1.36.1"}, "verified combination"),
+        ({"osImage": "Ubuntu 22.04.5 LTS"}, "verified combination"),
+        ({"size": "Standard_B2s_v2"}, "verified combination"),
+        ({"architecture": "arm64"}, "amd64"),
+        ({"allocatable": "0"}, "no hypervisor allocation"),
+    ],
+)
+def test_an_unmeasured_or_unadvertised_node_is_reported(change, reason):
+    report = node_report(labelled_node(**change))
+    assert not report["verified"]
+    assert any(reason in item for item in report["reasons"])

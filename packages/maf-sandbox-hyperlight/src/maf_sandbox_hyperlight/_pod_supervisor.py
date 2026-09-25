@@ -19,7 +19,15 @@ from contextlib import suppress
 from pathlib import Path
 from types import FrameType
 
-from ._pod import FRAME_LIMIT, frame, unframe, verify_container
+from ._pod import (
+    FRAME_LIMIT,
+    PLATFORM_EXIT,
+    PLATFORM_REFUSAL,
+    TERMINATION_LOG,
+    frame,
+    unframe,
+    verify_container,
+)
 from ._pod_config import POD_BINDING, POD_SOCKET, HyperlightPodConfig, PodLaunch
 from ._wire import HyperlightWorkerError
 
@@ -40,8 +48,10 @@ def _oom_kills() -> int:
     return int(values["oom_kill"])
 
 
-def verify_init(launch: PodLaunch) -> None:
-    """Only an unprivileged private namespace init may use process exit as containment."""
+def verify_init(launch: PodLaunch) -> dict[str, str]:
+    """Only an unprivileged private namespace init on a usable KVM node may start the owner."""
+    from ._linux import check_kvm
+
     status = _status(os.getpid())
     if os.getpid() != 1 or os.getuid() == 0:
         raise HyperlightWorkerError("pod supervisor must be non-root PID 1")
@@ -51,8 +61,19 @@ def verify_init(launch: PodLaunch) -> None:
         or int(status["Seccomp"]) != 2
     ):
         raise HyperlightWorkerError("pod supervisor requires no capabilities and RuntimeDefault")
-    verify_container(launch.memory_limit_bytes)
+    machine = os.uname().machine
+    if machine != "x86_64":
+        raise HyperlightWorkerError(f"pod mode requires x86-64, not {machine}")
+    controls = verify_container(launch.memory_limit_bytes)
+    try:
+        check_kvm()
+    except HyperlightWorkerError as error:
+        cause = error.__cause__
+        raise HyperlightWorkerError(
+            f"{error} ({cause.strerror})" if isinstance(cause, OSError) else str(error)
+        ) from error
     make_undumpable()
+    return {"machine": machine, "kernel": os.uname().release, "kvm_api": "12", **controls}
 
 
 def make_undumpable() -> None:
@@ -62,12 +83,23 @@ def make_undumpable() -> None:
         raise HyperlightWorkerError("pod supervisor could not become non-dumpable")
 
 
+def _refuse_platform(reason: str) -> None:
+    """Kubelet copies this file into the pod status, where the controller reads it."""
+    message = (PLATFORM_REFUSAL + reason)[:4000]
+    print(message, file=sys.stderr, flush=True)
+    with suppress(OSError), open(TERMINATION_LOG, "w", encoding="utf-8") as target:
+        target.write(message)
+
+
 class Supervisor:
     """The controller acknowledges every deadline before the owner can submit native work."""
 
-    def __init__(self, launch: PodLaunch, command: list[str]) -> None:
+    def __init__(
+        self, launch: PodLaunch, command: list[str], platform: dict[str, str] | None = None
+    ) -> None:
         self.launch = launch
         self.command = command
+        self.platform = platform or {}
         self.owner: subprocess.Popen[bytes] | None = None
         self.worker: int | None = None
         self.worker_fd: int | None = None
@@ -144,7 +176,7 @@ class Supervisor:
             os.chmod(POD_SOCKET, 0o600)
             self.listener.listen(1)
             threading.Thread(target=self.serve_owner, daemon=True).start()
-            self.emit("ready", owner_pid=self.owner.pid)
+            self.emit("ready", owner_pid=self.owner.pid, platform=self.platform)
             os.write(publish, b"1")
         finally:
             os.close(ready)
@@ -360,11 +392,15 @@ def main() -> None:
             fields.get("generation"),
             fields.get("memory_limit_bytes"),
         )
-        verify_init(launch)
+        try:
+            platform = verify_init(launch)
+        except (OSError, ValueError, KeyError, HyperlightWorkerError) as error:
+            _refuse_platform(str(error))
+            os._exit(PLATFORM_EXIT)
         command = sys.argv[1:]
         if not command:
             raise ValueError("an application command is required")
-        supervisor = Supervisor(launch, command)
+        supervisor = Supervisor(launch, command, platform)
 
         def terminate(signum: int, current: FrameType | None) -> None:
             supervisor.retire("pod termination requested")

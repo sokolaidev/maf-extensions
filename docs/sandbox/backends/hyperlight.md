@@ -98,6 +98,8 @@ The controller acknowledges each native deadline before submission. Namespace PI
 
 CPU throttling is not a program deadline, and an OOM event is not evidence that every worker has stopped. Kubernetes [resource enforcement](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) and [forced deletion](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#forced-pod-termination) therefore do not replace lifecycle verification. Controller-created pods use `restartPolicy: Never`, without automatic replay. A ConfigMap reserves each ownership scope before pod creation. Cleanup requires exact-UID runtime termination, persists that receipt, then removes the pod finalizer and reservation. Missing pods without saved proof, synthetic terminal states and unreachable nodes keep cleanup pending and block replacement. Node fencing is an operator responsibility. Controller namespaces are separate ownership authorities; generic distributed routing remains unimplemented.
 
+Supported node platforms are a measured matrix of VM size, node OS, Kubernetes minor and runtime, currently Ubuntu 24.04 and Azure Linux 3.0 on Kubernetes 1.35; the [deployment instructions](../../../images/hyperlight-sandbox/README.md#supported-platforms) list it. Operators label eligible node pools; the integration never changes a node. Before the application starts, PID 1 checks the requirements visible from the pod: x86-64, cgroup v2, the declared limits, no swap and a `/dev/kvm` that can create a VM. A failure raises `HyperlightPodPlatformError` from `supervise` after confirmed cleanup.
+
 The [AKS research and validation plan](../research/hyperlight-backend.md#aks-upstream-basis-and-evidence-2026-09-22) separates the measured device/delegation path from this container-based design. Per-worker cgroup isolation remains an independent option when several workers must share a container or the owner must survive a worker's resource failure.
 
 ## Validation and deployment limits
@@ -115,6 +117,7 @@ AKS probes cover both the historical delegated-cgroup path and this explicit con
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Feasibility measured; deployment work remains open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Upstream AKS device deployment | Pinned overlay implemented; production operational validation remains | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open) |
+| Supported AKS platform matrix | Ubuntu 24.04 and Azure Linux 3.0 on Kubernetes 1.35 measured; unsupported nodes refused before the application starts | [#1425](https://github.com/sokolaidev/maf-extensions/issues/1425) (open) |
 | One ownership scope per AKS pod | Explicit integration implemented; operational acceptance remains open | [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) (open) |
 | Distributed owner routing and purge | Conditional follow-up; not implemented | [#1239](https://github.com/sokolaidev/maf-extensions/issues/1239) (open) |
 | Writable inputs | Not implemented | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
