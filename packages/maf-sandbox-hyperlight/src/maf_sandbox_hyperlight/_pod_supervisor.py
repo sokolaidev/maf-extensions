@@ -19,7 +19,7 @@ from pathlib import Path
 from types import FrameType
 
 from ._pod import FRAME_LIMIT, frame, unframe, verify_container
-from ._pod_config import POD_BINDING, POD_SOCKET, HyperlightPodConfig
+from ._pod_config import POD_BINDING, POD_SOCKET, HyperlightPodConfig, PodLaunch
 from ._wire import HyperlightWorkerError
 
 LEASE_SECONDS = 5.0
@@ -37,7 +37,7 @@ def _oom_kills() -> int:
     return int(values["oom_kill"])
 
 
-def verify_init(binding: HyperlightPodConfig) -> None:
+def verify_init(launch: PodLaunch) -> None:
     """Only an unprivileged private namespace init may use process exit as containment."""
     status = _status(os.getpid())
     if os.getpid() != 1 or os.getuid() == 0:
@@ -48,14 +48,14 @@ def verify_init(binding: HyperlightPodConfig) -> None:
         or int(status["Seccomp"]) != 2
     ):
         raise HyperlightWorkerError("pod supervisor requires no capabilities and RuntimeDefault")
-    verify_container(binding.memory_limit_bytes)
+    verify_container(launch.memory_limit_bytes)
 
 
 class Supervisor:
     """The controller acknowledges every deadline before the owner can submit native work."""
 
-    def __init__(self, binding: HyperlightPodConfig, command: list[str]) -> None:
-        self.binding = binding
+    def __init__(self, launch: PodLaunch, command: list[str]) -> None:
+        self.launch = launch
         self.command = command
         self.owner: subprocess.Popen[bytes] | None = None
         self.worker: int | None = None
@@ -86,8 +86,8 @@ class Supervisor:
             self.outgoing.put_nowait(
                 {
                     "event": event,
-                    "pod_uid": self.binding.pod_uid,
-                    "generation": self.binding.generation,
+                    "pod_uid": self.launch.pod_uid,
+                    "generation": self.launch.generation,
                     **fields,
                 }
             )
@@ -104,7 +104,7 @@ class Supervisor:
         else:
             self.retire("controller stream closed")
 
-    def start_owner(self) -> None:
+    def start_owner(self, binding: HyperlightPodConfig) -> None:
         """Publish the owner PID before permitting application imports and backend construction."""
         directory = Path(POD_BINDING).parent
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -124,9 +124,9 @@ class Supervisor:
                 env=environment,
                 pass_fds=(ready,),
             )
-            binding = {**self.binding.mapping(), "owner_pid": self.owner.pid}
+            record = {**binding.mapping(), "owner_pid": self.owner.pid}
             with open(POD_BINDING, "x", encoding="utf-8") as target:
-                json.dump(binding, target)
+                json.dump(record, target)
             os.chmod(POD_BINDING, 0o400)
             self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self.listener.bind(POD_SOCKET)
@@ -162,8 +162,8 @@ class Supervisor:
     def check_identity(self, message: dict[str, object]) -> None:
         """Refuse messages replayed from another pod or controller generation."""
         if (
-            message.get("pod_uid") != self.binding.pod_uid
-            or message.get("generation") != self.binding.generation
+            message.get("pod_uid") != self.launch.pod_uid
+            or message.get("generation") != self.launch.generation
         ):
             raise HyperlightWorkerError("pod ownership generation differs")
 
@@ -173,7 +173,7 @@ class Supervisor:
             raise HyperlightWorkerError("pod session is retired or its controller lease expired")
         operation = message.get("op")
         if operation == "validate":
-            verify_container(self.binding.memory_limit_bytes)
+            verify_container(self.launch.memory_limit_bytes)
         elif operation == "policy":
             digest = message.get("digest")
             if not isinstance(digest, str) or len(digest) != 64:
@@ -281,9 +281,10 @@ class Supervisor:
             raise HyperlightWorkerError("an expired controller lease cannot be renewed")
         operation = message.get("op")
         if operation == "hello" and not self.connected:
+            binding = self.launch.bind(message)
             self.connected = True
             self.lease = time.monotonic() + LEASE_SECONDS
-            self.start_owner()
+            self.start_owner(binding)
         elif operation == "ping" and self.connected:
             self.lease = time.monotonic() + LEASE_SECONDS
         elif operation == "ack" and message.get("sequence") == self.sequence:
@@ -342,13 +343,17 @@ def main() -> None:
     """Run an application as the sole owner under the controller's immutable pod binding."""
     try:
         fields = json.loads(os.environ["MAF_HYPERLIGHT_POD_BINDING"])
-        fields["pod_uid"] = os.environ["MAF_HYPERLIGHT_POD_UID"]
-        binding = HyperlightPodConfig.from_mapping(fields)
-        verify_init(binding)
+        launch = PodLaunch(
+            fields.get("owner"),
+            os.environ["MAF_HYPERLIGHT_POD_UID"],
+            fields.get("generation"),
+            fields.get("memory_limit_bytes"),
+        )
+        verify_init(launch)
         command = sys.argv[1:]
         if not command:
             raise ValueError("an application command is required")
-        supervisor = Supervisor(binding, command)
+        supervisor = Supervisor(launch, command)
 
         def terminate(signum: int, current: FrameType | None) -> None:
             supervisor.retire("pod termination requested")
