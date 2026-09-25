@@ -1,0 +1,6 @@
+# A change to any of these asks the maintainer for review: the workflows, one of which holds the
+# PyPI publishing credential; the proxies that stand between a guest and the network; and the
+# configuration that decides what gets released.
+/.github/                       @antsok
+/packages/*/src/*/_proxy/       @antsok
+/release-please-config.json     @antsok
