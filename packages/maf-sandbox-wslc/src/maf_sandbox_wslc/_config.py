@@ -46,11 +46,11 @@ class WslcSandboxConfig:
     Each acquisition requires a trusted call key and creates a fresh workload and gateway.
     Credentials always require upstream TLS, including when private HTTP is enabled.
 
-    ``memory`` and ``cpus`` become the workload container's ``--memory`` and ``--cpus``; unset,
-    it has neither. ``memory`` bounds resident memory only: WSLC sets no swap limit, so a
-    workload can page past it into the session's swap. ``wslc container run`` has no flag for a
-    PID limit, dropping capabilities or ``no-new-privileges``, so this backend applies none of
-    them.
+    ``memory`` and ``cpus`` become ``--memory`` and ``--cpus`` on the workload container and on
+    its egress proxy, whose load the guest drives; unset, neither has them. ``memory`` bounds
+    resident memory only: WSLC sets no swap limit, so a container can page past it into the
+    session's swap. ``wslc container run`` has no flag for a PID limit, dropping capabilities
+    or ``no-new-privileges``, so this backend applies none of them.
     """
 
     wslc_path: str = "wslc"

@@ -16,7 +16,7 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 | Sharing | `CONVERSATION`, `CALL` |
 | Transfer limits | `DEFAULT_SANDBOX_LIMITS` |
 | Cleanup | Disposal; no `RECLAIM` or `SNAPSHOT` |
-| Resource limits | `memory` and `cpus` in config, unset by default; `memory` does not limit swap |
+| Resource limits | `memory` and `cpus` in config, applied to the workload and its proxy, unset by default; `memory` does not limit swap |
 | Not enforced | PID limit, dropped capabilities, `no-new-privileges`; `wslc container run` has no flag for them |
 
 The default Windows Proactor event loop supports the required subprocesses. A selector event loop does not.
@@ -81,11 +81,11 @@ These methods raise `NotImplementedError`. Their capabilities, including `HOST_T
 
 ## Resource limits and hardening
 
-`WslcSandboxConfig(memory="512M", cpus=1.5)` sets `--memory` and `--cpus` on the workload container. The proxy container gets neither. Both are unset by default. The engine refuses a value it cannot apply, such as more CPUs than the session has, and acquisition raises `RuntimeError` with its message.
+`WslcSandboxConfig(memory="512M", cpus=1.5)` sets `--memory` and `--cpus` on the workload container and on its egress proxy, because the guest drives the proxy's load. Both are unset by default. The engine refuses a value it cannot apply, such as more CPUs than the session has, and acquisition raises `RuntimeError` with its message.
 
 `memory` limits resident memory, not swap. WSLC sets no swap limit, and each session has its own swap file ([microsoft/WSL#41438](https://github.com/microsoft/WSL/issues/41438)). On WSLC 2.9.13.0 a workload limited to 256 MiB allocated and touched 1 GiB without being killed; about 780 MiB went to swap.
 
-`wslc container run` has no `--pids-limit`, `--cap-drop` or `--security-opt` ([microsoft/WSL#41545](https://github.com/microsoft/WSL/issues/41545)). A WSLC workload therefore keeps the engine's default capability set, runs with `no-new-privileges` off and can start processes without a limit. The engine does apply a seccomp filter. The Docker backend sets `no-new-privileges` and a PID limit on every container and can drop all capabilities.
+`wslc container run` has no `--pids-limit`, `--cap-drop` or `--security-opt` ([microsoft/WSL#41545](https://github.com/microsoft/WSL/issues/41545)). A WSLC workload and its proxy therefore keep the engine's default capability set, run with `no-new-privileges` off and can start processes without a limit. The engine does apply a seccomp filter. The Docker backend sets `no-new-privileges` and a PID limit on both containers, drops every capability from its proxy and can drop them from the workload.
 
 `--ulimit nproc` is not a substitute for a PID limit. It does not apply to root, and it counts every process its user ID runs in every container of the session, so one sandbox's processes use up another's allowance. The backend does not set it.
 
@@ -97,7 +97,7 @@ Both flags are in the CLI source from the supported 2.9.3 minimum; live evidence
 
 With no proxy image, only `CLOSED` is available. With one, `ALLOWLIST` uses an internal network and a proxy connected to the outbound network. An empty allowlist uses the closed setup. The proxy terminates guest TLS, checks host, method and path, and validates the upstream certificate. Its per-sandbox CA certificate is installed at the fixed guest path `/maf-sandbox-proxy-ca.crt` and named in `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`; its key stays in the proxy. Public HTTP is denied on every port. Listed private endpoints use TLS unless `allow_private_http=True` is set for development or test. The outbound dial checks the resolved address and denies loopback, link-local, metadata, gateway and proxy interface addresses. See [network policy](../network.md) for the full contract.
 
-The proxy, like the workload, has no PID, memory or CPU bound, no `no-new-privileges` and the engine's default capability set. `wslc` 2.9.13 accepts `--memory` and `--cpus` but no `--pids-limit`, `--cap-drop` or `--security-opt`, and the backend configures no memory or CPU limit yet.
+The proxy gets the workload's memory and CPU limits, and like the workload it has no PID limit, no `no-new-privileges` and the engine's default capability set. See [resource limits and hardening](#resource-limits-and-hardening).
 
 WSLC 2.9.12 creates IPv4-only bridge endpoints even when given an IPv6 subnet: network inspection reports `EnableIPv6=false`, and the container has no IPv6 address or route. Private IPv6 HTTP/TLS reachability cannot be verified with this topology. IPv6 loopback, link-local and metadata denials have been measured through the adapter. The live IPv6 transport test checks network readiness first and reports an explicit skip when IPv6 is disabled; a skipped test is not evidence of reachability. A host with a working ULA IPv6 network can supply its name through `MAF_SANDBOX_WSLC_E2E_IPV6_NETWORK`; the test removes its own containers and leaves that network in place. [#1407](https://github.com/sokolaidev/maf-extensions/issues/1407) tracks the remaining verification.
 

@@ -2547,11 +2547,7 @@ class WslcSandboxBackend:
                 "No sandbox image is configured: the spec names neither image nor image_id."
             )
 
-        args = ["container", "run", "-d", "--name", name]
-        if self._config.memory is not None:
-            args += ["--memory", self._config.memory]
-        if self._config.cpus is not None:
-            args += ["--cpus", str(self._config.cpus)]
+        args = ["container", "run", "-d", "--name", name, *self._resource_limits()]
         if allowlisting:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
@@ -2586,6 +2582,15 @@ class WslcSandboxBackend:
                     return image
             raise RuntimeError(f"wslc could not create container {name}: {conflict}")
         return image
+
+    def _resource_limits(self) -> list[str]:
+        """The ``run`` flags bounding a container the guest can drive: workload or proxy."""
+        args: list[str] = []
+        if self._config.memory is not None:
+            args += ["--memory", self._config.memory]
+        if self._config.cpus is not None:
+            args += ["--cpus", str(self._config.cpus)]
+        return args
 
     async def _ensure_egress(
         self, name: str, key: SandboxKey, spec: SandboxSpec, *, fresh: bool
@@ -2635,7 +2640,8 @@ class WslcSandboxBackend:
             self._report_proxy_drain(event)
 
         control_addresses = await self._control_addresses(_network_name(name))
-        args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
+        args = ["container", "run", "-d", "--name", proxy, *self._resource_limits()]
+        args += ["--network", _network_name(name)]
         args += [
             "-e",
             f"{_CONFIG_ENV}="
