@@ -107,7 +107,7 @@ jobs:
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, and
         # this workflow mints a publishing credential.
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       # Which package, which version, which registry — derived once so every later step
       # agrees. A tag drives a real release; a manual run is a rehearsal.
@@ -344,7 +344,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -388,7 +388,7 @@ jobs:
 
       - name: Install uv
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
@@ -479,7 +479,7 @@ jobs:
 
       - name: Install uv
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
@@ -580,7 +580,7 @@ jobs:
         if: >-
           needs.build.outputs.package == 'maf-sandbox'
           && needs.build.outputs.target == 'pypi'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       # Break refusal only — does NOT decide the dispatch. A version that admitted since build
       # and no longer imports exits 1, and `set -e` fails this step before the upload is reached.
@@ -672,7 +672,7 @@ jobs:
 
       - name: Install uv
         if: needs.build.outputs.package == 'maf-sandbox'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Decide the live-check dispatch after the upload
         id: decide

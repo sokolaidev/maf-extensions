@@ -56,7 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       # The six the suite reads plus the three azure/login consumes. No model variables: this
       # job calls no model. BICEP_SANDBOX_IMAGE supplies the guest — the probes run `sh`, `ln`,
