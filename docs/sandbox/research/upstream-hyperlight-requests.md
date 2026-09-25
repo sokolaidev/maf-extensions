@@ -1,6 +1,6 @@
 # Three upstream requests the Hyperlight path waits on
 
-> Drafted 2026-09-25 and not yet filed. Each section is one request: an opt-in file-preservation policy in `hyperlight-sandbox`, which [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) is blocked on; eager validation of `allow_domain` method tokens in the same SDK's Python binding, which the [#377](https://github.com/sokolaidev/maf-extensions/issues/377) measurement found missing; and digest-pinned base images with build provenance for the device-plugin image that [#1424](https://github.com/sokolaidev/maf-extensions/issues/1424) has to admit. Every measurement below was taken on 2026-09-25 against the exact 0.7.0 trio on Windows 11 x86-64 with WHP and CPython 3.13, except where a section says otherwise. The argument comes first in this repository's terms; the text to paste upstream follows under *What to file*, self-contained, with no relative link and no issue number only this repository can resolve. Filing is the maintainer's.
+> Drafted and filed 2026-09-25. Each section is one request: an opt-in file-preservation policy in `hyperlight-sandbox` ([hyperlight-dev/hyperlight-sandbox#227](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/227), open), which [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) is blocked on; eager validation of `allow_domain` method tokens in the same SDK's Python binding ([hyperlight-dev/hyperlight-sandbox#228](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/228), open), which the [#377](https://github.com/sokolaidev/maf-extensions/issues/377) measurement found missing; and digest-pinned base images with build provenance for the device-plugin image ([hyperlight-dev/hyperlight-on-kubernetes#15](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/issues/15), open) that [#1424](https://github.com/sokolaidev/maf-extensions/issues/1424) has to admit. Every measurement below was taken on 2026-09-25 against the exact 0.7.0 trio on Windows 11 x86-64 with WHP and CPython 3.13, except where a section says otherwise. The argument comes first in this repository's terms; the text to paste upstream follows under *What to file*, self-contained, with no relative link and no issue number only this repository can resolve. All three were posted the same day, verbatim.
 
 ## 1. `hyperlight-sandbox`: a policy that keeps files in the mutable directory across runs
 
@@ -20,7 +20,7 @@ host after run 3: []
 
 ### What to file
 
-Target: `hyperlight-dev/hyperlight-sandbox` → New issue. The repository has no issue template.
+Target: `hyperlight-dev/hyperlight-sandbox` → New issue. The repository has no issue template. Filed as [hyperlight-dev/hyperlight-sandbox#227](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/227) (open).
 
 **Title:** `Opt-in policy to preserve files in the mutable directory across runs; prepare_for_run always clears it`
 
@@ -92,7 +92,7 @@ allow_domain(PROPFIND) after init raised: RuntimeError invalid HTTP method: PROP
 
 ### What to file
 
-Target: `hyperlight-dev/hyperlight-sandbox` → New issue. The repository has no issue template.
+Target: `hyperlight-dev/hyperlight-sandbox` → New issue. The repository has no issue template. Filed as [hyperlight-dev/hyperlight-sandbox#228](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/228) (open).
 
 **Title:** `Python: an invalid method token queued before the first run fails that run and silently drops every other queued allow_domain rule`
 
@@ -187,7 +187,7 @@ The AKS overlay in [`backends/hyperlight.md`](../backends/hyperlight.md) pins th
 
 ### What to file
 
-Target: `hyperlight-dev/hyperlight-on-kubernetes` → New issue. The repository has no issue template.
+Target: `hyperlight-dev/hyperlight-on-kubernetes` → New issue. The repository has no issue template. Filed as [hyperlight-dev/hyperlight-on-kubernetes#15](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/issues/15) (open).
 
 **Title:** `Pin the device-plugin base images by digest and publish build provenance for ghcr.io/hyperlight-dev/hyperlight-device-plugin`
 
