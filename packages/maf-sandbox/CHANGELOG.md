@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.44.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.43.0...maf-sandbox-v0.44.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** refuse an egress allow entry that ends in a number, as an IPv4 address does, or is longer than 253 octets ([#1469](https://github.com/sokolaidev/maf-extensions/issues/1469))
+
+### Fixes
+
+* **sandbox:** refuse an egress allow entry that ends in a number, as an IPv4 address does, or is longer than 253 octets ([#1469](https://github.com/sokolaidev/maf-extensions/issues/1469)) ([c1ad890](https://github.com/sokolaidev/maf-extensions/commit/c1ad890827cb627a742f34b3eaf652de58fd7dcc))
+* **sandbox:** the file-store output sink and its read-back tools refuse a path that could leave the store ([#1468](https://github.com/sokolaidev/maf-extensions/issues/1468)) ([ba7461e](https://github.com/sokolaidev/maf-extensions/commit/ba7461ed883b073bd4b48baf5e2908f9a7b9dcdf))
+
 ## [0.43.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.42.0...maf-sandbox-v0.43.0) (2026-09-24)
 
 
