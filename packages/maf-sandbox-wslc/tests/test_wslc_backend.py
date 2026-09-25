@@ -52,6 +52,7 @@ from maf_sandbox import (
     SandboxBackend,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
+    SandboxExecOutputLimitExceeded,
     SandboxKey,
     SandboxOsFamilyNotSupported,
     SandboxRouter,
@@ -65,6 +66,7 @@ from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
     _CREATE_AS_THE_GUEST,
     _CREATE_DIRECTORIES,
+    _EXEC_OUTPUT_LIMIT,
     _GUEST_CA_PATH,
     _INSTALL_PROXY_CA,
     _LEFT_TO_THE_GUEST,
@@ -784,23 +786,31 @@ class _Recorded:
         stdin: bytes | None,
         timeout: float | None,
         read_limit: int | None = None,
+        max_output_bytes: int | None = None,
     ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
         self.read_limit = read_limit
+        self.max_output_bytes = max_output_bytes
 
 
 class _FakeWslc:
-    """Stands in for `WslcSandboxBackend._wslc`."""
+    """Stands in for `WslcSandboxBackend._wslc`; raises past ``max_output_bytes`` as it does."""
 
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
         self._responder = responder or _machine()
 
-    async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
-        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
+    async def __call__(
+        self, *args: str, stdin=None, timeout=None, read_limit=None, max_output_bytes=None
+    ) -> _WslcResult:
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit, max_output_bytes))
         result = self._responder(args)
+        if max_output_bytes is not None and (
+            len(result.stdout) + len(result.stderr) > max_output_bytes
+        ):
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
         if args[:2] == ("container", "inspect") and result == _WslcResult(0, b"", b""):
             result = _WslcResult(
                 0,
@@ -1854,6 +1864,38 @@ class TestExecDiscardsATimedOutSandbox:
 
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["sleep", "600"], working_directory="/w", timeout=1))
+
+
+class TestExecOutputBound:
+    """Plain ``exec`` output is bounded, so a guest printing without end cannot fill host memory."""
+
+    def _flooding(self, size: int):
+        overrides = {("container", "exec", "-w", "/w"): _WslcResult(0, b"x" * size, b"")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _METHOD_SPEC)), fake
+
+    def test_plain_exec_reads_under_the_backends_bound(self):
+        sandbox, fake = self._flooding(0)
+        asyncio.run(sandbox.exec(["true"], working_directory="/w", timeout=5))
+        assert fake.only("container", "exec").max_output_bytes == _EXEC_OUTPUT_LIMIT
+
+    def test_output_past_the_bound_is_refused_and_the_container_discarded(self):
+        """The command inside may still be running, as after a timeout."""
+        sandbox, fake = self._flooding(_EXEC_OUTPUT_LIMIT + 1)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(sandbox.exec(["flood"], working_directory="/w", timeout=5))
+        assert fake.only("container", "remove").args == ("container", "remove", "-f", f"id-{_NAME}")
+
+    def test_a_callers_own_budget_keeps_the_container(self):
+        sandbox, fake = self._flooding(65)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                sandbox.exec_bounded(
+                    ["cat", "big"], working_directory="/w", timeout=5, max_output_bytes=64
+                )
+            )
+        assert fake.only("container", "exec").max_output_bytes == 64
+        assert not fake.matching("container", "remove")
 
 
 # ---------------------------------------------------------------------------

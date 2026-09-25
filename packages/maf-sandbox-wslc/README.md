@@ -40,6 +40,7 @@ See the [Bicep sample](https://github.com/sokolaidev/maf-extensions/tree/main/sa
 | Network | `CLOSED`; `ALLOWLIST` with a configured proxy |
 | Lifetime | Conversation or separate sandbox per call |
 | Transfer ceiling | 8 MiB per file, 32 MiB total, 64 files per direction |
+| Command output | 8 MiB of stdout and stderr together; more refuses the call and discards the container |
 | Cleanup | Disposal; no reclaim or snapshot reset |
 
 Output reads, directory listing, file deletion, runtime `run_code` and host-tool calls are unavailable. A kind requiring one is refused before attachment.

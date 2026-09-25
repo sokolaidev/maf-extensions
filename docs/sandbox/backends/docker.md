@@ -96,7 +96,7 @@ Acquisition serializes get-or-create per loop, key and kind. It reuses a running
 
 Disposal queries engine labels and verifies physical IDs. Local records are a fallback when listing fails. A scope purge covers all matching calls. Failed workload deletion is reported; infrastructure cleanup failures are logged for later recovery.
 
-An exec timeout discards the container. Cancellation terminates and reaps the host CLI process; it does not by itself establish that guest work stopped. Router cleanup still applies.
+An exec timeout discards the container, and so does `exec` output past 8 MiB, stdout and stderr together, which raises `SandboxExecOutputLimitExceeded`. An `exec_bounded` caller's own budget keeps the container when it overflows. Cancellation terminates and reaps the host CLI process; it does not by itself establish that guest work stopped. Router cleanup still applies.
 
 The operator `reap` helper uses creation age. It can expire a running workload and is not an inactivity timer. A selected workload carries its proxy and network into cleanup even if those resources are newer. Orphan infrastructure uses its own age.
 

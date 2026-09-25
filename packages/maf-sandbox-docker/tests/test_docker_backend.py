@@ -56,6 +56,7 @@ from maf_sandbox.credentials import CredentialGateway
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
+    _EXEC_OUTPUT_LIMIT,
     _FREEZE_LOCKS,
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
@@ -337,11 +338,13 @@ class _Recorded:
         stdin: bytes | None,
         timeout: float | None,
         read_limit: int | None,
+        max_output_bytes: int | None = None,
     ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
         self.read_limit = read_limit
+        self.max_output_bytes = max_output_bytes
 
 
 class _FakeDocker:
@@ -349,7 +352,8 @@ class _FakeDocker:
 
     Honours ``read_limit`` by slicing the responder's stdout to it, the way the real bounded
     read stops after that many bytes — so a test asserting the read path never buffers a whole
-    oversized output sees the same truncated stdout the real seam would hand back.
+    oversized output sees the same truncated stdout the real seam would hand back. Raises
+    past ``max_output_bytes``, as the real bounded read does.
     """
 
     def __init__(self, responder=None) -> None:
@@ -358,9 +362,15 @@ class _FakeDocker:
         self._marked = 0
 
     async def __call__(
-        self, *args: str, stdin=None, timeout=None, read_limit=None, container=None
+        self,
+        *args: str,
+        stdin=None,
+        timeout=None,
+        read_limit=None,
+        max_output_bytes=None,
+        container=None,
     ) -> _DockerResult:
-        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit, max_output_bytes))
         result = self._responder(args)
         if (
             args[:1] == ("cp",)
@@ -377,6 +387,10 @@ class _FakeDocker:
             result = _DockerResult(0, json.dumps({"maf-sandbox.work-dir.v1": _WORK}).encode(), "")
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
+        if max_output_bytes is not None and (
+            len(result.stdout) + len(result.stderr.encode()) > max_output_bytes
+        ):
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
         return result
 
     def mark(self) -> None:
@@ -836,9 +850,22 @@ def _created_with(monkeypatch, responder=None, config=None):
     """
     fake = _FakeDocker(responder)
 
-    async def seam(_self, *args, stdin=None, timeout=None, read_limit=None, container=None):
+    async def seam(
+        _self,
+        *args,
+        stdin=None,
+        timeout=None,
+        read_limit=None,
+        max_output_bytes=None,
+        container=None,
+    ):
         return await fake(
-            *args, stdin=stdin, timeout=timeout, read_limit=read_limit, container=container
+            *args,
+            stdin=stdin,
+            timeout=timeout,
+            read_limit=read_limit,
+            max_output_bytes=max_output_bytes,
+            container=container,
         )
 
     async def binding(_self):
@@ -1495,6 +1522,39 @@ class TestExecArgv:
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         result = asyncio.run(sandbox.exec(["x"], working_directory=_WORK, timeout=5))
         assert (result.stdout, result.stderr, result.exit_code) == ("out\n", "err\n", 7)
+
+
+class TestExecOutputBound:
+    """Plain ``exec`` output is bounded, so a guest printing without end cannot fill host memory."""
+
+    def _flooding(self, size: int):
+        overrides = {("exec", "-w", _WORK): _DockerResult(0, b"x" * size, "")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _METHOD_SPEC)), fake
+
+    def test_plain_exec_reads_under_the_backends_bound(self):
+        sandbox, fake = self._flooding(0)
+        asyncio.run(sandbox.exec(["true"], working_directory=_WORK, timeout=5))
+        assert fake.only("exec").max_output_bytes == _EXEC_OUTPUT_LIMIT
+
+    def test_output_past_the_bound_is_refused_and_the_container_discarded(self):
+        """The command inside may still be running, as after a timeout."""
+        sandbox, fake = self._flooding(_EXEC_OUTPUT_LIMIT + 1)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(sandbox.exec(["flood"], working_directory=_WORK, timeout=5))
+        assert fake.matching("rm", "-f", _NAME)
+
+    def test_a_callers_own_budget_keeps_the_container(self):
+        """A file read over its cap is an ordinary refusal, not a reason to lose the sandbox."""
+        sandbox, fake = self._flooding(65)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                sandbox.exec_bounded(
+                    ["cat", "big"], working_directory=_WORK, timeout=5, max_output_bytes=64
+                )
+            )
+        assert fake.only("exec").max_output_bytes == 64
+        assert not fake.matching("rm", "-f", _NAME)
 
 
 class TestRunCode:
