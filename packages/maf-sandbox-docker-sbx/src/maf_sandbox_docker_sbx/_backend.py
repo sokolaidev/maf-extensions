@@ -531,7 +531,7 @@ class SbxSandboxBackend:
             ) as stopped:
                 # Killing the client leaves the guest's command running in a reusable sandbox,
                 # and a cancellation must not stop the kill either.
-                await asyncio.shield(self._end_the_command(name, instance, pid_file))
+                await _to_the_end(self._end_the_command(name, instance, pid_file))
                 if isinstance(stopped, TimeoutError):
                     raise TimeoutError(expired) from None
                 raise
@@ -827,7 +827,7 @@ class SbxSandboxBackend:
             )
         except BaseException:
             # The daemon may finish a create whose client was stopped.
-            await self._abandon_create(name, workspace)
+            await _to_the_end(self._abandon_create(name, workspace))
             raise
         if created.returncode != 0:
             await asyncio.to_thread(_remove_if_empty, workspace, directory)
@@ -934,7 +934,7 @@ class SbxSandboxBackend:
             )
 
     async def _discard(self, name: str) -> None:
-        failure = await asyncio.shield(self._remove(name, None))
+        failure = await _to_the_end(self._remove(name, None))
         if failure is not None:
             logger.warning(
                 "docker-sbx: could not remove %s after a failed acquire: %s", name, failure
@@ -950,12 +950,7 @@ class SbxSandboxBackend:
             except (SbxError, TimeoutError, ValueError) as error:
                 return DisposalFailure("unlisted", str(error))
             if row is None and await asyncio.to_thread(self._directory(name).exists):
-                # An engine that has lost its sandboxes lists none; the workspace says otherwise.
-                return DisposalFailure(
-                    "unlisted",
-                    f"`sbx ls` does not show {name} but its workspace remains; the daemon may "
-                    "have lost its engine. Run `sbx daemon restart`.",
-                )
+                return await self._remove_unlisted(name, instance_id)
             if row is None or row.get("id") != instance_id:
                 return None
         try:
@@ -966,6 +961,27 @@ class SbxSandboxBackend:
             error = _failure(f"sbx rm {name}", removed)
             code = "unreachable" if isinstance(error, SbxDaemonFault) else "refused"
             return DisposalFailure(code, str(error))
+        try:
+            await asyncio.to_thread(_delete_tree, self._directory(name))
+        except OSError as error:
+            return DisposalFailure("unknown", f"removing {name}'s workspace: {error}")
+        return None
+
+    async def _remove_unlisted(self, name: str, instance_id: str) -> DisposalFailure | None:
+        """Clear the workspace of an instance the listing omits, once the daemon says it is gone.
+
+        A daemon that has lost its engine lists nothing, so only the sandbox itself can answer.
+        """
+        try:
+            await self._confirm_absent(name)
+        except TimeoutError:
+            return DisposalFailure("timeout", f"asking whether {name} is there timed out")
+        except SbxDaemonFault as error:
+            return DisposalFailure("unreachable", str(error))
+        except SbxError as error:
+            return DisposalFailure("unknown", str(error))
+        if (self._read_meta(name) or {}).get("instance_id") != instance_id:
+            return None
         try:
             await asyncio.to_thread(_delete_tree, self._directory(name))
         except OSError as error:
@@ -1018,6 +1034,23 @@ async def _never_raises(
         return await sweep
     except Exception as error:  # noqa: BLE001 - disposal reports rather than raises
         return 0, [DisposalFailure("unknown", f"{type(error).__name__}: {error}")]
+
+
+async def _to_the_end[T](work: Awaitable[T]) -> T:
+    """Finish ``work`` through every cancellation, then re-raise one.
+
+    Cleanup must land before its caller releases the lock and handle it runs for.
+    """
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    return task.result()
 
 
 def _make_private(root: Path, directory: Path, workspace: Path) -> None:

@@ -762,6 +762,100 @@ class TestCleanupSurvivesCancellation:
         asyncio.run(scenario())
         assert killed == [True]
 
+    def test_a_call_cancelled_twice_returns_only_once_its_kill_settles(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            killing, release = asyncio.Event(), asyncio.Event()
+
+            async def gated_kill(*args: str, timeout: float | None = None) -> _Result:
+                if _EXEC_SCRIPT in args:
+                    raise TimeoutError
+                if _KILL_SCRIPT in args:
+                    killing.set()
+                    await release.wait()
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gated_kill  # type: ignore[method-assign]
+            call = asyncio.create_task(
+                sandbox.exec(["sleep", "9"], working_directory=".", timeout=30)
+            )
+            await killing.wait()
+            for _ in range(2):
+                call.cancel()
+                await asyncio.sleep(0.05)
+            assert not call.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await call
+            assert sandbox.instance_id in backend.retired
+
+        asyncio.run(scenario())
+
+    def test_an_acquire_cancelled_twice_holds_until_its_sandbox_is_removed(self, backend, sbx):
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            removing, release = asyncio.Event(), asyncio.Event()
+
+            async def gated_rm(*args: str, timeout: float | None = None) -> _Result:
+                if args == ("exec", name, "sh", "-c", "pwd -P"):
+                    return _Result(1, b"", b"error: setup failed\n")
+                if args[:2] == ("rm", "--force"):
+                    removing.set()
+                    await release.wait()
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gated_rm  # type: ignore[method-assign]
+            acquiring = asyncio.create_task(backend.acquire(KEY, _spec()))
+            await removing.wait()
+            for _ in range(2):
+                acquiring.cancel()
+                await asyncio.sleep(0.05)
+            assert not acquiring.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await acquiring
+            assert name not in sbx.sandboxes
+            assert not (backend.config.resolved_workspace_root / name).exists()
+
+        asyncio.run(scenario())
+
+    def test_a_create_cancelled_twice_still_removes_what_the_daemon_made(self, backend, sbx):
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            created, listing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+            async def gated(*args: str, timeout: float | None = None) -> _Result:
+                if args[0] == "create":
+                    await real(*args, timeout=timeout)
+                    created.set()
+                    await asyncio.sleep(3600)
+                if args == ("ls", "--json") and created.is_set():
+                    listing.set()
+                    await release.wait()
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gated  # type: ignore[method-assign]
+            acquiring = asyncio.create_task(backend.acquire(KEY, _spec()))
+            await created.wait()
+            acquiring.cancel()
+            await listing.wait()
+            acquiring.cancel()
+            await asyncio.sleep(0.05)
+            assert not acquiring.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await acquiring
+            assert name not in sbx.sandboxes
+
+        asyncio.run(scenario())
+
 
 class TestAnUnlistedSandbox:
     def test_a_lost_engine_neither_recreates_nor_deletes_the_workspace(
@@ -1017,15 +1111,42 @@ class TestDisposal:
         assert failure is not None and failure.code == "unreachable"
         assert len(list((tmp_path / "root").iterdir())) == 1
 
-    def test_an_unlisted_sandbox_with_a_workspace_is_not_reported_gone(
+    def test_an_unlisted_instance_that_answers_is_unreachable_and_kept(
         self, backend, sbx, tmp_path
     ):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         sbx.unlisted.add(sandbox.name)
         failure = asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id))
-        assert failure is not None and failure.code == "unlisted"
+        assert failure is not None and failure.code == "unreachable"
         assert sandbox.name in sbx.sandboxes
         assert (tmp_path / "root" / sandbox.name).is_dir()
+
+    def test_a_lost_engine_is_unreachable_for_an_instance_too(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.lost_engine = True
+        failure = asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id))
+        assert failure is not None and failure.code == "unreachable"
+        assert (tmp_path / "root" / sandbox.name / "meta.json").is_file()
+
+    def test_an_instance_the_daemon_says_is_gone_has_its_workspace_cleared(
+        self, backend, sbx, tmp_path
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]
+        assert (
+            asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id)) is None
+        )
+        assert not (tmp_path / "root" / sandbox.name).exists()
+
+    def test_a_gone_instance_keeps_a_workspace_recorded_for_another(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]
+        record = tmp_path / "root" / sandbox.name / "meta.json"
+        record.write_text(json.dumps({**json.loads(record.read_text()), "instance_id": "next"}))
+        assert (
+            asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id)) is None
+        )
+        assert record.is_file()
 
     def test_a_stale_instance_id_removes_nothing(self, backend, sbx):
         asyncio.run(backend.acquire(KEY, _spec()))
