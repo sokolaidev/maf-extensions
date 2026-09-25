@@ -50,6 +50,7 @@ import inspect
 import json
 import logging
 import math
+import ntpath
 import posixpath
 import string
 import threading
@@ -87,11 +88,13 @@ from ._outputs import (
     Artifact,
     LandedArtifact,
     OutputSink,
+    SandboxArtifactNameInvalid,
     SandboxLandingExists,
     SandboxLandingNotText,
     landing_outputs,
     missing_sink_refusal,
     spec_lands_artifacts,
+    validate_artifact_name,
 )
 from ._protocol import (
     INTEGRITY_RANK,
@@ -3218,8 +3221,10 @@ def make_file_store_sink(
       so an entry left behind by a write that then failed is safe.
     - **Text only.**  ``AgentFileStore.write`` takes a ``str``, so an artifact whose bytes are
       not UTF-8 is refused with :class:`~maf_sandbox.SandboxLandingNotText` rather than mangled.
-    - **No confinement check of its own**, unlike :func:`~maf_sandbox.make_file_system_sink`:
-      ``AgentFileStore`` requires its implementations to reject a path that escapes the root.
+    - **It lands only where** :func:`sandbox_outputs_read_tools` **reads.**  ``call_id`` must be
+      one folder name, and the name must meet :func:`~maf_sandbox.validate_artifact_name` with
+      no segment starting with a Windows drive, which a store on Windows joins outside its root.
+      What only the store can see, a link for one, the store still has to refuse.
 
     Nothing here creates the folder.  Both shipped stores list one that does not exist as empty;
     a store that raises there instead needs a host wrapper.  ``docs/sandbox/hosts.md`` carries
@@ -3234,7 +3239,10 @@ def make_file_store_sink(
             and the size; a host that would rather say less supplies its own.
 
     Raises:
-        ValueError: when an artifact reaches ``deliver`` with no ``call_id``.
+        ValueError: when an artifact reaches ``deliver`` with no ``call_id``, or with one that is
+            not one folder name.
+        SandboxArtifactNameInvalid: when an artifact's name breaks
+            :func:`~maf_sandbox.validate_artifact_name` or starts a segment with a Windows drive.
         SandboxLandingNotText: when an artifact's bytes are not valid UTF-8.
         SandboxLandingExists: when the store already holds the destination and says so with
             ``FileExistsError``, which both of ``agent_framework``'s own stores do.  A store
@@ -3246,6 +3254,18 @@ def make_file_store_sink(
             raise ValueError(
                 "make_file_store_sink was handed an artifact with no call_id, so there is no "
                 "folder to land it in. Pass collect_outputs(call_id=...)."
+            )
+        if "/" in artifact.call_id or not _in_store(artifact.call_id):
+            raise ValueError(
+                "make_file_store_sink was handed a call_id that is not one folder name, so the "
+                "read-back tools could not reach what it landed. Pass one path segment that "
+                "meets validate_artifact_name."
+            )
+        validate_artifact_name(artifact.name)
+        if _names_a_drive(artifact.name):
+            raise SandboxArtifactNameInvalid(
+                f"{echoed_name(artifact.name)} starts a segment with a Windows drive, which a "
+                "file store on Windows would land outside its root."
             )
         try:
             content = artifact.content.decode("utf-8")
@@ -3310,6 +3330,11 @@ _OUTPUTS_READ_DESCRIPTION = """Read one file out of the store a sandboxed tool's
             The file's text, or a message saying why it could not be read.
         """
 
+_NOT_IN_STORE = (
+    "Error: {named} is not a path in this store. Join the names a listing gave with '/', "
+    "and use no '.' or '..' segment."
+)
+
 
 def sandbox_outputs_read_tools(
     store: Any,
@@ -3340,6 +3365,11 @@ def sandbox_outputs_read_tools(
     knows about threads, so one store shared across conversations is one conversation reading
     another's outputs.
 
+    **Both arguments are checked before the store sees them**, against the rules
+    :func:`make_file_store_sink` lands by, so a store that does not normalise ``..`` or a
+    Windows drive is not all that keeps a read inside it.  ``folder`` may also be empty, for the
+    top level, or end in one ``/``.
+
     Args:
         store: The ``agent_framework`` ``AgentFileStore`` the sink lands in.
         name_prefix: What the two tools are called — ``<prefix>_ls`` and ``<prefix>_read``.
@@ -3353,8 +3383,12 @@ def sandbox_outputs_read_tools(
     # Preserve the hidden-content verdict before a host store callback can clear its evidence.
     async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
         named = _echoed(folder, "folder")
+        # One trailing separator, because a withheld result names the folder as `<call>/`.
+        directory = folder.removesuffix("/")
+        if folder and not _in_store(directory):
+            return _NOT_IN_STORE.format(named=named)
         try:
-            listed = await store.list_children(folder)
+            listed = await store.list_children(directory)
         except Exception as exc:  # noqa: BLE001
             _DEFAULT_LOGGER.warning(
                 "%s_ls: could not list a folder: %s", name_prefix, error_detail(exc)
@@ -3364,6 +3398,8 @@ def sandbox_outputs_read_tools(
 
     async def outputs_read(name: str) -> str:
         named = _echoed(name, "name")
+        if not _in_store(name):
+            return _NOT_IN_STORE.format(named=named)
         try:
             content = await store.read(name)
         except Exception as exc:  # noqa: BLE001
@@ -3392,6 +3428,34 @@ def _echoed(value: str, argument: str) -> str:
     """
     rewritten = positions_holding_hidden_content([value], argument=argument)
     return echoed_name(value, at=argument, hidden=0 in rewritten)
+
+
+def _in_store(path: str) -> bool:
+    """Whether ``path`` has the shape :func:`make_file_store_sink` lands: a call's folder, then
+    an artifact name, each meeting :func:`~maf_sandbox.validate_artifact_name` on its own, and
+    no segment naming a Windows drive.
+
+    Two halves rather than one path, because a name may use the whole byte bound by itself.
+    """
+    if _names_a_drive(path):
+        return False
+    folder, separator, below = path.partition("/")
+    try:
+        validate_artifact_name(folder)
+        if separator:
+            validate_artifact_name(below)
+    except SandboxArtifactNameInvalid:
+        return False
+    return True
+
+
+def _names_a_drive(path: str) -> bool:
+    """Whether any segment of ``path`` starts with a Windows drive, such as ``C:``.
+
+    Every segment rather than the first: a store joining one segment at a time is sent to the
+    drive by a later one too.
+    """
+    return any(ntpath.splitdrive(segment)[0] for segment in path.split("/"))
 
 
 async def list_all_files(
