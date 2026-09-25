@@ -17,6 +17,7 @@ See [information flow](../information-flow.md) for the source-tool, content-item
 | Backend | Isolation | Execution | File support | Cleanup |
 |---|---|---|---|---|
 | [ACAS](acas.md) | `MICROVM` | Commands; host-tool transport | Upload, read, list, delete; image checks apply | Dispose |
+| [Docker Sandboxes](docker-sbx.md) | `MICROVM` | Commands | Upload, read, list and delete in a host-owned workspace; removals run in the guest | Dispose or reclaim |
 | [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload, read, delete in the container root filesystem | Dispose by default; optional reclaim |
 | [WSLC](wslc.md) | `CONTAINER` | Commands | Upload | Dispose |
 | [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output reads and listing | Reset; dispose on failure |
@@ -27,6 +28,7 @@ The router's default minimum is `MICROVM`. Docker and WSLC require an explicit h
 | Backend | Network policy | Guest OS declaration | Sharing |
 |---|---|---|---|
 | ACAS | `CLOSED`, host `ALLOWLIST` | POSIX | Conversation or call |
+| Docker Sandboxes | `CLOSED` | POSIX | Conversation |
 | Docker | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX when the async factory confirms a Linux daemon | Conversation or call |
 | WSLC | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX | Conversation or call |
 | Hyperlight | `CLOSED`, exact-host HTTP/HTTPS `ALLOWLIST` | None; language runtime | Conversation, one owning host process |
@@ -39,6 +41,7 @@ Docker and WSLC report attributable proxy decisions when a proxy image is config
 | Backend | Important limit |
 |---|---|
 | ACAS | Workload writes and deletes run as the guest. Native reads, stat and listing retain races between path checks and file access. |
+| Docker Sandboxes | File methods reach only the storage base's parent. On Windows the plane rests on the guest being unable to create links in its workspace. |
 | Docker | Pauses the guest during path checks and archive transfers. The file view covers the root filesystem, not guest mounts such as tmpfs. |
 | WSLC | Uploads use root authority. A guest can replace a checked parent before extraction and redirect the write. |
 | Hyperlight | Optional output collection accepts flat names under `/output`; no input upload or listing. |
@@ -88,6 +91,7 @@ For implementation, use [writing a backend](writing-a-backend.md). For ACAS auth
 |---|---|---|
 | Backend selection and declarations | Implemented | [Policy and isolation](../policy-isolation.md), [capabilities](../capabilities.md) |
 | Service and container backends | Implemented with the limits above | [ACAS](acas.md), [Docker](docker.md), [WSLC](wslc.md) |
+| Local microVM backend | Implemented, `CLOSED` only; live CI added | [Docker Sandboxes](docker-sbx.md) |
 | Packaged Python runtime | Implemented for the supported host family | [Hyperlight](hyperlight.md) |
 | Test backend | Implemented; no security boundary | [In-process](in-process.md) |
 | Credential ownership and retention | Defined per backend and deployment | [ACAS credentials](acas-credentials.md), [operations](../operations.md) |

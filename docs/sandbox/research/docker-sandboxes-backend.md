@@ -183,6 +183,8 @@ Arbitrary images change two things. `RUN_CODE` stays withheld, because the runti
 
 Measured against sbx v0.45.1 on Windows. Tracked as [#1412](https://github.com/sokolaidev/maf-extensions/issues/1412).
 
+Built as [`maf-sandbox-docker-sbx`](../../../packages/maf-sandbox-docker-sbx/README.md), described in [the backend page](../backends/docker-sbx.md). The build departed from this section in four places. The workspace is bound at the storage base's parent, because `pwd` must name the base. Removals run in the guest, because a guest keeps seeing a name for seconds after a host-side delete. `HOST_TOOLS` is withheld until the transport is measured against the 30-second auto-stop. And acquire checks two of the three host facts below, not three: under `CLOSED` no host is allowed, so no allowed host can overlap a stored secret's domains, and the `sbx secret ls` check waits for `ALLOWLIST`. The rest of this section is the proposal as argued before the build.
+
 **Isolation: `MICROVM`.** Each sandbox gets its own hypervisor partition. Conditions 2 and 4 hold only while three host facts hold. The backend checks all three at every acquire and refuses if any fails:
 
 - SSH agent forwarding is off (`ssh.agentForwardingEnabled=false`). It is on by default, so the host operator has to change it.

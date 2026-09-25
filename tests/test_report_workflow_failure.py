@@ -180,6 +180,7 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
             },
             "conformance-live.yml": {"maf-sandbox", "maf-sandbox-acas"},
             "cleanup-live.yml": {"maf-sandbox-acas"},
+            "sbx-live.yml": {"maf-sandbox", "maf-sandbox-docker-sbx"},
             "lock-drift.yml": {"maf-sandbox-bicep", "maf-sandbox-codeact"},
             "terraform-live.yml": {"maf-sandbox", "maf-sandbox-docker", "maf-sandbox-terraform"},
         }[name]

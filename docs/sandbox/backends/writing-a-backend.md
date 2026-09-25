@@ -110,7 +110,7 @@ The four lines under each method name summarize the contract, shared helper, com
 
 Use engine metadata for path checks wherever available. When guest inspection is unavoidable, use `stat_by_asking_the_guest` or `stat_by_asking_the_guest_as_root` and state that dependency in the package README. The shared helpers keep link checks in the required order.
 
-A path check and a later operation are separate unless the provider makes them atomic or prevents intervening mutation. Docker pauses guest processes around archive operations. WSLC writes as the image's user, which bounds a swap, and creates its base as root only inside directories that are root's and writable by nobody else, or as the image's user elsewhere. ACAS native reads retain an explicit race. Passing an ownership probe does not close those windows.
+A path check and a later operation are separate unless the provider makes them atomic or prevents intervening mutation. Docker pauses guest processes around archive operations. Docker Sandboxes opens each host-side component relative to its parent without following links on macOS and Linux, and removes as the guest. WSLC writes as the image's user, which bounds a swap, and creates its base as root only inside directories that are root's and writable by nobody else, or as the image's user elsewhere. ACAS native reads retain an explicit race. Passing an ownership probe does not close those windows.
 
 The file view must match the storage being documented. For example, [Docker archives](docker.md#the-pull-surface-one-tar-read-twice) cover the root filesystem, not guest tmpfs. A missing result in one view does not establish absence in another.
 

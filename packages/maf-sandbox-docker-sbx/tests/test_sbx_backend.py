@@ -1,0 +1,1377 @@
+"""The backend against a scripted ``sbx``: command lines, ownership, refusals and disposal."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+from maf_sandbox import (
+    Capability,
+    Egress,
+    Isolation,
+    OsFamily,
+    SandboxBackend,
+    SandboxKey,
+    SandboxSpec,
+)
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
+
+from maf_sandbox_docker_sbx import (
+    SbxDaemonFault,
+    SbxError,
+    SbxHostNotConfined,
+    SbxLoginRequired,
+    SbxSandboxBackend,
+    SbxSandboxConfig,
+)
+from maf_sandbox_docker_sbx import _backend as sbx_module
+from maf_sandbox_docker_sbx._backend import (
+    _EXEC_SCRIPT,
+    _KILL_SCRIPT,
+    _MARKER,
+    _MOUNT_SCRIPT,
+    _OUTPUT_LIMIT,
+    _PROBE_SCRIPT,
+    _Result,
+    sandbox_name,
+)
+
+KEY = SandboxKey(scope="tenant", thread_id="thread", agent_id="agent")
+GUEST_MOUNT = "/host/ws"
+
+
+def _spec(**overrides: object) -> SandboxSpec:
+    return SandboxSpec(kind="kind", **overrides)  # type: ignore[arg-type]
+
+
+def _ok(stdout: bytes = b"", stderr: bytes = b"") -> _Result:
+    return _Result(0, stdout, stderr)
+
+
+def _workspace_of(tmp_path: Path, name: str) -> Path:
+    record = json.loads((tmp_path / "root" / name / "meta.json").read_text())
+    return tmp_path / "root" / name / record["workspace"]
+
+
+def _decode(argument: str) -> str:
+    return base64.b64decode(argument[1:]).decode()
+
+
+class FakeSbx:
+    """Answers ``sbx`` the way v0.45.1 did, keeping a listing and each workspace's host path."""
+
+    def __init__(self, backend: SbxSandboxBackend) -> None:
+        self.backend = backend
+        self.calls: list[tuple[str, ...]] = []
+        self.timeouts: list[float | None] = []
+        self.sandboxes: dict[str, str] = {}
+        self.forwarding = b"false\n"
+        self.servers: list[object] = []
+        self.mcp_payload: bytes | None = None
+        self.exec_hook: Callable[[tuple[str, ...]], _Result | None] = lambda _args: None
+        self.rm_result: _Result | None = None
+        self.mount_exit = 0
+        self.unmounted_once = False
+        self.unlisted: set[str] = set()
+        self.lost_engine = False
+        self.ids: dict[str, str] = {}
+        self.agent_socket = False
+        self.kill_result = _ok()
+        backend._sbx = self  # type: ignore[method-assign]
+
+    async def __call__(self, *args: str, timeout: float | None = None) -> _Result:
+        self.calls.append(args)
+        self.timeouts.append(timeout)
+        if self.lost_engine and args[0] not in ("settings", "mcp"):
+            # What a daemon that has lost its engine measured: an empty listing, and every
+            # sandbox command refused.
+            if args[:2] == ("ls", "--json"):
+                return _ok(json.dumps({"sandboxes": []}).encode())
+            return _Result(1, b"", b"error: 500 Internal Server Error: backend unavailable\n")
+        match args:
+            case ("settings", "get", "ssh.agentForwardingEnabled"):
+                return _ok(self.forwarding)
+            case ("mcp", "ls", "--json"):
+                if self.mcp_payload is not None:
+                    return _ok(self.mcp_payload)
+                return _ok(json.dumps({"servers": self.servers}).encode())
+            case ("ls", "--json"):
+                rows = [
+                    {
+                        "name": name,
+                        "id": self.ids.get(name, f"id-{name}"),
+                        "workspaces": [workspace],
+                    }
+                    for name, workspace in self.sandboxes.items()
+                    if name not in self.unlisted
+                ]
+                return _ok(json.dumps({"sandboxes": rows}).encode())
+            case ("create", "shell", "--name", name, *_rest):
+                if name in self.ids or any(call[:4] == args[:4] for call in self.calls[:-1]):
+                    self.ids[name] = f"id-{name}-{len(self.calls)}"
+                self.sandboxes[name] = args[-1]
+                return _ok()
+            case ("rm", "--force", name):
+                if self.rm_result is not None:
+                    return self.rm_result
+                if self.sandboxes.pop(name, None) is None:
+                    return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
+                return _ok()
+            case ("exec", _name, "sh", "-c", _script, "maf-sbx", "/run/ssh-agent.sock"):
+                return _Result(1 if self.agent_socket else 0, b"", b"")
+            case ("exec", name, "sh", "-c", ":"):
+                if name in self.sandboxes:
+                    return _ok()
+                return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
+            case ("exec", _name, "sh", "-c", "pwd -P"):
+                return _ok(f"{GUEST_MOUNT}\n".encode())
+            case ("exec", "-u", "root", _name, "sh", "-c", script, *_rest) if (
+                script == _MOUNT_SCRIPT
+            ):
+                return _Result(self.mount_exit, b"", b"")
+            case ("exec", name, "sh", "-c", script, "maf-sbx", nonce, _pid, _marker, *encoded) if (
+                script == _EXEC_SCRIPT
+            ):
+                hooked = self.exec_hook(args)
+                if hooked is not None:
+                    return hooked
+                if self.unmounted_once:
+                    self.unmounted_once = False
+                    return _Result(1, b"", f"{nonce}-unmounted\n".encode())
+                argv = [_decode(item) for item in encoded[1:]]
+                if argv[:2] == ["sh", "-c"] and "exec cat" in argv[2]:
+                    host = self._host(name, argv[4])
+                    return _Result(0, host.read_bytes(), f"{nonce}\n".encode())
+                if argv[0] == "cat":
+                    host = self._host(name, argv[1])
+                    return _Result(0, host.read_bytes(), f"{nonce}\n".encode())
+                return _Result(0, b"ran", f"{nonce}\n".encode())
+            case ("exec", _name, "sh", "-c", script, "maf-sbx", _pid, *_budget) if (
+                script == _KILL_SCRIPT
+            ):
+                return self.kill_result
+            case ("stop", _name):
+                return _ok()
+        raise AssertionError(f"unexpected sbx call {args}")
+
+    def _host(self, name: str, guest: str) -> Path:
+        workspace = Path(self.sandboxes[name])
+        return workspace / guest.split("/")[-1]
+
+
+@pytest.fixture
+def backend(tmp_path: Path) -> SbxSandboxBackend:
+    return SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+
+
+@pytest.fixture
+def sbx(backend: SbxSandboxBackend) -> FakeSbx:
+    return FakeSbx(backend)
+
+
+class TestDeclarations:
+    def test_microvm_closed_posix_and_the_workspace_capabilities(self, backend):
+        declared = backend.declarations
+        assert backend.isolation is Isolation.MICROVM
+        assert isinstance(backend, SandboxBackend)
+        assert declared.egress_modes == frozenset({Egress.CLOSED})
+        assert declared.os_families == frozenset({OsFamily.POSIX})
+        assert declared.observes_egress is False
+        assert declared.capabilities == frozenset(
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.FILES_LIST,
+                Capability.FILES_DELETE,
+                Capability.RECLAIM,
+            }
+        )
+
+    def test_the_default_workspace_root_is_fixed_at_construction(self, tmp_path, monkeypatch):
+        for variable in ("LOCALAPPDATA", "XDG_STATE_HOME", "HOME", "USERPROFILE"):
+            monkeypatch.setenv(variable, str(tmp_path / "first"))
+        config = SbxSandboxConfig()
+        root = config.resolved_workspace_root
+        for variable in ("LOCALAPPDATA", "XDG_STATE_HOME", "HOME", "USERPROFILE"):
+            monkeypatch.setenv(variable, str(tmp_path / "second"))
+        assert config.resolved_workspace_root == root
+        assert root.is_absolute() and (tmp_path / "first") in root.parents
+
+    def test_a_relative_workspace_root_is_fixed_at_construction(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = SbxSandboxConfig(workspace_root=Path("relative"))
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        assert config.resolved_workspace_root == tmp_path / "relative"
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"name_prefix": "Bad"},
+            {"name_prefix": ""},
+            {"cpus": 0},
+            {"memory": "lots"},
+            {"exec_cleanup_timeout_seconds": True},
+            {"exec_cleanup_timeout_seconds": float("inf")},
+            {"command_timeout_seconds": float("nan")},
+            {"create_timeout_seconds": "600"},
+        ],
+    )
+    def test_config_refuses_values_sbx_would_reject(self, overrides):
+        with pytest.raises(ValueError):
+            SbxSandboxConfig(**overrides)  # type: ignore[arg-type]
+
+
+class TestNames:
+    def test_a_name_sbx_accepts_that_carries_the_whole_key_and_kind(self):
+        name = sandbox_name("maf", KEY, "kind")
+        assert re.fullmatch(r"[a-z0-9][a-z0-9-]{1,62}", name) and len(name) <= 63
+        assert sandbox_name("maf", KEY, "other") != name
+        call = SandboxKey(scope="tenant", thread_id="thread", agent_id="agent", call_id="c")
+        assert sandbox_name("maf", call, "kind") != name
+        agent = SandboxKey(scope="tenant", thread_id="thread", agent_id="agent-2")
+        # One conversation shares a prefix, so a scope purge finds every agent's sandbox.
+        assert sandbox_name("maf", agent, "kind")[:17] == name[:17]
+
+
+class TestHostChecks:
+    def test_ssh_agent_forwarding_is_refused_before_anything_is_created(self, backend, sbx):
+        sbx.forwarding = b"true\n"
+        with pytest.raises(SbxHostNotConfined, match="ssh.agentForwardingEnabled false"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_a_registered_mcp_server_is_refused(self, backend, sbx):
+        sbx.servers = [{"name": "github"}]
+        with pytest.raises(SbxHostNotConfined, match="sbx mcp rm"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
+    @pytest.mark.parametrize(
+        "payload",
+        [b"", b"{}", b'{"servers": null}', b'{"mcpServers": []}', b"[]", b"not json"],
+    )
+    def test_an_mcp_listing_without_a_server_list_is_refused(self, backend, sbx, payload):
+        sbx.mcp_payload = payload
+        with pytest.raises(SbxError, match="no `servers` list"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_the_measured_mcp_listing_with_no_servers_passes(self, backend, sbx):
+        sbx.mcp_payload = json.dumps({"gateway": {"name": "LOCAL"}, "servers": []}).encode()
+        asyncio.run(backend.check_host())
+
+    def test_a_lapsed_login_names_sbx_login(self, backend, sbx):
+        async def lapsed(*args: str, timeout: float | None = None) -> _Result:
+            return _Result(1, b"", b"error: not logged in; run sbx login\n")
+
+        backend._sbx = lapsed  # type: ignore[method-assign]
+        with pytest.raises(SbxLoginRequired, match="Run `sbx login`"):
+            asyncio.run(backend.check_host())
+
+
+class TestAcquire:
+    def test_a_cold_acquire_creates_closed_bounded_and_mounted(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        name = sandbox_name("maf", KEY, "kind")
+        create = next(call for call in sbx.calls if call[0] == "create")
+        workspace = _workspace_of(tmp_path, name)
+        assert workspace.name.startswith("ws-")
+        assert create == (
+            "create",
+            "shell",
+            "--name",
+            name,
+            "--cpus",
+            "2",
+            "--memory",
+            "2g",
+            "--skills",
+            "off",
+            "--deny-network",
+            "**",
+            "--quiet",
+            str(workspace),
+        )
+        mount = next(call for call in sbx.calls if _MOUNT_SCRIPT in call)
+        assert mount[-3:] == ("/maf-sandbox", GUEST_MOUNT, "create")
+        assert sandbox.instance_id == f"id-{name}"
+        assert (workspace / _MARKER).exists() and (workspace / "work").is_dir()
+        meta = json.loads((tmp_path / "root" / name / "meta.json").read_text())
+        assert meta["work_dir"] == "/maf-sandbox/work" and meta["guest_mount"] == GUEST_MOUNT
+
+    def test_a_pinned_image_id_is_the_template_and_is_compared(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(
+            backend.acquire(KEY, _spec(image="example/image:1", image_id="sha256:abc"))
+        )
+        create = next(call for call in sbx.calls if call[0] == "create")
+        assert create[create.index("--template") + 1] == "sha256:abc"
+        record = json.loads((tmp_path / "root" / sandbox.name / "meta.json").read_text())
+        assert record["image_id"] == "sha256:abc"
+        with pytest.raises(ValueError, match="image_id"):
+            asyncio.run(backend.acquire(KEY, _spec(image="example/image:1", image_id="sha256:d")))
+
+    def test_an_image_is_the_template(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec(image="example/image:1")))
+        create = next(call for call in sbx.calls if call[0] == "create")
+        assert create[create.index("--template") + 1] == "example/image:1"
+
+    def test_a_parent_the_image_already_has_is_refused_and_the_sandbox_removed(self, backend, sbx):
+        sbx.mount_exit = 3
+        with pytest.raises(ValueError, match="already exists in the image"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+
+    def test_a_base_directly_under_the_root_is_refused(self, backend, sbx):
+        with pytest.raises(ValueError, match="parent"):
+            asyncio.run(backend.acquire(KEY, _spec(work_dir="/work")))
+
+    def test_only_closed_egress_is_served(self, backend, sbx):
+        with pytest.raises(ValueError, match="CLOSED"):
+            asyncio.run(
+                backend.acquire(KEY, _spec(egress=Egress.ALLOWLIST, egress_allow=("a.example",)))
+            )
+
+    def test_a_warm_acquire_adopts_and_refuses_a_changed_base(self, backend, sbx):
+        first = asyncio.run(backend.acquire(KEY, _spec()))
+        creates = sum(call[0] == "create" for call in sbx.calls)
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert again.instance_id == first.instance_id
+        assert sum(call[0] == "create" for call in sbx.calls) == creates
+        with pytest.raises(ValueError, match="dispose it"):
+            asyncio.run(backend.acquire(KEY, _spec(work_dir="/srv/other")))
+
+    def test_a_double_slash_base_is_the_single_root_path(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec(work_dir="//maf-sandbox/work")))
+        assert sandbox.base == "/maf-sandbox/work"
+        mount = next(call for call in sbx.calls if _MOUNT_SCRIPT in call)
+        assert mount[-3] == "/maf-sandbox"
+
+    def test_a_sandbox_the_listing_gives_no_id_is_refused_and_removed(self, backend, sbx, tmp_path):
+        sbx.unlisted.add(sandbox_name("maf", KEY, "kind"))
+        with pytest.raises(SbxError, match="no id"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+        assert list((tmp_path / "root").iterdir()) == []
+
+    def test_a_refused_create_leaves_no_workspace(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+
+        async def refused(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                return _Result(1, b"", b"error: pull access denied for example/missing\n")
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = refused  # type: ignore[method-assign]
+        with pytest.raises(SbxError, match="pull access denied"):
+            asyncio.run(backend.acquire(KEY, _spec(image="example/missing")))
+        assert list((tmp_path / "root").iterdir()) == []
+
+    def test_the_workspace_mount_is_read_with_the_shells_own_pwd(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[:1] == ("exec",) and "pwd" in call[2:3] for call in sbx.calls)
+
+    def test_a_record_for_another_key_or_kind_is_not_adopted(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        record = tmp_path / "root" / sandbox.name / "meta.json"
+        meta = json.loads(record.read_text())
+        meta["kind"] = "another-kind"
+        record.write_text(json.dumps(meta))
+        with pytest.raises(SbxError, match="another key or kind"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
+    def test_a_create_conflict_the_listing_missed_is_a_daemon_fault(self, backend, sbx):
+        async def conflicted(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                return _Result(1, b"", b"error: sandbox 'x' already exists\n")
+            return await FakeSbx.__call__(sbx, *args, timeout=timeout)
+
+        backend._sbx = conflicted  # type: ignore[method-assign]
+        with pytest.raises(SbxDaemonFault, match="sbx daemon restart"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
+
+class TestExec:
+    def test_sbx_chatter_before_the_nonce_is_not_the_commands_stderr(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def restarted(args: tuple[str, ...]) -> _Result:
+            nonce = args[6]
+            stderr = f"Sandbox x started successfully\n{nonce}\nguest err\n".encode()
+            return _Result(3, b"out", stderr)
+
+        sbx.exec_hook = restarted
+        result = asyncio.run(sandbox.exec(["x", ""], working_directory=".", timeout=10))
+        assert (result.stdout_bytes, result.stderr_bytes, result.exit_code) == (
+            b"out",
+            b"guest err\n",
+            3,
+        )
+
+    def test_no_nonce_means_the_wrapper_never_ran(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.exec_hook = lambda _args: _Result(1, b"", b"error: sandbox 'x' not found\n")
+        with pytest.raises(SbxError, match="not found"):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+        sbx.exec_hook = lambda _args: _Result(1, b"", b"500: backend unavailable\n")
+        with pytest.raises(SbxDaemonFault):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+
+    def test_a_missing_mount_is_bound_again_and_the_command_retried(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unmounted_once = True
+        before = len(sbx.calls)
+        result = asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+        assert result.stdout == "ran"
+        remounts = [call for call in sbx.calls[before:] if _MOUNT_SCRIPT in call]
+        assert len(remounts) == 1 and remounts[0][-1] == "again"
+
+    def test_a_timeout_kills_the_process_group_and_raises(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def slow(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
+
+        sbx.exec_hook = slow
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+
+
+class TestRemoval:
+    def _removal_argv(self, sbx: FakeSbx) -> list[str]:
+        call = next(call for call in reversed(sbx.calls) if _EXEC_SCRIPT in call)
+        return [_decode(item) for item in call[10:]]
+
+    def test_a_non_recursive_removal_never_recurses_in_the_guest(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("f", b"x", working_directory="."))
+        asyncio.run(sandbox.remove("f", working_directory="."))
+        assert self._removal_argv(sbx) == ["rm", "-f", "--", "/maf-sandbox/work/f"]
+
+    def test_reclaim_refuses_a_case_variant_on_a_folding_host(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("Upper/f", b"x", working_directory="."))
+        work = _workspace_of(tmp_path, sandbox.name) / "work"
+        if not (work / "upper").exists():
+            pytest.skip("this host filesystem is case-sensitive")
+        before = len(sbx.calls)
+        with pytest.raises(ValueError, match="verbatim"):
+            asyncio.run(sandbox.reclaim("upper", working_directory=".", timeout=10))
+        assert not any(_EXEC_SCRIPT in call for call in sbx.calls[before:])
+        assert (work / "Upper" / "f").is_file()
+
+    def test_recursive_removal_and_reclaim_recurse(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("d/f", b"x", working_directory="."))
+        asyncio.run(sandbox.remove("d", working_directory=".", recursive=True))
+        assert self._removal_argv(sbx) == ["rm", "-rf", "--", "/maf-sandbox/work/d"]
+        asyncio.run(sandbox.reclaim("d", working_directory=".", timeout=10))
+        assert self._removal_argv(sbx) == ["rm", "-rf", "--", "/maf-sandbox/work/d"]
+
+
+class TestTheListing:
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot store a backslash")
+    def test_a_name_the_path_grammar_refuses_fails_the_listing(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        (sandbox.mount.host / "work" / "a\\b").write_bytes(b"")
+        with pytest.raises(ValueError, match="backslash"):
+            asyncio.run(sandbox.list_dir(".", working_directory="."))
+
+    def test_ordinary_names_are_listed_relative_to_the_working_directory(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        (sandbox.mount.host / "work" / "f.txt").write_bytes(b"x")
+        listed = asyncio.run(sandbox.list_dir(".", working_directory="."))
+        assert [entry.path for entry in listed] == ["f.txt"]
+
+
+class TestDeadlines:
+    def test_a_remount_spends_the_callers_deadline(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unmounted_once = True
+        before = len(sbx.calls)
+        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
+        remount = next(
+            index for index in range(before, len(sbx.calls)) if _MOUNT_SCRIPT in sbx.calls[index]
+        )
+        bound = sbx.timeouts[remount]
+        assert bound is not None and bound <= 5
+
+    def test_the_create_probe_is_bounded_by_the_command_timeout(self, tmp_path):
+        backend = SbxSandboxBackend(
+            SbxSandboxConfig(workspace_root=tmp_path / "root", command_timeout_seconds=7)
+        )
+        sbx = FakeSbx(backend)
+        asyncio.run(backend.acquire(KEY, _spec()))
+        probes = [
+            timeout
+            for call, timeout in zip(sbx.calls, sbx.timeouts, strict=True)
+            if _EXEC_SCRIPT in call and _PROBE_SCRIPT in [_decode(item) for item in call[10:]]
+        ]
+        assert probes and all(timeout is not None and timeout <= 7 for timeout in probes)
+
+    def test_a_remount_that_overruns_the_deadline_is_the_callers_timeout(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unmounted_once = True
+        real = sbx.__call__
+
+        async def slow_mount(*args: str, timeout: float | None = None) -> _Result:
+            if _MOUNT_SCRIPT in args:
+                raise TimeoutError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = slow_mount  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError, match="within 5 seconds"):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
+
+
+class TestCancellation:
+    def test_a_cancelled_exec_kills_the_guest_process_group(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def cancelled(_args: tuple[str, ...]) -> _Result:
+            raise asyncio.CancelledError
+
+        sbx.exec_hook = cancelled
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=30))
+        assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+
+    def test_a_stopped_create_leaves_a_sandbox_mounting_another_workspace(
+        self, backend, sbx, tmp_path
+    ):
+        real = sbx.__call__
+        name = sandbox_name("maf", KEY, "kind")
+
+        async def raced(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                # Another process's create won the name and is still setting up: no record yet.
+                other = tmp_path / "root" / name / "ws-other"
+                other.mkdir(parents=True, exist_ok=True)
+                sbx.sandboxes[name] = str(other)
+                raise asyncio.CancelledError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = raced  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert name in sbx.sandboxes
+        assert not any(call[0] == "rm" for call in sbx.calls)
+        assert (tmp_path / "root" / name / "ws-other").is_dir()
+
+    def test_a_create_stopped_part_way_is_removed(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+
+        async def stopped(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await real(*args, timeout=timeout)  # the daemon finishes it
+                raise asyncio.CancelledError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = stopped  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+        assert list((tmp_path / "root").iterdir()) == []
+
+
+class TestGuestControlledSignals:
+    def test_the_sentinel_after_the_nonce_is_the_commands_output(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def forged(args: tuple[str, ...]) -> _Result:
+            nonce = args[6]
+            return _Result(0, b"", f"{nonce}\n{nonce}-unmounted\n".encode())
+
+        sbx.exec_hook = forged
+        before = len(sbx.calls)
+        result = asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=30))
+        assert result.stderr.endswith("-unmounted\n")
+        assert not any(_MOUNT_SCRIPT in call for call in sbx.calls[before:])
+        assert sum(_EXEC_SCRIPT in call for call in sbx.calls[before:]) == 1
+
+    def test_a_linked_marker_is_replaced_not_followed(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        victim = tmp_path / "victim"
+        victim.write_text("host file")
+        marker = _workspace_of(tmp_path, sandbox.name) / _MARKER
+        marker.unlink()
+        try:
+            marker.symlink_to(victim)
+        except OSError:
+            pytest.skip("this host cannot create a symlink")
+        sbx.unmounted_once = True
+        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=30))
+        assert victim.read_text() == "host file"
+        assert marker.is_file() and not marker.is_symlink()
+
+
+class TestAnExpiredCommand:
+    def _expire(self, backend, sbx) -> str:
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def slow(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
+
+        sbx.exec_hook = slow
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        return sandbox.name
+
+    def test_one_that_never_started_is_cancelled_and_nothing_else_stops(self, backend, sbx):
+        sbx.kill_result = _Result(4, b"", b"")
+        name = self._expire(backend, sbx)
+        assert not any(call[0] == "stop" for call in sbx.calls)
+        assert backend.retired == frozenset()
+        assert sbx.calls[-1][:5] == ("exec", name, "sh", "-c", _KILL_SCRIPT)
+
+    def test_a_sandbox_whose_command_could_not_be_killed_is_retired(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+
+        def slow(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
+
+        sbx.exec_hook = slow
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert not any(call[0] == "stop" for call in sbx.calls)
+        sbx.exec_hook = lambda _args: None
+        with pytest.raises(SbxError, match="retired"):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+        with pytest.raises(SbxError, match="retired"):
+            asyncio.run(sandbox.write_file("f", b"x", working_directory="."))
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert ("rm", "--force", sandbox.name) in sbx.calls
+        assert again.instance_id != sandbox.instance_id
+        with pytest.raises(SbxError, match="retired"):
+            asyncio.run(sandbox.stat_file("f", working_directory="."))
+        assert asyncio.run(again.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
+
+    def test_a_kill_that_cannot_be_spawned_retires_and_keeps_the_timeout(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        real = sbx.__call__
+
+        async def unspawnable(*args: str, timeout: float | None = None) -> _Result:
+            if _KILL_SCRIPT in args:
+                raise FileNotFoundError("sbx is gone")
+            if _EXEC_SCRIPT in args:
+                raise TimeoutError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = unspawnable  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert sandbox.instance_id in backend.retired
+
+    def test_a_failed_setup_cleanup_retires_that_instance_not_every_create(self, backend, sbx):
+        sbx.kill_result = _Result(1, b"", b"error: kill refused")
+        name = sandbox_name("maf", KEY, "kind")
+
+        def slow_probe(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
+
+        sbx.exec_hook = slow_probe
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert backend.retired == frozenset({f"id-{name}"})
+        sbx.exec_hook = lambda _args: None
+        sbx.kill_result = _ok()
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert again.instance_id not in backend.retired
+
+    def test_one_whose_group_was_killed_leaves_the_sandbox_running(self, backend, sbx):
+        name = self._expire(backend, sbx)
+        assert ("stop", name) not in sbx.calls
+        assert sbx.calls[-1][:5] == ("exec", name, "sh", "-c", _KILL_SCRIPT)
+
+    def test_a_retirement_outlives_the_process_that_made_it(self, backend, sbx, tmp_path):
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+        name = self._expire(backend, sbx)
+        retired = next(iter(backend.retired))
+        sbx.exec_hook = lambda _args: None
+        restarted = SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+        restarted._sbx = sbx  # type: ignore[method-assign]
+        again = asyncio.run(restarted.acquire(KEY, _spec()))
+        assert ("rm", "--force", name) in sbx.calls
+        assert again.instance_id != retired
+        assert asyncio.run(again.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
+
+
+class TestTheOutputBound:
+    """A guest printing without end cannot fill host memory."""
+
+    @pytest.mark.parametrize(
+        ("stdout", "stderr", "refused"),
+        [
+            (_OUTPUT_LIMIT // 2, _OUTPUT_LIMIT - _OUTPUT_LIMIT // 2, False),
+            (_OUTPUT_LIMIT // 2, _OUTPUT_LIMIT - _OUTPUT_LIMIT // 2 + 1, True),
+        ],
+    )
+    def test_the_client_is_read_under_one_budget_for_both_streams(
+        self, tmp_path, stdout, stderr, refused
+    ):
+        backend = SbxSandboxBackend(
+            SbxSandboxConfig(sbx_path=sys.executable, workspace_root=tmp_path / "root")
+        )
+        flood = (
+            "import sys; "
+            f"sys.stdout.buffer.write(b'o' * {stdout}); sys.stderr.buffer.write(b'e' * {stderr})"
+        )
+        if refused:
+            with pytest.raises(SandboxExecOutputLimitExceeded):
+                asyncio.run(backend._sbx("-c", flood, timeout=60))
+        else:
+            result = asyncio.run(backend._sbx("-c", flood, timeout=60))
+            assert (len(result.stdout), len(result.stderr)) == (stdout, stderr)
+
+    def _flood(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def flooding(_args: tuple[str, ...]) -> _Result:
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+
+        sbx.exec_hook = flooding
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(sandbox.exec(["yes"], working_directory=".", timeout=10))
+        sbx.exec_hook = lambda _args: None
+        return sandbox
+
+    def test_an_overflow_kills_the_command_and_keeps_the_sandbox(self, backend, sbx):
+        sandbox = self._flood(backend, sbx)
+        assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+        assert backend.retired == frozenset()
+        assert asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
+
+    def test_an_overflow_whose_kill_fails_retires_the_instance(self, backend, sbx):
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+        sandbox = self._flood(backend, sbx)
+        assert sandbox.instance_id in backend.retired
+
+    def test_a_kill_that_overflows_retires_and_keeps_the_timeout(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        real = sbx.__call__
+
+        async def flooding_kill(*args: str, timeout: float | None = None) -> _Result:
+            if _KILL_SCRIPT in args:
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+            if _EXEC_SCRIPT in args:
+                raise TimeoutError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = flooding_kill  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert sandbox.instance_id in backend.retired
+
+
+class TestCleanupSurvivesCancellation:
+    def test_a_cancellation_during_the_timeout_kill_does_not_stop_it(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        real = sbx.__call__
+        killing = asyncio.Event()
+        killed: list[bool] = []
+
+        async def slow_kill(*args: str, timeout: float | None = None) -> _Result:
+            if _EXEC_SCRIPT in args:
+                raise TimeoutError
+            if _KILL_SCRIPT in args:
+                killing.set()
+                await asyncio.sleep(0.2)
+                killed.append(True)
+                return _ok()
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = slow_kill  # type: ignore[method-assign]
+
+        async def scenario() -> None:
+            call = asyncio.create_task(
+                sandbox.exec(["sleep", "9"], working_directory=".", timeout=30)
+            )
+            await killing.wait()
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await call
+            await asyncio.sleep(0.4)
+
+        asyncio.run(scenario())
+        assert killed == [True]
+
+    def test_a_call_cancelled_twice_returns_only_once_its_kill_settles(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            killing, release = asyncio.Event(), asyncio.Event()
+
+            async def gated_kill(*args: str, timeout: float | None = None) -> _Result:
+                if _EXEC_SCRIPT in args:
+                    raise TimeoutError
+                if _KILL_SCRIPT in args:
+                    killing.set()
+                    await release.wait()
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gated_kill  # type: ignore[method-assign]
+            call = asyncio.create_task(
+                sandbox.exec(["sleep", "9"], working_directory=".", timeout=30)
+            )
+            await killing.wait()
+            for _ in range(2):
+                call.cancel()
+                await asyncio.sleep(0.05)
+            assert not call.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await call
+            assert sandbox.instance_id in backend.retired
+
+        asyncio.run(scenario())
+
+    def test_an_acquire_cancelled_twice_holds_until_its_sandbox_is_removed(self, backend, sbx):
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            removing, release = asyncio.Event(), asyncio.Event()
+
+            async def gated_rm(*args: str, timeout: float | None = None) -> _Result:
+                if args == ("exec", name, "sh", "-c", "pwd -P"):
+                    return _Result(1, b"", b"error: setup failed\n")
+                if args[:2] == ("rm", "--force"):
+                    removing.set()
+                    await release.wait()
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gated_rm  # type: ignore[method-assign]
+            acquiring = asyncio.create_task(backend.acquire(KEY, _spec()))
+            await removing.wait()
+            for _ in range(2):
+                acquiring.cancel()
+                await asyncio.sleep(0.05)
+            assert not acquiring.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await acquiring
+            assert name not in sbx.sandboxes
+            assert not (backend.config.resolved_workspace_root / name).exists()
+
+        asyncio.run(scenario())
+
+    def test_a_cleanup_that_cannot_start_leaves_the_cancellation_standing(self, backend, sbx):
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            setting_up = asyncio.Event()
+
+            async def gone(*args: str, timeout: float | None = None) -> _Result:
+                if args == ("exec", name, "sh", "-c", "pwd -P"):
+                    setting_up.set()
+                    await asyncio.sleep(3600)
+                if args[:2] == ("rm", "--force"):
+                    raise FileNotFoundError("sbx is gone")
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gone  # type: ignore[method-assign]
+            acquiring = asyncio.create_task(backend.acquire(KEY, _spec()))
+            await setting_up.wait()
+            acquiring.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await acquiring
+
+        asyncio.run(scenario())
+
+    def test_a_create_cancelled_twice_still_removes_what_the_daemon_made(self, backend, sbx):
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            created, listing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+            async def gated(*args: str, timeout: float | None = None) -> _Result:
+                if args[0] == "create":
+                    await real(*args, timeout=timeout)
+                    created.set()
+                    await asyncio.sleep(3600)
+                if args == ("ls", "--json") and created.is_set():
+                    listing.set()
+                    await release.wait()
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gated  # type: ignore[method-assign]
+            acquiring = asyncio.create_task(backend.acquire(KEY, _spec()))
+            await created.wait()
+            acquiring.cancel()
+            await listing.wait()
+            acquiring.cancel()
+            await asyncio.sleep(0.05)
+            assert not acquiring.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await acquiring
+            assert name not in sbx.sandboxes
+
+        asyncio.run(scenario())
+
+
+class TestACreateWhoseClientStopped:
+    """The daemon can finish a create after its client stopped, and list it a moment later."""
+
+    def _stopped(self, backend, sbx, monkeypatch, *, listed_after: int | None) -> str:
+        monkeypatch.setattr(sbx_module, "_ABANDON_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(sbx_module, "_ABANDON_SETTLE_SECONDS", 0.5)
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+        listings: list[None] = []
+
+        async def stopped_client(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await real(*args, timeout=timeout)
+                sbx.unlisted.add(name)
+                raise TimeoutError
+            if args[:2] == ("ls", "--json") and name in sbx.unlisted:
+                listings.append(None)
+                if listed_after is not None and len(listings) > listed_after:
+                    sbx.unlisted.discard(name)
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = stopped_client  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        return name
+
+    def test_one_the_daemon_lists_late_is_still_removed(self, backend, sbx, monkeypatch):
+        name = self._stopped(backend, sbx, monkeypatch, listed_after=2)
+        assert ("rm", "--force", name) in sbx.calls
+        assert name not in sbx.sandboxes
+
+    def test_one_never_listed_keeps_its_workspace(self, backend, sbx, monkeypatch, tmp_path):
+        name = self._stopped(backend, sbx, monkeypatch, listed_after=None)
+        assert ("rm", "--force", name) not in sbx.calls
+        assert [path.name[:3] for path in (tmp_path / "root" / name).iterdir()] == ["ws-"]
+
+
+class TestAnUnlistedSandbox:
+    def test_a_lost_engine_neither_recreates_nor_deletes_the_workspace(
+        self, backend, sbx, tmp_path
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        creates = sum(call[0] == "create" for call in sbx.calls)
+        sbx.lost_engine = True
+        with pytest.raises(SbxDaemonFault):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sum(call[0] == "create" for call in sbx.calls) == creates
+        assert (tmp_path / "root" / sandbox.name / "meta.json").is_file()
+        assert (_workspace_of(tmp_path, sandbox.name) / _MARKER).is_file()
+
+    def test_one_that_answers_is_a_daemon_fault_and_is_kept(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        creates = sum(call[0] == "create" for call in sbx.calls)
+        sbx.unlisted.add(sandbox.name)
+        with pytest.raises(SbxDaemonFault, match="answers"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sum(call[0] == "create" for call in sbx.calls) == creates
+        assert sandbox.name in sbx.sandboxes
+
+    def test_one_removed_by_hand_is_created_again(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert again.name in sbx.sandboxes
+        assert sum(call[0] == "create" for call in sbx.calls) == 2
+
+
+class TestTheRunningDaemonsForwarding:
+    def test_a_sandbox_given_the_hosts_agent_is_refused_and_removed(self, backend, sbx, tmp_path):
+        sbx.agent_socket = True
+        with pytest.raises(SbxHostNotConfined, match="daemon restart"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+        assert list((tmp_path / "root").iterdir()) == []
+
+
+class TestARecreatedSandbox:
+    def test_it_mounts_a_fresh_workspace_never_the_earlier_ones(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("stale.txt", b"earlier data", working_directory="."))
+        earlier = _workspace_of(tmp_path, sandbox.name)
+        del sbx.sandboxes[sandbox.name]  # removed outside the backend; workspace and record stay
+        real = sbx.__call__
+        mounted: list[Path] = []
+
+        async def watching(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                mounted.append(Path(args[-1]))
+                assert list(Path(args[-1]).iterdir()) == []
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = watching  # type: ignore[method-assign]
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert mounted and mounted[0] != earlier
+        assert _workspace_of(tmp_path, sandbox.name) == mounted[0]
+
+
+class TestAnInterruptedRecreate:
+    def test_a_stale_record_does_not_keep_a_half_built_sandbox(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]  # removed outside the backend; its record stays
+        real = sbx.__call__
+
+        async def interrupted(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await real(*args, timeout=timeout)  # the daemon finishes it
+                raise asyncio.CancelledError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = interrupted  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sandbox.name not in sbx.sandboxes
+
+
+class TestReclaimDeadline:
+    def test_the_host_stat_spends_the_reclaim_timeout(self, backend, sbx, monkeypatch):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("d/f", b"x", working_directory="."))
+        plane = sandbox.plane
+        real_lstat = plane.lstat
+
+        def slow_lstat(guest: str):
+            time.sleep(0.5)
+            return real_lstat(guest)
+
+        monkeypatch.setattr(plane, "lstat", slow_lstat)
+        before = len(sbx.calls)
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.reclaim("d", working_directory=".", timeout=0.2))
+        assert not any(_EXEC_SCRIPT in call for call in sbx.calls[before:])
+
+
+class TestTheRecord:
+    def test_it_is_written_only_once_setup_is_done(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+        seen: list[bool] = []
+
+        async def watching(*args: str, timeout: float | None = None) -> _Result:
+            if _MOUNT_SCRIPT in args:
+                seen.append((tmp_path / "root" / args[3] / "meta.json").exists())
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = watching  # type: ignore[method-assign]
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        assert seen == [False]
+        record = json.loads((tmp_path / "root" / sandbox.name / "meta.json").read_text())
+        assert record["instance_id"] == sandbox.instance_id
+
+    def test_a_record_for_another_instance_is_not_adopted(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        record = tmp_path / "root" / sandbox.name / "meta.json"
+        meta = json.loads(record.read_text())
+        meta["instance_id"] = "id-of-an-earlier-sandbox"
+        record.write_text(json.dumps(meta))
+        with pytest.raises(SbxError, match="another instance"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
+
+class TestCreateRace:
+    def _race(
+        self, backend, sbx, tmp_path, *, winner_is_up: bool, recorded_id: str | None = None
+    ) -> None:
+        real = sbx.__call__
+        name = sandbox_name("maf", KEY, "kind")
+
+        async def lost(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                # The winner mounts a workspace of its own, as every create does.
+                winner = tmp_path / "root" / name / "ws-winner"
+                winner.mkdir(parents=True, exist_ok=True)
+                sbx.sandboxes[name] = str(winner)
+                if winner_is_up:
+                    meta = {"work_dir": "/maf-sandbox/work", "image": None, "kind": "kind"}
+                    meta["key"] = [KEY.scope, KEY.thread_id, KEY.agent_id, KEY.call_id]
+                    meta["guest_mount"] = GUEST_MOUNT
+                    meta["instance_id"] = recorded_id or f"id-{name}"
+                    meta["workspace"] = winner.name
+                    (tmp_path / "root" / name / "meta.json").write_text(json.dumps(meta))
+                return _Result(1, b"", f"error: sandbox '{name}' already exists\n".encode())
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = lost  # type: ignore[method-assign]
+
+    def test_a_lost_create_serves_the_winners_sandbox(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True)
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        assert sandbox.instance_id == f"id-{sandbox.name}"
+        assert sandbox.name in sbx.sandboxes
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_failure_after_adopting_the_winner_leaves_its_sandbox(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True)
+        blocked = tmp_path / "root" / sandbox_name("maf", KEY, "kind") / "ws-winner" / "work"
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_text("a file where the base should be")
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_refused_create_leaves_a_listed_sandbox_alone(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+        name = sandbox_name("maf", KEY, "kind")
+
+        async def refused(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                # Another process's create landed meanwhile, on a workspace of its own.
+                other = tmp_path / "root" / name / "ws-other"
+                other.mkdir(parents=True, exist_ok=True)
+                sbx.sandboxes[name] = str(other)
+                return _Result(1, b"", b"error: 500 transient failure\n")
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = refused  # type: ignore[method-assign]
+        with pytest.raises(SbxError, match="transient"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert name in sbx.sandboxes
+        assert (tmp_path / "root" / name / "ws-other").is_dir()
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_an_interrupted_create_keeps_a_finished_winner(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True)
+        raced = backend._sbx
+
+        async def interrupted(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await raced(*args, timeout=timeout)
+                raise asyncio.CancelledError
+            return await raced(*args, timeout=timeout)
+
+        backend._sbx = interrupted  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_stale_record_does_not_make_a_winner_adoptable(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True, recorded_id="id-earlier")
+        with pytest.raises(SbxError, match="another process"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_winner_still_creating_is_named_and_left_alone(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=False)
+        with pytest.raises(SbxError, match="another process"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+
+class TestLocks:
+    def test_the_lock_table_holds_only_names_in_use(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert asyncio.run(backend.dispose(KEY)) is None
+        assert backend._locks == {}
+
+    def test_concurrent_acquires_of_one_name_create_once(self, backend, sbx):
+        async def both():
+            return await asyncio.gather(
+                backend.acquire(KEY, _spec()), backend.acquire(KEY, _spec())
+            )
+
+        first, second = asyncio.run(both())
+        assert first.instance_id == second.instance_id
+        assert sum(call[0] == "create" for call in sbx.calls) == 1
+        assert backend._locks == {}
+
+
+class TestDisposal:
+    def test_dispose_removes_every_kind_and_its_workspace(self, backend, sbx, tmp_path):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(backend.acquire(KEY, SandboxSpec(kind="second")))
+        assert asyncio.run(backend.dispose(KEY)) is None
+        assert sbx.sandboxes == {} and list((tmp_path / "root").iterdir()) == []
+
+    def test_a_workspace_the_listing_omits_is_still_removed(self, backend, sbx, tmp_path):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.sandboxes.clear()
+        purge = asyncio.run(backend.dispose_scope(KEY.scope, KEY.thread_id))
+        assert purge.undisposed is None and purge.disposed == 1
+        assert list((tmp_path / "root").iterdir()) == []
+
+    def test_a_lost_engine_is_unreachable_and_keeps_the_workspace(self, backend, sbx, tmp_path):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.rm_result = _Result(1, b"", b"500 Internal: backend unavailable\n")
+        failure = asyncio.run(backend.dispose(KEY))
+        assert failure is not None and failure.code == "unreachable"
+        assert len(list((tmp_path / "root").iterdir())) == 1
+
+    def test_an_unlisted_instance_that_answers_is_unreachable_and_kept(
+        self, backend, sbx, tmp_path
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unlisted.add(sandbox.name)
+        failure = asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id))
+        assert failure is not None and failure.code == "unreachable"
+        assert sandbox.name in sbx.sandboxes
+        assert (tmp_path / "root" / sandbox.name).is_dir()
+
+    def test_a_lost_engine_is_unreachable_for_an_instance_too(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.lost_engine = True
+        failure = asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id))
+        assert failure is not None and failure.code == "unreachable"
+        assert (tmp_path / "root" / sandbox.name / "meta.json").is_file()
+
+    def test_an_instance_the_daemon_says_is_gone_has_its_workspace_cleared(
+        self, backend, sbx, tmp_path
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]
+        assert (
+            asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id)) is None
+        )
+        assert not (tmp_path / "root" / sandbox.name).exists()
+
+    def test_a_gone_instance_keeps_a_workspace_recorded_for_another(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]
+        record = tmp_path / "root" / sandbox.name / "meta.json"
+        record.write_text(json.dumps({**json.loads(record.read_text()), "instance_id": "next"}))
+        assert (
+            asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id)) is None
+        )
+        assert record.is_file()
+
+    def test_a_stale_instance_id_removes_nothing(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert asyncio.run(backend.dispose(KEY, kind="kind", instance_id="old")) is None
+        assert len(sbx.sandboxes) == 1
+
+    def test_a_failed_listing_is_reported(self, backend, sbx):
+        async def unlisted(*args: str, timeout: float | None = None) -> _Result:
+            return _Result(1, b"", b"error: daemon down\n")
+
+        backend._sbx = unlisted  # type: ignore[method-assign]
+        failure = asyncio.run(backend.dispose(KEY))
+        assert failure is not None and failure.code == "unlisted"
+
+
+class TestANameReusedByAnotherProcess:
+    """`sbx rm` frees a name for every process, so a replacement can appear before cleanup."""
+
+    @pytest.mark.parametrize("purge", [False, True])
+    def test_a_disposal_leaves_the_replacement_made_as_the_name_freed(
+        self, backend, sbx, tmp_path, purge
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        other = SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+        other._sbx = sbx  # type: ignore[method-assign]
+        real = sbx.__call__
+        replacements: list[str] = []
+
+        async def racing(*args: str, timeout: float | None = None) -> _Result:
+            result = await real(*args, timeout=timeout)
+            if args[:2] == ("rm", "--force") and not replacements:
+                replacements.append((await other.acquire(KEY, _spec())).instance_id)
+            return result
+
+        backend._sbx = racing  # type: ignore[method-assign]
+        if purge:
+            assert asyncio.run(backend.dispose_scope(KEY.scope, KEY.thread_id)).undisposed is None
+        else:
+            disposed = backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id)
+            assert asyncio.run(disposed) is None
+        assert not sandbox.mount.host.exists()
+        again = asyncio.run(other.acquire(KEY, _spec()))
+        assert again.instance_id == replacements[0] != sandbox.instance_id
+        assert (again.mount.host / _MARKER).is_file()
+
+
+_SH = shutil.which("sh")
+_HAS_TOOLS = _SH is not None and all(shutil.which(tool) for tool in ("setsid", "base64"))
+
+
+@pytest.mark.skipif(not _HAS_TOOLS, reason="needs sh, setsid and base64")
+class TestTheWrapperInARealShell:
+    """The exec script itself, run by the host's own ``sh`` in place of the guest's."""
+
+    def _run(self, tmp_path: Path, argv: list[str], *, mounted: bool = True, cwd: str = "/"):
+        marker = tmp_path / "marker"
+        if mounted:
+            marker.touch()
+        encoded = ["x" + base64.b64encode(value.encode()).decode() for value in (cwd, *argv)]
+        return subprocess.run(
+            [_SH or "sh", "-c", _EXEC_SCRIPT, "maf-sbx", "NONCE", str(tmp_path / "pg"), str(marker)]
+            + encoded,
+            capture_output=True,
+            timeout=30,
+        )
+
+    def test_argv_arrives_verbatim_including_empty_arguments(self, tmp_path):
+        result = self._run(tmp_path, ["printf", "[%s]", "", "a b", "$HOME", "x\ny\n", ""])
+        assert result.stdout == b"[][a b][$HOME][x\ny\n][]"
+        assert result.stderr == b"NONCE\n" and result.returncode == 0
+
+    def test_streams_and_exit_codes_are_the_commands(self, tmp_path):
+        result = self._run(tmp_path, ["sh", "-c", "echo out; echo err >&2; exit 7"])
+        assert (result.stdout, result.stderr, result.returncode) == (b"out\n", b"NONCE\nerr\n", 7)
+        assert not (tmp_path / "pg").exists()
+
+    def test_a_missing_working_directory_exits_125(self, tmp_path):
+        result = self._run(tmp_path, ["pwd"], cwd=str(tmp_path / "absent"))
+        assert result.returncode == 125 and result.stderr.startswith(b"NONCE\n")
+
+    def test_the_create_probe_refuses_an_image_without_rm(self, tmp_path):
+        tools = tmp_path / "bin"
+        tools.mkdir()
+        for tool in ("cat", "sleep"):
+            (tools / tool).symlink_to(shutil.which(tool) or tool)
+        probed = tmp_path / "probed"
+        probed.write_text("token")
+
+        def probe() -> subprocess.CompletedProcess[bytes]:
+            return subprocess.run(
+                [_SH or "sh", "-c", _PROBE_SCRIPT, "maf-sbx", str(probed)],
+                capture_output=True,
+                env={"PATH": str(tools)},
+                timeout=30,
+            )
+
+        missing = probe()
+        assert missing.returncode == 127 and b"no rm" in missing.stderr
+        (tools / "rm").symlink_to(shutil.which("rm") or "rm")
+        found = probe()
+        assert (found.returncode, found.stdout) == (0, b"token")
+
+    def test_the_kill_cancels_a_command_that_has_not_started(self, tmp_path):
+        pid_file = tmp_path / "absent.pgid"
+        result = subprocess.run(
+            [_SH or "sh", "-c", _KILL_SCRIPT, "maf-sbx", str(pid_file)],
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 4
+        assert (tmp_path / "absent.pgid.cancel").exists()
+
+    def test_a_cancelled_command_never_runs(self, tmp_path):
+        (tmp_path / "pg.cancel").touch()
+        ran = tmp_path / "ran"
+        self._run(tmp_path, ["touch", str(ran)])
+        assert not ran.exists()
+        assert not (tmp_path / "pg.cancel").exists()
+
+    def test_nothing_runs_while_the_mount_is_missing(self, tmp_path):
+        result = self._run(tmp_path, ["touch", str(tmp_path / "ran")], mounted=False)
+        assert result.stderr == b"NONCE-unmounted\n" and not (tmp_path / "ran").exists()

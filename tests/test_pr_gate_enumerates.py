@@ -68,6 +68,7 @@ class TestTheGateEnumerates:
             "maf-sandbox-codeact",
             "maf-sandbox-deepagents",
             "maf-sandbox-docker",
+            "maf-sandbox-docker-sbx",
             "maf-sandbox-drawio",
             "maf-sandbox-hyperlight",
             "maf-sandbox-otel",

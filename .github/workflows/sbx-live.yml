@@ -1,0 +1,103 @@
+name: Docker Sandboxes (live)
+
+# Real microVMs are exercised after merge and on a timer, like the other live suites, so a
+# daemon, registry or login failure stays out of the pull-request gate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/maf-sandbox/src/**"
+      - "packages/maf-sandbox-docker-sbx/**"
+      - ".github/workflows/sbx-live.yml"
+  schedule:
+    # Offset from Docker live at 04:50 UTC.
+    - cron: "20 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sbx-live
+  cancel-in-progress: false
+
+jobs:
+  sbx-e2e:
+    name: Docker Sandboxes backend live tests
+    # The hosted image where a sandbox VM boots; the arm64 and macOS images have no usable
+    # hypervisor for sbx.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MAF_SANDBOX_SBX_E2E: "1"
+      SBX_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Sync workspace
+        run: uv sync --locked
+
+      - name: Install and prepare sbx
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
+        run: |
+          set -euo pipefail
+          # Docker's apt repository, the one `get.docker.com` with REPO_ONLY=1 configures.
+          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" \
+            | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+          sudo apt-get update -q
+          sudo apt-get install -y -q docker-sbx
+          sudo chmod 666 /dev/kvm
+          sbx version
+          printf '%s' "$DOCKER_PAT" | sbx login --username "$DOCKER_USERNAME" --password-stdin
+          sbx policy init deny-all
+          # The backend refuses a host that forwards its SSH agent into sandboxes.
+          sbx settings set ssh.agentForwardingEnabled false
+          sbx daemon restart
+
+      - name: Run the live suite
+        run: |
+          set -euo pipefail
+          # `-ra` because the module skips itself without MAF_SANDBOX_SBX_E2E; a skip here is a
+          # bug. `--durations` records whether the runner is fast enough to keep.
+          uv run pytest -q -ra -s --durations=0 \
+            packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py
+
+      - name: Remove leftover sandboxes
+        if: always()
+        run: sbx rm --all --force || true
+
+  report-failure:
+    name: Report Docker Sandboxes live failure
+    needs: sbx-e2e
+    if: always() && needs.sbx-e2e.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Open or notify the Docker Sandboxes live tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- sbx-live-failure-tracker -->'
+          --title 'Docker Sandboxes live checks failed'
+          --reproduce 'Re-run the linked attempt, or dispatch sbx-live.yml against the failing commit. Inspect the first failed step for install, login, daemon, or test failures.'
+          --expected 'All Docker Sandboxes live checks pass.'
+          --packages maf-sandbox maf-sandbox-docker-sbx
