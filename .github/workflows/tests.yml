@@ -85,7 +85,7 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
         # whoever can move it can run code in this workflow.
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -121,7 +121,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -148,7 +148,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -226,7 +226,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -271,7 +271,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -308,7 +308,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -352,7 +352,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
