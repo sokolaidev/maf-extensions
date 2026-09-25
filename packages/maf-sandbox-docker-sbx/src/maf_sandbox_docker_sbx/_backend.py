@@ -379,6 +379,8 @@ class _SbxSandbox:
                 raise ValueError(f"refusing to reclaim the working directory itself: {guest!r}")
         if self._plane.parts(guest) in (None, ()):
             raise ValueError(f"refusing to reclaim {guest!r}, which is not inside the workspace")
+        # The guest's lookups fold case as the host's do, so `upper` would remove `Upper`.
+        await self._stat(guest)
         await self._remove_as_the_guest(guest, timeout, recursive=True)
 
     async def _remove_as_the_guest(self, guest: str, timeout: float, *, recursive: bool) -> None:
@@ -705,10 +707,15 @@ class SbxSandboxBackend:
                 f"sandbox {name} was created for another key or kind, whose name digests to "
                 "the same; refusing to share it. Dispose it."
             )
-        if meta.get("work_dir") != base or meta.get("image") != spec.image:
+        if (
+            meta.get("work_dir") != base
+            or meta.get("image") != spec.image
+            or meta.get("image_id") != spec.image_id
+        ):
             raise ValueError(
-                f"sandbox {name} was created with work_dir {meta.get('work_dir')!r} and image "
-                f"{meta.get('image')!r}; dispose it before changing either"
+                f"sandbox {name} was created with work_dir {meta.get('work_dir')!r}, image "
+                f"{meta.get('image')!r} and image_id {meta.get('image_id')!r}; dispose it "
+                "before changing any of them"
             )
         guest_mount = meta.get("guest_mount")
         if not isinstance(guest_mount, str):
@@ -741,6 +748,7 @@ class SbxSandboxBackend:
             "kind": spec.kind,
             "work_dir": base,
             "image": spec.image,
+            "image_id": spec.image_id,
         }
         args = [
             "create",
@@ -757,8 +765,9 @@ class SbxSandboxBackend:
             "**",
             "--quiet",
         ]
-        if spec.image:
-            args += ["--template", spec.image]
+        template = spec.image_id or spec.image
+        if template:
+            args += ["--template", template]
         try:
             created = await self._sbx(
                 *args, str(workspace), timeout=self._config.create_timeout_seconds

@@ -65,7 +65,7 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 
 `RUN_CODE` is not declared, because any image is accepted and the runtime is the image's. `SNAPSHOT` is not declared. `HOST_TOOLS` is not declared yet: an idle sandbox stops 30 seconds after its last `sbx` session and kills every process, and the host-tool transport has not been measured against that.
 
-`spec.image`, when set, is passed to `sbx create --template`. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000) with passwordless `sudo`. An image without that user runs commands as root.
+`spec.image_id`, or else `spec.image`, is passed to `sbx create --template`, and a warm acquire refuses a spec that changes either. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000) with passwordless `sudo`. An image without that user runs commands as root.
 
 ## Files: a workspace answered by the host
 
@@ -76,7 +76,7 @@ Stats, reads, listings and writes act on the host side of the mount. No path che
 - On macOS and Linux each path component is opened relative to its parent with `O_NOFOLLOW`, so a link the guest creates between a check and an operation makes the operation fail rather than follow it.
 - On Windows there are no descriptor-relative calls. The backend refuses reparse points, and relies on the guest being unable to create a link in its workspace, measured with `sbx` v0.45.1.
 - Writes land in a temporary file and are renamed into place, so a write never goes through what stood at the destination.
-- `remove` and `reclaim` both remove in the guest, at the guest's own authority. `remove` first runs the host-side path check, then `rm -f`, which refuses a directory swapped in after the check, or `rm -rf` when recursive. `reclaim` checks placement only, then runs `rm -rf`: a relative target must name a child of the working directory, and an absolute one may be anywhere strictly inside the workspace. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
+- `remove` and `reclaim` both remove in the guest, at the guest's own authority. `remove` first runs the host-side path check, then `rm -f`, which refuses a directory swapped in after the check, or `rm -rf` when recursive. `reclaim` checks placement, then runs the host-side check on the target, then `rm -rf`: a relative target must name a child of the working directory, and an absolute one may be anywhere strictly inside the workspace. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
 - Names the host would change, hide or merge are refused: a name that stats but is not listed verbatim, such as a case variant on a case-insensitive host. On Windows, reserved characters, reserved device names and a trailing dot or space are refused too.
 
 File methods reach only paths under the storage base's parent. Any other absolute path is refused with `ValueError`. `work_dir` must have a parent other than `/`, and that parent must not already exist in the image.

@@ -245,6 +245,17 @@ class TestAcquire:
         meta = json.loads((tmp_path / "root" / name / "meta.json").read_text())
         assert meta["work_dir"] == "/maf-sandbox/work" and meta["guest_mount"] == GUEST_MOUNT
 
+    def test_a_pinned_image_id_is_the_template_and_is_compared(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(
+            backend.acquire(KEY, _spec(image="example/image:1", image_id="sha256:abc"))
+        )
+        create = next(call for call in sbx.calls if call[0] == "create")
+        assert create[create.index("--template") + 1] == "sha256:abc"
+        record = json.loads((tmp_path / "root" / sandbox.name / "meta.json").read_text())
+        assert record["image_id"] == "sha256:abc"
+        with pytest.raises(ValueError, match="image_id"):
+            asyncio.run(backend.acquire(KEY, _spec(image="example/image:1", image_id="sha256:d")))
+
     def test_an_image_is_the_template(self, backend, sbx):
         asyncio.run(backend.acquire(KEY, _spec(image="example/image:1")))
         create = next(call for call in sbx.calls if call[0] == "create")
@@ -382,6 +393,18 @@ class TestRemoval:
         asyncio.run(sandbox.write_file("f", b"x", working_directory="."))
         asyncio.run(sandbox.remove("f", working_directory="."))
         assert self._removal_argv(sbx) == ["rm", "-f", "--", "/maf-sandbox/work/f"]
+
+    def test_reclaim_refuses_a_case_variant_on_a_folding_host(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("Upper/f", b"x", working_directory="."))
+        work = tmp_path / "root" / sandbox.name / "ws" / "work"
+        if not (work / "upper").exists():
+            pytest.skip("this host filesystem is case-sensitive")
+        before = len(sbx.calls)
+        with pytest.raises(ValueError, match="verbatim"):
+            asyncio.run(sandbox.reclaim("upper", working_directory=".", timeout=10))
+        assert not any(_EXEC_SCRIPT in call for call in sbx.calls[before:])
+        assert (work / "Upper" / "f").is_file()
 
     def test_recursive_removal_and_reclaim_recurse(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
