@@ -1482,6 +1482,23 @@ class TestAcquireCreatesClosed:
         args = fake.only("container", "run").args
         assert args[:5] == ("container", "run", "-d", "--name", _NAME)
 
+    def test_resource_limits_are_off_by_default(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        args = fake.only("container", "run").args
+        assert "--memory" not in args
+        assert "--cpus" not in args
+
+    def test_resource_limits_come_from_config(self):
+        config = WslcSandboxConfig(memory="512M", cpus=1.5)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        args = fake.only("container", "run").args
+        assert args[args.index("--memory") + 1] == "512M"
+        assert args[args.index("--cpus") + 1] == "1.5"
+
     def test_the_name_is_derived_from_the_key_and_the_kind(self):
         assert _container_name(_KEY, "bicep") == _container_name(
             SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer"), "bicep"
@@ -4143,6 +4160,25 @@ class TestAllowlistTopology:
         ]
         assert order == sorted(order)
         assert fake.only("network", "connect").args == ("network", "connect", "bridge", _AL_PROXY)
+
+    def test_the_proxy_has_no_resource_limits_by_default(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        proxy = _run_named(fake, _AL_PROXY).args
+        assert "--memory" not in proxy
+        assert "--cpus" not in proxy
+
+    def test_resource_limits_reach_the_workload_and_the_proxy(self):
+        """The guest drives the proxy's load, so the proxy gets the workload's limits."""
+        config = replace(_ALLOW_CONFIG, memory="512M", cpus=1.5)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        for name in (_AL, _AL_PROXY):
+            args = _run_named(fake, name).args
+            assert args[args.index("--memory") + 1] == "512M", name
+            assert args[args.index("--cpus") + 1] == "1.5", name
 
     def test_the_network_is_internal_and_labelled(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)

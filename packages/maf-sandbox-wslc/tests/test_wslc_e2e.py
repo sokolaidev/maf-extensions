@@ -50,7 +50,7 @@ from maf_sandbox.conformance import (
 )
 
 from maf_sandbox_wslc import WslcReapResult, WslcSandboxBackend, WslcSandboxConfig
-from maf_sandbox_wslc._backend import _container_name
+from maf_sandbox_wslc._backend import _container_name, _proxy_name
 from maf_sandbox_wslc._reap import listing_rows
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
@@ -642,6 +642,26 @@ class TestALiveContainer:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
 
+def test_resource_limits_reach_the_workload_cgroup():
+    scope = f"e2e-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(WslcSandboxConfig(memory="256M", cpus=0.5))
+
+    async def scenario() -> None:
+        sandbox = await backend.acquire(_key(scope), _spec())
+        limits = await sandbox.exec(
+            ["cat", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/cpu.max"],
+            working_directory="/",
+            timeout=60,
+        )
+        assert limits.exit_code == 0, limits.stderr
+        assert limits.stdout.splitlines() == [str(256 * 1024 * 1024), "50000 100000"]
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
 class TestTheDeclaredGuestFamilyAgainstARealContainer:
     """The constant `os_families` states, backed by a container rather than matched on paper.
 
@@ -854,6 +874,32 @@ class TestAllowlistEgress:
         assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
+
+    def test_resource_limits_reach_the_proxy_and_it_still_serves(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(replace(self._config(), memory="256M", cpus=0.5))
+        spec = SandboxSpec(
+            kind="e2e", image=_IMAGE, egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",)
+        )
+        try:
+            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            limits = asyncio.run(
+                backend._wslc(
+                    "container",
+                    "exec",
+                    _proxy_name(sandbox.container_name),
+                    "cat",
+                    "/sys/fs/cgroup/memory.max",
+                    "/sys/fs/cgroup/cpu.max",
+                    timeout=30,
+                )
+            )
+            assert limits.returncode == 0, limits.stderr_text
+            assert limits.stdout_text.splitlines() == [str(256 * 1024 * 1024), "50000 100000"]
+            _, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
+            assert allowed_status != "000", allowed_status
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_tls_method_path_and_plaintext_controls(self):
         scope = f"e2e-{uuid.uuid4()}"
