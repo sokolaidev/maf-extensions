@@ -544,7 +544,9 @@ class TestEndToEnd:
             assert command == template.format(path="./main.bicep")
             assert f"{cwd}/main.bicep" == path
 
-    @pytest.mark.parametrize("name", ["-x.bicep", "--stdout.bicep"])
+    @pytest.mark.parametrize(
+        "name", ["-x.bicep", "--stdout.bicep", "-x.bicepparam", "--stdout.bicepparam"]
+    )
     def test_a_leading_hyphen_reaches_the_compiler_as_a_path(self, name):
         import shlex
 
