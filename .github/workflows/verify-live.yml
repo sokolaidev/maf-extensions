@@ -946,11 +946,15 @@ jobs:
       # PATH — the container images bake it in (`images/bicep-sandbox/Dockerfile` pins v0.46.1);
       # this job installs the same version onto the runner. `bicep --version` fails fast if the
       # runner is missing an ICU the binary needs, rather than failing later inside the workload.
+      # The digest is the Dockerfile's too: this job holds the OIDC token and secrets, so the
+      # binary is checked before it runs, as every action here is pinned by SHA.
       - name: Install the bicep CLI
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/bicep \
             "https://github.com/Azure/bicep/releases/download/v0.46.1/bicep-linux-x64"
+          echo "3e011d629ea4311b7a7dd8f0040ab2b1a072ea4ff5d02cb75e0e55a9a6703fb9  /tmp/bicep" \
+            | sha256sum -c -
           sudo install -m 0755 /tmp/bicep /usr/local/bin/bicep
           bicep --version
 
