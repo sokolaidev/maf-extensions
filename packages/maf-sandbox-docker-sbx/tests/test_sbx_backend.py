@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -72,6 +73,7 @@ class FakeSbx:
         self.unmounted_once = False
         self.unlisted: set[str] = set()
         self.lost_engine = False
+        self.ids: dict[str, str] = {}
         self.kill_result = _ok()
         backend._sbx = self  # type: ignore[method-assign]
 
@@ -91,12 +93,18 @@ class FakeSbx:
                 return _ok(json.dumps({"servers": self.servers}).encode())
             case ("ls", "--json"):
                 rows = [
-                    {"name": name, "id": f"id-{name}", "workspaces": [workspace]}
+                    {
+                        "name": name,
+                        "id": self.ids.get(name, f"id-{name}"),
+                        "workspaces": [workspace],
+                    }
                     for name, workspace in self.sandboxes.items()
                     if name not in self.unlisted
                 ]
                 return _ok(json.dumps({"sandboxes": rows}).encode())
             case ("create", "shell", "--name", name, *_rest):
+                if name in self.ids or any(call[:4] == args[:4] for call in self.calls[:-1]):
+                    self.ids[name] = f"id-{name}-{len(self.calls)}"
                 self.sandboxes[name] = args[-1]
                 return _ok()
             case ("rm", "--force", name):
@@ -598,6 +606,42 @@ class TestAnUnlistedSandbox:
         again = asyncio.run(backend.acquire(KEY, _spec()))
         assert again.name in sbx.sandboxes
         assert sum(call[0] == "create" for call in sbx.calls) == 2
+
+
+class TestAnInterruptedRecreate:
+    def test_a_stale_record_does_not_keep_a_half_built_sandbox(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]  # removed outside the backend; its record stays
+        real = sbx.__call__
+
+        async def interrupted(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await real(*args, timeout=timeout)  # the daemon finishes it
+                raise asyncio.CancelledError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = interrupted  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sandbox.name not in sbx.sandboxes
+
+
+class TestReclaimDeadline:
+    def test_the_host_stat_spends_the_reclaim_timeout(self, backend, sbx, monkeypatch):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("d/f", b"x", working_directory="."))
+        plane = sandbox.plane
+        real_lstat = plane.lstat
+
+        def slow_lstat(guest: str):
+            time.sleep(0.5)
+            return real_lstat(guest)
+
+        monkeypatch.setattr(plane, "lstat", slow_lstat)
+        before = len(sbx.calls)
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.reclaim("d", working_directory=".", timeout=0.2))
+        assert not any(_EXEC_SCRIPT in call for call in sbx.calls[before:])
 
 
 class TestTheRecord:

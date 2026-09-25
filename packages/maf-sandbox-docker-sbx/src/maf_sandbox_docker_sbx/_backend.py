@@ -370,6 +370,8 @@ class _SbxSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         cwd = self._cwd(working_directory)
         if posixpath.isabs(directory):
             guest = posixpath.normpath(directory)
@@ -380,8 +382,11 @@ class _SbxSandbox:
         if self._plane.parts(guest) in (None, ()):
             raise ValueError(f"refusing to reclaim {guest!r}, which is not inside the workspace")
         # The guest's lookups fold case as the host's do, so `upper` would remove `Upper`.
-        await self._stat(guest)
-        await self._remove_as_the_guest(guest, timeout, recursive=True)
+        await asyncio.wait_for(self._stat(guest), max(0.0, deadline - loop.time()))
+        left = deadline - loop.time()
+        if left <= 0:
+            raise TimeoutError(f"reclaiming {guest!r} did not finish within {timeout} seconds")
+        await self._remove_as_the_guest(guest, left, recursive=True)
 
     async def _remove_as_the_guest(self, guest: str, timeout: float, *, recursive: bool) -> None:
         # In the guest rather than on the host: a guest that looked a name up keeps seeing it
@@ -773,9 +778,9 @@ class SbxSandboxBackend:
                 *args, str(workspace), timeout=self._config.create_timeout_seconds
             )
         except BaseException:
-            # The daemon may finish a create whose client was stopped. A record means another
-            # process finished this name, so the sandbox is its to keep.
-            if self._read_meta(name) is None:
+            # The daemon may finish a create whose client was stopped. Only a record naming the
+            # listed instance means another process finished it; an older one is stale.
+            if not await self._finished_by_another(name):
                 await self._discard(name)
             raise
         if created.returncode != 0:
@@ -806,6 +811,14 @@ class SbxSandboxBackend:
             await self._discard(name)
             raise
         return served, True
+
+    async def _finished_by_another(self, name: str) -> bool:
+        try:
+            row = (await self._listing()).get(name)
+        except (SbxError, TimeoutError, ValueError):
+            return False
+        meta = self._read_meta(name)
+        return row is not None and meta is not None and meta.get("instance_id") == row.get("id")
 
     async def _confirm_absent(self, name: str) -> None:
         """Ask a sandbox the listing omits whether it is there, since a lost engine lists none."""

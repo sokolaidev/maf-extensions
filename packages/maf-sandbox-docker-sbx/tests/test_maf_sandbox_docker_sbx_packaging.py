@@ -47,12 +47,7 @@ class TestExperimentalWarningEmission:
             importlib.reload(maf_sandbox_docker_sbx)
 
     def test_suppressible_via_filterwarnings(self):
-        """Exercises `filterwarnings(category=...)` directly, not through another reload.
-
-        `filterwarnings`'s category matching is identity-based too, so — for the same reason
-        `test_emitted_by_default_on_import` avoids it above — this uses the class object this
-        test file already imported rather than one produced by a fresh reload.
-        """
+        """Suppressed by category, using the class this module imported rather than a reload's."""
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             warnings.filterwarnings(
