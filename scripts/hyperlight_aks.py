@@ -15,22 +15,32 @@ from maf_sandbox_hyperlight.kubernetes import HyperlightPodController, Hyperligh
 
 UPSTREAM_REVISION = "fc71b4501d23977fcc54f7be144d884fc8210667"
 PLUGIN_IMAGE = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98"
-# Measured end to end; a Kubernetes minor also moves the kubelet's never-started marker.
-# Trusted Launch images carry "TL" in the family name, so these prefixes exclude them.
-VERIFIED_PLATFORMS = (
+# Exact observations from live probe runs. A node verifies only by matching one of them;
+# a newer node image, kernel or patch needs its own run first.
+MEASURED_PLATFORMS = (
     {
-        "image": "AKSUbuntu-2404gen2containerd-",
-        "os": "Ubuntu 24.04",
-        "kubelet": "v1.35.",
-        "runtime": "containerd://2.",
-        "sizes": ("Standard_D2ads_v5", "Standard_D4ads_v5"),
+        "size": "Standard_D4ads_v5",
+        "node_image": "AKSUbuntu-2404gen2containerd-202609.15.0",
+        "os": "Ubuntu 24.04.5 LTS",
+        "kernel": "6.8.0-1067-azure",
+        "kubelet": "v1.35.7",
+        "runtime": "containerd://2.3.3-2",
     },
     {
-        "image": "AKSAzureLinux-V3gen2-",
+        "size": "Standard_D4ads_v5",
+        "node_image": "AKSUbuntu-2404gen2containerd-202609.09.0",
+        "os": "Ubuntu 24.04.5 LTS",
+        "kernel": "6.8.0-1067-azure",
+        "kubelet": "v1.35.7",
+        "runtime": "containerd://2.3.3-2",
+    },
+    {
+        "size": "Standard_D4ads_v5",
+        "node_image": "AKSAzureLinux-V3gen2-202609.15.0",
         "os": "Microsoft Azure Linux 3.0",
-        "kubelet": "v1.35.",
-        "runtime": "containerd://2.",
-        "sizes": ("Standard_D4ads_v5",),
+        "kernel": "6.6.150.1-1.azl3",
+        "kubelet": "v1.35.7",
+        "runtime": "containerd://2.2.4",
     },
 )
 UPSTREAM_MANIFEST = f"https://raw.githubusercontent.com/hyperlight-dev/hyperlight-on-kubernetes/{UPSTREAM_REVISION}/deploy/manifests/device-plugin.yaml"
@@ -98,15 +108,15 @@ def node_report(node: dict) -> dict:
         reasons.append("architecture is not amd64")
     if observed["security_type"]:
         reasons.append(f"security type {observed['security_type']} is not measured")
-    if not any(
-        observed["node_image"].startswith(row["image"])
-        and observed["os"].startswith(row["os"])
-        and observed["kubelet"].startswith(row["kubelet"])
-        and observed["runtime"].startswith(row["runtime"])
-        and observed["size"] in row["sizes"]
-        for row in VERIFIED_PLATFORMS
-    ):
-        reasons.append("node image, OS, kubelet, runtime and size are not a verified combination")
+    differences = min(
+        (
+            [field for field, value in row.items() if observed[field] != value]
+            for row in MEASURED_PLATFORMS
+        ),
+        key=len,
+    )
+    if differences:
+        reasons.append(f"unmeasured {', '.join(differences)}; nearest measured platform differs")
     if observed["allocatable"] in {"", "0"}:
         reasons.append("the device plugin advertises no hypervisor allocation")
     return {**observed, "verified": not reasons, "reasons": reasons}

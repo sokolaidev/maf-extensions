@@ -30,10 +30,13 @@ Inspect the rendered plugin before applying it with an explicit kubeconfig/conte
 
 Give eligible nodes their own node pool and label the pool in two steps. `hyperlight.dev/enabled=true` admits the device plugin; `hyperlight.dev/hypervisor=kvm` admits application pods. Create the pool with the first label only, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true`, install the plugin and run the report below. Add the second label once the report passes: `az aks nodepool update ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. That update replaces the pool's labels, so repeat every label the pool keeps. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.
 
-| VM size | Node OS | Kubernetes | Runtime | Measured |
-|---|---|---|---|---|
-| `Standard_D2ads_v5`, `Standard_D4ads_v5` | Ubuntu 24.04 (`AKSUbuntu-2404gen2containerd`) | 1.35 | containerd 2.x | Kubernetes 1.35.7, kernel `6.8.0-1067-azure`, containerd 2.3.3; `D4ads_v5` on node images 202609.09.0 and 202609.15.0 |
-| `Standard_D4ads_v5` | Azure Linux 3.0 (`AKSAzureLinux-V3gen2`) | 1.35 | containerd 2.x | Kubernetes 1.35.7, kernel `6.6.150.1-1.azl3`, containerd 2.2.4, node image 202609.15.0 |
+| VM size | Node image | OS | Kernel | Kubelet | containerd |
+|---|---|---|---|---|---|
+| `Standard_D4ads_v5` | `AKSUbuntu-2404gen2containerd-202609.15.0` | Ubuntu 24.04.5 LTS | `6.8.0-1067-azure` | v1.35.7 | 2.3.3-2 |
+| `Standard_D4ads_v5` | `AKSUbuntu-2404gen2containerd-202609.09.0` | Ubuntu 24.04.5 LTS | `6.8.0-1067-azure` | v1.35.7 | 2.3.3-2 |
+| `Standard_D4ads_v5` | `AKSAzureLinux-V3gen2-202609.15.0` | Microsoft Azure Linux 3.0 | `6.6.150.1-1.azl3` | v1.35.7 | 2.2.4 |
+
+Each row is one live observation, and the `nodes` report verifies a node only when it matches a row exactly. Guest execution was also measured on `Standard_D2ads_v5` with Ubuntu 24.04 and Kubernetes 1.35.7, but that run did not record the node image, so it is not a row.
 
 Every row was measured on pools with the default security type; Trusted Launch and confidential VM pools are not measured. Each row requires x86-64 with nested virtualization, cgroup v2, no swap and CDI enabled in containerd. B-series sizes do not offer nested virtualization. AKS Automatic, MSHV and Arm64 are outside the matrix.
 
@@ -43,11 +46,11 @@ Report the plugin-enabled nodes against this matrix before making them schedulab
 uv run python scripts/hyperlight_aks.py nodes --kubeconfig /path/to/kubeconfig --context verified-cluster
 ```
 
-The report reads each node labelled `hyperlight.dev/enabled=true`: its size, node image, security type, OS, kernel, runtime, kubelet version and advertised allocation, and whether it already carries the application label. It exits nonzero when any node is outside the matrix, has a non-default security type or advertises no allocation. It needs node read access, which the application controller does not have.
+The report reads each node labelled `hyperlight.dev/enabled=true`: its size, node image, security type, OS, kernel, runtime, kubelet version and advertised allocation, and whether it already carries the application label. It exits nonzero when any node matches no row, has a non-default security type or advertises no allocation, and names the fields that differ from the nearest row. It needs node read access, which the application controller does not have.
 
 The controller enforces the requirements it can observe, from inside the pod. Before starting the application, PID 1 requires x86-64, cgroup v2, the declared memory limit, no swap, finite CPU and PID limits and a `/dev/kvm` that the pod user can open and create a VM on. A node that fails any of these makes `supervise` raise `HyperlightPodPlatformError` with the reason, after confirming cleanup. A pod that cannot be scheduled, for example because no labelled node advertises a free allocation, raises `TimeoutError` with the scheduler's reason after its startup budget. A successful result carries the controls PID 1 observed in `HyperlightPodResult.platform`.
 
-Re-run the probes below on a fresh node pool, and extend this table, before accepting a Kubernetes minor, node OS or node-image family, containerd major or VM family not listed here. A Kubernetes minor also needs the never-started cleanup check described under failure and recovery, because it depends on kubelet status text. The cluster's node OS upgrade channel can move a pool's node image within its family; the `nodes` report shows the running version.
+Re-run the probes below on a node pool with the new version, and add its row, before accepting any node image, kernel, kubelet or containerd version not listed here. A Kubernetes minor also needs the never-started cleanup check described under failure and recovery, because it depends on kubelet status text. The cluster's node OS upgrade channel moves node images and kernels regularly, so the report goes red after an upgrade until the new version is measured.
 
 Create a dedicated application namespace with Restricted admission. Apply [controller-role.yaml](controller-role.yaml) in that namespace and bind it to the external controller's authenticated identity. Its namespace is one ownership authority: independent namespaces do not coordinate the same keys. The controller needs `kubectl` and an explicit kubeconfig/context; authentication and authorization remain the hosting application's responsibility. It needs no node, secret, exec or cluster-administration permission. Do not mount its credentials into application pods.
 
