@@ -1,6 +1,6 @@
 # A standing-guidance channel a tool may declare
 
-> The upstream request behind [#1306](https://github.com/sokolaidev/maf-extensions/issues/1306), drafted against `agent-framework-core` 1.19.0 and not yet filed. What it asks for is one slot a tool declares at attach time, which the framework itself appends to that tool's results labelled trusted. Everything below was measured on 2026-09-18 against 1.19.0 and, where the two are compared, against the 1.18.0 it replaced; nothing argues from a core older than the range this suite admits. The interim this repository ships in the meantime is in [`information-flow.md`](../information-flow.md).
+> The upstream request behind [#1306](https://github.com/sokolaidev/maf-extensions/issues/1306), drafted against `agent-framework-core` 1.19.0. Filed on 2026-09-25 as [microsoft/agent-framework#8757](https://github.com/microsoft/agent-framework/issues/8757) (open). What it asks for is one slot a tool declares at attach time, which the framework itself appends to that tool's results labelled trusted. Everything below was measured on 2026-09-18 against 1.19.0 and, where the two are compared, against the 1.18.0 it replaced; nothing argues from a core older than the range this suite admits. The interim this repository ships in the meantime is in [`information-flow.md`](../information-flow.md).
 
 ## Why a request rather than a workaround
 
@@ -77,7 +77,7 @@ A host that installs `LabelTrackingFunctionMiddleware`. The labels ride in `addi
 
 ## What to file
 
-The record above is the argument and the evidence, in this repository's own terms. What goes upstream is below, reshaped for `microsoft/agent-framework` → New issue → **Feature Request** and self-contained: no relative links, and no reference to an issue number only this repository can resolve. Filing is the maintainer's, and nothing here has been posted.
+The record above is the argument and the evidence, in this repository's own terms. What goes upstream is below, reshaped for `microsoft/agent-framework` → New issue → **Feature Request** and self-contained: no relative links, and no reference to an issue number only this repository can resolve. Filing was the maintainer's; it was posted as [microsoft/agent-framework#8757](https://github.com/microsoft/agent-framework/issues/8757) on 2026-09-25.
 
 **Title:** `[Feature]: Let a tool declare standing guidance the middleware appends to its results`
 **Language/SDK:** `Python`
