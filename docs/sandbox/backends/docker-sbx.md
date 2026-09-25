@@ -33,7 +33,7 @@ Both remove in the guest, at the guest's own authority, but they check different
 
 - argv is base64-encoded;
 - a nonce on stderr marks where the command's own stderr begins, and its absence means the wrapper never ran;
-- the command runs under `setsid`, and an expired `timeout` kills its process group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`. A command that has not recorded its group by then may still start, so the backend stops the sandbox instead, which kills every process and keeps the files (5.6 s measured).
+- the command runs under `setsid`, and an expired `timeout` kills its process group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`. A command that has not recorded its group within half that allowance may still start, so the backend stops the sandbox instead, within the rest, which kills every process and keeps the files (5.6 s measured). A sandbox it cannot stop is retired, and the next acquire replaces it.
 
 The image needs `sh`, `base64`, `setsid`, `mount`, `mkdir`, `cat`, `rm` and `sleep`. Acquire checks for all of them.
 

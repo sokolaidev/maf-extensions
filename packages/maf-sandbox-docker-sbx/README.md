@@ -89,7 +89,7 @@ File methods reach only paths under the storage base's parent. Any other absolut
 
 - argv is base64-encoded, because `sbx` refuses an empty argument;
 - a nonce on stderr marks where the command's own stderr starts, so a missing sandbox is never read as a command that exited 1;
-- the command runs in its own process group. When `timeout` expires, the backend kills that group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`, and then raises `TimeoutError`. Killing the `sbx` client alone would leave the command running. If the command has not recorded its group by the end of that allowance, it may still start, so the backend stops the sandbox instead. That kills every process in it and keeps the files; the next command starts it again.
+- the command runs in its own process group. When `timeout` expires, the backend kills that group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`, and then raises `TimeoutError`. Killing the `sbx` client alone would leave the command running. If the command has not recorded its group within half that allowance, it may still start, so the backend stops the sandbox instead, within the rest. That kills every process in it and keeps the files; the next command starts it again. A sandbox the backend cannot stop is retired, and the next acquire replaces it.
 
 A missing working directory exits 125 with the shell's message on stderr.
 

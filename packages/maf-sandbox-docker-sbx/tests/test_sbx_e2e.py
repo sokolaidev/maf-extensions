@@ -55,7 +55,11 @@ def _backend(tmp_path: Path, *, accept_host: bool = _ACCEPT_HOST) -> SbxSandboxB
         async def accepted() -> None:
             return None
 
+        async def accepted_sandbox(_name: str) -> None:
+            return None
+
         backend.check_host = accepted  # type: ignore[method-assign]
+        backend.check_sandbox = accepted_sandbox  # type: ignore[method-assign]
     return backend
 
 
@@ -288,6 +292,24 @@ def test_disposal_removes_the_sandbox_and_its_workspace(tmp_path):
             await backend.dispose(key)
 
     asyncio.run(scenario())
+
+
+def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
+    forwarding = subprocess.run(
+        [_SBX, "settings", "get", "ssh.agentForwardingEnabled"], capture_output=True, text=True
+    ).stdout.strip()
+    if forwarding != "true":
+        pytest.skip("SSH agent forwarding is off on this host")
+    backend = _backend(tmp_path, accept_host=False)
+
+    async def accepted() -> None:
+        return None
+
+    backend.check_host = accepted  # type: ignore[method-assign]
+    key = _key("agent")
+    with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
+        asyncio.run(backend.acquire(key, _spec()))
+    assert not _listed(sandbox_name("maf", key, "e2e"))
 
 
 def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):

@@ -74,6 +74,7 @@ class FakeSbx:
         self.unlisted: set[str] = set()
         self.lost_engine = False
         self.ids: dict[str, str] = {}
+        self.agent_socket = False
         self.kill_result = _ok()
         backend._sbx = self  # type: ignore[method-assign]
 
@@ -113,6 +114,8 @@ class FakeSbx:
                 if self.sandboxes.pop(name, None) is None:
                     return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
                 return _ok()
+            case ("exec", _name, "sh", "-c", _script, "maf-sbx", "/run/ssh-agent.sock"):
+                return _Result(1 if self.agent_socket else 0, b"", b"")
             case ("exec", name, "sh", "-c", ":"):
                 if name in self.sandboxes:
                     return _ok()
@@ -184,7 +187,16 @@ class TestDeclarations:
 
     @pytest.mark.parametrize(
         "overrides",
-        [{"name_prefix": "Bad"}, {"name_prefix": ""}, {"cpus": 0}, {"memory": "lots"}],
+        [
+            {"name_prefix": "Bad"},
+            {"name_prefix": ""},
+            {"cpus": 0},
+            {"memory": "lots"},
+            {"exec_cleanup_timeout_seconds": True},
+            {"exec_cleanup_timeout_seconds": float("inf")},
+            {"command_timeout_seconds": float("nan")},
+            {"create_timeout_seconds": "600"},
+        ],
     )
     def test_config_refuses_values_sbx_would_reject(self, overrides):
         with pytest.raises(ValueError):
@@ -539,6 +551,45 @@ class TestAnExpiredCommand:
         name = self._expire(backend, sbx)
         assert sbx.calls[-1] == ("stop", name)
 
+    def test_the_kill_and_the_stop_share_the_cleanup_allowance(self, tmp_path):
+        backend = SbxSandboxBackend(
+            SbxSandboxConfig(workspace_root=tmp_path / "root", exec_cleanup_timeout_seconds=2)
+        )
+        sbx = FakeSbx(backend)
+        sbx.kill_result = _Result(4, b"", b"")
+        real = sbx.__call__
+
+        async def slow_kill(*args: str, timeout: float | None = None) -> _Result:
+            if _KILL_SCRIPT in args:
+                await asyncio.sleep(0.3)
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = slow_kill  # type: ignore[method-assign]
+        self._expire(backend, sbx)
+        kill, stop = sbx.timeouts[-2], sbx.timeouts[-1]
+        assert sbx.calls[-1][0] == "stop"
+        assert kill is not None and kill <= 1.0
+        assert stop is not None and stop <= 2 - 0.3
+
+    def test_a_sandbox_that_could_not_be_stopped_is_replaced(self, backend, sbx):
+        sbx.kill_result = _Result(4, b"", b"")
+        real = sbx.__call__
+
+        async def refused_stop(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "stop":
+                sbx.calls.append(args)
+                sbx.timeouts.append(timeout)
+                return _Result(1, b"", b"error: stop refused\n")
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = refused_stop  # type: ignore[method-assign]
+        name = self._expire(backend, sbx)
+        first_id = sbx.ids.get(name, f"id-{name}")
+        sbx.exec_hook = lambda _args: None
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert ("rm", "--force", name) in sbx.calls
+        assert again.instance_id != first_id
+
     def test_one_whose_group_was_killed_leaves_the_sandbox_running(self, backend, sbx):
         name = self._expire(backend, sbx)
         assert ("stop", name) not in sbx.calls
@@ -606,6 +657,34 @@ class TestAnUnlistedSandbox:
         again = asyncio.run(backend.acquire(KEY, _spec()))
         assert again.name in sbx.sandboxes
         assert sum(call[0] == "create" for call in sbx.calls) == 2
+
+
+class TestTheRunningDaemonsForwarding:
+    def test_a_sandbox_given_the_hosts_agent_is_refused_and_removed(self, backend, sbx, tmp_path):
+        sbx.agent_socket = True
+        with pytest.raises(SbxHostNotConfined, match="daemon restart"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sbx.sandboxes == {}
+        assert list((tmp_path / "root").iterdir()) == []
+
+
+class TestARecreatedSandbox:
+    def test_its_stale_workspace_is_empty_before_the_new_vm_mounts_it(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        asyncio.run(sandbox.write_file("stale.txt", b"earlier data", working_directory="."))
+        del sbx.sandboxes[sandbox.name]  # removed outside the backend; workspace and record stay
+        workspace = tmp_path / "root" / sandbox.name / "ws"
+        real = sbx.__call__
+        seen: list[list[str]] = []
+
+        async def watching(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                seen.append(sorted(path.name for path in workspace.rglob("*")))
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = watching  # type: ignore[method-assign]
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert seen == [[]]
 
 
 class TestAnInterruptedRecreate:

@@ -6,6 +6,7 @@ the egress mode travel in a :class:`~maf_sandbox.SandboxSpec`, not here.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -55,7 +56,7 @@ class SbxSandboxConfig:
     memory: str = "2g"
     command_timeout_seconds: float = 60.0
     create_timeout_seconds: float = 600.0
-    exec_cleanup_timeout_seconds: float = 15.0
+    exec_cleanup_timeout_seconds: float = 20.0
 
     def __post_init__(self) -> None:
         if not _PREFIX.fullmatch(self.name_prefix):
@@ -69,8 +70,14 @@ class SbxSandboxConfig:
             "create_timeout_seconds",
             "exec_cleanup_timeout_seconds",
         ):
-            if not getattr(self, name) > 0:
-                raise ValueError(f"{name} must be positive")
+            value: object = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be a finite positive number of seconds")
 
     @property
     def resolved_workspace_root(self) -> Path:

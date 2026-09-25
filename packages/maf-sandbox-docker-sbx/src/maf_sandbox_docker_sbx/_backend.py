@@ -149,6 +149,10 @@ mkdir -p "$1" && mount --bind "$2" "$1"
 """
 _PARENT_EXISTS = 3
 
+_AGENT_SOCKET = "/run/ssh-agent.sock"
+#: Exits 1 when the SSH agent socket sbx forwards is present.
+_NO_AGENT_SCRIPT = r"""[ ! -e "$1" ] && [ ! -L "$1" ]"""
+
 #: Run once at create: checks the commands the wrapper, the deadline and removals use beyond
 #: the ones this script already needs to run, then reads the host's probe file.
 _PROBE_SCRIPT = r"""for c in rm sleep; do
@@ -425,6 +429,8 @@ class SbxSandboxBackend:
         # the last caller out drops the entry and the table holds only names in use.
         self._locks: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
         self._locks_guard = threading.Lock()
+        #: Sandboxes an expired command may still be running in; acquire replaces them.
+        self._retired: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -542,15 +548,25 @@ class SbxSandboxBackend:
         await asyncio.to_thread(plane.write, posixpath.join(mount.parent, _MARKER), b"")
 
     async def _stop_the_command(self, name: str, pid_file: str) -> None:
-        """Kill an expired command's process group, or stop the sandbox when that cannot."""
-        if await self._kill_group(name, pid_file):
+        """Kill an expired command's group, else stop the sandbox, within the cleanup allowance.
+
+        A sandbox this cannot stop is retired: the next acquire replaces it rather than serve a
+        sandbox a command may still be running in.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._config.exec_cleanup_timeout_seconds
+        # Half the allowance for the kill, so the stop (5.6 s measured) keeps the rest.
+        if await self._kill_group(name, pid_file, self._config.exec_cleanup_timeout_seconds / 2):
             return
-        # Stopping the sandbox kills every process in it and keeps its files; the next command
-        # starts it again.
+        # Stopping the sandbox kills every process in it and keeps its files.
+        left = deadline - loop.time()
         try:
-            stopped = await self._sbx("stop", name)
+            if left <= 0:
+                raise TimeoutError
+            stopped = await self._sbx("stop", name, timeout=left)
         except TimeoutError:
             logger.warning("docker-sbx: stopping %s after an expired command timed out", name)
+            self._retired.add(name)
             return
         if stopped.returncode != 0:
             logger.warning(
@@ -558,10 +574,11 @@ class SbxSandboxBackend:
                 name,
                 stopped.stderr_text.strip()[-_STDERR_TAIL:],
             )
+            self._retired.add(name)
 
-    async def _kill_group(self, name: str, pid_file: str) -> bool:
+    async def _kill_group(self, name: str, pid_file: str, budget: float) -> bool:
         """Whether the expired command's process group is known to be killed."""
-        allowance = self._config.exec_cleanup_timeout_seconds
+        allowance = budget
         tenths = max(1, int((allowance - 1) * 10))
         try:
             result = await self._sbx(
@@ -666,9 +683,15 @@ class SbxSandboxBackend:
         name = sandbox_name(self._config.name_prefix, key, spec.kind)
         await self.check_host()
         async with self._locked(name):
+            if name in self._retired:
+                failure = await self._remove(name, None)
+                if failure is not None:
+                    raise SbxError(f"could not replace retired sandbox {name}: {failure}")
             row = (await self._listing()).get(name)
             if row is None and self._read_meta(name) is not None:
                 await self._confirm_absent(name)
+                # Proven gone, so nothing mounts its workspace; empty it before a new VM does.
+                await asyncio.to_thread(_empty, self._directory(name) / _WORKSPACE)
             if row is None:
                 sandbox, created = await self._create(name, key, spec, base)
             else:
@@ -802,6 +825,7 @@ class SbxSandboxBackend:
             sandbox = self._sandbox(name, {"id": _SETTING_UP}, base, guest_mount)
             await self._bind_workspace(name, sandbox.mount, create=True)
             await self._prove_the_mount(sandbox)
+            await self.check_sandbox(name)
             row = (await self._listing()).get(name) or {}
             served = self._sandbox(name, row, base, guest_mount)
             # Last, so a record another process can read means the sandbox is ready to serve.
@@ -819,6 +843,23 @@ class SbxSandboxBackend:
             return False
         meta = self._read_meta(name)
         return row is not None and meta is not None and meta.get("instance_id") == row.get("id")
+
+    async def check_sandbox(self, name: str) -> None:
+        """Refuse a new sandbox the running daemon gave the host's SSH agent.
+
+        The setting ``check_host`` reads takes effect only after ``sbx daemon restart``.
+        """
+        checked = await self._sbx(
+            "exec", name, "sh", "-c", _NO_AGENT_SCRIPT, "maf-sbx", _AGENT_SOCKET
+        )
+        if checked.returncode == 1:
+            raise SbxHostNotConfined(
+                f"sandbox {name} has the host's SSH agent at {_AGENT_SOCKET}: the running daemon "
+                "still forwards it. Run `sbx daemon restart` after "
+                "`sbx settings set ssh.agentForwardingEnabled false`."
+            )
+        if checked.returncode != 0:
+            raise _failure(f"checking sandbox {name} for a forwarded SSH agent", checked)
 
     async def _confirm_absent(self, name: str) -> None:
         """Ask a sandbox the listing omits whether it is there, since a lost engine lists none."""
@@ -919,6 +960,7 @@ class SbxSandboxBackend:
             error = _failure(f"sbx rm {name}", removed)
             code = "unreachable" if isinstance(error, SbxDaemonFault) else "refused"
             return DisposalFailure(code, str(error))
+        self._retired.discard(name)
         try:
             await asyncio.to_thread(_delete_tree, self._directory(name))
         except OSError as error:
@@ -982,6 +1024,8 @@ def _make_private(root: Path, directory: Path, workspace: Path) -> None:
 
 
 def _empty(workspace: Path) -> None:
+    if not workspace.is_dir():
+        return
     for child in workspace.iterdir():
         if child.is_dir() and not child.is_symlink() and not child.is_junction():
             shutil.rmtree(child)
