@@ -199,10 +199,12 @@ class TestAllowEntryGrammar:
             "*.10",
         ],
     )
-    def test_an_entry_ending_in_a_number_is_refused_as_an_ipv4_address(self, host: str):
-        with pytest.raises(ValueError, match="reads as an IPv4 address"):
+    def test_an_entry_ending_in_a_number_is_refused(self, host: str):
+        """Both outcomes of a URL parser are refused: the address it reads, and the entry it
+        rejects, such as ``example.123``."""
+        with pytest.raises(ValueError, match="ends in a number"):
             spec(host)
-        with pytest.raises(ValueError, match="reads as an IPv4 address"):
+        with pytest.raises(ValueError, match="ends in a number"):
             EgressRule(host)
 
     @pytest.mark.parametrize("prefix", ["", "*."])

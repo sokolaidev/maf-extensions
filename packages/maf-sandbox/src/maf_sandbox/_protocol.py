@@ -229,8 +229,9 @@ _EGRESS_HOST = re.compile(rf"(?:\*\.)?{_EGRESS_LABEL}(?:\.{_EGRESS_LABEL})*")
 #: The longest name DNS can carry. A leading ``*.`` counts: it is as long as the shortest name
 #: it can match.
 _EGRESS_HOST_MAX = 253
-#: A final label a URL parser reads as a number, which makes the whole entry an IPv4 address —
-#: ``10.0.0.5``, ``127.1`` and ``0x7f000001`` alike. No top-level domain takes this shape.
+#: A final label a URL parser reads as a number. The parser then reads the whole entry as an IPv4
+#: address — ``10.0.0.5``, ``127.1`` and ``0x7f000001`` alike — or refuses it when it is not one.
+#: No top-level domain takes this shape.
 _NUMERIC_LABEL = re.compile(r"[0-9]+|0[xX][0-9A-Fa-f]*")
 #: An HTTP method token, per RFC 9110's ``token`` rule.  Case is refused separately, so that a
 #: lowercase method fails on being lowercase rather than on not being a token.
@@ -265,9 +266,9 @@ def _validated_egress_host(entry: object) -> str:
         )
     if _NUMERIC_LABEL.fullmatch(entry.rpartition(".")[2]):
         raise ValueError(
-            f"egress_allow entry {entry!r} is not one hostname: it ends in a number, so it reads "
-            "as an IPv4 address, and backends disagree about what an address rule allows. Name "
-            "the host by its DNS name."
+            f"egress_allow entry {entry!r} is not one hostname: it ends in a number, so a URL "
+            "parser reads it as an IPv4 address or refuses it, and backends disagree about what "
+            "an address rule allows. Name the host by its DNS name."
         )
     return entry
 
