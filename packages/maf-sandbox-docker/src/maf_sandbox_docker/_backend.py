@@ -2103,7 +2103,12 @@ class DockerSandboxBackend:
             read_limit=8192,
         )
         if result.returncode or not result.stdout.startswith(b"-----BEGIN CERTIFICATE-----"):
-            raise RuntimeError("docker could not read the egress proxy CA certificate")
+            detail = (
+                result.stderr.strip() or f"exit {result.returncode}"
+                if result.returncode
+                else "not a PEM certificate"
+            )
+            raise RuntimeError(f"docker could not read the egress proxy CA certificate: {detail}")
         await sandbox.write_file(
             _GUEST_CA_NAME, result.stdout, working_directory=spec.work_dir or "/maf-sandbox/work"
         )

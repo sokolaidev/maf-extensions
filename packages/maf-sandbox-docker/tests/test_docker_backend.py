@@ -5106,6 +5106,15 @@ class TestAllowlistTopology:
             assert args[args.index("--memory") + 1] == "256m"
             assert args[args.index("--cpus") + 1] == "0.5"
 
+    def test_an_unreadable_proxy_ca_names_the_engines_reason(self):
+        refused = "OCI runtime exec failed: unable to start container process: procReady"
+        backend, _ = _backend_with(
+            _machine(overrides={("exec", _AL_PROXY, "cat"): _DockerResult(126, b"", refused)}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match=f"CA certificate: {refused}"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
     def test_an_unreadable_outbound_gateway_refuses_the_proxy(self):
         backend, fake = _backend_with(
             _machine(

@@ -81,7 +81,8 @@ class DockerSandboxConfig:
     this package; ``cap_drop_all`` is off by default until real workloads have been measured
     under it (maintainer ruling — see the design document).  The egress proxy gets the same
     ``pids_limit``, ``memory`` and ``cpus``, because the guest drives its load, and always runs
-    with every capability dropped.
+    with every capability dropped.  It needs about 16 PIDs; below that, allowlisted acquires
+    fail.
     """
 
     docker_path: str = _DEFAULT_DOCKER_PATH
