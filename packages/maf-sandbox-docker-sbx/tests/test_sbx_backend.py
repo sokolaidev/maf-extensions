@@ -388,6 +388,19 @@ class TestDeadlines:
         bound = sbx.timeouts[remount]
         assert bound is not None and bound <= 5
 
+    def test_the_create_probe_is_bounded_by_the_command_timeout(self, tmp_path):
+        backend = SbxSandboxBackend(
+            SbxSandboxConfig(workspace_root=tmp_path / "root", command_timeout_seconds=7)
+        )
+        sbx = FakeSbx(backend)
+        asyncio.run(backend.acquire(KEY, _spec()))
+        probes = [
+            timeout
+            for call, timeout in zip(sbx.calls, sbx.timeouts, strict=True)
+            if _EXEC_SCRIPT in call and _PROBE_SCRIPT in [_decode(item) for item in call[10:]]
+        ]
+        assert probes and all(timeout is not None and timeout <= 7 for timeout in probes)
+
     def test_a_remount_that_overruns_the_deadline_is_the_callers_timeout(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         sbx.unmounted_once = True
@@ -429,6 +442,37 @@ class TestCancellation:
             asyncio.run(backend.acquire(KEY, _spec()))
         assert sbx.sandboxes == {}
         assert list((tmp_path / "root").iterdir()) == []
+
+
+class TestGuestControlledSignals:
+    def test_the_sentinel_after_the_nonce_is_the_commands_output(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def forged(args: tuple[str, ...]) -> _Result:
+            nonce = args[6]
+            return _Result(0, b"", f"{nonce}\n{nonce}-unmounted\n".encode())
+
+        sbx.exec_hook = forged
+        before = len(sbx.calls)
+        result = asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=30))
+        assert result.stderr.endswith("-unmounted\n")
+        assert not any(_MOUNT_SCRIPT in call for call in sbx.calls[before:])
+        assert sum(_EXEC_SCRIPT in call for call in sbx.calls[before:]) == 1
+
+    def test_a_linked_marker_is_replaced_not_followed(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        victim = tmp_path / "victim"
+        victim.write_text("host file")
+        marker = tmp_path / "root" / sandbox.name / "ws" / _MARKER
+        marker.unlink()
+        try:
+            marker.symlink_to(victim)
+        except OSError:
+            pytest.skip("this host cannot create a symlink")
+        sbx.unmounted_once = True
+        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=30))
+        assert victim.read_text() == "host file"
+        assert marker.is_file() and not marker.is_symlink()
 
 
 class TestCleanupSurvivesCancellation:
@@ -487,6 +531,49 @@ class TestCreateRace:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         assert sandbox.instance_id == f"id-{sandbox.name}"
         assert sandbox.name in sbx.sandboxes
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_failure_after_adopting_the_winner_leaves_its_sandbox(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True)
+        blocked = tmp_path / "root" / sandbox_name("maf", KEY, "kind") / "ws" / "work"
+        blocked.parent.mkdir(parents=True)
+        blocked.write_text("a file where the base should be")
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_refused_create_leaves_a_listed_sandbox_alone(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+        name = sandbox_name("maf", KEY, "kind")
+
+        async def refused(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                sbx.sandboxes[name] = args[-1]  # another process's create landed meanwhile
+                return _Result(1, b"", b"error: 500 transient failure\n")
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = refused  # type: ignore[method-assign]
+        with pytest.raises(SbxError, match="transient"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert name in sbx.sandboxes
+        assert (tmp_path / "root" / name).is_dir()
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_an_interrupted_create_keeps_a_finished_winner(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True)
+        raced = backend._sbx
+
+        async def interrupted(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await raced(*args, timeout=timeout)
+                raise asyncio.CancelledError
+            return await raced(*args, timeout=timeout)
+
+        backend._sbx = interrupted  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
         assert not any(call[0] == "rm" for call in sbx.calls)
 
     def test_a_winner_still_creating_is_named_and_left_alone(self, backend, sbx, tmp_path):

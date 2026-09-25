@@ -486,23 +486,23 @@ class SbxSandboxBackend:
                 if isinstance(stopped, TimeoutError):
                     raise TimeoutError(expired) from None
                 raise
-            if f"{nonce}-unmounted\n".encode() in result.stderr:
-                if attempt:
-                    break
-                left = deadline - loop.time()
-                if left <= 0:
-                    raise TimeoutError(expired)
-                try:
-                    await self._bind_workspace(name, mount, create=False, timeout=left)
-                except TimeoutError:
-                    raise TimeoutError(expired) from None
-                continue
             stderr = _guest_stderr(result.stderr, nonce)
-            if stderr is None:
+            if stderr is not None:
+                # The command started; what follows the nonce is its own, whatever it says.
+                return ExecResult(
+                    stdout_bytes=result.stdout, stderr_bytes=stderr, exit_code=result.returncode
+                )
+            if f"{nonce}-unmounted\n".encode() not in result.stderr:
                 raise _failure(f"sbx exec in {name}", result)
-            return ExecResult(
-                stdout_bytes=result.stdout, stderr_bytes=stderr, exit_code=result.returncode
-            )
+            if attempt:
+                break
+            left = deadline - loop.time()
+            if left <= 0:
+                raise TimeoutError(expired)
+            try:
+                await self._bind_workspace(name, mount, create=False, timeout=left)
+            except TimeoutError:
+                raise TimeoutError(expired) from None
         raise SbxError(f"the workspace is still not mounted at {mount.parent!r} in {name}")
 
     async def _bind_workspace(
@@ -529,7 +529,9 @@ class SbxSandboxBackend:
             )
         if bound.returncode != 0:
             raise _failure(f"mounting the workspace at {mount.parent}", bound)
-        await asyncio.to_thread((mount.host / _MARKER).write_bytes, b"")
+        # The guest can plant a link at the marker; the plane replaces the name, never its target.
+        plane = WorkspacePlane(mount.host, mount.parent)
+        await asyncio.to_thread(plane.write, posixpath.join(mount.parent, _MARKER), b"")
 
     async def _kill_group(self, name: str, pid_file: str) -> None:
         try:
@@ -633,9 +635,9 @@ class SbxSandboxBackend:
         async with self._locked(name):
             row = (await self._listing()).get(name)
             if row is None:
-                sandbox = await self._create(name, key, spec, base)
+                sandbox, created = await self._create(name, key, spec, base)
             else:
-                sandbox = self._adopt(key, name, row, spec, base)
+                sandbox, created = self._adopt(key, name, row, spec, base), False
             try:
                 await ensure_guest_work_dir(
                     spec,
@@ -645,7 +647,7 @@ class SbxSandboxBackend:
                     base=base,
                 )
             except BaseException:
-                if row is None:
+                if created:
                     await self._discard(name)
                 raise
             return sandbox
@@ -694,7 +696,8 @@ class SbxSandboxBackend:
 
     async def _create(
         self, name: str, key: SandboxKey, spec: SandboxSpec, base: str
-    ) -> _SbxSandbox:
+    ) -> tuple[_SbxSandbox, bool]:
+        """The sandbox, and whether this call created it rather than adopting a winner's."""
         directory = self._directory(name)
         workspace = directory / _WORKSPACE
         root = self._config.resolved_workspace_root
@@ -728,13 +731,15 @@ class SbxSandboxBackend:
                 *args, str(workspace), timeout=self._config.create_timeout_seconds
             )
         except BaseException:
-            # The daemon may finish a create whose client was stopped.
-            await self._discard(name)
+            # The daemon may finish a create whose client was stopped. A record means another
+            # process finished this name, so the sandbox is its to keep.
+            if self._read_meta(name) is None:
+                await self._discard(name)
             raise
         if created.returncode != 0:
             if _ALREADY_EXISTS in created.stderr_text:
-                return await self._adopt_the_winner(key, name, spec, base)
-            await self._discard(name)
+                return await self._adopt_the_winner(key, name, spec, base), False
+            await self._abandon_workspace(name)
             raise _failure(f"sbx create {name}", created)
         try:
             # The create proved nothing held this name, so anything in the workspace is stale.
@@ -755,7 +760,16 @@ class SbxSandboxBackend:
         except BaseException:
             await self._discard(name)
             raise
-        return served
+        return served, True
+
+    async def _abandon_workspace(self, name: str) -> None:
+        """Remove the directory a refused create made, unless the name has a sandbox after all."""
+        try:
+            listed = name in await self._listing()
+        except (SbxError, TimeoutError, ValueError):
+            return
+        if not listed:
+            await asyncio.to_thread(_delete_tree, self._directory(name))
 
     async def _adopt_the_winner(
         self, key: SandboxKey, name: str, spec: SandboxSpec, base: str
@@ -783,7 +797,7 @@ class SbxSandboxBackend:
             probe = await sandbox.exec(
                 ["sh", "-c", _PROBE_SCRIPT, "maf-sbx", posixpath.join(mount.parent, probe_name)],
                 working_directory="/",
-                timeout=60,
+                timeout=self._config.command_timeout_seconds,
             )
         finally:
             await asyncio.to_thread((mount.host / probe_name).unlink, True)
