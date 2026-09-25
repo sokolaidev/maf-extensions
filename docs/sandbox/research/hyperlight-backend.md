@@ -275,3 +275,7 @@ A Windows worker can use the validated WHP family. A Linux worker depends on rea
 - Resolved-IP filtering, path rules and attached identity are not current Hyperlight claims.
 - Direct ACA hosting remains unsupported by the inspected platform contract and measured profiles. The separate-worker route is a new remote integration, not a backend configuration switch.
 - The pinned Hyperlight distributions and guest artifacts have licenses and notices independent of the Python package; dependency upgrades must retain the exact matched-version and conformance discipline.
+
+## Upstream requests drafted, 2026-09-25
+
+Three requests this path waits on are drafted in [`upstream-hyperlight-requests.md`](upstream-hyperlight-requests.md) and filed the same day as [hyperlight-dev/hyperlight-sandbox#227](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/227), [hyperlight-dev/hyperlight-sandbox#228](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/228) and [hyperlight-dev/hyperlight-on-kubernetes#15](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/issues/15), all open: the preservation policy [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) needs from `hyperlight-sandbox`, eager validation of `allow_domain` method tokens in the same SDK's lazy path, which the [#377](https://github.com/sokolaidev/maf-extensions/issues/377) measurement found missing, and digest-pinned base images with build provenance for the device-plugin image [#1424](https://github.com/sokolaidev/maf-extensions/issues/1424) has to admit.
