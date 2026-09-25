@@ -378,7 +378,8 @@ class _SbxSandbox:
         listed = await asyncio.to_thread(self._plane.list, guest)
         entries: list[SandboxEntry] = []
         for name, entry in listed:
-            relative = guest_path_relative_to(posixpath.join(guest, name), cwd)
+            # A POSIX host keeps names the guest path grammar refuses, such as `a\b`.
+            relative = guest_path_relative_to(confine_resolve_guest_path(name, guest), cwd)
             if relative is None:
                 continue
             entries.append(SandboxEntry(relative, entry.kind, entry.size_bytes))
@@ -676,7 +677,12 @@ class SbxSandboxBackend:
             )
         if servers.returncode != 0:
             raise _failure("sbx mcp ls", servers)
-        registered = cast("list[object]", json.loads(servers.stdout or b"{}").get("servers") or [])
+        registered = _listed_servers(servers.stdout)
+        if registered is None:
+            raise SbxError(
+                "`sbx mcp ls --json` gave no `servers` list, so whether an MCP server is "
+                "registered cannot be told; refusing rather than assuming none is"
+            )
         if registered:
             raise SbxHostNotConfined(
                 f"{len(registered)} MCP server(s) are registered with sbx, and the MCP gateway "
@@ -1130,6 +1136,18 @@ def _write_record(path: Path, meta: dict[str, object]) -> None:
     part = path.with_name(f".{path.name}.{secrets.token_hex(8)}.part")
     part.write_text(json.dumps(meta), "utf-8")
     os.replace(part, path)
+
+
+def _listed_servers(stdout: bytes) -> list[object] | None:
+    """The servers `sbx mcp ls --json` names, or ``None`` for any other shape."""
+    try:
+        payload: object = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    servers = cast("dict[str, object]", payload).get("servers")
+    return cast("list[object]", servers) if isinstance(servers, list) else None
 
 
 def _generation_of(directory: Path, row: dict[str, object]) -> str | None:

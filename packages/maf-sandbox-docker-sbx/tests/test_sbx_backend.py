@@ -76,6 +76,7 @@ class FakeSbx:
         self.sandboxes: dict[str, str] = {}
         self.forwarding = b"false\n"
         self.servers: list[object] = []
+        self.mcp_payload: bytes | None = None
         self.exec_hook: Callable[[tuple[str, ...]], _Result | None] = lambda _args: None
         self.rm_result: _Result | None = None
         self.mount_exit = 0
@@ -100,6 +101,8 @@ class FakeSbx:
             case ("settings", "get", "ssh.agentForwardingEnabled"):
                 return _ok(self.forwarding)
             case ("mcp", "ls", "--json"):
+                if self.mcp_payload is not None:
+                    return _ok(self.mcp_payload)
                 return _ok(json.dumps({"servers": self.servers}).encode())
             case ("ls", "--json"):
                 rows = [
@@ -253,6 +256,20 @@ class TestHostChecks:
         sbx.servers = [{"name": "github"}]
         with pytest.raises(SbxHostNotConfined, match="sbx mcp rm"):
             asyncio.run(backend.acquire(KEY, _spec()))
+
+    @pytest.mark.parametrize(
+        "payload",
+        [b"", b"{}", b'{"servers": null}', b'{"mcpServers": []}', b"[]", b"not json"],
+    )
+    def test_an_mcp_listing_without_a_server_list_is_refused(self, backend, sbx, payload):
+        sbx.mcp_payload = payload
+        with pytest.raises(SbxError, match="no `servers` list"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_the_measured_mcp_listing_with_no_servers_passes(self, backend, sbx):
+        sbx.mcp_payload = json.dumps({"gateway": {"name": "LOCAL"}, "servers": []}).encode()
+        asyncio.run(backend.check_host())
 
     def test_a_lapsed_login_names_sbx_login(self, backend, sbx):
         async def lapsed(*args: str, timeout: float | None = None) -> _Result:
@@ -461,6 +478,21 @@ class TestRemoval:
         assert self._removal_argv(sbx) == ["rm", "-rf", "--", "/maf-sandbox/work/d"]
         asyncio.run(sandbox.reclaim("d", working_directory=".", timeout=10))
         assert self._removal_argv(sbx) == ["rm", "-rf", "--", "/maf-sandbox/work/d"]
+
+
+class TestTheListing:
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot store a backslash")
+    def test_a_name_the_path_grammar_refuses_fails_the_listing(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        (sandbox.mount.host / "work" / "a\\b").write_bytes(b"")
+        with pytest.raises(ValueError, match="backslash"):
+            asyncio.run(sandbox.list_dir(".", working_directory="."))
+
+    def test_ordinary_names_are_listed_relative_to_the_working_directory(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        (sandbox.mount.host / "work" / "f.txt").write_bytes(b"x")
+        listed = asyncio.run(sandbox.list_dir(".", working_directory="."))
+        assert [entry.path for entry in listed] == ["f.txt"]
 
 
 class TestDeadlines:
