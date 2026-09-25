@@ -221,8 +221,7 @@ def _service_listening(container: str, *ports: int) -> None:
 def _http_stub(port: int, response: str, *, ipv6: bool = False) -> str:
     """Shell serving ``response`` (``printf`` escapes) on ``port`` once each request head is read.
 
-    Answering before the request arrives lets the proxy's Go transport discard the reply as
-    unsolicited on a fresh connection and return 502.
+    A Go HTTP client drops a reply that arrives before its request is written.
     """
     handler = (
         'cr=$(printf "\\r"); while IFS= read -r line && [ "$line" != "$cr" ]; do :; done; '
