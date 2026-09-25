@@ -103,7 +103,8 @@ _MARKER = ".maf-sbx-workspace"
 #: causes.  argv arrives base64-encoded behind an ``x`` so no argument is empty, which ``sbx``
 #: refuses.  The nonce on stderr marks where the guest's own stderr begins, and proves the
 #: wrapper ran.  ``setsid`` gives the command its own process group, recorded in the pid file, so
-#: a deadline can kill the whole group.
+#: a deadline can kill the whole group.  The command runs only if no cancel file exists once
+#: its group is recorded; see ``_KILL_SCRIPT`` for why that closes the race with a kill.
 _EXEC_SCRIPT = r"""n=$1 f=$2 m=$3
 shift 3
 if [ ! -e "$m" ]; then printf '%s-unmounted\n' "$n" >&2; exit 1; fi
@@ -121,18 +122,18 @@ while [ "$i" -lt "$c" ]; do
   i=$((i + 1))
 done
 cd "$w" || exit 125
-g='echo $$ > "$MAF_SBX_PGID_FILE" && unset MAF_SBX_PGID_FILE && exec "$@"'
-MAF_SBX_PGID_FILE=$f setsid -w sh -c "$g" sh "$@"
+g='echo $$ > "$F" && [ ! -e "$F.cancel" ] && unset F && exec "$@"'
+F=$f setsid -w sh -c "$g" sh "$@"
 s=$?
-rm -f "$f"
+rm -f "$f" "$f.cancel"
 exit "$s"
 """
 
-#: Kills the process group an expired command recorded, waiting up to ``$2`` tenths of a second
-#: for a wrapper that has not yet written it.  Exit 4 means none appeared, so the command may
-#: still start.
-_KILL_SCRIPT = r"""i=0
-while [ ! -s "$1" ] && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done
+#: Ends an expired command, and only that command.  The cancel file goes down before the group
+#: is read, and the wrapper checks for it after recording its group: so either the wrapper sees
+#: it and never runs the command, or its group was recorded before this reads it.  Exit 4 is the
+#: first case, a command that never started and now never will.
+_KILL_SCRIPT = r""": > "$1.cancel" || exit 5
 [ -s "$1" ] || exit 4
 p=$(cat "$1")
 case $p in ''|*[!0-9]*) exit 3 ;; esac
@@ -150,6 +151,7 @@ fi
 mkdir -p "$1" && mount --bind "$2" "$1"
 """
 _PARENT_EXISTS = 3
+_NEVER_STARTED = 4
 
 _AGENT_SOCKET = "/run/ssh-agent.sock"
 #: Exits 1 when the SSH agent socket sbx forwards is present.
@@ -305,7 +307,15 @@ class _SbxSandbox:
     def mount(self) -> _Mount:
         return self._mount
 
+    def _refuse_if_retired(self) -> None:
+        if self._instance_id in self._backend.retired:
+            raise SbxError(
+                f"sandbox {self._name} was retired: an expired command's cleanup failed, so it "
+                "may still run there. Acquire again for a replacement."
+            )
+
     def _cwd(self, working_directory: str) -> str:
+        self._refuse_if_retired()
         return resolve_guest_working_directory(working_directory, self._base)
 
     async def _stat(self, guest: str) -> SandboxEntry | None:
@@ -319,7 +329,12 @@ class _SbxSandbox:
         if not argv:
             raise ValueError("an argv sequence needs at least one element")
         return await self._backend.run_in_guest(
-            self._name, argv, cwd=cwd, timeout=timeout, mount=self._mount
+            self._name,
+            argv,
+            cwd=cwd,
+            timeout=timeout,
+            mount=self._mount,
+            instance=self._instance_id,
         )
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
@@ -405,6 +420,7 @@ class _SbxSandbox:
             cwd="/",
             timeout=timeout,
             mount=self._mount,
+            instance=self._instance_id,
         )
         if result.exit_code != 0:
             raise OSError(
@@ -431,7 +447,8 @@ class SbxSandboxBackend:
         # the last caller out drops the entry and the table holds only names in use.
         self._locks: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
         self._locks_guard = threading.Lock()
-        #: Sandboxes an expired command may still be running in; acquire replaces them.
+        #: Instances an expired command may still start or run in: every handle to one refuses,
+        #: and acquire replaces it.  By instance, so a replacement under the same name is not.
         self._retired: set[str] = set()
 
     @property
@@ -449,6 +466,11 @@ class SbxSandboxBackend:
     @property
     def config(self) -> SbxSandboxConfig:
         return self._config
+
+    @property
+    def retired(self) -> frozenset[str]:
+        """Instance ids no handle may use again."""
+        return frozenset(self._retired)
 
     # --- the CLI ------------------------------------------------------------------------
 
@@ -475,7 +497,14 @@ class SbxSandboxBackend:
         return _Result(cast(int, process.returncode), stdout, stderr)
 
     async def run_in_guest(
-        self, name: str, argv: Sequence[str], *, cwd: str, timeout: float, mount: _Mount
+        self,
+        name: str,
+        argv: Sequence[str],
+        *,
+        cwd: str,
+        timeout: float,
+        mount: _Mount,
+        instance: str,
     ) -> ExecResult:
         """Run ``argv`` in ``cwd`` under the wrapper, killing its process group at ``timeout``.
 
@@ -498,7 +527,7 @@ class SbxSandboxBackend:
             except (TimeoutError, asyncio.CancelledError) as stopped:
                 # Killing the client leaves the guest's command running in a reusable sandbox,
                 # and a cancellation must not stop the kill either.
-                await asyncio.shield(self._stop_the_command(name, pid_file))
+                await asyncio.shield(self._end_the_command(name, instance, pid_file))
                 if isinstance(stopped, TimeoutError):
                     raise TimeoutError(expired) from None
                 raise
@@ -549,39 +578,18 @@ class SbxSandboxBackend:
         plane = WorkspacePlane(mount.host, mount.parent)
         await asyncio.to_thread(plane.write, posixpath.join(mount.parent, _MARKER), b"")
 
-    async def _stop_the_command(self, name: str, pid_file: str) -> None:
-        """Kill an expired command's group, else stop the sandbox, within the cleanup allowance.
+    async def _end_the_command(self, name: str, instance: str, pid_file: str) -> None:
+        """Kill or cancel an expired command; retire the instance when that cannot be done.
 
-        A sandbox this cannot stop is retired: the next acquire replaces it rather than serve a
-        sandbox a command may still be running in.
+        A retired instance refuses every further call, and the next acquire replaces it, since
+        the command may still start or run there.  Only the expired command is touched: the
+        sandbox may be running a sibling call of the same conversation.
         """
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._config.exec_cleanup_timeout_seconds
-        # Half the allowance for the kill, so the stop (5.6 s measured) keeps the rest.
-        if await self._kill_group(name, pid_file, self._config.exec_cleanup_timeout_seconds / 2):
-            return
-        # Stopping the sandbox kills every process in it and keeps its files.
-        left = deadline - loop.time()
-        try:
-            if left <= 0:
-                raise TimeoutError
-            stopped = await self._sbx("stop", name, timeout=left)
-        except TimeoutError:
-            logger.warning("docker-sbx: stopping %s after an expired command timed out", name)
-            self._retired.add(name)
-            return
-        if stopped.returncode != 0:
-            logger.warning(
-                "docker-sbx: could not stop %s after an expired command: %s",
-                name,
-                stopped.stderr_text.strip()[-_STDERR_TAIL:],
-            )
-            self._retired.add(name)
+        if not await self._kill_group(name, pid_file):
+            self._retired.add(instance)
 
-    async def _kill_group(self, name: str, pid_file: str, budget: float) -> bool:
-        """Whether the expired command's process group is known to be killed."""
-        allowance = budget
-        tenths = max(1, int((allowance - 1) * 10))
+    async def _kill_group(self, name: str, pid_file: str) -> bool:
+        """Whether the expired command is known to be killed, or never to start."""
         try:
             result = await self._sbx(
                 "exec",
@@ -591,13 +599,12 @@ class SbxSandboxBackend:
                 _KILL_SCRIPT,
                 "maf-sbx",
                 pid_file,
-                str(tenths),
-                timeout=allowance,
+                timeout=self._config.exec_cleanup_timeout_seconds,
             )
         except TimeoutError:
             logger.warning("docker-sbx: killing an expired command in %s timed out", name)
             return False
-        if result.returncode != 0:
+        if result.returncode not in (0, _NEVER_STARTED):
             logger.warning(
                 "docker-sbx: could not kill an expired command in %s (exit %s): %s",
                 name,
@@ -692,11 +699,12 @@ class SbxSandboxBackend:
         name = sandbox_name(self._config.name_prefix, key, spec.kind)
         await self.check_host()
         async with self._locked(name):
-            if name in self._retired:
-                failure = await self._remove(name, None)
+            row = (await self._listing()).get(name)
+            if row is not None and row.get("id") in self._retired:
+                failure = await self._remove(name, str(row.get("id")))
                 if failure is not None:
                     raise SbxError(f"could not replace retired sandbox {name}: {failure}")
-            row = (await self._listing()).get(name)
+                row = None
             if row is None and self._read_meta(name) is not None:
                 await self._confirm_absent(name)
             if row is None:
@@ -950,7 +958,6 @@ class SbxSandboxBackend:
             error = _failure(f"sbx rm {name}", removed)
             code = "unreachable" if isinstance(error, SbxDaemonFault) else "refused"
             return DisposalFailure(code, str(error))
-        self._retired.discard(name)
         try:
             await asyncio.to_thread(_delete_tree, self._directory(name))
         except OSError as error:

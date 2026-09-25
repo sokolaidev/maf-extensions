@@ -582,49 +582,35 @@ class TestAnExpiredCommand:
             asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
         return sandbox.name
 
-    def test_one_whose_group_never_appeared_stops_the_sandbox(self, backend, sbx):
+    def test_one_that_never_started_is_cancelled_and_nothing_else_stops(self, backend, sbx):
         sbx.kill_result = _Result(4, b"", b"")
         name = self._expire(backend, sbx)
-        assert sbx.calls[-1] == ("stop", name)
+        assert not any(call[0] == "stop" for call in sbx.calls)
+        assert backend.retired == frozenset()
+        assert sbx.calls[-1][:5] == ("exec", name, "sh", "-c", _KILL_SCRIPT)
 
-    def test_the_kill_and_the_stop_share_the_cleanup_allowance(self, tmp_path):
-        backend = SbxSandboxBackend(
-            SbxSandboxConfig(workspace_root=tmp_path / "root", exec_cleanup_timeout_seconds=2)
-        )
-        sbx = FakeSbx(backend)
-        sbx.kill_result = _Result(4, b"", b"")
-        real = sbx.__call__
+    def test_a_sandbox_whose_command_could_not_be_killed_is_retired(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
 
-        async def slow_kill(*args: str, timeout: float | None = None) -> _Result:
-            if _KILL_SCRIPT in args:
-                await asyncio.sleep(0.3)
-            return await real(*args, timeout=timeout)
+        def slow(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
 
-        backend._sbx = slow_kill  # type: ignore[method-assign]
-        self._expire(backend, sbx)
-        kill, stop = sbx.timeouts[-2], sbx.timeouts[-1]
-        assert sbx.calls[-1][0] == "stop"
-        assert kill is not None and kill <= 1.0
-        assert stop is not None and stop <= 2 - 0.3
-
-    def test_a_sandbox_that_could_not_be_stopped_is_replaced(self, backend, sbx):
-        sbx.kill_result = _Result(4, b"", b"")
-        real = sbx.__call__
-
-        async def refused_stop(*args: str, timeout: float | None = None) -> _Result:
-            if args[0] == "stop":
-                sbx.calls.append(args)
-                sbx.timeouts.append(timeout)
-                return _Result(1, b"", b"error: stop refused\n")
-            return await real(*args, timeout=timeout)
-
-        backend._sbx = refused_stop  # type: ignore[method-assign]
-        name = self._expire(backend, sbx)
-        first_id = sbx.ids.get(name, f"id-{name}")
+        sbx.exec_hook = slow
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert not any(call[0] == "stop" for call in sbx.calls)
         sbx.exec_hook = lambda _args: None
+        with pytest.raises(SbxError, match="retired"):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+        with pytest.raises(SbxError, match="retired"):
+            asyncio.run(sandbox.write_file("f", b"x", working_directory="."))
         again = asyncio.run(backend.acquire(KEY, _spec()))
-        assert ("rm", "--force", name) in sbx.calls
-        assert again.instance_id != first_id
+        assert ("rm", "--force", sandbox.name) in sbx.calls
+        assert again.instance_id != sandbox.instance_id
+        with pytest.raises(SbxError, match="retired"):
+            asyncio.run(sandbox.stat_file("f", working_directory="."))
+        assert asyncio.run(again.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
 
     def test_one_whose_group_was_killed_leaves_the_sandbox_running(self, backend, sbx):
         name = self._expire(backend, sbx)
@@ -999,13 +985,22 @@ class TestTheWrapperInARealShell:
         found = probe()
         assert (found.returncode, found.stdout) == (0, b"token")
 
-    def test_the_kill_reports_a_group_that_never_appeared(self, tmp_path):
+    def test_the_kill_cancels_a_command_that_has_not_started(self, tmp_path):
+        pid_file = tmp_path / "absent.pgid"
         result = subprocess.run(
-            [_SH or "sh", "-c", _KILL_SCRIPT, "maf-sbx", str(tmp_path / "absent.pgid"), "1"],
+            [_SH or "sh", "-c", _KILL_SCRIPT, "maf-sbx", str(pid_file)],
             capture_output=True,
             timeout=30,
         )
         assert result.returncode == 4
+        assert (tmp_path / "absent.pgid.cancel").exists()
+
+    def test_a_cancelled_command_never_runs(self, tmp_path):
+        (tmp_path / "pg.cancel").touch()
+        ran = tmp_path / "ran"
+        self._run(tmp_path, ["touch", str(ran)])
+        assert not ran.exists()
+        assert not (tmp_path / "pg.cancel").exists()
 
     def test_nothing_runs_while_the_mount_is_missing(self, tmp_path):
         result = self._run(tmp_path, ["touch", str(tmp_path / "ran")], mounted=False)

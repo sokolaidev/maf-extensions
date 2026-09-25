@@ -56,7 +56,7 @@ class SbxSandboxConfig:
     memory: str = "2g"
     command_timeout_seconds: float = 60.0
     create_timeout_seconds: float = 600.0
-    exec_cleanup_timeout_seconds: float = 20.0
+    exec_cleanup_timeout_seconds: float = 15.0
 
     def __post_init__(self) -> None:
         if not _PREFIX.fullmatch(self.name_prefix):
