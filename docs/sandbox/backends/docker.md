@@ -82,7 +82,7 @@ Root removal is allowed only when engine metadata establishes that every relevan
 
 ![With CLOSED, the workload has no network. With a nonempty ALLOWLIST, the workload joins an internal network and reaches destinations only through iron-proxy. The proxy also joins an outbound network and checks allowed hosts, HTTP methods, paths and resolved addresses. Proxy audit records are attributed to the sandbox before removal. Docker additionally requires an unaddressed internal bridge. The model's content labels remain a separate host-policy check.](../assets/container-egress.svg)
 
-`CLOSED`, including an empty allowlist, uses `--network none`. A nonempty allowlist uses an internal network and a proxy connected to both internal and outbound networks. Proxy environment variables configure clients; network separation enforces the route. The proxy runs with `no-new-privileges`, no capabilities, and the PID, memory and CPU limits configured for the workload.
+`CLOSED`, including an empty allowlist, uses `--network none`. A nonempty allowlist uses an internal network and a proxy connected to both internal and outbound networks. The proxy listens only on its internal-network address, so other containers on the outbound network cannot use it. Proxy environment variables configure clients; network separation enforces the route. The proxy runs with `no-new-privileges`, no capabilities, and the PID, memory and CPU limits configured for the workload.
 
 This setup requires Docker Engine 28 or later. The backend verifies that the internal bridge has no host address in either address family. It checks actual driver, internal-network and IPAM state. An invalid adopted network is replaced with its workload; an invalid new network is removed before use.
 

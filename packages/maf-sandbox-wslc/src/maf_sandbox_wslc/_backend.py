@@ -83,7 +83,13 @@ from ._probes import (
     probe_commands,
 )
 from ._proxy import build_context
-from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import (
+    INSTALL_GRANT,
+    encoded_policy,
+    ipv4_subnets,
+    network_gateways,
+    read_decisions,
+)
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
 logger = logging.getLogger(__name__)
@@ -180,6 +186,7 @@ _KEY_LABEL_MAX = 4096
 
 _PROXY_PORT = 3128
 _CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
+_TUNNEL_SUBNETS_ENV = "MAF_SANDBOX_TUNNEL_SUBNETS"
 _PROXY_READY_MARKER = "tunnel proxy starting"
 _PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
 _PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
@@ -2639,9 +2646,10 @@ class WslcSandboxBackend:
         if (await self._remove(proxy)).failure is None:
             self._report_proxy_drain(event)
 
-        control_addresses = await self._control_addresses(_network_name(name))
+        control_addresses, subnets = await self._proxy_networks(_network_name(name))
         args = ["container", "run", "-d", "--name", proxy, *self._resource_limits()]
         args += ["--network", _network_name(name)]
+        args += ["-e", f"{_TUNNEL_SUBNETS_ENV}={' '.join(subnets)}"]
         args += [
             "-e",
             f"{_CONFIG_ENV}="
@@ -2690,9 +2698,12 @@ class WslcSandboxBackend:
             )
         await self._await_listening(proxy)
 
-    async def _control_addresses(self, internal_network: str) -> tuple[str, ...]:
-        """Read gateways on both networks the proxy will join."""
+    async def _proxy_networks(
+        self, internal_network: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Read gateways on both networks the proxy joins, and the IPv4 subnets it listens on."""
         addresses: list[str] = []
+        subnets: tuple[str, ...] = ()
         for network in (internal_network, "bridge"):
             result = await self._wslc(
                 "network", "inspect", network, timeout=self._config.command_timeout_seconds
@@ -2718,11 +2729,17 @@ class WslcSandboxBackend:
                     raise ValueError("network inspection omitted IPAM")
                 ipam = cast("dict[str, object]", ipam_data)
                 addresses.extend(network_gateways(ipam.get("Config")))
+                if network == internal_network:
+                    subnets = ipv4_subnets(ipam.get("Config"))
             except (ValueError, TypeError) as exc:
                 raise RuntimeError(
-                    f"wslc proxy network {network!r} has unreadable gateway addresses"
+                    f"wslc proxy network {network!r} has unreadable addressing"
                 ) from exc
-        return tuple(dict.fromkeys(addresses))
+        if not subnets:
+            raise RuntimeError(
+                f"wslc network {internal_network!r} has no IPv4 subnet for the proxy to listen on"
+            )
+        return tuple(dict.fromkeys(addresses)), subnets
 
     async def _await_listening(self, proxy: str) -> None:
         """Wait for the patched policy contract and listener before serving.
@@ -2754,7 +2771,9 @@ class WslcSandboxBackend:
             )
         raise RuntimeError(
             f"egress proxy {proxy} did not report the required policy contract and listening "
-            f"within {budget:g}s: {detail}"
+            f"within {budget:g}s: {detail} — an image built from an older build context fails "
+            f"this check; rebuild it: wslc build -t {self._config.egress_proxy_image} "
+            f"{build_context()}"
         )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
