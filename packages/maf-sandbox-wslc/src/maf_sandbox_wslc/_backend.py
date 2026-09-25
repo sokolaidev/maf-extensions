@@ -61,7 +61,7 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
-from maf_sandbox.bounded_exec import read_bounded_process_output
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded, read_bounded_process_output
 from maf_sandbox.credentials import GatewayLease
 from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox.paths import (
@@ -462,6 +462,10 @@ _FILE_COMMAND_STDOUT_LIMIT = 4096
 #: Stdout an identity probe may return. ``id -u`` and ``id -g`` print one number; reaching
 #: this cap means the host killed a command that may still be running, not a long answer.
 _IDENTITY_STDOUT_LIMIT = 64
+
+#: Combined stdout and stderr one ``exec`` may return. Over it the call is refused and the
+#: container discarded, since the command inside may still be running.
+_EXEC_OUTPUT_LIMIT = 8 * 1024 * 1024
 
 #: How many quarantined instances one acquire will remove for a single name before deciding
 #: the name is contested. A discard runs outside the acquire lock, so a couple of pending
@@ -1100,6 +1104,10 @@ class _WslcSandbox:
         ``TimeoutError`` propagates — a workload reports the hang as a diagnostic, and the next
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process
         but keeps the sandbox: the in-container command runs on until the sandbox is disposed.
+
+        Output past 8 MiB, stdout and stderr together, is refused the same way: the sandbox is
+        discarded and :class:`~maf_sandbox.SandboxExecOutputLimitExceeded` propagates.  A caller
+        that needs a different budget uses :meth:`exec_bounded`.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
@@ -1118,22 +1126,11 @@ class _WslcSandbox:
             raise ValueError("max_output_bytes must be a positive integer")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
-        try:
-            result = await self._run(
-                "container",
-                "exec",
-                "-w",
-                working_directory,
-                self._name,
-                *argv,
-                timeout=timeout,
-                max_output_bytes=max_output_bytes,
-            )
-        except TimeoutError:
-            await self._discard()
-            raise
-        return ExecResult(
-            stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
+        return await self._exec(
+            argv,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
         )
 
     async def _exec(
@@ -1142,8 +1139,13 @@ class _WslcSandbox:
         *,
         working_directory: str,
         timeout: float,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
-        """One ``wslc container exec`` as the image's user."""
+        """One ``wslc container exec`` as the image's user.
+
+        ``max_output_bytes`` is a caller's own budget, and its overflow keeps the container;
+        left ``None``, the backend's bound applies and an overflow discards it.
+        """
         try:
             result = await self._run(
                 "container",
@@ -1153,7 +1155,14 @@ class _WslcSandbox:
                 self._name,
                 *argv,
                 timeout=timeout,
+                max_output_bytes=_EXEC_OUTPUT_LIMIT
+                if max_output_bytes is None
+                else max_output_bytes,
             )
+        except SandboxExecOutputLimitExceeded:
+            if max_output_bytes is None:
+                await self._discard()
+            raise
         except TimeoutError:
             await self._discard()
             raise

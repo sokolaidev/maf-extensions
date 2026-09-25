@@ -452,6 +452,10 @@ _FILES_LIMITS = TransferLimits(
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 
+#: Combined stdout and stderr one ``exec`` may return. Over it the call is refused and the
+#: container discarded, since the command inside may still be running.
+_EXEC_OUTPUT_LIMIT = 8 * _MIB
+
 # FILES_OUT from day one — the pull surface is native (stat from the tar entry header, read from
 # the same stream). FILES_LIST is withheld because directory archives transfer the whole subtree.
 #
@@ -1086,6 +1090,10 @@ class _DockerSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process but
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
 
+        Output past 8 MiB, stdout and stderr together, is refused the same way: the sandbox is
+        discarded and :class:`~maf_sandbox.SandboxExecOutputLimitExceeded` propagates.  A caller
+        that needs a different budget uses :meth:`exec_bounded`.
+
         A file call freezes the guest, so a command already running stops and resumes. A
         refused attempt is retried only if this process held the container frozen throughout
         it; a refusal that outlives the freeze is returned unchanged.
@@ -1112,27 +1120,11 @@ class _DockerSandbox:
             raise ValueError("max_output_bytes must be a positive integer")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
-        try:
-            result = await self._run(
-                "exec",
-                "-w",
-                working_directory,
-                self._name,
-                *argv,
-                timeout=timeout,
-                max_output_bytes=max_output_bytes,
-                container=self._name,
-            )
-        except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run("rm", "-f", self._name, timeout=self._command_timeout)
-            raise
-        return ExecResult(
-            stdout_bytes=result.stdout,
-            stderr_bytes=result.stderr_bytes
-            if result.stderr_bytes is not None
-            else result.stderr.encode(),
-            exit_code=result.returncode,
+        return await self._exec(
+            argv,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
         )
 
     async def _exec(
@@ -1142,11 +1134,15 @@ class _DockerSandbox:
         working_directory: str,
         timeout: float,
         as_root: bool = False,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """One ``docker exec``, as the image's user or as ``--user 0``.
 
         :meth:`remove` and :meth:`reclaim` ask for root; :meth:`exec` and :meth:`run_code` are
         the guest program's own and name no user.  See ``docs/sandbox/backends/docker.md``.
+
+        ``max_output_bytes`` is a caller's own budget, and its overflow keeps the container;
+        left ``None``, the backend's bound applies and an overflow discards it.
         """
         privilege = ("--user", "0") if as_root else ()
         try:
@@ -1158,8 +1154,16 @@ class _DockerSandbox:
                 self._name,
                 *argv,
                 timeout=timeout,
+                max_output_bytes=_EXEC_OUTPUT_LIMIT
+                if max_output_bytes is None
+                else max_output_bytes,
                 container=self._name,
             )
+        except SandboxExecOutputLimitExceeded:
+            if max_output_bytes is None:
+                with contextlib.suppress(Exception):
+                    await self._run("rm", "-f", self._name, timeout=self._command_timeout)
+            raise
         except TimeoutError:
             with contextlib.suppress(Exception):
                 await self._run("rm", "-f", self._name, timeout=self._command_timeout)
