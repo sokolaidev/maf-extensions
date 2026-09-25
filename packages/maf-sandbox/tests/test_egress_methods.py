@@ -139,7 +139,9 @@ class TestAllowEntryGrammar:
             "live-data.bicep.azure.com",
             "Example.COM",
             "localhost",
-            "1.2.3.4",
+            "1password.com",
+            "10.0.0.5.example",
+            "host.0xg",
         ],
     )
     def test_a_hostname_and_one_leading_wildcard_label_are_admitted(self, host: str):
@@ -181,6 +183,40 @@ class TestAllowEntryGrammar:
     def test_a_label_at_the_dns_limit_is_still_admitted(self):
         """The bound is 63, so refusing 64 must not cost the longest legal label."""
         assert spec("a" * 63 + ".example.com").egress_allow == ("a" * 63 + ".example.com",)
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "1.2.3.4",
+            "10.0.0.5",
+            "127.1",
+            "2130706433",
+            "0x7f000001",
+            "0x7f.0.0.1",
+            "0X7F.0.0.1",
+            "example.123",
+            "a.0x",
+            "*.10",
+        ],
+    )
+    def test_an_entry_ending_in_a_number_is_refused(self, host: str):
+        """Both outcomes of a URL parser are refused: the address it reads, and the entry it
+        rejects, such as ``example.123``."""
+        with pytest.raises(ValueError, match="ends in a number"):
+            spec(host)
+        with pytest.raises(ValueError, match="ends in a number"):
+            EgressRule(host)
+
+    @pytest.mark.parametrize("prefix", ["", "*."])
+    def test_an_entry_past_the_dns_name_limit_is_refused(self, prefix: str):
+        labels = f"{'a' * 63}.{'b' * 63}.{'c' * 63}."
+        longest = prefix + labels + "d" * (253 - len(prefix) - len(labels))
+        assert len(longest) == 253
+        assert spec(longest).egress_allow == (longest,)
+        with pytest.raises(ValueError, match="254 octets"):
+            spec(longest + "d")
+        with pytest.raises(ValueError, match="254 octets"):
+            EgressRule(longest + "d")
 
     def test_a_bare_string_is_refused_rather_than_read_one_character_at_a_time(self):
         with pytest.raises(TypeError, match="not a single string"):

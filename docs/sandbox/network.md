@@ -44,7 +44,9 @@ Bicep's allowlist contains `mcr.microsoft.com`, `*.data.mcr.microsoft.com`, `aka
 
 `egress_allow` accepts host strings and `EgressRule` values. A host string allows all methods and paths for that host. A rule can restrict methods or paths, or request an attached-authority header.
 
-Hostnames contain dot-separated labels of letters, digits and hyphens. Each label is at most 63 characters. A leading `*.` is the only wildcard form. Schemes, ports, paths, whitespace, commas, trailing dots and other wildcard forms are invalid.
+Hostnames contain dot-separated labels of letters, digits and hyphens. Each label is at most 63 characters, and a whole entry is at most 253, counting a leading `*.`. A leading `*.` is the only wildcard form. Schemes, ports, paths, whitespace, commas, trailing dots and other wildcard forms are invalid.
+
+An address is not a hostname. The last label cannot be a number, so IPv4 forms such as `10.0.0.5`, `127.1` and `0x7f000001` are refused, and an IPv6 address fails on its colons. Backends disagree about what an address rule allows, so name the host by its DNS name.
 
 Host matching is case-insensitive. A leading `*.` matches subdomains but not the bare name. Equivalent entries collapse while retaining the first spelling and rule order. Conflicting rules for one host are refused, including a host-wide rule paired with a narrower method, path or authority rule.
 
@@ -132,7 +134,7 @@ Egress is not an ingress policy. It does not promise that guest code cannot list
 
 | Decision | State | Tracking |
 |---|---|---|
-| Exact egress mode and host-rule matching | Implemented | [#34](https://github.com/sokolaidev/maf-extensions/issues/34) (closed); [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed); [#524](https://github.com/sokolaidev/maf-extensions/issues/524) (closed); [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged); [#1126](https://github.com/sokolaidev/maf-extensions/issues/1126) (closed); [#1138](https://github.com/sokolaidev/maf-extensions/pull/1138) (merged) |
+| Exact egress mode and host-rule matching | Implemented | [#34](https://github.com/sokolaidev/maf-extensions/issues/34) (closed); [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed); [#524](https://github.com/sokolaidev/maf-extensions/issues/524) (closed); [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged); [#1126](https://github.com/sokolaidev/maf-extensions/issues/1126) (closed); [#1138](https://github.com/sokolaidev/maf-extensions/pull/1138) (merged); [#1461](https://github.com/sokolaidev/maf-extensions/issues/1461) (closed) by [#1469](https://github.com/sokolaidev/maf-extensions/pull/1469) (merged) |
 | Backend enforcement | Implemented with backend-specific limits | [Backend guides](backends/README.md) |
 | Method and path rules | Core, Docker and WSLC implemented; Hyperlight method rules implemented; ACAS adoption remains open | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged) |
 | IPv6 upstream addresses | Docker private HTTP/TLS and denials measured; WSLC denials measured, private IPv6 blocked by engine network support | [#1407](https://github.com/sokolaidev/maf-extensions/issues/1407) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged) |
