@@ -94,8 +94,6 @@ _WORKSPACE_PREFIX = "ws-"
 _META = "meta.json"
 _META_VERSION = 1
 _PROBE_PREFIX = ".maf-sbx-probe-"
-#: The instance id of a sandbox still being set up; never returned from acquire.
-_SETTING_UP = "setting-up"
 #: Kept at the workspace root; its absence in the guest means the bind mount is gone.
 _MARKER = ".maf-sbx-workspace"
 
@@ -838,19 +836,19 @@ class SbxSandboxBackend:
             if not guest_mount.startswith("/") or "\n" in guest_mount:
                 raise SbxError(f"the guest reported {guest_mount!r} as its workspace mount")
             meta["guest_mount"] = guest_mount
-            sandbox = self._sandbox(name, {"id": _SETTING_UP}, base, guest_mount, workspace)
+            # The real id before any command runs, so a failed cleanup retires this instance.
+            row = (await self._listing()).get(name) or {}
+            sandbox = self._sandbox(name, row, base, guest_mount, workspace)
             await self._bind_workspace(name, sandbox.mount, create=True)
             await self._prove_the_mount(sandbox)
             await self.check_sandbox(name)
-            row = (await self._listing()).get(name) or {}
-            served = self._sandbox(name, row, base, guest_mount, workspace)
             # Last, so a record another process can read means the sandbox is ready to serve.
-            meta["instance_id"] = served.instance_id
+            meta["instance_id"] = sandbox.instance_id
             await asyncio.to_thread(_write_record, directory / _META, meta)
         except BaseException:
             await self._discard(name)
             raise
-        return served, True
+        return sandbox, True
 
     async def _abandon_create(self, name: str, workspace: Path) -> None:
         """Remove a stopped create's sandbox only if `sbx ls` shows it mounting our workspace."""

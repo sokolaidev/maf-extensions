@@ -638,6 +638,22 @@ class TestAnExpiredCommand:
             asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
         assert sandbox.instance_id in backend.retired
 
+    def test_a_failed_setup_cleanup_retires_that_instance_not_every_create(self, backend, sbx):
+        sbx.kill_result = _Result(1, b"", b"error: kill refused")
+        name = sandbox_name("maf", KEY, "kind")
+
+        def slow_probe(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
+
+        sbx.exec_hook = slow_probe
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert backend.retired == frozenset({f"id-{name}"})
+        sbx.exec_hook = lambda _args: None
+        sbx.kill_result = _ok()
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert again.instance_id not in backend.retired
+
     def test_one_whose_group_was_killed_leaves_the_sandbox_running(self, backend, sbx):
         name = self._expire(backend, sbx)
         assert ("stop", name) not in sbx.calls
