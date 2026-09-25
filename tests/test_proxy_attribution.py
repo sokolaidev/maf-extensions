@@ -52,14 +52,11 @@ class _Engine:
                 else self.result(error=f"No such container: {args[-1]}")
             )
         if args[:2] == ("network", "inspect"):
+            ipam = [{"Subnet": "172.17.0.0/16", "Gateway": "172.17.0.1"}]
             if self.name == "docker":
-                return self.result(b'[{"Gateway":"172.17.0.1"}]')
+                return self.result(json.dumps(ipam).encode())
             network = args[-1]
-            return self.result(
-                json.dumps(
-                    [{"Name": network, "IPAM": {"Config": [{"Gateway": "172.17.0.1"}]}}]
-                ).encode()
-            )
+            return self.result(json.dumps([{"Name": network, "IPAM": {"Config": ipam}}]).encode())
         if args[:2] == ("network", "connect"):
             return self.result(error="connect failed" if self.connect_error else "")
         command = args[1:] if args[0] == "container" else args
