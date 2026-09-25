@@ -44,6 +44,7 @@ from maf_sandbox import (
     OutputSink,
     ReclaimConfig,
     ReclaimFailure,
+    SandboxArtifactNameInvalid,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
@@ -6277,6 +6278,30 @@ class TestMakeFileStoreSink:
         with pytest.raises(ValueError, match="no call_id"):
             asyncio.run(sink.deliver(self._artifact("s.md", call_id=None)))
 
+    @pytest.mark.parametrize(
+        "call_id", ["", "a/b", "..", ".", "a\\b", "C:", "x" * (MAX_ARTIFACT_NAME_BYTES + 1)]
+    )
+    def test_a_call_id_that_is_not_one_folder_name_is_refused_before_it_lands(self, call_id):
+        """The read-back tools refuse every path under such a folder, so landing there would
+        put the bytes where the model cannot reach them."""
+        store = self._store()
+        sink = make_file_store_sink(store)
+
+        with pytest.raises(ValueError, match="not one folder name"):
+            asyncio.run(sink.deliver(self._artifact("s.md", call_id=call_id)))
+
+        assert asyncio.run(store.list_children("")) == []
+
+    @pytest.mark.parametrize("name", ["C:x", "sub/C:x", "../s.md", "sub//s.md"])
+    def test_a_name_the_read_tools_would_refuse_is_refused_before_it_lands(self, name):
+        store = self._store()
+        sink = make_file_store_sink(store)
+
+        with pytest.raises(SandboxArtifactNameInvalid):
+            asyncio.run(sink.deliver(self._artifact(name)))
+
+        assert asyncio.run(store.list_children("")) == []
+
     def test_it_declares_that_it_lands_per_call(self):
         """Which is what makes `collect_outputs(call_id=...)` required rather than optional,
         and what lets a kind name the folder without reading the sink's own string."""
@@ -6470,6 +6495,9 @@ class TestSandboxOutputsReadTools:
             "c0ffee/",
             "",
             f"c0ffee/{'x' * (MAX_ARTIFACT_NAME_BYTES + 1)}",
+            "C:/Windows/win.ini",
+            "C:x",
+            "c0ffee/C:x",
         ],
     )
     def test_a_name_the_sink_could_not_have_landed_never_reaches_the_store(self, name):
@@ -6481,7 +6509,9 @@ class TestSandboxOutputsReadTools:
 
         assert "is not a path in this store" in asyncio.run(self._body(read)(name))
 
-    @pytest.mark.parametrize("folder", ["..", "../x", "/", "c0ffee/..", "c0ffee//", ".", "a\\b"])
+    @pytest.mark.parametrize(
+        "folder", ["..", "../x", "/", "c0ffee/..", "c0ffee//", ".", "a\\b", "C:", "c0ffee/C:x"]
+    )
     def test_a_folder_the_sink_could_not_have_landed_never_reaches_the_store(self, folder):
         class _UntouchedStore:
             async def list_children(self, directory: str = "") -> list[Any]:

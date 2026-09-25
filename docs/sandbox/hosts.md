@@ -44,11 +44,11 @@ NFC normalization is the default. `NameNormalization.NONE` preserves spelling, b
 
 `make_file_store_sink` writes UTF-8 text under a host-minted call ID and artifact name. It does not overwrite existing files. Invalid text raises `SandboxLandingNotText`; an existing name raises `SandboxLandingExists`. Other store failures propagate.
 
-The sink declares `per_call=True`, so collection requires a call ID before reading outputs. The underlying store remains responsible for its own confinement.
+The sink declares `per_call=True`, so collection requires a call ID before reading outputs. The call ID must be one folder name that meets the artifact-name rules, and no segment of the destination may start with a Windows drive such as `C:`. The underlying store remains responsible for what only it can see, such as a link.
 
 Pass the store's `FileStoreProvenance` record to the sink. It records the output as untrusted before writing. A failed write keeps that conservative record.
 
-Use `sandbox_outputs_read_tools` to expose named listing and reading tools for the output store. It creates no write tool. Both tools refuse a path the sink could not have landed, such as an absolute path, a `..` segment or a backslash, before the store sees it. The host must classify these tools before use; withholding direct guest output does not prevent an explicit read tool from returning the same bytes.
+Use `sandbox_outputs_read_tools` to expose named listing and reading tools for the output store. It creates no write tool. Both tools refuse a path the sink could not have landed, such as an absolute path, a `..` segment, a backslash or a Windows drive, before the store sees it. The host must classify these tools before use; withholding direct guest output does not prevent an explicit read tool from returning the same bytes.
 
 ## Outbound confidentiality
 
@@ -214,7 +214,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | Decision | State | Tracking |
 |---|---|---|
 | Artifact collection, sinks and names | Implemented; delivery remains per artifact | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged); [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged) |
-| File-store output sink and read tools | Implemented | [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged) |
+| File-store output sink and read tools | Implemented | [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged); [#1457](https://github.com/sokolaidev/maf-extensions/issues/1457) (closed) by [#1468](https://github.com/sokolaidev/maf-extensions/pull/1468) (merged) |
 | Atomic batch delivery | Unimplemented | untracked |
 | Host-tool registry, declarations and transport | Implemented | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (closed); [#410](https://github.com/sokolaidev/maf-extensions/pull/410) (merged); [#417](https://github.com/sokolaidev/maf-extensions/issues/417) (closed) |
 | Host-tool identity admission and per-run minting | Implemented | [#396](https://github.com/sokolaidev/maf-extensions/issues/396) (closed); [#568](https://github.com/sokolaidev/maf-extensions/issues/568) (closed); [#446](https://github.com/sokolaidev/maf-extensions/issues/446) (closed); [#593](https://github.com/sokolaidev/maf-extensions/pull/593) (merged) |
