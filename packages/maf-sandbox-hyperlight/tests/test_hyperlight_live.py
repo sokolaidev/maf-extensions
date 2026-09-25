@@ -292,9 +292,9 @@ def test_method_rules_are_enforced_at_the_runtime_boundary(live_backend):
             scoped_spec = replace(
                 SPEC,
                 egress=Egress.ALLOWLIST,
-                egress_allow=(EgressRule("127.0.0.1", methods=("GET",)),),
+                egress_allow=(EgressRule("localhost", methods=("GET",)),),
             )
-            control_spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("127.0.0.1",))
+            control_spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("localhost",))
             capabilities = live_backend.declarations.capabilities
             scoped = RunCodeEgressMethodsSubject(
                 await live_backend.acquire(KEY, scoped_spec), capabilities
@@ -304,11 +304,11 @@ def test_method_rules_are_enforced_at_the_runtime_boundary(live_backend):
                 capabilities,
             )
             await assert_egress_methods_conformance(
-                scoped, control, allowed_url="http://127.0.0.1/method", request_timeout=10
+                scoped, control, allowed_url="http://localhost/method", request_timeout=10
             )
-            assert not await scoped.http_reaches("PUT", "http://127.0.0.1/put", timeout=10)
+            assert not await scoped.http_reaches("PUT", "http://localhost/put", timeout=10)
             for method in ("TRACE", "PROPFIND"):
-                assert not await control.http_reaches(method, "http://127.0.0.1/x", timeout=10)
+                assert not await control.http_reaches(method, "http://localhost/x", timeout=10)
             assert Handler.hits == ["/method", "/method"]
 
         try:
@@ -329,22 +329,22 @@ def test_closed_and_exact_host_allowlist_reach_only_the_named_host(live_backend)
             denied = await closed.run_code("http_get('http://127.0.0.1/probe')", timeout=5)
             assert denied.exit_code != 0 and not Handler.hits
             assert await live_backend.dispose(KEY) is None
-            spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("127.0.0.1",))
+            spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("localhost",))
             allowed = await live_backend.acquire(KEY, spec)
             result = await allowed.run_code(
-                "print(http_get('http://127.0.0.1/allowed')['body'])\nprint(http_post('http://127.0.0.1/posted', body='hello')['status'])",
+                "print(http_get('http://localhost/allowed')['body'])\nprint(http_post('http://localhost/posted', body='hello')['status'])",
                 timeout=5,
             )
             assert result.exit_code == 0, result.stderr
             assert "hyperlight-network-proof" in result.stdout and "200" in result.stdout
             assert Handler.hits == ["/allowed", "/posted"]
-            denied = await allowed.run_code("http_get('http://localhost/off-list')", timeout=5)
+            denied = await allowed.run_code("http_get('http://127.0.0.1/off-list')", timeout=5)
             assert denied.exit_code != 0
             assert Handler.hits == ["/allowed", "/posted"]
             await allowed.reset(timeout=5)
             assert (
                 await allowed.run_code(
-                    "print(http_get('http://127.0.0.1/after-reset')['status'])", timeout=5
+                    "print(http_get('http://localhost/after-reset')['status'])", timeout=5
                 )
             ).stdout == "200\n"
 
