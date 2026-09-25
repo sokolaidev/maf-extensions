@@ -1837,6 +1837,7 @@ class TestAllowlistEgress:
 
     def test_a_container_on_the_outbound_network_cannot_use_the_proxy(self):
         """The tunnel listens on the sandbox network only; its outbound address refuses."""
+        assert _IMAGE is not None
         scope = f"e2e-{uuid.uuid4()}"
         config = self._config()
         backend = DockerSandboxBackend(config)
