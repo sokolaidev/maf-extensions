@@ -126,11 +126,12 @@ rm -f "$f"
 exit "$s"
 """
 
-#: Kills the process group an expired command recorded, waiting briefly for a wrapper that had
-#: not yet written it.
+#: Kills the process group an expired command recorded, waiting up to ``$2`` tenths of a second
+#: for a wrapper that has not yet written it.  Exit 4 means none appeared, so the command may
+#: still start.
 _KILL_SCRIPT = r"""i=0
-while [ ! -s "$1" ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
-[ -s "$1" ] || exit 0
+while [ ! -s "$1" ] && [ "$i" -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done
+[ -s "$1" ] || exit 4
 p=$(cat "$1")
 case $p in ''|*[!0-9]*) exit 3 ;; esac
 kill -9 -"$p" 2>/dev/null
@@ -482,7 +483,7 @@ class SbxSandboxBackend:
             except (TimeoutError, asyncio.CancelledError) as stopped:
                 # Killing the client leaves the guest's command running in a reusable sandbox,
                 # and a cancellation must not stop the kill either.
-                await asyncio.shield(self._kill_group(name, pid_file))
+                await asyncio.shield(self._stop_the_command(name, pid_file))
                 if isinstance(stopped, TimeoutError):
                     raise TimeoutError(expired) from None
                 raise
@@ -533,7 +534,28 @@ class SbxSandboxBackend:
         plane = WorkspacePlane(mount.host, mount.parent)
         await asyncio.to_thread(plane.write, posixpath.join(mount.parent, _MARKER), b"")
 
-    async def _kill_group(self, name: str, pid_file: str) -> None:
+    async def _stop_the_command(self, name: str, pid_file: str) -> None:
+        """Kill an expired command's process group, or stop the sandbox when that cannot."""
+        if await self._kill_group(name, pid_file):
+            return
+        # Stopping the sandbox kills every process in it and keeps its files; the next command
+        # starts it again.
+        try:
+            stopped = await self._sbx("stop", name)
+        except TimeoutError:
+            logger.warning("docker-sbx: stopping %s after an expired command timed out", name)
+            return
+        if stopped.returncode != 0:
+            logger.warning(
+                "docker-sbx: could not stop %s after an expired command: %s",
+                name,
+                stopped.stderr_text.strip()[-_STDERR_TAIL:],
+            )
+
+    async def _kill_group(self, name: str, pid_file: str) -> bool:
+        """Whether the expired command's process group is known to be killed."""
+        allowance = self._config.exec_cleanup_timeout_seconds
+        tenths = max(1, int((allowance - 1) * 10))
         try:
             result = await self._sbx(
                 "exec",
@@ -543,17 +565,21 @@ class SbxSandboxBackend:
                 _KILL_SCRIPT,
                 "maf-sbx",
                 pid_file,
-                timeout=self._config.exec_cleanup_timeout_seconds,
+                str(tenths),
+                timeout=allowance,
             )
         except TimeoutError:
             logger.warning("docker-sbx: killing an expired command in %s timed out", name)
-            return
+            return False
         if result.returncode != 0:
             logger.warning(
-                "docker-sbx: could not kill an expired command in %s: %s",
+                "docker-sbx: could not kill an expired command in %s (exit %s): %s",
                 name,
+                result.returncode,
                 result.stderr_text.strip()[-_STDERR_TAIL:],
             )
+            return False
+        return True
 
     async def _listing(self) -> dict[str, dict[str, object]]:
         result = await self._sbx("ls", "--json")

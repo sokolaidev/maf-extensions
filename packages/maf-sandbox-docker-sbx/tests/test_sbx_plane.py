@@ -166,7 +166,10 @@ class TestDescriptors:
         assert len(os.listdir("/proc/self/fd")) == before
 
     def test_a_failing_close_is_not_retried_on_the_same_descriptor(self, plane, monkeypatch):
+        if not Path("/proc/self/fd").is_dir():
+            pytest.skip("needs /proc/self/fd to count descriptors")
         plane.make_directories("/maf-sandbox/a")
+        before = len(os.listdir("/proc/self/fd"))
         closed: list[int] = []
         real_close = os.close
 
@@ -179,4 +182,6 @@ class TestDescriptors:
         monkeypatch.setattr(os, "close", close)
         with pytest.raises(OSError, match="close reported"):
             plane.lstat("/maf-sandbox/a/x")
+        monkeypatch.undo()
         assert len(closed) == len(set(closed)), closed
+        assert len(os.listdir("/proc/self/fd")) == before, "a descriptor leaked"

@@ -72,6 +72,7 @@ class FakeSbx:
         self.unmounted_once = False
         self.unlisted: set[str] = set()
         self.lost_engine = False
+        self.kill_result = _ok()
         backend._sbx = self  # type: ignore[method-assign]
 
     async def __call__(self, *args: str, timeout: float | None = None) -> _Result:
@@ -131,7 +132,11 @@ class FakeSbx:
                     host = self._host(name, argv[1])
                     return _Result(0, host.read_bytes(), f"{nonce}\n".encode())
                 return _Result(0, b"ran", f"{nonce}\n".encode())
-            case ("exec", _name, "sh", "-c", script, "maf-sbx", _pid) if script == _KILL_SCRIPT:
+            case ("exec", _name, "sh", "-c", script, "maf-sbx", _pid, *_budget) if (
+                script == _KILL_SCRIPT
+            ):
+                return self.kill_result
+            case ("stop", _name):
                 return _ok()
         raise AssertionError(f"unexpected sbx call {args}")
 
@@ -486,6 +491,29 @@ class TestGuestControlledSignals:
         assert marker.is_file() and not marker.is_symlink()
 
 
+class TestAnExpiredCommand:
+    def _expire(self, backend, sbx) -> str:
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def slow(_args: tuple[str, ...]) -> _Result:
+            raise TimeoutError
+
+        sbx.exec_hook = slow
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        return sandbox.name
+
+    def test_one_whose_group_never_appeared_stops_the_sandbox(self, backend, sbx):
+        sbx.kill_result = _Result(4, b"", b"")
+        name = self._expire(backend, sbx)
+        assert sbx.calls[-1] == ("stop", name)
+
+    def test_one_whose_group_was_killed_leaves_the_sandbox_running(self, backend, sbx):
+        name = self._expire(backend, sbx)
+        assert ("stop", name) not in sbx.calls
+        assert sbx.calls[-1][:5] == ("exec", name, "sh", "-c", _KILL_SCRIPT)
+
+
 class TestCleanupSurvivesCancellation:
     def test_a_cancellation_during_the_timeout_kill_does_not_stop_it(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
@@ -512,7 +540,7 @@ class TestCleanupSurvivesCancellation:
             await killing.wait()
             call.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await call
+                _ = await call
             await asyncio.sleep(0.4)
 
         asyncio.run(scenario())
@@ -779,6 +807,14 @@ class TestTheWrapperInARealShell:
         (tools / "rm").symlink_to(shutil.which("rm") or "rm")
         found = probe()
         assert (found.returncode, found.stdout) == (0, b"token")
+
+    def test_the_kill_reports_a_group_that_never_appeared(self, tmp_path):
+        result = subprocess.run(
+            [_SH or "sh", "-c", _KILL_SCRIPT, "maf-sbx", str(tmp_path / "absent.pgid"), "1"],
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 4
 
     def test_nothing_runs_while_the_mount_is_missing(self, tmp_path):
         result = self._run(tmp_path, ["touch", str(tmp_path / "ran")], mounted=False)

@@ -336,8 +336,16 @@ class WorkspacePlane:
     def _walk(self, parts: Sequence[str], *, create: bool = False) -> _Directory:
         directory: _Directory = self._directory.open_root(self._host_root)
         for name in parts:
-            with directory:
+            try:
                 child = directory.child(name, create=create)
+            except BaseException:
+                directory.close()
+                raise
+            try:
+                directory.close()
+            except BaseException:
+                child.close()
+                raise
             directory = child
         return directory
 

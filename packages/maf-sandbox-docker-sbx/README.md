@@ -76,7 +76,7 @@ Stats, reads, listings and writes act on the host side of the mount. No path che
 - On macOS and Linux each path component is opened relative to its parent with `O_NOFOLLOW`, so a link the guest creates between a check and an operation makes the operation fail rather than follow it.
 - On Windows there are no descriptor-relative calls. The backend refuses reparse points, and relies on the guest being unable to create a link in its workspace, measured with `sbx` v0.45.1.
 - Writes land in a temporary file and are renamed into place, so a write never goes through what stood at the destination.
-- `remove` and `reclaim` both remove in the guest, at the guest's own authority. `remove` first runs the host-side path check, then `rm -f`, which refuses a directory swapped in after the check, or `rm -rf` when recursive. `reclaim` checks placement only, that the target lies inside the workspace and is a child of the working directory, then runs `rm -rf`. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
+- `remove` and `reclaim` both remove in the guest, at the guest's own authority. `remove` first runs the host-side path check, then `rm -f`, which refuses a directory swapped in after the check, or `rm -rf` when recursive. `reclaim` checks placement only, then runs `rm -rf`: a relative target must name a child of the working directory, and an absolute one may be anywhere strictly inside the workspace. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
 - Names the host would change, hide or merge are refused: a name that stats but is not listed verbatim, such as a case variant on a case-insensitive host. On Windows, reserved characters, reserved device names and a trailing dot or space are refused too.
 
 File methods reach only paths under the storage base's parent. Any other absolute path is refused with `ValueError`. `work_dir` must have a parent other than `/`, and that parent must not already exist in the image.
@@ -89,7 +89,7 @@ File methods reach only paths under the storage base's parent. Any other absolut
 
 - argv is base64-encoded, because `sbx` refuses an empty argument;
 - a nonce on stderr marks where the command's own stderr starts, so a missing sandbox is never read as a command that exited 1;
-- the command runs in its own process group. When `timeout` expires, the backend kills that group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`, and then raises `TimeoutError`. Killing the `sbx` client alone would leave the command running.
+- the command runs in its own process group. When `timeout` expires, the backend kills that group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`, and then raises `TimeoutError`. Killing the `sbx` client alone would leave the command running. If the command has not recorded its group by the end of that allowance, it may still start, so the backend stops the sandbox instead. That kills every process in it and keeps the files; the next command starts it again.
 
 A missing working directory exits 125 with the shell's message on stderr.
 
