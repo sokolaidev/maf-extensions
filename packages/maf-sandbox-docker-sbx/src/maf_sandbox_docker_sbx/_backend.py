@@ -46,6 +46,7 @@ from maf_sandbox import (
     ScopePurge,
     fold_disposal_failures,
 )
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded, read_bounded_process_output
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
     confine_resolve_guest_list_path,
@@ -168,6 +169,9 @@ _ALREADY_EXISTS = "already exists"
 _UNAVAILABLE = "backend unavailable"
 _LOGIN_HINTS = ("sbx login", "not logged in", "log in", "unauthorized", "unauthenticated")
 _STDERR_TAIL = 2000
+
+#: Combined stdout and stderr one ``sbx`` command may return, a guest command's included.
+_OUTPUT_LIMIT = 8 * 1024 * 1024
 
 
 class SbxError(RuntimeError):
@@ -473,7 +477,10 @@ class SbxSandboxBackend:
     # --- the CLI ------------------------------------------------------------------------
 
     async def _sbx(self, *args: str, timeout: float | None = None) -> _Result:
-        """Run one ``sbx`` command; a timeout kills the client and raises ``TimeoutError``."""
+        """Run one ``sbx`` command; a timeout kills the client and raises ``TimeoutError``.
+
+        Output past ``_OUTPUT_LIMIT`` kills it too and raises ``SandboxExecOutputLimitExceeded``.
+        """
         process = await asyncio.create_subprocess_exec(
             self._config.sbx_path,
             *args,
@@ -481,17 +488,11 @@ class SbxSandboxBackend:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout if timeout is not None else self._config.command_timeout_seconds,
-            )
-        except BaseException:
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            with contextlib.suppress(Exception):
-                await asyncio.shield(process.wait())
-            raise
+        stdout, stderr = await read_bounded_process_output(
+            process,
+            max_output_bytes=_OUTPUT_LIMIT,
+            timeout=timeout if timeout is not None else self._config.command_timeout_seconds,
+        )
         return _Result(cast(int, process.returncode), stdout, stderr)
 
     async def run_in_guest(
@@ -506,7 +507,8 @@ class SbxSandboxBackend:
     ) -> ExecResult:
         """Run ``argv`` in ``cwd`` under the wrapper, killing its process group at ``timeout``.
 
-        ``timeout`` covers a re-mount after an auto-stop as well as the command.
+        ``timeout`` covers a re-mount after an auto-stop as well as the command.  Output past
+        ``_OUTPUT_LIMIT`` ends the command the same way, then raises.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -522,7 +524,11 @@ class SbxSandboxBackend:
                 raise TimeoutError(expired)
             try:
                 result = await self._sbx(*args, *encoded, timeout=left)
-            except (TimeoutError, asyncio.CancelledError) as stopped:
+            except (
+                TimeoutError,
+                SandboxExecOutputLimitExceeded,
+                asyncio.CancelledError,
+            ) as stopped:
                 # Killing the client leaves the guest's command running in a reusable sandbox,
                 # and a cancellation must not stop the kill either.
                 await asyncio.shield(self._end_the_command(name, instance, pid_file))
@@ -602,9 +608,9 @@ class SbxSandboxBackend:
         except TimeoutError:
             logger.warning("docker-sbx: killing an expired command in %s timed out", name)
             return False
-        except OSError as error:
+        except (OSError, SandboxExecOutputLimitExceeded) as error:
             # Raised past here it would replace the caller's own timeout or cancellation.
-            logger.warning("docker-sbx: could not start the kill in %s: %s", name, error)
+            logger.warning("docker-sbx: the kill in %s did not complete: %s", name, error)
             return False
         if result.returncode not in (0, _NEVER_STARTED):
             logger.warning(

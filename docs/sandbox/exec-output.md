@@ -37,7 +37,7 @@ When `producer_owns_stderr=False`, each field belongs to the matching program st
 
 Byte fidelity covers the bytes returned. A documented cap can omit output, but the result must report that omission without presenting a producer note as program text. A backend can also refuse an oversized capture without returning an `ExecResult`.
 
-`BoundedExec.exec_bounded` limits combined stdout/stderr before buffering. Docker and WSLC bound subprocess pipes, and hold plain `exec` to 8 MiB combined: an overflow raises `SandboxExecOutputLimitExceeded` and discards the container, as a timeout does. ACAS bounds program capture and encoded response frames; framing can exhaust its budget even when program output fits.
+`BoundedExec.exec_bounded` limits combined stdout/stderr before buffering. Docker and WSLC bound subprocess pipes, and hold plain `exec` to 8 MiB combined: an overflow raises `SandboxExecOutputLimitExceeded` and discards the container, as a timeout does. Docker Sandboxes holds `exec` to the same 8 MiB and, as on its timeout, kills only the command's process group; it has no `exec_bounded`. ACAS bounds program capture and encoded response frames; framing can exhaust its budget even when program output fits.
 
 The host-tool transport exposes timeout partial output as `SandboxProgramTimeout.output_bytes`. Its `output` property and exception message are display text. Existing output and diagnostic-excerpt caps still apply. Host-tool request decoding stays strict UTF-8; malformed requests are refused.
 

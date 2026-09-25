@@ -62,6 +62,7 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 | Network | `CLOSED` |
 | Isolation scope | `CONVERSATION` |
 | Egress observation | No |
+| Command output | 8 MiB of stdout and stderr together; more kills the command and refuses the call |
 
 `RUN_CODE` is not declared, because any image is accepted and the runtime is the image's. `SNAPSHOT` is not declared. `HOST_TOOLS` is not declared yet: an idle sandbox stops 30 seconds after its last `sbx` session and kills every process, and the host-tool transport has not been measured against that.
 
@@ -90,6 +91,7 @@ File methods reach only paths under the storage base's parent. Any other absolut
 - argv is base64-encoded, because `sbx` refuses an empty argument;
 - a nonce on stderr marks where the command's own stderr starts, so a missing sandbox is never read as a command that exited 1;
 - the command runs in its own process group. When `timeout` expires, the backend kills that group with a second `sbx exec`, bounded by `exec_cleanup_timeout_seconds`, and then raises `TimeoutError`. Killing the `sbx` client alone would leave the command running. The same command first leaves a cancel file, which the wrapper checks after recording its group, so a command that has not started yet never will. Only the expired command is touched; a sibling call in the same sandbox keeps running. If the kill cannot run at all, the sandbox is retired: every handle to it refuses further use, and the next acquire replaces it.
+- output past 8 MiB, stdout and stderr together, ends the command the same way and raises `SandboxExecOutputLimitExceeded`, so a guest printing without end cannot fill host memory. The sandbox is kept unless the kill fails.
 
 A missing working directory exits 125 with the shell's message on stderr.
 

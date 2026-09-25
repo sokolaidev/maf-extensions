@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from maf_sandbox import Capability, EntryKind, SandboxKey, SandboxSpec
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_exec_conformance,
@@ -191,7 +192,7 @@ def test_explicit_storage_base_and_warm_reuse(tmp_path):
     asyncio.run(scenario())
 
 
-def test_exec_suite_and_the_process_group_deadline(tmp_path):
+def test_exec_suite_the_deadline_and_the_output_bound(tmp_path):
     backend = _backend(tmp_path)
     key = _key("exec")
     links: list[bool] = []
@@ -210,6 +211,13 @@ def test_exec_suite_and_the_process_group_deadline(tmp_path):
             )
             assert left.stdout.strip() == "0", left
             assert elapsed < 3 + backend.config.exec_cleanup_timeout_seconds, elapsed
+            with pytest.raises(SandboxExecOutputLimitExceeded):
+                await sandbox.exec("sleep 300 & yes", working_directory=".", timeout=120)
+            left = await sandbox.exec(
+                "ps -eo args | grep -cE '^(yes|sleep 300)$'", working_directory=".", timeout=30
+            )
+            assert left.stdout.strip() == "0", left
+            assert sandbox.instance_id not in backend.retired
             missing = await sandbox.exec(["pwd"], working_directory="/nowhere", timeout=30)
             assert missing.exit_code == 125 and "nowhere" in missing.stderr, missing
             await assert_exec_conformance(_subject(backend, sandbox, links))

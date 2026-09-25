@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -22,6 +23,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxSpec,
 )
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
 
 from maf_sandbox_docker_sbx import (
     SbxDaemonFault,
@@ -36,6 +38,7 @@ from maf_sandbox_docker_sbx._backend import (
     _KILL_SCRIPT,
     _MARKER,
     _MOUNT_SCRIPT,
+    _OUTPUT_LIMIT,
     _PROBE_SCRIPT,
     _Result,
     sandbox_name,
@@ -658,6 +661,73 @@ class TestAnExpiredCommand:
         name = self._expire(backend, sbx)
         assert ("stop", name) not in sbx.calls
         assert sbx.calls[-1][:5] == ("exec", name, "sh", "-c", _KILL_SCRIPT)
+
+
+class TestTheOutputBound:
+    """A guest printing without end cannot fill host memory."""
+
+    @pytest.mark.parametrize(
+        ("stdout", "stderr", "refused"),
+        [
+            (_OUTPUT_LIMIT // 2, _OUTPUT_LIMIT - _OUTPUT_LIMIT // 2, False),
+            (_OUTPUT_LIMIT // 2, _OUTPUT_LIMIT - _OUTPUT_LIMIT // 2 + 1, True),
+        ],
+    )
+    def test_the_client_is_read_under_one_budget_for_both_streams(
+        self, tmp_path, stdout, stderr, refused
+    ):
+        backend = SbxSandboxBackend(
+            SbxSandboxConfig(sbx_path=sys.executable, workspace_root=tmp_path / "root")
+        )
+        flood = (
+            "import sys; "
+            f"sys.stdout.buffer.write(b'o' * {stdout}); sys.stderr.buffer.write(b'e' * {stderr})"
+        )
+        if refused:
+            with pytest.raises(SandboxExecOutputLimitExceeded):
+                asyncio.run(backend._sbx("-c", flood, timeout=60))
+        else:
+            result = asyncio.run(backend._sbx("-c", flood, timeout=60))
+            assert (len(result.stdout), len(result.stderr)) == (stdout, stderr)
+
+    def _flood(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def flooding(_args: tuple[str, ...]) -> _Result:
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+
+        sbx.exec_hook = flooding
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(sandbox.exec(["yes"], working_directory=".", timeout=10))
+        sbx.exec_hook = lambda _args: None
+        return sandbox
+
+    def test_an_overflow_kills_the_command_and_keeps_the_sandbox(self, backend, sbx):
+        sandbox = self._flood(backend, sbx)
+        assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+        assert backend.retired == frozenset()
+        assert asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
+
+    def test_an_overflow_whose_kill_fails_retires_the_instance(self, backend, sbx):
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+        sandbox = self._flood(backend, sbx)
+        assert sandbox.instance_id in backend.retired
+
+    def test_a_kill_that_overflows_retires_and_keeps_the_timeout(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        real = sbx.__call__
+
+        async def flooding_kill(*args: str, timeout: float | None = None) -> _Result:
+            if _KILL_SCRIPT in args:
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+            if _EXEC_SCRIPT in args:
+                raise TimeoutError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = flooding_kill  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert sandbox.instance_id in backend.retired
 
 
 class TestCleanupSurvivesCancellation:
