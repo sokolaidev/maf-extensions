@@ -105,7 +105,7 @@ Every sandbox is created with `--deny-network "**"`. A per-sandbox deny beats ev
 
 `sbx` has no labels, so ownership is in the name: `name_prefix`, then digests of the conversation, the whole key and the kind. Two creates racing one name get one sandbox and a conflict.
 
-`dispose` and `dispose_scope` run `sbx rm --force` on every name with the matching prefix, taken from `sbx ls` and from the workspace directories. The directories are a second record because the daemon can lose its engine and then report no sandboxes at all. That failure surfaces as `SbxDaemonFault`, which names `sbx daemon restart`, and a disposal reports it as `unreachable` rather than as a sandbox that is gone.
+`dispose` and `dispose_scope` run `sbx rm --force` on every name with the matching prefix, taken from `sbx ls` and from the workspace directories. Afterwards they delete only what was on the host before the removal, never a workspace made after it, since the name is then free for another process to create again. The directories are a second record because the daemon can lose its engine and then report no sandboxes at all. That failure surfaces as `SbxDaemonFault`, which names `sbx daemon restart`, and a disposal reports it as `unreachable` rather than as a sandbox that is gone.
 
 Nothing expires on its own. A sandbox left behind by a crashed host keeps its `cpus` and `memory` until a disposal or `sbx rm` removes it. An idle sandbox stops after 30 seconds and keeps its files; the next command starts it again and binds the workspace in about 2 seconds.
 

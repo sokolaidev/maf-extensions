@@ -1162,6 +1162,37 @@ class TestDisposal:
         assert failure is not None and failure.code == "unlisted"
 
 
+class TestANameReusedByAnotherProcess:
+    """`sbx rm` frees a name for every process, so a replacement can appear before cleanup."""
+
+    @pytest.mark.parametrize("purge", [False, True])
+    def test_a_disposal_leaves_the_replacement_made_as_the_name_freed(
+        self, backend, sbx, tmp_path, purge
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        other = SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+        other._sbx = sbx  # type: ignore[method-assign]
+        real = sbx.__call__
+        replacements: list[str] = []
+
+        async def racing(*args: str, timeout: float | None = None) -> _Result:
+            result = await real(*args, timeout=timeout)
+            if args[:2] == ("rm", "--force") and not replacements:
+                replacements.append((await other.acquire(KEY, _spec())).instance_id)
+            return result
+
+        backend._sbx = racing  # type: ignore[method-assign]
+        if purge:
+            assert asyncio.run(backend.dispose_scope(KEY.scope, KEY.thread_id)).undisposed is None
+        else:
+            disposed = backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id)
+            assert asyncio.run(disposed) is None
+        assert not sandbox.mount.host.exists()
+        again = asyncio.run(other.acquire(KEY, _spec()))
+        assert again.instance_id == replacements[0] != sandbox.instance_id
+        assert (again.mount.host / _MARKER).is_file()
+
+
 _SH = shutil.which("sh")
 _HAS_TOOLS = _SH is not None and all(shutil.which(tool) for tool in ("setsid", "base64"))
 

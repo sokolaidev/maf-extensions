@@ -729,7 +729,7 @@ class SbxSandboxBackend:
                 )
             except BaseException:
                 if created:
-                    await self._discard(name)
+                    await self._discard(name, sandbox.mount.host)
                 raise
             return sandbox
 
@@ -852,7 +852,7 @@ class SbxSandboxBackend:
             meta["instance_id"] = sandbox.instance_id
             await asyncio.to_thread(_write_record, directory / _META, meta)
         except BaseException:
-            await self._discard(name)
+            await self._discard(name, workspace)
             raise
         return sandbox, True
 
@@ -863,7 +863,7 @@ class SbxSandboxBackend:
         except (SbxError, TimeoutError, ValueError):
             return
         if row is not None and row.get("workspaces") == [str(workspace)]:
-            await self._discard(name)
+            await self._discard(name, workspace)
         else:
             await asyncio.to_thread(_remove_if_empty, workspace, workspace.parent)
 
@@ -933,8 +933,8 @@ class SbxSandboxBackend:
                 f"{probe.stderr.strip()}"
             )
 
-    async def _discard(self, name: str) -> None:
-        failure = await _to_the_end(self._remove(name, None))
+    async def _discard(self, name: str, workspace: Path) -> None:
+        failure = await _to_the_end(self._remove(name, None, workspace.name))
         if failure is not None:
             logger.warning(
                 "docker-sbx: could not remove %s after a failed acquire: %s", name, failure
@@ -942,17 +942,32 @@ class SbxSandboxBackend:
 
     # --- disposal -----------------------------------------------------------------------
 
-    async def _remove(self, name: str, instance_id: str | None) -> DisposalFailure | None:
-        """Delete one sandbox and its workspace; absence is success."""
+    async def _remove(
+        self, name: str, instance_id: str | None, generation: str | None = None
+    ) -> DisposalFailure | None:
+        """Delete one sandbox, then what it left on the host; absence is success.
+
+        `sbx rm` frees the name for every process, and a replacement makes its own generation in
+        the same directory.  So only what was there before the removal is deleted: the instance's
+        generation, the one ``generation`` names, or else everything the directory held.
+        """
+        directory = self._directory(name)
         if instance_id is not None:
             try:
                 row = (await self._listing()).get(name)
             except (SbxError, TimeoutError, ValueError) as error:
                 return DisposalFailure("unlisted", str(error))
-            if row is None and await asyncio.to_thread(self._directory(name).exists):
+            if row is None and await asyncio.to_thread(directory.exists):
                 return await self._remove_unlisted(name, instance_id)
             if row is None or row.get("id") != instance_id:
                 return None
+            generation = _generation_of(directory, row)
+        if generation is not None:
+            held = {generation}
+        elif instance_id is None:
+            held = await asyncio.to_thread(_entries, directory)
+        else:
+            held = set[str]()
         try:
             removed = await self._sbx("rm", "--force", name)
         except TimeoutError:
@@ -962,7 +977,7 @@ class SbxSandboxBackend:
             code = "unreachable" if isinstance(error, SbxDaemonFault) else "refused"
             return DisposalFailure(code, str(error))
         try:
-            await asyncio.to_thread(_delete_tree, self._directory(name))
+            await asyncio.to_thread(_clear, directory, held)
         except OSError as error:
             return DisposalFailure("unknown", f"removing {name}'s workspace: {error}")
         return None
@@ -980,10 +995,12 @@ class SbxSandboxBackend:
             return DisposalFailure("unreachable", str(error))
         except SbxError as error:
             return DisposalFailure("unknown", str(error))
-        if (self._read_meta(name) or {}).get("instance_id") != instance_id:
+        meta = self._read_meta(name) or {}
+        generation = meta.get("workspace")
+        if meta.get("instance_id") != instance_id or not isinstance(generation, str):
             return None
         try:
-            await asyncio.to_thread(_delete_tree, self._directory(name))
+            await asyncio.to_thread(_clear, self._directory(name), {generation})
         except OSError as error:
             return DisposalFailure("unknown", f"removing {name}'s workspace: {error}")
         return None
@@ -1073,9 +1090,58 @@ def _write_record(path: Path, meta: dict[str, object]) -> None:
     os.replace(part, path)
 
 
-def _delete_tree(directory: Path) -> None:
-    if directory.exists() or directory.is_symlink():
-        shutil.rmtree(directory)
+def _generation_of(directory: Path, row: dict[str, object]) -> str | None:
+    """The workspace generation a listed sandbox mounts, if it is one of ``directory``'s."""
+    workspaces = row.get("workspaces")
+    if not isinstance(workspaces, list):
+        return None
+    listed = cast("list[object]", workspaces)
+    if len(listed) != 1 or not isinstance(listed[0], str):
+        return None
+    path = Path(listed[0])
+    if path.parent != directory or not path.name.startswith(_WORKSPACE_PREFIX):
+        return None
+    return path.name
+
+
+def _entries(directory: Path) -> set[str]:
+    try:
+        return {entry.name for entry in directory.iterdir()}
+    except FileNotFoundError:
+        return set()
+
+
+def _clear(directory: Path, held: set[str]) -> None:
+    """Delete ``held`` from a name's directory, then the directory if nothing else is in it."""
+    for name in held - {_META}:
+        if name in ("", ".", "..") or Path(name).name != name:
+            continue
+        path = directory / name
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    _drop_record(directory, held)
+    _remove_if_empty(directory)
+
+
+def _drop_record(directory: Path, held: set[str]) -> None:
+    """Remove the name's record unless it describes a generation outside ``held``."""
+    record = directory / _META
+    detached = directory / f".{_META}.{secrets.token_hex(8)}.drop"
+    try:
+        os.replace(record, detached)
+    except FileNotFoundError:
+        return
+    try:
+        workspace = json.loads(detached.read_text("utf-8")).get("workspace")
+    except (ValueError, AttributeError):
+        workspace = None
+    if isinstance(workspace, str) and workspace not in held:
+        # A replacement's: put it back, unless it has already written a newer one.
+        with contextlib.suppress(FileExistsError):
+            os.link(detached, record)
+    detached.unlink()
 
 
 def _directories_named(root: Path, prefix: str) -> set[str]:

@@ -40,7 +40,7 @@ The image needs `sh`, `base64`, `setsid`, `mount`, `mkdir`, `cat`, `rm` and `sle
 
 ## Ownership and disposal
 
-`sbx` has no labels. A sandbox's name is a prefix plus digests of the conversation, the whole key and the kind, and its workspace directory has the same name. Disposal runs `sbx rm --force` on every matching name from the listing and from the workspace directories. When the daemon loses its engine, it lists no sandboxes, and the directories are what still find them. A daemon reporting "backend unavailable" raises `SbxDaemonFault`, and a disposal reports it as `unreachable`.
+`sbx` has no labels. A sandbox's name is a prefix plus digests of the conversation, the whole key and the kind, and its workspace directory has the same name. Disposal runs `sbx rm --force` on every matching name from the listing and from the workspace directories. Each create makes its own workspace inside the name's directory, and the removal frees the name for any process. So a disposal then deletes only what the directory held before the removal: the removed instance's workspace, or for a purge by name, everything there was. It deletes the directory itself only once it is empty, so a replacement another process creates after the removal stays intact. When the daemon loses its engine, it lists no sandboxes, and the directories are what still find them. A daemon reporting "backend unavailable" raises `SbxDaemonFault`, and a disposal reports it as `unreachable`.
 
 ## Unsupported operations
 
