@@ -71,11 +71,18 @@ class FakeSbx:
         self.mount_exit = 0
         self.unmounted_once = False
         self.unlisted: set[str] = set()
+        self.lost_engine = False
         backend._sbx = self  # type: ignore[method-assign]
 
     async def __call__(self, *args: str, timeout: float | None = None) -> _Result:
         self.calls.append(args)
         self.timeouts.append(timeout)
+        if self.lost_engine and args[0] not in ("settings", "mcp"):
+            # What a daemon that has lost its engine measured: an empty listing, and every
+            # sandbox command refused.
+            if args[:2] == ("ls", "--json"):
+                return _ok(json.dumps({"sandboxes": []}).encode())
+            return _Result(1, b"", b"error: 500 Internal Server Error: backend unavailable\n")
         match args:
             case ("settings", "get", "ssh.agentForwardingEnabled"):
                 return _ok(self.forwarding)
@@ -97,6 +104,10 @@ class FakeSbx:
                 if self.sandboxes.pop(name, None) is None:
                     return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
                 return _ok()
+            case ("exec", name, "sh", "-c", ":"):
+                if name in self.sandboxes:
+                    return _ok()
+                return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
             case ("exec", _name, "sh", "-c", "pwd -P"):
                 return _ok(f"{GUEST_MOUNT}\n".encode())
             case ("exec", "-u", "root", _name, "sh", "-c", script, *_rest) if (
@@ -508,8 +519,66 @@ class TestCleanupSurvivesCancellation:
         assert killed == [True]
 
 
+class TestAnUnlistedSandbox:
+    def test_a_lost_engine_neither_recreates_nor_deletes_the_workspace(
+        self, backend, sbx, tmp_path
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        creates = sum(call[0] == "create" for call in sbx.calls)
+        sbx.lost_engine = True
+        with pytest.raises(SbxDaemonFault):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sum(call[0] == "create" for call in sbx.calls) == creates
+        directory = tmp_path / "root" / sandbox.name
+        assert (directory / "meta.json").is_file() and (directory / "ws" / _MARKER).is_file()
+
+    def test_one_that_answers_is_a_daemon_fault_and_is_kept(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        creates = sum(call[0] == "create" for call in sbx.calls)
+        sbx.unlisted.add(sandbox.name)
+        with pytest.raises(SbxDaemonFault, match="answers"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert sum(call[0] == "create" for call in sbx.calls) == creates
+        assert sandbox.name in sbx.sandboxes
+
+    def test_one_removed_by_hand_is_created_again(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        del sbx.sandboxes[sandbox.name]
+        again = asyncio.run(backend.acquire(KEY, _spec()))
+        assert again.name in sbx.sandboxes
+        assert sum(call[0] == "create" for call in sbx.calls) == 2
+
+
+class TestTheRecord:
+    def test_it_is_written_only_once_setup_is_done(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+        seen: list[bool] = []
+
+        async def watching(*args: str, timeout: float | None = None) -> _Result:
+            if _MOUNT_SCRIPT in args:
+                seen.append((tmp_path / "root" / args[3] / "meta.json").exists())
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = watching  # type: ignore[method-assign]
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        assert seen == [False]
+        record = json.loads((tmp_path / "root" / sandbox.name / "meta.json").read_text())
+        assert record["instance_id"] == sandbox.instance_id
+
+    def test_a_record_for_another_instance_is_not_adopted(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        record = tmp_path / "root" / sandbox.name / "meta.json"
+        meta = json.loads(record.read_text())
+        meta["instance_id"] = "id-of-an-earlier-sandbox"
+        record.write_text(json.dumps(meta))
+        with pytest.raises(SbxError, match="another instance"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
+
 class TestCreateRace:
-    def _race(self, backend, sbx, tmp_path, *, winner_is_up: bool) -> None:
+    def _race(
+        self, backend, sbx, tmp_path, *, winner_is_up: bool, recorded_id: str | None = None
+    ) -> None:
         real = sbx.__call__
         name = sandbox_name("maf", KEY, "kind")
 
@@ -520,6 +589,7 @@ class TestCreateRace:
                     meta = {"work_dir": "/maf-sandbox/work", "image": None, "kind": "kind"}
                     meta["key"] = [KEY.scope, KEY.thread_id, KEY.agent_id, KEY.call_id]
                     meta["guest_mount"] = GUEST_MOUNT
+                    meta["instance_id"] = recorded_id or f"id-{name}"
                     (tmp_path / "root" / name / "meta.json").write_text(json.dumps(meta))
                 return _Result(1, b"", f"error: sandbox '{name}' already exists\n".encode())
             return await real(*args, timeout=timeout)
@@ -572,6 +642,13 @@ class TestCreateRace:
 
         backend._sbx = interrupted  # type: ignore[method-assign]
         with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert len(sbx.sandboxes) == 1
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
+    def test_a_stale_record_does_not_make_a_winner_adoptable(self, backend, sbx, tmp_path):
+        self._race(backend, sbx, tmp_path, winner_is_up=True, recorded_id="id-earlier")
+        with pytest.raises(SbxError, match="another process"):
             asyncio.run(backend.acquire(KEY, _spec()))
         assert len(sbx.sandboxes) == 1
         assert not any(call[0] == "rm" for call in sbx.calls)

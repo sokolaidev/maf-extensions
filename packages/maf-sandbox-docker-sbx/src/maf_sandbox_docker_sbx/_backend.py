@@ -634,6 +634,8 @@ class SbxSandboxBackend:
         await self.check_host()
         async with self._locked(name):
             row = (await self._listing()).get(name)
+            if row is None and self._read_meta(name) is not None:
+                await self._confirm_absent(name)
             if row is None:
                 sandbox, created = await self._create(name, key, spec, base)
             else:
@@ -666,6 +668,11 @@ class SbxSandboxBackend:
             raise SbxError(
                 f"sandbox {name} exists but its workspace is not {workspace}; it was created "
                 "with a different workspace_root. Dispose it or use the same root."
+            )
+        if meta.get("instance_id") != row.get("id"):
+            raise SbxError(
+                f"sandbox {name}'s record describes another instance; its create did not "
+                "finish, or it was replaced outside this backend. Dispose it."
             )
         if meta.get("key") != _key_record(key) or meta.get("kind") != spec.kind:
             raise SbxError(
@@ -702,7 +709,7 @@ class SbxSandboxBackend:
         workspace = directory / _WORKSPACE
         root = self._config.resolved_workspace_root
         await asyncio.to_thread(_make_private, root, directory, workspace)
-        meta = {
+        meta: dict[str, object] = {
             "version": _META_VERSION,
             "key": _key_record(key),
             "kind": spec.kind,
@@ -739,8 +746,9 @@ class SbxSandboxBackend:
         if created.returncode != 0:
             if _ALREADY_EXISTS in created.stderr_text:
                 return await self._adopt_the_winner(key, name, spec, base), False
-            await self._abandon_workspace(name)
-            raise _failure(f"sbx create {name}", created)
+            refusal = _failure(f"sbx create {name}", created)
+            await self._abandon_workspace(directory, refusal)
+            raise refusal
         try:
             # The create proved nothing held this name, so anything in the workspace is stale.
             await asyncio.to_thread(_empty, workspace)
@@ -751,25 +759,46 @@ class SbxSandboxBackend:
             if not guest_mount.startswith("/") or "\n" in guest_mount:
                 raise SbxError(f"the guest reported {guest_mount!r} as its workspace mount")
             meta["guest_mount"] = guest_mount
-            await asyncio.to_thread((directory / _META).write_text, json.dumps(meta), "utf-8")
             sandbox = self._sandbox(name, {"id": _SETTING_UP}, base, guest_mount)
             await self._bind_workspace(name, sandbox.mount, create=True)
             await self._prove_the_mount(sandbox)
             row = (await self._listing()).get(name) or {}
             served = self._sandbox(name, row, base, guest_mount)
+            # Last, so a record another process can read means the sandbox is ready to serve.
+            meta["instance_id"] = served.instance_id
+            await asyncio.to_thread(_write_record, directory / _META, meta)
         except BaseException:
             await self._discard(name)
             raise
         return served, True
 
-    async def _abandon_workspace(self, name: str) -> None:
-        """Remove the directory a refused create made, unless the name has a sandbox after all."""
+    async def _confirm_absent(self, name: str) -> None:
+        """Ask a sandbox the listing omits whether it is there, since a lost engine lists none."""
+        answered = await self._sbx("exec", name, "sh", "-c", ":")
+        if answered.returncode == 0:
+            raise SbxDaemonFault(
+                f"sandbox {name} answers although `sbx ls` does not list it; the daemon may have "
+                "lost its engine. Run `sbx daemon restart`."
+            )
+        if _NOT_FOUND not in answered.stderr_text:
+            raise _failure(f"checking whether sandbox {name} is there", answered)
+
+    async def _abandon_workspace(self, directory: Path, refusal: SbxError) -> None:
+        """Remove the empty directories a refused create made; never content, never on a fault.
+
+        A listed name keeps them: another process's sandbox mounts that workspace, and is empty
+        between its create and its bind.
+        """
+        if isinstance(refusal, SbxDaemonFault):
+            return
         try:
-            listed = name in await self._listing()
+            if directory.name in await self._listing():
+                return
         except (SbxError, TimeoutError, ValueError):
             return
-        if not listed:
-            await asyncio.to_thread(_delete_tree, self._directory(name))
+        for path in (directory / _WORKSPACE, directory):
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(path.rmdir)
 
     async def _adopt_the_winner(
         self, key: SandboxKey, name: str, spec: SandboxSpec, base: str
@@ -781,7 +810,8 @@ class SbxSandboxBackend:
                 f"sandbox {name} already exists although `sbx ls` does not list it; the daemon "
                 "may have lost its engine. Run `sbx daemon restart`."
             )
-        if self._read_meta(name) is None:
+        meta = self._read_meta(name)
+        if meta is None or meta.get("instance_id") != row.get("id"):
             raise SbxError(
                 f"sandbox {name} is being created by another process; acquire again once it is up"
             )
@@ -909,6 +939,12 @@ def _empty(workspace: Path) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+def _write_record(path: Path, meta: dict[str, object]) -> None:
+    part = path.with_name(f".{path.name}.{secrets.token_hex(8)}.part")
+    part.write_text(json.dumps(meta), "utf-8")
+    os.replace(part, path)
 
 
 def _delete_tree(directory: Path) -> None:
