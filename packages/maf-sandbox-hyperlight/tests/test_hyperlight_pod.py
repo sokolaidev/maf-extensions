@@ -259,7 +259,7 @@ _pod_supervisor.main()
     )
 
 
-def test_ready_event_carries_the_observed_platform(monkeypatch):
+def test_ready_event_carries_the_observed_platform():
     observed = {"kernel": "6.8.0-1067-azure", "memory.swap.max": "0"}
     payload = frame(
         {"event": "ready", "pod_uid": "pod-uid", "generation": "generation", "platform": observed}
@@ -268,32 +268,32 @@ def test_ready_event_carries_the_observed_platform(monkeypatch):
     # An open pipe keeps the transport alive until the session deadline.
     source, sink = os.pipe()
     os.write(sink, payload)
-    stream = SimpleNamespace(
-        stdout=open(source, "rb"),
-        stderr=io.BytesIO(),
-        stdin=io.BytesIO(),
-        poll=lambda: 0 if stopped.is_set() else None,
-    )
     platform: dict[str, str] = {}
     readers = []
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
-    try:
-        controller._supervise(
-            stream,
-            "pod-uid",
-            "generation",
-            IDENTITY,
-            time.monotonic() + 0.5,
-            bytearray(),
-            platform,
-            readers,
+    with open(source, "rb") as control:
+        stream = SimpleNamespace(
+            stdout=control,
+            stderr=io.BytesIO(),
+            stdin=io.BytesIO(),
+            poll=lambda: 0 if stopped.is_set() else None,
         )
-    finally:
-        stopped.set()
-        os.close(sink)
-        for reader in readers:
-            reader.join(timeout=2)
-        stream.stdout.close()
+        try:
+            controller._supervise(
+                stream,
+                "pod-uid",
+                "generation",
+                IDENTITY,
+                time.monotonic() + 0.5,
+                bytearray(),
+                platform,
+                readers,
+            )
+        finally:
+            stopped.set()
+            os.close(sink)
+            for reader in readers:
+                reader.join(timeout=2)
     assert platform == observed
 
 
