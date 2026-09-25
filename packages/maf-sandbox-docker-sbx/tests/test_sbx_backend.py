@@ -53,6 +53,11 @@ def _ok(stdout: bytes = b"", stderr: bytes = b"") -> _Result:
     return _Result(0, stdout, stderr)
 
 
+def _workspace_of(tmp_path: Path, name: str) -> Path:
+    record = json.loads((tmp_path / "root" / name / "meta.json").read_text())
+    return tmp_path / "root" / name / record["workspace"]
+
+
 def _decode(argument: str) -> str:
     return base64.b64decode(argument[1:]).decode()
 
@@ -185,6 +190,14 @@ class TestDeclarations:
             }
         )
 
+    def test_a_relative_workspace_root_is_fixed_at_construction(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = SbxSandboxConfig(workspace_root=Path("relative"))
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        assert config.resolved_workspace_root == tmp_path / "relative"
+
     @pytest.mark.parametrize(
         "overrides",
         [
@@ -241,7 +254,8 @@ class TestAcquire:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         name = sandbox_name("maf", KEY, "kind")
         create = next(call for call in sbx.calls if call[0] == "create")
-        workspace = tmp_path / "root" / name / "ws"
+        workspace = _workspace_of(tmp_path, name)
+        assert workspace.name.startswith("ws-")
         assert create == (
             "create",
             "shell",
@@ -417,7 +431,7 @@ class TestRemoval:
     def test_reclaim_refuses_a_case_variant_on_a_folding_host(self, backend, sbx, tmp_path):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         asyncio.run(sandbox.write_file("Upper/f", b"x", working_directory="."))
-        work = tmp_path / "root" / sandbox.name / "ws" / "work"
+        work = _workspace_of(tmp_path, sandbox.name) / "work"
         if not (work / "upper").exists():
             pytest.skip("this host filesystem is case-sensitive")
         before = len(sbx.calls)
@@ -487,6 +501,28 @@ class TestCancellation:
             asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=30))
         assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
 
+    def test_a_stopped_create_leaves_a_sandbox_mounting_another_workspace(
+        self, backend, sbx, tmp_path
+    ):
+        real = sbx.__call__
+        name = sandbox_name("maf", KEY, "kind")
+
+        async def raced(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                # Another process's create won the name and is still setting up: no record yet.
+                other = tmp_path / "root" / name / "ws-other"
+                other.mkdir(parents=True, exist_ok=True)
+                sbx.sandboxes[name] = str(other)
+                raise asyncio.CancelledError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = raced  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert name in sbx.sandboxes
+        assert not any(call[0] == "rm" for call in sbx.calls)
+        assert (tmp_path / "root" / name / "ws-other").is_dir()
+
     def test_a_create_stopped_part_way_is_removed(self, backend, sbx, tmp_path):
         real = sbx.__call__
 
@@ -522,7 +558,7 @@ class TestGuestControlledSignals:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         victim = tmp_path / "victim"
         victim.write_text("host file")
-        marker = tmp_path / "root" / sandbox.name / "ws" / _MARKER
+        marker = _workspace_of(tmp_path, sandbox.name) / _MARKER
         marker.unlink()
         try:
             marker.symlink_to(victim)
@@ -639,8 +675,8 @@ class TestAnUnlistedSandbox:
         with pytest.raises(SbxDaemonFault):
             asyncio.run(backend.acquire(KEY, _spec()))
         assert sum(call[0] == "create" for call in sbx.calls) == creates
-        directory = tmp_path / "root" / sandbox.name
-        assert (directory / "meta.json").is_file() and (directory / "ws" / _MARKER).is_file()
+        assert (tmp_path / "root" / sandbox.name / "meta.json").is_file()
+        assert (_workspace_of(tmp_path, sandbox.name) / _MARKER).is_file()
 
     def test_one_that_answers_is_a_daemon_fault_and_is_kept(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
@@ -669,22 +705,24 @@ class TestTheRunningDaemonsForwarding:
 
 
 class TestARecreatedSandbox:
-    def test_its_stale_workspace_is_empty_before_the_new_vm_mounts_it(self, backend, sbx, tmp_path):
+    def test_it_mounts_a_fresh_workspace_never_the_earlier_ones(self, backend, sbx, tmp_path):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         asyncio.run(sandbox.write_file("stale.txt", b"earlier data", working_directory="."))
+        earlier = _workspace_of(tmp_path, sandbox.name)
         del sbx.sandboxes[sandbox.name]  # removed outside the backend; workspace and record stay
-        workspace = tmp_path / "root" / sandbox.name / "ws"
         real = sbx.__call__
-        seen: list[list[str]] = []
+        mounted: list[Path] = []
 
         async def watching(*args: str, timeout: float | None = None) -> _Result:
             if args[0] == "create":
-                seen.append(sorted(path.name for path in workspace.rglob("*")))
+                mounted.append(Path(args[-1]))
+                assert list(Path(args[-1]).iterdir()) == []
             return await real(*args, timeout=timeout)
 
         backend._sbx = watching  # type: ignore[method-assign]
         asyncio.run(backend.acquire(KEY, _spec()))
-        assert seen == [[]]
+        assert mounted and mounted[0] != earlier
+        assert _workspace_of(tmp_path, sandbox.name) == mounted[0]
 
 
 class TestAnInterruptedRecreate:
@@ -758,12 +796,16 @@ class TestCreateRace:
 
         async def lost(*args: str, timeout: float | None = None) -> _Result:
             if args[0] == "create":
-                sbx.sandboxes[name] = args[-1]
+                # The winner mounts a workspace of its own, as every create does.
+                winner = tmp_path / "root" / name / "ws-winner"
+                winner.mkdir(parents=True, exist_ok=True)
+                sbx.sandboxes[name] = str(winner)
                 if winner_is_up:
                     meta = {"work_dir": "/maf-sandbox/work", "image": None, "kind": "kind"}
                     meta["key"] = [KEY.scope, KEY.thread_id, KEY.agent_id, KEY.call_id]
                     meta["guest_mount"] = GUEST_MOUNT
                     meta["instance_id"] = recorded_id or f"id-{name}"
+                    meta["workspace"] = winner.name
                     (tmp_path / "root" / name / "meta.json").write_text(json.dumps(meta))
                 return _Result(1, b"", f"error: sandbox '{name}' already exists\n".encode())
             return await real(*args, timeout=timeout)
@@ -779,8 +821,8 @@ class TestCreateRace:
 
     def test_a_failure_after_adopting_the_winner_leaves_its_sandbox(self, backend, sbx, tmp_path):
         self._race(backend, sbx, tmp_path, winner_is_up=True)
-        blocked = tmp_path / "root" / sandbox_name("maf", KEY, "kind") / "ws" / "work"
-        blocked.parent.mkdir(parents=True)
+        blocked = tmp_path / "root" / sandbox_name("maf", KEY, "kind") / "ws-winner" / "work"
+        blocked.parent.mkdir(parents=True, exist_ok=True)
         blocked.write_text("a file where the base should be")
         with pytest.raises(NotADirectoryError):
             asyncio.run(backend.acquire(KEY, _spec()))
@@ -793,7 +835,10 @@ class TestCreateRace:
 
         async def refused(*args: str, timeout: float | None = None) -> _Result:
             if args[0] == "create":
-                sbx.sandboxes[name] = args[-1]  # another process's create landed meanwhile
+                # Another process's create landed meanwhile, on a workspace of its own.
+                other = tmp_path / "root" / name / "ws-other"
+                other.mkdir(parents=True, exist_ok=True)
+                sbx.sandboxes[name] = str(other)
                 return _Result(1, b"", b"error: 500 transient failure\n")
             return await real(*args, timeout=timeout)
 
@@ -801,7 +846,7 @@ class TestCreateRace:
         with pytest.raises(SbxError, match="transient"):
             asyncio.run(backend.acquire(KEY, _spec()))
         assert name in sbx.sandboxes
-        assert (tmp_path / "root" / name).is_dir()
+        assert (tmp_path / "root" / name / "ws-other").is_dir()
         assert not any(call[0] == "rm" for call in sbx.calls)
 
     def test_an_interrupted_create_keeps_a_finished_winner(self, backend, sbx, tmp_path):

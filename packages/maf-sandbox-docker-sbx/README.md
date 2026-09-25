@@ -43,7 +43,7 @@ sbx settings set ssh.agentForwardingEnabled false
 sbx daemon restart
 ```
 
-The backend checks two host-wide settings at every acquire and refuses with `SbxHostNotConfined` when either fails. It reads them and never writes them.
+The backend checks two host-wide settings at every acquire and refuses with `SbxHostNotConfined` when either fails. It reads them and never writes them. Because the SSH setting takes effect only after `sbx daemon restart`, each new sandbox is also checked for the forwarded agent socket before any workload runs. That check runs in the template's own `sh`, so it catches a daemon that was not restarted, not a template that lies: use templates you trust.
 
 - **SSH agent forwarding must be off.** It is on by default, and it gives every sandbox a socket to the host's SSH agent.
 - **No MCP server may be registered** (`sbx mcp ls`). The host's MCP gateway answers a sandbox even under a deny-all rule.
@@ -69,7 +69,7 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 
 ## Files: a workspace answered by the host
 
-Each sandbox mounts one fresh, private host directory, `<workspace_root>/<sandbox name>/ws`, and nothing else. At create, the backend binds that mount again at the storage base's parent, as root. With the default storage base `/maf-sandbox/work`, that parent is `/maf-sandbox`. An idle stop drops the bind, and the next command binds it again before it runs.
+Each sandbox mounts one fresh, private host directory, `<workspace_root>/<sandbox name>/ws-<random>`, and nothing else. Every create gets a new one, so a new sandbox never mounts an earlier one's files, and `sbx ls` tells which create made a sandbox. At create, the backend binds that mount again at the storage base's parent, as root. With the default storage base `/maf-sandbox/work`, that parent is `/maf-sandbox`. An idle stop drops the bind, and the next command binds it again before it runs.
 
 Stats, reads, listings and writes act on the host side of the mount. No path check is answered inside the guest.
 

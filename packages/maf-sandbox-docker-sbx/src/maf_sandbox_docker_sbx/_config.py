@@ -78,6 +78,9 @@ class SbxSandboxConfig:
                 or value <= 0
             ):
                 raise ValueError(f"{name} must be a finite positive number of seconds")
+        if self.workspace_root is not None:
+            # Fixed now, so a later change of working directory cannot move it.
+            object.__setattr__(self, "workspace_root", Path(self.workspace_root).absolute())
 
     @property
     def resolved_workspace_root(self) -> Path:

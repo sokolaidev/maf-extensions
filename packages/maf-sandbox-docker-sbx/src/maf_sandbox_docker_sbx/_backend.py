@@ -88,7 +88,9 @@ _CAPABILITIES = frozenset(
     }
 )
 _DEFAULT_BASE = "/maf-sandbox/work"
-_WORKSPACE = "ws"
+#: Every create mounts a fresh directory of its own, so `sbx ls` names whose create made a
+#: sandbox and no VM ever mounts an earlier one's files.
+_WORKSPACE_PREFIX = "ws-"
 _META = "meta.json"
 _META_VERSION = 1
 _PROBE_PREFIX = ".maf-sbx-probe-"
@@ -659,8 +661,15 @@ class SbxSandboxBackend:
     def _directory(self, name: str) -> Path:
         return self._config.resolved_workspace_root / name
 
-    def _plane(self, name: str, base: str) -> WorkspacePlane:
-        return WorkspacePlane(self._directory(name) / _WORKSPACE, posixpath.dirname(base))
+    def _recorded_workspace(self, name: str, meta: dict[str, object]) -> Path:
+        workspace = meta.get("workspace")
+        if (
+            not isinstance(workspace, str)
+            or not workspace.startswith(_WORKSPACE_PREFIX)
+            or Path(workspace).name != workspace
+        ):
+            raise SbxError(f"sandbox {name}'s record names no workspace. Dispose it.")
+        return self._directory(name) / workspace
 
     def _read_meta(self, name: str) -> dict[str, object] | None:
         try:
@@ -690,8 +699,6 @@ class SbxSandboxBackend:
             row = (await self._listing()).get(name)
             if row is None and self._read_meta(name) is not None:
                 await self._confirm_absent(name)
-                # Proven gone, so nothing mounts its workspace; empty it before a new VM does.
-                await asyncio.to_thread(_empty, self._directory(name) / _WORKSPACE)
             if row is None:
                 sandbox, created = await self._create(name, key, spec, base)
             else:
@@ -714,13 +721,13 @@ class SbxSandboxBackend:
         self, key: SandboxKey, name: str, row: dict[str, object], spec: SandboxSpec, base: str
     ) -> _SbxSandbox:
         meta = self._read_meta(name)
-        workspace = str(self._directory(name) / _WORKSPACE)
         if meta is None:
             raise SbxError(
                 f"sandbox {name} has no record in {self._directory(name)}; it was created by "
                 "another backend or its create was interrupted. Dispose it."
             )
-        if row.get("workspaces") != [workspace]:
+        workspace = self._recorded_workspace(name, meta)
+        if row.get("workspaces") != [str(workspace)]:
             raise SbxError(
                 f"sandbox {name} exists but its workspace is not {workspace}; it was created "
                 "with a different workspace_root. Dispose it or use the same root."
@@ -748,10 +755,10 @@ class SbxSandboxBackend:
         guest_mount = meta.get("guest_mount")
         if not isinstance(guest_mount, str):
             raise SbxError(f"sandbox {name}'s record does not say where its workspace is mounted")
-        return self._sandbox(name, row, base, guest_mount)
+        return self._sandbox(name, row, base, guest_mount, workspace)
 
     def _sandbox(
-        self, name: str, row: dict[str, object], base: str, guest_mount: str
+        self, name: str, row: dict[str, object], base: str, guest_mount: str, workspace: Path
     ) -> _SbxSandbox:
         instance_id = row.get("id")
         if not isinstance(instance_id, str) or not instance_id:
@@ -759,15 +766,16 @@ class SbxSandboxBackend:
                 f"`sbx ls` gives sandbox {name} no id, so it could not be disposed exactly; the "
                 "daemon may have lost its engine. Run `sbx daemon restart`."
             )
-        mount = _Mount(guest_mount, posixpath.dirname(base), self._directory(name) / _WORKSPACE)
-        return _SbxSandbox(self, name, instance_id, base, self._plane(name, base), mount)
+        mount = _Mount(guest_mount, posixpath.dirname(base), workspace)
+        plane = WorkspacePlane(workspace, posixpath.dirname(base))
+        return _SbxSandbox(self, name, instance_id, base, plane, mount)
 
     async def _create(
         self, name: str, key: SandboxKey, spec: SandboxSpec, base: str
     ) -> tuple[_SbxSandbox, bool]:
         """The sandbox, and whether this call created it rather than adopting a winner's."""
         directory = self._directory(name)
-        workspace = directory / _WORKSPACE
+        workspace = directory / f"{_WORKSPACE_PREFIX}{secrets.token_hex(6)}"
         root = self._config.resolved_workspace_root
         await asyncio.to_thread(_make_private, root, directory, workspace)
         meta: dict[str, object] = {
@@ -777,6 +785,7 @@ class SbxSandboxBackend:
             "work_dir": base,
             "image": spec.image,
             "image_id": spec.image_id,
+            "workspace": workspace.name,
         }
         args = [
             "create",
@@ -801,20 +810,15 @@ class SbxSandboxBackend:
                 *args, str(workspace), timeout=self._config.create_timeout_seconds
             )
         except BaseException:
-            # The daemon may finish a create whose client was stopped. Only a record naming the
-            # listed instance means another process finished it; an older one is stale.
-            if not await self._finished_by_another(name):
-                await self._discard(name)
+            # The daemon may finish a create whose client was stopped.
+            await self._abandon_create(name, workspace)
             raise
         if created.returncode != 0:
+            await asyncio.to_thread(_remove_if_empty, workspace, directory)
             if _ALREADY_EXISTS in created.stderr_text:
                 return await self._adopt_the_winner(key, name, spec, base), False
-            refusal = _failure(f"sbx create {name}", created)
-            await self._abandon_workspace(directory, refusal)
-            raise refusal
+            raise _failure(f"sbx create {name}", created)
         try:
-            # The create proved nothing held this name, so anything in the workspace is stale.
-            await asyncio.to_thread(_empty, workspace)
             mounted = await self._run_setup(
                 "reading the workspace mount", "exec", name, "sh", "-c", "pwd -P"
             )
@@ -822,12 +826,12 @@ class SbxSandboxBackend:
             if not guest_mount.startswith("/") or "\n" in guest_mount:
                 raise SbxError(f"the guest reported {guest_mount!r} as its workspace mount")
             meta["guest_mount"] = guest_mount
-            sandbox = self._sandbox(name, {"id": _SETTING_UP}, base, guest_mount)
+            sandbox = self._sandbox(name, {"id": _SETTING_UP}, base, guest_mount, workspace)
             await self._bind_workspace(name, sandbox.mount, create=True)
             await self._prove_the_mount(sandbox)
             await self.check_sandbox(name)
             row = (await self._listing()).get(name) or {}
-            served = self._sandbox(name, row, base, guest_mount)
+            served = self._sandbox(name, row, base, guest_mount, workspace)
             # Last, so a record another process can read means the sandbox is ready to serve.
             meta["instance_id"] = served.instance_id
             await asyncio.to_thread(_write_record, directory / _META, meta)
@@ -836,13 +840,16 @@ class SbxSandboxBackend:
             raise
         return served, True
 
-    async def _finished_by_another(self, name: str) -> bool:
+    async def _abandon_create(self, name: str, workspace: Path) -> None:
+        """Remove a stopped create's sandbox only if `sbx ls` shows it mounting our workspace."""
         try:
             row = (await self._listing()).get(name)
         except (SbxError, TimeoutError, ValueError):
-            return False
-        meta = self._read_meta(name)
-        return row is not None and meta is not None and meta.get("instance_id") == row.get("id")
+            return
+        if row is not None and row.get("workspaces") == [str(workspace)]:
+            await self._discard(name)
+        else:
+            await asyncio.to_thread(_remove_if_empty, workspace, workspace.parent)
 
     async def check_sandbox(self, name: str) -> None:
         """Refuse a new sandbox the running daemon gave the host's SSH agent.
@@ -871,23 +878,6 @@ class SbxSandboxBackend:
             )
         if _NOT_FOUND not in answered.stderr_text:
             raise _failure(f"checking whether sandbox {name} is there", answered)
-
-    async def _abandon_workspace(self, directory: Path, refusal: SbxError) -> None:
-        """Remove the empty directories a refused create made; never content, never on a fault.
-
-        A listed name keeps them: another process's sandbox mounts that workspace, and is empty
-        between its create and its bind.
-        """
-        if isinstance(refusal, SbxDaemonFault):
-            return
-        try:
-            if directory.name in await self._listing():
-                return
-        except (SbxError, TimeoutError, ValueError):
-            return
-        for path in (directory / _WORKSPACE, directory):
-            with contextlib.suppress(OSError):
-                await asyncio.to_thread(path.rmdir)
 
     async def _adopt_the_winner(
         self, key: SandboxKey, name: str, spec: SandboxSpec, base: str
@@ -1023,14 +1013,10 @@ def _make_private(root: Path, directory: Path, workspace: Path) -> None:
         os.chmod(root, 0o700)
 
 
-def _empty(workspace: Path) -> None:
-    if not workspace.is_dir():
-        return
-    for child in workspace.iterdir():
-        if child.is_dir() and not child.is_symlink() and not child.is_junction():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+def _remove_if_empty(*directories: Path) -> None:
+    for directory in directories:
+        with contextlib.suppress(OSError):
+            directory.rmdir()
 
 
 def _write_record(path: Path, meta: dict[str, object]) -> None:
