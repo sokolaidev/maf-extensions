@@ -48,7 +48,7 @@ The sink declares `per_call=True`, so collection requires a call ID before readi
 
 Pass the store's `FileStoreProvenance` record to the sink. It records the output as untrusted before writing. A failed write keeps that conservative record.
 
-Use `sandbox_outputs_read_tools` to expose named listing and reading tools for the output store. It creates no write tool. The host must classify these tools before use; withholding direct guest output does not prevent an explicit read tool from returning the same bytes.
+Use `sandbox_outputs_read_tools` to expose named listing and reading tools for the output store. It creates no write tool. Both tools refuse a path the sink could not have landed, such as an absolute path, a `..` segment or a backslash, before the store sees it. The host must classify these tools before use; withholding direct guest output does not prevent an explicit read tool from returning the same bytes.
 
 ## Outbound confidentiality
 

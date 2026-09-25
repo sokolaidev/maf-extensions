@@ -24,6 +24,7 @@ import pytest
 
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
+    MAX_ARTIFACT_NAME_BYTES,
     Artifact,
     BackendDeclarations,
     CallerContext,
@@ -6426,6 +6427,90 @@ class TestSandboxOutputsReadTools:
         assert "the store is down" in caplog.text
         assert "the store is down" not in listed + got
 
+    def test_a_store_that_does_not_normalise_is_not_read_outside_its_root(self, tmp_path):
+        """The store this module cannot inspect: one that joins whatever it is handed onto its
+        root, so `..` reaches a file the sink never landed."""
+
+        @dataclasses.dataclass
+        class _Entry:
+            name: str
+            type: str
+
+        class _NaiveStore:
+            def __init__(self, root: Any) -> None:
+                self._root = root
+
+            async def list_children(self, directory: str = "") -> list[Any]:
+                return [_Entry(child.name, "file") for child in (self._root / directory).iterdir()]
+
+            async def read(self, path: str) -> str | None:
+                target = self._root / path
+                return target.read_text() if target.is_file() else None
+
+        (tmp_path / "outside.txt").write_text("host secret")
+        root = tmp_path / "outputs"
+        (root / "c0ffee").mkdir(parents=True)
+        (root / "c0ffee" / "report.md").write_text("# total")
+        listing, read = sandbox_outputs_read_tools(_NaiveStore(root))
+
+        assert asyncio.run(self._body(read)("c0ffee/report.md")) == "# total"
+        assert "host secret" not in asyncio.run(self._body(read)("c0ffee/../../outside.txt"))
+        assert "outside.txt" not in str(asyncio.run(self._body(listing)("c0ffee/../..")))
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "../outside.txt",
+            "c0ffee/../../outside.txt",
+            "/etc/passwd",
+            "c0ffee\\..\\outside.txt",
+            "c0ffee//report.md",
+            "c0ffee/./report.md",
+            "c0ffee/report.md\n",
+            "c0ffee/",
+            "",
+            f"c0ffee/{'x' * (MAX_ARTIFACT_NAME_BYTES + 1)}",
+        ],
+    )
+    def test_a_name_the_sink_could_not_have_landed_never_reaches_the_store(self, name):
+        class _UntouchedStore:
+            async def read(self, path: str) -> str | None:
+                raise AssertionError(f"the store was asked for {path!r}")
+
+        _, read = sandbox_outputs_read_tools(_UntouchedStore())
+
+        assert "is not a path in this store" in asyncio.run(self._body(read)(name))
+
+    @pytest.mark.parametrize("folder", ["..", "../x", "/", "c0ffee/..", "c0ffee//", ".", "a\\b"])
+    def test_a_folder_the_sink_could_not_have_landed_never_reaches_the_store(self, folder):
+        class _UntouchedStore:
+            async def list_children(self, directory: str = "") -> list[Any]:
+                raise AssertionError(f"the store was asked for {directory!r}")
+
+        listing, _ = sandbox_outputs_read_tools(_UntouchedStore())
+
+        assert "is not a path in this store" in asyncio.run(self._body(listing)(folder))
+
+    def test_a_folder_spelled_the_way_a_withheld_result_names_it_lists(self):
+        """Codeact names the folder `<call>/`, so that spelling has to pass the check."""
+        listing, _ = sandbox_outputs_read_tools(self._landed())
+
+        assert asyncio.run(self._body(listing)("c0ffee/")) == [
+            {"name": "report.md", "type": "file"}
+        ]
+
+    def test_a_name_using_the_whole_byte_bound_still_reads_back(self):
+        """The bound applies below the call's folder, as it did when the name was landed."""
+        store = self._store()
+        long_name = "n" * MAX_ARTIFACT_NAME_BYTES
+        artifact = Artifact(
+            name=long_name, content=b"long", kind="codeact", media_type=None, call_id="c0ffee"
+        )
+        asyncio.run(make_file_store_sink(store).deliver(artifact))
+        _, read = sandbox_outputs_read_tools(store)
+
+        assert asyncio.run(self._body(read)(f"c0ffee/{long_name}")) == "long"
+
     def test_a_refusal_reports_a_position_rather_than_repeating_a_long_value(self):
         """The bound on shape `echoed_name` falls back to where no middleware answers. A name
         the framework expanded into this argument is the value a refusal must not put back."""
@@ -6497,6 +6582,14 @@ class TestSandboxOutputsReadTools:
         value the middleware put in the argument is content the model never spelled."""
         said = self._through_the_middleware(self._landed(), "[VAR]", payload="SECRET_PAYLOAD")
 
+        assert "SECRET_PAYLOAD" not in said
+        assert "name" in said
+
+    def test_a_refused_traversal_the_framework_expanded_is_not_quoted_either(self):
+        """The check's own refusal renders through the same verdict as the store's."""
+        said = self._through_the_middleware(self._landed(), "[VAR]", payload="../SECRET_PAYLOAD")
+
+        assert "is not a path in this store" in said
         assert "SECRET_PAYLOAD" not in said
         assert "name" in said
 

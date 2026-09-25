@@ -87,11 +87,13 @@ from ._outputs import (
     Artifact,
     LandedArtifact,
     OutputSink,
+    SandboxArtifactNameInvalid,
     SandboxLandingExists,
     SandboxLandingNotText,
     landing_outputs,
     missing_sink_refusal,
     spec_lands_artifacts,
+    validate_artifact_name,
 )
 from ._protocol import (
     INTEGRITY_RANK,
@@ -3310,6 +3312,12 @@ _OUTPUTS_READ_DESCRIPTION = """Read one file out of the store a sandboxed tool's
             The file's text, or a message saying why it could not be read.
         """
 
+#: What either tool answers for a path that fails the artifact-name rules, before any store call.
+_NOT_IN_STORE = (
+    "Error: {named} is not a path in this store. Join the names a listing gave with '/', "
+    "and use no '.' or '..' segment."
+)
+
 
 def sandbox_outputs_read_tools(
     store: Any,
@@ -3340,6 +3348,11 @@ def sandbox_outputs_read_tools(
     knows about threads, so one store shared across conversations is one conversation reading
     another's outputs.
 
+    **Both arguments are checked before the store sees them**, against the rules
+    :func:`~maf_sandbox.validate_artifact_name` holds every landed name to, so a store that does
+    not normalise ``..`` is not all that keeps a read inside it.  ``folder`` may also be empty,
+    for the top level, or end in one ``/``.
+
     Args:
         store: The ``agent_framework`` ``AgentFileStore`` the sink lands in.
         name_prefix: What the two tools are called — ``<prefix>_ls`` and ``<prefix>_read``.
@@ -3353,8 +3366,12 @@ def sandbox_outputs_read_tools(
     # Preserve the hidden-content verdict before a host store callback can clear its evidence.
     async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
         named = _echoed(folder, "folder")
+        # One trailing separator, because a withheld result names the folder as `<call>/`.
+        directory = folder.removesuffix("/")
+        if folder and not _in_store(directory):
+            return _NOT_IN_STORE.format(named=named)
         try:
-            listed = await store.list_children(folder)
+            listed = await store.list_children(directory)
         except Exception as exc:  # noqa: BLE001
             _DEFAULT_LOGGER.warning(
                 "%s_ls: could not list a folder: %s", name_prefix, error_detail(exc)
@@ -3364,6 +3381,8 @@ def sandbox_outputs_read_tools(
 
     async def outputs_read(name: str) -> str:
         named = _echoed(name, "name")
+        if not _in_store(name):
+            return _NOT_IN_STORE.format(named=named)
         try:
             content = await store.read(name)
         except Exception as exc:  # noqa: BLE001
@@ -3392,6 +3411,22 @@ def _echoed(value: str, argument: str) -> str:
     """
     rewritten = positions_holding_hidden_content([value], argument=argument)
     return echoed_name(value, at=argument, hidden=0 in rewritten)
+
+
+def _in_store(path: str) -> bool:
+    """Whether ``path`` has the shape :func:`make_file_store_sink` lands: a call's folder, then
+    an artifact name, each meeting :func:`~maf_sandbox.validate_artifact_name` on its own.
+
+    Two halves rather than one path, because a name may use the whole byte bound by itself.
+    """
+    folder, separator, below = path.partition("/")
+    try:
+        validate_artifact_name(folder)
+        if separator:
+            validate_artifact_name(below)
+    except SandboxArtifactNameInvalid:
+        return False
+    return True
 
 
 async def list_all_files(
