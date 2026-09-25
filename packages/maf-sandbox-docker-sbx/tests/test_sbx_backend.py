@@ -33,6 +33,7 @@ from maf_sandbox_docker_sbx import (
     SbxSandboxBackend,
     SbxSandboxConfig,
 )
+from maf_sandbox_docker_sbx import _backend as sbx_module
 from maf_sandbox_docker_sbx._backend import (
     _EXEC_SCRIPT,
     _KILL_SCRIPT,
@@ -662,6 +663,18 @@ class TestAnExpiredCommand:
         assert ("stop", name) not in sbx.calls
         assert sbx.calls[-1][:5] == ("exec", name, "sh", "-c", _KILL_SCRIPT)
 
+    def test_a_retirement_outlives_the_process_that_made_it(self, backend, sbx, tmp_path):
+        sbx.kill_result = _Result(1, b"", b"error: kill refused\n")
+        name = self._expire(backend, sbx)
+        retired = next(iter(backend.retired))
+        sbx.exec_hook = lambda _args: None
+        restarted = SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+        restarted._sbx = sbx  # type: ignore[method-assign]
+        again = asyncio.run(restarted.acquire(KEY, _spec()))
+        assert ("rm", "--force", name) in sbx.calls
+        assert again.instance_id != retired
+        assert asyncio.run(again.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
+
 
 class TestTheOutputBound:
     """A guest printing without end cannot fill host memory."""
@@ -824,6 +837,30 @@ class TestCleanupSurvivesCancellation:
 
         asyncio.run(scenario())
 
+    def test_a_cleanup_that_cannot_start_leaves_the_cancellation_standing(self, backend, sbx):
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+
+        async def scenario() -> None:
+            setting_up = asyncio.Event()
+
+            async def gone(*args: str, timeout: float | None = None) -> _Result:
+                if args == ("exec", name, "sh", "-c", "pwd -P"):
+                    setting_up.set()
+                    await asyncio.sleep(3600)
+                if args[:2] == ("rm", "--force"):
+                    raise FileNotFoundError("sbx is gone")
+                return await real(*args, timeout=timeout)
+
+            backend._sbx = gone  # type: ignore[method-assign]
+            acquiring = asyncio.create_task(backend.acquire(KEY, _spec()))
+            await setting_up.wait()
+            acquiring.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await acquiring
+
+        asyncio.run(scenario())
+
     def test_a_create_cancelled_twice_still_removes_what_the_daemon_made(self, backend, sbx):
         name = sandbox_name("maf", KEY, "kind")
         real = sbx.__call__
@@ -855,6 +892,43 @@ class TestCleanupSurvivesCancellation:
             assert name not in sbx.sandboxes
 
         asyncio.run(scenario())
+
+
+class TestACreateWhoseClientStopped:
+    """The daemon can finish a create after its client stopped, and list it a moment later."""
+
+    def _stopped(self, backend, sbx, monkeypatch, *, listed_after: int | None) -> str:
+        monkeypatch.setattr(sbx_module, "_ABANDON_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(sbx_module, "_ABANDON_SETTLE_SECONDS", 0.5)
+        name = sandbox_name("maf", KEY, "kind")
+        real = sbx.__call__
+        listings: list[None] = []
+
+        async def stopped_client(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "create":
+                await real(*args, timeout=timeout)
+                sbx.unlisted.add(name)
+                raise TimeoutError
+            if args[:2] == ("ls", "--json") and name in sbx.unlisted:
+                listings.append(None)
+                if listed_after is not None and len(listings) > listed_after:
+                    sbx.unlisted.discard(name)
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = stopped_client  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        return name
+
+    def test_one_the_daemon_lists_late_is_still_removed(self, backend, sbx, monkeypatch):
+        name = self._stopped(backend, sbx, monkeypatch, listed_after=2)
+        assert ("rm", "--force", name) in sbx.calls
+        assert name not in sbx.sandboxes
+
+    def test_one_never_listed_keeps_its_workspace(self, backend, sbx, monkeypatch, tmp_path):
+        name = self._stopped(backend, sbx, monkeypatch, listed_after=None)
+        assert ("rm", "--force", name) not in sbx.calls
+        assert [path.name[:3] for path in (tmp_path / "root" / name).iterdir()] == ["ws-"]
 
 
 class TestAnUnlistedSandbox:

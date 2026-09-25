@@ -173,6 +173,11 @@ _STDERR_TAIL = 2000
 #: Combined stdout and stderr one ``sbx`` command may return, a guest command's included.
 _OUTPUT_LIMIT = 8 * 1024 * 1024
 
+#: How long an interrupted create is watched for its sandbox.  With `sbx` 0.45.1 one appeared
+#: within 0.4 s of its client being killed, or not at all.
+_ABANDON_SETTLE_SECONDS = 10.0
+_ABANDON_POLL_SECONDS = 0.5
+
 
 class SbxError(RuntimeError):
     """An ``sbx`` command failed; the message carries its stderr."""
@@ -589,8 +594,33 @@ class SbxSandboxBackend:
         the command may still start or run there.  Only the expired command is touched: the
         sandbox may be running a sibling call of the same conversation.
         """
-        if not await self._kill_group(name, pid_file):
+        try:
+            killed = await self._kill_group(name, pid_file)
+        except Exception as error:  # noqa: BLE001 - the caller's own exception must stand
+            logger.warning("docker-sbx: the kill in %s failed: %s", name, error)
+            killed = False
+        if not killed:
             self._retired.add(instance)
+            await asyncio.to_thread(self._record_retirement, name, instance)
+
+    def _record_retirement(self, name: str, instance: str) -> None:
+        """Mark the record, so a later process replaces the instance too; never raises."""
+        meta = self._read_meta(name)
+        if meta is None or meta.get("instance_id") != instance:
+            return
+        try:
+            _write_record(self._directory(name) / _META, {**meta, "retired": True})
+        except OSError as error:
+            logger.warning("docker-sbx: could not record %s as retired: %s", name, error)
+
+    def _is_retired(self, name: str, instance: object) -> bool:
+        if instance in self._retired:
+            return True
+        meta = self._read_meta(name) or {}
+        if meta.get("retired") is True and meta.get("instance_id") == instance:
+            self._retired.add(str(instance))
+            return True
+        return False
 
     async def _kill_group(self, name: str, pid_file: str) -> bool:
         """Whether the expired command is known to be killed, or never to start."""
@@ -622,8 +652,8 @@ class SbxSandboxBackend:
             return False
         return True
 
-    async def _listing(self) -> dict[str, dict[str, object]]:
-        result = await self._sbx("ls", "--json")
+    async def _listing(self, timeout: float | None = None) -> dict[str, dict[str, object]]:
+        result = await self._sbx("ls", "--json", timeout=timeout)
         if result.returncode != 0:
             raise _failure("sbx ls", result)
         payload = json.loads(result.stdout or b"{}")
@@ -708,7 +738,7 @@ class SbxSandboxBackend:
         await self.check_host()
         async with self._locked(name):
             row = (await self._listing()).get(name)
-            if row is not None and row.get("id") in self._retired:
+            if row is not None and self._is_retired(name, row.get("id")):
                 failure = await self._remove(name, str(row.get("id")))
                 if failure is not None:
                     raise SbxError(f"could not replace retired sandbox {name}: {failure}")
@@ -857,15 +887,23 @@ class SbxSandboxBackend:
         return sandbox, True
 
     async def _abandon_create(self, name: str, workspace: Path) -> None:
-        """Remove a stopped create's sandbox only if `sbx ls` shows it mounting our workspace."""
-        try:
-            row = (await self._listing()).get(name)
-        except (SbxError, TimeoutError, ValueError):
-            return
-        if row is not None and row.get("workspaces") == [str(workspace)]:
-            await self._discard(name, workspace)
-        else:
-            await asyncio.to_thread(_remove_if_empty, workspace, workspace.parent)
+        """Remove a stopped create's sandbox, which the daemon may list only after a moment.
+
+        Only one mounting this create's workspace is removed.  The workspace is kept while none
+        has appeared, so a sandbox the daemon finishes even later still has it.  Never raises.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _ABANDON_SETTLE_SECONDS
+        while (left := deadline - loop.time()) > 0:
+            try:
+                row = (await self._listing(timeout=left)).get(name)
+            except (SbxError, OSError, ValueError):
+                return
+            if row is not None:
+                if row.get("workspaces") == [str(workspace)]:
+                    await self._discard(name, workspace)
+                return
+            await asyncio.sleep(min(_ABANDON_POLL_SECONDS, max(0.0, deadline - loop.time())))
 
     async def check_sandbox(self, name: str) -> None:
         """Refuse a new sandbox the running daemon gave the host's SSH agent.
@@ -934,7 +972,11 @@ class SbxSandboxBackend:
             )
 
     async def _discard(self, name: str, workspace: Path) -> None:
-        failure = await _to_the_end(self._remove(name, None, workspace.name))
+        """Remove what a failed acquire created; never raises, so the acquire's error stands."""
+        try:
+            failure = await _to_the_end(self._remove(name, None, workspace.name))
+        except Exception as error:  # noqa: BLE001 - reported, not raised
+            failure = DisposalFailure("unknown", f"{type(error).__name__}: {error}")
         if failure is not None:
             logger.warning(
                 "docker-sbx: could not remove %s after a failed acquire: %s", name, failure
