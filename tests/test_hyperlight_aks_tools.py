@@ -92,11 +92,19 @@ def test_overlay_keeps_upstream_devices_without_adding_node_delegation(namespace
 
 
 def labelled_node(**info: str) -> dict[str, Any]:
+    labels = {
+        "node.kubernetes.io/instance-type": info.pop("size", "Standard_D4ads_v5"),
+        "kubernetes.azure.com/node-image-version": info.pop(
+            "image", "AKSAzureLinux-V3gen2-202609.15.0"
+        ),
+        **(
+            {"kubernetes.azure.com/security-type": info.pop("security")}
+            if "security" in info
+            else {}
+        ),
+    }
     return {
-        "metadata": {
-            "name": "node",
-            "labels": {"node.kubernetes.io/instance-type": info.pop("size", "Standard_D4ads_v5")},
-        },
+        "metadata": {"name": "node", "labels": labels},
         "status": {
             "allocatable": {"hyperlight.dev/hypervisor": info.pop("allocatable", "1")},
             "nodeInfo": {
@@ -111,8 +119,9 @@ def labelled_node(**info: str) -> dict[str, Any]:
     }
 
 
-def test_a_measured_node_platform_is_verified():
-    assert node_report(labelled_node())["verified"]
+def test_a_measured_node_platform_is_verified_before_it_is_schedulable():
+    report = node_report(labelled_node())
+    assert report["verified"] and not report["schedulable"]
 
 
 @pytest.mark.parametrize(
@@ -121,6 +130,9 @@ def test_a_measured_node_platform_is_verified():
         ({"kubeletVersion": "v1.36.1"}, "verified combination"),
         ({"osImage": "Ubuntu 22.04.5 LTS"}, "verified combination"),
         ({"size": "Standard_B2s_v2"}, "verified combination"),
+        ({"image": "AKSAzureLinux-V3gen2TL-202609.15.0"}, "verified combination"),
+        ({"image": "AKSUbuntu-2404gen2containerd-202609.15.0"}, "verified combination"),
+        ({"security": "TrustedLaunch"}, "security type TrustedLaunch"),
         ({"architecture": "arm64"}, "amd64"),
         ({"allocatable": "0"}, "no hypervisor allocation"),
     ],

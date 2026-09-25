@@ -28,7 +28,7 @@ Inspect the rendered plugin before applying it with an explicit kubeconfig/conte
 
 ## Supported platforms
 
-Give eligible nodes their own node pool and set `hyperlight.dev/enabled=true` and `hyperlight.dev/hypervisor=kvm` as pool labels, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.
+Give eligible nodes their own node pool and label the pool in two steps. `hyperlight.dev/enabled=true` admits the device plugin; `hyperlight.dev/hypervisor=kvm` admits application pods. Create the pool with the first label only, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true`, install the plugin and run the report below. Add the second label once the report passes: `az aks nodepool update ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. That update replaces the pool's labels, so repeat every label the pool keeps. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.
 
 | VM size | Node OS | Kubernetes | Runtime | Measured |
 |---|---|---|---|---|
@@ -37,13 +37,13 @@ Give eligible nodes their own node pool and set `hyperlight.dev/enabled=true` an
 
 Every row was measured on pools with the default security type; Trusted Launch and confidential VM pools are not measured. Each row requires x86-64 with nested virtualization, cgroup v2, no swap and CDI enabled in containerd. B-series sizes do not offer nested virtualization. AKS Automatic, MSHV and Arm64 are outside the matrix.
 
-Before scheduling workloads, report the labelled nodes against this matrix:
+Report the plugin-enabled nodes against this matrix before making them schedulable:
 
 ```sh
 uv run python scripts/hyperlight_aks.py nodes --kubeconfig /path/to/kubeconfig --context verified-cluster
 ```
 
-The report reads each labelled node's size, OS, kernel, runtime, kubelet version and advertised allocation. It exits nonzero when any node is outside the matrix or advertises no allocation. It needs node read access, which the application controller does not have.
+The report reads each node labelled `hyperlight.dev/enabled=true`: its size, node image, security type, OS, kernel, runtime, kubelet version and advertised allocation, and whether it already carries the application label. It exits nonzero when any node is outside the matrix, has a non-default security type or advertises no allocation. It needs node read access, which the application controller does not have.
 
 The controller enforces the requirements it can observe, from inside the pod. Before starting the application, PID 1 requires x86-64, cgroup v2, the declared memory limit, no swap, finite CPU and PID limits and a `/dev/kvm` that the pod user can open and create a VM on. A node that fails any of these makes `supervise` raise `HyperlightPodPlatformError` with the reason, after confirming cleanup. A pod that cannot be scheduled, for example because no labelled node advertises a free allocation, raises `TimeoutError` with the scheduler's reason after its startup budget. A successful result carries the controls PID 1 observed in `HyperlightPodResult.platform`.
 

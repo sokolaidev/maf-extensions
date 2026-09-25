@@ -16,14 +16,17 @@ from maf_sandbox_hyperlight.kubernetes import HyperlightPodController, Hyperligh
 UPSTREAM_REVISION = "fc71b4501d23977fcc54f7be144d884fc8210667"
 PLUGIN_IMAGE = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98"
 # Measured end to end; a Kubernetes minor also moves the kubelet's never-started marker.
+# Trusted Launch images carry "TL" in the family name, so these prefixes exclude them.
 VERIFIED_PLATFORMS = (
     {
+        "image": "AKSUbuntu-2404gen2containerd-",
         "os": "Ubuntu 24.04",
         "kubelet": "v1.35.",
         "runtime": "containerd://2.",
         "sizes": ("Standard_D2ads_v5", "Standard_D4ads_v5"),
     },
     {
+        "image": "AKSAzureLinux-V3gen2-",
         "os": "Microsoft Azure Linux 3.0",
         "kubelet": "v1.35.",
         "runtime": "containerd://2.",
@@ -74,31 +77,36 @@ def render_plugin(source: str, *, namespace: str, image: str = PLUGIN_IMAGE, cou
 
 
 def node_report(node: dict) -> dict:
-    """Compare one labelled node's reported platform with the verified matrix."""
+    """Compare one plugin-enabled node with the verified matrix, before it becomes schedulable."""
     info = node["status"]["nodeInfo"]
     labels = node["metadata"].get("labels", {})
     observed = {
         "name": node["metadata"]["name"],
         "size": labels.get("node.kubernetes.io/instance-type", ""),
         "node_image": labels.get("kubernetes.azure.com/node-image-version", ""),
+        "security_type": labels.get("kubernetes.azure.com/security-type", ""),
         "os": info["osImage"],
         "kernel": info["kernelVersion"],
         "runtime": info["containerRuntimeVersion"],
         "kubelet": info["kubeletVersion"],
         "architecture": info["architecture"],
         "allocatable": node["status"].get("allocatable", {}).get("hyperlight.dev/hypervisor", "0"),
+        "schedulable": labels.get("hyperlight.dev/hypervisor") == "kvm",
     }
     reasons = []
     if observed["architecture"] != "amd64":
         reasons.append("architecture is not amd64")
+    if observed["security_type"]:
+        reasons.append(f"security type {observed['security_type']} is not measured")
     if not any(
-        observed["os"].startswith(row["os"])
+        observed["node_image"].startswith(row["image"])
+        and observed["os"].startswith(row["os"])
         and observed["kubelet"].startswith(row["kubelet"])
         and observed["runtime"].startswith(row["runtime"])
         and observed["size"] in row["sizes"]
         for row in VERIFIED_PLATFORMS
     ):
-        reasons.append("OS, kubelet, runtime and size are not a verified combination")
+        reasons.append("node image, OS, kubelet, runtime and size are not a verified combination")
     if observed["allocatable"] in {"", "0"}:
         reasons.append("the device plugin advertises no hypervisor allocation")
     return {**observed, "verified": not reasons, "reasons": reasons}
