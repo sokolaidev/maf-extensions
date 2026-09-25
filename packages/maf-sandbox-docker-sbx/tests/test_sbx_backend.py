@@ -97,7 +97,7 @@ class FakeSbx:
                 if self.sandboxes.pop(name, None) is None:
                     return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
                 return _ok()
-            case ("exec", _name, "pwd"):
+            case ("exec", _name, "sh", "-c", "pwd -P"):
                 return _ok(f"{GUEST_MOUNT}\n".encode())
             case ("exec", "-u", "root", _name, "sh", "-c", script, *_rest) if (
                 script == _MOUNT_SCRIPT
@@ -285,6 +285,19 @@ class TestAcquire:
             asyncio.run(backend.acquire(KEY, _spec(image="example/missing")))
         assert list((tmp_path / "root").iterdir()) == []
 
+    def test_the_workspace_mount_is_read_with_the_shells_own_pwd(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[:1] == ("exec",) and "pwd" in call[2:3] for call in sbx.calls)
+
+    def test_a_record_for_another_key_or_kind_is_not_adopted(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        record = tmp_path / "root" / sandbox.name / "meta.json"
+        meta = json.loads(record.read_text())
+        meta["kind"] = "another-kind"
+        record.write_text(json.dumps(meta))
+        with pytest.raises(SbxError, match="another key or kind"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
     def test_a_create_conflict_the_listing_missed_is_a_daemon_fault(self, backend, sbx):
         async def conflicted(*args: str, timeout: float | None = None) -> _Result:
             if args[0] == "create":
@@ -418,6 +431,39 @@ class TestCancellation:
         assert list((tmp_path / "root").iterdir()) == []
 
 
+class TestCleanupSurvivesCancellation:
+    def test_a_cancellation_during_the_timeout_kill_does_not_stop_it(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        real = sbx.__call__
+        killing = asyncio.Event()
+        killed: list[bool] = []
+
+        async def slow_kill(*args: str, timeout: float | None = None) -> _Result:
+            if _EXEC_SCRIPT in args:
+                raise TimeoutError
+            if _KILL_SCRIPT in args:
+                killing.set()
+                await asyncio.sleep(0.2)
+                killed.append(True)
+                return _ok()
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = slow_kill  # type: ignore[method-assign]
+
+        async def scenario() -> None:
+            call = asyncio.create_task(
+                sandbox.exec(["sleep", "9"], working_directory=".", timeout=30)
+            )
+            await killing.wait()
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            await asyncio.sleep(0.4)
+
+        asyncio.run(scenario())
+        assert killed == [True]
+
+
 class TestCreateRace:
     def _race(self, backend, sbx, tmp_path, *, winner_is_up: bool) -> None:
         real = sbx.__call__
@@ -427,7 +473,8 @@ class TestCreateRace:
             if args[0] == "create":
                 sbx.sandboxes[name] = args[-1]
                 if winner_is_up:
-                    meta = {"work_dir": "/maf-sandbox/work", "image": None}
+                    meta = {"work_dir": "/maf-sandbox/work", "image": None, "kind": "kind"}
+                    meta["key"] = [KEY.scope, KEY.thread_id, KEY.agent_id, KEY.call_id]
                     meta["guest_mount"] = GUEST_MOUNT
                     (tmp_path / "root" / name / "meta.json").write_text(json.dumps(meta))
                 return _Result(1, b"", f"error: sandbox '{name}' already exists\n".encode())
@@ -488,6 +535,16 @@ class TestDisposal:
         failure = asyncio.run(backend.dispose(KEY))
         assert failure is not None and failure.code == "unreachable"
         assert len(list((tmp_path / "root").iterdir())) == 1
+
+    def test_an_unlisted_sandbox_with_a_workspace_is_not_reported_gone(
+        self, backend, sbx, tmp_path
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.unlisted.add(sandbox.name)
+        failure = asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id))
+        assert failure is not None and failure.code == "unlisted"
+        assert sandbox.name in sbx.sandboxes
+        assert (tmp_path / "root" / sandbox.name).is_dir()
 
     def test_a_stale_instance_id_removes_nothing(self, backend, sbx):
         asyncio.run(backend.acquire(KEY, _spec()))

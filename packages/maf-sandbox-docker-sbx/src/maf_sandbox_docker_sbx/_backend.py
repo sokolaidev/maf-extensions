@@ -216,6 +216,10 @@ def _key_prefix(prefix: str, key: SandboxKey) -> str:
     return f"{_conversation_prefix(prefix, key.scope, key.thread_id)}{whole}-"
 
 
+def _key_record(key: SandboxKey) -> list[str]:
+    return [key.scope, key.thread_id, key.agent_id, key.call_id]
+
+
 def sandbox_name(prefix: str, key: SandboxKey, kind: str) -> str:
     """The sandbox's name, which is also its workspace directory's; at most 50 characters."""
     return f"{_key_prefix(prefix, key)}{_digest(kind, length=8)}"
@@ -475,12 +479,12 @@ class SbxSandboxBackend:
                 raise TimeoutError(expired)
             try:
                 result = await self._sbx(*args, *encoded, timeout=left)
-            except TimeoutError:
-                await self._kill_group(name, pid_file)
-                raise TimeoutError(expired) from None
-            except asyncio.CancelledError:
-                # Killing the client leaves the guest's command running in a reusable sandbox.
+            except (TimeoutError, asyncio.CancelledError) as stopped:
+                # Killing the client leaves the guest's command running in a reusable sandbox,
+                # and a cancellation must not stop the kill either.
                 await asyncio.shield(self._kill_group(name, pid_file))
+                if isinstance(stopped, TimeoutError):
+                    raise TimeoutError(expired) from None
                 raise
             if f"{nonce}-unmounted\n".encode() in result.stderr:
                 if attempt:
@@ -631,7 +635,7 @@ class SbxSandboxBackend:
             if row is None:
                 sandbox = await self._create(name, key, spec, base)
             else:
-                sandbox = self._adopt(name, row, spec, base)
+                sandbox = self._adopt(key, name, row, spec, base)
             try:
                 await ensure_guest_work_dir(
                     spec,
@@ -647,7 +651,7 @@ class SbxSandboxBackend:
             return sandbox
 
     def _adopt(
-        self, name: str, row: dict[str, object], spec: SandboxSpec, base: str
+        self, key: SandboxKey, name: str, row: dict[str, object], spec: SandboxSpec, base: str
     ) -> _SbxSandbox:
         meta = self._read_meta(name)
         workspace = str(self._directory(name) / _WORKSPACE)
@@ -660,6 +664,11 @@ class SbxSandboxBackend:
             raise SbxError(
                 f"sandbox {name} exists but its workspace is not {workspace}; it was created "
                 "with a different workspace_root. Dispose it or use the same root."
+            )
+        if meta.get("key") != _key_record(key) or meta.get("kind") != spec.kind:
+            raise SbxError(
+                f"sandbox {name} was created for another key or kind, whose name digests to "
+                "the same; refusing to share it. Dispose it."
             )
         if meta.get("work_dir") != base or meta.get("image") != spec.image:
             raise ValueError(
@@ -692,7 +701,7 @@ class SbxSandboxBackend:
         await asyncio.to_thread(_make_private, root, directory, workspace)
         meta = {
             "version": _META_VERSION,
-            "key": [key.scope, key.thread_id, key.agent_id, key.call_id],
+            "key": _key_record(key),
             "kind": spec.kind,
             "work_dir": base,
             "image": spec.image,
@@ -724,13 +733,15 @@ class SbxSandboxBackend:
             raise
         if created.returncode != 0:
             if _ALREADY_EXISTS in created.stderr_text:
-                return await self._adopt_the_winner(name, spec, base)
+                return await self._adopt_the_winner(key, name, spec, base)
             await self._discard(name)
             raise _failure(f"sbx create {name}", created)
         try:
             # The create proved nothing held this name, so anything in the workspace is stale.
             await asyncio.to_thread(_empty, workspace)
-            mounted = await self._run_setup("reading the workspace mount", "exec", name, "pwd")
+            mounted = await self._run_setup(
+                "reading the workspace mount", "exec", name, "sh", "-c", "pwd -P"
+            )
             guest_mount = mounted.stdout.decode("utf-8", errors="replace").strip()
             if not guest_mount.startswith("/") or "\n" in guest_mount:
                 raise SbxError(f"the guest reported {guest_mount!r} as its workspace mount")
@@ -746,7 +757,9 @@ class SbxSandboxBackend:
             raise
         return served
 
-    async def _adopt_the_winner(self, name: str, spec: SandboxSpec, base: str) -> _SbxSandbox:
+    async def _adopt_the_winner(
+        self, key: SandboxKey, name: str, spec: SandboxSpec, base: str
+    ) -> _SbxSandbox:
         """Serve the sandbox a concurrent create made, which the conflict proved exists."""
         row = (await self._listing()).get(name)
         if row is None:
@@ -758,7 +771,7 @@ class SbxSandboxBackend:
             raise SbxError(
                 f"sandbox {name} is being created by another process; acquire again once it is up"
             )
-        return self._adopt(name, row, spec, base)
+        return self._adopt(key, name, row, spec, base)
 
     async def _prove_the_mount(self, sandbox: _SbxSandbox) -> None:
         """Have the guest read, through the mount and the wrapper, a file the host just wrote."""
@@ -797,6 +810,13 @@ class SbxSandboxBackend:
                 row = (await self._listing()).get(name)
             except (SbxError, TimeoutError, ValueError) as error:
                 return DisposalFailure("unlisted", str(error))
+            if row is None and await asyncio.to_thread(self._directory(name).exists):
+                # An engine that has lost its sandboxes lists none; the workspace says otherwise.
+                return DisposalFailure(
+                    "unlisted",
+                    f"`sbx ls` does not show {name} but its workspace remains; the daemon may "
+                    "have lost its engine. Run `sbx daemon restart`.",
+                )
             if row is None or row.get("id") != instance_id:
                 return None
         try:
