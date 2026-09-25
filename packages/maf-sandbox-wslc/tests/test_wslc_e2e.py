@@ -642,6 +642,26 @@ class TestALiveContainer:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
 
+def test_resource_limits_reach_the_workload_cgroup():
+    scope = f"e2e-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(WslcSandboxConfig(memory="256M", cpus=0.5))
+
+    async def scenario() -> None:
+        sandbox = await backend.acquire(_key(scope), _spec())
+        limits = await sandbox.exec(
+            ["cat", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/cpu.max"],
+            working_directory="/",
+            timeout=60,
+        )
+        assert limits.exit_code == 0, limits.stderr
+        assert limits.stdout.splitlines() == [str(256 * 1024 * 1024), "50000 100000"]
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
 class TestTheDeclaredGuestFamilyAgainstARealContainer:
     """The constant `os_families` states, backed by a container rather than matched on paper.
 

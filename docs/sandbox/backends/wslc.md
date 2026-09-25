@@ -16,6 +16,8 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 | Sharing | `CONVERSATION`, `CALL` |
 | Transfer limits | `DEFAULT_SANDBOX_LIMITS` |
 | Cleanup | Disposal; no `RECLAIM` or `SNAPSHOT` |
+| Resource limits | `memory` and `cpus` in config, unset by default; `memory` does not limit swap |
+| Not enforced | PID limit, dropped capabilities, `no-new-privileges`; `wslc container run` has no flag for them |
 
 The default Windows Proactor event loop supports the required subprocesses. A selector event loop does not.
 
@@ -77,6 +79,18 @@ These are container-internal permission boundaries, not an escape into the Windo
 
 These methods raise `NotImplementedError`. Their capabilities, including `HOST_TOOLS`, are not declared. The router refuses a kind that requires them.
 
+## Resource limits and hardening
+
+`WslcSandboxConfig(memory="512M", cpus=1.5)` sets `--memory` and `--cpus` on the workload container. The proxy container gets neither. Both are unset by default. The engine refuses a value it cannot apply, such as more CPUs than the session has, and acquisition raises `RuntimeError` with its message.
+
+`memory` limits resident memory, not swap. WSLC sets no swap limit, and each session has its own swap file ([microsoft/WSL#41438](https://github.com/microsoft/WSL/issues/41438)). On WSLC 2.9.13.0 a workload limited to 256 MiB allocated and touched 1 GiB without being killed; about 780 MiB went to swap.
+
+`wslc container run` has no `--pids-limit`, `--cap-drop` or `--security-opt` ([microsoft/WSL#41545](https://github.com/microsoft/WSL/issues/41545)). A WSLC workload therefore keeps the engine's default capability set, runs with `no-new-privileges` off and can start processes without a limit. The engine does apply a seccomp filter. The Docker backend sets `no-new-privileges` and a PID limit on every container and can drop all capabilities.
+
+`--ulimit nproc` is not a substitute for a PID limit. It does not apply to root, and it counts every process its user ID runs in every container of the session, so one sandbox's processes use up another's allowance. The backend does not set it.
+
+Both flags are in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.13.0.
+
 ## Network policy
 
 ![A CLOSED workload has no network. A nonempty ALLOWLIST connects the workload to an internal network and iron-proxy; the proxy also joins an outbound network. Allowed hosts, HTTP methods, paths and resolved addresses are checked there. Proxy decisions are attributed to the sandbox when the proxy is removed. Docker's additional unaddressed-bridge check belongs to Docker, while WSLC uses its own engine network behavior.](../assets/container-egress.svg)
@@ -117,6 +131,6 @@ The backend starts no scheduler. See the [retention example](../../../packages/m
 | Parent swaps at placement | Bounded — writes run as the image's user; setup runs as root only where nothing can be swapped, and as the image's user elsewhere | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (closed) by [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged) and [#1400](https://github.com/sokolaidev/maf-extensions/pull/1400) (merged); held no-follow upload is [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594) (open) |
 | Output reads and listing | Withheld pending an adequate engine interface | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open), [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (open), [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (open) |
 | Delete, reclaim and reset | Withheld | [Cleanup contract](../tool-call.md) |
-| Container resource and privilege limits | Not applied to the workload or the proxy; the CLI can enforce memory and CPU only | [#1452](https://github.com/sokolaidev/maf-extensions/issues/1452) (open), [#1455](https://github.com/sokolaidev/maf-extensions/issues/1455) (open) |
+| Container resource and privilege limits | `memory` and `cpus` applied to the workload and the proxy; PID limit, capability drop and `no-new-privileges` wait on the CLI | [#1452](https://github.com/sokolaidev/maf-extensions/issues/1452) (closed) and [#1455](https://github.com/sokolaidev/maf-extensions/issues/1455) (closed); [microsoft/WSL#41545](https://github.com/microsoft/WSL/issues/41545) (open), [microsoft/WSL#41438](https://github.com/microsoft/WSL/issues/41438) (open) |
 | Temporary host disk use during stat | Explicit limit; requires host quotas | [Package README](../../../packages/maf-sandbox-wslc/README.md) |
 | Operator retention | Implemented; maintenance coordination required | [Operations](../operations.md) |

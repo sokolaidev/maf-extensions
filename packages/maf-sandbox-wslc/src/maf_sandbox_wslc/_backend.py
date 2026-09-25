@@ -2548,6 +2548,10 @@ class WslcSandboxBackend:
             )
 
         args = ["container", "run", "-d", "--name", name]
+        if self._config.memory is not None:
+            args += ["--memory", self._config.memory]
+        if self._config.cpus is not None:
+            args += ["--cpus", str(self._config.cpus)]
         if allowlisting:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
