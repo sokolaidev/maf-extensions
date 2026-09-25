@@ -117,7 +117,7 @@ AKS probes cover both the historical delegated-cgroup path and this explicit con
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Feasibility measured; deployment work remains open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Upstream AKS device deployment | Pinned overlay implemented; production operational validation remains | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open) |
-| Supported AKS platform matrix | Ubuntu 24.04 and Azure Linux 3.0 on Kubernetes 1.35 measured; unsupported nodes refused before the application starts | [#1425](https://github.com/sokolaidev/maf-extensions/issues/1425) (open) |
+| Supported AKS platform matrix | Ubuntu 24.04 and Azure Linux 3.0 on Kubernetes 1.35 measured; unsupported nodes refused before the application starts | [#1425](https://github.com/sokolaidev/maf-extensions/issues/1425) (closed) by [#1486](https://github.com/sokolaidev/maf-extensions/pull/1486) (merged) |
 | One ownership scope per AKS pod | Explicit integration implemented; operational acceptance remains open | [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) (open) |
 | Distributed owner routing and purge | Conditional follow-up; not implemented | [#1239](https://github.com/sokolaidev/maf-extensions/issues/1239) (open) |
 | Writable inputs | Not implemented | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
