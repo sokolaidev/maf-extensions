@@ -18,7 +18,7 @@ from typing import BinaryIO, cast
 from maf_sandbox import SandboxKey
 
 from ._pod import FRAME_LIMIT, frame, unframe
-from ._pod_config import ownership_name
+from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
 _FINALIZER = "sandbox.sokol.ai/confirmed-stop"
