@@ -604,6 +604,10 @@ class SbxSandboxBackend:
         except TimeoutError:
             logger.warning("docker-sbx: killing an expired command in %s timed out", name)
             return False
+        except OSError as error:
+            # Raised past here it would replace the caller's own timeout or cancellation.
+            logger.warning("docker-sbx: could not start the kill in %s: %s", name, error)
+            return False
         if result.returncode not in (0, _NEVER_STARTED):
             logger.warning(
                 "docker-sbx: could not kill an expired command in %s (exit %s): %s",

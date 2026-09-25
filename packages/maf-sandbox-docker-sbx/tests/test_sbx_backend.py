@@ -190,6 +190,16 @@ class TestDeclarations:
             }
         )
 
+    def test_the_default_workspace_root_is_fixed_at_construction(self, tmp_path, monkeypatch):
+        for variable in ("LOCALAPPDATA", "XDG_STATE_HOME", "HOME", "USERPROFILE"):
+            monkeypatch.setenv(variable, str(tmp_path / "first"))
+        config = SbxSandboxConfig()
+        root = config.resolved_workspace_root
+        for variable in ("LOCALAPPDATA", "XDG_STATE_HOME", "HOME", "USERPROFILE"):
+            monkeypatch.setenv(variable, str(tmp_path / "second"))
+        assert config.resolved_workspace_root == root
+        assert root.is_absolute() and (tmp_path / "first") in root.parents
+
     def test_a_relative_workspace_root_is_fixed_at_construction(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = SbxSandboxConfig(workspace_root=Path("relative"))
@@ -611,6 +621,22 @@ class TestAnExpiredCommand:
         with pytest.raises(SbxError, match="retired"):
             asyncio.run(sandbox.stat_file("f", working_directory="."))
         assert asyncio.run(again.exec(["true"], working_directory=".", timeout=10)).exit_code == 0
+
+    def test_a_kill_that_cannot_be_spawned_retires_and_keeps_the_timeout(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        real = sbx.__call__
+
+        async def unspawnable(*args: str, timeout: float | None = None) -> _Result:
+            if _KILL_SCRIPT in args:
+                raise FileNotFoundError("sbx is gone")
+            if _EXEC_SCRIPT in args:
+                raise TimeoutError
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = unspawnable  # type: ignore[method-assign]
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "9"], working_directory=".", timeout=1))
+        assert sandbox.instance_id in backend.retired
 
     def test_one_whose_group_was_killed_leaves_the_sandbox_running(self, backend, sbx):
         name = self._expire(backend, sbx)

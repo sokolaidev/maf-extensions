@@ -78,9 +78,10 @@ class SbxSandboxConfig:
                 or value <= 0
             ):
                 raise ValueError(f"{name} must be a finite positive number of seconds")
-        if self.workspace_root is not None:
-            # Fixed now, so a later change of working directory cannot move it.
-            object.__setattr__(self, "workspace_root", Path(self.workspace_root).absolute())
+        # Fixed now, default or given, so a later change of environment or working directory
+        # cannot move it away from the sandboxes already created under it.
+        root = self.workspace_root if self.workspace_root is not None else default_workspace_root()
+        object.__setattr__(self, "workspace_root", Path(root).absolute())
 
     @property
     def resolved_workspace_root(self) -> Path:
