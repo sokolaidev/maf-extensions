@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import posixpath
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
@@ -540,8 +541,22 @@ class TestEndToEnd:
         (path,) = _written(backend)
         commands = _commands(backend)
         for (command, cwd, _), template in zip(commands, (_BUILD_CMD, _LINT_CMD), strict=True):
-            assert command == template.format(path="main.bicep")
+            assert command == template.format(path="./main.bicep")
             assert f"{cwd}/main.bicep" == path
+
+    @pytest.mark.parametrize(
+        "name", ["-x.bicep", "--stdout.bicep", "-x.bicepparam", "--stdout.bicepparam"]
+    )
+    def test_a_leading_hyphen_reaches_the_compiler_as_a_path(self, name):
+        import shlex
+
+        store = InMemoryStore({name: "x"})
+        backend = _fake_backend()
+        out = _run(_tool(store, backend), [name])
+
+        commands = [shlex.split(command) for command, *_ in _commands(backend)]
+        assert [command[command.index("bicep") + 2] for command in commands] == [f"./{name}"] * 2
+        assert f"build({name}): no diagnostics" in out
 
     def test_renders_diagnostics_from_sarif(self):
         store = InMemoryStore({"main.bicep": "x"})
@@ -752,7 +767,9 @@ class TestConcurrentRounds:
         for command, working_directory, _ in _commands(backend):
             compiled = command.split(" bicep ", 1)[1].split(" ")[1]
             assert not compiled.startswith("/")
-            assert f"{working_directory}/{compiled}" in _written(backend)
+            assert posixpath.join(working_directory, posixpath.normpath(compiled)) in _written(
+                backend
+            )
 
     def test_both_calls_report_their_own_diagnostics(self):
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
