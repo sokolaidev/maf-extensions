@@ -226,6 +226,13 @@ class Egress(StrEnum):
 _EGRESS_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 #: A whole allow entry — dot-separated labels, optionally behind a single ``*.`` wildcard label.
 _EGRESS_HOST = re.compile(rf"(?:\*\.)?{_EGRESS_LABEL}(?:\.{_EGRESS_LABEL})*")
+#: The longest name DNS can carry. A leading ``*.`` counts: it is as long as the shortest name
+#: it can match.
+_EGRESS_HOST_MAX = 253
+#: A final label a URL parser reads as a number. The parser then reads the whole entry as an IPv4
+#: address — ``10.0.0.5``, ``127.1`` and ``0x7f000001`` alike — or refuses it when it is not one.
+#: No top-level domain takes this shape.
+_NUMERIC_LABEL = re.compile(r"[0-9]+|0[xX][0-9A-Fa-f]*")
 #: An HTTP method token, per RFC 9110's ``token`` rule.  Case is refused separately, so that a
 #: lowercase method fails on being lowercase rather than on not being a token.
 _HTTP_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
@@ -251,6 +258,17 @@ def _validated_egress_host(entry: object) -> str:
             f"egress_allow entry {entry!r} is not one hostname: an entry is dot-separated labels "
             "of letters, digits and hyphens, optionally behind a single '*.' wildcard label, "
             "with no scheme, port, path, whitespace or comma."
+        )
+    if len(entry) > _EGRESS_HOST_MAX:
+        raise ValueError(
+            f"egress_allow entry {entry!r} is not one hostname: it is {len(entry)} "
+            f"octets, past the {_EGRESS_HOST_MAX} a DNS name can be."
+        )
+    if _NUMERIC_LABEL.fullmatch(entry.rpartition(".")[2]):
+        raise ValueError(
+            f"egress_allow entry {entry!r} is not one hostname: it ends in a number, so a URL "
+            "parser reads it as an IPv4 address or refuses it, and backends disagree about what "
+            "an address rule allows. Name the host by its DNS name."
         )
     return entry
 

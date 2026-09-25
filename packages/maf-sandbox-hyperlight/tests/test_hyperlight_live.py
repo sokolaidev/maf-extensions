@@ -11,10 +11,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 import pytest
 from maf_sandbox import (
@@ -22,15 +23,20 @@ from maf_sandbox import (
     Capability,
     Cleanup,
     Egress,
+    EgressRule,
     EntryKind,
     ListedFile,
+    Sandbox,
     SandboxKey,
     SandboxQueuedTimeout,
     SandboxRouter,
     SandboxSpec,
     Selection,
 )
-from maf_sandbox.conformance import assert_instance_disposal_conformance
+from maf_sandbox.conformance import (
+    assert_egress_methods_conformance,
+    assert_instance_disposal_conformance,
+)
 
 from maf_sandbox_hyperlight import (
     RUNTIME_INSTRUCTIONS,
@@ -226,8 +232,90 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.do_GET()
 
+    do_PUT = do_TRACE = do_PROPFIND = do_POST
+
     def log_message(self, format: str, *args: object) -> None:
         pass
+
+
+#: Sends one request through the guest's raw wasi-http binding, which takes any method, so the
+#: host boundary is measured rather than the GET/POST helpers.
+_RAW_REQUEST = """
+import wit_world
+from wit_world.imports import wasi_http_types as t, outgoing_handler as oh
+
+def reached(method, authority, path):
+    standard = {"GET": t.Method_Get, "POST": t.Method_Post, "PUT": t.Method_Put,
+                "TRACE": t.Method_Trace}
+    request = t.OutgoingRequest(t.Fields())
+    request.set_method(standard[method]() if method in standard else t.Method_Other(method))
+    request.set_scheme(t.Scheme_Http())
+    request.set_authority(authority)
+    request.set_path_with_query(path)
+    body = request.body()
+    try:
+        response = oh.handle(request, None)
+        t.OutgoingBody.finish(body, None)
+        response.subscribe().block()
+        result = response.get()
+        while not hasattr(result, "status"):
+            result = result.value
+    except wit_world.Err:
+        return False
+    return 200 <= result.status() < 300
+"""
+
+
+@dataclass(frozen=True)
+class RunCodeEgressMethodsSubject:
+    sandbox: Sandbox
+    capabilities: frozenset[Capability]
+
+    async def http_reaches(self, method: str, url: str, *, timeout: float) -> bool:
+        parts = urlsplit(url)
+        result = await self.sandbox.run_code(
+            f"{_RAW_REQUEST}\nprint(reached({method!r}, {parts.netloc!r}, {parts.path or '/'!r}))",
+            timeout=timeout,
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"the raw request harness failed: {result.stderr}")
+        return result.stdout == "True\n"
+
+
+def test_method_rules_are_enforced_at_the_runtime_boundary(live_backend):
+    Handler.hits = []
+    with HTTPServer(("127.0.0.1", 80), Handler) as server:
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+
+        async def check():
+            scoped_spec = replace(
+                SPEC,
+                egress=Egress.ALLOWLIST,
+                egress_allow=(EgressRule("localhost", methods=("GET",)),),
+            )
+            control_spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("localhost",))
+            capabilities = live_backend.declarations.capabilities
+            scoped = RunCodeEgressMethodsSubject(
+                await live_backend.acquire(KEY, scoped_spec), capabilities
+            )
+            control = RunCodeEgressMethodsSubject(
+                await live_backend.acquire(replace(KEY, thread_id="control"), control_spec),
+                capabilities,
+            )
+            await assert_egress_methods_conformance(
+                scoped, control, allowed_url="http://localhost/method", request_timeout=10
+            )
+            assert not await scoped.http_reaches("PUT", "http://localhost/put", timeout=10)
+            for method in ("TRACE", "PROPFIND"):
+                assert not await control.http_reaches(method, "http://localhost/x", timeout=10)
+            assert Handler.hits == ["/method", "/method"]
+
+        try:
+            asyncio.run(check())
+        finally:
+            server.shutdown()
+            serving.join(timeout=3)
 
 
 def test_closed_and_exact_host_allowlist_reach_only_the_named_host(live_backend):
@@ -241,22 +329,22 @@ def test_closed_and_exact_host_allowlist_reach_only_the_named_host(live_backend)
             denied = await closed.run_code("http_get('http://127.0.0.1/probe')", timeout=5)
             assert denied.exit_code != 0 and not Handler.hits
             assert await live_backend.dispose(KEY) is None
-            spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("127.0.0.1",))
+            spec = replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("localhost",))
             allowed = await live_backend.acquire(KEY, spec)
             result = await allowed.run_code(
-                "print(http_get('http://127.0.0.1/allowed')['body'])\nprint(http_post('http://127.0.0.1/posted', body='hello')['status'])",
+                "print(http_get('http://localhost/allowed')['body'])\nprint(http_post('http://localhost/posted', body='hello')['status'])",
                 timeout=5,
             )
             assert result.exit_code == 0, result.stderr
             assert "hyperlight-network-proof" in result.stdout and "200" in result.stdout
             assert Handler.hits == ["/allowed", "/posted"]
-            denied = await allowed.run_code("http_get('http://localhost/off-list')", timeout=5)
+            denied = await allowed.run_code("http_get('http://127.0.0.1/off-list')", timeout=5)
             assert denied.exit_code != 0
             assert Handler.hits == ["/allowed", "/posted"]
             await allowed.reset(timeout=5)
             assert (
                 await allowed.run_code(
-                    "print(http_get('http://127.0.0.1/after-reset')['status'])", timeout=5
+                    "print(http_get('http://localhost/after-reset')['status'])", timeout=5
                 )
             ).stdout == "200\n"
 

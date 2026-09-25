@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import posixpath
+import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from time import perf_counter
@@ -184,6 +185,11 @@ _UNREAD_IS_NOT_A_PASS = (
     "files[N] refers to the corresponding input argument. It omits messages and source "
     "positions. Unknown, unattributed or truncated findings do not mean a clean check."
 )
+
+
+def _operand(sandbox_path: str, working_directory: str) -> str:
+    """The file as a quoted shell word the CLI reads as a path, even with a leading ``-``."""
+    return shlex.quote("./" + posixpath.relpath(sandbox_path, working_directory))
 
 
 def _build_command_for(name: str) -> str:
@@ -656,7 +662,7 @@ async def _run_phase(
     started = perf_counter()
     execution = asyncio.create_task(
         sandbox.exec(
-            template.format(path=posixpath.relpath(sandbox_path, working_directory)),
+            template.format(path=_operand(sandbox_path, working_directory)),
             working_directory=working_directory,
             timeout=timeout,
         )

@@ -267,3 +267,61 @@ def test_job_assignment_failure_reaps_process_and_closes_pipes(
         stream is not None and stream.closed
         for stream in (spawned[0].stdin, spawned[0].stdout, spawned[0].stderr)
     )
+
+
+_RECORDING_WORKER = """import sys
+from types import SimpleNamespace
+from maf_sandbox_hyperlight import _worker
+if sys.platform == 'linux':
+    from maf_sandbox_hyperlight import _linux
+    _linux.check_kvm = lambda: None
+class Native:
+    def __init__(self, **kwargs):
+        pass
+    def allow_domain(self, target, methods=None):
+        print('allow', target, methods, file=sys.stderr)
+    def run(self, code):
+        return SimpleNamespace(stdout='', stderr='', exit_code=0)
+    def snapshot(self):
+        return object()
+_worker.version = lambda package: '0.7.0'
+_worker.ctypes.WinDLL = lambda name: None
+_worker.importlib.import_module = lambda name: SimpleNamespace(Sandbox=Native)
+_worker.main()
+"""
+
+
+def _init_recording_worker(targets: object) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, "-I", "-u", "-c", _RECORDING_WORKER],
+        input=encode({"op": "init", "targets": targets, "output_limit": 1024}),
+        capture_output=True,
+        timeout=5,
+    )
+
+
+def test_worker_passes_each_targets_methods_to_the_native_allowlist():
+    result = _init_recording_worker(
+        [["http://a.example/", ["GET", "POST"]], ["https://a.example/", None]]
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert decode(result.stdout) == {"ok": True}
+    assert [line for line in result.stderr.decode().splitlines() if line.startswith("allow ")] == [
+        "allow http://a.example/ ['GET', 'POST']",
+        "allow https://a.example/ None",
+    ]
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ["http://a.example/"],
+        [["http://a.example/"]],
+        [["http://a.example/", []]],
+        [["http://a.example/", "GET"]],
+    ],
+)
+def test_worker_refuses_malformed_targets_before_allowing_any(targets: object):
+    result = _init_recording_worker(targets)
+    assert decode(result.stdout)["error"] == "native"
+    assert "allow http" not in result.stderr.decode()

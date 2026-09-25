@@ -5,10 +5,16 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
 from maf_sandbox import Egress, EgressRule, SandboxSpec
 
 from maf_sandbox_wslc._proxy import build_context
-from maf_sandbox_wslc._proxy.policy import encoded_policy, network_gateways, read_decisions
+from maf_sandbox_wslc._proxy.policy import (
+    encoded_policy,
+    ipv4_subnets,
+    network_gateways,
+    read_decisions,
+)
 
 
 def test_scoped_rules_are_serialized_for_iron_proxy() -> None:
@@ -121,3 +127,16 @@ def test_packaged_context_pins_the_proxy_and_carries_its_patch() -> None:
     assert "COPY iron.patch" in dockerfile
     assert (context / "iron.patch").is_file()
     assert (context / "entrypoint.sh").is_file()
+
+
+def test_only_the_ipv4_subnets_of_the_sandbox_network_are_read() -> None:
+    ipam = [{"Subnet": "fd42:1454::/64"}, {"Subnet": "172.20.0.0/16", "Gateway": "172.20.0.1"}]
+    assert ipv4_subnets(ipam) == ("172.20.0.0/16",)
+    with pytest.raises(ValueError, match="subnet"):
+        ipv4_subnets([{"Gateway": "172.20.0.1"}])
+
+
+def test_the_policy_leaves_the_tunnel_to_the_entrypoint() -> None:
+    """An image whose entrypoint does not bind the sandbox network starts no tunnel at all."""
+    spec = SandboxSpec(kind="test", image="image", egress=Egress.ALLOWLIST)
+    assert "tunnel_listen" not in json.loads(base64.b64decode(encoded_policy(spec)))["proxy"]

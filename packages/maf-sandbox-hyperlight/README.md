@@ -22,7 +22,7 @@ The package pins the SDK, Wasm backend and Python guest together at 0.7.0. The g
 
 `json`, `math` and `re` are available. `datetime`, `statistics`, `pickle` and `__future__` are absent. Programs run statements and must print results; final expressions are not echoed. There is no shell or package installation.
 
-The backend declares `RUN_CODE` and `SNAPSHOT`, plus `FILES_OUT` and `FILES_LIST` when output files are enabled. It supports conversation scope, one call at a time per sandbox. It provides no command execution, input transfer or host-tool registration.
+The backend declares `RUN_CODE`, `SNAPSHOT` and `EGRESS_METHODS`, plus `FILES_OUT` and `FILES_LIST` when output files are enabled. It supports conversation scope, one call at a time per sandbox. It provides no command execution, input transfer or host-tool registration.
 
 <a id="linux-and-wsl2-setup"></a>
 
@@ -137,7 +137,9 @@ Programs use `guest_call_path + '/name'`. The guest cannot create directories, s
 
 `CLOSED` is the default. For HTTP access, select `Egress.ALLOWLIST` and exact hosts in `egress_allow`. Guest helpers `http_get` and `http_post` can then use HTTP port 80 and HTTPS port 443 at any path on those hosts.
 
-Raw sockets, wildcard hosts, unrestricted access, method-scoped rules and attached-authority rules are unavailable. The pinned runtime blocks CONNECT and TRACE. Reset preserves the allowlist.
+An `EgressRule(host, methods=...)` limits a host to GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS. The runtime checks the method before connecting, including for raw wasi-http requests. It refuses CONNECT, TRACE and custom methods, so a rule naming one is refused.
+
+Raw sockets, wildcard hosts, unrestricted access, path rules and attached-authority rules are unavailable. Reset preserves the allowlist.
 
 Requests originate on the host network. Allowing an internal or loopback hostname makes it reachable; hostname policy does not filter resolved IP addresses. The worker receives only selected platform variables, and the guest receives no application credentials.
 

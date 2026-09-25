@@ -30,6 +30,7 @@ jobs:
           # changes the pull request did not make. Against the head, the merge base is the
           # branch point whatever `main` has done, which is the question this check asks.
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:

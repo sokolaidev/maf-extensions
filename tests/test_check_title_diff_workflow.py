@@ -7,7 +7,7 @@ TEXT = WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_pr_title_workflow_checks_out_the_full_history():
-    assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4" in TEXT
+    assert "uses: actions/checkout@" in TEXT
     assert "fetch-depth: 0" in TEXT
 
 

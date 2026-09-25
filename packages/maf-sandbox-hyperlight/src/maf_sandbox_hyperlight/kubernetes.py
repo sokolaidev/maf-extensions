@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import queue
@@ -19,6 +18,7 @@ from typing import BinaryIO, cast
 from maf_sandbox import SandboxKey
 
 from ._pod import FRAME_LIMIT, frame, unframe
+from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
 _FINALIZER = "sandbox.sokol.ai/confirmed-stop"
@@ -79,14 +79,6 @@ class HyperlightPodResult:
     diagnostics: str
 
 
-def ownership_name(key: SandboxKey, kind: str) -> str:
-    """Use the complete scope as a durable allocation key without publishing it in labels."""
-    if key.call_id or not all((key.scope, key.thread_id, key.agent_id, kind)):
-        raise ValueError("a complete conversation-scoped key and kind are required")
-    identity = json.dumps([key.scope, key.thread_id, key.agent_id, kind], separators=(",", ":"))
-    return "maf-hl-" + hashlib.sha256(identity.encode()).hexdigest()[:40]
-
-
 def pod_manifest(
     key: SandboxKey,
     kind: str,
@@ -99,11 +91,9 @@ def pod_manifest(
     if not re.fullmatch(_DNS_LABEL, namespace):
         raise ValueError("invalid application namespace")
     name = ownership_name(key, kind)
+    # Pod readers see only the digest; the identity itself arrives over the attach stream.
     binding = {
-        "scope": key.scope,
-        "thread_id": key.thread_id,
-        "agent_id": key.agent_id,
-        "kind": kind,
+        "owner": name,
         "generation": generation,
         "memory_limit_bytes": template.memory_limit_bytes,
     }
@@ -428,6 +418,24 @@ class HyperlightPodController:
         manifest = pod_manifest(
             key, kind, template, namespace=self.namespace, generation=generation
         )
+        identity = {
+            "scope": key.scope,
+            "thread_id": key.thread_id,
+            "agent_id": key.agent_id,
+            "kind": kind,
+        }
+        try:
+            # A Kubernetes UID is a UUID, so this is the size of the hello the pod reads.
+            frame(
+                {
+                    "op": "hello",
+                    "pod_uid": str(uuid.UUID(int=0)),
+                    "generation": generation,
+                    **identity,
+                }
+            )
+        except HyperlightWorkerError as error:
+            raise ValueError("the ownership identity exceeds a lifecycle frame") from error
         ledger = self.api(
             "create",
             "-f",
@@ -483,6 +491,7 @@ class HyperlightPodController:
                     stream,
                     uid,
                     generation,
+                    identity,
                     started + template.session_timeout,
                     diagnostics,
                     readers,
@@ -532,6 +541,7 @@ class HyperlightPodController:
         stream: subprocess.Popen[bytes],
         uid: str,
         generation: str,
+        identity: dict[str, str],
         session_deadline: float,
         diagnostics: bytearray,
         readers: list[threading.Thread],
@@ -593,7 +603,7 @@ class HyperlightPodController:
                     "controller transport stopped consuming messages"
                 ) from error
 
-        send("hello")
+        send("hello", **identity)
         next_ping = 0.0
         deadline: float | None = None
         sequence = 0

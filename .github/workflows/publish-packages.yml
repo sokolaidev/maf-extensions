@@ -102,6 +102,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, and
@@ -113,13 +114,14 @@ jobs:
       - name: Resolve the release
         id: resolve
         env:
+          EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           INPUT_PACKAGE: ${{ inputs.package }}
           INPUT_TARGET: ${{ inputs.target }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             package="$INPUT_PACKAGE"
             target="$INPUT_TARGET"
             version="$INPUT_VERSION"
@@ -238,7 +240,9 @@ jobs:
         run: uv run pytest -q
 
       - name: Types
-        run: uv run pyright -p packages/${{ steps.resolve.outputs.package }}
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+        run: uv run pyright -p "packages/$PACKAGE"
 
       # `uv build` is what puts a version into the artifacts, and the filename assertions, the
       # install checks, the dependent gates and the summary all read it from there — so the
@@ -256,23 +260,27 @@ jobs:
         run: uv version --package "$PACKAGE" --frozen "$VERSION"
 
       - name: Build
-        run: uv build --package ${{ steps.resolve.outputs.package }} --out-dir dist
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+        run: uv build --package "$PACKAGE" --out-dir dist
 
       # Guards against a stale dist/ or a glob that swept up a sibling package: exactly one
       # sdist and one wheel, both named for the package being released.
       - name: Check the artifacts are this package's, and only this package's
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          module="$(echo "${{ steps.resolve.outputs.package }}" | tr '-' '_')"
-          version="${{ steps.resolve.outputs.version }}"
+          module="${PACKAGE//-/_}"
           ls -la dist/
           count="$(ls dist | wc -l)"
           if [ "$count" -ne 2 ]; then
             echo "::error::expected exactly one sdist and one wheel in dist/, found ${count}"
             exit 1
           fi
-          test -f "dist/${module}-${version}.tar.gz"
-          test -f "dist/${module}-${version}-py3-none-any.whl"
+          test -f "dist/${module}-${VERSION}.tar.gz"
+          test -f "dist/${module}-${VERSION}-py3-none-any.whl"
 
       - name: Check metadata
         run: uv run twine check dist/*
@@ -280,10 +288,12 @@ jobs:
       # py.typed and the licence travel in the wheel or the package is broken for consumers
       # in ways no test in this repository would notice.
       - name: Check the wheel carries py.typed and the licence
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
         run: |
           set -euo pipefail
-          module="$(echo "${{ steps.resolve.outputs.package }}" | tr '-' '_')"
-          contents="$(unzip -Z1 dist/${module}-*.whl)"
+          module="${PACKAGE//-/_}"
+          contents="$(unzip -Z1 "dist/${module}"-*.whl)"
           echo "$contents"
           echo "$contents" | grep -qx "${module}/py.typed"
           echo "$contents" | grep -q "\.dist-info/licenses/LICENSE"
@@ -330,6 +340,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -353,7 +365,9 @@ jobs:
           uv pip list --python /tmp/smoke/bin/python
 
       - name: Use it
-        run: /tmp/smoke/bin/python scripts/smoke_install.py ${{ needs.build.outputs.package }}
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+        run: /tmp/smoke/bin/python scripts/smoke_install.py "$PACKAGE"
 
   # Runs the dependent's own suite against every *published* core its range admits. `tests.yml`
   # runs the same suite against the workspace core, which is not a pairing anybody installs —
@@ -369,6 +383,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        with:
+          persist-credentials: false
 
       - name: Install uv
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
@@ -459,6 +475,7 @@ jobs:
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install uv
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
@@ -529,6 +546,7 @@ jobs:
             scripts
             packages/*/pyproject.toml
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -590,16 +608,20 @@ jobs:
           print-hash: true
 
       - name: Summary
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TARGET: ${{ needs.build.outputs.target }}
         run: |
           {
-            echo "### Published \`${{ needs.build.outputs.package }}\` ${{ needs.build.outputs.version }}"
+            echo "### Published \`${PACKAGE}\` ${VERSION}"
             echo
-            if [ "${{ needs.build.outputs.target }}" = "testpypi" ]; then
-              echo "- https://test.pypi.org/project/${{ needs.build.outputs.package }}/${{ needs.build.outputs.version }}/"
-              echo "- Install: \`pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
+            if [ "$TARGET" = "testpypi" ]; then
+              echo "- https://test.pypi.org/project/${PACKAGE}/${VERSION}/"
+              echo "- Install: \`pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ ${PACKAGE}==${VERSION}\`"
             else
-              echo "- https://pypi.org/project/${{ needs.build.outputs.package }}/${{ needs.build.outputs.version }}/"
-              echo "- Install: \`pip install ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
+              echo "- https://pypi.org/project/${PACKAGE}/${VERSION}/"
+              echo "- Install: \`pip install ${PACKAGE}==${VERSION}\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -632,6 +654,7 @@ jobs:
             scripts
             packages/*/pyproject.toml
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.build.outputs.package == 'maf-sandbox'
@@ -678,6 +701,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # The changelog entry is the release notes; a missing section fails the job rather
       # than shipping a Release with no notes.
@@ -878,6 +903,7 @@ jobs:
             scripts
             packages/*/pyproject.toml
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       # Never fails the run. The upload has already happened by the time this executes, and a
       # detector that cannot reach the index has nothing to say — colouring a shipped release

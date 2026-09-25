@@ -56,6 +56,7 @@ from maf_sandbox.credentials import CredentialGateway
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
+    _EXEC_OUTPUT_LIMIT,
     _FREEZE_LOCKS,
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
@@ -84,6 +85,8 @@ _ADDRESSED = 'bridge|true|[{"Subnet":"172.20.0.0/16","Gateway":"172.20.0.1"}]'
 _ADDRESSED_ON_THE_SECOND_FAMILY = (
     'bridge|true|[{"Subnet":"172.20.0.0/16"},{"Subnet":"fd00::/64","Gateway":"fd00::1"}]'
 )
+#: The IPAM entries of the outbound network, which is not one this backend creates.
+_OUTBOUND_IPAM = '[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]'
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -337,11 +340,13 @@ class _Recorded:
         stdin: bytes | None,
         timeout: float | None,
         read_limit: int | None,
+        max_output_bytes: int | None = None,
     ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
         self.read_limit = read_limit
+        self.max_output_bytes = max_output_bytes
 
 
 class _FakeDocker:
@@ -349,7 +354,8 @@ class _FakeDocker:
 
     Honours ``read_limit`` by slicing the responder's stdout to it, the way the real bounded
     read stops after that many bytes — so a test asserting the read path never buffers a whole
-    oversized output sees the same truncated stdout the real seam would hand back.
+    oversized output sees the same truncated stdout the real seam would hand back. Raises
+    past ``max_output_bytes``, as the real bounded read does.
     """
 
     def __init__(self, responder=None) -> None:
@@ -358,9 +364,15 @@ class _FakeDocker:
         self._marked = 0
 
     async def __call__(
-        self, *args: str, stdin=None, timeout=None, read_limit=None, container=None
+        self,
+        *args: str,
+        stdin=None,
+        timeout=None,
+        read_limit=None,
+        max_output_bytes=None,
+        container=None,
     ) -> _DockerResult:
-        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit, max_output_bytes))
         result = self._responder(args)
         if (
             args[:1] == ("cp",)
@@ -377,6 +389,10 @@ class _FakeDocker:
             result = _DockerResult(0, json.dumps({"maf-sandbox.work-dir.v1": _WORK}).encode(), "")
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
+        if max_output_bytes is not None and (
+            len(result.stdout) + len(result.stderr.encode()) > max_output_bytes
+        ):
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
         return result
 
     def mark(self) -> None:
@@ -485,11 +501,10 @@ def _machine(
             return _DockerResult(0, b"", "")
         if args[:2] == ("network", "inspect"):
             net = args[-1]
-            if args[3] == "{{json .IPAM.Config}}":
-                return _DockerResult(
-                    0, b'[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]\n', ""
-                )
             modes = live_networks.get(net)
+            if args[3] == "{{json .IPAM.Config}}":
+                ipam = modes.split("|", 2)[-1] if modes else _OUTBOUND_IPAM
+                return _DockerResult(0, ipam.encode() + b"\n", "")
             if modes is None:
                 return _DockerResult(1, b"", f"Error response from daemon: network {net} not found")
             return _DockerResult(0, modes.encode() + b"\n", "")
@@ -836,9 +851,22 @@ def _created_with(monkeypatch, responder=None, config=None):
     """
     fake = _FakeDocker(responder)
 
-    async def seam(_self, *args, stdin=None, timeout=None, read_limit=None, container=None):
+    async def seam(
+        _self,
+        *args,
+        stdin=None,
+        timeout=None,
+        read_limit=None,
+        max_output_bytes=None,
+        container=None,
+    ):
         return await fake(
-            *args, stdin=stdin, timeout=timeout, read_limit=read_limit, container=container
+            *args,
+            stdin=stdin,
+            timeout=timeout,
+            read_limit=read_limit,
+            max_output_bytes=max_output_bytes,
+            container=container,
         )
 
     async def binding(_self):
@@ -1495,6 +1523,39 @@ class TestExecArgv:
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         result = asyncio.run(sandbox.exec(["x"], working_directory=_WORK, timeout=5))
         assert (result.stdout, result.stderr, result.exit_code) == ("out\n", "err\n", 7)
+
+
+class TestExecOutputBound:
+    """Plain ``exec`` output is bounded, so a guest printing without end cannot fill host memory."""
+
+    def _flooding(self, size: int):
+        overrides = {("exec", "-w", _WORK): _DockerResult(0, b"x" * size, "")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _METHOD_SPEC)), fake
+
+    def test_plain_exec_reads_under_the_backends_bound(self):
+        sandbox, fake = self._flooding(0)
+        asyncio.run(sandbox.exec(["true"], working_directory=_WORK, timeout=5))
+        assert fake.only("exec").max_output_bytes == _EXEC_OUTPUT_LIMIT
+
+    def test_output_past_the_bound_is_refused_and_the_container_discarded(self):
+        """The command inside may still be running, as after a timeout."""
+        sandbox, fake = self._flooding(_EXEC_OUTPUT_LIMIT + 1)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(sandbox.exec(["flood"], working_directory=_WORK, timeout=5))
+        assert fake.matching("rm", "-f", _NAME)
+
+    def test_a_callers_own_budget_keeps_the_container(self):
+        """A file read over its cap is an ordinary refusal, not a reason to lose the sandbox."""
+        sandbox, fake = self._flooding(65)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                sandbox.exec_bounded(
+                    ["cat", "big"], working_directory=_WORK, timeout=5, max_output_bytes=64
+                )
+            )
+        assert fake.only("exec").max_output_bytes == 64
+        assert not fake.matching("rm", "-f", _NAME)
 
 
 class TestRunCode:
@@ -4989,6 +5050,7 @@ class TestAllowlistTopology:
         message = str(raised.value)
         assert "missing ['maf-sandbox egress contract v1']" in message
         assert "'listen tcp :3128: bind'" in message
+        assert "rebuild it: docker build -t maf-egress-proxy:local" in message
         assert message.isprintable()
         assert message.count("CONNECT") == 10
         assert len(message) < 4000
@@ -5026,6 +5088,35 @@ class TestAllowlistTopology:
         labels = [args[i + 1] for i, a in enumerate(args) if a == "--label"]
         assert "maf-sandbox.role=proxy" in labels
 
+    def test_the_proxy_drops_every_capability_while_the_workload_keeps_its_default(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = _run_named(fake, _AL_PROXY).args
+        assert args[args.index("--security-opt") + 1] == "no-new-privileges"
+        assert args[args.index("--pids-limit") + 1] == "512"
+        assert args[args.index("--cap-drop") + 1] == "ALL"
+        assert "--memory" not in args and "--cpus" not in args
+        assert "--cap-drop" not in _run_named(fake, _AL).args
+
+    def test_the_proxy_gets_the_workloads_configured_limits(self):
+        config = replace(_ALLOW_CONFIG, pids_limit=64, memory="256m", cpus=0.5)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        for name in (_AL_PROXY, _AL):
+            args = _run_named(fake, name).args
+            assert args[args.index("--pids-limit") + 1] == "64"
+            assert args[args.index("--memory") + 1] == "256m"
+            assert args[args.index("--cpus") + 1] == "0.5"
+
+    def test_an_unreadable_proxy_ca_names_the_engines_reason(self):
+        refused = "OCI runtime exec failed: unable to start container process: procReady"
+        backend, _ = _backend_with(
+            _machine(overrides={("exec", _AL_PROXY, "cat"): _DockerResult(126, b"", refused)}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match=f"CA certificate: {refused}"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
     def test_an_unreadable_outbound_gateway_refuses_the_proxy(self):
         backend, fake = _backend_with(
             _machine(
@@ -5038,6 +5129,28 @@ class TestAllowlistTopology:
             config=_ALLOW_CONFIG,
         )
         with pytest.raises(RuntimeError, match="unreadable gateway addresses"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
+
+    def test_the_proxy_listens_only_on_the_sandbox_networks_subnet(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = _run_named(fake, _AL_PROXY).args
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert "MAF_SANDBOX_TUNNEL_SUBNETS=172.20.0.0/16" in env
+        encoded = next(v.split("=", 1)[1] for v in env if v.startswith("MAF_SANDBOX_CONFIG_B64="))
+        assert "tunnel_listen" not in json.loads(base64.b64decode(encoded))["proxy"]
+
+    @pytest.mark.parametrize(
+        ("ipam", "match"),
+        [(b'[{"Subnet":"fd00::/64"}]', "no IPv4 subnet"), (b"not-json", "unreadable subnets")],
+    )
+    def test_a_sandbox_network_without_a_readable_ipv4_subnet_refuses_the_proxy(self, ipam, match):
+        inspect = ("network", "inspect", "-f", "{{json .IPAM.Config}}", _AL_NET)
+        backend, fake = _backend_with(
+            _machine(overrides={inspect: _DockerResult(0, ipam, "")}), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match=match):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
 

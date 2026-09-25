@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -14,6 +15,26 @@ from ._wire import HyperlightWorkerError
 
 POD_BINDING = "/run/maf-hyperlight/session/binding.json"
 POD_SOCKET = "/run/maf-hyperlight/session/control.sock"
+
+
+def ownership_name(key: SandboxKey, kind: str) -> str:
+    """Use the complete scope as a durable allocation key without publishing it on the pod."""
+    if key.call_id or not all((key.scope, key.thread_id, key.agent_id, kind)):
+        raise ValueError("a complete conversation-scoped key and kind are required")
+    _check_fields(key.scope, key.thread_id, key.agent_id, kind)
+    identity = json.dumps([key.scope, key.thread_id, key.agent_id, kind], separators=(",", ":"))
+    return "maf-hl-" + hashlib.sha256(identity.encode()).hexdigest()[:40]
+
+
+def _check_fields(*values: object) -> None:
+    for value in values:
+        if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
+            raise ValueError("pod ownership fields must be nonempty bounded strings")
+
+
+def _check_memory(value: object) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError("pod memory_limit_bytes must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -30,25 +51,17 @@ class HyperlightPodConfig:
     memory_limit_bytes: int
 
     def __post_init__(self) -> None:
-        for value in (
+        _check_fields(
             self.key.scope,
             self.key.thread_id,
             self.key.agent_id,
             self.kind,
             self.pod_uid,
             self.generation,
-        ):
-            if (
-                not isinstance(cast("object", value), str)
-                or not value
-                or len(value) > 1024
-                or "\x00" in value
-            ):
-                raise ValueError("pod ownership fields must be nonempty bounded strings")
+        )
         if self.key.call_id:
             raise ValueError("the pod integration supports conversation ownership only")
-        if type(self.memory_limit_bytes) is not int or self.memory_limit_bytes <= 0:
-            raise ValueError("pod memory_limit_bytes must be a positive integer")
+        _check_memory(self.memory_limit_bytes)
 
     @classmethod
     def from_environment(cls) -> HyperlightPodConfig:
@@ -91,3 +104,31 @@ class HyperlightPodConfig:
         """Reject a caller outside the pod's fixed ownership scope."""
         if key != self.key or (kind is not None and kind != self.kind):
             raise HyperlightWorkerError("the pod belongs to another sandbox ownership scope")
+
+
+@dataclass(frozen=True)
+class PodLaunch:
+    """What PID 1 starts with: the pod spec names its owner only by digest."""
+
+    owner: str
+    pod_uid: str
+    generation: str
+    memory_limit_bytes: int
+
+    def __post_init__(self) -> None:
+        _check_fields(self.owner, self.pod_uid, self.generation)
+        _check_memory(self.memory_limit_bytes)
+
+    def bind(self, identity: dict[str, object]) -> HyperlightPodConfig:
+        """Accept the controller's identity only when it is the one this pod is named for."""
+        binding = HyperlightPodConfig.from_mapping(
+            {
+                **identity,
+                "pod_uid": self.pod_uid,
+                "generation": self.generation,
+                "memory_limit_bytes": self.memory_limit_bytes,
+            }
+        )
+        if ownership_name(binding.key, binding.kind) != self.owner:
+            raise HyperlightWorkerError("the controller's identity does not name this pod")
+        return binding

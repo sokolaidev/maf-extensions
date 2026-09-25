@@ -104,7 +104,13 @@ from maf_sandbox.paths import (
 from ._config import DockerSandboxConfig
 from ._probes import probe_commands
 from ._proxy import build_context
-from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import (
+    INSTALL_GRANT,
+    encoded_policy,
+    ipv4_subnets,
+    network_gateways,
+    read_decisions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +187,7 @@ _BRIDGE_DRIVER = "bridge"
 #: the request echoed back whether or not the daemon acted on it, and so cannot tell a bridge
 #: that ended up unaddressed from one that did not.
 _NETWORK_EFFECT_FORMAT = "{{.Driver}}|{{.Internal}}|{{json .IPAM.Config}}"
-_NETWORK_GATEWAY_FORMAT = "{{json .IPAM.Config}}"
+_NETWORK_IPAM_FORMAT = "{{json .IPAM.Config}}"
 #: What the engine says for a network or container that is not there — read only alongside
 #: that target's own name, never on its own.  Absence is the one answer a caller may treat as
 #: safe, and unrelated failures use these words too: a missing context reports `context not
@@ -349,6 +355,7 @@ async def _freeze_lock(name: str) -> AsyncGenerator[None]:
 
 _PROXY_PORT = 3128
 _CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
+_TUNNEL_SUBNETS_ENV = "MAF_SANDBOX_TUNNEL_SUBNETS"
 _PROXY_READY_MARKER = "tunnel proxy starting"
 _PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
 _PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
@@ -451,6 +458,10 @@ _FILES_LIMITS = TransferLimits(
     max_bytes_per_file=64 * _MIB, max_total_bytes=256 * _MIB, max_files=256
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
+
+#: Combined stdout and stderr one ``exec`` may return. Over it the call is refused and the
+#: container discarded, since the command inside may still be running.
+_EXEC_OUTPUT_LIMIT = 8 * _MIB
 
 # FILES_OUT from day one — the pull surface is native (stat from the tar entry header, read from
 # the same stream). FILES_LIST is withheld because directory archives transfer the whole subtree.
@@ -1086,6 +1097,10 @@ class _DockerSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process but
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
 
+        Output past 8 MiB, stdout and stderr together, is refused the same way: the sandbox is
+        discarded and :class:`~maf_sandbox.SandboxExecOutputLimitExceeded` propagates.  A caller
+        that needs a different budget uses :meth:`exec_bounded`.
+
         A file call freezes the guest, so a command already running stops and resumes. A
         refused attempt is retried only if this process held the container frozen throughout
         it; a refusal that outlives the freeze is returned unchanged.
@@ -1112,27 +1127,11 @@ class _DockerSandbox:
             raise ValueError("max_output_bytes must be a positive integer")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
-        try:
-            result = await self._run(
-                "exec",
-                "-w",
-                working_directory,
-                self._name,
-                *argv,
-                timeout=timeout,
-                max_output_bytes=max_output_bytes,
-                container=self._name,
-            )
-        except TimeoutError:
-            with contextlib.suppress(Exception):
-                await self._run("rm", "-f", self._name, timeout=self._command_timeout)
-            raise
-        return ExecResult(
-            stdout_bytes=result.stdout,
-            stderr_bytes=result.stderr_bytes
-            if result.stderr_bytes is not None
-            else result.stderr.encode(),
-            exit_code=result.returncode,
+        return await self._exec(
+            argv,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
         )
 
     async def _exec(
@@ -1142,11 +1141,15 @@ class _DockerSandbox:
         working_directory: str,
         timeout: float,
         as_root: bool = False,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
         """One ``docker exec``, as the image's user or as ``--user 0``.
 
         :meth:`remove` and :meth:`reclaim` ask for root; :meth:`exec` and :meth:`run_code` are
         the guest program's own and name no user.  See ``docs/sandbox/backends/docker.md``.
+
+        ``max_output_bytes`` is a caller's own budget, and its overflow keeps the container;
+        left ``None``, the backend's bound applies and an overflow discards it.
         """
         privilege = ("--user", "0") if as_root else ()
         try:
@@ -1158,8 +1161,16 @@ class _DockerSandbox:
                 self._name,
                 *argv,
                 timeout=timeout,
+                max_output_bytes=_EXEC_OUTPUT_LIMIT
+                if max_output_bytes is None
+                else max_output_bytes,
                 container=self._name,
             )
+        except SandboxExecOutputLimitExceeded:
+            if max_output_bytes is None:
+                with contextlib.suppress(Exception):
+                    await self._run("rm", "-f", self._name, timeout=self._command_timeout)
+            raise
         except TimeoutError:
             with contextlib.suppress(Exception):
                 await self._run("rm", "-f", self._name, timeout=self._command_timeout)
@@ -2099,7 +2110,12 @@ class DockerSandboxBackend:
             read_limit=8192,
         )
         if result.returncode or not result.stdout.startswith(b"-----BEGIN CERTIFICATE-----"):
-            raise RuntimeError("docker could not read the egress proxy CA certificate")
+            detail = (
+                result.stderr.strip() or f"exit {result.returncode}"
+                if result.returncode
+                else "not a PEM certificate"
+            )
+            raise RuntimeError(f"docker could not read the egress proxy CA certificate: {detail}")
         await sandbox.write_file(
             _GUEST_CA_NAME, result.stdout, working_directory=spec.work_dir or "/maf-sandbox/work"
         )
@@ -3400,9 +3416,8 @@ class DockerSandboxBackend:
 
         The network and proxy already exist by now (``_ensure_egress`` ran first), so this only
         places the workload: on ``--network none`` when closed, or on the internal network with
-        the proxy in its environment when allowlisting.  Hardening flags go on unconditionally
-        (``--security-opt no-new-privileges``, ``--pids-limit``) or from config (``--cap-drop
-        ALL``, ``--memory``, ``--cpus``); no bind mount, no host path and no socket ever cross.
+        the proxy in its environment when allowlisting.  No bind mount, no host path and no
+        socket ever cross.
         """
         image = spec.image_id or spec.image
         if not image:
@@ -3412,18 +3427,7 @@ class DockerSandboxBackend:
         await self._ensure_image(image)
 
         args = ["run", "-d", "--name", name]
-        args += [
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            str(self._config.pids_limit),
-        ]
-        if self._config.cap_drop_all:
-            args += ["--cap-drop", "ALL"]
-        if self._config.memory is not None:
-            args += ["--memory", self._config.memory]
-        if self._config.cpus is not None:
-            args += ["--cpus", str(self._config.cpus)]
+        args += self._hardening(drop_capabilities=self._config.cap_drop_all)
         if allowlisting:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
@@ -3446,6 +3450,17 @@ class DockerSandboxBackend:
                 return image
             raise RuntimeError(f"docker could not create container {name}: {result.stderr.strip()}")
         return image
+
+    def _hardening(self, *, drop_capabilities: bool) -> list[str]:
+        """The ``run`` flags bounding a container the guest can drive: workload or proxy."""
+        args = ["--security-opt", "no-new-privileges", "--pids-limit", str(self._config.pids_limit)]
+        if drop_capabilities:
+            args += ["--cap-drop", "ALL"]
+        if self._config.memory is not None:
+            args += ["--memory", self._config.memory]
+        if self._config.cpus is not None:
+            args += ["--cpus", str(self._config.cpus)]
+        return args
 
     async def _ensure_egress(
         self, name: str, key: SandboxKey, spec: SandboxSpec, *, fresh: bool
@@ -3678,7 +3693,12 @@ class DockerSandboxBackend:
             self._report_proxy_drain(event)
 
         control_addresses = await self._outbound_control_addresses()
+        subnets = await self._tunnel_subnets(_network_name(name))
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
+        # The packaged image runs unprivileged on an unprivileged port, so it needs no
+        # capability whatever `cap_drop_all` says about the workload.
+        args += self._hardening(drop_capabilities=True)
+        args += ["-e", f"{_TUNNEL_SUBNETS_ENV}={' '.join(subnets)}"]
         args += [
             "-e",
             f"{_CONFIG_ENV}="
@@ -3739,7 +3759,7 @@ class DockerSandboxBackend:
             "network",
             "inspect",
             "-f",
-            _NETWORK_GATEWAY_FORMAT,
+            _NETWORK_IPAM_FORMAT,
             network,
             timeout=self._config.command_timeout_seconds,
         )
@@ -3753,6 +3773,28 @@ class DockerSandboxBackend:
             raise RuntimeError(
                 f"docker outbound network {network!r} has unreadable gateway addresses"
             ) from exc
+
+    async def _tunnel_subnets(self, net: str) -> tuple[str, ...]:
+        """Read the IPv4 subnets of the sandbox's network, the only leg the proxy listens on."""
+        result = await self._docker(
+            "network",
+            "inspect",
+            "-f",
+            _NETWORK_IPAM_FORMAT,
+            net,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"docker could not inspect network {net!r}: {result.stderr.strip()}")
+        try:
+            subnets = ipv4_subnets(json.loads(result.stdout))
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(f"docker network {net!r} has unreadable subnets") from exc
+        if not subnets:
+            raise RuntimeError(
+                f"docker network {net!r} has no IPv4 subnet for the proxy to listen on"
+            )
+        return subnets
 
     async def _await_listening(self, proxy: str) -> None:
         """Wait for the patched policy contract and listener before serving.
@@ -3782,7 +3824,9 @@ class DockerSandboxBackend:
             )
         raise RuntimeError(
             f"egress proxy {proxy} did not report the required policy contract and listening "
-            f"within {budget:g}s: {detail}"
+            f"within {budget:g}s: {detail} — an image built from an older build context fails "
+            f"this check; rebuild it: docker build -t {self._config.egress_proxy_image} "
+            f"{build_context()}"
         )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:

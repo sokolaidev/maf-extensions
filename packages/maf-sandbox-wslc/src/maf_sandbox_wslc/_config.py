@@ -45,6 +45,12 @@ class WslcSandboxConfig:
     a rebuilt packaged proxy image and attached-authority opt-ins in the host and workload.
     Each acquisition requires a trusted call key and creates a fresh workload and gateway.
     Credentials always require upstream TLS, including when private HTTP is enabled.
+
+    ``memory`` and ``cpus`` become ``--memory`` and ``--cpus`` on the workload container and on
+    its egress proxy, whose load the guest drives; unset, neither has them. ``memory`` bounds
+    resident memory only: WSLC sets no swap limit, so a container can page past it into the
+    session's swap. ``wslc container run`` has no flag for a PID limit, dropping capabilities
+    or ``no-new-privileges``, so this backend applies none of them.
     """
 
     wslc_path: str = "wslc"
@@ -52,3 +58,5 @@ class WslcSandboxConfig:
     egress_proxy_image: str | None = None
     allow_private_http: bool = False
     credential_gateway: CredentialGateway | None = None
+    memory: str | None = None
+    cpus: float | None = None

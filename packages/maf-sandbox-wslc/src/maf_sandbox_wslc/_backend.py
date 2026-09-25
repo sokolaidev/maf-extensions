@@ -61,7 +61,7 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
-from maf_sandbox.bounded_exec import read_bounded_process_output
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded, read_bounded_process_output
 from maf_sandbox.credentials import GatewayLease
 from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox.paths import (
@@ -83,7 +83,13 @@ from ._probes import (
     probe_commands,
 )
 from ._proxy import build_context
-from ._proxy.policy import INSTALL_GRANT, encoded_policy, network_gateways, read_decisions
+from ._proxy.policy import (
+    INSTALL_GRANT,
+    encoded_policy,
+    ipv4_subnets,
+    network_gateways,
+    read_decisions,
+)
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, listing_rows, reap
 
 logger = logging.getLogger(__name__)
@@ -180,6 +186,7 @@ _KEY_LABEL_MAX = 4096
 
 _PROXY_PORT = 3128
 _CONFIG_ENV = "MAF_SANDBOX_CONFIG_B64"
+_TUNNEL_SUBNETS_ENV = "MAF_SANDBOX_TUNNEL_SUBNETS"
 _PROXY_READY_MARKER = "tunnel proxy starting"
 _PROXY_CONTRACT_MARKER = "maf-sandbox egress contract v1"
 _PROXY_CA_PATH = "/run/maf-proxy/ca.crt"
@@ -462,6 +469,10 @@ _FILE_COMMAND_STDOUT_LIMIT = 4096
 #: Stdout an identity probe may return. ``id -u`` and ``id -g`` print one number; reaching
 #: this cap means the host killed a command that may still be running, not a long answer.
 _IDENTITY_STDOUT_LIMIT = 64
+
+#: Combined stdout and stderr one ``exec`` may return. Over it the call is refused and the
+#: container discarded, since the command inside may still be running.
+_EXEC_OUTPUT_LIMIT = 8 * 1024 * 1024
 
 #: How many quarantined instances one acquire will remove for a single name before deciding
 #: the name is contested. A discard runs outside the acquire lock, so a couple of pending
@@ -1100,6 +1111,10 @@ class _WslcSandbox:
         ``TimeoutError`` propagates — a workload reports the hang as a diagnostic, and the next
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process
         but keeps the sandbox: the in-container command runs on until the sandbox is disposed.
+
+        Output past 8 MiB, stdout and stderr together, is refused the same way: the sandbox is
+        discarded and :class:`~maf_sandbox.SandboxExecOutputLimitExceeded` propagates.  A caller
+        that needs a different budget uses :meth:`exec_bounded`.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
@@ -1118,22 +1133,11 @@ class _WslcSandbox:
             raise ValueError("max_output_bytes must be a positive integer")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
-        try:
-            result = await self._run(
-                "container",
-                "exec",
-                "-w",
-                working_directory,
-                self._name,
-                *argv,
-                timeout=timeout,
-                max_output_bytes=max_output_bytes,
-            )
-        except TimeoutError:
-            await self._discard()
-            raise
-        return ExecResult(
-            stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
+        return await self._exec(
+            argv,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
         )
 
     async def _exec(
@@ -1142,8 +1146,13 @@ class _WslcSandbox:
         *,
         working_directory: str,
         timeout: float,
+        max_output_bytes: int | None = None,
     ) -> ExecResult:
-        """One ``wslc container exec`` as the image's user."""
+        """One ``wslc container exec`` as the image's user.
+
+        ``max_output_bytes`` is a caller's own budget, and its overflow keeps the container;
+        left ``None``, the backend's bound applies and an overflow discards it.
+        """
         try:
             result = await self._run(
                 "container",
@@ -1153,7 +1162,14 @@ class _WslcSandbox:
                 self._name,
                 *argv,
                 timeout=timeout,
+                max_output_bytes=_EXEC_OUTPUT_LIMIT
+                if max_output_bytes is None
+                else max_output_bytes,
             )
+        except SandboxExecOutputLimitExceeded:
+            if max_output_bytes is None:
+                await self._discard()
+            raise
         except TimeoutError:
             await self._discard()
             raise
@@ -2538,7 +2554,7 @@ class WslcSandboxBackend:
                 "No sandbox image is configured: the spec names neither image nor image_id."
             )
 
-        args = ["container", "run", "-d", "--name", name]
+        args = ["container", "run", "-d", "--name", name, *self._resource_limits()]
         if allowlisting:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
@@ -2573,6 +2589,15 @@ class WslcSandboxBackend:
                     return image
             raise RuntimeError(f"wslc could not create container {name}: {conflict}")
         return image
+
+    def _resource_limits(self) -> list[str]:
+        """The ``run`` flags bounding a container the guest can drive: workload or proxy."""
+        args: list[str] = []
+        if self._config.memory is not None:
+            args += ["--memory", self._config.memory]
+        if self._config.cpus is not None:
+            args += ["--cpus", str(self._config.cpus)]
+        return args
 
     async def _ensure_egress(
         self, name: str, key: SandboxKey, spec: SandboxSpec, *, fresh: bool
@@ -2621,8 +2646,10 @@ class WslcSandboxBackend:
         if (await self._remove(proxy)).failure is None:
             self._report_proxy_drain(event)
 
-        control_addresses = await self._control_addresses(_network_name(name))
-        args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
+        control_addresses, subnets = await self._proxy_networks(_network_name(name))
+        args = ["container", "run", "-d", "--name", proxy, *self._resource_limits()]
+        args += ["--network", _network_name(name)]
+        args += ["-e", f"{_TUNNEL_SUBNETS_ENV}={' '.join(subnets)}"]
         args += [
             "-e",
             f"{_CONFIG_ENV}="
@@ -2671,9 +2698,12 @@ class WslcSandboxBackend:
             )
         await self._await_listening(proxy)
 
-    async def _control_addresses(self, internal_network: str) -> tuple[str, ...]:
-        """Read gateways on both networks the proxy will join."""
+    async def _proxy_networks(
+        self, internal_network: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Read gateways on both networks the proxy joins, and the IPv4 subnets it listens on."""
         addresses: list[str] = []
+        subnets: tuple[str, ...] = ()
         for network in (internal_network, "bridge"):
             result = await self._wslc(
                 "network", "inspect", network, timeout=self._config.command_timeout_seconds
@@ -2699,11 +2729,17 @@ class WslcSandboxBackend:
                     raise ValueError("network inspection omitted IPAM")
                 ipam = cast("dict[str, object]", ipam_data)
                 addresses.extend(network_gateways(ipam.get("Config")))
+                if network == internal_network:
+                    subnets = ipv4_subnets(ipam.get("Config"))
             except (ValueError, TypeError) as exc:
                 raise RuntimeError(
-                    f"wslc proxy network {network!r} has unreadable gateway addresses"
+                    f"wslc proxy network {network!r} has unreadable addressing"
                 ) from exc
-        return tuple(dict.fromkeys(addresses))
+        if not subnets:
+            raise RuntimeError(
+                f"wslc network {internal_network!r} has no IPv4 subnet for the proxy to listen on"
+            )
+        return tuple(dict.fromkeys(addresses)), subnets
 
     async def _await_listening(self, proxy: str) -> None:
         """Wait for the patched policy contract and listener before serving.
@@ -2735,7 +2771,9 @@ class WslcSandboxBackend:
             )
         raise RuntimeError(
             f"egress proxy {proxy} did not report the required policy contract and listening "
-            f"within {budget:g}s: {detail}"
+            f"within {budget:g}s: {detail} — an image built from an older build context fails "
+            f"this check; rebuild it: wslc build -t {self._config.egress_proxy_image} "
+            f"{build_context()}"
         )
 
     async def _adopt(self, name: str, spec: SandboxSpec) -> bool:

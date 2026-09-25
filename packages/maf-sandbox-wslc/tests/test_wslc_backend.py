@@ -52,6 +52,7 @@ from maf_sandbox import (
     SandboxBackend,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
+    SandboxExecOutputLimitExceeded,
     SandboxKey,
     SandboxOsFamilyNotSupported,
     SandboxRouter,
@@ -65,6 +66,7 @@ from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
     _CREATE_AS_THE_GUEST,
     _CREATE_DIRECTORIES,
+    _EXEC_OUTPUT_LIMIT,
     _GUEST_CA_PATH,
     _INSTALL_PROXY_CA,
     _LEFT_TO_THE_GUEST,
@@ -784,23 +786,31 @@ class _Recorded:
         stdin: bytes | None,
         timeout: float | None,
         read_limit: int | None = None,
+        max_output_bytes: int | None = None,
     ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
         self.read_limit = read_limit
+        self.max_output_bytes = max_output_bytes
 
 
 class _FakeWslc:
-    """Stands in for `WslcSandboxBackend._wslc`."""
+    """Stands in for `WslcSandboxBackend._wslc`; raises past ``max_output_bytes`` as it does."""
 
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
         self._responder = responder or _machine()
 
-    async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
-        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
+    async def __call__(
+        self, *args: str, stdin=None, timeout=None, read_limit=None, max_output_bytes=None
+    ) -> _WslcResult:
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit, max_output_bytes))
         result = self._responder(args)
+        if max_output_bytes is not None and (
+            len(result.stdout) + len(result.stderr) > max_output_bytes
+        ):
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
         if args[:2] == ("container", "inspect") and result == _WslcResult(0, b"", b""):
             result = _WslcResult(
                 0,
@@ -912,8 +922,9 @@ def _machine(
             return _WslcResult(0, b"maf-sandbox egress contract v1\ntunnel proxy starting\n", b"")
         if args[:2] == ("network", "inspect"):
             network = args[-1]
-            gateway = "172.17.0.1" if network == "bridge" else "172.20.0.1"
-            detail = {"Name": network, "IPAM": {"Config": [{"Gateway": gateway}]}}
+            octet = 17 if network == "bridge" else 20
+            config = [{"Subnet": f"172.{octet}.0.0/16", "Gateway": f"172.{octet}.0.1"}]
+            detail = {"Name": network, "IPAM": {"Config": config}}
             return _WslcResult(0, json.dumps([detail]).encode(), b"")
         if args[:2] == ("container", "exec") and args[-2:] == (
             "cat",
@@ -1472,6 +1483,23 @@ class TestAcquireCreatesClosed:
         args = fake.only("container", "run").args
         assert args[:5] == ("container", "run", "-d", "--name", _NAME)
 
+    def test_resource_limits_are_off_by_default(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        args = fake.only("container", "run").args
+        assert "--memory" not in args
+        assert "--cpus" not in args
+
+    def test_resource_limits_come_from_config(self):
+        config = WslcSandboxConfig(memory="512M", cpus=1.5)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        args = fake.only("container", "run").args
+        assert args[args.index("--memory") + 1] == "512M"
+        assert args[args.index("--cpus") + 1] == "1.5"
+
     def test_the_name_is_derived_from_the_key_and_the_kind(self):
         assert _container_name(_KEY, "bicep") == _container_name(
             SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer"), "bicep"
@@ -1854,6 +1882,38 @@ class TestExecDiscardsATimedOutSandbox:
 
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["sleep", "600"], working_directory="/w", timeout=1))
+
+
+class TestExecOutputBound:
+    """Plain ``exec`` output is bounded, so a guest printing without end cannot fill host memory."""
+
+    def _flooding(self, size: int):
+        overrides = {("container", "exec", "-w", "/w"): _WslcResult(0, b"x" * size, b"")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _METHOD_SPEC)), fake
+
+    def test_plain_exec_reads_under_the_backends_bound(self):
+        sandbox, fake = self._flooding(0)
+        asyncio.run(sandbox.exec(["true"], working_directory="/w", timeout=5))
+        assert fake.only("container", "exec").max_output_bytes == _EXEC_OUTPUT_LIMIT
+
+    def test_output_past_the_bound_is_refused_and_the_container_discarded(self):
+        """The command inside may still be running, as after a timeout."""
+        sandbox, fake = self._flooding(_EXEC_OUTPUT_LIMIT + 1)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(sandbox.exec(["flood"], working_directory="/w", timeout=5))
+        assert fake.only("container", "remove").args == ("container", "remove", "-f", f"id-{_NAME}")
+
+    def test_a_callers_own_budget_keeps_the_container(self):
+        sandbox, fake = self._flooding(65)
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                sandbox.exec_bounded(
+                    ["cat", "big"], working_directory="/w", timeout=5, max_output_bytes=64
+                )
+            )
+        assert fake.only("container", "exec").max_output_bytes == 64
+        assert not fake.matching("container", "remove")
 
 
 # ---------------------------------------------------------------------------
@@ -4102,6 +4162,25 @@ class TestAllowlistTopology:
         assert order == sorted(order)
         assert fake.only("network", "connect").args == ("network", "connect", "bridge", _AL_PROXY)
 
+    def test_the_proxy_has_no_resource_limits_by_default(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        proxy = _run_named(fake, _AL_PROXY).args
+        assert "--memory" not in proxy
+        assert "--cpus" not in proxy
+
+    def test_resource_limits_reach_the_workload_and_the_proxy(self):
+        """The guest drives the proxy's load, so the proxy gets the workload's limits."""
+        config = replace(_ALLOW_CONFIG, memory="512M", cpus=1.5)
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        for name in (_AL, _AL_PROXY):
+            args = _run_named(fake, name).args
+            assert args[args.index("--memory") + 1] == "512M", name
+            assert args[args.index("--cpus") + 1] == "1.5", name
+
     def test_the_network_is_internal_and_labelled(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -4137,7 +4216,32 @@ class TestAllowlistTopology:
             _machine(overrides={("network", "inspect", "bridge"): _WslcResult(0, b"[]", b"")}),
             config=_ALLOW_CONFIG,
         )
-        with pytest.raises(RuntimeError, match="unreadable gateway addresses"):
+        with pytest.raises(RuntimeError, match="unreadable addressing"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("container", "run", "-d", "--name", _AL_PROXY) == []
+
+    def test_the_proxy_listens_only_on_the_sandbox_networks_subnet(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = _run_named(fake, _AL_PROXY).args
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert "MAF_SANDBOX_TUNNEL_SUBNETS=172.20.0.0/16" in env
+        encoded = next(v.split("=", 1)[1] for v in env if v.startswith("MAF_SANDBOX_CONFIG_B64="))
+        assert "tunnel_listen" not in json.loads(base64.b64decode(encoded))["proxy"]
+
+    @pytest.mark.parametrize(
+        ("config", "match"),
+        [([{"Subnet": "fd00::/64"}], "no IPv4 subnet"), ([{}], "unreadable addressing")],
+    )
+    def test_a_sandbox_network_without_a_readable_ipv4_subnet_refuses_the_proxy(
+        self, config, match
+    ):
+        inspected = json.dumps([{"Name": _AL_NET, "IPAM": {"Config": config}}]).encode()
+        backend, fake = _backend_with(
+            _machine(overrides={("network", "inspect", _AL_NET): _WslcResult(0, inspected, b"")}),
+            config=_ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match=match):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("container", "run", "-d", "--name", _AL_PROXY) == []
 
@@ -4304,6 +4408,7 @@ class TestAllowlistTopology:
         message = str(raised.value)
         assert "missing ['maf-sandbox egress contract v1']" in message
         assert "'listen tcp :3128: bind'" in message
+        assert "rebuild it: wslc build -t maf-egress-proxy:local" in message
         assert message.isprintable()
         assert message.count("CONNECT") == 10
         assert len(message) < 4000

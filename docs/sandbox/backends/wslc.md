@@ -16,6 +16,8 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 | Sharing | `CONVERSATION`, `CALL` |
 | Transfer limits | `DEFAULT_SANDBOX_LIMITS` |
 | Cleanup | Disposal; no `RECLAIM` or `SNAPSHOT` |
+| Resource limits | `memory` and `cpus` in config, applied to the workload and its proxy, unset by default; `memory` does not limit swap |
+| Not enforced | PID limit, dropped capabilities, `no-new-privileges`; `wslc container run` has no flag for them |
 
 The default Windows Proactor event loop supports the required subprocesses. A selector event loop does not.
 
@@ -26,6 +28,8 @@ Acquisition checks `sh` for `EXEC`. For `FILES_IN`, it checks the external `/usr
 `write_file` runs one command as the image's user through `container exec`. The content arrives on stdin. The command creates missing parents, writes a sibling named for the call, checks the byte count, then moves the sibling into place. The file and any new parents belong to the image's user because that user wrote them. Existing directories keep their metadata.
 
 A destination the image's user cannot write raises `PermissionError`. There is no root fallback. Where the image's user is root, writes reach what its own programs reach. A write this host stops discards the container, because killing the host process does not reach the command inside it: that covers a blocked guest utility hitting the deadline, and a command whose stdout reaches the read cap, which the host answers by killing it and returning. This matches `exec`.
+
+`exec` returns at most 8 MiB of stdout and stderr together. Past that it raises `SandboxExecOutputLimitExceeded` and discards the container, as a timeout does. An `exec_bounded` caller's own budget keeps the container when it overflows.
 
 On WSLC 2.9.12.0 a 32 MiB write took 0.31 s and a plain exec 0.11 s. The write's byte count is checked against the content length before the file is published, so an engine whose `exec` does not stream stdin refuses the write rather than publishing a short file. `container exec --interactive` is present in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.12.0.
 
@@ -75,11 +79,25 @@ These are container-internal permission boundaries, not an escape into the Windo
 
 These methods raise `NotImplementedError`. Their capabilities, including `HOST_TOOLS`, are not declared. The router refuses a kind that requires them.
 
+## Resource limits and hardening
+
+`WslcSandboxConfig(memory="512M", cpus=1.5)` sets `--memory` and `--cpus` on the workload container and on its egress proxy, because the guest drives the proxy's load. Both are unset by default. The engine refuses a value it cannot apply, such as more CPUs than the session has, and acquisition raises `RuntimeError` with its message.
+
+`memory` limits resident memory, not swap. WSLC sets no swap limit, and each session has its own swap file ([microsoft/WSL#41438](https://github.com/microsoft/WSL/issues/41438)). On WSLC 2.9.13.0 a workload limited to 256 MiB allocated and touched 1 GiB without being killed; about 780 MiB went to swap.
+
+`wslc container run` has no `--pids-limit`, `--cap-drop` or `--security-opt` ([microsoft/WSL#41545](https://github.com/microsoft/WSL/issues/41545)). A WSLC workload and its proxy therefore keep the engine's default capability set, run with `no-new-privileges` off and can start processes without a limit. The engine does apply a seccomp filter. The Docker backend sets `no-new-privileges` and a PID limit on both containers, drops every capability from its proxy and can drop them from the workload.
+
+`--ulimit nproc` is not a substitute for a PID limit. It does not apply to root, and it counts every process its user ID runs in every container of the session, so one sandbox's processes use up another's allowance. The backend does not set it.
+
+Both flags are in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.13.0.
+
 ## Network policy
 
 ![A CLOSED workload has no network. A nonempty ALLOWLIST connects the workload to an internal network and iron-proxy; the proxy also joins an outbound network. Allowed hosts, HTTP methods, paths and resolved addresses are checked there. Proxy decisions are attributed to the sandbox when the proxy is removed. Docker's additional unaddressed-bridge check belongs to Docker, while WSLC uses its own engine network behavior.](../assets/container-egress.svg)
 
-With no proxy image, only `CLOSED` is available. With one, `ALLOWLIST` uses an internal network and a proxy connected to the outbound network. An empty allowlist uses the closed setup. The proxy terminates guest TLS, checks host, method and path, and validates the upstream certificate. Its per-sandbox CA certificate is installed at the fixed guest path `/maf-sandbox-proxy-ca.crt` and named in `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`; its key stays in the proxy. Public HTTP is denied on every port. Listed private endpoints use TLS unless `allow_private_http=True` is set for development or test. The outbound dial checks the resolved address and denies loopback, link-local, metadata, gateway and proxy interface addresses. See [network policy](../network.md) for the full contract.
+With no proxy image, only `CLOSED` is available. With one, `ALLOWLIST` uses an internal network and a proxy connected to the outbound network. The proxy listens only on its internal-network address, so other containers on the outbound network cannot use it. An empty allowlist uses the closed setup. The proxy terminates guest TLS, checks host, method and path, and validates the upstream certificate. Its per-sandbox CA certificate is installed at the fixed guest path `/maf-sandbox-proxy-ca.crt` and named in `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and `REQUESTS_CA_BUNDLE`; its key stays in the proxy. Public HTTP is denied on every port. Listed private endpoints use TLS unless `allow_private_http=True` is set for development or test. The outbound dial checks the resolved address and denies loopback, link-local, metadata, gateway and proxy interface addresses. See [network policy](../network.md) for the full contract.
+
+The proxy gets the workload's memory and CPU limits, and like the workload it has no PID limit, no `no-new-privileges` and the engine's default capability set. See [resource limits and hardening](#resource-limits-and-hardening).
 
 WSLC 2.9.12 creates IPv4-only bridge endpoints even when given an IPv6 subnet: network inspection reports `EnableIPv6=false`, and the container has no IPv6 address or route. Private IPv6 HTTP/TLS reachability cannot be verified with this topology. IPv6 loopback, link-local and metadata denials have been measured through the adapter. The live IPv6 transport test checks network readiness first and reports an explicit skip when IPv6 is disabled; a skipped test is not evidence of reachability. A host with a working ULA IPv6 network can supply its name through `MAF_SANDBOX_WSLC_E2E_IPV6_NETWORK`; the test removes its own containers and leaves that network in place. [#1407](https://github.com/sokolaidev/maf-extensions/issues/1407) tracks the remaining verification.
 
@@ -113,5 +131,6 @@ The backend starts no scheduler. See the [retention example](../../../packages/m
 | Parent swaps at placement | Bounded — writes run as the image's user; setup runs as root only where nothing can be swapped, and as the image's user elsewhere | [#1338](https://github.com/sokolaidev/maf-extensions/issues/1338) (closed) by [#1380](https://github.com/sokolaidev/maf-extensions/pull/1380) (merged) and [#1400](https://github.com/sokolaidev/maf-extensions/pull/1400) (merged); held no-follow upload is [microsoft/WSL#41594](https://github.com/microsoft/WSL/issues/41594) (open) |
 | Output reads and listing | Withheld pending an adequate engine interface | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open), [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (open), [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (open) |
 | Delete, reclaim and reset | Withheld | [Cleanup contract](../tool-call.md) |
+| Container resource and privilege limits | `memory` and `cpus` applied to the workload and the proxy; PID limit, capability drop and `no-new-privileges` wait on the CLI | [#1452](https://github.com/sokolaidev/maf-extensions/issues/1452) (closed) and [#1455](https://github.com/sokolaidev/maf-extensions/issues/1455) (closed) by [#1474](https://github.com/sokolaidev/maf-extensions/pull/1474) (merged); [microsoft/WSL#41545](https://github.com/microsoft/WSL/issues/41545) (open), [microsoft/WSL#41438](https://github.com/microsoft/WSL/issues/41438) (open) |
 | Temporary host disk use during stat | Explicit limit; requires host quotas | [Package README](../../../packages/maf-sandbox-wslc/README.md) |
 | Operator retention | Implemented; maintenance coordination required | [Operations](../operations.md) |

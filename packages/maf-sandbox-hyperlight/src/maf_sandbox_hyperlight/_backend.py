@@ -13,6 +13,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, asynccontextmanager, suppress
+from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from maf_sandbox import (
@@ -42,6 +43,10 @@ from ._process import Worker
 from ._wire import HyperlightWorkerError
 
 BACKEND_NAME = "hyperlight"
+#: The verbs the runtime enforces. It refuses TRACE, CONNECT and every custom token outright.
+METHOD_TOKENS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+#: A scheme-qualified allowlist target and the methods it admits, or None for all of them.
+_Target = tuple[str, tuple[str, ...] | None]
 RUNTIME_INSTRUCTIONS = (
     "Python statements execute in a persistent CPython 3.14 WebAssembly runtime. "
     "Print results; a final expression is not echoed. The host may reset state between calls. "
@@ -136,7 +141,7 @@ class _HyperlightSandbox:
     def __init__(
         self,
         config: HyperlightSandboxConfig,
-        targets: tuple[str, ...],
+        targets: tuple[_Target, ...],
         contract: str | None,
         owner: str,
         key: SandboxKey,
@@ -385,8 +390,11 @@ class HyperlightSandboxBackend:
     name = BACKEND_NAME
     isolation = Isolation.MICROVM
     declarations = BackendDeclarations(
-        capabilities=frozenset({Capability.RUN_CODE, Capability.SNAPSHOT}),
+        capabilities=frozenset(
+            {Capability.RUN_CODE, Capability.SNAPSHOT, Capability.EGRESS_METHODS}
+        ),
         egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
+        egress_method_tokens=METHOD_TOKENS,
         requires_exclusive_admission=True,
     )
     _gate: ClassVar[threading.Lock] = threading.Lock()
@@ -396,11 +404,10 @@ class HyperlightSandboxBackend:
         self.config = config if config is not None else HyperlightSandboxConfig()
         self._owner = uuid.uuid4().hex
         if self.config.file_outputs:
-            self.declarations = BackendDeclarations(
+            self.declarations = replace(
+                self.declarations,
                 capabilities=self.declarations.capabilities
                 | {Capability.FILES_OUT, Capability.FILES_LIST},
-                egress_modes=self.declarations.egress_modes,
-                requires_exclusive_admission=True,
             )
 
     @asynccontextmanager
@@ -414,7 +421,7 @@ class HyperlightSandboxBackend:
         async with admit(key, spec.kind, owner=owner, timeout=timeout) as cleanup_authority:
             yield cleanup_authority
 
-    def _targets(self, spec: SandboxSpec) -> tuple[str, ...]:
+    def _targets(self, spec: SandboxSpec) -> tuple[_Target, ...]:
         missing = spec.required_capabilities - self.declarations.capabilities
         if missing:
             raise SandboxCapabilityNotSupported(f"Hyperlight cannot serve {sorted(missing)}")
@@ -430,21 +437,33 @@ class HyperlightSandboxBackend:
             raise ValueError("Hyperlight currently supports conversation isolation only")
         if spec.egress not in self.declarations.egress_modes:
             raise ValueError("Hyperlight supports CLOSED or ALLOWLIST egress")
-        hosts: set[str] = set()
+        hosts: dict[str, tuple[str, ...] | None] = {}
         for entry in spec.egress_allow:
+            methods: tuple[str, ...] | None = None
             if isinstance(entry, EgressRule):
-                if entry.methods is not None or entry.authority is not None:
-                    raise ValueError("Hyperlight does not support refined egress rules")
+                if entry.authority is not None or entry.paths is not None:
+                    raise ValueError("Hyperlight does not support authority or path egress rules")
+                if entry.methods is not None:
+                    unsupported = set(entry.methods) - METHOD_TOKENS
+                    if unsupported:
+                        raise SandboxCapabilityNotSupported(
+                            f"Hyperlight cannot enforce egress methods {sorted(unsupported)}"
+                        )
+                    methods = tuple(sorted(str(method) for method in entry.methods))
                 host = entry.host
             else:
                 host = entry
             if host.startswith("*."):
                 raise ValueError("Hyperlight requires exact egress hosts, without wildcards")
-            hosts.add(host.lower())
+            # The runtime unions entries for one host, so a second rule would widen the first.
+            if hosts.setdefault(host.lower(), methods) != methods:
+                raise ValueError(f"conflicting egress rules for host {host.lower()!r}")
         if len(hosts) > 512:
             raise ValueError("Hyperlight supports at most 512 egress hosts")
         return tuple(
-            f"{scheme}://{host}/" for host in sorted(hosts) for scheme in ("http", "https")
+            (f"{scheme}://{host}/", hosts[host])
+            for host in sorted(hosts)
+            for scheme in ("http", "https")
         )
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:

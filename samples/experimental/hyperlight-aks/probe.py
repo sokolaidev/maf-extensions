@@ -233,18 +233,18 @@ async def network(backend: HyperlightSandboxBackend, binding: HyperlightPodConfi
                 work_dir=None,
                 requires=frozenset({Capability.RUN_CODE}),
                 egress=Egress.ALLOWLIST,
-                egress_allow=("127.0.0.1",),
+                egress_allow=("localhost",),
             )
             sandbox = await backend.acquire(binding.key, spec)
             allowed = await sandbox.run_code(
-                "print(http_get('http://127.0.0.1/allowed')['body'])", timeout=5
+                "print(http_get('http://localhost/allowed')['body'])", timeout=5
             )
             assert allowed.exit_code == 0 and "hyperlight-network-proof" in allowed.stdout
-            denied = await sandbox.run_code("http_get('http://localhost/denied')", timeout=5)
+            denied = await sandbox.run_code("http_get('http://127.0.0.1/denied')", timeout=5)
             assert denied.exit_code != 0 and hits == ["/allowed"]
             await sandbox.reset(timeout=5)
             restored = await sandbox.run_code(
-                "print(http_get('http://127.0.0.1/restored')['status'])", timeout=5
+                "print(http_get('http://localhost/restored')['status'])", timeout=5
             )
             assert restored.stdout.strip() == "200" and hits == ["/allowed", "/restored"]
             report("allowlist", exact_host=True, reset_preserves_policy=True)

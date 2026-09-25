@@ -45,13 +45,14 @@ The backend captures the client environment and binds its context, endpoint and 
 | Network | `CLOSED`; `ALLOWLIST` with a configured proxy |
 | Lifetime | Conversation or separate sandbox per call |
 | Transfer ceiling | 64 MiB per file, 256 MiB total, 256 files in each direction |
+| Command output | 8 MiB of stdout and stderr together; more refuses the call and discards the container |
 | Cleanup | Disposal by default; reclaim requires explicit host opt-in |
 
 Directory listing, runtime `run_code`, snapshots and core attached identity are unavailable. Method and path network rules require the configured proxy.
 
 Acquisition checks the guest commands needed by the requested capabilities. `EXEC` needs `sh`, even for an argv-only workload. Deletion needs `rm`; host tools also need `mkdir`, `mv` and `nohup`. File transfer itself needs no guest command.
 
-The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration.
+The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration. The egress proxy gets the workload's PID, memory and CPU limits and always drops all capabilities.
 
 ## File transfer
 
