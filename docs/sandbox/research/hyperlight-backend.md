@@ -231,7 +231,7 @@ Deployment acceptance remains open. A GitHub provenance verification for the pin
 
 Teardown removed every application pod and ownership reservation, both probe namespaces, the upstream plugin, diagnostic pod and temporary node pool. The test VM scale set was absent afterward. The cluster returned to its original two nodes and 34 pods, with unchanged original pod UIDs/restart counts, node labels and cluster identity/security/network/admission settings. Host KVM ownership and mode were unchanged before deleting the test node.
 
-### Platform matrix, 2026-09-26
+### Platform matrix, 2026-09-25
 
 [#1425](https://github.com/sokolaidev/maf-extensions/issues/1425) asked which node platforms the pod integration supports and how an unsupported node fails. Two temporary one-node `Standard_D4ads_v5` user pools were added to the Standard cluster with the eligibility labels set on the pool, at Kubernetes 1.35.7 and the default security type:
 
