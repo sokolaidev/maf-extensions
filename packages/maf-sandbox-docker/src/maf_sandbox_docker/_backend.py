@@ -3404,9 +3404,8 @@ class DockerSandboxBackend:
 
         The network and proxy already exist by now (``_ensure_egress`` ran first), so this only
         places the workload: on ``--network none`` when closed, or on the internal network with
-        the proxy in its environment when allowlisting.  Hardening flags go on unconditionally
-        (``--security-opt no-new-privileges``, ``--pids-limit``) or from config (``--cap-drop
-        ALL``, ``--memory``, ``--cpus``); no bind mount, no host path and no socket ever cross.
+        the proxy in its environment when allowlisting.  No bind mount, no host path and no
+        socket ever cross.
         """
         image = spec.image_id or spec.image
         if not image:
@@ -3416,18 +3415,7 @@ class DockerSandboxBackend:
         await self._ensure_image(image)
 
         args = ["run", "-d", "--name", name]
-        args += [
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            str(self._config.pids_limit),
-        ]
-        if self._config.cap_drop_all:
-            args += ["--cap-drop", "ALL"]
-        if self._config.memory is not None:
-            args += ["--memory", self._config.memory]
-        if self._config.cpus is not None:
-            args += ["--cpus", str(self._config.cpus)]
+        args += self._hardening(drop_capabilities=self._config.cap_drop_all)
         if allowlisting:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
@@ -3450,6 +3438,17 @@ class DockerSandboxBackend:
                 return image
             raise RuntimeError(f"docker could not create container {name}: {result.stderr.strip()}")
         return image
+
+    def _hardening(self, *, drop_capabilities: bool) -> list[str]:
+        """The ``run`` flags bounding a container the guest can drive: workload or proxy."""
+        args = ["--security-opt", "no-new-privileges", "--pids-limit", str(self._config.pids_limit)]
+        if drop_capabilities:
+            args += ["--cap-drop", "ALL"]
+        if self._config.memory is not None:
+            args += ["--memory", self._config.memory]
+        if self._config.cpus is not None:
+            args += ["--cpus", str(self._config.cpus)]
+        return args
 
     async def _ensure_egress(
         self, name: str, key: SandboxKey, spec: SandboxSpec, *, fresh: bool
@@ -3683,6 +3682,9 @@ class DockerSandboxBackend:
 
         control_addresses = await self._outbound_control_addresses()
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
+        # The packaged image runs unprivileged on an unprivileged port, so it needs no
+        # capability whatever `cap_drop_all` says about the workload.
+        args += self._hardening(drop_capabilities=True)
         args += [
             "-e",
             f"{_CONFIG_ENV}="
