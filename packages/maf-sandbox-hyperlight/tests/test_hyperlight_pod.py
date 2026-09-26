@@ -40,6 +40,7 @@ from maf_sandbox_hyperlight._pod_supervisor import Supervisor
 from maf_sandbox_hyperlight.kubernetes import (
     HyperlightPodCleanupPending,
     HyperlightPodController,
+    HyperlightPodPlatformError,
     HyperlightPodTemplate,
     confirmed_exit,
     ownership_name,
@@ -191,6 +192,7 @@ def controls(tmp_path: Path):
         "memory.swap.max": "0",
         "cpu.max": "100000 100000",
         "pids.max": "100",
+        "cgroup.controllers": "cpu memory pids",
     }
     for name, value in values.items():
         (tmp_path / name).write_text(value)
@@ -215,6 +217,84 @@ def test_absent_or_weaker_kernel_controls_refuse_startup(controls, name, value):
     (controls / name).write_text(value)
     with pytest.raises((ValueError, HyperlightWorkerError)):
         verify_container(BINDING.memory_limit_bytes, root=controls)
+
+
+@pytest.mark.parametrize(
+    "missing,match",
+    [
+        ("cgroup.controllers", "requires cgroup v2"),
+        ("memory.swap.max", "cannot read cgroup memory.swap.max"),
+    ],
+)
+def test_cgroup_v1_or_missing_swap_accounting_names_the_requirement(controls, missing, match):
+    (controls / missing).unlink()
+    with pytest.raises(HyperlightWorkerError, match=match):
+        verify_container(BINDING.memory_limit_bytes, root=controls)
+
+
+def test_platform_refusal_reaches_the_termination_message_with_its_own_exit(tmp_path):
+    launch = {"owner": LAUNCH.owner, "generation": "generation", "memory_limit_bytes": 1}
+    log = tmp_path / "termination-log"
+    program = f"""
+import json, os
+from maf_sandbox_hyperlight import _pod_supervisor
+from maf_sandbox_hyperlight._wire import HyperlightWorkerError
+os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(launch)!r}
+os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
+_pod_supervisor.TERMINATION_LOG = {str(log)!r}
+def refuse(launch):
+    raise HyperlightWorkerError('KVM initialization failed (Permission denied)')
+_pod_supervisor.verify_init = refuse
+_pod_supervisor.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, "application"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 78
+    assert log.read_text() == (
+        "maf-hyperlight: unsupported platform: KVM initialization failed (Permission denied)"
+    )
+
+
+def test_ready_event_carries_the_observed_platform():
+    observed = {"kernel": "6.8.0-1067-azure", "memory.swap.max": "0"}
+    payload = frame(
+        {"event": "ready", "pod_uid": "pod-uid", "generation": "generation", "platform": observed}
+    )
+    stopped = threading.Event()
+    # An open pipe keeps the transport alive until the session deadline.
+    source, sink = os.pipe()
+    os.write(sink, payload)
+    platform: dict[str, str] = {}
+    readers = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    with open(source, "rb") as control:
+        stream = SimpleNamespace(
+            stdout=control,
+            stderr=io.BytesIO(),
+            stdin=io.BytesIO(),
+            poll=lambda: 0 if stopped.is_set() else None,
+        )
+        try:
+            controller._supervise(
+                stream,
+                "pod-uid",
+                "generation",
+                IDENTITY,
+                time.monotonic() + 0.5,
+                bytearray(),
+                platform,
+                readers,
+            )
+        finally:
+            stopped.set()
+            os.close(sink)
+            for reader in readers:
+                reader.join(timeout=2)
+    assert platform == observed
 
 
 @pytest.mark.parametrize("raw", [b"{}", b"[]\n", b"{" + b"x" * FRAME_LIMIT + b"}\n", b"not-json\n"])
@@ -342,7 +422,14 @@ def test_controller_hello_carries_the_identity_the_supervisor_binds(supervisor, 
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
         controller._supervise(
-            stream, "pod-uid", "generation", IDENTITY, time.monotonic() + 2, bytearray(), readers
+            stream,
+            "pod-uid",
+            "generation",
+            IDENTITY,
+            time.monotonic() + 2,
+            bytearray(),
+            {},
+            readers,
         )
         written = time.monotonic() + 2
         while not stream.stdin.getvalue() and time.monotonic() < written:
@@ -485,7 +572,14 @@ def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
         controller._supervise(
-            stream, "pod-uid", "generation", IDENTITY, time.monotonic() + 2, bytearray(), readers
+            stream,
+            "pod-uid",
+            "generation",
+            IDENTITY,
+            time.monotonic() + 2,
+            bytearray(),
+            {},
+            readers,
         )
     finally:
         stopped.set()
@@ -597,6 +691,58 @@ class RejectingController(FakeController):
                 return copy.deepcopy(self.ledger)
             raise self.error
         return super().api(*arguments, body=body)
+
+
+def refused_pod(message):
+    pod = terminal_pod()
+    ended = pod["status"]["containerStatuses"][0]["state"]["terminated"]
+    ended.update({"reason": "Error", "exitCode": 78, "message": message})
+    return pod
+
+
+class SupervisingController(FakeController):
+    def api(self, *arguments, body=None):
+        if arguments[0] == "create":
+            assert body is not None
+            if body["kind"] == "ConfigMap":
+                self.ledger["data"].update(body["data"])
+                return copy.deepcopy(self.ledger)
+            self.pod["metadata"]["annotations"] = body["metadata"]["annotations"]
+            return copy.deepcopy(self.pod)
+        return super().api(*arguments, body=body)
+
+
+def test_platform_refusal_raises_after_confirmed_cleanup():
+    controller = SupervisingController(
+        refused_pod("maf-hyperlight: unsupported platform: pod mode requires cgroup v2")
+    )
+    with pytest.raises(HyperlightPodPlatformError, match="requires cgroup v2"):
+        controller.supervise(KEY, KIND, TEMPLATE)
+    assert not controller.ledger and not controller.pod
+
+
+def test_an_application_exit_78_is_not_a_platform_refusal():
+    controller = SupervisingController(refused_pod("application configuration error"))
+    assert controller.supervise(KEY, KIND, TEMPLATE).exit_code == 78
+
+
+def test_startup_timeout_names_the_scheduler_reason():
+    pod = terminal_pod()
+    pod["status"] = {
+        "phase": "Pending",
+        "conditions": [
+            {
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "Unschedulable",
+                "message": "0/3 nodes are available: 3 Insufficient hyperlight.dev/hypervisor.",
+            }
+        ],
+    }
+    controller = FakeController(pod)
+    name = ownership_name(KEY, KIND)
+    with pytest.raises(TimeoutError, match="Unschedulable: 0/3 nodes .* Insufficient hyperlight"):
+        controller._await_running(name, "pod-uid", time.monotonic() + 0.1)
 
 
 def rejected_create(message):
