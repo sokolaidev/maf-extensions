@@ -30,11 +30,11 @@ Inspect the rendered plugin before applying it with an explicit kubeconfig/conte
 
 Give eligible nodes their own node pool and label the pool in two steps. `hyperlight.dev/enabled=true` admits the device plugin; `hyperlight.dev/hypervisor=kvm` admits application pods. Create the pool with the first label only, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true`, install the plugin and run the report below. Add the second label once the report passes: `az aks nodepool update ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. That update replaces the pool's labels, so repeat every label the pool keeps. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.
 
-| VM size | Node image | OS | Kernel | Kubelet | containerd |
-|---|---|---|---|---|---|
-| `Standard_D4ads_v5` | `AKSUbuntu-2404gen2containerd-202609.15.0` | Ubuntu 24.04.5 LTS | `6.8.0-1067-azure` | v1.35.7 | 2.3.3-2 |
-| `Standard_D4ads_v5` | `AKSUbuntu-2404gen2containerd-202609.09.0` | Ubuntu 24.04.5 LTS | `6.8.0-1067-azure` | v1.35.7 | 2.3.3-2 |
-| `Standard_D4ads_v5` | `AKSAzureLinux-V3gen2-202609.15.0` | Microsoft Azure Linux 3.0 | `6.6.150.1-1.azl3` | v1.35.7 | 2.2.4 |
+| VM size | Node image | OS | Kernel | Kubelet | containerd | runc |
+|---|---|---|---|---|---|---|
+| `Standard_D4ads_v5` | `AKSUbuntu-2404gen2containerd-202609.15.0` | Ubuntu 24.04.5 LTS | `6.8.0-1067-azure` | v1.35.7 | 2.3.3-2 | 1.4.3-2 |
+| `Standard_D4ads_v5` | `AKSUbuntu-2404gen2containerd-202609.09.0` | Ubuntu 24.04.5 LTS | `6.8.0-1067-azure` | v1.35.7 | 2.3.3-2 | 1.4.3-2 |
+| `Standard_D4ads_v5` | `AKSAzureLinux-V3gen2-202609.15.0` | Microsoft Azure Linux 3.0 | `6.6.150.1-1.azl3` | v1.35.7 | 2.2.4 | 1.3.6 |
 
 Each row is one live observation, and the `nodes` report verifies a node only when it matches a row exactly. Guest execution was also measured on `Standard_D2ads_v5` with Ubuntu 24.04 and Kubernetes 1.35.7, but that run did not record the node image, so it is not a row.
 
@@ -47,6 +47,14 @@ uv run python scripts/hyperlight_aks.py nodes --kubeconfig /path/to/kubeconfig -
 ```
 
 The report reads each node labelled `hyperlight.dev/enabled=true`: its size, node image, security type, OS, kernel, runtime, kubelet version and advertised allocation, and whether it already carries the application label. It exits nonzero when any node matches no row, has a non-default security type or advertises no allocation, and names the fields that differ from the nearest row. It needs node read access, which the application controller does not have.
+
+Node status does not include runc, and OS patching can change it without a new node image, so the report cannot compare it. It prints the nearest row's value as `measured_runc`. Compare that with the node's own runc before adding the application label, using a one-off debug pod that runs the host binary:
+
+```sh
+kubectl debug node/NODE -n hyperlight-system --profile=sysadmin --image=python:3.13.12-slim-bookworm@sha256:3121f8b0804aa3698ab750d9a39ea4a42657a385c9b133722b915e55c51551a6 -- chroot /host runc --version
+```
+
+The `sysadmin` profile is privileged, so run it as a node operator in a namespace without Restricted admission, and delete the debug pod afterwards. A different runc version needs its own probe run and row.
 
 The controller enforces the requirements it can observe, from inside the pod. Before starting the application, PID 1 requires x86-64, cgroup v2, the declared memory limit, no swap, finite CPU and PID limits and a `/dev/kvm` that the pod user can open and create a VM on. A node that fails any of these makes `supervise` raise `HyperlightPodPlatformError` with the reason, after confirming cleanup. A pod that cannot be scheduled, for example because no labelled node advertises a free allocation, raises `TimeoutError` with the scheduler's reason after its startup budget. A successful result carries the controls PID 1 observed in `HyperlightPodResult.platform`.
 

@@ -16,7 +16,8 @@ from maf_sandbox_hyperlight.kubernetes import HyperlightPodController, Hyperligh
 UPSTREAM_REVISION = "fc71b4501d23977fcc54f7be144d884fc8210667"
 PLUGIN_IMAGE = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:fc71b45@sha256:dcb786825c83615c95ad5e95d25f8668efe032454c2fec623b5ed3806bb3ac98"
 # Exact observations from live probe runs. A node verifies only by matching one of them;
-# a newer node image, kernel or patch needs its own run first.
+# a newer node image, kernel or patch needs its own run first. Node status omits runc, so
+# the report shows the measured value for the operator to compare on the node.
 MEASURED_PLATFORMS = (
     {
         "size": "Standard_D4ads_v5",
@@ -25,6 +26,7 @@ MEASURED_PLATFORMS = (
         "kernel": "6.8.0-1067-azure",
         "kubelet": "v1.35.7",
         "runtime": "containerd://2.3.3-2",
+        "runc": "1.4.3-2",
     },
     {
         "size": "Standard_D4ads_v5",
@@ -33,6 +35,7 @@ MEASURED_PLATFORMS = (
         "kernel": "6.8.0-1067-azure",
         "kubelet": "v1.35.7",
         "runtime": "containerd://2.3.3-2",
+        "runc": "1.4.3-2",
     },
     {
         "size": "Standard_D4ads_v5",
@@ -41,6 +44,7 @@ MEASURED_PLATFORMS = (
         "kernel": "6.6.150.1-1.azl3",
         "kubelet": "v1.35.7",
         "runtime": "containerd://2.2.4",
+        "runc": "1.3.6",
     },
 )
 UPSTREAM_MANIFEST = f"https://raw.githubusercontent.com/hyperlight-dev/hyperlight-on-kubernetes/{UPSTREAM_REVISION}/deploy/manifests/device-plugin.yaml"
@@ -108,18 +112,21 @@ def node_report(node: dict) -> dict:
         reasons.append("architecture is not amd64")
     if observed["security_type"]:
         reasons.append(f"security type {observed['security_type']} is not measured")
-    differences = min(
-        (
-            [field for field, value in row.items() if observed[field] != value]
-            for row in MEASURED_PLATFORMS
-        ),
-        key=len,
+    nearest = min(
+        MEASURED_PLATFORMS,
+        key=lambda row: sum(observed[field] != row[field] for field in row if field != "runc"),
     )
+    differences = [f for f in nearest if f != "runc" and observed[f] != nearest[f]]
     if differences:
         reasons.append(f"unmeasured {', '.join(differences)}; nearest measured platform differs")
     if observed["allocatable"] in {"", "0"}:
         reasons.append("the device plugin advertises no hypervisor allocation")
-    return {**observed, "verified": not reasons, "reasons": reasons}
+    return {
+        **observed,
+        "measured_runc": nearest["runc"],
+        "verified": not reasons,
+        "reasons": reasons,
+    }
 
 
 def main() -> None:

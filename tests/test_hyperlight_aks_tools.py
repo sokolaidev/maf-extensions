@@ -122,6 +122,7 @@ def labelled_node(**info: str) -> dict[str, Any]:
 def test_a_measured_node_platform_is_verified_before_it_is_schedulable():
     report = node_report(labelled_node())
     assert report["verified"] and not report["schedulable"]
+    assert report["measured_runc"] == "1.3.6"
 
 
 @pytest.mark.parametrize(
