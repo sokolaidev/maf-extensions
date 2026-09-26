@@ -5,7 +5,7 @@
   "packages/maf-sandbox-codeact": "0.21.1",
   "packages/maf-sandbox-deepagents": "0.4.3",
   "packages/maf-sandbox-docker": "0.24.0",
-  "packages/maf-sandbox-hyperlight": "0.5.1",
+  "packages/maf-sandbox-hyperlight": "0.6.0",
   "packages/maf-sandbox-otel": "0.7.3",
   "packages/maf-sandbox-terraform": "0.5.2",
   "packages/maf-sandbox-wslc": "0.26.0",

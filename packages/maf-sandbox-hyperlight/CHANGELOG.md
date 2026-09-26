@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.5.1...maf-sandbox-hyperlight-v0.6.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **hyperlight:** stop publishing a pod's scope, thread and agent in its spec ([#1470](https://github.com/sokolaidev/maf-extensions/issues/1470))
+
+### Features
+
+* **hyperlight:** enforce HTTP method rules through the runtime's own allowlist ([#1448](https://github.com/sokolaidev/maf-extensions/issues/1448)) ([bacc886](https://github.com/sokolaidev/maf-extensions/commit/bacc8864d6d4250de6940c59ba428265069c6fa4))
+* **hyperlight:** refuse AKS nodes that fail pod-mode requirements before the application starts ([#1486](https://github.com/sokolaidev/maf-extensions/issues/1486)) ([02c0dce](https://github.com/sokolaidev/maf-extensions/commit/02c0dcea8efbf7a9dc06452e22199d18934cc284))
+* **hyperlight:** report why a Kubernetes pod retired, after its cleanup ([#1487](https://github.com/sokolaidev/maf-extensions/issues/1487)) ([c858d48](https://github.com/sokolaidev/maf-extensions/commit/c858d48d342fec41fcccc40ab3b7000b53b0f2ed))
+
+
+### Fixes
+
+* **hyperlight:** keep the pod's other processes out of PID 1's controller stdin ([#1491](https://github.com/sokolaidev/maf-extensions/issues/1491)) ([d75a448](https://github.com/sokolaidev/maf-extensions/commit/d75a4489c01a799c36eff01bf5238fffacc959c2))
+* **hyperlight:** stop publishing a pod's scope, thread and agent in its spec ([#1470](https://github.com/sokolaidev/maf-extensions/issues/1470)) ([05c2c8b](https://github.com/sokolaidev/maf-extensions/commit/05c2c8ba12823cb0dcdf2927a50d1b03feb1e19c))
+* require maf-sandbox 0.44.0 in the dependents, and admit the 0.44 line ([#1489](https://github.com/sokolaidev/maf-extensions/issues/1489)) ([90e5f6f](https://github.com/sokolaidev/maf-extensions/commit/90e5f6f04f87b18799536401eaab8b2e676be2af))
+
 ## [0.5.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.5.0...maf-sandbox-hyperlight-v0.5.1) (2026-09-24)
 
 
