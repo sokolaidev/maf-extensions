@@ -98,9 +98,11 @@ The command deadline includes retrieval and scratch cleanup. Failure deletion ha
 
 ## Network policy
 
-Each create sets full traffic inspection and default deny. `ALLOWLIST` adds the hosts in `spec.egress_allow`; `CLOSED` adds none. `UNRESTRICTED` and `EGRESS_METHODS` are refused.
+Each create sets full traffic inspection and default deny. `ALLOWLIST` adds the hosts in `spec.egress_allow`; `CLOSED` adds none. Bare hosts retain host-wide rules. An `EgressRule` with methods becomes an advanced allow rule, without a host-wide allow for that entry. Matching allow rules combine, including exact/wildcard overlap. `UNRESTRICTED`, path rules and attached-authority rules are refused.
 
-A held sandbox records its mode and case-insensitive host set. An equivalent policy reuses it. A changed policy raises `AcasEgressPolicyConflict` before resume and preserves the old instance.
+`EGRESS_METHODS` supports the qualified HTTPS tokens GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, PROPFIND, X-CUSTOM and literal `*`. CONNECT and other unqualified tokens refuse both at router selection and direct acquisition. The finite declaration is not a claim about every valid HTTP token. Full-inspection plaintext HTTP remained blocked in the measured host-wide and method-scoped policies; nonstandard ports remain unqualified. GET-only is not a read-only or body-free guarantee.
+
+A held sandbox records its mode, case-insensitive hosts and method sets. Equivalent host/rule/method ordering reuses it. A changed policy raises `AcasEgressPolicyConflict` before resume and preserves the old instance and cleanup ownership.
 
 To change policy, coordinate active calls, dispose that kind and require successful completion, or choose a new key. `router.dispose_kind(...)` must return `True`; direct `backend.dispose(..., kind=...)` must return `None`.
 
@@ -138,5 +140,5 @@ The broader metadata, private-network, host-path and host-socket isolation probe
 | Typed SDK file metadata | Open; adapter requires raw flags | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) (open) |
 | Special-file classification | Open; regular files cannot be distinguished reliably | [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) (open) |
 | Working-directory preparation authority | Bounded; setup creates missing directories as the guest and refuses if that creation fails | [#1339](https://github.com/sokolaidev/maf-extensions/issues/1339) (closed) by [#1379](https://github.com/sokolaidev/maf-extensions/pull/1379) (merged) |
-| Method-level network policy | Withheld pending full validation | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open) |
+| Method-level network policy | Qualified HTTPS subset implemented; remaining parent validation is separate | [#1507](https://github.com/sokolaidev/maf-extensions/issues/1507) (open); [#1508](https://github.com/sokolaidev/maf-extensions/issues/1508) (open); [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open) |
 | Broader isolation probes | Not implemented | untracked |

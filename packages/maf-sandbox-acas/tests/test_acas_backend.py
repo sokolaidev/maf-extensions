@@ -438,6 +438,7 @@ class TestBackendIdentity:
                 Capability.FILES_LIST,
                 Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
+                Capability.EGRESS_METHODS,
             }
         )
 
@@ -4152,7 +4153,7 @@ def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed)
         replacement = await backend.acquire(key, changed)
         assert first.instance_id in client.deleted
         assert replacement.instance_id != first.instance_id
-        assert replacement._held.egress == (Egress.ALLOWLIST, frozenset({"api.example"}))
+        assert replacement._held.egress == (Egress.ALLOWLIST, frozenset({("api.example", None)}))
         assert client.create_calls == 2
 
     asyncio.run(scenario())
@@ -4506,7 +4507,7 @@ class TestConcurrentAcquire:
             assert original_sandbox.instance_id == other.instance_id
         held = backend._registry[("s", "t", "a", "", original.kind)]
         assert held.sandbox_id == original_sandbox.instance_id
-        assert held.egress == (Egress.ALLOWLIST, frozenset({"api.example"}))
+        assert held.egress == (Egress.ALLOWLIST, frozenset({("api.example", None)}))
 
     def test_cancelling_a_waiter_preserves_exclusion_for_other_waiters(self):
         backend = _backend_with(_SlowCreateGroupClient())
@@ -4763,7 +4764,7 @@ class TestEgressPolicy:
 
         asyncio.run(scenario())
 
-    @pytest.mark.parametrize("methods", [("GET",), ("POST", "PUT"), ("PROPFIND",)])
+    @pytest.mark.parametrize("methods", [("CONNECT",), ("GET", "X-UNQUALIFIED")])
     def test_method_policy_refuses_before_reaching_the_service(self, methods, monkeypatch):
         backend = AcasSandboxBackend(_config())
         monkeypatch.setattr(
@@ -4775,7 +4776,7 @@ class TestEgressPolicy:
             egress_allow=(EgressRule("api.example", methods),),
         )
         router = SandboxRouter([backend])
-        assert Capability.EGRESS_METHODS not in backend.declarations.capabilities
+        assert Capability.EGRESS_METHODS in backend.declarations.capabilities
         for acquire in (backend.acquire, router.acquire):
             with pytest.raises(SandboxCapabilityNotSupported):
                 asyncio.run(acquire(SandboxKey("s", "t", "a"), scoped))
@@ -4783,6 +4784,101 @@ class TestEgressPolicy:
             router.ensure_can_serve(scoped)
         with pytest.raises(SandboxCapabilityNotSupported):
             backend._egress_policy(scoped)
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            EgressRule("api.example", paths=("/v1",)),
+            EgressRule("api.example", authority="audience"),
+        ],
+    )
+    def test_direct_acquire_refuses_unsupported_rule_refinements(self, rule, monkeypatch):
+        from maf_sandbox import IdentityScope
+
+        backend = AcasSandboxBackend(_config())
+        monkeypatch.setattr(
+            backend, "_group_client", lambda credential: pytest.fail("contacted service")
+        )
+        spec = SandboxSpec(
+            kind="t",
+            egress=Egress.ALLOWLIST,
+            egress_allow=(rule,),
+            requires=frozenset({Capability.ATTACHED_IDENTITY}) if rule.authority else frozenset(),
+            max_identity_scope=IdentityScope.SHARED if rule.authority else None,
+            max_identity_retention_seconds=60 if rule.authority else None,
+        )
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(backend.acquire(SandboxKey("s", "t", "a"), spec))
+
+    def test_method_translation_keeps_unrestricted_hosts_out_of_scoped_rules(self):
+        backend = AcasSandboxBackend(_config())
+        spec = SandboxSpec(
+            kind="t",
+            egress=Egress.ALLOWLIST,
+            egress_allow=(
+                "other.example",
+                EgressRule("API.example", ("POST", "GET")),
+                EgressRule("*.example", ("*",)),
+            ),
+        )
+        SandboxRouter([backend]).ensure_can_serve(spec)
+        policy = backend._egress_policy(spec)
+        assert policy._to_dict() == {
+            "defaultAction": "Deny",
+            "trafficInspection": "Full",
+            "hostRules": [{"pattern": "other.example", "action": "Allow"}],
+            "rules": [
+                {
+                    "match": {"host": "api.example", "methods": ["GET", "POST"]},
+                    "action": {"type": "Allow"},
+                },
+                {"match": {"host": "*.example", "methods": ["*"]}, "action": {"type": "Allow"}},
+            ],
+        }
+
+    def test_method_order_and_host_case_reuse_the_same_instance(self):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        spec = replace(
+            _spec(),
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("API.example", ("POST", "GET")), "other.example"),
+        )
+        equivalent = replace(
+            spec, egress_allow=("OTHER.example", EgressRule("api.example", ("GET", "POST")))
+        )
+
+        async def scenario():
+            original = await backend.acquire(key, spec)
+            assert (await backend.acquire(key, equivalent)).instance_id == original.instance_id
+            assert client.create_calls == 1
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize(
+        "before,after",
+        [(None, ("GET",)), (("GET",), None), (("GET",), ("POST",)), (("GET",), ("GET", "POST"))],
+    )
+    def test_changed_methods_preserve_the_original_holder(self, before, after):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        original = replace(
+            _spec(), egress=Egress.ALLOWLIST, egress_allow=(EgressRule("api.example", before),)
+        )
+        changed = replace(original, egress_allow=(EgressRule("api.example", after),))
+
+        async def scenario():
+            first = await backend.acquire(key, original)
+            held = backend._registry[("s", "t", "a", "", original.kind)]
+            with pytest.raises(AcasEgressPolicyConflict):
+                await SandboxRouter([backend]).acquire(key, changed)
+            assert backend._registry[("s", "t", "a", "", original.kind)] is held
+            assert not client.resumed and client.create_calls == 1
+            assert (await backend.acquire(key, original)).instance_id == first.instance_id
+
+        asyncio.run(scenario())
 
     def test_equivalent_host_policies_reuse_the_same_instance(self):
         client = _SlowCreateGroupClient()
