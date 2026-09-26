@@ -1361,7 +1361,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-drawio"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "packages/maf-sandbox-drawio" }
 dependencies = [
     { name = "agent-framework-core" },
