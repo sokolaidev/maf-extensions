@@ -582,6 +582,19 @@ os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
             70,
             "cannot read \\udcff",
         ),
+        (
+            (
+                "_pod_supervisor.verify_init = lambda launch: None\n"
+                "_pod_supervisor._oom_kills = lambda: 0\n"
+                "def run(self):\n"
+                "    with open(_pod_supervisor.TERMINATION_LOG, 'w') as target:\n"
+                "        target.write('written by the application')\n"
+                "    return 0\n"
+                "_pod_supervisor.Supervisor.run = run"
+            ),
+            0,
+            "",
+        ),
     ],
 )
 def test_supervisor_records_its_reason_as_the_termination_message(tmp_path, outcome, code, reason):

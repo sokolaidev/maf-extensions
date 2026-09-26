@@ -432,7 +432,8 @@ def main() -> None:
     if reason:
         with suppress(OSError, ValueError):
             print(reason, file=sys.stderr, flush=True)
-        record_reason(reason)
+    # The application shares this UID and may have written the file; an empty reason clears it.
+    record_reason(reason)
     # Python shutdown can wait on application-owned resources; namespace exit must not.
     os._exit(status if 0 <= status <= 255 else 70)
 
