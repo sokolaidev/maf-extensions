@@ -119,8 +119,9 @@ class Supervisor:
         self.oom_kills = _oom_kills()
 
     def retire(self, reason: str) -> None:
-        """Revoke admission before the namespace init exits."""
-        self.reason = reason
+        """Revoke admission before the namespace init exits; the first cause is the one reported."""
+        if not self.reason:
+            self.reason = reason
         self.retired.set()
         self.ack.set()
 
@@ -385,7 +386,10 @@ class Supervisor:
 
 def record_reason(reason: str) -> None:
     """The kubelet copies this file into pod status, which outlives the pod's log."""
-    with suppress(OSError), open(TERMINATION_LOG, "w", encoding="utf-8") as target:
+    with (
+        suppress(OSError),
+        open(TERMINATION_LOG, "w", encoding="utf-8", errors="backslashreplace") as target,
+    ):
         target.write(reason[:REASON_LIMIT])
 
 
@@ -421,7 +425,8 @@ def main() -> None:
         reason = f"pod supervisor refused startup: {error}"
         status = 71
     if reason:
-        print(reason, file=sys.stderr, flush=True)
+        with suppress(OSError, ValueError):
+            print(reason, file=sys.stderr, flush=True)
         record_reason(reason)
     # Python shutdown can wait on application-owned resources; namespace exit must not.
     os._exit(status if 0 <= status <= 255 else 70)

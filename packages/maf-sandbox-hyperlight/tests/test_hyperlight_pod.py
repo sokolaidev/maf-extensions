@@ -571,6 +571,17 @@ os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
             70,
             "controller stream closed",
         ),
+        (
+            (
+                "_pod_supervisor.verify_init = lambda launch: None\n"
+                "_pod_supervisor._oom_kills = lambda: 0\n"
+                "_pod_supervisor.Supervisor.run = lambda self: ("
+                "self.retire('cannot read ' + chr(0xDCFF)) "
+                "or self.retire('pod termination requested') or 70)"
+            ),
+            70,
+            "cannot read \\udcff",
+        ),
     ],
 )
 def test_supervisor_records_its_reason_as_the_termination_message(tmp_path, outcome, code, reason):
@@ -594,8 +605,16 @@ def test_recorded_reason_is_bounded_and_never_blocks_exit(tmp_path, monkeypatch)
     monkeypatch.setattr(_pod_supervisor, "TERMINATION_LOG", str(log))
     _pod_supervisor.record_reason("x" * (REASON_LIMIT + 1))
     assert log.read_text(encoding="utf-8") == "x" * REASON_LIMIT
+    _pod_supervisor.record_reason("cannot read \udcff")
+    assert log.read_text(encoding="utf-8") == "cannot read \\udcff"
     monkeypatch.setattr(_pod_supervisor, "TERMINATION_LOG", str(tmp_path))
     _pod_supervisor.record_reason("unwritable")
+
+
+def test_the_first_retirement_cause_is_the_one_reported(supervisor):
+    supervisor.retire("controller stream closed")
+    supervisor.retire("pod termination requested")
+    assert supervisor.reason == "controller stream closed"
 
 
 def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
