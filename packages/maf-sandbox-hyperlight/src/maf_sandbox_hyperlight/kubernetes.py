@@ -348,11 +348,14 @@ def _never_started_terminal(container: dict[str, object]) -> bool:
 
 
 def _termination_reason(pod: dict[str, object]) -> str:
+    """Only a runtime exit carries supervisor text; kubelet's synthetic status does not."""
     status = cast("dict[str, object]", pod.get("status", {}))
     containers = cast("list[dict[str, object]]", status.get("containerStatuses", []))
     if len(containers) != 1 or containers[0].get("name") != "sandbox":
         return ""
     state = cast("dict[str, object]", containers[0].get("state", {}))
+    if _terminated_exit(state) is None:
+        return ""
     message = cast("dict[str, object]", state.get("terminated", {})).get("message")
     return message[:REASON_LIMIT] if isinstance(message, str) else ""
 

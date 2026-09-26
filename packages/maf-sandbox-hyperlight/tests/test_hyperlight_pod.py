@@ -1071,10 +1071,11 @@ def test_never_started_cleanup_records_failure_before_releasing_ownership(mode):
     assert confirmed_exit(pod, "pod-uid") == 71
     assert confirmed_exit(pod, "other-uid") is None
     controller = FakeController(pod)
-    assert controller.recover(KEY, KIND, retire=True) == 71
+    assert controller.recover_exit(KEY, KIND, retire=True) == kubernetes.HyperlightPodExit(71, "")
     mutations = [(args[0], body) for args, body in controller.calls if args[0] != "get"]
     assert mutations[0][1]["data"]["state"] == "stopped"
     assert mutations[0][1]["data"]["exit_code"] == "71"
+    assert mutations[0][1]["data"]["reason"] == ""
     assert controller.pod == controller.ledger == {}
 
 
