@@ -42,7 +42,7 @@ from maf_sandbox_hyperlight._pod import (
     unframe,
     verify_container,
 )
-from maf_sandbox_hyperlight._pod_config import PodLaunch
+from maf_sandbox_hyperlight._pod_config import PodLaunch, hello_digest
 from maf_sandbox_hyperlight._pod_supervisor import Supervisor
 from maf_sandbox_hyperlight.kubernetes import (
     HyperlightPodCleanupPending,
@@ -57,7 +57,9 @@ from maf_sandbox_hyperlight.kubernetes import (
 KEY = SandboxKey("tenant:user", "conversation", "agent")
 KIND = "codeact"
 BINDING = HyperlightPodConfig(KEY, KIND, "pod-uid", "generation", 4 * 1024**3)
-LAUNCH = PodLaunch(ownership_name(KEY, KIND), "pod-uid", "generation", 4 * 1024**3)
+SECRET = "c" * 64
+DIGEST = hello_digest(SECRET)
+LAUNCH = PodLaunch(ownership_name(KEY, KIND), "pod-uid", "generation", 4 * 1024**3, DIGEST)
 IDENTITY = {"scope": KEY.scope, "thread_id": KEY.thread_id, "agent_id": KEY.agent_id, "kind": KIND}
 TEMPLATE = HyperlightPodTemplate(
     "registry.example/runtime@sha256:" + "a" * 64, ("python", "app.py")
@@ -136,7 +138,9 @@ def test_manifest_uses_upstream_resource_with_private_container_limits():
     key = SandboxKey("tenant-7f3a:user-91c2", "thread-5c2e0b", "analyst-b41d")
     kind = "kind-e83f"
     serialized = json.dumps(
-        pod_manifest(key, kind, TEMPLATE, namespace="scoped-agents", generation="gen")
+        pod_manifest(
+            key, kind, TEMPLATE, namespace="scoped-agents", generation="gen", secret_digest=DIGEST
+        )
     )
     pod = json.loads(serialized)
     spec = pod["spec"]
@@ -182,7 +186,7 @@ def test_invalid_dns_labels_are_rejected_locally(name):
     with pytest.raises(ValueError, match="namespace"):
         HyperlightPodController(kubeconfig="config", context="context", namespace=name)
     with pytest.raises(ValueError, match="namespace"):
-        pod_manifest(KEY, KIND, TEMPLATE, namespace=name, generation="gen")
+        pod_manifest(KEY, KIND, TEMPLATE, namespace=name, generation="gen", secret_digest=DIGEST)
     with pytest.raises(ValueError, match="ConfigMap"):
         replace(TEMPLATE, bundle_configmap=name, bundle_sha256="a" * 64)
 
@@ -191,7 +195,7 @@ def test_invalid_dns_labels_are_rejected_locally(name):
 def test_valid_dns_label_boundaries_remain_accepted(name):
     HyperlightPodController(kubeconfig="config", context="context", namespace=name)
     template = replace(TEMPLATE, bundle_configmap=name, bundle_sha256="a" * 64)
-    assert pod_manifest(KEY, KIND, template, namespace=name, generation="gen")
+    assert pod_manifest(KEY, KIND, template, namespace=name, generation="gen", secret_digest=DIGEST)
 
 
 @pytest.fixture
@@ -242,7 +246,12 @@ def test_cgroup_v1_or_missing_swap_accounting_names_the_requirement(controls, mi
 
 
 def test_platform_refusal_reaches_the_termination_message_with_its_own_exit(tmp_path):
-    launch = {"owner": LAUNCH.owner, "generation": "generation", "memory_limit_bytes": 1}
+    launch = {
+        "owner": LAUNCH.owner,
+        "generation": "generation",
+        "memory_limit_bytes": 1,
+        "hello_digest": DIGEST,
+    }
     log = tmp_path / "termination-log"
     program = f"""
 import json, os
@@ -388,7 +397,14 @@ def test_late_heartbeat_cannot_revive_an_expired_lease(supervisor):
 
 
 def hello(**changes: object) -> dict[str, object]:
-    return {"op": "hello", "pod_uid": "pod-uid", "generation": "generation", **IDENTITY, **changes}
+    return {
+        "op": "hello",
+        "pod_uid": "pod-uid",
+        "generation": "generation",
+        "secret": SECRET,
+        **IDENTITY,
+        **changes,
+    }
 
 
 def test_hello_binds_the_identity_the_pod_is_named_for(supervisor, monkeypatch):
@@ -411,8 +427,83 @@ def test_hello_for_another_identity_cannot_bind_the_pod(supervisor, monkeypatch,
     assert not started and not supervisor.connected
 
 
+@pytest.mark.parametrize("secret", [None, "", "d" * 64, SECRET.upper(), 7])
+def test_hello_without_the_controller_secret_cannot_bind_the_pod(supervisor, monkeypatch, secret):
+    started = []
+    monkeypatch.setattr(supervisor, "start_owner", started.append)
+    supervisor.connected = False
+    with pytest.raises(HyperlightWorkerError, match="controller secret"):
+        supervisor.controller_message(hello(secret=secret))
+    message = hello()
+    del message["secret"]
+    with pytest.raises(HyperlightWorkerError, match="controller secret"):
+        supervisor.controller_message(message)
+    assert not started and not supervisor.connected
+    supervisor.controller_message(hello())
+    assert started == [BINDING]
+
+
+def test_only_the_creating_controller_holds_the_hello_secret(monkeypatch):
+    secrets_sent: list[str] = []
+    manifests: list[dict[str, Any]] = []
+    controller = SupervisingController()
+    create = controller.api
+
+    def record(*arguments, body=None):
+        if arguments[0] == "create" and body is not None and body["kind"] == "Pod":
+            manifests.append(copy.deepcopy(body))
+        return create(*arguments, body=body)
+
+    monkeypatch.setattr(controller, "api", record)
+    stream = SimpleNamespace(
+        poll=lambda: 0, wait=lambda timeout: 0, stdin=None, stdout=None, stderr=None
+    )
+    monkeypatch.setattr(controller, "_await_running", lambda name, uid, deadline: True)
+    monkeypatch.setattr(kubernetes.subprocess, "Popen", lambda *args, **kwargs: stream)
+    monkeypatch.setattr(
+        controller,
+        "_supervise",
+        lambda stream, uid, generation, identity, *rest: secrets_sent.append(identity["secret"]),
+    )
+    for _ in range(2):
+        controller.pod = terminal_pod()
+        controller.ledger = {
+            "metadata": {"uid": "ledger-uid", "resourceVersion": "1"},
+            "data": {},
+        }
+        controller.supervise(KEY, KIND, TEMPLATE)
+    assert len(manifests) == 2 and len(set(secrets_sent)) == 2
+    for manifest, secret in zip(manifests, secrets_sent, strict=True):
+        assert secret not in json.dumps(manifest)
+        env = {item["name"]: item.get("value") for item in manifest["spec"]["containers"][0]["env"]}
+        binding = json.loads(env["MAF_HYPERLIGHT_POD_BINDING"])
+        launch = PodLaunch(
+            binding["owner"],
+            "pod-uid",
+            binding["generation"],
+            binding["memory_limit_bytes"],
+            binding["hello_digest"],
+        )
+        assert launch.bind({**IDENTITY, "secret": secret}).key == KEY
+        with pytest.raises(HyperlightWorkerError, match="controller secret"):
+            launch.bind(
+                {
+                    **IDENTITY,
+                    "secret": secrets_sent[0] if secret != secrets_sent[0] else secrets_sent[1],
+                }
+            )
+
+
 @pytest.mark.parametrize(
-    "field,value", [("owner", None), ("pod_uid", ""), ("memory_limit_bytes", True)]
+    "field,value",
+    [
+        ("owner", None),
+        ("pod_uid", ""),
+        ("memory_limit_bytes", True),
+        ("hello_digest", None),
+        ("hello_digest", "a" * 63),
+        ("hello_digest", "A" * 64),
+    ],
 )
 def test_invalid_pod_launch_is_refused(field, value):
     with pytest.raises(ValueError):
@@ -434,7 +525,7 @@ def test_controller_hello_carries_the_identity_the_supervisor_binds(supervisor, 
             stream,
             "pod-uid",
             "generation",
-            IDENTITY,
+            {**IDENTITY, "secret": SECRET},
             time.monotonic() + 2,
             bytearray(),
             {},
@@ -521,7 +612,12 @@ def test_same_uid_process_cannot_open_an_undumpable_supervisor_stdin():
 
 @pytest.mark.parametrize("error", ["SystemExit(0)", "KeyboardInterrupt()"])
 def test_init_forces_failure_exit_without_waiting_for_python_threads(error):
-    launch = {"owner": LAUNCH.owner, "generation": "generation", "memory_limit_bytes": 1}
+    launch = {
+        "owner": LAUNCH.owner,
+        "generation": "generation",
+        "memory_limit_bytes": 1,
+        "hello_digest": DIGEST,
+    }
     program = f"""
 import json, os, threading
 import sys
@@ -547,7 +643,12 @@ LAUNCH_ENVIRONMENT = f"""
 import json, os
 from maf_sandbox_hyperlight import _pod_supervisor
 os.environ['MAF_HYPERLIGHT_POD_BINDING'] = json.dumps(
-    {{"owner": {LAUNCH.owner!r}, "generation": "generation", "memory_limit_bytes": 1}}
+    {{
+        "owner": {LAUNCH.owner!r},
+        "generation": "generation",
+        "memory_limit_bytes": 1,
+        "hello_digest": {DIGEST!r},
+    }}
 )
 os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
 """
@@ -1305,7 +1406,11 @@ def test_bootstrap_is_digest_pinned_and_uses_only_private_writable_storage(tmp_p
 def test_bundle_is_not_mounted_into_the_guest_host_process():
     template = replace(TEMPLATE, bundle_configmap="bundle-test", bundle_sha256="b" * 64)
     pod = json.loads(
-        json.dumps(pod_manifest(KEY, KIND, template, namespace="agents", generation="gen"))
+        json.dumps(
+            pod_manifest(
+                KEY, KIND, template, namespace="agents", generation="gen", secret_digest=DIGEST
+            )
+        )
     )
     spec = pod["spec"]
     assert not any(volume["name"] == "bundle" for volume in spec["containers"][0]["volumeMounts"])
