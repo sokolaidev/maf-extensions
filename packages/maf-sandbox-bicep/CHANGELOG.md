@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.21.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.21.1...maf-sandbox-bicep-v0.21.2) (2026-09-26)
+
+
+### Fixes
+
+* **bicep:** pass a file whose name starts with a hyphen to the compiler as a path ([#1463](https://github.com/sokolaidev/maf-extensions/issues/1463)) ([db4b29a](https://github.com/sokolaidev/maf-extensions/commit/db4b29a346e0b91300bdece9e03b45552701ea95))
+* require maf-sandbox 0.44.0 in the dependents, and admit the 0.44 line ([#1489](https://github.com/sokolaidev/maf-extensions/issues/1489)) ([90e5f6f](https://github.com/sokolaidev/maf-extensions/commit/90e5f6f04f87b18799536401eaab8b2e676be2af))
+
 ## [0.21.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.21.0...maf-sandbox-bicep-v0.21.1) (2026-09-24)
 
 
