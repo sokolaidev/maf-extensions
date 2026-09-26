@@ -1425,7 +1425,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-tui"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "packages/maf-sandbox-tui" }
 dependencies = [
     { name = "maf-sandbox" },
