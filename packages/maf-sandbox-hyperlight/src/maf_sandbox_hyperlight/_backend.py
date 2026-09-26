@@ -40,7 +40,7 @@ from ._admission import admit, require_owner
 from ._config import HyperlightSandboxConfig
 from ._files import GUEST_ROOT, OutputDirectory
 from ._process import Worker
-from ._wire import HyperlightWorkerError
+from ._wire import HyperlightPodDetached, HyperlightWorkerError
 
 BACKEND_NAME = "hyperlight"
 #: The verbs the runtime enforces. It refuses TRACE, CONNECT and every custom token outright.
@@ -229,7 +229,8 @@ class _HyperlightSandbox:
         except BaseException as error:
             with admission:
                 withdrawn = True
-                dispatched = started
+                # PID 1 refuses a call while its controller reconnects, before the worker sees it.
+                dispatched = started and not isinstance(error, HyperlightPodDetached)
             try:
                 if dispatched:
                     await self.stop(failed=True)
@@ -508,8 +509,8 @@ class HyperlightSandboxBackend:
             self._sandboxes[index] = sandbox
             try:
                 await sandbox.prepare(deadline)
-            except BaseException:
-                await sandbox.stop(failed=True)
+            except BaseException as error:
+                await sandbox.stop(failed=not isinstance(error, HyperlightPodDetached))
                 del self._sandboxes[index]
                 raise
             return sandbox

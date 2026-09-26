@@ -127,10 +127,13 @@ class PodLaunch:
     generation: str
     memory_limit_bytes: int
     hello_digest: str
+    recovery_seconds: int = 0
 
     def __post_init__(self) -> None:
         _check_fields(self.owner, self.pod_uid, self.generation)
         _check_memory(self.memory_limit_bytes)
+        if type(self.recovery_seconds) is not int or self.recovery_seconds < 0:
+            raise ValueError("pod recovery_seconds must be a non-negative integer")
         _check_digest(self.hello_digest)
 
     def bind(self, identity: dict[str, object]) -> HyperlightPodConfig:

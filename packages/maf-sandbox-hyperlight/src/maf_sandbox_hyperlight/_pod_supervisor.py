@@ -18,6 +18,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from types import FrameType
+from typing import cast
 
 from ._pod import (
     FRAME_LIMIT,
@@ -26,11 +27,13 @@ from ._pod import (
     REASON_LIMIT,
     TERMINATION_LOG,
     frame,
+    refusal_reply,
     unframe,
+    unseal,
     verify_container,
 )
 from ._pod_config import POD_BINDING, POD_SOCKET, HyperlightPodConfig, PodLaunch
-from ._wire import HyperlightWorkerError
+from ._wire import HyperlightPodDetached, HyperlightWorkerError
 
 LEASE_SECONDS = 5.0
 STARTUP_SECONDS = 60.0
@@ -115,8 +118,17 @@ class Supervisor:
         self.incoming: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         self.outgoing: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         self.lease = time.monotonic() + STARTUP_SECONDS
+        # Admission needs a live controller; only retirement waits out the recovery window.
+        self.fresh = self.lease
+        self.expires_at: float | None = None
+        self.key: str | None = None
+        self.counter = 0
         self.connected = False
         self.oom_kills = _oom_kills()
+
+    @property
+    def continuity(self) -> bool:
+        return self.launch.recovery_seconds > 0
 
     @property
     def reason(self) -> str:
@@ -147,10 +159,23 @@ class Supervisor:
             self.retire("controller is not consuming lifecycle events")
 
     def read_controller(self) -> None:
-        """A broken or malformed authenticated attach stream retires the owner."""
+        """A broken or malformed attach stream retires the owner.
+
+        In continuity mode one malformed line in a row is dropped: a dropped attach can leave a
+        torn frame, which the reconnecting controller terminates with a newline.
+        """
+        torn = False
         try:
             while raw := sys.stdin.buffer.readline(FRAME_LIMIT + 1):
-                self.incoming.put_nowait(unframe(raw))
+                try:
+                    message = unframe(raw)
+                except (ValueError, HyperlightWorkerError):
+                    if torn or not self.continuity:
+                        raise
+                    torn = True
+                    continue
+                torn = False
+                self.incoming.put_nowait(message)
         except (OSError, ValueError, queue.Full, HyperlightWorkerError) as error:
             self.retire(f"controller stream failed: {type(error).__name__}")
         else:
@@ -209,7 +234,7 @@ class Supervisor:
                     connection.sendall(frame({"ok": True}))
                 except (OSError, ValueError, HyperlightWorkerError) as error:
                     with suppress(OSError):
-                        connection.sendall(frame({"error": str(error)[:1024]}))
+                        connection.sendall(frame(refusal_reply(error)))
 
     def check_identity(self, message: dict[str, object]) -> None:
         """Refuse messages replayed from another pod or controller generation."""
@@ -224,6 +249,8 @@ class Supervisor:
         if self.retired.is_set() or not self.connected or time.monotonic() >= self.lease:
             raise HyperlightWorkerError("pod session is retired or its controller lease expired")
         operation = message.get("op")
+        if operation in ("validate", "begin") and time.monotonic() >= self.fresh:
+            raise HyperlightPodDetached("the pod's controller is reconnecting; no call is admitted")
         if operation == "validate":
             verify_container(self.launch.memory_limit_bytes)
         elif operation == "policy":
@@ -252,8 +279,12 @@ class Supervisor:
             self.ack.clear()
             self.sequence += 1
             self.deadline = float(deadline)
+            self.expires_at = float(expires_at)
             self.emit("begin", sequence=self.sequence, expires_at=expires_at)
-            if not self.ack.wait(min(3, max(0, self.deadline - time.monotonic()))):
+            if not self.await_ack():
+                if self.continuity and time.monotonic() >= self.fresh:
+                    self.deadline = self.expires_at = None
+                    raise HyperlightPodDetached("the pod's controller disconnected before the call")
                 self.retire("controller did not acknowledge the deadline")
             if self.retired.is_set():
                 raise HyperlightWorkerError("pod retired while registering its deadline")
@@ -261,7 +292,7 @@ class Supervisor:
             if self.deadline is None:
                 raise HyperlightWorkerError("no native operation is active")
             self.emit("end", sequence=self.sequence)
-            self.deadline = None
+            self.deadline = self.expires_at = None
         elif operation == "release":
             if message.get("pid") != self.worker or self.deadline is not None:
                 raise HyperlightWorkerError("cannot release an active or different worker")
@@ -270,6 +301,19 @@ class Supervisor:
             self.retire("application retired the session")
         else:
             raise HyperlightWorkerError("unknown pod lifecycle operation")
+
+    def await_ack(self) -> bool:
+        """Wait up to three seconds; in continuity mode, a quiet controller until it is stale."""
+        assert self.deadline is not None
+        limit = time.monotonic() + 3
+        while not self.ack.wait(0.05):
+            now = time.monotonic()
+            if now >= self.deadline or (self.continuity and now >= self.fresh):
+                return False
+            # A controller that pinged within the last two seconds is refusing, not gone.
+            if now >= limit and (not self.continuity or now < self.fresh - LEASE_SECONDS + 2):
+                return False
+        return True
 
     def register_worker(self, value: object) -> None:
         """Pin the sole direct worker child with a pidfd before native execution."""
@@ -325,6 +369,21 @@ class Supervisor:
         finally:
             self.closing = False
 
+    def renew(self) -> None:
+        self.fresh = time.monotonic() + LEASE_SECONDS
+        self.lease = self.fresh + self.launch.recovery_seconds
+
+    def authenticate(self, message: dict[str, object]) -> dict[str, object]:
+        """Every attacher shares stdin in continuity mode, so each frame proves the secret."""
+        if self.key is None:
+            raise HyperlightWorkerError("controller message before its hello")
+        body = unseal(message, self.key)
+        counter = body.get("counter")
+        if type(counter) is not int or counter <= self.counter:
+            raise HyperlightWorkerError("stale controller message")
+        self.counter = counter
+        return body
+
     def controller_message(self, message: dict[str, object]) -> None:
         """An attach credential permits lifecycle control, never guest source submission."""
         self.check_identity(message)
@@ -334,11 +393,23 @@ class Supervisor:
         operation = message.get("op")
         if operation == "hello" and not self.connected:
             binding = self.launch.bind(message)
+            self.key = cast("str", message["secret"])
             self.connected = True
-            self.lease = time.monotonic() + LEASE_SECONDS
+            self.renew()
             self.start_owner(binding)
-        elif operation == "ping" and self.connected:
-            self.lease = time.monotonic() + LEASE_SECONDS
+            return
+        if self.continuity:
+            message = self.authenticate(message)
+        if operation == "ping" and self.connected:
+            self.renew()
+        elif operation == "resume" and self.connected and self.continuity:
+            self.renew()
+            self.emit(
+                "resumed",
+                sequence=self.sequence,
+                expires_at=self.expires_at,
+                acknowledged=self.ack.is_set(),
+            )
         elif operation == "ack" and message.get("sequence") == self.sequence:
             self.ack.set()
         elif operation == "stop":
@@ -360,6 +431,8 @@ class Supervisor:
                         raise HyperlightWorkerError("controller lifecycle write was incomplete")
                 now = time.monotonic()
                 deadline = self.deadline
+                if self.continuity and self.connected and now >= self.lease:
+                    self.retire("controller recovery window expired")
                 if now >= self.lease or (deadline is not None and now >= deadline):
                     self.retire("controller lease or native deadline expired")
                 if self.retired.is_set():
@@ -409,6 +482,7 @@ def main() -> None:
             fields.get("generation"),
             fields.get("memory_limit_bytes"),
             fields.get("hello_digest"),
+            fields.get("recovery_seconds", 0),
         )
         try:
             platform = verify_init(launch)

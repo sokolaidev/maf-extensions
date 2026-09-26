@@ -286,7 +286,8 @@ def test_ready_event_carries_the_observed_platform():
     # An open pipe keeps the transport alive until the session deadline.
     source, sink = os.pipe()
     os.write(sink, payload)
-    platform: dict[str, str] = {}
+    session = controller_session(time.monotonic() + 0.5)
+    platform = session.platform
     readers = []
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     with open(source, "rb") as control:
@@ -297,16 +298,7 @@ def test_ready_event_carries_the_observed_platform():
             poll=lambda: 0 if stopped.is_set() else None,
         )
         try:
-            controller._supervise(
-                stream,
-                "pod-uid",
-                "generation",
-                IDENTITY,
-                time.monotonic() + 0.5,
-                bytearray(),
-                platform,
-                readers,
-            )
+            controller._supervise(stream, session, readers)
         finally:
             stopped.set()
             os.close(sink)
@@ -396,6 +388,12 @@ def test_late_heartbeat_cannot_revive_an_expired_lease(supervisor):
     assert supervisor.retired.is_set()
 
 
+def controller_session(deadline: float, recovery: int = 0) -> kubernetes._Session:
+    return kubernetes._Session(
+        "generation", {**IDENTITY, "secret": SECRET}, deadline, recovery, uid="pod-uid"
+    )
+
+
 def hello(**changes: object) -> dict[str, object]:
     return {
         "op": "hello",
@@ -458,13 +456,14 @@ def test_only_the_creating_controller_holds_the_hello_secret(monkeypatch):
     stream = SimpleNamespace(
         poll=lambda: 0, wait=lambda timeout: 0, stdin=None, stdout=None, stderr=None
     )
-    monkeypatch.setattr(controller, "_await_running", lambda name, uid, deadline: True)
-    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: stream)
-    monkeypatch.setattr(
-        controller,
-        "_supervise",
-        lambda stream, uid, generation, identity, *rest: secrets_sent.append(identity["secret"]),
-    )
+    monkeypatch.setattr(controller, "_await_running", lambda name, uid, deadline: "c")
+    monkeypatch.setattr(controller, "_attach", lambda name: stream)
+
+    def supervise(stream, session, readers, *, resume_by):
+        secrets_sent.append(session.identity["secret"])
+        return "attach stream closed"
+
+    monkeypatch.setattr(controller, "_supervise", supervise)
     for _ in range(2):
         controller.pod = terminal_pod()
         controller.ledger = {
@@ -521,16 +520,7 @@ def test_controller_hello_carries_the_identity_the_supervisor_binds(supervisor, 
     readers = []
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
-        controller._supervise(
-            stream,
-            "pod-uid",
-            "generation",
-            {**IDENTITY, "secret": SECRET},
-            time.monotonic() + 2,
-            bytearray(),
-            {},
-            readers,
-        )
+        controller._supervise(stream, controller_session(time.monotonic() + 2), readers)
         written = time.monotonic() + 2
         while not stream.stdin.getvalue() and time.monotonic() < written:
             time.sleep(0.01)
@@ -805,16 +795,7 @@ def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
     readers = []
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
-        controller._supervise(
-            stream,
-            "pod-uid",
-            "generation",
-            IDENTITY,
-            time.monotonic() + 2,
-            bytearray(),
-            {},
-            readers,
-        )
+        controller._supervise(stream, controller_session(time.monotonic() + 2), readers)
     finally:
         stopped.set()
         for reader in readers:

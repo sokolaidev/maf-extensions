@@ -10,6 +10,10 @@ class HyperlightWorkerError(RuntimeError):
     """The native worker failed; acquire a replacement before executing again."""
 
 
+class HyperlightPodDetached(HyperlightWorkerError):
+    """The pod's controller is reconnecting; the call never reached the worker, so retry it."""
+
+
 class HyperlightOutputLimitExceeded(RuntimeError):
     """Combined UTF-8 stdout/stderr exceeded the configured return limit."""
 
