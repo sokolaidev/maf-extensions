@@ -82,39 +82,24 @@ jobs:
           set +e
           x() { echo; echo "\$ $*"; "$@"; echo "[exit $?]"; }
           mk() { d=$(mktemp -d); x sbx create shell --name "$1" --cpus 1 --memory 1g --skills off --deny-network '**' --quiet "$d"; }
-          x sbx daemon status --json
-          x sbx settings get ssh.agentForwardingEnabled
-          echo "TMPDIR=$TMPDIR XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
-          ps -eo pid,ppid,user,args | grep -i -E 'sbox|sbx|krun|vmm|qemu|firecracker|cloud-hyp' | grep -v grep
-          find / -xdev \( -name 'sboxd*' -o -name 'sandboxd*' \) 2>/dev/null | head -40
-          ls -la /tmp "$XDG_RUNTIME_DIR" 2>&1 | head -60
-          x sbx mcp add maf-probe --command true
-          x sbx mcp ls --json
-          x sbx mcp rm -f maf-probe
-          x sbx mcp add maf-probe2 --command python3 --args "-c,import sys;sys.stdin.read()"
-          x sbx mcp ls --json
-          x sbx mcp rm -f maf-probe2
-          x sbx mcp ls --json
           mk maf-explore
-          x sbx ls --json
-          for s in $(find / -xdev -name 'sboxd*' 2>/dev/null); do echo "socket candidate: $s"; ls -la "$s"; done
-          x sbx logout -y
-          x sbx ls --json
-          x sbx settings get ssh.agentForwardingEnabled
-          x sbx mcp ls --json
           x sbx exec maf-explore true
-          mk maf-explore2
+          ps -eo pid,ppid,user,args --forest | grep -v -E '\[.*\]$' | tail -40
+          D=/home/runner/.local/state/sandboxes/sandboxes
+          find "$D" -maxdepth 3 | head -60
+          find /run/user/1001 -maxdepth 4 2>/dev/null | head -40
+          ss -xlp 2>/dev/null | grep -v -E 'systemd|dbus' | head -30
+          tail -30 "$D/sandboxd/daemon.log"
+          for s in $(find "$D" /run/user/1001 -type s 2>/dev/null | grep -v sandboxd.sock | grep -v -E '/bus$|pk-debconf|snapd'); do
+            echo "=== moving aside $s"; mv "$s" "$s.away"
+            x sbx ls --json
+            x sbx exec maf-explore true
+            mv "$s.away" "$s"
+            x sbx ls --json
+          done
+          x sbx daemon restart
+          x sbx ls --json
           x sbx rm --force maf-explore
-          printf '%s' "$DOCKER_PAT" | sbx login --username "$DOCKER_USERNAME" --password-stdin; echo "[login exit $?]"
-          x sbx ls --json
-          mk maf-explore3
-          x sbx exec maf-explore3 true
-          x sbx daemon stop
-          x sbx ls --json
-          x sbx exec maf-explore3 true
-          x sbx daemon start
-          x sbx ls --json
-          x sbx rm --force maf-explore3
 
       - name: Remove leftover sandboxes
         if: always()
