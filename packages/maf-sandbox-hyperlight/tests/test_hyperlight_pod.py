@@ -563,6 +563,14 @@ os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
         ),
         (
             (
+                "_pod_supervisor.verify_init = lambda launch: (_ for _ in ()).throw("
+                "OSError('cannot read ' + chr(0xDCFF)))"
+            ),
+            78,
+            "maf-hyperlight: unsupported platform: cannot read \\udcff",
+        ),
+        (
+            (
                 "_pod_supervisor.verify_init = lambda launch: None\n"
                 "_pod_supervisor._oom_kills = lambda: 0\n"
                 "_pod_supervisor.Supervisor.run = "
