@@ -276,10 +276,12 @@ class TestHostChecks:
         [
             # What `sbx` 0.45.1 printed on Linux after `sbx logout`: `ls`, then `mcp ls`.
             b"error: Not authenticated to Docker\n  try: sbx login\n",
-            b"error: query MCP gateway mode from sandboxd (is the daemon running and up to "
-            b"date?): get MCP gateway mode: request failed: 401 Unauthorized: user is not "
-            b"authenticated to Docker: no default account profile set: secret not found no "
-            b"valid user session found, please sign in to Docker to proceed\n  try: sbx login\n",
+            (
+                b"error: query MCP gateway mode from sandboxd (is the daemon running and up to "
+                b"date?): get MCP gateway mode: request failed: 401 Unauthorized: user is not "
+                b"authenticated to Docker: no default account profile set: secret not found no "
+                b"valid user session found, please sign in to Docker to proceed\n  try: sbx login\n"
+            ),
         ],
     )
     def test_a_lapsed_login_names_sbx_login(self, backend, sbx, stderr):

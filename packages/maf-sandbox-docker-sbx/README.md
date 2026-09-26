@@ -113,4 +113,6 @@ Nothing expires on its own. A sandbox left behind by a crashed host keeps its `c
 
 The live suite in `tests/test_sbx_e2e.py` runs the shared storage-base, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `RECLAIM`, reach and `EXEC` conformance suites against a real sandbox, and checks by response content that the network is closed. Set `MAF_SANDBOX_SBX_E2E=1`, and `MAF_SANDBOX_SBX_PATH` when `sbx` is not on `PATH`.
 
+`tests/test_sbx_e2e_host.py` checks the refusals and faults that depend on host-wide state: SSH agent forwarding, a registered MCP server, a lapsed login, and a daemon that has lost its engine (its `docker.sock` hidden). Most of these tests change that state and put it back, so they also need `MAF_SANDBOX_SBX_E2E_HOST=1`. Set it only on a host no one else is using. The login test logs back in with `DOCKER_USERNAME` and `DOCKER_PAT`.
+
 Tested with `sbx` v0.45.1 on Windows 11 and on GitHub's `ubuntu-24.04` runner, where the live suite runs nightly. Not tested on macOS. `sbx` is closed source and in early access, and its behaviour has changed between releases, so re-run the live suite on every `sbx` version you install.

@@ -81,7 +81,7 @@ jobs:
           DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
         run: |
           set -euo pipefail
-          # An agent for the forwarding tests to reach; the daemon they restart inherits it.
+          # The forwarding tests need a host agent to forward.
           eval "$(ssh-agent -s)"
           uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee host.log
           ! grep -q '^SKIPPED' host.log
