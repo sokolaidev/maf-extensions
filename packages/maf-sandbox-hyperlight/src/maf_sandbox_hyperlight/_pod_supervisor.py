@@ -110,7 +110,7 @@ class Supervisor:
         self.deadline: float | None = None
         self.ack = threading.Event()
         self.retired = threading.Event()
-        self.reason = ""
+        self.cause: dict[str, str] = {}
         self.guard = threading.Lock()
         self.incoming: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         self.outgoing: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
@@ -118,10 +118,17 @@ class Supervisor:
         self.connected = False
         self.oom_kills = _oom_kills()
 
+    @property
+    def reason(self) -> str:
+        return self.cause.get("reason", "")
+
     def retire(self, reason: str) -> None:
-        """Revoke admission before the namespace init exits; the first cause is the one reported."""
-        if not self.reason:
-            self.reason = reason
+        """Revoke admission before the namespace init exits; the first cause is the one reported.
+
+        Callers include the signal handler, so the first cause is stored by one ``setdefault``,
+        which neither another thread nor a signal can interrupt, instead of under a lock.
+        """
+        self.cause.setdefault("reason", reason)
         self.retired.set()
         self.ack.set()
 
@@ -386,11 +393,9 @@ class Supervisor:
 
 def record_reason(reason: str) -> None:
     """The kubelet copies this file into pod status, which outlives the pod's log."""
-    with (
-        suppress(OSError),
-        open(TERMINATION_LOG, "w", encoding="utf-8", errors="backslashreplace") as target,
-    ):
-        target.write(reason[:REASON_LIMIT])
+    text = reason.encode("utf-8", "backslashreplace").decode("utf-8")[:REASON_LIMIT]
+    with suppress(OSError), open(TERMINATION_LOG, "w", encoding="utf-8") as target:
+        target.write(text)
 
 
 def main() -> None:

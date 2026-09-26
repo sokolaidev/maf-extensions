@@ -607,6 +607,8 @@ def test_recorded_reason_is_bounded_and_never_blocks_exit(tmp_path, monkeypatch)
     assert log.read_text(encoding="utf-8") == "x" * REASON_LIMIT
     _pod_supervisor.record_reason("cannot read \udcff")
     assert log.read_text(encoding="utf-8") == "cannot read \\udcff"
+    _pod_supervisor.record_reason("\udcff" * REASON_LIMIT)
+    assert log.read_text(encoding="utf-8") == ("\\udcff" * REASON_LIMIT)[:REASON_LIMIT]
     monkeypatch.setattr(_pod_supervisor, "TERMINATION_LOG", str(tmp_path))
     _pod_supervisor.record_reason("unwritable")
 
@@ -615,6 +617,33 @@ def test_the_first_retirement_cause_is_the_one_reported(supervisor):
     supervisor.retire("controller stream closed")
     supervisor.retire("pod termination requested")
     assert supervisor.reason == "controller stream closed"
+
+
+@pytest.mark.parametrize("point", range(4))
+def test_an_interrupting_retirement_never_overwrites_a_stored_cause(supervisor, point):
+    # A signal handler runs between any two lines of the call it interrupts.
+    expected: list[str] = []
+    events = 0
+
+    def interrupt(frame, event, arg):
+        nonlocal events
+        if event == "line" and not expected:
+            events += 1
+            if events == point + 1:
+                expected.append(supervisor.reason or "pod termination requested")
+                supervisor.retire("pod termination requested")
+        return interrupt
+
+    def enter(frame, event, arg):
+        return interrupt if frame.f_code is Supervisor.retire.__code__ else None
+
+    previous = sys.gettrace()
+    sys.settrace(enter)
+    try:
+        supervisor.retire("controller stream closed")
+    finally:
+        sys.settrace(previous)
+    assert supervisor.reason == (expected[0] if expected else "controller stream closed")
 
 
 def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
