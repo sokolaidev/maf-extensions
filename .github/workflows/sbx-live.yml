@@ -68,38 +68,23 @@ jobs:
       - name: Run the live suite
         run: |
           set -euo pipefail
-          # `-ra` because the module skips itself without MAF_SANDBOX_SBX_E2E; a skip here is a
-          # bug. `--durations` records whether the runner is fast enough to keep.
-          uv run pytest -q -ra -s --durations=0 \
-            packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py
+          # A skip here is a bug: the module skips itself without MAF_SANDBOX_SBX_E2E.
+          # `--durations` records whether the runner is fast enough to keep.
+          uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py | tee suite.log
+          ! grep -q '^SKIPPED' suite.log
 
-      - name: Explore (temporary)
-        if: always()
+      - name: Run the host-state refusals and faults
         env:
+          # Each test changes host-wide sbx state and restores it; this runner has no other user.
+          MAF_SANDBOX_SBX_E2E_HOST: "1"
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
         run: |
-          set +e
-          x() { echo; echo "\$ $*"; "$@"; echo "[exit $?]"; }
-          mk() { d=$(mktemp -d); x sbx create shell --name "$1" --cpus 1 --memory 1g --skills off --deny-network '**' --quiet "$d"; }
-          mk maf-explore
-          x sbx exec maf-explore true
-          ps -eo pid,ppid,user,args --forest | grep -v -E '\[.*\]$' | tail -40
-          D=/home/runner/.local/state/sandboxes/sandboxes
-          find "$D" -maxdepth 3 | head -60
-          find /run/user/1001 -maxdepth 4 2>/dev/null | head -40
-          ss -xlp 2>/dev/null | grep -v -E 'systemd|dbus' | head -30
-          tail -30 "$D/sandboxd/daemon.log"
-          for s in $(find "$D" /run/user/1001 -type s 2>/dev/null | grep -v sandboxd.sock | grep -v -E '/bus$|pk-debconf|snapd'); do
-            echo "=== moving aside $s"; mv "$s" "$s.away"
-            x sbx ls --json
-            x sbx exec maf-explore true
-            mv "$s.away" "$s"
-            x sbx ls --json
-          done
-          x sbx daemon restart
-          x sbx ls --json
-          x sbx rm --force maf-explore
+          set -euo pipefail
+          # An agent for the forwarding tests to reach; the daemon they restart inherits it.
+          eval "$(ssh-agent -s)"
+          uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee host.log
+          ! grep -q '^SKIPPED' host.log
 
       - name: Remove leftover sandboxes
         if: always()

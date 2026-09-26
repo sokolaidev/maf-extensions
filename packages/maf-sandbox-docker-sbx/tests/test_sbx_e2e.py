@@ -3,8 +3,8 @@
 Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  ``MAF_SANDBOX_SBX_PATH`` names the CLI when it is
 not on ``PATH``.  The host must pass the backend's own checks — SSH agent forwarding off, no MCP
 server registered — except on a host whose settings the tester may not change, where
-``MAF_SANDBOX_SBX_E2E_ACCEPT_HOST=1`` skips those two checks for every test but the one that
-asserts them.
+``MAF_SANDBOX_SBX_E2E_ACCEPT_HOST=1`` skips those two checks.  ``test_sbx_e2e_host.py`` asserts
+them.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from maf_sandbox.conformance import (
     assert_storage_base_conformance,
 )
 
-from maf_sandbox_docker_sbx import SbxHostNotConfined, SbxSandboxBackend, SbxSandboxConfig
+from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 from maf_sandbox_docker_sbx._backend import sandbox_name
 from maf_sandbox_docker_sbx._plane import WorkspacePlane
 
@@ -47,11 +47,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _backend(tmp_path: Path, *, accept_host: bool = _ACCEPT_HOST) -> SbxSandboxBackend:
+def _backend(tmp_path: Path) -> SbxSandboxBackend:
     backend = SbxSandboxBackend(
         SbxSandboxConfig(sbx_path=_SBX, workspace_root=tmp_path / "workspaces", cpus=2)
     )
-    if accept_host:
+    if _ACCEPT_HOST:
 
         async def accepted() -> None:
             return None
@@ -300,34 +300,3 @@ def test_disposal_removes_the_sandbox_and_its_workspace(tmp_path):
             await backend.dispose(key)
 
     asyncio.run(scenario())
-
-
-def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
-    forwarding = subprocess.run(
-        [_SBX, "settings", "get", "ssh.agentForwardingEnabled"], capture_output=True, text=True
-    ).stdout.strip()
-    if forwarding != "true":
-        pytest.skip("SSH agent forwarding is off on this host")
-    backend = _backend(tmp_path, accept_host=False)
-
-    async def accepted() -> None:
-        return None
-
-    backend.check_host = accepted  # type: ignore[method-assign]
-    key = _key("agent")
-    with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
-        asyncio.run(backend.acquire(key, _spec()))
-    assert not _listed(sandbox_name("maf", key, "e2e"))
-
-
-def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):
-    forwarding = subprocess.run(
-        [_SBX, "settings", "get", "ssh.agentForwardingEnabled"], capture_output=True, text=True
-    ).stdout.strip()
-    if forwarding != "true":
-        pytest.skip("SSH agent forwarding is already off on this host")
-    backend = _backend(tmp_path, accept_host=False)
-    key = _key("refused")
-    with pytest.raises(SbxHostNotConfined, match="ssh.agentForwardingEnabled"):
-        asyncio.run(backend.acquire(key, _spec()))
-    assert not _listed(sandbox_name("maf", key, "e2e"))
