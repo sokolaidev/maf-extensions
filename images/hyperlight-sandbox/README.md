@@ -56,7 +56,7 @@ Treat device-plugin upgrades separately. The rendered DaemonSet uses `OnDelete`,
 
 ## Failure and recovery
 
-The authenticated attach stream carries lifecycle messages. Each native request has a deadline acknowledged by the external controller before submission. PID 1 watches owner/worker lifetime, deadlines, cgroup OOM events and a five-second controller lease. Losing the controller or active native execution retires PID 1; Linux kills the remaining processes in that PID namespace. Pods use `restartPolicy: Never` and a finite lifetime. There is no source replay.
+The authenticated attach stream carries lifecycle messages. PID 1 makes itself non-dumpable, so the pod's other processes, which share its UID, cannot open its stdin to hold the stream open or forge controller messages. Each native request has a deadline acknowledged by the external controller before submission. PID 1 watches owner/worker lifetime, deadlines, cgroup OOM events and a five-second controller lease. Losing the controller or active native execution retires PID 1; Linux kills the remaining processes in that PID namespace. Pods use `restartPolicy: Never` and a finite lifetime. There is no source replay.
 
 An ordinary Python exception may reuse the worker. Queue expiry before submission preserves it. Active timeout/cancellation, native failure, failed reset, owner death and OOM retire the whole pod. The owning application can die before returning a tool error; its host must treat nonzero exit or lost connectivity as lost state and potentially uncertain execution, not a successful tool result.
 

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import ctypes
 import gzip
 import hashlib
 import io
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -373,6 +375,52 @@ def test_controller_input_overflow_retires_with_diagnostic(supervisor, monkeypat
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(frame({}) * 2)))
     supervisor.read_controller()
     assert supervisor.retired.is_set() and "Full" in supervisor.reason
+
+
+@pytest.mark.parametrize("replies,refused", [((0, 0), False), ((-1, 0), True), ((0, 1), True)])
+def test_init_refuses_a_dumpable_supervisor(monkeypatch, replies, refused):
+    calls: list[tuple[int, ...]] = []
+
+    def prctl(*arguments: int) -> int:
+        calls.append(arguments)
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(prctl=prctl))
+    if refused:
+        with pytest.raises(HyperlightWorkerError, match="non-dumpable"):
+            _pod_supervisor.make_undumpable()
+    else:
+        _pod_supervisor.make_undumpable()
+    assert calls[0] == (_pod_supervisor.PR_SET_DUMPABLE, 0, 0, 0, 0)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or os.geteuid() == 0,
+    reason="needs Linux /proc, and root bypasses the dumpable check",
+)
+def test_same_uid_process_cannot_open_an_undumpable_supervisor_stdin():
+    reachable = {}
+    for undumpable in (False, True):
+        program = (
+            "import sys, time\n"
+            "from maf_sandbox_hyperlight import _pod_supervisor\n"
+            f"if {undumpable}: _pod_supervisor.make_undumpable()\n"
+            "print('ready', flush=True); time.sleep(30)\n"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", program], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        )
+        try:
+            assert child.stdout is not None and child.stdout.readline() == b"ready\n"
+            try:
+                os.close(os.open(f"/proc/{child.pid}/fd/0", os.O_WRONLY))
+                reachable[undumpable] = True
+            except PermissionError:
+                reachable[undumpable] = False
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+    assert reachable == {False: True, True: False}
 
 
 @pytest.mark.parametrize("error", ["SystemExit(0)", "KeyboardInterrupt()"])

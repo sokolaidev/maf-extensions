@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
@@ -24,6 +25,8 @@ from ._wire import HyperlightWorkerError
 
 LEASE_SECONDS = 5.0
 STARTUP_SECONDS = 60.0
+PR_GET_DUMPABLE = 3
+PR_SET_DUMPABLE = 4
 
 
 def _status(pid: int) -> dict[str, str]:
@@ -49,6 +52,14 @@ def verify_init(launch: PodLaunch) -> None:
     ):
         raise HyperlightWorkerError("pod supervisor requires no capabilities and RuntimeDefault")
     verify_container(launch.memory_limit_bytes)
+    make_undumpable()
+
+
+def make_undumpable() -> None:
+    """Keep the pod's other processes, which share PID 1's UID, out of /proc/1 and its stdin."""
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    if prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 or prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise HyperlightWorkerError("pod supervisor could not become non-dumpable")
 
 
 class Supervisor:
