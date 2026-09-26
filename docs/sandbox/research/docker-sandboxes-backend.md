@@ -219,6 +219,8 @@ Built as [`maf-sandbox-docker-sbx`](../../../packages/maf-sandbox-docker-sbx/REA
 
 **The Windows-only dependency.** The five file capabilities and `RECLAIM` all rest on one measured fact: the guest cannot create links in its workspace. On Windows, `ln -s` exits 0 and creates nothing. On macOS and Linux this is not measured. If the guest can create links there, those rows fall back to `sbx cp` with checks the guest answers, and `FILES_LIST` is withheld.
 
+**Linux, measured after the build (2026-09-26).** On the `ubuntu-24.04` runner with `sbx` v0.45.1, the guest can create links in its workspace: all 11 it attempted during the conformance suites were created. The build made the fallback unnecessary there. On macOS and Linux the plane opens each component with `O_NOFOLLOW`, and it refused to read or write through every guest-made link. So the rows above hold on Linux without `sbx cp`. macOS is still unmeasured ([#1499](https://github.com/sokolaidev/maf-extensions/issues/1499)).
+
 **A first version** declares `MICROVM`, `EXEC`, the workspace file capabilities, `RECLAIM`, `HOST_TOOLS` and `CLOSED` only, after the macOS and Linux link probe.
 
 ## What the package would cost
@@ -253,12 +255,12 @@ Several of these are security-relevant, in both directions. The live suite is th
 
 ## Still open
 
-1. All of the above on **macOS and Linux** hosts, starting with whether the guest can create a symlink in the workspace.
+1. All of the above on **macOS and Linux** hosts, starting with whether the guest can create a symlink in the workspace. Linux answered on 2026-09-26: it can, and the plane does not follow it (above).
 2. SSH agent forwarding where the bridge works (macOS and Linux), with a key loaded, to confirm what `ssh.agentForwardingEnabled=false` removes.
 3. What a registered MCP server gives a guest under deny-all: whether its own traffic passes the sandbox's policy.
 4. Clipboard writes from the guest, and whether they are policy-checked like browser-open.
 5. What deleted the engine socket directory, and whether the daemon ever recovers without a restart.
-6. Timing on `ubuntu-24.04` hosted runners.
+6. Timing on `ubuntu-24.04` hosted runners. Answered on 2026-09-26: the whole live suite takes 70 to 76 s there.
 7. Whether the host-name rules for the workspace are complete for NTFS, and for APFS in its default case-insensitive mode.
 
 ## Verdict, held loosely

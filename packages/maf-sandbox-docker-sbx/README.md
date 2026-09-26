@@ -74,7 +74,7 @@ Each sandbox mounts one fresh, private host directory, `<workspace_root>/<sandbo
 
 Stats, reads, listings and writes act on the host side of the mount. No path check is answered inside the guest.
 
-- On macOS and Linux each path component is opened relative to its parent with `O_NOFOLLOW`, so a link the guest creates between a check and an operation makes the operation fail rather than follow it.
+- On macOS and Linux each path component is opened relative to its parent with `O_NOFOLLOW`, so a link the guest creates between a check and an operation makes the operation fail rather than follow it. On Linux the guest can create links in its workspace, and the plane refused to read or write through each one, measured with `sbx` v0.45.1.
 - On Windows there are no descriptor-relative calls. The backend refuses reparse points, and relies on the guest being unable to create a link in its workspace, measured with `sbx` v0.45.1.
 - Writes land in a temporary file and are renamed into place, so a write never goes through what stood at the destination.
 - `remove` and `reclaim` both remove in the guest, at the guest's own authority. `remove` first runs the host-side path check, then `rm -f`, which refuses a directory swapped in after the check, or `rm -rf` when recursive. `reclaim` checks placement, then runs the host-side check on the target, then `rm -rf`: a relative target must name a child of the working directory, and an absolute one may be anywhere strictly inside the workspace. A guest keeps seeing a name for seconds after a host-side delete, so a host-side removal would leave it acting on a file that is gone.
@@ -113,4 +113,4 @@ Nothing expires on its own. A sandbox left behind by a crashed host keeps its `c
 
 The live suite in `tests/test_sbx_e2e.py` runs the shared storage-base, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `RECLAIM`, reach and `EXEC` conformance suites against a real sandbox, and checks by response content that the network is closed. Set `MAF_SANDBOX_SBX_E2E=1`, and `MAF_SANDBOX_SBX_PATH` when `sbx` is not on `PATH`.
 
-Tested with `sbx` v0.45.1 on Windows 11. `sbx` is closed source and in early access, and its behaviour has changed between releases, so re-run the live suite on every `sbx` version you install.
+Tested with `sbx` v0.45.1 on Windows 11 and on GitHub's `ubuntu-24.04` runner, where the live suite runs nightly. Not tested on macOS. `sbx` is closed source and in early access, and its behaviour has changed between releases, so re-run the live suite on every `sbx` version you install.
