@@ -28,6 +28,7 @@ from maf_sandbox_codeact import CodeactRuntime, make_codeact_tools
 from maf_sandbox_hyperlight import (
     RUNTIME_INSTRUCTIONS,
     HyperlightPodConfig,
+    HyperlightPodDetached,
     HyperlightSandboxBackend,
     HyperlightSandboxConfig,
     HyperlightWorkerError,
@@ -106,6 +107,11 @@ async def main(mode: str) -> None:
         retained = []
         while True:
             retained.append(bytearray(64 * 1024**2))
+    if mode == "continuity":
+        await continuity(sandbox)
+        await backend.aclose()
+        report("complete", mode=mode)
+        return
     if mode == "hold":
         await sandbox.run_code("while True: pass", timeout=120)
         raise AssertionError("held guest returned normally")
@@ -182,6 +188,38 @@ async def main(mode: str) -> None:
     )
     await backend.aclose()
     report("complete", fresh_worker_after_disposal=True, total_seconds=time.monotonic() - started)
+
+
+async def continuity(sandbox: object, seconds: float = 150) -> None:
+    """Count guest calls for a while; a reset or a replacement guest breaks the count."""
+    run_code = getattr(sandbox, "run_code")
+    increment = "counter = globals().get('counter', 0) + 1\n"
+    started = time.monotonic()
+    await run_code(increment + "for _ in range(2000000): pass\nprint(counter)", timeout=30)
+    # About twelve seconds of guest work, long enough to span an interruption.
+    loops = int(2000000 * 12 / max(time.monotonic() - started, 0.01))
+    expected, refused = 2, 0
+    worker = getattr(sandbox, "worker").process.pid
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        long = expected == 20
+        code = increment + (f"for _ in range({loops}): pass\n" if long else "") + "print(counter)"
+        if long:
+            report("long-call-started", counter=expected)
+        try:
+            result = await run_code(code, timeout=60)
+        except HyperlightPodDetached as error:
+            refused += 1
+            report("detached", counter=expected, error=str(error))
+            await asyncio.sleep(0.5)
+            continue
+        assert result.stdout.split()[-1] == str(expected), result.stdout
+        if long:
+            report("long-call-ended", counter=expected)
+        expected += 1
+        await asyncio.sleep(0.5)
+    assert getattr(sandbox, "worker").process.pid == worker
+    report("continuity", calls=expected - 1, refused=refused, worker_pid=worker)
 
 
 async def files(backend: HyperlightSandboxBackend, binding: HyperlightPodConfig) -> None:

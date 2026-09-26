@@ -139,7 +139,7 @@ The default template requests 500 millicores and limits CPU to one core, request
 
 The application is the sole host process. Normal worker disposal stops every other process in its private PID namespace before permitting another worker. Applications that need independent child services should put those services outside this container. Threads in the owning application are supported. Heap/stack sizes remain the adapter defaults.
 
-The probe command supports `positive`, `codeact-fixed`, `codeact-per-spec`, `files`, `allowlist`, `timeout`, `cancel`, `owner-death`, `oom`, `output-limit`, `worker-death`, `native-hang` and `hold`:
+The probe command supports `positive`, `codeact-fixed`, `codeact-per-spec`, `files`, `allowlist`, `timeout`, `cancel`, `owner-death`, `oom`, `output-limit`, `worker-death`, `native-hang`, `hold` and `continuity`, which counts guest calls for 150 seconds so an interruption can be checked against the count:
 
 ```sh
 uv run python scripts/hyperlight_aks.py supervise --namespace scoped-agents --kubeconfig /path/to/kubeconfig --context verified-cluster --scope tenant-user --thread conversation --agent analyst --image registry.example/hyperlight@sha256:REPLACE_WITH_DIGEST --mode positive

@@ -276,7 +276,8 @@ def test_default_mode_retires_on_one_torn_line(monkeypatch):
     assert subject.reason.startswith("controller stream failed")
 
 
-FUTURE = time.time() + 60
+# Parameters are built at collection, well before a full suite reaches these tests.
+FUTURE = time.time() + 86400
 
 
 @pytest.mark.parametrize(
