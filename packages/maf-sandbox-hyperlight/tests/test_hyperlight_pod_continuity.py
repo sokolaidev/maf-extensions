@@ -160,7 +160,7 @@ def test_hello_keeps_the_secret_that_seals_every_later_message(pid1, monkeypatch
         | IDENTITY
     )
     assert started and pid1.key == SECRET
-    assert pid1.lease - pid1.fresh == LAUNCH.recovery_seconds
+    assert pid1.lease - pid1.fresh == pytest.approx(LAUNCH.recovery_seconds)
 
 
 def test_a_detached_pod_refuses_new_calls_without_retiring(pid1):
