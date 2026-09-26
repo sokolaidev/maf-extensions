@@ -158,6 +158,21 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
             check=True,
         )
         image_id = iid_path.read_text(encoding="utf-8").strip()
+    expected = hashlib.sha256((destination / "build-inputs.json").read_bytes()).hexdigest()
+    smoke = verify_image(image_id, expected)
+    record = {
+        "schema_version": 1,
+        "local_image_id": image_id,
+        "registry_digest": None,
+        "signed_provenance_verified": False,
+        "smoke": smoke,
+    }
+    record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+    return record
+
+
+def verify_image(image_id: str, expected_inputs_sha256: str) -> dict[str, object]:
+    """Check one immutable runtime image against the expected prepared build inputs."""
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         raise ValueError("Docker did not return an immutable image ID")
     details = json.loads(
@@ -209,18 +224,9 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
         text=True,
     )
     smoke = json.loads(result.stdout)
-    expected = hashlib.sha256((destination / "build-inputs.json").read_bytes()).hexdigest()
-    if smoke["build_inputs_sha256"] != expected:
+    if smoke["build_inputs_sha256"] != expected_inputs_sha256:
         raise ValueError("image build inputs do not match the prepared context")
-    record = {
-        "schema_version": 1,
-        "local_image_id": image_id,
-        "registry_digest": None,
-        "signed_provenance_verified": False,
-        "smoke": smoke,
-    }
-    record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
-    return record
+    return smoke
 
 
 def main() -> None:

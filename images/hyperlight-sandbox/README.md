@@ -26,6 +26,24 @@ Publish the verified image ID to an approved registry and retain the registry's 
 
 Inspect the rendered plugin before applying it with an explicit kubeconfig/context. It pins the upstream revision and image digest, drops capabilities, disables the service-account token and uses `OnDelete` upgrades. It preserves upstream discovery, device allocation and CDI generation. The default `DEVICE_COUNT=1` advertises one allocation per eligible node; it is a scheduling choice, not measured VM capacity. A cluster operator installs the plugin separately from application controllers. Restart, node replacement and stale-CDI recovery require operational validation before production use.
 
+## Verify a published runtime
+
+Before promoting a runtime digest, run `scripts/verify_hyperlight_aks_image.py` on the trusted host. Supply the approved image reference, full source commit, source branch/tag ref, exact signing workflow certificate identity (including its ref), and the expected SHA-256 of the prepared `build-inputs.json`. Choose these values from the reviewed build and publisher policy, not from claims inside the candidate. The source repository is fixed to `sokolaidev/maf-extensions`; reusable signing workflows may live in a separately approved repository.
+
+```sh
+python scripts/verify_hyperlight_aks_image.py \
+  --image "$IMAGE_DIGEST_REF" \
+  --signer-identity "$SIGNER_IDENTITY" \
+  --source-revision "$SOURCE_REVISION" \
+  --source-ref "$SOURCE_REF" \
+  --build-inputs-sha256 "$BUILD_INPUTS_SHA256" \
+  --output "$EVIDENCE_DIR/runtime-provenance.json"
+```
+
+Use a GitHub CLI version supporting the [attestation verification policy flags](https://cli.github.com/manual/gh_attestation_verify), with GitHub and registry authentication configured on the host, and Docker with Linux/amd64 support. The verifier requires GitHub Actions SLSA v1 provenance, the exact signer identity, source revision/ref and GitHub OIDC issuer, and refuses self-hosted runners. It verifies the signature before running image code, then pulls the same digest, resolves its immutable local image ID and applies the builder's restricted packaging check. The payload must match the expected build-input hash and clean source revision. Missing attestations, unsupported CLI flags and verification failures refuse promotion; there is no unsigned fallback.
+
+The output retains the verified attestation bundles, expected policy, image identities, timestamp and packaging report. A failed attempt removes any previous success record at that output path. Keep these records and their signed bundles in operator-controlled storage for the image's supported lifetime; the local JSON report itself is unsigned. Records may contain private registry identifiers and should not be committed to this public repository. This command does not publish/sign images, configure cluster admission, or establish KVM execution, lifecycle acceptance or plugin provenance. Admission must independently enforce the accepted policy and digest; a saved report is not an admission credential. The existing unsigned candidate and CI records cannot satisfy this gate until a trusted publishing workflow produces matching attestations.
+
 ## Supported platforms
 
 Give eligible nodes their own node pool and label the pool in two steps. `hyperlight.dev/enabled=true` admits the device plugin; `hyperlight.dev/hypervisor=kvm` admits application pods. Create the pool with the first label only, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true`, install the plugin and run the report below. Add the second label once the report passes: `az aks nodepool update ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. That update replaces the pool's labels, so repeat every label the pool keeps. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.
