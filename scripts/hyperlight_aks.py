@@ -1,4 +1,4 @@
-"""Render the pinned upstream plugin overlay, report eligible nodes, or supervise one pod."""
+"""Render the pinned upstream plugin overlay, report eligible nodes and plugin rollout, or supervise one pod."""
 
 from __future__ import annotations
 
@@ -129,10 +129,83 @@ def node_report(node: dict) -> dict:
     }
 
 
+def _digest(image: str) -> str:
+    match = re.search(r"@(sha256:[a-f0-9]{64})$", image)
+    return match.group(1) if match else ""
+
+
+def plugin_rollout(daemonset: dict, pods: list[dict], nodes: list[dict], image: str = "") -> list:
+    """Report each plugin-enabled node's running plugin image; `OnDelete` never replaces it."""
+    template = daemonset["spec"]["template"]["spec"]["containers"][0]["image"]
+    expected = _digest(image or template)
+    if not expected:
+        raise ValueError("the expected plugin image must be digest-pinned")
+    reports = []
+    for node in nodes:
+        name = node["metadata"]["name"]
+        placed = [pod for pod in pods if pod["spec"].get("nodeName") == name]
+        live = [pod for pod in placed if not pod["metadata"].get("deletionTimestamp")]
+        report = {
+            "name": name,
+            "cordoned": bool(node["spec"].get("unschedulable")),
+            "allocatable": node["status"]
+            .get("allocatable", {})
+            .get("hyperlight.dev/hypervisor", "0"),
+            "expected_digest": expected,
+            "plugin_pod": "",
+            "template_image": "",
+            "running_digest": "",
+            "ready": False,
+            "restarts": 0,
+        }
+        reasons = []
+        if len(live) < len(placed):
+            reasons.append("a plugin pod is still terminating")
+        if len(live) != 1:
+            reasons.append(f"{len(live)} running plugin pods, expected one")
+        else:
+            pod = live[0]
+            statuses = pod.get("status", {}).get("containerStatuses", [])
+            status = statuses[0] if len(statuses) == 1 else {}
+            report.update(
+                {
+                    "plugin_pod": pod["metadata"]["name"],
+                    "template_image": pod["spec"]["containers"][0]["image"],
+                    "running_digest": _digest(status.get("imageID", "")),
+                    "ready": status.get("ready") is True,
+                    "restarts": status.get("restartCount", 0),
+                }
+            )
+            if report["template_image"] != template:
+                reasons.append("the plugin pod predates the DaemonSet template; delete it")
+            if report["running_digest"] != expected:
+                reasons.append("the running plugin digest is not the expected one")
+            if not report["ready"]:
+                reasons.append("the plugin pod is not ready")
+        if report["allocatable"] in {"", "0"}:
+            reasons.append("the device plugin advertises no hypervisor allocation")
+        reports.append({**report, "verified": not reasons, "reasons": reasons})
+    return reports
+
+
+def _kubectl(args: argparse.Namespace, *command: str) -> dict:
+    listed = subprocess.run(
+        ["kubectl", "--kubeconfig", args.kubeconfig, "--context", args.context, *command],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=True,
+    )
+    return json.loads(listed.stdout)
+
+
 def main() -> None:
     """Kubernetes authentication stays with the operator or host controller's kubeconfig."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plugin", "nodes", "supervise", "recover"))
+    parser.add_argument(
+        "action", choices=("plugin", "plugin-status", "nodes", "supervise", "recover")
+    )
     parser.add_argument("--namespace")
     parser.add_argument("--kubeconfig")
     parser.add_argument("--context")
@@ -149,20 +222,28 @@ def main() -> None:
     if args.action == "nodes":
         if not (args.kubeconfig and args.context):
             parser.error("nodes requires kubeconfig and context")
-        listed = subprocess.run(
-            ["kubectl", "--kubeconfig", args.kubeconfig, "--context", args.context]
-            + ["get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=True,
-        )
-        reports = [node_report(node) for node in json.loads(listed.stdout)["items"]]
+        listed = _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")
+        reports = [node_report(node) for node in listed["items"]]
         print(json.dumps(reports, indent=2))
         raise SystemExit(0 if reports and all(item["verified"] for item in reports) else 1)
     if not args.namespace:
         parser.error(f"{args.action} requires --namespace")
+    if args.action == "plugin-status":
+        if not (args.kubeconfig and args.context):
+            parser.error("plugin-status requires kubeconfig and context")
+        scope = ("-n", args.namespace, "-o", "json")
+        reports = plugin_rollout(
+            _kubectl(args, "get", "daemonset", "hyperlight-device-plugin", *scope),
+            _kubectl(
+                args, "get", "pods", "-l", "app.kubernetes.io/name=hyperlight-device-plugin", *scope
+            )["items"],
+            _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")[
+                "items"
+            ],
+            args.image or "",
+        )
+        print(json.dumps(reports, indent=2))
+        raise SystemExit(0 if reports and all(item["verified"] for item in reports) else 1)
     if args.action == "plugin":
         with urllib.request.urlopen(UPSTREAM_MANIFEST, timeout=20) as response:
             source = response.read(1024 * 1024).decode()

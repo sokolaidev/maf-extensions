@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_hyperlight_aks_image
-from hyperlight_aks import PLUGIN_IMAGE, node_report, render_plugin
+from hyperlight_aks import PLUGIN_IMAGE, node_report, plugin_rollout, render_plugin
 
 
 @pytest.mark.parametrize("namespace", ["", "-a", "a-", "a.b", "A", "a" * 64])
@@ -145,3 +145,91 @@ def test_an_unmeasured_or_unadvertised_node_is_reported(change, reason):
     report = node_report(labelled_node(**change))
     assert not report["verified"]
     assert any(reason in item for item in report["reasons"])
+
+
+PREVIOUS_PLUGIN = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:51d7dab@sha256:" + "a" * 64
+
+
+def plugin_daemonset(image: str = PLUGIN_IMAGE) -> dict[str, Any]:
+    return {"spec": {"template": {"spec": {"containers": [{"image": image}]}}}}
+
+
+def plugin_pod(node: str = "node", image: str = PLUGIN_IMAGE, **status: Any) -> dict[str, Any]:
+    terminating = status.pop("terminating", False)
+    return {
+        "metadata": {
+            "name": f"plugin-{node}",
+            **({"deletionTimestamp": "2026-09-26T00:00:00Z"} if terminating else {}),
+        },
+        "spec": {"nodeName": node, "containers": [{"image": image}]},
+        "status": {
+            "containerStatuses": [
+                {
+                    "imageID": "ghcr.io/hyperlight-dev/hyperlight-device-plugin@"
+                    + image.rpartition("@")[2],
+                    "ready": True,
+                    "restartCount": 0,
+                    **status,
+                }
+            ]
+        },
+    }
+
+
+def plugin_node(name: str = "node", allocatable: str = "1", **spec: Any) -> dict[str, Any]:
+    return {
+        "metadata": {"name": name},
+        "spec": spec,
+        "status": {"allocatable": {"hyperlight.dev/hypervisor": allocatable}},
+    }
+
+
+def test_a_node_running_the_daemonsets_plugin_is_verified_while_cordoned():
+    [report] = plugin_rollout(plugin_daemonset(), [plugin_pod()], [plugin_node(unschedulable=True)])
+    assert report["verified"] and report["cordoned"]
+    assert report["running_digest"] == PLUGIN_IMAGE.rpartition("@")[2]
+
+
+def test_ondelete_leaves_the_previous_plugin_running_until_its_pod_is_deleted():
+    pods = [plugin_pod("upgraded"), plugin_pod("stale", PREVIOUS_PLUGIN)]
+    nodes = [plugin_node("upgraded"), plugin_node("stale")]
+    upgraded, stale = plugin_rollout(plugin_daemonset(), pods, nodes)
+    assert upgraded["verified"] and not stale["verified"]
+    assert any("predates the DaemonSet template" in item for item in stale["reasons"])
+    assert any("not the expected one" in item for item in stale["reasons"])
+
+
+def test_an_explicit_image_checks_a_rollback_before_the_daemonset_is_restored():
+    [report] = plugin_rollout(plugin_daemonset(), [plugin_pod()], [plugin_node()], PREVIOUS_PLUGIN)
+    assert report["reasons"] == ["the running plugin digest is not the expected one"]
+
+
+def test_a_template_match_is_not_enough_when_the_node_resolved_another_digest():
+    pod = plugin_pod(imageID="ghcr.io/hyperlight-dev/hyperlight-device-plugin@sha256:" + "b" * 64)
+    [report] = plugin_rollout(plugin_daemonset(), [pod], [plugin_node()])
+    assert report["reasons"] == ["the running plugin digest is not the expected one"]
+
+
+@pytest.mark.parametrize(
+    "pods,node,reason",
+    [
+        ([], plugin_node(), "0 running plugin pods"),
+        ([plugin_pod(), plugin_pod()], plugin_node(), "2 running plugin pods"),
+        ([plugin_pod(terminating=True)], plugin_node(), "still terminating"),
+        ([plugin_pod(terminating=True), plugin_pod()], plugin_node(), "still terminating"),
+        ([plugin_pod(ready=False)], plugin_node(), "not ready"),
+        ([plugin_pod("elsewhere")], plugin_node(), "0 running plugin pods"),
+        ([plugin_pod()], plugin_node(allocatable="0"), "no hypervisor allocation"),
+    ],
+)
+def test_a_node_without_one_ready_advertising_plugin_is_reported(pods, node, reason):
+    [report] = plugin_rollout(plugin_daemonset(), pods, [node])
+    assert not report["verified"]
+    assert any(reason in item for item in report["reasons"])
+
+
+def test_the_expected_plugin_image_must_be_digest_pinned():
+    with pytest.raises(ValueError, match="digest-pinned"):
+        plugin_rollout(plugin_daemonset("plugin:latest"), [], [])
+    with pytest.raises(ValueError, match="digest-pinned"):
+        plugin_rollout(plugin_daemonset(), [], [], "plugin:latest")
