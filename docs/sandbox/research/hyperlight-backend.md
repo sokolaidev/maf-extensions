@@ -231,6 +231,29 @@ Deployment acceptance remains open. A GitHub provenance verification for the pin
 
 Teardown removed every application pod and ownership reservation, both probe namespaces, the upstream plugin, diagnostic pod and temporary node pool. The test VM scale set was absent afterward. The cluster returned to its original two nodes and 34 pods, with unchanged original pod UIDs/restart counts, node labels and cluster identity/security/network/admission settings. Host KVM ownership and mode were unchanged before deleting the test node.
 
+### Platform matrix, 2026-09-25
+
+[#1425](https://github.com/sokolaidev/maf-extensions/issues/1425) asked which node platforms the pod integration supports and how an unsupported node fails. Two temporary one-node `Standard_D4ads_v5` user pools were added to the Standard cluster with the eligibility labels set on the pool, at Kubernetes 1.35.7 and the default security type:
+
+| Pool | Node image | Kernel | containerd | runc | Host `/dev/kvm` |
+|---|---|---|---|---|---|
+| Ubuntu 24.04.5 | `AKSUbuntu-2404gen2containerd-202609.15.0` | `6.8.0-1067-azure` | 2.3.3-2 | 1.4.3-2 | `0660` root:993 |
+| Azure Linux 3.0 | `AKSAzureLinux-V3gen2-202609.15.0` | `6.6.150.1-1.azl3` | 2.2.4 | 1.3.6 | `0666` root:32 |
+
+The pinned plugin advertised one allocation on each node. The pods ran a bundle built from the change under test, with the unchanged 0.7.0 SDK/backend/guest trio. Running every probe mode as two concurrent scopes put each mode on both nodes. `positive`, both CodeAct modes, `files` and `allowlist` exited 0 on both. `timeout`, `cancel`, `owner-death`, `output-limit`, `worker-death` and `native-hang` retired the pod with exit 70, and `oom` ended with the aggregate OOM exit 137, on both. Acquisition took 2.46 to 2.67 seconds, reset about 0.2 seconds, and the container memory peak was about 1.92 GB under the 4 GiB limit on both. PID 1 observed swap 0, `cpu.max` of one core and `pids.max` near 19,150; the cluster sets no per-pod PID limit, so that value is the node default.
+
+Three negatives exercised the new refusals without changing a node:
+
+| Case | Observed outcome |
+|---|---|
+| Both allocations held by other scopes | `supervise` with a 40-second startup budget raised `TimeoutError` after 56.8 seconds, naming `Unschedulable` and `2 Insufficient hyperlight.dev/hypervisor`. Its pod and reservation were removed. |
+| Plugin overlay rendering CDI owner 1000:1000 | On Ubuntu, PID 1 refused before starting the application: `supervise` raised `HyperlightPodPlatformError` with `KVM initialization failed ... (Permission denied)` after 38 seconds and confirmed cleanup. On Azure Linux the pod ran, because the host device is world-writable and the CDI owner does not gate it. Restoring 65534:65534 and restarting the plugin pods restored success on both. |
+| No `/dev/kvm` (local Docker Desktop, same image) | PID 1 exited 78 with `(No such file or directory)`. |
+
+A node without nested virtualization was not measured. The subscription offers only Bsv2 among B-series sizes in the region and has no Bsv2 quota; Bsv2 is [documented](https://learn.microsoft.com/azure/virtual-machines/sizes/general-purpose/bsv2-series#feature-support) without nested virtualization, so the plugin would advertise nothing there and scheduling would refuse the pod. The `nodes` report marked both test nodes verified. Trusted Launch and confidential VM pools, other VM families and Kubernetes 1.36 were not measured.
+
+A second pair of pools on 2026-09-26, the same sizes and node images, measured what the first run left out. Created with `hyperlight.dev/enabled=true` only, both nodes ran the plugin and advertised one allocation. The `nodes` report marked them verified and not schedulable. `chroot /host runc --version` in a `sysadmin` debug pod read runc 1.4.3-2 on Ubuntu and 1.3.6 on Azure Linux; the runc column above comes from these nodes, not the first pair. `az aks nodepool update --labels` then added `hyperlight.dev/hypervisor=kvm` to the existing nodes in place: the same node objects and plugin pods remained. `positive` exited 0 on both nodes. Both pools were deleted afterwards.
+
 ## Azure Container Apps
 
 ### Source feasibility audit

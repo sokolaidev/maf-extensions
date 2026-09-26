@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
@@ -18,12 +19,23 @@ from contextlib import suppress
 from pathlib import Path
 from types import FrameType
 
-from ._pod import FRAME_LIMIT, frame, unframe, verify_container
+from ._pod import (
+    FRAME_LIMIT,
+    PLATFORM_EXIT,
+    PLATFORM_REFUSAL,
+    REASON_LIMIT,
+    TERMINATION_LOG,
+    frame,
+    unframe,
+    verify_container,
+)
 from ._pod_config import POD_BINDING, POD_SOCKET, HyperlightPodConfig, PodLaunch
 from ._wire import HyperlightWorkerError
 
 LEASE_SECONDS = 5.0
 STARTUP_SECONDS = 60.0
+PR_GET_DUMPABLE = 3
+PR_SET_DUMPABLE = 4
 
 
 def _status(pid: int) -> dict[str, str]:
@@ -37,8 +49,10 @@ def _oom_kills() -> int:
     return int(values["oom_kill"])
 
 
-def verify_init(launch: PodLaunch) -> None:
-    """Only an unprivileged private namespace init may use process exit as containment."""
+def verify_init(launch: PodLaunch) -> dict[str, str]:
+    """Only an unprivileged private namespace init on a usable KVM node may start the owner."""
+    from ._linux import check_kvm
+
     status = _status(os.getpid())
     if os.getpid() != 1 or os.getuid() == 0:
         raise HyperlightWorkerError("pod supervisor must be non-root PID 1")
@@ -48,15 +62,45 @@ def verify_init(launch: PodLaunch) -> None:
         or int(status["Seccomp"]) != 2
     ):
         raise HyperlightWorkerError("pod supervisor requires no capabilities and RuntimeDefault")
-    verify_container(launch.memory_limit_bytes)
+    machine = os.uname().machine
+    if machine != "x86_64":
+        raise HyperlightWorkerError(f"pod mode requires x86-64, not {machine}")
+    controls = verify_container(launch.memory_limit_bytes)
+    try:
+        check_kvm()
+    except HyperlightWorkerError as error:
+        cause = error.__cause__
+        raise HyperlightWorkerError(
+            f"{error} ({cause.strerror})" if isinstance(cause, OSError) else str(error)
+        ) from error
+    make_undumpable()
+    return {"machine": machine, "kernel": os.uname().release, "kvm_api": "12", **controls}
+
+
+def make_undumpable() -> None:
+    """Keep the pod's other processes, which share PID 1's UID, out of /proc/1 and its stdin."""
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    if prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 or prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise HyperlightWorkerError("pod supervisor could not become non-dumpable")
+
+
+def _refuse_platform(reason: str) -> None:
+    """Kubelet copies the termination message into the pod status, where the controller reads it."""
+    message = PLATFORM_REFUSAL + reason
+    with suppress(OSError, ValueError):
+        print(message, file=sys.stderr, flush=True)
+    record_reason(message)
 
 
 class Supervisor:
     """The controller acknowledges every deadline before the owner can submit native work."""
 
-    def __init__(self, launch: PodLaunch, command: list[str]) -> None:
+    def __init__(
+        self, launch: PodLaunch, command: list[str], platform: dict[str, str] | None = None
+    ) -> None:
         self.launch = launch
         self.command = command
+        self.platform = platform or {}
         self.owner: subprocess.Popen[bytes] | None = None
         self.worker: int | None = None
         self.worker_fd: int | None = None
@@ -66,7 +110,7 @@ class Supervisor:
         self.deadline: float | None = None
         self.ack = threading.Event()
         self.retired = threading.Event()
-        self.reason = ""
+        self.cause: dict[str, str] = {}
         self.guard = threading.Lock()
         self.incoming: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         self.outgoing: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
@@ -74,9 +118,17 @@ class Supervisor:
         self.connected = False
         self.oom_kills = _oom_kills()
 
+    @property
+    def reason(self) -> str:
+        return self.cause.get("reason", "")
+
     def retire(self, reason: str) -> None:
-        """Revoke admission before the namespace init exits."""
-        self.reason = reason
+        """Revoke admission before the namespace init exits; the first cause is the one reported.
+
+        Callers include the signal handler, so the first cause is stored by one ``setdefault``,
+        which neither another thread nor a signal can interrupt, instead of under a lock.
+        """
+        self.cause.setdefault("reason", reason)
         self.retired.set()
         self.ack.set()
 
@@ -133,7 +185,7 @@ class Supervisor:
             os.chmod(POD_SOCKET, 0o600)
             self.listener.listen(1)
             threading.Thread(target=self.serve_owner, daemon=True).start()
-            self.emit("ready", owner_pid=self.owner.pid)
+            self.emit("ready", owner_pid=self.owner.pid, platform=self.platform)
             os.write(publish, b"1")
         finally:
             os.close(ready)
@@ -339,8 +391,16 @@ class Supervisor:
         return 70
 
 
+def record_reason(reason: str) -> None:
+    """The kubelet copies this file into pod status, which outlives the pod's log."""
+    text = reason.encode("utf-8", "backslashreplace").decode("utf-8")[:REASON_LIMIT]
+    with suppress(OSError), open(TERMINATION_LOG, "w", encoding="utf-8") as target:
+        target.write(text)
+
+
 def main() -> None:
     """Run an application as the sole owner under the controller's immutable pod binding."""
+    reason = ""
     try:
         fields = json.loads(os.environ["MAF_HYPERLIGHT_POD_BINDING"])
         launch = PodLaunch(
@@ -349,11 +409,15 @@ def main() -> None:
             fields.get("generation"),
             fields.get("memory_limit_bytes"),
         )
-        verify_init(launch)
+        try:
+            platform = verify_init(launch)
+        except (OSError, ValueError, KeyError, HyperlightWorkerError) as error:
+            _refuse_platform(str(error))
+            os._exit(PLATFORM_EXIT)
         command = sys.argv[1:]
         if not command:
             raise ValueError("an application command is required")
-        supervisor = Supervisor(launch, command)
+        supervisor = Supervisor(launch, command, platform)
 
         def terminate(signum: int, current: FrameType | None) -> None:
             supervisor.retire("pod termination requested")
@@ -361,11 +425,15 @@ def main() -> None:
         signal.signal(signal.SIGTERM, terminate)
         signal.signal(signal.SIGINT, terminate)
         status = supervisor.run()
-        if supervisor.reason:
-            print(supervisor.reason, file=sys.stderr, flush=True)
+        reason = supervisor.reason
     except BaseException as error:
-        print(f"pod supervisor refused startup: {error}", file=sys.stderr, flush=True)
+        reason = f"pod supervisor refused startup: {error}"
         status = 71
+    if reason:
+        with suppress(OSError, ValueError):
+            print(reason, file=sys.stderr, flush=True)
+    # The application shares this UID and may have written the file; an empty reason clears it.
+    record_reason(reason)
     # Python shutdown can wait on application-owned resources; namespace exit must not.
     os._exit(status if 0 <= status <= 255 else 70)
 

@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import ctypes
 import gzip
 import hashlib
 import io
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -32,12 +34,20 @@ from maf_sandbox_hyperlight import (
     _pod_supervisor,
     kubernetes,
 )
-from maf_sandbox_hyperlight._pod import FRAME_LIMIT, frame, unframe, verify_container
+from maf_sandbox_hyperlight._pod import (
+    FRAME_LIMIT,
+    REASON_LIMIT,
+    TERMINATION_LOG,
+    frame,
+    unframe,
+    verify_container,
+)
 from maf_sandbox_hyperlight._pod_config import PodLaunch
 from maf_sandbox_hyperlight._pod_supervisor import Supervisor
 from maf_sandbox_hyperlight.kubernetes import (
     HyperlightPodCleanupPending,
     HyperlightPodController,
+    HyperlightPodPlatformError,
     HyperlightPodTemplate,
     confirmed_exit,
     ownership_name,
@@ -143,6 +153,8 @@ def test_manifest_uses_upstream_resource_with_private_container_limits():
     assert spec["securityContext"]["runAsUser"] == 65534
     assert all("hostPath" not in volume for volume in spec["volumes"])
     assert container["stdinOnce"] is True and container["tty"] is False
+    assert container["terminationMessagePath"] == TERMINATION_LOG
+    assert container["terminationMessagePolicy"] == "File"
     env = {item["name"]: item.get("value") for item in container["env"]}
     launch = json.loads(env["MAF_HYPERLIGHT_POD_BINDING"])
     assert launch["owner"] == pod["metadata"]["name"] == ownership_name(key, kind)
@@ -189,6 +201,7 @@ def controls(tmp_path: Path):
         "memory.swap.max": "0",
         "cpu.max": "100000 100000",
         "pids.max": "100",
+        "cgroup.controllers": "cpu memory pids",
     }
     for name, value in values.items():
         (tmp_path / name).write_text(value)
@@ -213,6 +226,84 @@ def test_absent_or_weaker_kernel_controls_refuse_startup(controls, name, value):
     (controls / name).write_text(value)
     with pytest.raises((ValueError, HyperlightWorkerError)):
         verify_container(BINDING.memory_limit_bytes, root=controls)
+
+
+@pytest.mark.parametrize(
+    "missing,match",
+    [
+        ("cgroup.controllers", "requires cgroup v2"),
+        ("memory.swap.max", "cannot read cgroup memory.swap.max"),
+    ],
+)
+def test_cgroup_v1_or_missing_swap_accounting_names_the_requirement(controls, missing, match):
+    (controls / missing).unlink()
+    with pytest.raises(HyperlightWorkerError, match=match):
+        verify_container(BINDING.memory_limit_bytes, root=controls)
+
+
+def test_platform_refusal_reaches_the_termination_message_with_its_own_exit(tmp_path):
+    launch = {"owner": LAUNCH.owner, "generation": "generation", "memory_limit_bytes": 1}
+    log = tmp_path / "termination-log"
+    program = f"""
+import json, os
+from maf_sandbox_hyperlight import _pod_supervisor
+from maf_sandbox_hyperlight._wire import HyperlightWorkerError
+os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(launch)!r}
+os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
+_pod_supervisor.TERMINATION_LOG = {str(log)!r}
+def refuse(launch):
+    raise HyperlightWorkerError('KVM initialization failed (Permission denied)')
+_pod_supervisor.verify_init = refuse
+_pod_supervisor.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, "application"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 78
+    assert log.read_text() == (
+        "maf-hyperlight: unsupported platform: KVM initialization failed (Permission denied)"
+    )
+
+
+def test_ready_event_carries_the_observed_platform():
+    observed = {"kernel": "6.8.0-1067-azure", "memory.swap.max": "0"}
+    payload = frame(
+        {"event": "ready", "pod_uid": "pod-uid", "generation": "generation", "platform": observed}
+    )
+    stopped = threading.Event()
+    # An open pipe keeps the transport alive until the session deadline.
+    source, sink = os.pipe()
+    os.write(sink, payload)
+    platform: dict[str, str] = {}
+    readers = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    with open(source, "rb") as control:
+        stream = SimpleNamespace(
+            stdout=control,
+            stderr=io.BytesIO(),
+            stdin=io.BytesIO(),
+            poll=lambda: 0 if stopped.is_set() else None,
+        )
+        try:
+            controller._supervise(
+                stream,
+                "pod-uid",
+                "generation",
+                IDENTITY,
+                time.monotonic() + 0.5,
+                bytearray(),
+                platform,
+                readers,
+            )
+        finally:
+            stopped.set()
+            os.close(sink)
+            for reader in readers:
+                reader.join(timeout=2)
+    assert platform == observed
 
 
 @pytest.mark.parametrize("raw", [b"{}", b"[]\n", b"{" + b"x" * FRAME_LIMIT + b"}\n", b"not-json\n"])
@@ -340,7 +431,14 @@ def test_controller_hello_carries_the_identity_the_supervisor_binds(supervisor, 
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
         controller._supervise(
-            stream, "pod-uid", "generation", IDENTITY, time.monotonic() + 2, bytearray(), readers
+            stream,
+            "pod-uid",
+            "generation",
+            IDENTITY,
+            time.monotonic() + 2,
+            bytearray(),
+            {},
+            readers,
         )
         written = time.monotonic() + 2
         while not stream.stdin.getvalue() and time.monotonic() < written:
@@ -375,6 +473,52 @@ def test_controller_input_overflow_retires_with_diagnostic(supervisor, monkeypat
     assert supervisor.retired.is_set() and "Full" in supervisor.reason
 
 
+@pytest.mark.parametrize("replies,refused", [((0, 0), False), ((-1, 0), True), ((0, 1), True)])
+def test_init_refuses_a_dumpable_supervisor(monkeypatch, replies, refused):
+    calls: list[tuple[int, ...]] = []
+
+    def prctl(*arguments: int) -> int:
+        calls.append(arguments)
+        return replies[len(calls) - 1]
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(prctl=prctl))
+    if refused:
+        with pytest.raises(HyperlightWorkerError, match="non-dumpable"):
+            _pod_supervisor.make_undumpable()
+    else:
+        _pod_supervisor.make_undumpable()
+    assert calls[0] == (_pod_supervisor.PR_SET_DUMPABLE, 0, 0, 0, 0)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or os.geteuid() == 0,
+    reason="needs Linux /proc, and root bypasses the dumpable check",
+)
+def test_same_uid_process_cannot_open_an_undumpable_supervisor_stdin():
+    reachable = {}
+    for undumpable in (False, True):
+        program = (
+            "import sys, time\n"
+            "from maf_sandbox_hyperlight import _pod_supervisor\n"
+            f"if {undumpable}: _pod_supervisor.make_undumpable()\n"
+            "print('ready', flush=True); time.sleep(30)\n"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", program], stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        )
+        try:
+            assert child.stdout is not None and child.stdout.readline() == b"ready\n"
+            try:
+                os.close(os.open(f"/proc/{child.pid}/fd/0", os.O_WRONLY))
+                reachable[undumpable] = True
+            except PermissionError:
+                reachable[undumpable] = False
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+    assert reachable == {False: True, True: False}
+
+
 @pytest.mark.parametrize("error", ["SystemExit(0)", "KeyboardInterrupt()"])
 def test_init_forces_failure_exit_without_waiting_for_python_threads(error):
     launch = {"owner": LAUNCH.owner, "generation": "generation", "memory_limit_bytes": 1}
@@ -397,6 +541,130 @@ _pod_supervisor.main()
     assert result.returncode == 71
     assert b"verifying init" in result.stderr
     assert b"pod supervisor refused startup" in result.stderr
+
+
+LAUNCH_ENVIRONMENT = f"""
+import json, os
+from maf_sandbox_hyperlight import _pod_supervisor
+os.environ['MAF_HYPERLIGHT_POD_BINDING'] = json.dumps(
+    {{"owner": {LAUNCH.owner!r}, "generation": "generation", "memory_limit_bytes": 1}}
+)
+os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
+"""
+
+
+@pytest.mark.parametrize(
+    "outcome,code,reason",
+    [
+        (
+            "_pod_supervisor.verify_init = lambda launch: {}\nsys.argv = ['supervisor']",
+            71,
+            "pod supervisor refused startup: an application command is required",
+        ),
+        (
+            (
+                "_pod_supervisor.verify_init = lambda launch: (_ for _ in ()).throw("
+                "OSError('cannot read ' + chr(0xDCFF)))"
+            ),
+            78,
+            "maf-hyperlight: unsupported platform: cannot read \\udcff",
+        ),
+        (
+            (
+                "_pod_supervisor.verify_init = lambda launch: None\n"
+                "_pod_supervisor._oom_kills = lambda: 0\n"
+                "_pod_supervisor.Supervisor.run = "
+                "lambda self: self.retire('controller stream closed') or 70"
+            ),
+            70,
+            "controller stream closed",
+        ),
+        (
+            (
+                "_pod_supervisor.verify_init = lambda launch: None\n"
+                "_pod_supervisor._oom_kills = lambda: 0\n"
+                "_pod_supervisor.Supervisor.run = lambda self: ("
+                "self.retire('cannot read ' + chr(0xDCFF)) "
+                "or self.retire('pod termination requested') or 70)"
+            ),
+            70,
+            "cannot read \\udcff",
+        ),
+        (
+            (
+                "_pod_supervisor.verify_init = lambda launch: None\n"
+                "_pod_supervisor._oom_kills = lambda: 0\n"
+                "def run(self):\n"
+                "    with open(_pod_supervisor.TERMINATION_LOG, 'w') as target:\n"
+                "        target.write('written by the application')\n"
+                "    return 0\n"
+                "_pod_supervisor.Supervisor.run = run"
+            ),
+            0,
+            "",
+        ),
+    ],
+)
+def test_supervisor_records_its_reason_as_the_termination_message(tmp_path, outcome, code, reason):
+    log = tmp_path / "termination-log"
+    program = (
+        LAUNCH_ENVIRONMENT
+        + f"_pod_supervisor.TERMINATION_LOG = {str(log)!r}\n"
+        + "import sys; sys.argv = ['supervisor', 'app']\n"
+        + outcome
+        + "\n_pod_supervisor.main()\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, timeout=10, check=False
+    )
+    assert result.returncode == code, result.stderr
+    assert log.read_text(encoding="utf-8") == reason
+
+
+def test_recorded_reason_is_bounded_and_never_blocks_exit(tmp_path, monkeypatch):
+    log = tmp_path / "termination-log"
+    monkeypatch.setattr(_pod_supervisor, "TERMINATION_LOG", str(log))
+    _pod_supervisor.record_reason("x" * (REASON_LIMIT + 1))
+    assert log.read_text(encoding="utf-8") == "x" * REASON_LIMIT
+    _pod_supervisor.record_reason("cannot read \udcff")
+    assert log.read_text(encoding="utf-8") == "cannot read \\udcff"
+    _pod_supervisor.record_reason("\udcff" * REASON_LIMIT)
+    assert log.read_text(encoding="utf-8") == ("\\udcff" * REASON_LIMIT)[:REASON_LIMIT]
+    monkeypatch.setattr(_pod_supervisor, "TERMINATION_LOG", str(tmp_path))
+    _pod_supervisor.record_reason("unwritable")
+
+
+def test_the_first_retirement_cause_is_the_one_reported(supervisor):
+    supervisor.retire("controller stream closed")
+    supervisor.retire("pod termination requested")
+    assert supervisor.reason == "controller stream closed"
+
+
+@pytest.mark.parametrize("point", range(4))
+def test_an_interrupting_retirement_never_overwrites_a_stored_cause(supervisor, point):
+    # A signal handler runs between any two lines of the call it interrupts.
+    expected: list[str] = []
+    events = 0
+
+    def interrupt(frame, event, arg):
+        nonlocal events
+        if event == "line" and not expected:
+            events += 1
+            if events == point + 1:
+                expected.append(supervisor.reason or "pod termination requested")
+                supervisor.retire("pod termination requested")
+        return interrupt
+
+    def enter(frame, event, arg):
+        return interrupt if frame.f_code is Supervisor.retire.__code__ else None
+
+    previous = sys.gettrace()
+    sys.settrace(enter)
+    try:
+        supervisor.retire("controller stream closed")
+    finally:
+        sys.settrace(previous)
+    assert supervisor.reason == (expected[0] if expected else "controller stream closed")
 
 
 def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
@@ -437,7 +705,14 @@ def test_closed_full_control_stream_cannot_acknowledge_queued_work(monkeypatch):
     controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
     try:
         controller._supervise(
-            stream, "pod-uid", "generation", IDENTITY, time.monotonic() + 2, bytearray(), readers
+            stream,
+            "pod-uid",
+            "generation",
+            IDENTITY,
+            time.monotonic() + 2,
+            bytearray(),
+            {},
+            readers,
         )
     finally:
         stopped.set()
@@ -549,6 +824,58 @@ class RejectingController(FakeController):
                 return copy.deepcopy(self.ledger)
             raise self.error
         return super().api(*arguments, body=body)
+
+
+def refused_pod(message):
+    pod = terminal_pod()
+    ended = pod["status"]["containerStatuses"][0]["state"]["terminated"]
+    ended.update({"reason": "Error", "exitCode": 78, "message": message})
+    return pod
+
+
+class SupervisingController(FakeController):
+    def api(self, *arguments, body=None):
+        if arguments[0] == "create":
+            assert body is not None
+            if body["kind"] == "ConfigMap":
+                self.ledger["data"].update(body["data"])
+                return copy.deepcopy(self.ledger)
+            self.pod["metadata"]["annotations"] = body["metadata"]["annotations"]
+            return copy.deepcopy(self.pod)
+        return super().api(*arguments, body=body)
+
+
+def test_platform_refusal_raises_after_confirmed_cleanup():
+    controller = SupervisingController(
+        refused_pod("maf-hyperlight: unsupported platform: pod mode requires cgroup v2")
+    )
+    with pytest.raises(HyperlightPodPlatformError, match="requires cgroup v2"):
+        controller.supervise(KEY, KIND, TEMPLATE)
+    assert not controller.ledger and not controller.pod
+
+
+def test_an_application_exit_78_is_not_a_platform_refusal():
+    controller = SupervisingController(refused_pod("application configuration error"))
+    assert controller.supervise(KEY, KIND, TEMPLATE).exit_code == 78
+
+
+def test_startup_timeout_names_the_scheduler_reason():
+    pod = terminal_pod()
+    pod["status"] = {
+        "phase": "Pending",
+        "conditions": [
+            {
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "Unschedulable",
+                "message": "0/3 nodes are available: 3 Insufficient hyperlight.dev/hypervisor.",
+            }
+        ],
+    }
+    controller = FakeController(pod)
+    name = ownership_name(KEY, KIND)
+    with pytest.raises(TimeoutError, match="Unschedulable: 0/3 nodes .* Insufficient hyperlight"):
+        controller._await_running(name, "pod-uid", time.monotonic() + 0.1)
 
 
 def rejected_create(message):
@@ -719,6 +1046,45 @@ def test_recovery_finishes_after_pod_deletion_when_proof_was_saved():
     assert not controller.ledger
 
 
+def exiting_pod(message: object) -> dict[str, Any]:
+    pod = terminal_pod()
+    terminated = pod["status"]["containerStatuses"][0]["state"]["terminated"]
+    terminated.update({"reason": "Error", "exitCode": 70, "message": message})
+    return pod
+
+
+def test_cleanup_saves_the_reason_with_its_termination_receipt():
+    controller = FakeController(pod=exiting_pod("controller stream closed"))
+    assert controller.recover_exit(KEY, KIND) == kubernetes.HyperlightPodExit(
+        70, "controller stream closed"
+    )
+    receipts = [body for args, body in controller.calls if args[0] == "replace" and "data" in body]
+    assert receipts[0]["data"]["reason"] == "controller stream closed"
+
+
+def test_saved_reason_survives_pod_deletion():
+    controller = FakeController(pod={})
+    controller.ledger["data"].update(
+        {
+            "state": "stopped",
+            "exit_code": "70",
+            "reason": "controller lease or native deadline expired",
+        }
+    )
+    assert controller.recover_exit(KEY, KIND) == kubernetes.HyperlightPodExit(
+        70, "controller lease or native deadline expired"
+    )
+
+
+@pytest.mark.parametrize(
+    "message,reason", [(None, ""), (7, ""), ("y" * (REASON_LIMIT + 1), "y" * REASON_LIMIT)]
+)
+def test_termination_message_is_bounded_text(message, reason):
+    controller = FakeController(pod=exiting_pod(message))
+    assert controller.recover(KEY, KIND) == 70
+    assert FakeController(pod=exiting_pod(message)).recover_exit(KEY, KIND).reason == reason
+
+
 def test_stale_recovery_never_deletes_a_replacement():
     pod = terminal_pod()
     pod["metadata"]["uid"] = "replacement"
@@ -774,10 +1140,11 @@ def test_never_started_cleanup_records_failure_before_releasing_ownership(mode):
     assert confirmed_exit(pod, "pod-uid") == 71
     assert confirmed_exit(pod, "other-uid") is None
     controller = FakeController(pod)
-    assert controller.recover(KEY, KIND, retire=True) == 71
+    assert controller.recover_exit(KEY, KIND, retire=True) == kubernetes.HyperlightPodExit(71, "")
     mutations = [(args[0], body) for args, body in controller.calls if args[0] != "get"]
     assert mutations[0][1]["data"]["state"] == "stopped"
     assert mutations[0][1]["data"]["exit_code"] == "71"
+    assert mutations[0][1]["data"]["reason"] == ""
     assert controller.pod == controller.ledger == {}
 
 

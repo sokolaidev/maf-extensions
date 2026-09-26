@@ -11,13 +11,13 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, cast
 
 from maf_sandbox import SandboxKey
 
-from ._pod import FRAME_LIMIT, frame, unframe
+from ._pod import FRAME_LIMIT, PLATFORM_EXIT, PLATFORM_REFUSAL, REASON_LIMIT, frame, unframe
 from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
@@ -30,6 +30,10 @@ _DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
 class HyperlightPodCleanupPending(HyperlightWorkerError):
     """The ownership record remains reserved because workload termination is unconfirmed."""
+
+
+class HyperlightPodPlatformError(HyperlightWorkerError):
+    """The node the pod landed on fails a pod-mode requirement; its cleanup is confirmed."""
 
 
 @dataclass(frozen=True)
@@ -71,12 +75,22 @@ class HyperlightPodTemplate:
 
 @dataclass(frozen=True)
 class HyperlightPodResult:
-    """A confirmed pod outcome with bounded application diagnostics."""
+    """A confirmed pod outcome with bounded diagnostics and the controls PID 1 observed."""
 
     pod_uid: str
     exit_code: int
     elapsed: float
     diagnostics: str
+    platform: dict[str, str] = field(default_factory=dict[str, str])
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class HyperlightPodExit:
+    """A confirmed exit code and the reason the pod supervisor recorded, empty if none."""
+
+    exit_code: int
+    reason: str
 
 
 def pod_manifest(
@@ -143,6 +157,8 @@ def pod_manifest(
                     "stdin": True,
                     "stdinOnce": True,
                     "tty": False,
+                    "terminationMessagePath": "/dev/termination-log",
+                    "terminationMessagePolicy": "File",
                     "securityContext": {
                         "allowPrivilegeEscalation": False,
                         "readOnlyRootFilesystem": True,
@@ -331,6 +347,19 @@ def _never_started_terminal(container: dict[str, object]) -> bool:
     )
 
 
+def _termination_reason(pod: dict[str, object]) -> str:
+    """Only a runtime exit carries supervisor text; kubelet's synthetic status does not."""
+    status = cast("dict[str, object]", pod.get("status", {}))
+    containers = cast("list[dict[str, object]]", status.get("containerStatuses", []))
+    if len(containers) != 1 or containers[0].get("name") != "sandbox":
+        return ""
+    state = cast("dict[str, object]", containers[0].get("state", {}))
+    if _terminated_exit(state) is None:
+        return ""
+    message = cast("dict[str, object]", state.get("terminated", {})).get("message")
+    return message[:REASON_LIMIT] if isinstance(message, str) else ""
+
+
 def _terminated_exit(state: dict[str, object]) -> int | None:
     """Synthetic kubelet statuses cannot certify that a container exited."""
     ended = cast("dict[str, object]", state.get("terminated", {}))
@@ -464,6 +493,7 @@ class HyperlightPodController:
             self._release_rejected(name, ledger, record=True)
             raise
         diagnostics = bytearray()
+        platform: dict[str, str] = {}
         readers: list[threading.Thread] = []
         stream: subprocess.Popen[bytes] | None = None
         try:
@@ -494,6 +524,7 @@ class HyperlightPodController:
                     identity,
                     started + template.session_timeout,
                     diagnostics,
+                    platform,
                     readers,
                 )
         finally:
@@ -511,13 +542,21 @@ class HyperlightPodController:
                     if pipe is not None:
                         with suppress(OSError):
                             pipe.close()
-            result = self.recover(key, kind, timeout=cleanup_timeout, retire=True)
+            outcome = self.recover_exit(key, kind, timeout=cleanup_timeout, retire=True)
+        if outcome.exit_code == PLATFORM_EXIT and outcome.reason.startswith(PLATFORM_REFUSAL):
+            raise HyperlightPodPlatformError(outcome.reason)
         return HyperlightPodResult(
-            uid, result, time.monotonic() - started, diagnostics.decode(errors="replace")
+            uid,
+            outcome.exit_code,
+            time.monotonic() - started,
+            diagnostics.decode(errors="replace"),
+            platform,
+            outcome.reason,
         )
 
     def _await_running(self, name: str, uid: str, deadline: float) -> bool:
         """Attach only after init containers finish and the namespace supervisor starts."""
+        pod: dict[str, object] = {}
         while time.monotonic() < deadline:
             pod = self.api("get", "pod", name, "-o", "json")
             metadata = cast("dict[str, object]", pod["metadata"])
@@ -534,7 +573,9 @@ class HyperlightPodController:
             ):
                 return True
             time.sleep(0.5)
-        raise TimeoutError("application pod did not start within its startup budget")
+        raise TimeoutError(
+            "application pod did not start within its startup budget" + _startup_blocker(pod)
+        )
 
     def _supervise(
         self,
@@ -544,6 +585,7 @@ class HyperlightPodController:
         identity: dict[str, str],
         session_deadline: float,
         diagnostics: bytearray,
+        platform: dict[str, str],
         readers: list[threading.Thread],
     ) -> None:
         messages: queue.Queue[dict[str, object]] = queue.Queue(maxsize=64)
@@ -644,6 +686,14 @@ class HyperlightPodController:
                 deadline = None
             elif event == "ready" and not ready:
                 ready = True
+                observed = message.get("platform")
+                if isinstance(observed, dict):
+                    platform.update(
+                        {
+                            str(item): str(value)[:256]
+                            for item, value in cast("dict[object, object]", observed).items()
+                        }
+                    )
             else:
                 raise HyperlightWorkerError("invalid pod lifecycle event")
 
@@ -651,6 +701,12 @@ class HyperlightPodController:
         self, key: SandboxKey, kind: str, *, timeout: float = 45, retire: bool = False
     ) -> int:
         """Release a stopped or rejected allocation; confirmed rejection returns code 71."""
+        return self.recover_exit(key, kind, timeout=timeout, retire=retire).exit_code
+
+    def recover_exit(
+        self, key: SandboxKey, kind: str, *, timeout: float = 45, retire: bool = False
+    ) -> HyperlightPodExit:
+        """Like `recover`, and also return the reason saved with the termination receipt."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         name = ownership_name(key, kind)
@@ -663,10 +719,10 @@ class HyperlightPodController:
         data = cast("dict[str, str]", ledger["data"])
         if data.get("state") == "rejected" and not data.get("pod_uid"):
             self._release_rejected(name, ledger)
-            return 71
+            return HyperlightPodExit(71, "")
         if data.get("state") == "stopped" and data.get("pod_uid"):
             self._finish_cleanup(name, ledger)
-            return int(data["exit_code"])
+            return HyperlightPodExit(int(data["exit_code"]), data.get("reason", ""))
         until = time.monotonic() + timeout
         deleted = False
         while True:
@@ -702,7 +758,10 @@ class HyperlightPodController:
             if time.monotonic() >= until:
                 raise HyperlightPodCleanupPending("termination unconfirmed; allocation retained")
             time.sleep(0.2)
-        data.update({"state": "stopped", "pod_uid": uid, "exit_code": str(result)})
+        reason = _termination_reason(pod)
+        data.update(
+            {"state": "stopped", "pod_uid": uid, "exit_code": str(result), "reason": reason}
+        )
         try:
             ledger = self._replace(ledger)
         except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError) as error:
@@ -710,7 +769,7 @@ class HyperlightPodController:
                 "termination receipt is unconfirmed; allocation retained"
             ) from error
         self._finish_cleanup(name, ledger)
-        return result
+        return HyperlightPodExit(result, reason)
 
     def _release_rejected(
         self, name: str, ledger: dict[str, object], *, record: bool = False
@@ -760,6 +819,22 @@ class HyperlightPodController:
             raise HyperlightPodCleanupPending(
                 "cleanup is incomplete; termination receipt retained"
             ) from error
+
+
+def _startup_blocker(pod: dict[str, object]) -> str:
+    """Name the scheduler's or kubelet's reason a pod is still waiting."""
+    status = cast("dict[str, object]", pod.get("status", {}))
+    for condition in cast("list[dict[str, object]]", status.get("conditions", [])):
+        if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
+            return f": {condition.get('reason')}: {str(condition.get('message'))[:1024]}"
+    for container in cast("list[dict[str, object]]", status.get("containerStatuses", [])):
+        waiting = cast(
+            "dict[str, object]",
+            cast("dict[str, object]", container.get("state", {})).get("waiting", {}),
+        )
+        if waiting.get("reason"):
+            return f": {waiting.get('reason')}: {str(waiting.get('message', ''))[:1024]}"
+    return ""
 
 
 def _create_rejected(error: BaseException, name: str) -> bool:

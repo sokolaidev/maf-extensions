@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-hyperlight"
-version = "0.5.1"
+version = "0.6.0"
 description = "Hyperlight Python micro-VMs on Windows WHP and Linux KVM with bounded execution and snapshot reset."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "maf-sandbox>=0.43.0,<0.44",
+    "maf-sandbox>=0.44.0,<0.45",
     "hyperlight-sandbox==0.7.0",
     "hyperlight-sandbox-backend-wasm==0.7.0; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and platform_machine == 'x86_64')",
     "hyperlight-sandbox-python-guest==0.7.0; (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and platform_machine == 'x86_64')",

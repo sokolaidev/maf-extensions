@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.23.1...maf-sandbox-docker-v0.24.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **egress:** stop containers on the outbound network from using a sandbox's egress proxy ([#1477](https://github.com/sokolaidev/maf-extensions/issues/1477))
+
+### Fixes
+
+* **docker:** give the egress proxy the workload's PID, memory and CPU limits and drop its capabilities ([#1471](https://github.com/sokolaidev/maf-extensions/issues/1471)) ([ab34a1d](https://github.com/sokolaidev/maf-extensions/commit/ab34a1d0b4e4a524393aa53ffa6cac45c1727b87))
+* **egress:** stop containers on the outbound network from using a sandbox's egress proxy ([#1477](https://github.com/sokolaidev/maf-extensions/issues/1477)) ([bd910c1](https://github.com/sokolaidev/maf-extensions/commit/bd910c18c7c5487eba0183ceb07d7fb94daff907))
+* refuse Docker and WSLC command output past 8 MiB instead of buffering it whole ([#1462](https://github.com/sokolaidev/maf-extensions/issues/1462)) ([8280f9b](https://github.com/sokolaidev/maf-extensions/commit/8280f9b9414f19f75de4c8ddcff041ce1dc25942))
+* require maf-sandbox 0.44.0 in the dependents, and admit the 0.44 line ([#1489](https://github.com/sokolaidev/maf-extensions/issues/1489)) ([90e5f6f](https://github.com/sokolaidev/maf-extensions/commit/90e5f6f04f87b18799536401eaab8b2e676be2af))
+
 ## [0.23.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.23.0...maf-sandbox-docker-v0.23.1) (2026-09-24)
 
 

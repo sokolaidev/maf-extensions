@@ -16,6 +16,10 @@ from ._pod_config import POD_SOCKET, HyperlightPodConfig
 from ._wire import HyperlightWorkerError
 
 FRAME_LIMIT = 8192
+REASON_LIMIT = 1024
+PLATFORM_EXIT = 78
+PLATFORM_REFUSAL = "maf-hyperlight: unsupported platform: "
+TERMINATION_LOG = "/dev/termination-log"
 
 
 def frame(message: dict[str, object]) -> bytes:
@@ -36,17 +40,32 @@ def unframe(raw: bytes) -> dict[str, object]:
     return cast("dict[str, object]", value)
 
 
-def verify_container(memory_limit: int, *, root: Path = Path("/sys/fs/cgroup")) -> None:
+def container_controls(root: Path = Path("/sys/fs/cgroup")) -> dict[str, str]:
+    """Read the effective cgroup v2 controls the kernel applies to this container."""
+    if not (root / "cgroup.controllers").is_file():
+        raise HyperlightWorkerError("pod containment requires cgroup v2")
+    controls: dict[str, str] = {}
+    for name in ("memory.max", "memory.swap.max", "cpu.max", "pids.max"):
+        try:
+            controls[name] = (root / name).read_text().strip()
+        except OSError as error:
+            raise HyperlightWorkerError(f"pod containment cannot read cgroup {name}") from error
+    return controls
+
+
+def verify_container(memory_limit: int, *, root: Path = Path("/sys/fs/cgroup")) -> dict[str, str]:
     """Require finite container controls without requesting writable cgroup delegation."""
-    if int((root / "memory.max").read_text()) != memory_limit:
+    controls = container_controls(root)
+    if controls["memory.max"] != str(memory_limit):
         raise HyperlightWorkerError("container memory.max differs from its declared pod budget")
-    if (root / "memory.swap.max").read_text().strip() != "0":
+    if controls["memory.swap.max"] != "0":
         raise HyperlightWorkerError("pod containment requires swap disabled")
-    cpu = (root / "cpu.max").read_text().split()
+    cpu = controls["cpu.max"].split()
     if len(cpu) != 2 or any(not item.isdigit() or int(item) <= 0 for item in cpu):
         raise HyperlightWorkerError("pod containment requires a finite CPU limit")
-    if int((root / "pids.max").read_text()) <= 0:
+    if not controls["pids.max"].isdigit() or int(controls["pids.max"]) <= 0:
         raise HyperlightWorkerError("pod containment requires a finite PID limit")
+    return controls
 
 
 class PodJob:
