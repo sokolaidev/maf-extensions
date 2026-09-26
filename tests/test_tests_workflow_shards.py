@@ -86,3 +86,17 @@ class TestTheShardsNeverSkipWholesale:
             if key == "changes" or job.get("name") == _REQUIRED_CONTEXT:
                 continue
             assert "changes" in job.get("needs", []), f"{key} does not wait for `changes`"
+
+
+def test_public_https_relay_requires_explicit_dispatch_opt_in():
+    triggers = WORKFLOW.get("on", WORKFLOW.get(True))
+    option = triggers["workflow_dispatch"]["inputs"]["hyperlight_https"]
+    assert option["type"] == "boolean" and option["default"] is False
+    steps = JOBS["hyperlight-linux-worker"]["steps"]
+    relay_steps = [step for step in steps if "cloudflared" in step.get("run", "")]
+    assert len(relay_steps) == 2
+    for step in relay_steps:
+        assert step["if"] == "github.event_name == 'workflow_dispatch' && inputs.hyperlight_https"
+    assert "sha256sum --check" in relay_steps[0]["run"]
+    assert "MAF_HYPERLIGHT_HTTPS_LIVE=1" in relay_steps[1]["run"]
+    assert "check_hyperlight_linux.py --live" in relay_steps[1]["run"]

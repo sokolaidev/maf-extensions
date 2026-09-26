@@ -27,6 +27,11 @@ on:
   # release workflow no longer tries (#196). This trigger is for re-running the suite at a
   # branch, not for that.
   workflow_dispatch:
+    inputs:
+      hyperlight_https:
+        description: "Run Hyperlight HTTPS method conformance through a temporary public relay"
+        type: boolean
+        default: false
 
 # Read-only by default: nothing here writes to the repository, and an unset block would
 # inherit whatever the org default is (often write).
@@ -203,6 +208,20 @@ jobs:
       - name: Real KVM guest conformance
         if: needs.changes.outputs.code == 'true'
         run: sudo python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python"
+
+      - name: Download the pinned HTTPS test relay
+        if: github.event_name == 'workflow_dispatch' && inputs.hyperlight_https
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/cloudflared" https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-linux-amd64
+          echo "77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2  $RUNNER_TEMP/cloudflared" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/cloudflared"
+
+      - name: HTTPS method conformance on Linux KVM
+        if: github.event_name == 'workflow_dispatch' && inputs.hyperlight_https
+        run: |
+          set -euo pipefail
+          sudo env MAF_HYPERLIGHT_HTTPS_LIVE=1 MAF_HYPERLIGHT_CLOUDFLARED="$RUNNER_TEMP/cloudflared" python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python" -- -q -s packages/maf-sandbox-hyperlight/tests/test_hyperlight_https_live.py
 
       - name: CodeAct artifact delivery on Linux KVM
         if: needs.changes.outputs.code == 'true'
