@@ -39,6 +39,11 @@ def _check_fields(*values: object) -> None:
             raise ValueError("pod ownership fields must be nonempty bounded strings")
 
 
+def _check_digest(value: object) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise ValueError("pod launch requires the digest of its controller's secret")
+
+
 def _check_memory(value: object) -> None:
     if type(value) is not int or value <= 0:
         raise ValueError("pod memory_limit_bytes must be a positive integer")
@@ -126,10 +131,7 @@ class PodLaunch:
     def __post_init__(self) -> None:
         _check_fields(self.owner, self.pod_uid, self.generation)
         _check_memory(self.memory_limit_bytes)
-        if not isinstance(self.hello_digest, str) or not re.fullmatch(
-            r"[a-f0-9]{64}", self.hello_digest
-        ):
-            raise ValueError("pod launch requires the digest of its controller's secret")
+        _check_digest(self.hello_digest)
 
     def bind(self, identity: dict[str, object]) -> HyperlightPodConfig:
         """Accept only the creating controller, and only for the identity this pod is named for."""

@@ -459,7 +459,7 @@ def test_only_the_creating_controller_holds_the_hello_secret(monkeypatch):
         poll=lambda: 0, wait=lambda timeout: 0, stdin=None, stdout=None, stderr=None
     )
     monkeypatch.setattr(controller, "_await_running", lambda name, uid, deadline: True)
-    monkeypatch.setattr(kubernetes.subprocess, "Popen", lambda *args, **kwargs: stream)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: stream)
     monkeypatch.setattr(
         controller,
         "_supervise",
