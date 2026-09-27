@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -38,7 +39,7 @@ from maf_sandbox_docker_sbx._backend import (
     _EXEC_SCRIPT,
     _KILL_SCRIPT,
     _MARKER,
-    _MOUNT_SCRIPT,
+    _MOUNT_POINT_SCRIPT,
     _OUTPUT_LIMIT,
     _PROBE_SCRIPT,
     _Result,
@@ -80,7 +81,7 @@ class FakeSbx:
         self.exec_hook: Callable[[tuple[str, ...]], _Result | None] = lambda _args: None
         self.rm_result: _Result | None = None
         self.mount_exit = 0
-        self.unmounted_once = False
+        self.unmounted = False
         self.unlisted: set[str] = set()
         self.lost_engine = False
         self.ids: dict[str, str] = {}
@@ -135,17 +136,29 @@ class FakeSbx:
             case ("exec", _name, "sh", "-c", "pwd -P"):
                 return _ok(f"{GUEST_MOUNT}\n".encode())
             case ("exec", "-u", "root", _name, "sh", "-c", script, *_rest) if (
-                script == _MOUNT_SCRIPT
+                script == _MOUNT_POINT_SCRIPT
             ):
                 return _Result(self.mount_exit, b"", b"")
-            case ("exec", name, "sh", "-c", script, "maf-sbx", nonce, _pid, _marker, *encoded) if (
-                script == _EXEC_SCRIPT
-            ):
+            case (
+                "exec",
+                name,
+                "sh",
+                "-c",
+                script,
+                "maf-sbx",
+                _itself,
+                "enter",
+                nonce,
+                _pid,
+                _parent,
+                _mount,
+                _marker,
+                *encoded,
+            ) if script == _EXEC_SCRIPT:
                 hooked = self.exec_hook(args)
                 if hooked is not None:
                     return hooked
-                if self.unmounted_once:
-                    self.unmounted_once = False
+                if self.unmounted:
                     return _Result(1, b"", f"{nonce}-unmounted\n".encode())
                 argv = [_decode(item) for item in encoded[1:]]
                 if argv[:2] == ["sh", "-c"] and "exec cat" in argv[2]:
@@ -316,8 +329,10 @@ class TestAcquire:
             "--quiet",
             str(workspace),
         )
-        mount = next(call for call in sbx.calls if _MOUNT_SCRIPT in call)
-        assert mount[-3:] == ("/maf-sandbox", GUEST_MOUNT, "create")
+        mount_point = next(call for call in sbx.calls if _MOUNT_POINT_SCRIPT in call)
+        assert mount_point[-1] == "/maf-sandbox"
+        wrapped = next(call for call in sbx.calls if _EXEC_SCRIPT in call)
+        assert wrapped[10:13] == ("/maf-sandbox", GUEST_MOUNT, _MARKER)
         assert sandbox.instance_id == f"id-{name}"
         assert (workspace / _MARKER).exists() and (workspace / "work").is_dir()
         meta = json.loads((tmp_path / "root" / name / "meta.json").read_text())
@@ -367,8 +382,8 @@ class TestAcquire:
     def test_a_double_slash_base_is_the_single_root_path(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec(work_dir="//maf-sandbox/work")))
         assert sandbox.base == "/maf-sandbox/work"
-        mount = next(call for call in sbx.calls if _MOUNT_SCRIPT in call)
-        assert mount[-3] == "/maf-sandbox"
+        mount_point = next(call for call in sbx.calls if _MOUNT_POINT_SCRIPT in call)
+        assert mount_point[-1] == "/maf-sandbox"
 
     def test_a_sandbox_the_listing_gives_no_id_is_refused_and_removed(self, backend, sbx, tmp_path):
         sbx.unlisted.add(sandbox_name("maf", KEY, "kind"))
@@ -419,7 +434,7 @@ class TestExec:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
 
         def restarted(args: tuple[str, ...]) -> _Result:
-            nonce = args[6]
+            nonce = args[8]
             stderr = f"Sandbox x started successfully\n{nonce}\nguest err\n".encode()
             return _Result(3, b"out", stderr)
 
@@ -440,14 +455,36 @@ class TestExec:
         with pytest.raises(SbxDaemonFault):
             asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
 
-    def test_a_missing_mount_is_bound_again_and_the_command_retried(self, backend, sbx):
+    def test_a_bind_without_the_marker_is_refused_not_run(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
-        sbx.unmounted_once = True
+        sbx.unmounted = True
+        with pytest.raises(SbxError, match="not this sandbox's"):
+            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+
+    def test_the_whole_command_gets_the_callers_deadline(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         before = len(sbx.calls)
-        result = asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
-        assert result.stdout == "ran"
-        remounts = [call for call in sbx.calls[before:] if _MOUNT_SCRIPT in call]
-        assert len(remounts) == 1 and remounts[0][-1] == "again"
+        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
+        assert sbx.timeouts[before:] == [5]
+
+    def test_an_image_that_cannot_start_names_bash(self, backend, sbx, tmp_path):
+        real = sbx.__call__
+
+        async def no_bash(*args: str, timeout: float | None = None) -> _Result:
+            if args[0] == "exec":
+                # What `sbx` 0.45.1 printed for an image without /bin/bash.
+                return _Result(
+                    1,
+                    b"",
+                    b"error: failed to start sandbox: start runtime: request failed: 500 "
+                    b"Internal Server Error: run kit startup: kit startup exited with code 127\n",
+                )
+            return await real(*args, timeout=timeout)
+
+        backend._sbx = no_bash  # type: ignore[method-assign]
+        with pytest.raises(SbxError, match="/bin/bash"):
+            asyncio.run(backend.acquire(KEY, _spec(image="example/no-bash")))
+        assert sbx.sandboxes == {}
 
     def test_a_timeout_kills_the_process_group_and_raises(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
@@ -464,7 +501,7 @@ class TestExec:
 class TestRemoval:
     def _removal_argv(self, sbx: FakeSbx) -> list[str]:
         call = next(call for call in reversed(sbx.calls) if _EXEC_SCRIPT in call)
-        return [_decode(item) for item in call[10:]]
+        return [_decode(item) for item in call[14:]]
 
     def test_a_non_recursive_removal_never_recurses_in_the_guest(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
@@ -509,17 +546,6 @@ class TestTheListing:
 
 
 class TestDeadlines:
-    def test_a_remount_spends_the_callers_deadline(self, backend, sbx):
-        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
-        sbx.unmounted_once = True
-        before = len(sbx.calls)
-        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
-        remount = next(
-            index for index in range(before, len(sbx.calls)) if _MOUNT_SCRIPT in sbx.calls[index]
-        )
-        bound = sbx.timeouts[remount]
-        assert bound is not None and bound <= 5
-
     def test_the_create_probe_is_bounded_by_the_command_timeout(self, tmp_path):
         backend = SbxSandboxBackend(
             SbxSandboxConfig(workspace_root=tmp_path / "root", command_timeout_seconds=7)
@@ -529,23 +555,9 @@ class TestDeadlines:
         probes = [
             timeout
             for call, timeout in zip(sbx.calls, sbx.timeouts, strict=True)
-            if _EXEC_SCRIPT in call and _PROBE_SCRIPT in [_decode(item) for item in call[10:]]
+            if _EXEC_SCRIPT in call and _PROBE_SCRIPT in [_decode(item) for item in call[14:]]
         ]
         assert probes and all(timeout is not None and timeout <= 7 for timeout in probes)
-
-    def test_a_remount_that_overruns_the_deadline_is_the_callers_timeout(self, backend, sbx):
-        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
-        sbx.unmounted_once = True
-        real = sbx.__call__
-
-        async def slow_mount(*args: str, timeout: float | None = None) -> _Result:
-            if _MOUNT_SCRIPT in args:
-                raise TimeoutError
-            return await real(*args, timeout=timeout)
-
-        backend._sbx = slow_mount  # type: ignore[method-assign]
-        with pytest.raises(TimeoutError, match="within 5 seconds"):
-            asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
 
 
 class TestCancellation:
@@ -603,30 +615,14 @@ class TestGuestControlledSignals:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
 
         def forged(args: tuple[str, ...]) -> _Result:
-            nonce = args[6]
+            nonce = args[8]
             return _Result(0, b"", f"{nonce}\n{nonce}-unmounted\n".encode())
 
         sbx.exec_hook = forged
         before = len(sbx.calls)
         result = asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=30))
         assert result.stderr.endswith("-unmounted\n")
-        assert not any(_MOUNT_SCRIPT in call for call in sbx.calls[before:])
         assert sum(_EXEC_SCRIPT in call for call in sbx.calls[before:]) == 1
-
-    def test_a_linked_marker_is_replaced_not_followed(self, backend, sbx, tmp_path):
-        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
-        victim = tmp_path / "victim"
-        victim.write_text("host file")
-        marker = _workspace_of(tmp_path, sandbox.name) / _MARKER
-        marker.unlink()
-        try:
-            marker.symlink_to(victim)
-        except OSError:
-            pytest.skip("this host cannot create a symlink")
-        sbx.unmounted_once = True
-        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=30))
-        assert victim.read_text() == "host file"
-        assert marker.is_file() and not marker.is_symlink()
 
 
 class TestAnExpiredCommand:
@@ -1078,7 +1074,7 @@ class TestTheRecord:
         seen: list[bool] = []
 
         async def watching(*args: str, timeout: float | None = None) -> _Result:
-            if _MOUNT_SCRIPT in args:
+            if _MOUNT_POINT_SCRIPT in args:
                 seen.append((tmp_path / "root" / args[3] / "meta.json").exists())
             return await real(*args, timeout=timeout)
 
@@ -1316,21 +1312,47 @@ _SH = shutil.which("sh")
 _HAS_TOOLS = _SH is not None and all(shutil.which(tool) for tool in ("setsid", "base64"))
 
 
+#: Stand-ins that keep every stage of the wrapper but need no namespace privilege: `unshare`
+#: runs what follows its `--`, and `mount` records its arguments.
+_UNSHARE_STUB = """#!/bin/sh
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+"""
+_MOUNT_STUB = """#!/bin/sh
+printf '%s\\n' "$*" >> "$(dirname "$0")/mounts"
+"""
+
+
 @pytest.mark.skipif(not _HAS_TOOLS, reason="needs sh, setsid and base64")
 class TestTheWrapperInARealShell:
     """The exec script itself, run by the host's own ``sh`` in place of the guest's."""
 
     def _run(self, tmp_path: Path, argv: list[str], *, mounted: bool = True, cwd: str = "/"):
-        marker = tmp_path / "marker"
+        stubs = tmp_path / "stubs"
+        stubs.mkdir(exist_ok=True)
+        for name, body in (("unshare", _UNSHARE_STUB), ("mount", _MOUNT_STUB)):
+            (stubs / name).write_text(body)
+            (stubs / name).chmod(0o755)
+        parent = tmp_path / "parent"
+        parent.mkdir(exist_ok=True)
         if mounted:
-            marker.touch()
+            (parent / _MARKER).touch()
         encoded = ["x" + base64.b64encode(value.encode()).decode() for value in (cwd, *argv)]
         return subprocess.run(
-            [_SH or "sh", "-c", _EXEC_SCRIPT, "maf-sbx", "NONCE", str(tmp_path / "pg"), str(marker)]
+            [_SH or "sh", "-c", _EXEC_SCRIPT, "maf-sbx", _EXEC_SCRIPT, "enter", "NONCE"]
+            + [str(tmp_path / "pg"), str(parent), "/guest/ws", _MARKER]
             + encoded,
             capture_output=True,
+            env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}"},
             timeout=30,
         )
+
+    def test_the_workspace_is_bound_at_the_parent_before_the_command(self, tmp_path):
+        result = self._run(tmp_path, ["true"])
+        assert result.returncode == 0
+        mounts = (tmp_path / "stubs" / "mounts").read_text()
+        assert mounts == f"--bind -- /guest/ws {tmp_path / 'parent'}\n"
 
     def test_argv_arrives_verbatim_including_empty_arguments(self, tmp_path):
         result = self._run(tmp_path, ["printf", "[%s]", "", "a b", "$HOME", "x\ny\n", ""])

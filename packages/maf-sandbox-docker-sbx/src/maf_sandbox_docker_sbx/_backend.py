@@ -1,9 +1,10 @@
 """The Docker Sandboxes backend: one ``sbx`` microVM per sandbox, driven through the CLI.
 
 Every sandbox is created with ``--deny-network "**"``, fixed CPU and memory, the shared skills
-store off, no published ports, and one mount: a fresh host directory this backend owns.  That
-mount is bound again at the storage base's parent, so the base is a real directory in the guest,
-and stats, reads, listings and writes act on the host side of it (see ``_plane.py``).
+store off, no published ports, and one mount: a fresh host directory this backend owns.  Every
+command binds that mount at the storage base's parent inside a user and mount namespace of its
+own, so the base is a real directory to the command, and stats, reads, listings and writes act
+on the host side of it (see ``_plane.py``).
 
 ``sbx`` has no labels, so ownership lives in the name: a prefix, then digests of the
 conversation, the whole key and the kind.  The workspace directory carries the same name, and
@@ -95,18 +96,33 @@ _WORKSPACE_PREFIX = "ws-"
 _META = "meta.json"
 _META_VERSION = 1
 _PROBE_PREFIX = ".maf-sbx-probe-"
-#: Kept at the workspace root; its absence in the guest means the bind mount is gone.
+#: Kept at the workspace root; the wrapper runs nothing unless the bind shows it.
 _MARKER = ".maf-sbx-workspace"
 
-#: Runs every command.  It runs nothing while the bind mount is missing, which an auto-stop
-#: causes.  argv arrives base64-encoded behind an ``x`` so no argument is empty, which ``sbx``
-#: refuses.  The nonce on stderr marks where the guest's own stderr begins, and proves the
-#: wrapper ran.  ``setsid`` gives the command its own process group, recorded in the pid file, so
-#: a deadline can kill the whole group.  The command runs only if no cancel file exists once
-#: its group is recorded; see ``_KILL_SCRIPT`` for why that closes the race with a kill.
-_EXEC_SCRIPT = r"""n=$1 f=$2 m=$3
-shift 3
-if [ ! -e "$m" ]; then printf '%s-unmounted\n' "$n" >&2; exit 1; fi
+#: Runs every command, in three stages the script reaches by running itself again (``$1``).
+#: ``sbx`` grants the mount capability only to Docker's own templates, so ``enter`` makes a user
+#: and mount namespace where the caller is root; the next stage binds the workspace at the storage
+#: base's parent, then maps the caller back to its own uid and gid before ``run`` starts the
+#: command.  A failure before ``run`` prints no nonce.  argv arrives base64-encoded behind an
+#: ``x`` so no argument is empty, which ``sbx`` refuses.  The nonce on stderr marks where the
+#: guest's own stderr begins.  ``setsid`` gives the command its own process group, recorded in
+#: the pid file, so a deadline can kill the whole group.  The command runs only if no cancel file
+#: exists once its group is recorded; see ``_KILL_SCRIPT`` for why that closes the race.
+_EXEC_SCRIPT = r"""s=$1 k=$2 n=$3 f=$4 p=$5 m=$6 q=$7
+shift 7
+case $k in
+enter)
+  exec unshare --user --mount --map-root-user -- \
+    sh -c "$s" maf-sbx "$s" "$(id -u):$(id -g)" "$n" "$f" "$p" "$m" "$q" "$@"
+  ;;
+run) ;;
+*)
+  mount --bind -- "$m" "$p" || exit 125
+  if [ ! -e "$p/$q" ]; then printf '%s-unmounted\n' "$n" >&2; exit 1; fi
+  exec unshare --user --map-user="${k%:*}" --map-group="${k#*:}" -- \
+    sh -c "$s" maf-sbx "$s" run "$n" "$f" "$p" "$m" "$q" "$@"
+  ;;
+esac
 printf '%s\n' "$n" >&2
 d() { printf %s "${1#x}" | base64 -d && printf x; }
 w=$(d "$1") || exit 125
@@ -128,6 +144,7 @@ rm -f "$f" "$f.cancel"
 exit "$s"
 """
 
+
 #: Ends an expired command, and only that command.  The cancel file goes down before the group
 #: is read, and the wrapper checks for it after recording its group: so either the wrapper sees
 #: it and never runs the command, or its group was recorded before this reads it.  Exit 4 is the
@@ -141,13 +158,13 @@ rm -f "$1"
 exit 0
 """
 
-#: Run as root: bind the workspace mount at the storage base's parent.  At create the parent
-#: must not exist in the image, so nothing of the image's is hidden under the mount.
-_MOUNT_SCRIPT = r"""if [ "$3" = create ] && { [ -e "$1" ] || [ -L "$1" ]; }; then
+#: Run as root at create: make the directory each command binds the workspace over.  It must
+#: not exist in the image, so nothing of the image's is hidden under the mount.
+_MOUNT_POINT_SCRIPT = r"""if [ -e "$1" ] || [ -L "$1" ]; then
   echo "maf-sbx: $1 already exists in the image" >&2
   exit 3
 fi
-mkdir -p "$1" && mount --bind "$2" "$1"
+mkdir -p "$1"
 """
 _PARENT_EXISTS = 3
 _NEVER_STARTED = 4
@@ -167,6 +184,8 @@ exec cat "$1"
 _NOT_FOUND = "not found"
 _ALREADY_EXISTS = "already exists"
 _UNAVAILABLE = "backend unavailable"
+#: How `sbx` 0.45.1 reports an image that cannot start its shell, one without `/bin/bash`.
+_NO_STARTUP = "kit startup exited with code 127"
 _LOGIN_HINTS = ("sbx login", "not logged in", "log in", "unauthorized", "unauthenticated")
 _STDERR_TAIL = 2000
 
@@ -216,6 +235,11 @@ def _failure(what: str, result: _Result) -> SbxError:
         )
     if any(hint in lowered for hint in _LOGIN_HINTS):
         return SbxLoginRequired(f"{what}: the sbx login has lapsed ({detail}). Run `sbx login`.")
+    if _NO_STARTUP in lowered:
+        return SbxError(
+            f"{what}: sbx could not start the image ({detail}). A template needs /bin/sh and "
+            "/bin/bash."
+        )
     return SbxError(f"{what}: {detail}")
 
 
@@ -262,7 +286,7 @@ def _encode(value: str) -> str:
 
 @dataclass(frozen=True)
 class _Mount:
-    """Where the workspace appears in the guest, and where the backend binds it again."""
+    """Where the workspace appears in the guest, and where each command binds it again."""
 
     guest_mount: str
     parent: str
@@ -513,77 +537,54 @@ class SbxSandboxBackend:
     ) -> ExecResult:
         """Run ``argv`` in ``cwd`` under the wrapper, killing its process group at ``timeout``.
 
-        ``timeout`` covers a re-mount after an auto-stop as well as the command.  Output past
-        ``_OUTPUT_LIMIT`` ends the command the same way, then raises.
+        Output past ``_OUTPUT_LIMIT`` ends the command the same way, then raises.
         """
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        encoded = (_encode(cwd), *(_encode(arg) for arg in argv))
-        marker = posixpath.join(mount.parent, _MARKER)
+        nonce = secrets.token_hex(12)
+        pid_file = f"/tmp/maf-sbx-{nonce}.pgid"
         expired = f"the command did not finish within {timeout} seconds"
-        for attempt in range(2):
-            nonce = secrets.token_hex(12)
-            pid_file = f"/tmp/maf-sbx-{nonce}.pgid"
-            args = ("exec", name, "sh", "-c", _EXEC_SCRIPT, "maf-sbx", nonce, pid_file, marker)
-            left = deadline - loop.time()
-            if left <= 0:
-                raise TimeoutError(expired)
-            try:
-                result = await self._sbx(*args, *encoded, timeout=left)
-            except (
-                TimeoutError,
-                SandboxExecOutputLimitExceeded,
-                asyncio.CancelledError,
-            ) as stopped:
-                # Killing the client leaves the guest's command running in a reusable sandbox,
-                # and a cancellation must not stop the kill either.
-                await _to_the_end(self._end_the_command(name, instance, pid_file))
-                if isinstance(stopped, TimeoutError):
-                    raise TimeoutError(expired) from None
-                raise
-            stderr = _guest_stderr(result.stderr, nonce)
-            if stderr is not None:
-                # The command started; what follows the nonce is its own, whatever it says.
-                return ExecResult(
-                    stdout_bytes=result.stdout, stderr_bytes=stderr, exit_code=result.returncode
-                )
-            if f"{nonce}-unmounted\n".encode() not in result.stderr:
-                raise _failure(f"sbx exec in {name}", result)
-            if attempt:
-                break
-            left = deadline - loop.time()
-            if left <= 0:
-                raise TimeoutError(expired)
-            try:
-                await self._bind_workspace(name, mount, create=False, timeout=left)
-            except TimeoutError:
-                raise TimeoutError(expired) from None
-        raise SbxError(f"the workspace is still not mounted at {mount.parent!r} in {name}")
-
-    async def _bind_workspace(
-        self, name: str, mount: _Mount, *, create: bool, timeout: float | None = None
-    ) -> None:
-        bound = await self._sbx(
-            "exec",
-            "-u",
-            "root",
-            name,
-            "sh",
-            "-c",
-            _MOUNT_SCRIPT,
-            "maf-sbx",
-            mount.parent,
-            mount.guest_mount,
-            "create" if create else "again",
-            timeout=timeout,
+        args = (
+            *("exec", name, "sh", "-c", _EXEC_SCRIPT, "maf-sbx", _EXEC_SCRIPT, "enter"),
+            *(nonce, pid_file, mount.parent, mount.guest_mount, _MARKER),
+            _encode(cwd),
+            *(_encode(arg) for arg in argv),
         )
-        if bound.returncode == _PARENT_EXISTS and create:
+        try:
+            result = await self._sbx(*args, timeout=timeout)
+        except (
+            TimeoutError,
+            SandboxExecOutputLimitExceeded,
+            asyncio.CancelledError,
+        ) as stopped:
+            # Killing the client leaves the guest's command running in a reusable sandbox,
+            # and a cancellation must not stop the kill either.
+            await _to_the_end(self._end_the_command(name, instance, pid_file))
+            if isinstance(stopped, TimeoutError):
+                raise TimeoutError(expired) from None
+            raise
+        stderr = _guest_stderr(result.stderr, nonce)
+        if stderr is not None:
+            # The command started; what follows the nonce is its own, whatever it says.
+            return ExecResult(
+                stdout_bytes=result.stdout, stderr_bytes=stderr, exit_code=result.returncode
+            )
+        if f"{nonce}-unmounted\n".encode() in result.stderr:
+            raise SbxError(
+                f"the workspace bound at {mount.parent!r} in {name} is not this sandbox's; "
+                "dispose it and acquire again"
+            )
+        raise _failure(f"sbx exec in {name}", result)
+
+    async def _make_mount_point(self, name: str, mount: _Mount) -> None:
+        made = await self._sbx(
+            "exec", "-u", "root", name, "sh", "-c", _MOUNT_POINT_SCRIPT, "maf-sbx", mount.parent
+        )
+        if made.returncode == _PARENT_EXISTS:
             raise ValueError(
                 f"{mount.parent!r} already exists in the image; this backend mounts the "
                 "workspace there, so choose a work_dir whose parent the image lacks"
             )
-        if bound.returncode != 0:
-            raise _failure(f"mounting the workspace at {mount.parent}", bound)
+        if made.returncode != 0:
+            raise _failure(f"making the mount point {mount.parent}", made)
         # The guest can plant a link at the marker; the plane replaces the name, never its target.
         plane = WorkspacePlane(mount.host, mount.parent)
         await asyncio.to_thread(plane.write, posixpath.join(mount.parent, _MARKER), b"")
@@ -881,7 +882,7 @@ class SbxSandboxBackend:
             # The real id before any command runs, so a failed cleanup retires this instance.
             row = (await self._listing()).get(name) or {}
             sandbox = self._sandbox(name, row, base, guest_mount, workspace)
-            await self._bind_workspace(name, sandbox.mount, create=True)
+            await self._make_mount_point(name, sandbox.mount)
             await self._prove_the_mount(sandbox)
             await self.check_sandbox(name)
             # Last, so a record another process can read means the sandbox is ready to serve.
@@ -973,7 +974,8 @@ class SbxSandboxBackend:
         if probe.exit_code != 0 or probe.stdout != token:
             raise SbxError(
                 f"the guest could not read the workspace at {mount.parent!r}; the image needs sh, "
-                "base64, setsid, mount, mkdir, cat, rm and sleep for this backend: "
+                "base64, setsid, mount, unshare (util-linux 2.38 or later), mkdir, cat, rm and "
+                "sleep for this backend: "
                 f"{probe.stderr.strip()}"
             )
 
