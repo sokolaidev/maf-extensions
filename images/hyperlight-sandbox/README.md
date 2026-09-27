@@ -44,6 +44,19 @@ Use a GitHub CLI version supporting the [attestation verification policy flags](
 
 The output retains the verified attestation bundles, expected policy, image identities, timestamp and packaging report. A failed attempt removes any previous success record at that output path. Keep these records and their signed bundles in operator-controlled storage for the image's supported lifetime; the local JSON report itself is unsigned. Records may contain private registry identifiers and should not be committed to this public repository. This command does not publish/sign images, configure cluster admission, or establish KVM execution, lifecycle acceptance or plugin provenance. Admission must independently enforce the accepted policy and digest; a saved report is not an admission credential. The existing unsigned candidate and CI records cannot satisfy this gate until a trusted publishing workflow produces matching attestations.
 
+
+### Exercise signing and verification in CI
+
+Dispatch the existing live workflow against a reviewed branch to build and attest a temporary candidate, then verify it on a fresh GitHub-hosted runner:
+
+```sh
+gh workflow run verify-live.yml --ref YOUR_BRANCH -f package=maf-sandbox-hyperlight -f source=branch
+```
+
+This explicit selection calls [the signed-runtime integration workflow](../../.github/workflows/hyperlight-provenance.yml). It uses the `live-verify` environment's existing Azure OIDC identity and `ACAS_SANDBOX_REGISTRY`, which must allow pushing, pulling and deleting its dedicated test repository. It builds clean workspace wheels, signs the published SHA-256 digest with GitHub OIDC, and exercises the verifier with the exact signer, source commit, source ref and prepared build-input hash. Refusal cases change each policy value and present an unsigned image with a modified manifest. Every refusal must remove a seeded success record, and a final positive check must still pass.
+
+The build and verification artifacts retain public source metadata, build inputs, verified signature bundles and case results without the private registry address. The attestation uses the logical subject name `hyperlight-runtime-integration`; its subject digest identifies the image independently of registry location. Cleanup removes only the repository named for that workflow run and attempt, including after a failed test. The attestation remains in GitHub, while the temporary image is deleted. This proves signing and verification of test candidates; it does not approve a production publisher, enforce Kubernetes admission, or execute a Hyperlight guest.
+
 ## Supported platforms
 
 Give eligible nodes their own node pool and label the pool in two steps. `hyperlight.dev/enabled=true` admits the device plugin; `hyperlight.dev/hypervisor=kvm` admits application pods. Create the pool with the first label only, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true`, install the plugin and run the report below. Add the second label once the report passes: `az aks nodepool update ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. That update replaces the pool's labels, so repeat every label the pool keeps. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.

@@ -133,6 +133,16 @@ env:
   SOURCE: ${{ inputs.source || 'published' }}
 
 jobs:
+  hyperlight-provenance:
+    name: Verify signed Hyperlight runtime
+    if: github.event_name == 'workflow_dispatch' && inputs.package == 'maf-sandbox-hyperlight' && inputs.source == 'branch'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/hyperlight-provenance.yml
+    secrets: inherit
+
   acas-images:
     name: Check ACAS image prerequisites
     if: >-
