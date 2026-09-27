@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
           registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
-            '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+            '[.[] | select((.loginServer | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) or (.name | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")))] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
           echo "::add-mask::$name"
@@ -119,7 +119,7 @@ jobs:
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
           registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
-            '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+            '[.[] | select((.loginServer | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) or (.name | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")))] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
           echo "::add-mask::$name"
@@ -173,7 +173,7 @@ jobs:
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
           registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
-            '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+            '[.[] | select((.loginServer | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) or (.name | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")))] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
           echo "::add-mask::$name"
