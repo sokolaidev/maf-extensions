@@ -1,0 +1,144 @@
+name: Hyperlight signed runtime integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY_IMAGE: registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+  IMAGE: localhost:5000/hyperlight-runtime
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+      unsigned_digest: ${{ steps.publish.outputs.unsigned_digest }}
+      inputs_sha256: ${{ steps.publish.outputs.inputs_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Build and smoke-check the clean runtime
+        run: |
+          uv run --locked python scripts/build_hyperlight_aks_image.py \
+            --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag hyperlight-provenance:runtime
+      - name: Publish isolated test candidates
+        id: publish
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/registry-data"
+          docker run --detach --name hyperlight-provenance-registry \
+            --publish 127.0.0.1:5000:5000 \
+            --volume "$RUNNER_TEMP/registry-data:/var/lib/registry" "$REGISTRY_IMAGE"
+          curl --fail --silent --show-error --max-time 2 --retry 20 --retry-all-errors --retry-delay 1 http://localhost:5000/v2/
+          docker tag hyperlight-provenance:runtime "$IMAGE:runtime"
+          docker push "$IMAGE:runtime"
+          # A changed manifest has no attestation even though its layers are the signed runtime's.
+          printf 'FROM hyperlight-provenance:runtime\nLABEL provenance-test="unsigned"\n' \
+            | docker build --tag "$IMAGE:unsigned" -
+          docker push "$IMAGE:unsigned"
+          runtime=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:runtime")
+          unsigned=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:unsigned")
+          digest="${runtime##*@}"
+          unsigned_digest="${unsigned##*@}"
+          test "$digest" != "$unsigned_digest"
+          inputs_sha256=$(sha256sum "$RUNNER_TEMP/hyperlight-image/build-inputs.json" | cut -d ' ' -f 1)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "unsigned_digest=$unsigned_digest" >> "$GITHUB_OUTPUT"
+          echo "inputs_sha256=$inputs_sha256" >> "$GITHUB_OUTPUT"
+      - name: Attest the runtime digest with GitHub OIDC
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: hyperlight-runtime-integration
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: false
+          create-storage-record: false
+      - name: Preserve the registry's exact manifests and blobs
+        run: |
+          set -euo pipefail
+          docker stop hyperlight-provenance-registry
+          sudo tar -C "$RUNNER_TEMP/registry-data" -czf "$RUNNER_TEMP/registry-data.tar.gz" .
+      - name: Transfer the registry to a fresh runner
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyperlight-provenance-registry
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          path: ${{ runner.temp }}/registry-data.tar.gz
+      - name: Retain clean build inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyperlight-provenance-build
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/hyperlight-image/source.json
+            ${{ runner.temp }}/hyperlight-image/build-inputs.json
+      - name: Remove the temporary registry
+        if: always()
+        run: |
+          if docker container inspect hyperlight-provenance-registry >/dev/null 2>&1; then
+            docker rm --force hyperlight-provenance-registry
+          fi
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hyperlight-provenance-registry
+          path: ${{ runner.temp }}
+      - name: Restore the exact registry contents on a fresh runner
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/registry-data"
+          sudo tar -C "$RUNNER_TEMP/registry-data" -xzf "$RUNNER_TEMP/registry-data.tar.gz"
+          docker run --detach --name hyperlight-provenance-registry \
+            --publish 127.0.0.1:5000:5000 \
+            --volume "$RUNNER_TEMP/registry-data:/var/lib/registry" "$REGISTRY_IMAGE"
+          curl --fail --silent --show-error --max-time 2 --retry 20 --retry-all-errors --retry-delay 1 http://localhost:5000/v2/
+      - name: Verify signed runtime and refusal cases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          UNSIGNED_DIGEST: ${{ needs.build.outputs.unsigned_digest }}
+          INPUTS_SHA256: ${{ needs.build.outputs.inputs_sha256 }}
+          SIGNER: https://github.com/${{ github.repository }}/.github/workflows/hyperlight-provenance.yml@${{ github.ref }}
+        run: |
+          uv run --locked python scripts/check_hyperlight_provenance_live.py \
+            --image "$IMAGE@$DIGEST" --unsigned-image "$IMAGE@$UNSIGNED_DIGEST" \
+            --signer-identity "$SIGNER" --source-revision "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+            --build-inputs-sha256 "$INPUTS_SHA256" --output "$RUNNER_TEMP/provenance-evidence"
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyperlight-provenance-verification
+          if-no-files-found: error
+          path: ${{ runner.temp }}/provenance-evidence/*.json
+      - name: Remove the temporary registry
+        if: always()
+        run: |
+          if docker container inspect hyperlight-provenance-registry >/dev/null 2>&1; then
+            docker rm --force hyperlight-provenance-registry
+          fi
