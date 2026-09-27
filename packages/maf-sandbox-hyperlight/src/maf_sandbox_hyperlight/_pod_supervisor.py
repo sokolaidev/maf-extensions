@@ -283,18 +283,32 @@ class Supervisor:
                 or self.deadline is not None
             ):
                 raise HyperlightWorkerError("invalid or overlapping native operation")
+            started = time.monotonic()
             with self.lifecycle:
                 self.ack.clear()
                 self.sequence += 1
                 self.deadline = float(deadline)
                 self.expires_at = float(expires_at)
                 self.emit("begin", sequence=self.sequence, expires_at=expires_at)
-            if not self.await_ack():
-                if self.continuity and time.monotonic() >= self.fresh:
-                    with self.lifecycle:
+            while not self.await_ack(started):
+                # Decided under the lock a resume takes, so its snapshot matches the outcome.
+                with self.lifecycle:
+                    if self.ack.is_set():
+                        break
+                    now = time.monotonic()
+                    if self.continuity and now >= self.fresh:
                         self.deadline = self.expires_at = None
-                    raise HyperlightPodDetached("the pod's controller disconnected before the call")
+                        raise HyperlightPodDetached(
+                            "the pod's controller disconnected before the call"
+                        )
+                    if (
+                        self.continuity
+                        and now < self.resumed_at + ACK_SECONDS
+                        and now < min(self.deadline, started + BEGIN_WAIT)
+                    ):
+                        continue
                 self.retire("controller did not acknowledge the deadline")
+                break
             if self.retired.is_set():
                 raise HyperlightWorkerError("pod retired while registering its deadline")
         elif operation == "end":
@@ -312,14 +326,13 @@ class Supervisor:
         else:
             raise HyperlightWorkerError("unknown pod lifecycle operation")
 
-    def await_ack(self) -> bool:
-        """Wait for the controller's acknowledgement; never longer than the owner's socket waits.
+    def await_ack(self, started: float) -> bool:
+        """Wait for the controller's acknowledgement; never past the owner's socket bound.
 
         In continuity mode a quiet controller is waited for until it is stale, and a controller
         that resumes gets ACK_SECONDS from its resume to acknowledge.
         """
         assert self.deadline is not None
-        started = time.monotonic()
         while not self.ack.wait(0.05):
             now = time.monotonic()
             if now >= self.deadline or now >= started + BEGIN_WAIT:

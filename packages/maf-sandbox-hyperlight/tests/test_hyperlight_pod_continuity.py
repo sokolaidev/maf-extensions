@@ -399,6 +399,92 @@ def test_a_resume_at_any_line_of_a_call_change_is_consistent(pid1, monkeypatch, 
     assert state.resumed
 
 
+def test_a_resume_that_wins_the_stale_check_keeps_the_call(pid1, monkeypatch):
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(pid1, "emit", lambda event, **fields: events.append((event, fields)))
+    waits = []
+
+    def stale_then_resumed(started):
+        waits.append(started)
+        if len(waits) == 1:
+            # Stale when the wait gave up; the controller's resume lands before the check.
+            pid1.controller_message(sealed("resume", 1))
+            threading.Timer(
+                0.1, pid1.controller_message, args=(sealed("ack", 2, sequence=1),)
+            ).start()
+            return False
+        return pid1.ack.wait(2)
+
+    monkeypatch.setattr(pid1, "await_ack", stale_then_resumed)
+    pid1.handle({"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10})
+    assert pid1.deadline is not None and not pid1.retired.is_set()
+    assert len(waits) == 2 and waits[0] == waits[1]
+    assert [event for event, _ in events] == ["begin", "resumed"]
+
+
+@pytest.mark.parametrize("point", range(40))
+def test_a_stale_begin_and_a_resume_agree_on_whether_the_call_runs(pid1, monkeypatch, point):
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def emit(event, **fields):
+        events.append((event, fields))
+        attached = any(name == "resumed" for name, _ in events)
+        unacknowledged = event == "resumed" and not fields["acknowledged"]
+        if attached and event in ("begin", "resumed") and (event == "begin" or unacknowledged):
+            if event == "resumed" and fields["expires_at"] is None:
+                return
+            # Once reattached, the controller acknowledges each call it learns of.
+            threading.Thread(
+                target=pid1.controller_message,
+                args=(sealed("ack", 2, sequence=fields["sequence"]),),
+                daemon=True,
+            ).start()
+
+    monkeypatch.setattr(pid1, "emit", emit)
+    pid1.fresh = time.monotonic() + 0.3
+    lines = 0
+    resuming: list[threading.Thread] = []
+
+    def interrupt(frame, event, arg):
+        nonlocal lines
+        if event == "line" and not resuming:
+            lines += 1
+            if lines == point + 1:
+                resuming.append(
+                    threading.Thread(
+                        target=pid1.controller_message, args=(sealed("resume", 1),), daemon=True
+                    )
+                )
+                resuming[0].start()
+                resuming[0].join(timeout=0.2)
+        return interrupt
+
+    def enter(frame, event, arg):
+        return interrupt if frame.f_code is Supervisor.handle.__code__ else None
+
+    previous = sys.gettrace()
+    sys.settrace(enter)
+    try:
+        pid1.handle(
+            {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
+        )
+        admitted = True
+    except HyperlightPodDetached:
+        admitted = False
+    finally:
+        sys.settrace(previous)
+    if not resuming:
+        pytest.skip("the request finished before this line")
+    resuming[0].join(timeout=5)
+    assert not pid1.retired.is_set()
+    # Events before the resume went down with the dropped attach.
+    delivered = events[[event for event, _ in events].index("resumed") :]
+    state = session()
+    state.ready = True
+    replay(delivered, state)
+    assert (state.deadline is not None) == admitted == (pid1.deadline is not None)
+
+
 def test_default_mode_has_no_resume(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     subject = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])
