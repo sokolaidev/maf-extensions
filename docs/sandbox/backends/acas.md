@@ -166,8 +166,8 @@ The broader metadata, private-network, host-path and host-socket isolation probe
 | Area | State | Tracking |
 |---|---|---|
 | Execution, files, call scope and disposal | Implemented with the limits above | [Package README](../../../packages/maf-sandbox-acas/README.md) |
-| Group-configured identity | Supported through trusted host configuration | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
-| Configured identity description | Implemented; reports sharing and guest token access, with acquisition scope checks | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
+| Group-configured identity | Supported through trusted host configuration | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
+| Configured identity description | Implemented; reports sharing and guest token access, with acquisition scope checks | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
 | Native read/stat/list path race | Open; no atomic service primitive | [#1336](https://github.com/sokolaidev/maf-extensions/issues/1336) (open), waiting on [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) (open) |
 | Typed SDK file metadata | Open; adapter requires raw flags | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) (open) |
 | Special-file classification | Open; regular files cannot be distinguished reliably | [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) (open) |
