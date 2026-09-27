@@ -408,6 +408,7 @@ def main() -> None:
             os.environ["MAF_HYPERLIGHT_POD_UID"],
             fields.get("generation"),
             fields.get("memory_limit_bytes"),
+            fields.get("hello_digest"),
         )
         try:
             platform = verify_init(launch)

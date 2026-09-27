@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -26,10 +28,20 @@ def ownership_name(key: SandboxKey, kind: str) -> str:
     return "maf-hl-" + hashlib.sha256(identity.encode()).hexdigest()[:40]
 
 
+def hello_digest(secret: str) -> str:
+    """The pod spec carries this digest of the controller's secret, never the secret."""
+    return hashlib.sha256(secret.encode()).hexdigest()
+
+
 def _check_fields(*values: object) -> None:
     for value in values:
         if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
             raise ValueError("pod ownership fields must be nonempty bounded strings")
+
+
+def _check_digest(value: object) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise ValueError("pod launch requires the digest of its controller's secret")
 
 
 def _check_memory(value: object) -> None:
@@ -114,13 +126,20 @@ class PodLaunch:
     pod_uid: str
     generation: str
     memory_limit_bytes: int
+    hello_digest: str
 
     def __post_init__(self) -> None:
         _check_fields(self.owner, self.pod_uid, self.generation)
         _check_memory(self.memory_limit_bytes)
+        _check_digest(self.hello_digest)
 
     def bind(self, identity: dict[str, object]) -> HyperlightPodConfig:
-        """Accept the controller's identity only when it is the one this pod is named for."""
+        """Accept only the creating controller, and only for the identity this pod is named for."""
+        secret = identity.get("secret")
+        if not isinstance(secret, str) or not hmac.compare_digest(
+            hello_digest(secret), self.hello_digest
+        ):
+            raise HyperlightWorkerError("the hello does not hold the pod's controller secret")
         binding = HyperlightPodConfig.from_mapping(
             {
                 **identity,

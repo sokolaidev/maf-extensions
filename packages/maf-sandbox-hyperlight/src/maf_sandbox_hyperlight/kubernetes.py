@@ -6,6 +6,7 @@ import json
 import math
 import queue
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -18,6 +19,7 @@ from typing import BinaryIO, cast
 from maf_sandbox import SandboxKey
 
 from ._pod import FRAME_LIMIT, PLATFORM_EXIT, PLATFORM_REFUSAL, REASON_LIMIT, frame, unframe
+from ._pod_config import hello_digest
 from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
@@ -100,6 +102,7 @@ def pod_manifest(
     *,
     namespace: str,
     generation: str,
+    secret_digest: str,
 ) -> dict[str, object]:
     """Add a private supervised application to upstream's extended-resource deployment model."""
     if not re.fullmatch(_DNS_LABEL, namespace):
@@ -110,6 +113,7 @@ def pod_manifest(
         "owner": name,
         "generation": generation,
         "memory_limit_bytes": template.memory_limit_bytes,
+        "hello_digest": secret_digest,
     }
     security = {
         "runAsNonRoot": True,
@@ -444,14 +448,22 @@ class HyperlightPodController:
             raise ValueError("cleanup_timeout must be positive and finite")
         name = ownership_name(key, kind)
         generation = uuid.uuid4().hex
+        # Only this process holds the secret; the pod spec carries its digest.
+        secret = secrets.token_hex(32)
         manifest = pod_manifest(
-            key, kind, template, namespace=self.namespace, generation=generation
+            key,
+            kind,
+            template,
+            namespace=self.namespace,
+            generation=generation,
+            secret_digest=hello_digest(secret),
         )
         identity = {
             "scope": key.scope,
             "thread_id": key.thread_id,
             "agent_id": key.agent_id,
             "kind": kind,
+            "secret": secret,
         }
         try:
             # A Kubernetes UID is a UUID, so this is the size of the hello the pod reads.
