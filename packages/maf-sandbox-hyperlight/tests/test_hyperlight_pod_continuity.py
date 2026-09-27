@@ -482,13 +482,16 @@ def test_reattach_requires_the_same_running_container(pod, same):
 class Reattaching(HyperlightPodController):
     """Scripted attach outcomes: each entry is what one attach returns, and whether it resumed."""
 
-    def __init__(self, outcomes, same=True):
+    def __init__(self, outcomes, same=True, during_check=None):
         super().__init__(kubeconfig="config", context="context", namespace="agents")
         self.outcomes = list(outcomes)
         self.same = same
+        self.during_check = during_check
         self.attaches: list[float | None] = []
 
     def _same_container(self, name, container, session):
+        if self.during_check is not None:
+            self.during_check(session)
         return self.same
 
     def _attach_once(self, name, session, *, resume_by):
@@ -548,6 +551,24 @@ def test_only_a_detached_refusal_reaches_the_owner_as_one():
     other = refusal(unframe(frame(refusal_reply(HyperlightWorkerError("x" * 2000)))))
     assert type(other) is HyperlightWorkerError and len(str(other)) == 1024
     assert type(refusal({"detached": "yes"})) is HyperlightWorkerError
+
+
+def expire_the_window(state):
+    time.sleep(1.1)
+
+
+def expire_the_call(state):
+    state.sequence, state.deadline = 1, time.time() - 1
+
+
+@pytest.mark.parametrize("during_check", [expire_the_window, expire_the_call])
+def test_a_bound_that_passes_during_the_pod_check_prevents_the_reattach(during_check):
+    state = session(recovery=1)
+    controller = Reattaching(
+        [("attach stream closed", False), ("", True)], during_check=during_check
+    )
+    controller._hold(NAME, "c1", state)
+    assert len(controller.attaches) == 1 and not state.resumed
 
 
 def test_an_unreachable_api_retires_when_the_window_closes():

@@ -675,7 +675,8 @@ class HyperlightPodController:
                 if time.monotonic() >= recover_by or session.expired():
                     return
                 same = self._same_container(name, container, session)
-                if same is False:
+                # The API call can outlast either bound; a resume sent after one would renew PID 1.
+                if same is False or time.monotonic() >= recover_by or session.expired():
                     return
                 if same:
                     ended = self._attach_once(name, session, resume_by=recover_by)
