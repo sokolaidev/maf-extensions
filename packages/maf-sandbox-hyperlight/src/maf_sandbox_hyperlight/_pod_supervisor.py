@@ -427,7 +427,7 @@ class Supervisor:
         """An attach credential permits lifecycle control, never guest source submission."""
         self.check_identity(message)
         if self.retired.is_set() or time.monotonic() >= self.lease:
-            self.retire("controller lease expired")
+            self.retire(self.lapse_reason() if self.continuity else "controller lease expired")
             raise HyperlightWorkerError("an expired controller lease cannot be renewed")
         operation = message.get("op")
         if operation == "hello" and not self.connected:

@@ -545,6 +545,26 @@ def test_a_pod_whose_hello_never_came_records_that_reason(tmp_path):
     assert log.read_text(encoding="utf-8") == "controller never sent its hello"
 
 
+@pytest.mark.parametrize(
+    "recovery,connected,reason",
+    [
+        (30, True, "controller recovery window expired"),
+        (30, False, "controller never sent its hello"),
+        (0, True, "controller lease expired"),
+    ],
+)
+def test_a_frame_after_the_lease_lapsed_records_the_lapse_reason(
+    monkeypatch, recovery, connected, reason
+):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    subject = Supervisor(replace(LAUNCH, recovery_seconds=recovery), ["application"])
+    subject.connected, subject.key = connected, SECRET
+    subject.lease = time.monotonic() - 1
+    with pytest.raises(HyperlightWorkerError, match="cannot be renewed"):
+        subject.controller_message(sealed("ping", 1))
+    assert subject.reason == reason
+
+
 def test_default_mode_has_no_resume(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     subject = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])
