@@ -38,14 +38,27 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve the configured registry
+        env:
+          REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          az account set --subscription "$REGISTRY_SUBSCRIPTION"
+          registry=$(az acr list -o json | jq -ce --arg input "$REGISTRY" \
+            '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+          name=$(printf '%s' "$registry" | jq -er '.name')
+          server=$(printf '%s' "$registry" | jq -er '.loginServer')
+          echo "::add-mask::$name"
+          echo "::add-mask::$server"
+          echo "REGISTRY=$name" >> "$GITHUB_ENV"
+          echo "REGISTRY_SERVER=$server" >> "$GITHUB_ENV"
       - name: Publish isolated test candidates
         id: publish
         shell: bash
         run: |
           set -euo pipefail
           az acr login --name "$REGISTRY" --output none
-          server=$(az acr show --name "$REGISTRY" --query loginServer -o tsv)
-          echo "::add-mask::$server"
+          server="$REGISTRY_SERVER"
           image="$server/$TEST_REPOSITORY"
           docker tag hyperlight-provenance:runtime "$image:runtime"
           docker push "$image:runtime"
@@ -97,6 +110,20 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve the configured registry
+        env:
+          REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          az account set --subscription "$REGISTRY_SUBSCRIPTION"
+          registry=$(az acr list -o json | jq -ce --arg input "$REGISTRY" \
+            '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+          name=$(printf '%s' "$registry" | jq -er '.name')
+          server=$(printf '%s' "$registry" | jq -er '.loginServer')
+          echo "::add-mask::$name"
+          echo "::add-mask::$server"
+          echo "REGISTRY=$name" >> "$GITHUB_ENV"
+          echo "REGISTRY_SERVER=$server" >> "$GITHUB_ENV"
       - name: Verify signed runtime and refusal cases on a fresh runner
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,8 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           az acr login --name "$REGISTRY" --output none
-          server=$(az acr show --name "$REGISTRY" --query loginServer -o tsv)
-          echo "::add-mask::$server"
+          server="$REGISTRY_SERVER"
           uv run --locked python scripts/check_hyperlight_provenance_live.py \
             --image "$server/$TEST_REPOSITORY@$DIGEST" \
             --unsigned-image "$server/$TEST_REPOSITORY@$UNSIGNED_DIGEST" \
@@ -137,6 +163,20 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Resolve the configured registry
+        env:
+          REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          az account set --subscription "$REGISTRY_SUBSCRIPTION"
+          registry=$(az acr list -o json | jq -ce --arg input "$REGISTRY" \
+            '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+          name=$(printf '%s' "$registry" | jq -er '.name')
+          server=$(printf '%s' "$registry" | jq -er '.loginServer')
+          echo "::add-mask::$name"
+          echo "::add-mask::$server"
+          echo "REGISTRY=$name" >> "$GITHUB_ENV"
+          echo "REGISTRY_SERVER=$server" >> "$GITHUB_ENV"
       - name: Remove only this run's test repository
         run: |
           set -euo pipefail
