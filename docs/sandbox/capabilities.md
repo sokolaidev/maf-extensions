@@ -18,7 +18,7 @@ Capabilities describe operations. [Isolation](policy-isolation.md), [network pol
 | `SNAPSHOT` | Reset to a baseline taken before input | Hyperlight |
 | `RECLAIM` | Safely remove the framework's call directory | Docker |
 | `ATTACHED_IDENTITY` | Enforce the core attached-authority contract | None |
-| `EGRESS_METHODS` | Enforce HTTP method restrictions | Docker and WSLC with iron-proxy configured; Hyperlight for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS |
+| `EGRESS_METHODS` | Enforce HTTP method restrictions | Docker and WSLC with iron-proxy configured; Hyperlight for seven standard methods; ACAS for its [qualified HTTPS token set](backends/acas.md#network-policy) |
 
 This table shows supported configurations. Image checks and backend options can narrow them. Each [backend guide](backends/README.md) states its limits. The in-process fake declares test behavior; it provides no real containment.
 
