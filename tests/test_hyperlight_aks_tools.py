@@ -213,7 +213,31 @@ def rollout(pods: list[dict[str, Any]], nodes: list[dict[str, Any]], image: str 
 def test_a_node_running_the_daemonsets_plugin_is_verified_while_cordoned():
     [report] = rollout([plugin_pod()], [plugin_node(unschedulable=True)])
     assert report["verified"] and report["cordoned"]
-    assert report["running_digest"] == PLUGIN_IMAGE.rpartition("@")[2]
+    [pod] = report["pods"]
+    assert pod["running_digest"] == PLUGIN_IMAGE.rpartition("@")[2]
+    assert pod["controlled"] and pod["current_revision"] and not pod["terminating"]
+
+
+def named(pod: dict[str, Any], name: str) -> dict[str, Any]:
+    pod["metadata"]["name"] = name
+    return pod
+
+
+@pytest.mark.parametrize("old_terminating", [True, False])
+def test_every_plugin_pod_on_a_failing_node_is_listed_with_its_image(old_terminating):
+    old = named(
+        plugin_pod(image=PREVIOUS_PLUGIN, revision="old", terminating=old_terminating), "old"
+    )
+    pods = [old, named(plugin_pod(), "new"), named(plugin_pod(owner=None), "foreign")]
+    [report] = rollout(pods, [plugin_node()])
+    assert not report["verified"]
+    listed = {pod["name"]: pod for pod in report["pods"]}
+    assert listed["old"]["running_digest"] == "sha256:" + "a" * 64
+    assert listed["old"]["terminating"] is old_terminating
+    assert not listed["old"]["current_revision"]
+    assert listed["new"]["running_digest"] == PLUGIN_IMAGE.rpartition("@")[2]
+    assert listed["new"]["current_revision"] and listed["new"]["ready"]
+    assert not listed["foreign"]["controlled"]
 
 
 def test_ondelete_leaves_the_previous_plugin_running_until_its_pod_is_deleted():

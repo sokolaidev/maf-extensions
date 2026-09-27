@@ -150,10 +150,26 @@ def current_revision(daemonset: dict, revisions: list[dict]) -> str:
     return newest["metadata"].get("labels", {}).get("controller-revision-hash", "")
 
 
+def _plugin_pod(pod: dict, daemonset: dict, revision: str) -> dict:
+    statuses = pod.get("status", {}).get("containerStatuses", [])
+    status = statuses[0] if len(statuses) == 1 else {}
+    return {
+        "name": pod["metadata"]["name"],
+        "controlled": _owned_by(pod, daemonset),
+        "terminating": bool(pod["metadata"].get("deletionTimestamp")),
+        "current_revision": pod["metadata"].get("labels", {}).get("controller-revision-hash")
+        == revision,
+        "template_image": pod["spec"]["containers"][0]["image"],
+        "running_digest": _digest(status.get("imageID", "")),
+        "ready": status.get("ready") is True,
+        "restarts": status.get("restartCount", 0),
+    }
+
+
 def plugin_rollout(
     daemonset: dict, revision: str, pods: list[dict], nodes: list[dict], image: str = ""
 ) -> list:
-    """Report each plugin-enabled node's running plugin image; `OnDelete` never replaces it."""
+    """Report every plugin pod on each plugin-enabled node; `OnDelete` never replaces one."""
     template = daemonset["spec"]["template"]["spec"]["containers"][0]["image"]
     expected = _digest(image or template)
     if not expected:
@@ -163,22 +179,14 @@ def plugin_rollout(
     reports = []
     for node in nodes:
         name = node["metadata"]["name"]
-        here = [pod for pod in pods if pod["spec"].get("nodeName") == name]
-        placed = [pod for pod in here if _owned_by(pod, daemonset)]
-        live = [pod for pod in placed if not pod["metadata"].get("deletionTimestamp")]
-        report = {
-            "name": name,
-            "cordoned": bool(node["spec"].get("unschedulable")),
-            "allocatable": node["status"]
-            .get("allocatable", {})
-            .get("hyperlight.dev/hypervisor", "0"),
-            "expected_digest": expected,
-            "plugin_pod": "",
-            "template_image": "",
-            "running_digest": "",
-            "ready": False,
-            "restarts": 0,
-        }
+        here = [
+            _plugin_pod(pod, daemonset, revision)
+            for pod in pods
+            if pod["spec"].get("nodeName") == name
+        ]
+        placed = [pod for pod in here if pod["controlled"]]
+        live = [pod for pod in placed if not pod["terminating"]]
+        allocatable = node["status"].get("allocatable", {}).get("hyperlight.dev/hypervisor", "0")
         reasons = []
         if len(placed) < len(here):
             reasons.append("a plugin-labelled pod is not controlled by the DaemonSet")
@@ -187,27 +195,26 @@ def plugin_rollout(
         if len(live) != 1:
             reasons.append(f"{len(live)} running plugin pods, expected one")
         else:
-            pod = live[0]
-            statuses = pod.get("status", {}).get("containerStatuses", [])
-            status = statuses[0] if len(statuses) == 1 else {}
-            report.update(
-                {
-                    "plugin_pod": pod["metadata"]["name"],
-                    "template_image": pod["spec"]["containers"][0]["image"],
-                    "running_digest": _digest(status.get("imageID", "")),
-                    "ready": status.get("ready") is True,
-                    "restarts": status.get("restartCount", 0),
-                }
-            )
-            if pod["metadata"].get("labels", {}).get("controller-revision-hash") != revision:
+            [pod] = live
+            if not pod["current_revision"]:
                 reasons.append("the plugin pod predates the DaemonSet template; delete it")
-            if report["running_digest"] != expected:
+            if pod["running_digest"] != expected:
                 reasons.append("the running plugin digest is not the expected one")
-            if not report["ready"]:
+            if not pod["ready"]:
                 reasons.append("the plugin pod is not ready")
-        if report["allocatable"] in {"", "0"}:
+        if allocatable in {"", "0"}:
             reasons.append("the device plugin advertises no hypervisor allocation")
-        reports.append({**report, "verified": not reasons, "reasons": reasons})
+        reports.append(
+            {
+                "name": name,
+                "cordoned": bool(node["spec"].get("unschedulable")),
+                "allocatable": allocatable,
+                "expected_digest": expected,
+                "pods": here,
+                "verified": not reasons,
+                "reasons": reasons,
+            }
+        )
     return reports
 
 
