@@ -165,15 +165,19 @@ The rendered DaemonSet uses `OnDelete`, so a changed manifest leaves every node 
 
 1. Apply the new manifest. `plugin-status` (below) now fails each node, naming the pod's older revision and its digest.
 2. Cordon the node and drain it with `kubectl drain NODE --ignore-daemonsets --delete-emptydir-data --force`. `--force` is required because the controller's pods declare no Kubernetes controller. Eviction retires each owner with exit 70 and reason `pod termination requested`, and the controller confirms cleanup; the drains measured took 10 to 13 seconds. If the owning controller is gone, the pod waits on its finalizer and the drain waits with it. Run `recover` with the same identity; do not remove the finalizer.
-3. Delete the node's plugin pod and run `plugin-status` until it verifies. A ready plugin pod is not yet an advertised device: one replacement read allocation 0 at 8 seconds and 1 at about 24; others advertised within 6 seconds.
-4. While the node is still cordoned, compare the CDI spec with the one the previous plugin wrote. The plugin rewrites it at start; its content did not change between these two plugins. Read `/host/run/cdi`, not `/host/var/run/cdi`, which is an absolute symlink. Delete the debug pod afterwards.
+3. Record the checksum of the CDI spec the running plugin wrote. `kubectl debug` does not attach without `-i`; it prints the name of the pod it created, `node-debugger-NODE-…`, which the next commands take as `DEBUG_POD`. Read `/host/run/cdi`, not `/host/var/run/cdi`, which is an absolute symlink.
 
    ```sh
    kubectl debug node/NODE -n hyperlight-system --profile=general --image=python:3.13.12-slim-bookworm@sha256:3121f8b0804aa3698ab750d9a39ea4a42657a385c9b133722b915e55c51551a6 -- sha256sum /host/run/cdi/hyperlight.json
+   kubectl -n hyperlight-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/DEBUG_POD --timeout=120s
+   kubectl -n hyperlight-system logs DEBUG_POD
+   kubectl -n hyperlight-system delete pod DEBUG_POD
    ```
 
-5. Uncordon the node and run a `positive` probe at once. A cordoned node refuses the controller's pods, so guest execution cannot be checked before the node returns to service: the probe waits out its startup budget, about 200 seconds, and raises `TimeoutError` naming the node as unschedulable. If the probe fails, cordon the node again.
-6. To roll back, apply the previous manifest and repeat these steps. Before restoring the DaemonSet, `plugin-status --image PREVIOUS_REFERENCE` checks a node against the previous digest.
+4. Delete the node's plugin pod and run `plugin-status` until this node's row reports `verified`. The command exits nonzero until every plugin-enabled node has been replaced, so read the node's row and its `reasons` rather than the exit code. A ready plugin pod is not yet an advertised device: one replacement read allocation 0 at 8 seconds and 1 at about 24; others advertised within 6 seconds.
+5. While the node is still cordoned, read the checksum again with the commands from step 3 and compare. The plugin rewrites the spec at start; its content did not change between these two plugins.
+6. Uncordon the node and run a `positive` probe at once. A cordoned node refuses the controller's pods, so guest execution cannot be checked before the node returns to service: the probe waits out its startup budget, about 200 seconds, and raises `TimeoutError` naming the node as unschedulable. If the probe fails, cordon the node again.
+7. To roll back, apply the previous manifest and repeat these steps. Before restoring the DaemonSet, `plugin-status --image PREVIOUS_REFERENCE` checks a node against the previous digest.
 
 Check which plugin image each node actually runs:
 

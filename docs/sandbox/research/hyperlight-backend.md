@@ -254,7 +254,7 @@ A node without nested virtualization was not measured. The subscription offers o
 
 A second pair of pools on 2026-09-26, the same sizes and node images, measured what the first run left out. Created with `hyperlight.dev/enabled=true` only, both nodes ran the plugin and advertised one allocation. The `nodes` report marked them verified and not schedulable. `chroot /host runc --version` in a `sysadmin` debug pod read runc 1.4.3-2 on Ubuntu and 1.3.6 on Azure Linux; the runc column above comes from these nodes, not the first pair. `az aks nodepool update --labels` then added `hyperlight.dev/hypervisor=kvm` to the existing nodes in place: the same node objects and plugin pods remained. `positive` exited 0 on both nodes. Both pools were deleted afterwards.
 
-### Upgrade and rollback, 2026-09-26
+### Upgrade and rollback, 2026-09-26 to 27
 
 [#1426](https://github.com/sokolaidev/maf-extensions/issues/1426) exercised the upgrade and rollback procedure on temporary one-node `Standard_D4ads_v5` pools from the Ubuntu row above. The runtime moved between 0.5.0 and 0.6.0, each image run with its own release's controller and pulled by digest. The plugin moved between upstream `51d7dab` and the pinned `fc71b45`. Each run's record is on its issue: [runtime](https://github.com/sokolaidev/maf-extensions/issues/1512#issuecomment-5854856249), [plugin](https://github.com/sokolaidev/maf-extensions/issues/1513#issuecomment-5850250572) and [failures and interrupted maintenance](https://github.com/sokolaidev/maf-extensions/issues/1514#issuecomment-5850391223).
 
