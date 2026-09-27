@@ -66,11 +66,21 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 
 `RUN_CODE` is not declared, because any image is accepted and the runtime is the image's. `SNAPSHOT` is not declared. `HOST_TOOLS` is not declared yet: an idle sandbox stops 30 seconds after its last `sbx` session and kills every process, and the host-tool transport has not been measured against that.
 
-`spec.image_id`, or else `spec.image`, is passed to `sbx create --template`, and a warm acquire refuses a spec that changes either. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000) with passwordless `sudo`. An image without that user runs commands as root.
+`spec.image_id`, or else `spec.image`, is passed to `sbx create --template`, and a warm acquire refuses a spec that changes either. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000). An image without that user runs commands as root. Commands run in a user namespace of their own, so `sudo` does not work in them, even in Docker's template.
+
+Any Linux image works as a template if it has `/bin/sh` and `/bin/bash` and the tools listed under [Commands](#commands). Without `/bin/bash`, `sbx` cannot start the sandbox. An image built locally reaches `sbx` through a tar:
+
+```bash
+docker build -t my-image:local .
+docker save -o my-image.tar my-image:local
+sbx template load my-image.tar
+```
+
+Then pass `image="my-image:local"`.
 
 ## Files: a workspace answered by the host
 
-Each sandbox mounts one fresh, private host directory, `<workspace_root>/<sandbox name>/ws-<random>`, and nothing else. Every create gets a new one, so a new sandbox never mounts an earlier one's files, and `sbx ls` tells which create made a sandbox. At create, the backend binds that mount again at the storage base's parent, as root. With the default storage base `/maf-sandbox/work`, that parent is `/maf-sandbox`. An idle stop drops the bind, and the next command binds it again before it runs.
+Each sandbox mounts one fresh, private host directory, `<workspace_root>/<sandbox name>/ws-<random>`, and nothing else. Every create gets a new one, so a new sandbox never mounts an earlier one's files, and `sbx ls` tells which create made a sandbox. Every command binds that mount again at the storage base's parent, inside a user and mount namespace of its own, and then runs as the image's user. With the default storage base `/maf-sandbox/work`, that parent is `/maf-sandbox`. `sbx` lets only its own templates mount as root, and the namespace needs no such capability, so any template works. At create, root only makes the empty directory the mount goes over.
 
 Stats, reads, listings and writes act on the host side of the mount. No path check is answered inside the guest.
 
@@ -86,7 +96,7 @@ File methods reach only paths under the storage base's parent. Any other absolut
 
 ## Commands
 
-`exec` runs argv verbatim, with separate, byte-exact streams and the command's own exit code. Every command runs through a small `sh` wrapper. The image needs `sh`, `base64`, `setsid`, `mount`, `mkdir`, `cat`, `rm` and `sleep`, and acquire checks for all of them:
+`exec` runs argv verbatim, with separate, byte-exact streams and the command's own exit code. Every command runs through a small `sh` wrapper. The image needs `sh`, `base64`, `setsid`, `mount`, `unshare` from util-linux 2.38 or later, `mkdir`, `cat`, `rm` and `sleep`, and acquire checks for all of them:
 
 - argv is base64-encoded, because `sbx` refuses an empty argument;
 - a nonce on stderr marks where the command's own stderr starts, so a missing sandbox is never read as a command that exited 1;
@@ -107,7 +117,7 @@ Every sandbox is created with `--deny-network "**"`. A per-sandbox deny beats ev
 
 `dispose` and `dispose_scope` run `sbx rm --force` on every name with the matching prefix, taken from `sbx ls` and from the workspace directories. Afterwards they delete only what was on the host before the removal, never a workspace made after it, since the name is then free for another process to create again. `sbx rm` accepts only a name, so disposing of one instance checks its id in `sbx ls` first, then removes by name: another process that replaces the instance in between loses the replacement. The directories are a second record because the daemon can lose its engine and then report no sandboxes at all. That failure surfaces as `SbxDaemonFault`, which names `sbx daemon restart`, and a disposal reports it as `unreachable` rather than as a sandbox that is gone.
 
-Nothing expires on its own. A sandbox left behind by a crashed host keeps its `cpus` and `memory` until a disposal or `sbx rm` removes it. An idle sandbox stops after 30 seconds and keeps its files; the next command starts it again and binds the workspace in about 2 seconds.
+Nothing expires on its own. A sandbox left behind by a crashed host keeps its `cpus` and `memory` until a disposal or `sbx rm` removes it. An idle sandbox stops after 30 seconds and keeps its files; the next command starts it again, in 0.5 to 1.2 seconds on the `ubuntu-24.04` runner.
 
 ## Verification
 
