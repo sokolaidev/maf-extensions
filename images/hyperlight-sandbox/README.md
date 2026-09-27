@@ -20,11 +20,29 @@ The builder uses the lockfile, builds three workspace wheels and limits the Dock
 
 The Linux Hyperlight CI job builds from a clean checkout and retains the three JSON records in the `hyperlight-image-verification` artifact for 14 days. It does not publish an image or sign these records. When a core release reaches a dependent's ceiling, CI reports the pending adoption in its job summary and defers the image build and artifact until the range admits that core. Linux worker and KVM checks still run. Invalid ranges, unmet floors and ceilings older than the current core line fail the preflight. The normal builder and image smoke check always enforce dependency consistency.
 
-The smoke check runs as the image's non-root user with no network, a read-only root filesystem, dropped capabilities, no privilege escalation and finite CPU, memory and PID limits. It checks payload hashes, workspace versions, dependency consistency and imports. It opens no hypervisor device. Its 256 MiB limit is only for packaging verification; it does not size a Hyperlight VM or establish AKS containment.
+The smoke check runs as the image's non-root user with no network, a read-only root filesystem, dropped capabilities, no privilege escalation and finite CPU, memory and PID limits. The host enforces a 60-second execution deadline and a combined 1 MiB stdout/stderr limit, disables container logging, and force-removes the named container after every attempt. Docker creation and removal each have a 10-second deadline; cleanup failure refuses verification. It checks payload hashes, workspace versions, dependency consistency and imports. It opens no hypervisor device. Its 256 MiB limit is only for packaging verification; it does not size a Hyperlight VM or establish AKS containment.
 
 Publish the verified image ID to an approved registry and retain the registry's immutable manifest digest. Configure pull authorization outside application containers, verify the published artifact and its provenance through the approved registry workflow, then pass that digest to the controller. Registry publishing and provenance verification are separate deployment gates; the builder does not push images. The included image runs the verification application; an embedding application supplies its own code and command with the same pinned dependencies and supervisor.
 
 Inspect the rendered plugin before applying it with an explicit kubeconfig/context. It pins the upstream revision and image digest, drops capabilities, disables the service-account token and uses `OnDelete` upgrades. It preserves upstream discovery, device allocation and CDI generation. The default `DEVICE_COUNT=1` advertises one allocation per eligible node; it is a scheduling choice, not measured VM capacity. A cluster operator installs the plugin separately from application controllers. Restart, node replacement and stale-CDI recovery require operational validation before production use.
+
+## Verify a published runtime
+
+Before promoting a runtime digest, run `scripts/verify_hyperlight_aks_image.py` on the trusted host. Supply the approved image reference, full source commit, source branch/tag ref, exact signing workflow certificate identity (including its ref), and the expected SHA-256 of the prepared `build-inputs.json`. Choose these values from the reviewed build and publisher policy, not from claims inside the candidate. The source repository is fixed to `sokolaidev/maf-extensions`; reusable signing workflows may live in a separately approved repository.
+
+```sh
+python scripts/verify_hyperlight_aks_image.py \
+  --image "$IMAGE_DIGEST_REF" \
+  --signer-identity "$SIGNER_IDENTITY" \
+  --source-revision "$SOURCE_REVISION" \
+  --source-ref "$SOURCE_REF" \
+  --build-inputs-sha256 "$BUILD_INPUTS_SHA256" \
+  --output "$EVIDENCE_DIR/runtime-provenance.json"
+```
+
+Use a GitHub CLI version supporting the [attestation verification policy flags](https://cli.github.com/manual/gh_attestation_verify), with GitHub and registry authentication configured on the host, and Docker with Linux/amd64 support. The verifier requires GitHub Actions SLSA v1 provenance, the exact signer identity, source revision/ref and GitHub OIDC issuer, and refuses self-hosted runners. It verifies the signature before running image code, then pulls the same digest, resolves its immutable local image ID and applies the builder's restricted packaging check. The payload must match the expected build-input hash and clean source revision. Missing attestations, unsupported CLI flags and verification failures refuse promotion; there is no unsigned fallback.
+
+The output retains the verified attestation bundles, expected policy, image identities, timestamp and packaging report. A failed attempt removes any previous success record at that output path. Keep these records and their signed bundles in operator-controlled storage for the image's supported lifetime; the local JSON report itself is unsigned. Records may contain private registry identifiers and should not be committed to this public repository. This command does not publish/sign images, configure cluster admission, or establish KVM execution, lifecycle acceptance or plugin provenance. Admission must independently enforce the accepted policy and digest; a saved report is not an admission credential. The existing unsigned candidate and CI records cannot satisfy this gate until a trusted publishing workflow produces matching attestations.
 
 ## Supported platforms
 
