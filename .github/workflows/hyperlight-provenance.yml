@@ -94,7 +94,7 @@ jobs:
   verify:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
       attestations: read
@@ -129,6 +129,43 @@ jobs:
             --image "$IMAGE@$DIGEST" --unsigned-image "$IMAGE@$UNSIGNED_DIGEST" \
             --signer-identity "$SIGNER" --source-revision "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
             --build-inputs-sha256 "$INPUTS_SHA256" --output "$RUNNER_TEMP/provenance-evidence"
+      - name: Install pinned KIND
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 \
+            --output "$RUNNER_TEMP/kind"
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  $RUNNER_TEMP/kind" | sha256sum --check -
+          chmod +x "$RUNNER_TEMP/kind"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Verify candidates and exercise Kubernetes admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+          INPUTS_SHA256: ${{ needs.build.outputs.inputs_sha256 }}
+          SIGNER: https://github.com/${{ github.repository }}/.github/workflows/hyperlight-provenance.yml@${{ github.ref }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          policy = {
+              "namespace": "hyperlight-runtime-test",
+              "candidates": [{
+                  "image": os.environ["IMAGE"] + "@" + os.environ["DIGEST"],
+                  "signer_identity": os.environ["SIGNER"],
+                  "source_revision": os.environ["GITHUB_SHA"],
+                  "source_ref": os.environ["GITHUB_REF"],
+                  "build_inputs_sha256": os.environ["INPUTS_SHA256"],
+              }],
+          }
+          Path(os.environ["RUNNER_TEMP"], "admission-policy.json").write_text(json.dumps(policy))
+          PY
+          uv run --locked python scripts/prepare_hyperlight_admission.py \
+            --policy "$RUNNER_TEMP/admission-policy.json" \
+            --output "$RUNNER_TEMP/provenance-evidence/promotion.json"
+          uv run --locked python scripts/check_hyperlight_admission_live.py \
+            --bundle "$RUNNER_TEMP/provenance-evidence/promotion.json" \
+            --output "$RUNNER_TEMP/provenance-evidence/admission.json"
       - name: Retain verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

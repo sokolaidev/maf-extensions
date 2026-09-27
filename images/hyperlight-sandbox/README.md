@@ -57,7 +57,41 @@ This explicit selection calls [the signed-runtime integration workflow](../../.g
 
 The test requires the exact signer, source commit, source ref and prepared build-input hash. Refusal cases change each policy value and present an unsigned image with a modified manifest. Every refusal must remove a seeded success record, and a final positive check must still pass. Build and verification artifacts retain source metadata, build inputs, verified signature bundles and case results. Temporary registry containers are removed on success or failure, and the transferred registry artifact expires after one day.
 
-This proves real GitHub OIDC signing and OCI image verification for test candidates without Azure credentials or a persistent registry. It does not test ACR access, approve a production publisher, enforce Kubernetes admission, or execute a Hyperlight guest.
+The same job freshly verifies the candidate again and generates namespace admission rules, then tests them against a disposable KIND Kubernetes 1.35 API server. Server-side probes cover approved images, tags, changed digests/registries, extra containers, init containers, native sidecars, ephemeral-container updates, ordinary image updates, image volumes and namespace isolation. A scheduling gate prevents the persistent probe pod from running. The cluster is removed before a successful admission report is written.
+
+This proves real GitHub OIDC signing, OCI image verification and runtime image admission in the isolated test cluster. It does not test ACR access, approve a production publisher, install or validate production AKS admission, or execute a Hyperlight guest.
+
+## Prepare runtime admission
+
+Use `scripts/prepare_hyperlight_admission.py` on the trusted operator host to turn reviewed publisher policy into an exact image allowlist for a dedicated application namespace. This targets Kubernetes 1.35 and its native [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/) API. The operator supplies a JSON policy with these fields; replace the example values with independently approved build metadata:
+
+```json
+{
+  "namespace": "hyperlight-apps",
+  "candidates": [
+    {
+      "image": "registry.example/runtime@sha256:APPROVED_DIGEST",
+      "signer_identity": "https://github.com/OWNER/REPO/.github/workflows/build.yml@refs/heads/main",
+      "source_revision": "APPROVED_FULL_COMMIT",
+      "source_ref": "refs/heads/main",
+      "build_inputs_sha256": "APPROVED_BUILD_INPUTS_HASH"
+    }
+  ]
+}
+```
+
+```sh
+python scripts/prepare_hyperlight_admission.py --policy operator-policy.json --output promotion.json
+jq '.admission' promotion.json > admission.json
+kubectl --kubeconfig /path/to/kubeconfig --context verified-cluster apply --dry-run=server -f admission.json
+kubectl --kubeconfig /path/to/kubeconfig --context verified-cluster apply -f admission.json
+```
+
+Review the generated manifest before applying it. The generator freshly verifies every candidate's signature, source and restricted packaging check, and emits nothing unless all candidates pass. A failed attempt removes the previous bundle at the output path. The output contains the admission resources and fresh verification records with signed bundles; keep it in operator-controlled storage for the supported image lifetime. Its enclosing JSON is unsigned and must not be accepted as an authorization credential from an untrusted caller.
+
+The policy and binding deny Pod creation and updates when any normal, init, native sidecar or ephemeral container names an image outside the verified registry/repository/digest allowlist. OCI image volumes are denied. Namespace matching uses the request namespace, so changing pod labels cannot opt out. Policy evaluation fails closed. Cluster administrators must protect both admission resources from application identities, and verify the policy's type-check status and actual positive/negative API requests before granting application access to the namespace. Other namespaces, including the upstream device plugin's namespace, are outside this runtime policy.
+
+Admission does not evict existing pods. Keep both old and new verified candidates in the policy during an upgrade or rollback; removing a digest can also deny updates to pods that still use it. The generator accepts up to eight candidates and verifies all of them again. Kubelet registry pull authorization remains an operator prerequisite; this tool creates no registry credentials or role assignments. It neither approves a production publisher nor establishes provenance for the upstream plugin.
 
 ## Supported platforms
 
