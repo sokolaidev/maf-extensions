@@ -87,9 +87,9 @@ def _forwarding_set(value: str) -> Iterator[None]:
         yield
         return
     _needs_host_changes(f"SSH agent forwarding is {before} on this host")
-    _checked("settings", "set", _FORWARDING, value)
-    _checked("daemon", "restart")
     try:
+        _checked("settings", "set", _FORWARDING, value)
+        _checked("daemon", "restart")
         yield
     finally:
         _checked("settings", "set", _FORWARDING, before)
@@ -144,8 +144,8 @@ def test_a_lapsed_login_names_sbx_login(tmp_path):
     if not username or not token:
         pytest.skip("logging back in needs DOCKER_USERNAME and DOCKER_PAT")
     with _forwarding_set("false"):
-        _checked("logout", "--yes")
         try:
+            _checked("logout", "--yes")
             backend = _backend(tmp_path)
             with pytest.raises(SbxLoginRequired, match="Run `sbx login`") as refused:
                 asyncio.run(backend.acquire(_key("login"), _spec()))
