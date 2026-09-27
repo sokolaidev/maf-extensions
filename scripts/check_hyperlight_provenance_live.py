@@ -14,7 +14,9 @@ VERIFIER = Path(__file__).with_name("verify_hyperlight_aks_image.py")
 
 
 def check_result(
-    result: subprocess.CompletedProcess[str], output: Path, expected_error: str | None
+    result: subprocess.CompletedProcess[str],
+    output: Path,
+    expected_error: str | tuple[str, ...] | None,
 ) -> None:
     """Accept a refusal only for the expected reason and with no stale success record."""
     if expected_error is None:
@@ -26,7 +28,10 @@ def check_result(
     elif (
         result.returncode == 0
         or output.exists()
-        or expected_error.casefold() not in result.stderr.casefold()
+        or not any(
+            error.casefold() in result.stderr.casefold()
+            for error in ((expected_error,) if isinstance(expected_error, str) else expected_error)
+        )
     ):
         raise ValueError("refusal did not fail for the expected reason or left stale evidence")
 
@@ -81,7 +86,14 @@ def exercise(
             },
             "image build inputs do not match",
         ),
-        ("unsigned-modified-image", {"--image": unsigned_image}, "no attestations"),
+        (
+            "unsigned-modified-image",
+            {"--image": unsigned_image},
+            (
+                "no attestations",
+                "HTTP 404: Not Found (https://api.github.com/repos/sokolaidev/maf-extensions/attestations/",
+            ),
+        ),
         ("signed-runtime-after-refusals", {}, None),
     ]
     results = []
