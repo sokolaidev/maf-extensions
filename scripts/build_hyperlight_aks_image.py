@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import gzip
 import hashlib
@@ -10,11 +11,16 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_URL = "https://github.com/sokolaidev/maf-extensions"
+SMOKE_TIMEOUT = 60
+SMOKE_OUTPUT_LIMIT = 1024 * 1024
+DOCKER_TIMEOUT = 10
 PROBE_COMMAND = [
     "python",
     "-I",
@@ -171,6 +177,47 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
     return record
 
 
+async def _smoke_output(command: list[str]) -> bytes:
+    """Capture bounded diagnostics while enforcing the host's smoke deadline."""
+    process = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = bytearray(), bytearray()
+    exceeded = False
+
+    async def read(stream: asyncio.StreamReader | None, target: bytearray) -> None:
+        nonlocal exceeded
+        assert stream is not None
+        while chunk := await stream.read(8192):
+            remaining = SMOKE_OUTPUT_LIMIT - len(stdout) - len(stderr)
+            target.extend(chunk[:remaining])
+            if len(chunk) > remaining and not exceeded:
+                exceeded = True
+                if process.returncode is None:
+                    process.kill()
+
+    tasks = [
+        asyncio.create_task(read(process.stdout, stdout)),
+        asyncio.create_task(read(process.stderr, stderr)),
+        asyncio.create_task(process.wait()),
+    ]
+    completion = asyncio.gather(*tasks)
+    try:
+        await asyncio.wait_for(asyncio.shield(completion), SMOKE_TIMEOUT)
+        if exceeded:
+            raise ValueError("image smoke output limit exceeded")
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, command, bytes(stdout), bytes(stderr)
+            )
+        return bytes(stdout)
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), DOCKER_TIMEOUT)
+        sys.stderr.write(stderr.decode("utf-8", errors="replace"))
+
+
 def verify_image(image_id: str, expected_inputs_sha256: str) -> dict[str, object]:
     """Check one immutable runtime image against the expected prepared build inputs."""
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
@@ -191,39 +238,48 @@ def verify_image(image_id: str, expected_inputs_sha256: str) -> dict[str, object
         raise ValueError("image platform or default user does not match the runtime contract")
     if details["Config"].get("Entrypoint") or details["Config"].get("Cmd") != PROBE_COMMAND:
         raise ValueError("image default command does not use the pod supervisor and probe")
-    result = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--pull=never",
-            "--network",
-            "none",
-            "--read-only",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "64",
-            "--memory",
-            "256m",
-            "--memory-swap",
-            "256m",
-            "--cpus",
-            "1",
-            "--entrypoint",
-            "python",
-            image_id,
-            "-I",
-            "-B",
-            "/opt/verify.py",
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    smoke = json.loads(result.stdout)
+    name = "maf-hyperlight-smoke-" + uuid4().hex
+    command = [
+        "docker",
+        "create",
+        "--name",
+        name,
+        "--log-driver",
+        "none",
+        "--pull=never",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "64",
+        "--memory",
+        "256m",
+        "--memory-swap",
+        "256m",
+        "--cpus",
+        "1",
+        "--entrypoint",
+        "python",
+        image_id,
+        "-I",
+        "-B",
+        "/opt/verify.py",
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, timeout=DOCKER_TIMEOUT)
+        output = asyncio.run(_smoke_output(["docker", "start", "--attach", name]))
+    finally:
+        subprocess.run(
+            ["docker", "rm", "--force", name],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            timeout=DOCKER_TIMEOUT,
+        )
+    smoke = json.loads(output)
     if smoke["build_inputs_sha256"] != expected_inputs_sha256:
         raise ValueError("image build inputs do not match the prepared context")
     return smoke

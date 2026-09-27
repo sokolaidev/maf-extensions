@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
@@ -114,7 +116,7 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(
 
     def execute(command, **kwargs):
         commands.append(command)
-        if (failure, command[1]) in {("smoke", "run"), ("inspect", "image")}:
+        if (failure, command[1]) in {("smoke", "start"), ("inspect", "image")}:
             return run(
                 [
                     sys.executable,
@@ -146,7 +148,9 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(
                     ]
                 ),
             )
-        assert command[1] == "run"
+        if command[1] in {"create", "rm"}:
+            return subprocess.CompletedProcess(command, 0)
+        assert command[1] == "start"
         return subprocess.CompletedProcess(
             command,
             0,
@@ -160,7 +164,11 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(
             ),
         )
 
+    async def capture(command):
+        return execute(command, check=True, stdout=subprocess.PIPE, text=True).stdout.encode()
+
     monkeypatch.setattr(subprocess, "run", execute)
+    monkeypatch.setattr(builder, "_smoke_output", capture)
     if failure:
         with pytest.raises((ValueError, subprocess.CalledProcessError)):
             builder.build_and_verify(tmp_path, "mutable:tag")
@@ -173,10 +181,11 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(
     assert result["local_image_id"] == IMAGE_ID
     assert result["registry_digest"] is None
     assert result["signed_provenance_verified"] is False
-    command = commands[-1]
+    command = next(command for command in commands if command[1] == "create")
     assert command[-4:] == [IMAGE_ID, "-I", "-B", "/opt/verify.py"]
     assert "mutable:tag" not in command
     for option, value in (
+        ("--log-driver", "none"),
         ("--network", "none"),
         ("--cap-drop", "ALL"),
         ("--security-opt", "no-new-privileges"),
@@ -258,3 +267,57 @@ def test_pip_check_preserves_failures_and_keeps_json_clean(
         smoke.main()
         report = json.loads(capfd.readouterr().out)
         assert "pip-check" in report["checks"]
+
+
+@pytest.mark.parametrize("mode", ["hang", "stdout", "stderr", "combined", "closed-pipes"])
+def test_smoke_bounds_stop_real_child_and_reap_it(monkeypatch, capfd, mode):
+    create = asyncio.create_subprocess_exec
+    children = []
+
+    async def launch(*args, **kwargs):
+        process = await create(*args, **kwargs)
+        children.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    monkeypatch.setattr(builder, "SMOKE_TIMEOUT", 1)
+    monkeypatch.setattr(builder, "SMOKE_OUTPUT_LIMIT", 16384)
+    if mode == "hang":
+        code = "import time; time.sleep(30)"
+    elif mode == "closed-pipes":
+        code = "import os, time; os.close(1); os.close(2); time.sleep(30)"
+    elif mode == "combined":
+        code = "import os, time; os.write(1, b'x' * 9000); os.write(2, b'x' * 9000); time.sleep(30)"
+    else:
+        fd = 1 if mode == "stdout" else 2
+        code = f"import os\nwhile True: os.write({fd}, b'x' * 8192)"
+    started = time.monotonic()
+    error = TimeoutError if mode in {"hang", "closed-pipes"} else ValueError
+    with pytest.raises(error):
+        asyncio.run(builder._smoke_output([sys.executable, "-u", "-c", code]))
+    assert time.monotonic() - started < 10
+    assert len(children) == 1 and children[0].returncode is not None
+    assert len(capfd.readouterr().err.encode()) <= builder.SMOKE_OUTPUT_LIMIT
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_smoke_preserves_json_and_bounded_stderr(capfd, returncode):
+    code = (
+        f"import sys; print('{{}}'); print('diagnostic', file=sys.stderr); sys.exit({returncode})"
+    )
+    command = [sys.executable, "-c", code]
+    if returncode:
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            asyncio.run(builder._smoke_output(command))
+        assert error.value.returncode == returncode
+        assert error.value.output.strip() == b"{}"
+    else:
+        assert json.loads(asyncio.run(builder._smoke_output(command))) == {}
+    assert capfd.readouterr().err.strip() == "diagnostic"
+
+
+def test_smoke_accepts_exact_combined_output_limit(monkeypatch, capfd):
+    monkeypatch.setattr(builder, "SMOKE_OUTPUT_LIMIT", 16)
+    code = "import os; os.write(1, b'{}'); os.write(2, b'x' * 14)"
+    assert asyncio.run(builder._smoke_output([sys.executable, "-c", code])) == b"{}"
+    assert capfd.readouterr().err == "x" * 14

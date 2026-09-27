@@ -77,11 +77,17 @@ def scenario(tmp_path, monkeypatch):
                     ]
                 ),
             )
-        assert command[1] == "run"
-        assert command[-4:] == [IMAGE_ID, "-I", "-B", "/opt/verify.py"]
+        if command[1] in {"create", "rm"}:
+            assert kwargs["timeout"] == builder.DOCKER_TIMEOUT
+            return subprocess.CompletedProcess(command, 0)
+        assert command[1] == "start"
         return subprocess.CompletedProcess(command, 0, json.dumps(state["smoke"]))
 
+    async def capture(command):
+        return execute(command, check=True).stdout.encode()
+
     monkeypatch.setattr(subprocess, "run", execute)
+    monkeypatch.setattr(builder, "_smoke_output", capture)
     options = {
         "signer_identity": SIGNER,
         "source_revision": REVISION,
@@ -119,7 +125,13 @@ def test_verified_digest_and_payload_record_preserves_proof_and_policy(scenario)
     assert "--deny-self-hosted-runners" in command
     assert not {"--signer-workflow", "--signer-repo", "--cert-identity-regex"}.intersection(command)
     assert commands[1] == ["docker", "pull", "--platform", "linux/amd64", IMAGE]
-    smoke_command = commands[-1]
+    smoke_command = next(command for command in commands if command[1] == "create")
+    assert smoke_command[-4:] == [IMAGE_ID, "-I", "-B", "/opt/verify.py"]
+    name = smoke_command[smoke_command.index("--name") + 1]
+    assert commands[-2:] == [
+        ["docker", "start", "--attach", name],
+        ["docker", "rm", "--force", name],
+    ]
     assert "--pull=never" in smoke_command
     assert "--read-only" in smoke_command
     assert smoke_command[smoke_command.index("--network") + 1] == "none"
@@ -128,14 +140,22 @@ def test_verified_digest_and_payload_record_preserves_proof_and_policy(scenario)
 
 
 @pytest.mark.parametrize(
-    "step", [["gh", "attestation"], ["docker", "pull"], ["docker", "image"], ["docker", "run"]]
+    "step",
+    [
+        ["gh", "attestation"],
+        ["docker", "pull"],
+        ["docker", "image"],
+        ["docker", "create"],
+        ["docker", "start"],
+        ["docker", "rm"],
+    ],
 )
 def test_failure_never_retains_success_or_runs_subsequent_steps(scenario, step):
     state, commands, options, output = scenario
     state["fail"] = step
     with pytest.raises(subprocess.CalledProcessError):
         verifier.verify_published_image(IMAGE, **options)
-    assert commands[-1][:2] == step
+    assert commands[-1][:2] == (["docker", "rm"] if step[1] in {"create", "start"} else step)
     assert not output.exists()
     if step[0] == "gh":
         assert len(commands) == 1
@@ -241,4 +261,20 @@ def test_success_without_retained_signed_bundle_is_refused(scenario, bundle):
     with pytest.raises(ValueError, match="invalid verification result"):
         verifier.verify_published_image(IMAGE, **options)
     assert len(commands) == 1
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("error", [TimeoutError("deadline"), ValueError("output limit")])
+def test_smoke_refusal_removes_container_and_success_record(scenario, monkeypatch, error):
+    _, commands, options, output = scenario
+
+    async def refuse(command):
+        raise error
+
+    monkeypatch.setattr(builder, "_smoke_output", refuse)
+    with pytest.raises(type(error), match=str(error)):
+        verifier.verify_published_image(IMAGE, **options)
+    create = commands[-2]
+    name = create[create.index("--name") + 1]
+    assert commands[-1] == ["docker", "rm", "--force", name]
     assert not output.exists()
