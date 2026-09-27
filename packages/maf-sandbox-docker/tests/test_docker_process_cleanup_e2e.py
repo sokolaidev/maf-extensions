@@ -226,9 +226,11 @@ print(json.dumps(dict(program=state(w['program']),child=state(w['child']),victim
             )
             assert check.exit_code == 0, check.stderr
             states = json.loads(check.stdout)
-            assert states["program"] in {"Z", "gone"}, states
-            assert states["child"] in {"Z", "gone"}, states
-            assert states["victim"] not in {"Z", "gone"}, states
+            # `X` is the instant a zombie is being reaped: as dead as `Z` or gone.
+            dead = {"Z", "X", "gone"}
+            assert states["program"] in dead, states
+            assert states["child"] in dead, states
+            assert states["victim"] not in dead, states
             assert [s.phase for s in records.snapshots] == [
                 "before_launch",
                 "after_launch",
