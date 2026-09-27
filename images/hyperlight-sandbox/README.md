@@ -93,6 +93,21 @@ The policy and binding deny Pod creation and updates when any normal, init, nati
 
 Admission does not evict existing pods. Keep both old and new verified candidates in the policy during an upgrade or rollback; removing a digest can also deny updates to pods that still use it. The generator accepts up to eight candidates and verifies all of them again. Kubelet registry pull authorization remains an operator prerequisite; this tool creates no registry credentials or role assignments. It neither approves a production publisher nor establishes provenance for the upstream plugin.
 
+### Check admission on an existing AKS cluster
+
+Run the same admission matrix against an explicit cluster context with `scripts/check_hyperlight_admission_aks.py`. Supply the existing operator policy with a fresh namespace name beginning `hyperlight-admission-` (at most 50 characters), and use an operator identity authorized to create the temporary resources and impersonate their service accounts:
+
+```sh
+uv run python scripts/check_hyperlight_admission_aks.py \
+  --policy operator-policy.json \
+  --kubeconfig /path/to/kubeconfig --context verified-cluster \
+  --output admission-evidence.json
+```
+
+The command freshly verifies the candidate before cluster changes, refuses resource-name collisions, and creates two temporary Restricted namespaces plus the generated policy/binding. Temporary application and controller service accounts exercise authorization; the controller gets only the repository's existing namespace Role. The probe checks that neither identity can alter admission resources, read secrets or create pods outside the test namespace. It uses the same 17 admission cases as KIND and keeps the probe pod behind a scheduling gate, so it neither pulls the runtime on a node nor executes a guest. Reuse separately recorded pull and guest-execution evidence for the relevant candidate instead of treating API admission as execution.
+
+Cleanup verifies the probe ownership label, removes its resources and checks their absence before writing success. The output includes full signed verification/promotion material and can contain private registry identifiers; retain it in operator-controlled storage and publish only a redacted summary. This is a temporary acceptance probe, not installation of a retained policy in a serving namespace.
+
 ## Supported platforms
 
 Give eligible nodes their own node pool and label the pool in two steps. `hyperlight.dev/enabled=true` admits the device plugin; `hyperlight.dev/hypervisor=kvm` admits application pods. Create the pool with the first label only, for example `az aks nodepool add ... --labels hyperlight.dev/enabled=true`, install the plugin and run the report below. Add the second label once the report passes: `az aks nodepool update ... --labels hyperlight.dev/enabled=true hyperlight.dev/hypervisor=kvm`. That update replaces the pool's labels, so repeat every label the pool keeps. Pool labels survive node reimage and scale-out; labels applied to a single node with `kubectl label` do not. The integration never labels, configures or changes a node.
@@ -191,7 +206,7 @@ The report lists every node labelled `hyperlight.dev/enabled=true` with its adve
 
 - **A runtime digest that does not pull** fails the pod's startup: `supervise` raises `TimeoutError` after its startup budget, about 200 seconds, with cleanup confirmed. The reason names the container whose image did not pull, which on the bundle path is the `bootstrap` init container. The same scope then accepts the previous candidate.
 - **A plugin digest that does not pull** fails closed: the node's allocation fell to 0 within 14 seconds, so no application pod lands there. `OnDelete` does not replace the stuck pod after the manifest is restored; delete it, and the node advertised again 16 seconds later.
-- **A missing or stale CDI spec** is invisible to `plugin-status` and to the plugin's own health loop ([#1423](https://github.com/sokolaidev/maf-extensions/issues/1423)). Application pods fail with `CreateContainerError: … unresolvable CDI devices`, which `supervise` reports after its startup budget. Restarting the plugin pod rewrote the spec.
+- **A missing or stale CDI spec** is invisible to `plugin-status` and to the plugin's own health loop ([#1423](https://github.com/sokolaidev/maf-extensions/issues/1423)). Application pods fail with `CreateContainerError: â€¦ unresolvable CDI devices`, which `supervise` reports after its startup budget. Restarting the plugin pod rewrote the spec.
 
 ### Not yet measured
 
