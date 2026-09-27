@@ -1,4 +1,4 @@
-"""Render the pinned upstream plugin overlay, report eligible nodes, or supervise one pod."""
+"""Render the pinned upstream plugin overlay, report eligible nodes and plugin rollout, or supervise one pod."""
 
 from __future__ import annotations
 
@@ -129,10 +129,122 @@ def node_report(node: dict) -> dict:
     }
 
 
+def _digest(image: str) -> str:
+    match = re.search(r"@(sha256:[a-f0-9]{64})$", image)
+    return match.group(1) if match else ""
+
+
+def _owned_by(resource: dict, owner: dict) -> bool:
+    return any(
+        reference.get("controller") is True and reference.get("uid") == owner["metadata"]["uid"]
+        for reference in resource["metadata"].get("ownerReferences", [])
+    )
+
+
+def current_revision(daemonset: dict, revisions: list[dict]) -> str:
+    """The DaemonSet's newest ControllerRevision hash, which its up-to-date pods carry.
+
+    Read `revisions` after `daemonset`: until the controller has observed the DaemonSet's
+    generation, its newest revision may still be the previous template's.
+    """
+    observed = daemonset.get("status", {}).get("observedGeneration")
+    if observed != daemonset["metadata"].get("generation"):
+        raise ValueError("the DaemonSet controller has not observed its latest template; retry")
+    owned = [item for item in revisions if _owned_by(item, daemonset)]
+    if not owned:
+        raise ValueError("the DaemonSet owns no ControllerRevision")
+    newest = max(owned, key=lambda item: item["revision"])
+    return newest["metadata"].get("labels", {}).get("controller-revision-hash", "")
+
+
+def _plugin_pod(pod: dict, daemonset: dict, revision: str) -> dict:
+    statuses = pod.get("status", {}).get("containerStatuses", [])
+    status = statuses[0] if len(statuses) == 1 else {}
+    return {
+        "name": pod["metadata"]["name"],
+        "controlled": _owned_by(pod, daemonset),
+        "terminating": bool(pod["metadata"].get("deletionTimestamp")),
+        "current_revision": pod["metadata"].get("labels", {}).get("controller-revision-hash")
+        == revision,
+        "template_image": pod["spec"]["containers"][0]["image"],
+        "running_digest": _digest(status.get("imageID", "")),
+        "ready": status.get("ready") is True,
+        "restarts": status.get("restartCount", 0),
+    }
+
+
+def plugin_rollout(
+    daemonset: dict, revision: str, pods: list[dict], nodes: list[dict], image: str = ""
+) -> list:
+    """Report every plugin pod on each plugin-enabled node; `OnDelete` never replaces one."""
+    template = daemonset["spec"]["template"]["spec"]["containers"][0]["image"]
+    expected = _digest(image or template)
+    if not expected:
+        raise ValueError("the expected plugin image must be digest-pinned")
+    if not revision:
+        raise ValueError("the DaemonSet's current revision is unknown")
+    reports = []
+    for node in nodes:
+        name = node["metadata"]["name"]
+        here = [
+            _plugin_pod(pod, daemonset, revision)
+            for pod in pods
+            if pod["spec"].get("nodeName") == name
+        ]
+        placed = [pod for pod in here if pod["controlled"]]
+        live = [pod for pod in placed if not pod["terminating"]]
+        allocatable = node["status"].get("allocatable", {}).get("hyperlight.dev/hypervisor", "0")
+        reasons = []
+        if len(placed) < len(here):
+            reasons.append("a plugin-labelled pod is not controlled by the DaemonSet")
+        if len(live) < len(placed):
+            reasons.append("a plugin pod is still terminating")
+        if len(live) != 1:
+            reasons.append(f"{len(live)} running plugin pods, expected one")
+        else:
+            [pod] = live
+            # A rollback target is checked before the DaemonSet is restored, so its pods
+            # are necessarily on an older revision.
+            if not image and not pod["current_revision"]:
+                reasons.append("the plugin pod predates the DaemonSet template; delete it")
+            if pod["running_digest"] != expected:
+                reasons.append("the running plugin digest is not the expected one")
+            if not pod["ready"]:
+                reasons.append("the plugin pod is not ready")
+        if allocatable in {"", "0"}:
+            reasons.append("the device plugin advertises no hypervisor allocation")
+        reports.append(
+            {
+                "name": name,
+                "cordoned": bool(node["spec"].get("unschedulable")),
+                "allocatable": allocatable,
+                "expected_digest": expected,
+                "pods": here,
+                "verified": not reasons,
+                "reasons": reasons,
+            }
+        )
+    return reports
+
+
+def _kubectl(args: argparse.Namespace, *command: str) -> dict:
+    listed = subprocess.run(
+        ["kubectl", "--kubeconfig", args.kubeconfig, "--context", args.context, *command],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=True,
+    )
+    return json.loads(listed.stdout)
+
+
 def main() -> None:
     """Kubernetes authentication stays with the operator or host controller's kubeconfig."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plugin", "nodes", "supervise", "recover"))
+    parser.add_argument(
+        "action", choices=("plugin", "plugin-status", "nodes", "supervise", "recover")
+    )
     parser.add_argument("--namespace")
     parser.add_argument("--kubeconfig")
     parser.add_argument("--context")
@@ -149,20 +261,32 @@ def main() -> None:
     if args.action == "nodes":
         if not (args.kubeconfig and args.context):
             parser.error("nodes requires kubeconfig and context")
-        listed = subprocess.run(
-            ["kubectl", "--kubeconfig", args.kubeconfig, "--context", args.context]
-            + ["get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=True,
-        )
-        reports = [node_report(node) for node in json.loads(listed.stdout)["items"]]
+        listed = _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")
+        reports = [node_report(node) for node in listed["items"]]
         print(json.dumps(reports, indent=2))
         raise SystemExit(0 if reports and all(item["verified"] for item in reports) else 1)
     if not args.namespace:
         parser.error(f"{args.action} requires --namespace")
+    if args.action == "plugin-status":
+        if not (args.kubeconfig and args.context):
+            parser.error("plugin-status requires kubeconfig and context")
+        scope = ("-n", args.namespace, "-o", "json")
+        selector = ("-l", "app.kubernetes.io/name=hyperlight-device-plugin")
+        daemonset = _kubectl(args, "get", "daemonset", "hyperlight-device-plugin", *scope)
+        reports = plugin_rollout(
+            daemonset,
+            current_revision(
+                daemonset,
+                _kubectl(args, "get", "controllerrevisions", *selector, *scope)["items"],
+            ),
+            _kubectl(args, "get", "pods", *selector, *scope)["items"],
+            _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")[
+                "items"
+            ],
+            args.image or "",
+        )
+        print(json.dumps(reports, indent=2))
+        raise SystemExit(0 if reports and all(item["verified"] for item in reports) else 1)
     if args.action == "plugin":
         with urllib.request.urlopen(UPSTREAM_MANIFEST, timeout=20) as response:
             source = response.read(1024 * 1024).decode()

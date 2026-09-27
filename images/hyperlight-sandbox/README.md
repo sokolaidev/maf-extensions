@@ -119,7 +119,15 @@ Keep the previous runtime digest, its build record, the application command, tem
 
 Change the trusted host's template for newly created pods. Let existing owners finish or retire them through the controller and confirm termination before reusing their scopes. An image update does not transfer a running VM's state. Roll back by restoring the previous digest and compatible template for new pods; an unresolved cleanup ledger still blocks replacement after rollback. The controller and the image exchange unversioned lifecycle messages, so run both from the same `maf-sandbox-hyperlight` release and upgrade or roll them back together.
 
-Treat device-plugin upgrades separately. The rendered DaemonSet uses `OnDelete`, so changing its manifest does not restart existing plugin pods. Cordon and drain affected nodes under the operator's maintenance process, confirm owner cleanup, then replace plugin pods and verify registration, CDI contents and actual VM creation before returning nodes to service. Restore the prior manifest and repeat verification to roll back. A healthy device count alone does not establish device usability: the pinned upstream plugin checks device-path presence and does not repair missing or stale CDI during its health loop.
+Treat device-plugin upgrades separately. The rendered DaemonSet uses `OnDelete`, so changing its manifest does not restart existing plugin pods, and `kubectl rollout status` refuses to wait on it. Cordon and drain affected nodes under the operator's maintenance process, confirm owner cleanup, then replace plugin pods and verify registration, CDI contents and actual VM creation before returning nodes to service. Restore the prior manifest and repeat verification to roll back. A healthy device count alone does not establish device usability: the pinned upstream plugin checks device-path presence and does not repair missing or stale CDI during its health loop.
+
+Check which plugin image each node actually runs before uncordoning it:
+
+```sh
+uv run python scripts/hyperlight_aks.py plugin-status --namespace hyperlight-system --kubeconfig /path/to/kubeconfig --context verified-cluster
+```
+
+The report lists every node labelled `hyperlight.dev/enabled=true` with its advertised allocation, cordon state and every plugin pod on it: the digest containerd resolved, readiness, restarts, whether it is terminating, controlled by the DaemonSet and on its newest revision. Only controlled pods count toward the verdict. It exits nonzero when a node has no single ready plugin pod, carries a plugin-labelled pod the DaemonSet does not control, runs a pod whose revision is older than the DaemonSet's newest one, resolved a digest other than the expected one, or advertises no allocation. The expected digest is the DaemonSet's. To check a node against a rollback target before the DaemonSet is restored, pass `--image` with its digest-pinned reference; the pod's older revision is then reported but does not fail the node. It reads pods, nodes, the DaemonSet and its ControllerRevisions only. Right after an apply it refuses until the DaemonSet controller has observed the new template; run it again. It does not read CDI files or create a VM, so a verified row is not device usability.
 
 ## Failure and recovery
 
