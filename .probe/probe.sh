@@ -1,53 +1,57 @@
 #!/usr/bin/env bash
-# Temporary: does an image built FROM Docker's shell template keep the capabilities sbx grants.
+# Temporary: can a command bind the workspace inside its own user and mount namespace.
 set +e
 x() { echo; echo "\$ $*"; "$@"; echo "[exit $?]"; }
 cd "$(dirname "$0")"
 
-x docker pull -q docker/sandbox-templates:shell
-docker inspect docker/sandbox-templates:shell --format '{{json .Config.Labels}} user={{.Config.User}} entry={{json .Config.Entrypoint}} cmd={{json .Config.Cmd}}'
-x docker build -q -t bicep-sandbox:local ../images/bicep-sandbox
-
+cat > d_agent.dockerfile <<'EOF'
+FROM debian:bookworm-slim
+RUN useradd -u 1000 -m -s /bin/bash agent
+USER agent
+EOF
+cat > d_root.dockerfile <<'EOF'
+FROM debian:bookworm-slim
+EOF
 cat > s_graphviz.dockerfile <<'EOF'
 FROM docker/sandbox-templates:shell
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends graphviz && rm -rf /var/lib/apt/lists/*
 USER agent
 EOF
-cat > s_bicep.dockerfile <<'EOF'
-FROM docker/sandbox-templates:shell
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends libicu74 && rm -rf /var/lib/apt/lists/*
-COPY --from=bicep-sandbox:local /usr/local/bin/bicep /usr/local/bin/bicep
-USER agent
-EOF
-cat > s_rootuser.dockerfile <<'EOF'
-FROM docker/sandbox-templates:shell
-USER root
-EOF
-labels=$(docker inspect docker/sandbox-templates:shell --format '{{range $k, $v := .Config.Labels}}--label {{$k}}={{$v}} {{end}}')
-cat > d_labels.dockerfile <<'EOF'
-FROM debian:bookworm-slim
-RUN useradd -u 1000 -m -s /bin/bash agent
+cat > az_agent.dockerfile <<'EOF'
+FROM mcr.microsoft.com/azurelinux/base/core:3.0
+RUN tdnf install -y bash shadow-utils util-linux && tdnf clean all && useradd -u 1000 -m -s /bin/bash agent
 USER agent
 EOF
 
-S='id; grep -E "^CapEff" /proc/self/status; mkdir -p /tmp/probe-src /tmp/probe-dst && mount --bind /tmp/probe-src /tmp/probe-dst && echo MOUNT_OK; command -v dot bicep; bicep --version 2>&1 | head -1'
+# $1 is the guest workspace mount (pwd -P at create).
+NS='ws=$1; unshare --version | head -1; cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null; cat /proc/sys/user/max_user_namespaces
+unshare --user --mount --map-current-user sh -c "mount --bind \"$ws\" /maf-sandbox && cd /maf-sandbox && pwd && /bin/pwd && id && echo from-ns > made-in-ns && ls -ln" && echo NS_OK
+unshare --user --mount --map-root-user sh -c "mount --bind \"$ws\" /maf-sandbox && echo NS_ROOTMAP_OK"
+ls -ln "$ws"; echo "outside ns /maf-sandbox:"; ls -la /maf-sandbox'
 
-for f in s_graphviz s_bicep s_rootuser d_labels; do
+run() {
+  local name=$1
+  mount=$(sbx exec "$name" sh -c 'pwd -P')
+  echo "guest mount: $mount"
+  x sbx exec -u root "$name" sh -c 'mkdir -p /maf-sandbox && chmod 0755 /maf-sandbox && ls -ld /maf-sandbox'
+  x sbx exec "$name" sh -c "$NS" ns "$mount"
+  x sbx exec -u root "$name" sh -c "$NS" ns "$mount"
+  echo "host side:"; ls -ln "$2"
+}
+
+d=$(mktemp -d)
+x sbx create shell --name probe-shell --cpus 1 --memory 1g --skills off --deny-network '**' --quiet "$d"
+run probe-shell "$d"
+x sbx rm --force probe-shell
+
+for f in d_agent d_root s_graphviz az_agent; do
   echo; echo "=================== $f"
-  if [ "$f" = d_labels ]; then
-    # shellcheck disable=SC2086
-    x docker build -q $labels -t "probe-$f:local" -f "$f.dockerfile" .
-  else
-    x docker build -q -t "probe-$f:local" -f "$f.dockerfile" .
-  fi
-  x docker save -o "/tmp/$f.tar" "probe-$f:local"
-  x sbx template load "/tmp/$f.tar"
+  x docker build -q -t "probe-$f:local" -f "$f.dockerfile" .
+  docker save -o "/tmp/$f.tar" "probe-$f:local" && sbx template load "/tmp/$f.tar" >/dev/null
   name="probe-${f//_/-}"
-  x sbx create shell --name "$name" --template "probe-$f:local" --cpus 1 --memory 1g --skills off --deny-network '**' --quiet "$(mktemp -d)"
-  x sbx exec -u root "$name" sh -c "$S"
-  x sbx exec "$name" sh -c "$S"
+  d=$(mktemp -d)
+  x sbx create shell --name "$name" --template "probe-$f:local" --cpus 1 --memory 1g --skills off --deny-network '**' --quiet "$d"
+  run "$name" "$d"
   x sbx rm --force "$name"
-  x uv run python _backend_probe.py "probe-$f:local" 'id; pwd; cat in.txt; echo; command -v dot bicep'
 done
