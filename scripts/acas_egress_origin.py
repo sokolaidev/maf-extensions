@@ -39,8 +39,12 @@ class Origin(BaseHTTPRequestHandler):
                 self.events.append({"id": query.get("id", [""])[0], "method": self.command})
             payload = b"probe origin\n"
             if parsed.path.startswith("/redirect/"):
+                location = query["to"][0]
+                if "\r" in location or "\n" in location:
+                    self.send_error(400)
+                    return
                 self.send_response(int(parsed.path.rsplit("/", 1)[1]))
-                self.send_header("Location", query["to"][0])
+                self.send_header("Location", location)
             else:
                 self.send_response(200)
         self.send_header("Content-Type", "application/json")
