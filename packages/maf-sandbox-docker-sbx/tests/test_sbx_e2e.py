@@ -4,7 +4,8 @@ Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  ``MAF_SANDBOX_SBX_PATH`` names the CL
 not on ``PATH``.  The host must pass the backend's own checks — SSH agent forwarding off, no MCP
 server registered — except on a host whose settings the tester may not change, where
 ``MAF_SANDBOX_SBX_E2E_ACCEPT_HOST=1`` skips those two checks.  ``test_sbx_e2e_host.py`` asserts
-them.
+them.  ``MAF_SANDBOX_SBX_E2E_IMAGES`` names templates, comma-separated, that the file, exec and
+egress tests also run on, beside Docker's default one.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ _SBX = os.environ.get("MAF_SANDBOX_SBX_PATH", "sbx")
 _ACCEPT_HOST = os.environ.get("MAF_SANDBOX_SBX_E2E_ACCEPT_HOST") == "1"
 _WORK = "/maf-sandbox/work"
 _NO_SYMLINK_PRIVILEGE = 1314
+_IMAGES = [None, *(i for i in os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGES", "").split(",") if i)]
+_BY_IMAGE = pytest.mark.parametrize("image", _IMAGES, ids=lambda image: image or "default")
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAF_SANDBOX_SBX_E2E") != "1",
@@ -144,14 +147,15 @@ def _subject(backend: SbxSandboxBackend, sandbox, links: list[bool]) -> SbxSubje
     )
 
 
-def test_file_suites_hold_against_a_real_sandbox(tmp_path):
+@_BY_IMAGE
+def test_file_suites_hold_against_a_real_sandbox(tmp_path, image):
     backend = _backend(tmp_path)
     key = _key("files")
     links: list[bool] = []
 
     async def scenario():
         try:
-            sandbox = await backend.acquire(key, _spec())
+            sandbox = await backend.acquire(key, _spec(image=image))
             subject = _subject(backend, sandbox, links)
             await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
             await assert_files_in_conformance(subject)
@@ -166,10 +170,11 @@ def test_file_suites_hold_against_a_real_sandbox(tmp_path):
     print(f"guest-made links in the workspace: {links.count(True)} of {len(links)}")
 
 
-def test_explicit_storage_base_and_warm_reuse(tmp_path):
+@_BY_IMAGE
+def test_explicit_storage_base_and_warm_reuse(tmp_path, image):
     backend = _backend(tmp_path)
     key = _key("base")
-    spec = _spec(work_dir="/srv/maf/base")
+    spec = _spec(work_dir="/srv/maf/base", image=image)
 
     async def scenario():
         try:
@@ -185,21 +190,22 @@ def test_explicit_storage_base_and_warm_reuse(tmp_path):
             print(f"exec on a stopped sandbox: {time.monotonic() - started:.1f} s")
             assert (result.exit_code, result.stdout) == (0, "kept")
             with pytest.raises(ValueError, match="work_dir"):
-                await backend.acquire(key, _spec(work_dir="/srv/maf/other"))
+                await backend.acquire(key, _spec(work_dir="/srv/maf/other", image=image))
         finally:
             assert await backend.dispose(key) is None
 
     asyncio.run(scenario())
 
 
-def test_exec_suite_the_deadline_and_the_output_bound(tmp_path):
+@_BY_IMAGE
+def test_exec_suite_the_deadline_and_the_output_bound(tmp_path, image):
     backend = _backend(tmp_path)
     key = _key("exec")
     links: list[bool] = []
 
     async def scenario():
         try:
-            sandbox = await backend.acquire(key, _spec())
+            sandbox = await backend.acquire(key, _spec(image=image))
             started = time.monotonic()
             with pytest.raises(TimeoutError):
                 await sandbox.exec(
@@ -218,6 +224,27 @@ def test_exec_suite_the_deadline_and_the_output_bound(tmp_path):
             )
             assert left.stdout.strip() == "0", left
             assert sandbox.instance_id not in backend.retired
+            ids = "id -u; id -g"
+            wrapped = await sandbox.exec(ids, working_directory=".", timeout=30)
+            direct = subprocess.run(
+                [_SBX, "exec", sandbox.name, "sh", "-c", ids], capture_output=True
+            )
+            assert wrapped.stdout.split() == direct.stdout.decode().split(), (wrapped, direct)
+            assert len(wrapped.stdout.split()) == 2, wrapped
+            # A user namespace never reaches the guest's real root, Docker's template included.
+            sudo = await sandbox.exec("sudo -n true", working_directory=".", timeout=30)
+            assert sudo.exit_code != 0, sudo
+            # The namespace maps the caller's own ids and no others.
+            uid = wrapped.stdout.split()[0]
+            owner = await sandbox.exec(
+                ["stat", "-c", "%u", "/etc/passwd"], working_directory=".", timeout=30
+            )
+            assert owner.stdout.strip() == ("0" if uid == "0" else "65534"), owner
+            given = await sandbox.exec(
+                "touch given && chown 4321 given", working_directory=".", timeout=30
+            )
+            print(f"uid {uid}: /etc/passwd owner {owner.stdout.strip()}, chown {given.exit_code}")
+            assert given.exit_code != 0, given
             missing = await sandbox.exec(["pwd"], working_directory="/nowhere", timeout=30)
             assert missing.exit_code == 125 and "nowhere" in missing.stderr, missing
             await assert_exec_conformance(_subject(backend, sandbox, links))
@@ -227,13 +254,14 @@ def test_exec_suite_the_deadline_and_the_output_bound(tmp_path):
     asyncio.run(scenario())
 
 
-def test_egress_is_closed_by_content(tmp_path):
+@_BY_IMAGE
+def test_egress_is_closed_by_content(tmp_path, image):
     backend = _backend(tmp_path)
     key = _key("egress")
 
     async def scenario():
         try:
-            sandbox = await backend.acquire(key, _spec())
+            sandbox = await backend.acquire(key, _spec(image=image))
             for url, content in (
                 ("https://example.com/", "Example Domain"),
                 ("http://example.com/", "Example Domain"),

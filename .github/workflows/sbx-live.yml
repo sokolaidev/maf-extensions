@@ -65,7 +65,20 @@ jobs:
           sbx settings set ssh.agentForwardingEnabled false
           sbx daemon restart
 
+      - name: Load the test templates
+        run: |
+          set -euo pipefail
+          for image in agent root; do
+            docker build -q -t "maf-sbx-e2e-$image:local" \
+              -f "packages/maf-sandbox-docker-sbx/tests/images/$image.Dockerfile" \
+              packages/maf-sandbox-docker-sbx/tests/images
+            docker save -o "$RUNNER_TEMP/$image.tar" "maf-sbx-e2e-$image:local"
+            sbx template load "$RUNNER_TEMP/$image.tar"
+          done
+
       - name: Run the live suite
+        env:
+          MAF_SANDBOX_SBX_E2E_IMAGES: maf-sbx-e2e-agent:local,maf-sbx-e2e-root:local
         run: |
           set -euo pipefail
           # A skip here is a bug: the module skips itself without MAF_SANDBOX_SBX_E2E.
