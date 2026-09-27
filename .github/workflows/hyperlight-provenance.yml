@@ -45,8 +45,9 @@ jobs:
         run: |
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
-            '[.[] | select((.loginServer | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) or (.name | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")))] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+          registries=$(az acr list --resource-group "$REGISTRY_GROUP" -o json)
+          registry=$(printf '%s' "$registries" | jq -ce --arg input "$REGISTRY" \
+            '. as $all | ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $configured | [.[] | select((.loginServer | ascii_downcase) == $configured or (.name | ascii_downcase) == $configured)] | if length == 1 then .[0] else error("configured registry mismatch: visible=" + ($all | length | tostring) + ", input_length=" + ($input | length | tostring) + ", normalized_length=" + ($configured | length | tostring) + ", hostname=" + ($configured | endswith(".azurecr.io") | tostring)) end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
           echo "::add-mask::$name"
@@ -118,8 +119,9 @@ jobs:
         run: |
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
-            '[.[] | select((.loginServer | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) or (.name | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")))] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+          registries=$(az acr list --resource-group "$REGISTRY_GROUP" -o json)
+          registry=$(printf '%s' "$registries" | jq -ce --arg input "$REGISTRY" \
+            '. as $all | ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $configured | [.[] | select((.loginServer | ascii_downcase) == $configured or (.name | ascii_downcase) == $configured)] | if length == 1 then .[0] else error("configured registry mismatch: visible=" + ($all | length | tostring) + ", input_length=" + ($input | length | tostring) + ", normalized_length=" + ($configured | length | tostring) + ", hostname=" + ($configured | endswith(".azurecr.io") | tostring)) end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
           echo "::add-mask::$name"
@@ -172,8 +174,9 @@ jobs:
         run: |
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
-            '[.[] | select((.loginServer | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) or (.name | ascii_downcase) == ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")))] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
+          registries=$(az acr list --resource-group "$REGISTRY_GROUP" -o json)
+          registry=$(printf '%s' "$registries" | jq -ce --arg input "$REGISTRY" \
+            '. as $all | ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $configured | [.[] | select((.loginServer | ascii_downcase) == $configured or (.name | ascii_downcase) == $configured)] | if length == 1 then .[0] else error("configured registry mismatch: visible=" + ($all | length | tostring) + ", input_length=" + ($input | length | tostring) + ", normalized_length=" + ($configured | length | tostring) + ", hostname=" + ($configured | endswith(".azurecr.io") | tostring)) end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
           echo "::add-mask::$name"
