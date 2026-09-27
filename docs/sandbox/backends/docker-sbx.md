@@ -58,6 +58,6 @@ The image needs `/bin/sh` and `/bin/bash`, without which `sbx` cannot start it, 
 |---|---|---|
 | Backend at the `MICROVM` floor, `CLOSED` only | Implemented; live suite green with `sbx` v0.45.1 on Windows 11, and on `ubuntu-24.04` nightly by [`sbx-live.yml`](../../../.github/workflows/sbx-live.yml) | [#1412](https://github.com/sokolaidev/maf-extensions/issues/1412) (open) |
 | Linux link behaviour in the workspace | Measured: the guest creates links, and the plane never follows them | [#1500](https://github.com/sokolaidev/maf-extensions/issues/1500) (closed) by [#1505](https://github.com/sokolaidev/maf-extensions/pull/1505) (merged) |
-| Templates other than Docker's | Implemented; the live suite runs on two Debian templates, one with an `agent` user and one running as root | [#1531](https://github.com/sokolaidev/maf-extensions/issues/1531) (closed) |
+| Templates other than Docker's | Implemented; the live suite runs on two Debian templates, one with an `agent` user and one running as root | [#1531](https://github.com/sokolaidev/maf-extensions/issues/1531) (closed) by [#1533](https://github.com/sokolaidev/maf-extensions/pull/1533) (merged) |
 | macOS link behaviour in the workspace | Not measured; the hosted `macos-15` runner cannot boot a sandbox | [#1499](https://github.com/sokolaidev/maf-extensions/issues/1499) (open) |
 | `ALLOWLIST`, `HOST_TOOLS`, `SNAPSHOT` | Not implemented | untracked |
