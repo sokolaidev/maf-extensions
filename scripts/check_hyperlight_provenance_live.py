@@ -67,7 +67,7 @@ def exercise(
                     "/.github/workflows/", "/.github/workflows/wrong-"
                 )
             },
-            "verification failed",
+            'Error: verifying with issuer "sigstore.dev"',
         ),
         (
             "wrong-source-revision",
@@ -75,9 +75,13 @@ def exercise(
                 "--source-revision": ("0" if source_revision[0] != "0" else "1")
                 + source_revision[1:]
             },
-            "verification failed",
+            "expected SourceRepositoryDigest to be",
         ),
-        ("wrong-source-ref", {"--source-ref": source_ref + "-wrong"}, "verification failed"),
+        (
+            "wrong-source-ref",
+            {"--source-ref": source_ref + "-wrong"},
+            "expected SourceRepositoryRef to be",
+        ),
         (
             "wrong-build-inputs",
             {

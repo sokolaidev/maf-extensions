@@ -60,12 +60,12 @@ def test_real_cli_matrix_retains_only_registry_independent_evidence(tmp_path, mo
             error = "no attestations"
         elif options["--build-inputs-sha256"] != "d" * 64:
             error = "image build inputs do not match"
-        elif (
-            options["--signer-identity"] != signer
-            or options["--source-revision"] != "c" * 40
-            or options["--source-ref"] != "refs/heads/main"
-        ):
-            error = "verification failed"
+        elif options["--signer-identity"] != signer:
+            error = 'Error: verifying with issuer "sigstore.dev"'
+        elif options["--source-revision"] != "c" * 40:
+            error = "expected SourceRepositoryDigest to be"
+        elif options["--source-ref"] != "refs/heads/main":
+            error = "expected SourceRepositoryRef to be"
         else:
             error = ""
         seen.append((options, error))

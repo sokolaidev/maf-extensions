@@ -278,35 +278,3 @@ def test_smoke_refusal_removes_container_and_success_record(scenario, monkeypatc
     name = create[create.index("--name") + 1]
     assert commands[-1] == ["docker", "rm", "--force", name]
     assert not output.exists()
-
-
-def test_cli_preserves_attestation_failure_diagnostics(monkeypatch, tmp_path, capsys):
-    error = subprocess.CalledProcessError(1, ["gh"], output="Sigstore verification failed")
-
-    def fail(*args, **kwargs):
-        raise error
-
-    monkeypatch.setattr(verifier, "verify_published_image", fail)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "verify_hyperlight_aks_image.py",
-            "--image",
-            IMAGE,
-            "--signer-identity",
-            SIGNER,
-            "--source-revision",
-            REVISION,
-            "--source-ref",
-            "refs/heads/main",
-            "--build-inputs-sha256",
-            INPUTS,
-            "--output",
-            str(tmp_path / "evidence.json"),
-        ],
-    )
-    with pytest.raises(subprocess.CalledProcessError) as caught:
-        verifier.main()
-    assert caught.value is error
-    assert "Sigstore verification failed" in capsys.readouterr().err

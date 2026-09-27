@@ -7,7 +7,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -168,19 +167,14 @@ def main() -> None:
         "--output", required=True, type=Path, help="Local provenance verification record"
     )
     args = parser.parse_args()
-    try:
-        verify_published_image(
-            args.image,
-            signer_identity=args.signer_identity,
-            source_revision=args.source_revision,
-            source_ref=args.source_ref,
-            build_inputs_sha256=args.build_inputs_sha256,
-            output=args.output,
-        )
-    except subprocess.CalledProcessError as error:
-        if error.stdout:
-            print(error.stdout, file=sys.stderr)
-        raise
+    verify_published_image(
+        args.image,
+        signer_identity=args.signer_identity,
+        source_revision=args.source_revision,
+        source_ref=args.source_ref,
+        build_inputs_sha256=args.build_inputs_sha256,
+        output=args.output,
+    )
     print(f"Verified published runtime; evidence: {args.output}")
 
 
