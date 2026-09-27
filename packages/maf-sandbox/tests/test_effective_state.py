@@ -257,6 +257,7 @@ class TestPostureNeverPayload:
             "max_identity_scope",
             "max_identity_retention_seconds",
             "execution_contract",
+            "configured_identity",
         }
 
 

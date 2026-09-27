@@ -89,7 +89,9 @@ See [policy](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox
 
 `BackendDeclarations.attached_identity` describes authority supplied through the core contract. A workload must request `ATTACHED_IDENTITY`, bound its sharing and lifetime, and name authorized destinations. The host separately sets `max_identity_scope`; its default permits none.
 
-No real backend advertises this core contract. ACAS sandbox-group identity is separate, deployment-owned configuration. Core does not discover or bound those Azure assignments. See [host identity](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#identity--whose-authority-sandbox-work-carries).
+Docker and WSLC advertise this contract when configured with a credential gateway. ACAS sandbox-group identity is separate, deployment-owned configuration. Core does not discover or bound those Azure assignments. See [host identity](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#identity--whose-authority-sandbox-work-carries).
+
+`BackendDeclarations.configured_identity` optionally carries `ConfiguredIdentity(scope, guest_token_endpoint)` for host-reported deployment identity. Omission means unreported; `ConfiguredIdentity()` asserts absence. Acquisition observers and `EffectiveState` retain this description separately from the enforced attachment. Serialized state explicitly marks host provenance and no authority lifetime bound. This description does not satisfy `ATTACHED_IDENTITY` or change router admission; deployment permissions and principal sharing remain the host's responsibility.
 
 ## Files in and out
 

@@ -149,6 +149,14 @@ An idle timeout, token lifetime or [operator retention sweep](operations.md) alo
 
 Docker and WSLC advertise this contract when configured with `credential_gateway`. ACAS supports managed identity through group configuration without ARM discovery or drift polling. Ordinary ACAS specs can reach that configured identity without core opt-in, audience or retention checks. See [sandbox group identity](backends/acas.md#sandbox-group-identity).
 
+### Host-configured identity descriptions
+
+`BackendDeclarations.configured_identity` optionally carries `ConfiguredIdentity(scope, guest_token_endpoint)`. It reports host-owned deployment facts separately from enforced `AttachedIdentity`. An omitted description means unreported; `ConfiguredIdentity()` explicitly asserts `NONE`. The scope covers every exposed principal, and `guest_token_endpoint` describes whether guest token access is configured. These values are neither discovered assignments nor a complete set of bounded authority channels.
+
+Acquisition events carry the selected backend's description. `EffectiveState` serializes it with `provenance="host_configuration"` and `authority_lifetime_seconds=null`, without scope or principal identifiers. Router identity opt-in, sharing ceilings and retention checks continue to apply only to the enforced attachment contract. This description does not satisfy `ATTACHED_IDENTITY`, change ordinary workload admission, or establish a confidentiality boundary. The host chooses a backend with appropriate deployment authority.
+
+ACAS exposes this through `AcasGroupIdentity`; a `PER_SCOPE` configuration checks the caller's scope before acquisition, while principal exclusivity remains the host's provisioning responsibility. The [ACAS guide](backends/acas.md#report-configured-group-identity) defines defaults, scope checks and cleanup behavior.
+
 ### Credentials for guest HTTP requests
 
 Configure `CredentialGateway(provider, max_lifetime_seconds=300)` from `maf_sandbox.credentials` on `DockerSandboxConfig` or `WslcSandboxConfig`, together with a rebuilt packaged `egress_proxy_image`. The lifetime accepts integer seconds from 1 to 3600. The backend declares `ATTACHED_IDENTITY`, `PER_SANDBOX`, and the configured retention bound. The host must permit `max_identity_scope=IdentityScope.PER_SANDBOX`; the workload must request that capability, scope and retention explicitly, with `isolation_scope=IsolationScope.CALL` and concrete `EgressRule(..., authority=...)` destinations. Ordinary workloads need a backend without a credential gateway.

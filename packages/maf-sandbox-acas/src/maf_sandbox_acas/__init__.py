@@ -28,9 +28,10 @@ from ._backend import (
     BACKEND_NAME,
     AcasEgressPolicyConflict,
     AcasEntryPayloadIncomplete,
+    AcasIdentityScopeMismatch,
     AcasSandboxBackend,
 )
-from ._config import AcasSandboxConfig
+from ._config import AcasGroupIdentity, AcasSandboxConfig
 from ._credentials import (
     AcasClientCloseError,
     AcasCredentialBinding,
@@ -49,6 +50,8 @@ __all__ = [
     "AcasCredentialResolver",
     "AcasEgressPolicyConflict",
     "AcasEntryPayloadIncomplete",
+    "AcasGroupIdentity",
+    "AcasIdentityScopeMismatch",
     "AcasSandboxBackend",
     "AcasSandboxConfig",
     "MafSandboxAcasExperimentalWarning",

@@ -42,6 +42,7 @@ from ._observer import SandboxAcquired
 from ._protocol import (
     AttachedIdentity,
     Capability,
+    ConfiguredIdentity,
     Egress,
     EgressRule,
     Identity,
@@ -116,6 +117,7 @@ class EffectiveState:
     max_identity_retention_seconds: int | None = None
     #: The host's opaque execution configuration used to bind compatible reuse.
     execution_contract: str | None = None
+    configured_identity: ConfiguredIdentity | None = None
 
     @classmethod
     def of(cls, event: SandboxAcquired) -> EffectiveState | None:
@@ -155,6 +157,7 @@ class EffectiveState:
             max_identity_scope=spec.max_identity_scope,
             max_identity_retention_seconds=spec.max_identity_retention_seconds,
             execution_contract=spec.execution_contract,
+            configured_identity=None if declarations is None else declarations.configured_identity,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -204,6 +207,16 @@ class EffectiveState:
             "max_identity_scope": _named(self.max_identity_scope),
             "max_identity_retention_seconds": self.max_identity_retention_seconds,
             "execution_contract": self.execution_contract,
+            "configured_identity": (
+                None
+                if self.configured_identity is None
+                else {
+                    "scope": str(self.configured_identity.scope),
+                    "guest_token_endpoint": self.configured_identity.guest_token_endpoint,
+                    "provenance": "host_configuration",
+                    "authority_lifetime_seconds": None,
+                }
+            ),
         }
 
 
