@@ -36,6 +36,8 @@ def _require(result: subprocess.CompletedProcess[str]) -> str:
 
 def check(bundle_path: Path, output: Path) -> None:
     """Use an isolated KIND context; retain successful evidence only after cluster cleanup."""
+    if bundle_path.resolve() == output.resolve():
+        raise ValueError("bundle and output must be different files")
     output.unlink(missing_ok=True)
     raw = bundle_path.read_bytes()
     bundle = json.loads(raw)

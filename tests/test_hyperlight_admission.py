@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import check_hyperlight_admission_live as live
 import prepare_hyperlight_admission as admission
 
 pytestmark = pytest.mark.workflow
@@ -134,3 +135,50 @@ def test_policy_cannot_be_overwritten(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="different files"):
         admission.prepare(path, path)
     assert path.exists()
+
+
+@pytest.mark.parametrize("alias", ["same", "relative", "parent"])
+def test_live_check_preserves_aliased_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    alias: str,
+) -> None:
+    bundle = tmp_path / "promotion.json"
+    contents = b'{"preserve": "signed promotion evidence"}\n'
+    bundle.write_bytes(contents)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "nested").mkdir()
+    output = {
+        "same": bundle,
+        "relative": Path("promotion.json"),
+        "parent": tmp_path / "nested" / ".." / "promotion.json",
+    }[alias]
+
+    def run(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("aliased paths must be rejected before any cluster command")
+
+    monkeypatch.setattr(live.subprocess, "run", run)
+    try:
+        with pytest.raises(ValueError, match="bundle and output must be different files"):
+            live.check(bundle, output)
+    finally:
+        assert bundle.read_bytes() == contents
+
+
+def test_live_check_removes_stale_report_for_distinct_invalid_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "promotion.json"
+    bundle.write_bytes(b"invalid JSON")
+    output = tmp_path / "admission.json"
+    output.write_text("stale success", encoding="utf-8")
+
+    def run(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("invalid bundle must be rejected before any cluster command")
+
+    monkeypatch.setattr(live.subprocess, "run", run)
+    with pytest.raises(json.JSONDecodeError):
+        live.check(bundle, output)
+    assert bundle.read_bytes() == b"invalid JSON"
+    assert not output.exists()
