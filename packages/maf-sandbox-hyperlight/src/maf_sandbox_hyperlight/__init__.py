@@ -10,7 +10,7 @@ from ._backend import (
 )
 from ._config import HyperlightSandboxConfig
 from ._pod_config import HyperlightPodConfig
-from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError
+from ._wire import HyperlightOutputLimitExceeded, HyperlightPodDetached, HyperlightWorkerError
 
 __all__ = [
     "BACKEND_NAME",
@@ -20,6 +20,7 @@ __all__ = [
     "HyperlightSandboxConfig",
     "HyperlightPodConfig",
     "HyperlightOutputLimitExceeded",
+    "HyperlightPodDetached",
     "HyperlightWorkerError",
     "MafSandboxHyperlightExperimentalWarning",
 ]

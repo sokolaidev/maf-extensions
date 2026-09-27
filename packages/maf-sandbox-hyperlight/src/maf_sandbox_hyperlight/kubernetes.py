@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,8 +19,17 @@ from typing import BinaryIO, cast
 
 from maf_sandbox import SandboxKey
 
-from ._pod import FRAME_LIMIT, PLATFORM_EXIT, PLATFORM_REFUSAL, REASON_LIMIT, frame, unframe
-from ._pod_config import hello_digest
+from ._pod import (
+    FRAME_LIMIT,
+    PING_SECONDS,
+    PLATFORM_EXIT,
+    PLATFORM_REFUSAL,
+    REASON_LIMIT,
+    frame,
+    seal,
+    unframe,
+)
+from ._pod_config import RECOVERY_LIMIT, hello_digest
 from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
@@ -40,7 +50,11 @@ class HyperlightPodPlatformError(HyperlightWorkerError):
 
 @dataclass(frozen=True)
 class HyperlightPodTemplate:
-    """An immutable image and application command with aggregate container resource budgets."""
+    """An immutable image and application command with aggregate container resource budgets.
+
+    A positive ``recovery_seconds`` keeps the session when the controller's attach breaks and
+    returns within that many seconds; zero retires the pod on the first break.
+    """
 
     image: str
     command: tuple[str, ...]
@@ -51,6 +65,7 @@ class HyperlightPodTemplate:
     session_timeout: int = 1800
     bundle_configmap: str | None = None
     bundle_sha256: str | None = None
+    recovery_seconds: int = 0
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[^\s@]+@sha256:[a-f0-9]{64}", self.image):
@@ -68,6 +83,14 @@ class HyperlightPodTemplate:
                 raise ValueError("pod budgets must be positive integers")
         if self.cpu_request_millis > self.cpu_millis:
             raise ValueError("CPU request must not exceed the limit")
+        if (
+            type(self.recovery_seconds) is not int
+            or not 0 <= self.recovery_seconds <= RECOVERY_LIMIT
+            or self.recovery_seconds >= self.session_timeout
+        ):
+            raise ValueError(
+                f"recovery_seconds must be 0 to {RECOVERY_LIMIT} and shorter than the session"
+            )
         if self.bundle_configmap is not None or self.bundle_sha256 is not None:
             if not re.fullmatch(_DNS_LABEL, self.bundle_configmap or ""):
                 raise ValueError("bundle_configmap must name a namespaced ConfigMap")
@@ -85,6 +108,8 @@ class HyperlightPodResult:
     diagnostics: str
     platform: dict[str, str] = field(default_factory=dict[str, str])
     reason: str = ""
+    # Why each controller attach the session survived ended, in order.
+    interruptions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -93,6 +118,87 @@ class HyperlightPodExit:
 
     exit_code: int
     reason: str
+
+
+@dataclass
+class _Session:
+    """What the controller keeps for one pod across its attaches."""
+
+    generation: str
+    identity: dict[str, str]
+    session_deadline: float
+    recovery: int
+    uid: str = ""
+    diagnostics: bytearray = field(default_factory=bytearray)
+    platform: dict[str, str] = field(default_factory=dict[str, str])
+    interruptions: list[str] = field(default_factory=list[str])
+    interrupted: str = ""
+    ended_at: float = 0.0
+    counter: int = 0
+    sequence: int = 0
+    deadline: float | None = None
+    ready: bool = False
+    resumed: bool = False
+
+    def expired(self) -> bool:
+        return time.monotonic() >= self.session_deadline or (
+            self.deadline is not None and time.time() >= self.deadline
+        )
+
+    def observe(self, platform: object) -> None:
+        """Keep the bounded controls PID 1 reported, from `ready` or from a resume."""
+        if isinstance(platform, dict):
+            self.platform.update(
+                {
+                    str(item): str(value)[:256]
+                    for item, value in cast("dict[object, object]", platform).items()
+                }
+            )
+
+    def reconcile(self, snapshot: dict[str, object], send: Callable[..., None]) -> None:
+        """Adopt PID 1's call state after a reattach; events sent while detached were lost."""
+        sequence, expires = snapshot.get("sequence"), snapshot.get("expires_at")
+        acknowledged = snapshot.get("acknowledged")
+        if (
+            type(sequence) is not int
+            or type(acknowledged) is not bool
+            or not (expires is None or _finite(expires))
+        ):
+            raise HyperlightWorkerError("invalid pod state snapshot")
+        active = None if expires is None else float(cast("float", expires))
+        if sequence == self.sequence + 1 and not acknowledged:
+            if active is not None and active <= time.time():
+                raise HyperlightWorkerError("invalid or overlapping controller deadline")
+            self.sequence = sequence
+        elif sequence != self.sequence or (active is not None and active != self.deadline):
+            raise HyperlightWorkerError("pod lifecycle state diverged during reconnection")
+        self.deadline = active
+        if active is not None and not acknowledged:
+            send("ack", sequence=sequence)
+        self.observe(snapshot.get("platform"))
+        self.ready = self.resumed = True
+        self.interruptions.append(self.interrupted)
+
+
+def _finite(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _running_container(pod: dict[str, object]) -> str | None:
+    """The sandbox container's runtime ID while it runs its first and only start."""
+    status = cast("dict[str, object]", pod.get("status", {}))
+    for item in cast("list[dict[str, object]]", status.get("containerStatuses", [])):
+        state = cast("dict[str, object]", item.get("state", {}))
+        container = item.get("containerID")
+        if (
+            item.get("name") == "sandbox"
+            and "running" in state
+            and item.get("restartCount") == 0
+            and isinstance(container, str)
+            and container
+        ):
+            return container
+    return None
 
 
 def pod_manifest(
@@ -114,6 +220,7 @@ def pod_manifest(
         "generation": generation,
         "memory_limit_bytes": template.memory_limit_bytes,
         "hello_digest": secret_digest,
+        "recovery_seconds": template.recovery_seconds,
     }
     security = {
         "runAsNonRoot": True,
@@ -159,7 +266,8 @@ def pod_manifest(
                         *template.command,
                     ],
                     "stdin": True,
-                    "stdinOnce": True,
+                    # A reattach can reach PID 1's stdin only when it outlives the first.
+                    "stdinOnce": template.recovery_seconds == 0,
                     "tty": False,
                     "terminationMessagePath": "/dev/termination-log",
                     "terminationMessagePolicy": "File",
@@ -504,56 +612,21 @@ class HyperlightPodController:
                 ) from error
             self._release_rejected(name, ledger, record=True)
             raise
-        diagnostics = bytearray()
-        platform: dict[str, str] = {}
-        readers: list[threading.Thread] = []
-        stream: subprocess.Popen[bytes] | None = None
+        session = _Session(
+            generation, identity, started + template.session_timeout, template.recovery_seconds
+        )
+        uid = ""
         try:
             uid = str(cast("dict[str, object]", pod["metadata"])["uid"])
+            session.uid = uid
             cast("dict[str, str]", ledger["data"]).update({"pod_uid": uid, "state": "running"})
             self._replace(ledger)
-            if self._await_running(
+            container = self._await_running(
                 name, uid, min(started + template.session_timeout, started + 180)
-            ):
-                stream = subprocess.Popen(
-                    [
-                        *self.command,
-                        "attach",
-                        "-i",
-                        name,
-                        "-c",
-                        "sandbox",
-                        "--pod-running-timeout=10s",
-                    ],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                self._supervise(
-                    stream,
-                    uid,
-                    generation,
-                    identity,
-                    started + template.session_timeout,
-                    diagnostics,
-                    platform,
-                    readers,
-                )
+            )
+            if container is not None:
+                self._hold(name, container, session)
         finally:
-            if stream is not None:
-                if stream.poll() is None:
-                    stream.terminate()
-                try:
-                    stream.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    stream.kill()
-                    stream.wait(timeout=5)
-                for reader in readers:
-                    reader.join(timeout=1)
-                for pipe in (stream.stdin, stream.stdout, stream.stderr):
-                    if pipe is not None:
-                        with suppress(OSError):
-                            pipe.close()
             outcome = self.recover_exit(key, kind, timeout=cleanup_timeout, retire=True)
         if outcome.exit_code == PLATFORM_EXIT and outcome.reason.startswith(PLATFORM_REFUSAL):
             raise HyperlightPodPlatformError(outcome.reason)
@@ -561,13 +634,14 @@ class HyperlightPodController:
             uid,
             outcome.exit_code,
             time.monotonic() - started,
-            diagnostics.decode(errors="replace"),
-            platform,
+            session.diagnostics.decode(errors="replace"),
+            session.platform,
             outcome.reason,
+            tuple(session.interruptions),
         )
 
-    def _await_running(self, name: str, uid: str, deadline: float) -> bool:
-        """Attach only after init containers finish and the namespace supervisor starts."""
+    def _await_running(self, name: str, uid: str, deadline: float) -> str | None:
+        """Return the running container to attach to, or None once the pod has exited."""
         pod: dict[str, object] = {}
         while time.monotonic() < deadline:
             pod = self.api("get", "pod", name, "-o", "json")
@@ -575,34 +649,96 @@ class HyperlightPodController:
             if metadata.get("uid") != uid:
                 raise HyperlightPodCleanupPending("pod UID changed during startup")
             if confirmed_exit(pod, uid) is not None:
-                return False
-            status = cast("dict[str, object]", pod.get("status", {}))
-            containers = cast("list[dict[str, object]]", status.get("containerStatuses", []))
-            if any(
-                item.get("name") == "sandbox"
-                and "running" in cast("dict[str, object]", item.get("state", {}))
-                for item in containers
-            ):
-                return True
+                return None
+            container = _running_container(pod)
+            if container is not None:
+                return container
             time.sleep(0.5)
         raise TimeoutError(
             "application pod did not start within its startup budget" + _startup_blocker(pod)
         )
 
+    def _attach(self, name: str) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            [*self.command, "attach", "-i", name, "-c", "sandbox", "--pod-running-timeout=10s"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def _hold(self, name: str, container: str, session: _Session) -> None:
+        """Supervise over attach; in continuity mode, reattach while the recovery window lasts."""
+        ended = self._attach_once(name, session, resume_by=None)
+        while ended and session.recovery:
+            session.interrupted, session.resumed = ended, False
+            recover_by = session.ended_at + session.recovery
+            while not session.resumed:
+                if time.monotonic() >= recover_by or session.expired():
+                    return
+                same = self._same_container(name, container, session)
+                # The API call can outlast either bound; a resume sent after one would renew PID 1.
+                if same is False or time.monotonic() >= recover_by or session.expired():
+                    return
+                if same:
+                    ended = self._attach_once(name, session, resume_by=recover_by)
+                if not session.resumed:
+                    time.sleep(0.5)
+
+    def _same_container(self, name: str, container: str, session: _Session) -> bool | None:
+        """None when the API cannot answer; False once the pod or its container differ."""
+        try:
+            pod = self.api("get", "pod", name, "-o", "json", "--ignore-not-found=true")
+        except (OSError, ValueError, subprocess.SubprocessError, HyperlightWorkerError):
+            return None
+        if not pod:
+            return False
+        metadata = cast("dict[str, object]", pod["metadata"])
+        annotations = cast("dict[str, str]", metadata.get("annotations", {}))
+        return (
+            metadata.get("uid") == session.uid
+            and annotations.get(_GENERATION) == session.generation
+            and not metadata.get("deletionTimestamp")
+            and _running_container(pod) == container
+        )
+
+    def _attach_once(self, name: str, session: _Session, *, resume_by: float | None) -> str:
+        stream = self._attach(name)
+        readers: list[threading.Thread] = []
+        try:
+            return self._supervise(stream, session, readers, resume_by=resume_by)
+        finally:
+            # The recovery window runs from here, not from after the cleanup below.
+            session.ended_at = time.monotonic()
+            if stream.poll() is None:
+                stream.terminate()
+            try:
+                stream.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                stream.kill()
+                stream.wait(timeout=5)
+            for reader in readers:
+                reader.join(timeout=1)
+            for pipe in (stream.stdin, stream.stdout, stream.stderr):
+                if pipe is not None:
+                    with suppress(OSError):
+                        pipe.close()
+
     def _supervise(
         self,
         stream: subprocess.Popen[bytes],
-        uid: str,
-        generation: str,
-        identity: dict[str, str],
-        session_deadline: float,
-        diagnostics: bytearray,
-        platform: dict[str, str],
+        session: _Session,
         readers: list[threading.Thread],
-    ) -> None:
+        *,
+        resume_by: float | None = None,
+    ) -> str:
+        """Return why the attach ended while the pod may still run, or "" once stop is sent.
+
+        With ``resume_by`` this attach resumes the session and must confirm it by then.
+        """
         messages: queue.Queue[dict[str, object]] = queue.Queue(maxsize=64)
         outgoing: queue.Queue[bytes] = queue.Queue(maxsize=8)
         transport_closed = threading.Event()
+        diagnostics = session.diagnostics
         assert stream.stdout is not None and stream.stderr is not None and stream.stdin is not None
 
         def read(source: BinaryIO, *, control: bool) -> None:
@@ -648,66 +784,80 @@ class HyperlightPodController:
             thread.start()
 
         def send(operation: str, **fields: object) -> None:
+            message = {
+                "op": operation,
+                "pod_uid": session.uid,
+                "generation": session.generation,
+                **fields,
+            }
+            if session.recovery and operation != "hello":
+                session.counter += 1
+                message = seal({**message, "counter": session.counter}, session.identity["secret"])
             try:
-                outgoing.put_nowait(
-                    frame({"op": operation, "pod_uid": uid, "generation": generation, **fields})
-                )
+                outgoing.put_nowait(frame(message))
             except queue.Full as error:
                 raise HyperlightWorkerError(
                     "controller transport stopped consuming messages"
                 ) from error
 
-        send("hello", **identity)
+        if resume_by is None:
+            send("hello", **session.identity)
+        else:
+            # Terminates any frame the dropped attach left half-written in the pod's stdin.
+            outgoing.put_nowait(b"\n")
+            if not session.ready:
+                # The first hello may never have reached PID 1; a bound PID 1 ignores a repeat.
+                send("hello", **session.identity)
+            send("resume")
         next_ping = 0.0
-        deadline: float | None = None
-        sequence = 0
-        ready = False
         while stream.poll() is None:
             if transport_closed.is_set():
-                return
+                return "attach stream closed"
             now = time.monotonic()
-            if now >= session_deadline or (deadline is not None and time.time() >= deadline):
+            if session.expired():
                 send("stop")
-                return
+                return ""
+            if resume_by is not None and not session.resumed and now >= resume_by:
+                return "reconnection was not confirmed"
             if now >= next_ping:
                 send("ping")
-                next_ping = now + 1
+                next_ping = now + PING_SECONDS
             try:
                 message = messages.get(timeout=0.05)
             except queue.Empty:
                 continue
-            if message.get("pod_uid") != uid or message.get("generation") != generation:
+            if message.get("pod_uid") != session.uid or message.get("generation") != (
+                session.generation
+            ):
                 raise HyperlightWorkerError("attach stream belongs to another pod generation")
             event = message.get("event")
             if event == "begin":
                 expires = message.get("expires_at")
                 if (
-                    not ready
-                    or deadline is not None
-                    or message.get("sequence") != sequence + 1
-                    or not isinstance(expires, (int, float))
-                    or isinstance(expires, bool)
-                    or not math.isfinite(expires)
-                    or float(expires) <= time.time()
+                    not session.ready
+                    or session.deadline is not None
+                    or message.get("sequence") != session.sequence + 1
+                    or not _finite(expires)
+                    or cast("float", expires) <= time.time()
                 ):
                     raise HyperlightWorkerError("invalid or overlapping controller deadline")
-                sequence += 1
-                deadline = float(expires)
-                send("ack", sequence=sequence)
-            elif event == "end" and message.get("sequence") == sequence and deadline is not None:
-                deadline = None
-            elif event == "ready" and not ready:
-                ready = True
-                observed = message.get("platform")
-                if isinstance(observed, dict):
-                    platform.update(
-                        {
-                            str(item): str(value)[:256]
-                            for item, value in cast("dict[object, object]", observed).items()
-                        }
-                    )
+                session.sequence += 1
+                session.deadline = float(cast("float", expires))
+                send("ack", sequence=session.sequence)
+            elif (
+                event == "end"
+                and message.get("sequence") == session.sequence
+                and session.deadline is not None
+            ):
+                session.deadline = None
+            elif event == "ready" and not session.ready:
+                session.ready = True
+                session.observe(message.get("platform"))
+            elif event == "resumed" and resume_by is not None and not session.resumed:
+                session.reconcile(message, send)
             else:
                 raise HyperlightWorkerError("invalid pod lifecycle event")
+        return f"attach exited with {stream.returncode}"
 
     def recover(
         self, key: SandboxKey, kind: str, *, timeout: float = 45, retire: bool = False

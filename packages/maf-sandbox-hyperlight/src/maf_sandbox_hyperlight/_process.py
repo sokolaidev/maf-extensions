@@ -12,7 +12,13 @@ from typing import BinaryIO, cast
 from ._config import HyperlightSandboxConfig
 from ._lifetime import create_job
 from ._pod import PodJob
-from ._wire import HyperlightOutputLimitExceeded, HyperlightWorkerError, decode, encode
+from ._wire import (
+    HyperlightOutputLimitExceeded,
+    HyperlightPodDetached,
+    HyperlightWorkerError,
+    decode,
+    encode,
+)
 
 _STDERR_LIMIT = 64 * 1024
 
@@ -82,6 +88,8 @@ class Worker:
             self._input.write(encode(message))
             self._input.flush()
             response = decode(self._output.readline(6 * self._config.max_output_bytes + 32768))
+        except HyperlightPodDetached:
+            raise
         except (OSError, ValueError, HyperlightWorkerError) as error:
             with self._stderr_guard:
                 detail = self._stderr.decode("utf-8", errors="replace")

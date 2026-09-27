@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -13,13 +15,18 @@ from pathlib import Path
 from typing import cast
 
 from ._pod_config import POD_SOCKET, HyperlightPodConfig
-from ._wire import HyperlightWorkerError
+from ._wire import HyperlightPodDetached, HyperlightWorkerError
 
 FRAME_LIMIT = 8192
 REASON_LIMIT = 1024
 PLATFORM_EXIT = 78
 PLATFORM_REFUSAL = "maf-hyperlight: unsupported platform: "
 TERMINATION_LOG = "/dev/termination-log"
+PING_SECONDS = 1.0
+LEASE_SECONDS = 5.0
+ACK_SECONDS = 3.0
+# PID 1 answers a begin within this long, so the owner's socket must wait at least as long.
+BEGIN_WAIT = LEASE_SECONDS + ACK_SECONDS
 
 
 def frame(message: dict[str, object]) -> bytes:
@@ -30,6 +37,25 @@ def frame(message: dict[str, object]) -> bytes:
     return encoded
 
 
+def seal(message: dict[str, object], key: str) -> dict[str, object]:
+    """Authenticate a controller message to a pod in continuity mode."""
+    return {**message, "mac": _mac(message, key)}
+
+
+def unseal(message: dict[str, object], key: str) -> dict[str, object]:
+    """Return the message without its MAC, or refuse one this key did not seal."""
+    body = {name: value for name, value in message.items() if name != "mac"}
+    mac = message.get("mac")
+    if not isinstance(mac, str) or not hmac.compare_digest(_mac(body, key), mac):
+        raise HyperlightWorkerError("unauthenticated controller message")
+    return body
+
+
+def _mac(message: dict[str, object], key: str) -> str:
+    canonical = json.dumps(message, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return hmac.new(key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+
 def unframe(raw: bytes) -> dict[str, object]:
     """Refuse truncated, oversized or non-object lifecycle messages."""
     if len(raw) > FRAME_LIMIT or not raw.endswith(b"\n"):
@@ -38,6 +64,24 @@ def unframe(raw: bytes) -> dict[str, object]:
     if not isinstance(value, dict):
         raise HyperlightWorkerError("pod lifecycle message must be an object")
     return cast("dict[str, object]", value)
+
+
+def refusal_reply(error: BaseException) -> dict[str, object]:
+    """PID 1's answer to a refused owner request; a detached refusal says so."""
+    reply: dict[str, object] = {"error": str(error)[:1024]}
+    if isinstance(error, HyperlightPodDetached):
+        reply["detached"] = True
+    return reply
+
+
+def refusal(reply: dict[str, object]) -> HyperlightWorkerError:
+    """The owner's exception for PID 1's refusal."""
+    error = str(reply.get("error", "pod supervisor refused request"))
+    return (
+        HyperlightPodDetached(error)
+        if reply.get("detached") is True
+        else HyperlightWorkerError(error)
+    )
 
 
 def container_controls(root: Path = Path("/sys/fs/cgroup")) -> dict[str, str]:
@@ -79,7 +123,9 @@ class PodJob:
         self.closed = False
         self.request("validate")
 
-    def request(self, operation: str, **fields: object) -> dict[str, object]:
+    def request(
+        self, operation: str, *, timeout: float | None = None, **fields: object
+    ) -> dict[str, object]:
         """Authenticate the local supervisor and bind every request to this pod generation."""
         if os.getpid() != self.owner:
             raise HyperlightWorkerError("a forked process cannot use another pod owner")
@@ -90,7 +136,7 @@ class PodJob:
             **fields,
         }
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(self.timeout)
+            connection.settimeout(self.timeout if timeout is None else timeout)
             connection.connect(POD_SOCKET)
             peer = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
             pid, uid, _ = struct.unpack("3i", peer)
@@ -100,7 +146,7 @@ class PodJob:
             with connection.makefile("rb") as stream:
                 reply = unframe(stream.readline(FRAME_LIMIT + 1))
         if reply.get("ok") is not True:
-            raise HyperlightWorkerError(str(reply.get("error", "pod supervisor refused request")))
+            raise refusal(reply)
         return reply
 
     def spawn(
@@ -133,7 +179,12 @@ class PodJob:
         remaining = deadline - time.monotonic()
         if not math.isfinite(remaining) or remaining <= 0:
             raise TimeoutError("pod operation expired before submission")
-        self.request("begin", deadline=deadline, expires_at=time.time() + remaining)
+        self.request(
+            "begin",
+            timeout=max(self.timeout, min(remaining, BEGIN_WAIT) + 1),
+            deadline=deadline,
+            expires_at=time.time() + remaining,
+        )
 
     def end(self) -> None:
         """Clear the registered operation after the worker has replied."""

@@ -257,6 +257,7 @@ def main() -> None:
     parser.add_argument("--mode", default="positive")
     parser.add_argument("--bundle-configmap")
     parser.add_argument("--bundle-sha256")
+    parser.add_argument("--recovery-seconds", type=int, default=0)
     args = parser.parse_args()
     if args.action == "nodes":
         if not (args.kubeconfig and args.context):
@@ -329,6 +330,7 @@ def main() -> None:
             ),
             bundle_configmap=args.bundle_configmap,
             bundle_sha256=args.bundle_sha256,
+            recovery_seconds=args.recovery_seconds,
         ),
     )
     print(json.dumps(dataclasses.asdict(result), indent=2))

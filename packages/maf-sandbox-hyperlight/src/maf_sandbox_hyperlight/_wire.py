@@ -7,7 +7,14 @@ from typing import cast
 
 
 class HyperlightWorkerError(RuntimeError):
-    """The native worker failed; acquire a replacement before executing again."""
+    """A Hyperlight worker, pod or controller operation failed.
+
+    Unless a subclass says otherwise, the sandbox is gone: acquire a replacement.
+    """
+
+
+class HyperlightPodDetached(HyperlightWorkerError):
+    """The pod's controller is reconnecting; the call never reached the worker, so retry it."""
 
 
 class HyperlightOutputLimitExceeded(RuntimeError):
