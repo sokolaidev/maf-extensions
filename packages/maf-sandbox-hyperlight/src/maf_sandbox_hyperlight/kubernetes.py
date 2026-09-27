@@ -28,7 +28,7 @@ from ._pod import (
     seal,
     unframe,
 )
-from ._pod_config import hello_digest
+from ._pod_config import RECOVERY_LIMIT, hello_digest
 from ._pod_config import ownership_name as ownership_name
 from ._wire import HyperlightWorkerError
 
@@ -84,10 +84,12 @@ class HyperlightPodTemplate:
             raise ValueError("CPU request must not exceed the limit")
         if (
             type(self.recovery_seconds) is not int
-            or not 0 <= self.recovery_seconds <= 600
+            or not 0 <= self.recovery_seconds <= RECOVERY_LIMIT
             or self.recovery_seconds >= self.session_timeout
         ):
-            raise ValueError("recovery_seconds must be 0 to 600 and shorter than the session")
+            raise ValueError(
+                f"recovery_seconds must be 0 to {RECOVERY_LIMIT} and shorter than the session"
+            )
         if self.bundle_configmap is not None or self.bundle_sha256 is not None:
             if not re.fullmatch(_DNS_LABEL, self.bundle_configmap or ""):
                 raise ValueError("bundle_configmap must name a namespaced ConfigMap")
@@ -141,6 +143,16 @@ class _Session:
             self.deadline is not None and time.time() >= self.deadline
         )
 
+    def observe(self, platform: object) -> None:
+        """Keep the bounded controls PID 1 reported, from `ready` or from a resume."""
+        if isinstance(platform, dict):
+            self.platform.update(
+                {
+                    str(item): str(value)[:256]
+                    for item, value in cast("dict[object, object]", platform).items()
+                }
+            )
+
     def reconcile(self, snapshot: dict[str, object], send: Callable[..., None]) -> None:
         """Adopt PID 1's call state after a reattach; events sent while detached were lost."""
         sequence, expires = snapshot.get("sequence"), snapshot.get("expires_at")
@@ -161,6 +173,7 @@ class _Session:
         self.deadline = active
         if active is not None and not acknowledged:
             send("ack", sequence=sequence)
+        self.observe(snapshot.get("platform"))
         self.ready = self.resumed = True
         self.interruptions.append(self.interrupted)
 
@@ -831,14 +844,7 @@ class HyperlightPodController:
                 session.deadline = None
             elif event == "ready" and not session.ready:
                 session.ready = True
-                observed = message.get("platform")
-                if isinstance(observed, dict):
-                    session.platform.update(
-                        {
-                            str(item): str(value)[:256]
-                            for item, value in cast("dict[object, object]", observed).items()
-                        }
-                    )
+                session.observe(message.get("platform"))
             elif event == "resumed" and resume_by is not None and not session.resumed:
                 session.reconcile(message, send)
             else:

@@ -409,6 +409,7 @@ class Supervisor:
                 sequence=self.sequence,
                 expires_at=self.expires_at,
                 acknowledged=self.ack.is_set(),
+                platform=self.platform,
             )
         elif operation == "ack" and message.get("sequence") == self.sequence:
             self.ack.set()
