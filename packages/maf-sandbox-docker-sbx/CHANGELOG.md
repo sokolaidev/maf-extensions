@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.1.0...maf-sandbox-docker-sbx-v0.2.0) (2026-09-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **docker-sbx:** serve any template by binding the workspace in each command's own namespace, which leaves commands without sudo ([#1533](https://github.com/sokolaidev/maf-extensions/issues/1533))
+
+### Fixes
+
+* **docker-sbx:** serve any template by binding the workspace in each command's own namespace, which leaves commands without sudo ([#1533](https://github.com/sokolaidev/maf-extensions/issues/1533)) ([92daa48](https://github.com/sokolaidev/maf-extensions/commit/92daa4889e2481f8098b9997870efc763ad1dc07))
+
+
+### Documentation
+
+* **docker-sbx:** record the Linux live results, where the guest makes links the file plane never follows ([#1505](https://github.com/sokolaidev/maf-extensions/issues/1505)) ([b45566b](https://github.com/sokolaidev/maf-extensions/commit/b45566ba6134a4d7cb3215ce7f28222b1fd26ece))
+
 ## 0.1.0 (2026-09-26)
 
 
