@@ -66,7 +66,7 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 
 `RUN_CODE` is not declared, because any image is accepted and the runtime is the image's. `SNAPSHOT` is not declared. `HOST_TOOLS` is not declared yet: an idle sandbox stops 30 seconds after its last `sbx` session and kills every process, and the host-tool transport has not been measured against that.
 
-`spec.image_id`, or else `spec.image`, is passed to `sbx create --template`, and a warm acquire refuses a spec that changes either. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000). An image without that user runs commands as root. Commands run in a user namespace of their own, so `sudo` does not work in them, even in Docker's template.
+`spec.image_id`, or else `spec.image`, is passed to `sbx create --template`, and a warm acquire refuses a spec that changes either. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000). An image without that user runs commands as root. Commands run in a user namespace of their own, so `sudo` does not work in them, even in Docker's template. The namespace maps only the command's own uid and gid. Files owned by anyone else show as uid 65534 (`nobody`), and `chown` to another user fails, also in a template that runs as root. Permission checks still use the real owners.
 
 Any Linux image works as a template if it has `/bin/sh` and `/bin/bash` and the tools listed under [Commands](#commands). Without `/bin/bash`, `sbx` cannot start the sandbox. An image built locally reaches `sbx` through a tar:
 
