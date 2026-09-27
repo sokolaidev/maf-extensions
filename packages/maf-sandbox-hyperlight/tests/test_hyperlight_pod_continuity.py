@@ -10,6 +10,7 @@ import queue
 import sys
 import threading
 import time
+from contextlib import suppress
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
@@ -97,7 +98,8 @@ def test_recovery_window_is_bounded_and_shorter_than_the_session(value):
     with pytest.raises(ValueError, match="recovery_seconds"):
         replace(TEMPLATE, recovery_seconds=value)
     with pytest.raises(ValueError, match="recovery_seconds"):
-        replace(LAUNCH, recovery_seconds=-1)
+        replace(LAUNCH, recovery_seconds=value)
+    assert replace(LAUNCH, recovery_seconds=600).recovery_seconds == 600
 
 
 @pytest.mark.parametrize("recovery,once", [(0, True), (30, False)])
@@ -222,10 +224,21 @@ def test_resume_reports_the_call_state_the_lost_events_carried(pid1, monkeypatch
     emitted = []
     monkeypatch.setattr(pid1, "emit", lambda event, **fields: emitted.append((event, fields)))
     pid1.sequence, pid1.expires_at = 3, 1234.5
+    pid1.platform = {"kernel": "6.8.0-1067-azure"}
     pid1.ack.set()
     pid1.fresh = time.monotonic() - 1
     pid1.controller_message(sealed("resume", 1))
-    assert emitted == [("resumed", {"sequence": 3, "expires_at": 1234.5, "acknowledged": True})]
+    assert emitted == [
+        (
+            "resumed",
+            {
+                "sequence": 3,
+                "expires_at": 1234.5,
+                "acknowledged": True,
+                "platform": {"kernel": "6.8.0-1067-azure"},
+            },
+        )
+    ]
     assert pid1.fresh > time.monotonic()
     pid1.ack.clear()
     pid1.controller_message(sealed("resume", 2))
@@ -304,6 +317,17 @@ def test_resume_adopts_the_state_lost_events_carried(known, snapshot, after, ack
     assert (state.sequence, state.deadline) == after
     assert sent == ([("ack", {"sequence": after[0]})] if acked else [])
     assert state.resumed and state.ready and state.interruptions == [""]
+
+
+def test_resume_restores_the_platform_a_missed_ready_carried():
+    state = session()
+    observed = {"kernel": "6.8.0-1067-azure", "memory.max": "x" * 300}
+    state.reconcile(
+        {"sequence": 0, "expires_at": None, "acknowledged": False, "platform": observed},
+        lambda operation, **fields: None,
+    )
+    assert state.ready
+    assert state.platform == {"kernel": "6.8.0-1067-azure", "memory.max": "x" * 256}
 
 
 @pytest.mark.parametrize(
@@ -710,12 +734,12 @@ class Pod(HyperlightPodController):
 def pump(pid1: Supervisor, pod: Pod, stop: threading.Event) -> None:
     """The part of PID 1's run loop that moves lifecycle frames."""
     while not stop.is_set() and not pid1.retired.is_set():
-        try:
-            pid1.controller_message(pid1.incoming.get(timeout=0.02))
-        except queue.Empty:
-            pass
-        except (ValueError, HyperlightWorkerError) as error:
-            pid1.retire(str(error))
+        with suppress(queue.Empty):
+            message = pid1.incoming.get(timeout=0.02)
+            try:
+                pid1.controller_message(message)
+            except (ValueError, HyperlightWorkerError) as error:
+                pid1.retire(str(error))
         while not pid1.outgoing.empty():
             pod.deliver(frame(pid1.outgoing.get_nowait()))
         if time.monotonic() >= pid1.lease:
