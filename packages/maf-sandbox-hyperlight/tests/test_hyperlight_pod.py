@@ -979,6 +979,50 @@ def test_startup_timeout_names_the_scheduler_reason():
         controller._await_running(name, "pod-uid", time.monotonic() + 0.1)
 
 
+def waiting(name: str, reason: str, message: str = "") -> dict[str, object]:
+    return {"name": name, "state": {"waiting": {"reason": reason, "message": message}}}
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        (
+            {
+                "initContainerStatuses": [
+                    waiting("bootstrap", "ErrImagePull", 'failed to pull image "registry/x"')
+                ],
+                "containerStatuses": [waiting("sandbox", "PodInitializing")],
+            },
+            r": bootstrap: ErrImagePull: failed to pull image \"registry/x\"$",
+        ),
+        (
+            {
+                "initContainerStatuses": [
+                    {"name": "bootstrap", "state": {"terminated": {"exitCode": 0}}}
+                ],
+                "containerStatuses": [
+                    waiting("sandbox", "CreateContainerError", "unresolvable CDI devices")
+                ],
+            },
+            r": sandbox: CreateContainerError: unresolvable CDI devices$",
+        ),
+        (
+            {
+                "initContainerStatuses": [{"name": "bootstrap", "state": {"running": {}}}],
+                "containerStatuses": [waiting("sandbox", "PodInitializing")],
+            },
+            r": sandbox: PodInitializing: $",
+        ),
+    ],
+)
+def test_startup_timeout_names_the_blocked_container(status, expected):
+    pod = terminal_pod()
+    pod["status"] = {"phase": "Pending", **status}
+    controller = FakeController(pod)
+    with pytest.raises(TimeoutError, match=expected):
+        controller._await_running(ownership_name(KEY, KIND), "pod-uid", time.monotonic() + 0.1)
+
+
 def rejected_create(message):
     return subprocess.CalledProcessError(1, ["kubectl", "create"], output="", stderr=message)
 

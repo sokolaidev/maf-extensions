@@ -839,14 +839,23 @@ def _startup_blocker(pod: dict[str, object]) -> str:
     for condition in cast("list[dict[str, object]]", status.get("conditions", [])):
         if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
             return f": {condition.get('reason')}: {str(condition.get('message'))[:1024]}"
-    for container in cast("list[dict[str, object]]", status.get("containerStatuses", [])):
-        waiting = cast(
-            "dict[str, object]",
-            cast("dict[str, object]", container.get("state", {})).get("waiting", {}),
-        )
-        if waiting.get("reason"):
-            return f": {waiting.get('reason')}: {str(waiting.get('message', ''))[:1024]}"
-    return ""
+    # Init containers run first; while one is blocked, the application only reports
+    # PodInitializing, so that is the reason of last resort.
+    blocked = [
+        (str(container.get("name")), waiting)
+        for key in ("initContainerStatuses", "containerStatuses")
+        for container in cast("list[dict[str, object]]", status.get(key, []))
+        if (
+            waiting := cast(
+                "dict[str, object]",
+                cast("dict[str, object]", container.get("state", {})).get("waiting", {}),
+            )
+        ).get("reason")
+    ]
+    if not blocked:
+        return ""
+    name, waiting = min(blocked, key=lambda item: item[1]["reason"] == "PodInitializing")
+    return f": {name}: {waiting['reason']}: {str(waiting.get('message', ''))[:1024]}"
 
 
 def _create_rejected(error: BaseException, name: str) -> bool:
