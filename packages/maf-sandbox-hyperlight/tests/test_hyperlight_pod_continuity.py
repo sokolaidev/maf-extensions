@@ -324,6 +324,81 @@ def test_a_repeated_hello_is_checked_then_ignored(pid1, monkeypatch):
     assert not started
 
 
+def replay(events, state):
+    """Apply PID 1's events in emitted order with the controller's own acceptance rules."""
+    for event, fields in events:
+        if event == "begin":
+            assert fields["sequence"] == state.sequence + 1 and state.deadline is None
+            state.sequence, state.deadline = state.sequence + 1, fields["expires_at"]
+        elif event == "end":
+            assert fields["sequence"] == state.sequence and state.deadline is not None
+            state.deadline = None
+        else:
+            state.reconcile(fields, lambda operation, **fields: None)
+
+
+@pytest.mark.parametrize("operation", ["begin", "end"])
+@pytest.mark.parametrize("point", range(40))
+def test_a_resume_at_any_line_of_a_call_change_is_consistent(pid1, monkeypatch, operation, point):
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(pid1, "emit", lambda event, **fields: events.append((event, fields)))
+    if operation == "end":
+        pid1.sequence, pid1.deadline, pid1.expires_at = 1, time.monotonic() + 10, 1234.5
+        pid1.ack.set()
+        message: dict[str, object] = {"op": "end"}
+    else:
+        message = {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
+
+    def acknowledge():
+        # The controller acknowledges a begin once it sees one.
+        until = time.monotonic() + 5
+        while not any(event == "begin" for event, _ in events) and time.monotonic() < until:
+            time.sleep(0.005)
+        pid1.ack.set()
+
+    lines = 0
+    resuming: list[threading.Thread] = []
+
+    def interrupt(frame, event, arg):
+        nonlocal lines
+        if event == "line" and not resuming:
+            lines += 1
+            if lines == point + 1:
+                # The controller's resume lands between two lines of the owner's request.
+                resuming.append(
+                    threading.Thread(
+                        target=pid1.controller_message, args=(sealed("resume", 1),), daemon=True
+                    )
+                )
+                resuming[0].start()
+                resuming[0].join(timeout=0.2)
+        return interrupt
+
+    def enter(frame, event, arg):
+        return interrupt if frame.f_code is Supervisor.handle.__code__ else None
+
+    acknowledger = threading.Thread(target=acknowledge, daemon=True)
+    if operation == "begin":
+        acknowledger.start()
+    previous = sys.gettrace()
+    sys.settrace(enter)
+    try:
+        pid1.handle(message)
+    finally:
+        sys.settrace(previous)
+    if not resuming:
+        pytest.skip("the request finished before this line")
+    resuming[0].join(timeout=5)
+    if operation == "begin":
+        acknowledger.join(timeout=5)
+    state = session()
+    state.ready = True
+    if operation == "end":
+        state.sequence, state.deadline = 1, 1234.5
+    replay(events, state)
+    assert state.resumed
+
+
 def test_default_mode_has_no_resume(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     subject = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])

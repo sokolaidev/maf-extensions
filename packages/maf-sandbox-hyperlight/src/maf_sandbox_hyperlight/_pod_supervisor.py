@@ -118,6 +118,8 @@ class Supervisor:
         self.retired = threading.Event()
         self.cause: dict[str, str] = {}
         self.guard = threading.Lock()
+        # Each call-state change is emitted with it, so a resume snapshot sits between events.
+        self.lifecycle = threading.Lock()
         self.incoming: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         self.outgoing: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         # A first attach lost before its hello gets the same recovery window as a later one.
@@ -281,14 +283,16 @@ class Supervisor:
                 or self.deadline is not None
             ):
                 raise HyperlightWorkerError("invalid or overlapping native operation")
-            self.ack.clear()
-            self.sequence += 1
-            self.deadline = float(deadline)
-            self.expires_at = float(expires_at)
-            self.emit("begin", sequence=self.sequence, expires_at=expires_at)
+            with self.lifecycle:
+                self.ack.clear()
+                self.sequence += 1
+                self.deadline = float(deadline)
+                self.expires_at = float(expires_at)
+                self.emit("begin", sequence=self.sequence, expires_at=expires_at)
             if not self.await_ack():
                 if self.continuity and time.monotonic() >= self.fresh:
-                    self.deadline = self.expires_at = None
+                    with self.lifecycle:
+                        self.deadline = self.expires_at = None
                     raise HyperlightPodDetached("the pod's controller disconnected before the call")
                 self.retire("controller did not acknowledge the deadline")
             if self.retired.is_set():
@@ -296,8 +300,9 @@ class Supervisor:
         elif operation == "end":
             if self.deadline is None:
                 raise HyperlightWorkerError("no native operation is active")
-            self.emit("end", sequence=self.sequence)
-            self.deadline = self.expires_at = None
+            with self.lifecycle:
+                self.emit("end", sequence=self.sequence)
+                self.deadline = self.expires_at = None
         elif operation == "release":
             if message.get("pid") != self.worker or self.deadline is not None:
                 raise HyperlightWorkerError("cannot release an active or different worker")
@@ -420,15 +425,16 @@ class Supervisor:
         if operation == "ping" and self.connected:
             self.renew()
         elif operation == "resume" and self.connected and self.continuity:
-            self.renew()
-            self.resumed_at = time.monotonic()
-            self.emit(
-                "resumed",
-                sequence=self.sequence,
-                expires_at=self.expires_at,
-                acknowledged=self.ack.is_set(),
-                platform=self.platform,
-            )
+            with self.lifecycle:
+                self.renew()
+                self.resumed_at = time.monotonic()
+                self.emit(
+                    "resumed",
+                    sequence=self.sequence,
+                    expires_at=self.expires_at,
+                    acknowledged=self.ack.is_set(),
+                    platform=self.platform,
+                )
         elif operation == "ack" and message.get("sequence") == self.sequence:
             self.ack.set()
         elif operation == "stop":
