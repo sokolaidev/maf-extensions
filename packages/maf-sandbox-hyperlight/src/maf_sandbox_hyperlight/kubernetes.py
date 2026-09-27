@@ -801,6 +801,9 @@ class HyperlightPodController:
         else:
             # Terminates any frame the dropped attach left half-written in the pod's stdin.
             outgoing.put_nowait(b"\n")
+            if not session.ready:
+                # The first hello may never have reached PID 1; a bound PID 1 ignores a repeat.
+                send("hello", **session.identity)
             send("resume")
         next_ping = 0.0
         while stream.poll() is None:

@@ -410,6 +410,10 @@ class Supervisor:
             self.renew()
             self.start_owner(binding)
             return
+        if operation == "hello" and self.continuity:
+            # A reconnecting controller that never saw `ready` repeats its hello.
+            self.launch.bind(message)
+            return
         if self.continuity:
             message = self.authenticate(message)
         if operation == "ping" and self.connected:

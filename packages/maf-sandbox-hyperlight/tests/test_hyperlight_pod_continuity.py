@@ -303,6 +303,17 @@ def test_resume_reports_the_call_state_the_lost_events_carried(pid1, monkeypatch
     assert emitted[1][1]["acknowledged"] is False
 
 
+def test_a_repeated_hello_is_checked_then_ignored(pid1, monkeypatch):
+    started = []
+    monkeypatch.setattr(pid1, "start_owner", started.append)
+    repeat = {"op": "hello", "pod_uid": "pod-uid", "generation": "generation", "secret": SECRET}
+    pid1.controller_message(repeat | IDENTITY)
+    assert not started and pid1.counter == 0 and not pid1.retired.is_set()
+    with pytest.raises(HyperlightWorkerError, match="controller secret"):
+        pid1.controller_message(repeat | IDENTITY | {"secret": "d" * 64})
+    assert not started
+
+
 def test_default_mode_has_no_resume(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     subject = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])
@@ -725,7 +736,8 @@ def test_a_refused_preparation_releases_the_worker_without_retiring_the_pod(monk
 class Attach:
     """One kubectl attach to a shared PID 1 stdin; the pod's stdout reaches it while attached."""
 
-    def __init__(self, stdin: int) -> None:
+    def __init__(self, stdin: int, budget: int | None = None) -> None:
+        self.budget = budget
         source, self.sink = os.pipe()
         self.stdout = os.fdopen(source, "rb")
         self.stderr = io.BytesIO()
@@ -742,6 +754,13 @@ class Attach:
     def write(self, payload: bytes) -> None:
         if self.returncode is not None:
             raise BrokenPipeError
+        if self.budget is not None and len(payload) > self.budget:
+            # The attach dies partway through this write.
+            os.write(self.pod_stdin, payload[: self.budget])
+            self.drop()
+            raise BrokenPipeError
+        if self.budget is not None:
+            self.budget -= len(payload)
         os.write(self.pod_stdin, payload)
 
     def flush(self) -> None:
@@ -773,6 +792,7 @@ class Pod(HyperlightPodController):
         self.pid1 = pid1
         self.stdin = stdin
         self.attaches: list[Attach] = []
+        self.budgets: list[int] = []
         self.reachable = threading.Event()
         self.reachable.set()
 
@@ -780,7 +800,8 @@ class Pod(HyperlightPodController):
         return True if self.reachable.is_set() else None
 
     def _attach(self, name):
-        self.attaches.append(Attach(self.stdin))
+        budget = self.budgets.pop(0) if self.budgets else None
+        self.attaches.append(Attach(self.stdin, budget))
         return self.attaches[-1]
 
     def deliver(self, payload: bytes) -> None:
@@ -869,6 +890,45 @@ def test_a_session_survives_an_interrupted_attach_end_to_end(monkeypatch):
         threads[2].join(timeout=10)
         assert not threads[2].is_alive()
         assert len(state.interruptions) == 2
+    finally:
+        stop.set()
+        pid1.retire("test finished")
+        for attach in pod.attaches:
+            attach.drop()
+        os.close(stdin_write)
+        for thread in threads:
+            thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("budget", [0, 25], ids=["hello-lost", "hello-torn"])
+def test_a_first_attach_that_dies_before_its_hello_is_recovered(monkeypatch, budget):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    pid1 = Supervisor(replace(LAUNCH, recovery_seconds=3), ["application"])
+    owners: list[object] = []
+
+    def start_owner(binding):
+        owners.append(binding)
+        pid1.emit("ready", owner_pid=2, platform={"kernel": "k"})
+
+    monkeypatch.setattr(pid1, "start_owner", start_owner)
+    stdin_read, stdin_write = os.pipe()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=os.fdopen(stdin_read, "rb")))
+    pod = Pod(pid1, stdin_write)
+    pod.budgets = [budget]
+    state = session(recovery=3)
+    stop = threading.Event()
+    threads = [
+        threading.Thread(target=pid1.read_controller, daemon=True),
+        threading.Thread(target=pump, args=(pid1, pod, stop), daemon=True),
+        threading.Thread(target=pod._hold, args=(NAME, "c1", state), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        wait_for(lambda: state.resumed)
+        assert len(pod.attaches) == 2 and len(owners) == 1
+        assert pid1.connected and not pid1.retired.is_set()
+        assert state.ready and state.platform == {"kernel": "k"}
     finally:
         stop.set()
         pid1.retire("test finished")
