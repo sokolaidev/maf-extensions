@@ -40,11 +40,12 @@ class Origin(BaseHTTPRequestHandler):
             payload = b"probe origin\n"
             if parsed.path.startswith("/redirect/"):
                 location = query["to"][0]
-                if "\r" in location or "\n" in location:
+                header_location = location.replace("\r", "").replace("\n", "")
+                if header_location != location:
                     self.send_error(400)
                     return
                 self.send_response(int(parsed.path.rsplit("/", 1)[1]))
-                self.send_header("Location", location)
+                self.send_header("Location", header_location)
             else:
                 self.send_response(200)
         self.send_header("Content-Type", "application/json")
