@@ -4006,8 +4006,11 @@ class TestThePidAgainstARealShell:
             launcher_script(layout, sys.executable), encoding="utf-8"
         )
 
+        # `Z` until reaped, `X` while being reaped, then gone; nothing here reaps an orphan.
+        dead = ("Z", "X", "gone")
+
         def state(pid: str) -> str:
-            """`Z` or gone is dead; nothing here reaps an orphan.
+            """The process's state letter, or `gone`.
 
             Read without asking first: the entry can go between an `exists()` and the read,
             and the poll below is waiting for exactly that, so a vanished one is the answer
@@ -4024,7 +4027,7 @@ class TestThePidAgainstARealShell:
         session = self._appears(layout.session)
         child = self._appears(kid)
 
-        assert state(child) not in ("Z", "gone"), "the child never ran"
+        assert state(child) not in dead, "the child never ran"
         pgid = pathlib.Path(f"/proc/{child}/stat").read_text(encoding="utf-8").split()[4]
         assert pgid == session, (
             f"the child is in group {pgid} and the recorded session is {session}, so the "
@@ -4036,10 +4039,10 @@ class TestThePidAgainstARealShell:
         subprocess.run(["sh", "-c", f"kill -KILL -{session}"], capture_output=True, timeout=30)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if state(child) in ("Z", "gone"):
+            if state(child) in dead:
                 break
             time.sleep(0.1)
-        assert state(child) in ("Z", "gone"), (
+        assert state(child) in dead, (
             "the spawned child outlived the group kill, which is what #437 was about"
         )
 
