@@ -303,6 +303,16 @@ def test_resume_reports_the_call_state_the_lost_events_carried(pid1, monkeypatch
     assert emitted[1][1]["acknowledged"] is False
 
 
+@pytest.mark.parametrize("recovery", [0, 120])
+def test_the_startup_lease_includes_the_recovery_window(monkeypatch, recovery):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    before = time.monotonic()
+    subject = Supervisor(replace(LAUNCH, recovery_seconds=recovery), ["application"])
+    startup = subject.lease - before
+    assert _pod_supervisor.STARTUP_SECONDS + recovery <= startup
+    assert startup < _pod_supervisor.STARTUP_SECONDS + recovery + 1
+
+
 def test_a_repeated_hello_is_checked_then_ignored(pid1, monkeypatch):
     started = []
     monkeypatch.setattr(pid1, "start_owner", started.append)

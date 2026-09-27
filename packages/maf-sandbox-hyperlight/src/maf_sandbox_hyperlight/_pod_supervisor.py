@@ -120,7 +120,8 @@ class Supervisor:
         self.guard = threading.Lock()
         self.incoming: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
         self.outgoing: queue.Queue[dict[str, object]] = queue.Queue(maxsize=32)
-        self.lease = time.monotonic() + STARTUP_SECONDS
+        # A first attach lost before its hello gets the same recovery window as a later one.
+        self.lease = time.monotonic() + STARTUP_SECONDS + launch.recovery_seconds
         # Admission needs a live controller; only retirement waits out the recovery window.
         self.fresh = self.lease
         self.expires_at: float | None = None
