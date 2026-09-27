@@ -157,10 +157,11 @@ PREVIOUS_PLUGIN = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:51d7dab@sha25
 DAEMONSET_UID = "ds-uid"
 
 
-def plugin_daemonset(image: str = PLUGIN_IMAGE) -> dict[str, Any]:
+def plugin_daemonset(image: str = PLUGIN_IMAGE, observed: int = 2) -> dict[str, Any]:
     return {
-        "metadata": {"uid": DAEMONSET_UID},
+        "metadata": {"uid": DAEMONSET_UID, "generation": 2},
         "spec": {"template": {"spec": {"containers": [{"image": image}]}}},
+        "status": {"observedGeneration": observed},
     }
 
 
@@ -319,3 +320,14 @@ def test_the_current_revision_is_the_daemonsets_newest_one():
     assert current_revision(plugin_daemonset(), revisions) == "current"
     with pytest.raises(ValueError, match="owns no ControllerRevision"):
         current_revision(plugin_daemonset(), revisions[2:])
+
+
+def test_a_template_the_controller_has_not_observed_has_no_current_revision():
+    # The previous template's revision is still the newest one the controller wrote.
+    revisions = [controller_revision(1, "previous")]
+    with pytest.raises(ValueError, match="not observed its latest template"):
+        current_revision(plugin_daemonset(observed=1), revisions)
+    stale = plugin_daemonset(observed=1)
+    del stale["status"]
+    with pytest.raises(ValueError, match="not observed its latest template"):
+        current_revision(stale, revisions)

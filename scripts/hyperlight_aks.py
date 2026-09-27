@@ -142,7 +142,14 @@ def _owned_by(resource: dict, owner: dict) -> bool:
 
 
 def current_revision(daemonset: dict, revisions: list[dict]) -> str:
-    """The DaemonSet's newest ControllerRevision hash, which its up-to-date pods carry."""
+    """The DaemonSet's newest ControllerRevision hash, which its up-to-date pods carry.
+
+    Read `revisions` after `daemonset`: until the controller has observed the DaemonSet's
+    generation, its newest revision may still be the previous template's.
+    """
+    observed = daemonset.get("status", {}).get("observedGeneration")
+    if observed != daemonset["metadata"].get("generation"):
+        raise ValueError("the DaemonSet controller has not observed its latest template; retry")
     owned = [item for item in revisions if _owned_by(item, daemonset)]
     if not owned:
         raise ValueError("the DaemonSet owns no ControllerRevision")
