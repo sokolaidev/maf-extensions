@@ -302,3 +302,39 @@ A Windows worker can use the validated WHP family. A Linux worker depends on rea
 ## Upstream requests drafted, 2026-09-25
 
 Three requests this path waits on are drafted in [`upstream-hyperlight-requests.md`](upstream-hyperlight-requests.md) and filed the same day as [hyperlight-dev/hyperlight-sandbox#227](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/227), [hyperlight-dev/hyperlight-sandbox#228](https://github.com/hyperlight-dev/hyperlight-sandbox/issues/228) and [hyperlight-dev/hyperlight-on-kubernetes#15](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/issues/15), all open: the preservation policy [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) needs from `hyperlight-sandbox`, eager validation of `allow_domain` method tokens in the same SDK's lazy path, which the [#377](https://github.com/sokolaidev/maf-extensions/issues/377) measurement found missing, and digest-pinned base images with build provenance for the device-plugin image [#1424](https://github.com/sokolaidev/maf-extensions/issues/1424) has to admit.
+
+## HTTPS method conformance through the adapter, 2026-09-27
+
+The [#1509](https://github.com/sokolaidev/maf-extensions/issues/1509) probe used the real `HyperlightSandboxBackend`, its supervised worker and raw guest wasi-http requests. Each run created a loopback recording server behind a temporary Cloudflare Quick Tunnel, with a random path and synthetic request data only. TLS terminated at the relay's publicly trusted HTTPS endpoint on port 443. The unchanged SDK validated its certificate using its bundled public roots; no custom root or certificate-validation bypass was used. The relay forwarded requests to the recording server, so recorded framing describes that final hop rather than the original TLS wire.
+
+| Measured host | Host Python | Result |
+| --- | --- | --- |
+| Windows 11 x86-64, build 26220, WHP | 3.13.12 | HTTPS matrix and body probes passed |
+| Ubuntu 24.04 under WSL2, x86-64, kernel 6.18.40.1, KVM | 3.13.15 | HTTPS matrix and body probes passed |
+| GitHub-hosted Ubuntu 24.04.5, x86-64, kernel 6.17.0-1022-azure, KVM | 3.13.15 | HTTPS matrix and body probes passed |
+
+All runs used workspace core 0.44.0 and Hyperlight adapter 0.6.0, the exactly pinned `hyperlight-sandbox`, `hyperlight-sandbox-backend-wasm` and `hyperlight-sandbox-python-guest` 0.7.0 trio, and SHA-256-verified cloudflared 2026.9.3. The local Linux helper ran the test as an unprivileged user in a temporary delegated cgroup without changing device permissions. The [hosted KVM job](https://github.com/sokolaidev/maf-extensions/actions/runs/36276244905/job/108499472847) on `94407dd4` passed the HTTPS case, all 16 existing live backend tests, 14 CodeAct delivery tests and the CodeAct sample. Its runner used the existing KVM/device and port preparation steps. These measurements do not add AKS or MSHV qualification.
+
+All seven declared methods first succeeded under an unrestricted-method host rule. Each singleton rule then admitted its named method and refused the other six: seven positive and 42 negative cases, checked against both raw guest results and recording-server logs. The shared GET/POST conformance probe also passed. TRACE, CONNECT and two custom methods were refused from the guest under the unrestricted-method rule. Separate offline cases pinned router and direct-acquisition refusal for unsupported policy tokens before worker construction. TLS and connection errors raise harness failures rather than count as method denials. A Windows mutation run changed only the worker's `allow_domain` call to drop `methods`: the same HTTPS test failed because HEAD received 200 under the GET-only rule. The worker source was then restored byte-for-byte.
+
+Under GET-only policy, a GET carrying an explicit `Content-Length` delivered all 10,259 synthetic body bytes and its query to the recorder. A POST control delivered the same bytes. A GET with automatic framing completed with 200 but delivered no body bytes in this relay setup. That last observation does not identify where the bytes were omitted, and the relay may change framing. The recording parser separately passed real HTTP tests with content-length and chunked GET bodies, including chunk extensions and trailers. The explicit-length HTTPS result establishes that GET-only does not prevent outbound request bodies or provide confidentiality.
+
+Workers were disposed and reaped, pipe-draining threads stopped, and the recording server and tunnel were closed after each run. The Linux helper also removed its temporary cgroup. Startup depends on the public relay and DNS: one development run timed out before readiness, so this network-dependent probe has a separate explicit opt-in and does not run in the ordinary offline gate.
+
+### Reproducing the HTTPS probe
+
+Download the [cloudflared 2026.9.3 release](https://github.com/cloudflare/cloudflared/releases/tag/2026.9.3) binary for the measured host. The fixture verifies its SHA-256 before starting it: Windows amd64 `f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2`, Linux amd64 `77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2`. The probe publishes only its temporary recording fixture; it needs no Cloudflare account or repository credentials.
+
+On a WHP-capable Windows host, set `MAF_HYPERLIGHT_LIVE=1`, `MAF_HYPERLIGHT_HTTPS_LIVE=1` and `MAF_HYPERLIGHT_CLOUDFLARED` to the downloaded executable, then run:
+
+```powershell
+uv run pytest -q -s packages/maf-sandbox-hyperlight/tests/test_hyperlight_https_live.py
+```
+
+On a prepared Linux KVM host, use the existing cgroup helper with those environment settings:
+
+```bash
+sudo env MAF_HYPERLIGHT_HTTPS_LIVE=1 MAF_HYPERLIGHT_CLOUDFLARED="$CLOUDFLARED" python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python" -- -q -s packages/maf-sandbox-hyperlight/tests/test_hyperlight_https_live.py
+```
+
+The Tests workflow exposes the same Linux run through its `hyperlight_https` dispatch input, disabled by default. Its download is pinned and verified, and the test prints `HTTPS_METHOD_EVIDENCE` with platform, dependency versions, matrix counts, body observations and completed cleanup. Both opt-ins are required for the HTTPS test; the existing offline and loopback HTTP suites retain their original behavior.

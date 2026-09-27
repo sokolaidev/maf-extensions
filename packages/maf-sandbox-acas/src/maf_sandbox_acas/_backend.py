@@ -21,7 +21,7 @@ from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequen
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import wraps
 from hashlib import sha256
 from time import monotonic
@@ -36,8 +36,10 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressRule,
     EntryKind,
     ExecResult,
+    IdentityScope,
     Isolation,
     IsolationScope,
     OsFamily,
@@ -106,6 +108,7 @@ __all__ = [
     "BACKEND_NAME",
     "AcasEgressPolicyConflict",
     "AcasEntryPayloadIncomplete",
+    "AcasIdentityScopeMismatch",
     "AcasSandboxBackend",
 ]
 
@@ -295,6 +298,24 @@ _FILES_LIMITS = TransferLimits(
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 
+# The declaration is limited to tokens covered by the service conformance contract.
+_EGRESS_METHOD_TOKENS = frozenset(
+    {
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+        "TRACE",
+        "PROPFIND",
+        "X-CUSTOM",
+        "*",
+    }
+)
+_EgressKey = tuple[Egress, frozenset[tuple[str, frozenset[str] | None]]]
+
 # What the router reads off this backend. The four fields stated here are constants — the
 # sandbox group's egress policy, the data plane's own surface and the guest's shape are all
 # fixed before a spec arrives.
@@ -344,10 +365,12 @@ _DECLARATIONS = BackendDeclarations(
             Capability.FILES_LIST,
             Capability.FILES_DELETE,
             Capability.HOST_TOOLS,
+            Capability.EGRESS_METHODS,
         }
     ),
     limits=_LIMITS,
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
+    egress_method_tokens=_EGRESS_METHOD_TOKENS,
     os_families=frozenset({OsFamily.POSIX}),
     # Both scopes, because a sandbox's identity folds the key's ``call_id`` — into the registry
     # entry it is filed at and the service label a disposal selects on — so two acquires
@@ -486,19 +509,26 @@ class _Held:
     invalidation_guard: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
     )
-    egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
+    egress: _EgressKey = field(kw_only=True)
     work_dir: str = "/maf-sandbox/work"
 
 
-def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
-    """The supported policy's identity, independent of host spelling and order."""
-    if Capability.EGRESS_METHODS in spec.required_capabilities:
-        raise SandboxCapabilityNotSupported(
-            "ACAS has not established method enforcement against the service; method-scoped "
-            "policy is refused. The measured HTTPS path denies an unnamed verb, but redirects, "
-            "rule precedence, wildcard overlap and the non-TLS path are unmeasured."
-        )
-    return spec.egress, frozenset(str(host).lower() for host in spec.egress_allow)
+def _egress_key(spec: SandboxSpec) -> _EgressKey:
+    """The supported policy's identity, independent of host spelling and rule/token order."""
+    entries: set[tuple[str, frozenset[str] | None]] = set()
+    for entry in spec.egress_allow:
+        if isinstance(entry, EgressRule):
+            if entry.paths is not None or entry.authority is not None:
+                raise SandboxCapabilityNotSupported("ACAS cannot enforce path or authority rules")
+            methods = None if entry.methods is None else frozenset(entry.methods)
+            if methods is not None and (unsupported := methods - _EGRESS_METHOD_TOKENS):
+                raise SandboxCapabilityNotSupported(
+                    f"ACAS cannot enforce unqualified egress methods {sorted(unsupported)}"
+                )
+            entries.add((entry.host.lower(), methods))
+        else:
+            entries.add((entry.lower(), None))
+    return spec.egress, frozenset(entries)
 
 
 @dataclass(frozen=True)
@@ -1249,6 +1279,10 @@ class _AcasSandbox:
         )
 
 
+class AcasIdentityScopeMismatch(PermissionError):
+    """The caller scope differs from the host-configured group identity scope."""
+
+
 class AcasSandboxBackend:
     """Hands out microVM-isolated sandboxes from an Azure Container Apps sandbox group."""
 
@@ -1297,7 +1331,11 @@ class AcasSandboxBackend:
 
     @property
     def declarations(self) -> BackendDeclarations:
-        return _DECLARATIONS
+        identity = self._config.group_identity
+        return replace(
+            _DECLARATIONS,
+            configured_identity=None if identity is None else identity.declaration,
+        )
 
     # -- client -------------------------------------------------------------------
 
@@ -1358,12 +1396,19 @@ class AcasSandboxBackend:
                 ``HOST_TOOLS`` and the removal compatibility probe completed with failure,
                 or ``FILES_DELETE`` without a successful removal observation. An inconclusive
                 probe serves the writing capabilities but refuses deletion; a successful
-                probe does not establish that the guest is root. Method-scoped egress
-                is also refused because the service matches methods case-insensitively.
+                probe does not establish that the guest is root. Unqualified egress methods,
+                path rules and authority rules are also refused.
             AcasEgressPolicyConflict: when this key and kind hold a usable sandbox with a
                 different egress policy. Dispose it before changing policy, or use another
                 key. Capture-invalidated instances are deleted before replacement.
         """
+        identity = self._config.group_identity
+        if (
+            identity is not None
+            and identity.scope is IdentityScope.PER_SCOPE
+            and key.scope != identity.scope_id
+        ):
+            raise AcasIdentityScopeMismatch("ACAS group identity belongs to another caller scope")
         _sandbox_labels(key, spec)
         async with self._acquire_lock((*_key_prefix(key), spec.kind)):
             await self._prepare_acquire(key, spec)
@@ -2116,16 +2161,35 @@ class AcasSandboxBackend:
         # -- internals ----------------------------------------------------------------
 
     def _egress_policy(self, spec: SandboxSpec) -> Any:
-        """Deny by default, allow only the hosts the spec names."""
-        from azure.containerapps.sandbox import EgressHostRule, EgressPolicy
+        """Preserve host-wide rules and translate method restrictions without widening them."""
+        from azure.containerapps.sandbox import (
+            EgressHostRule,
+            EgressPolicy,
+            EgressRuleAction,
+            EgressRuleMatch,
+        )
+        from azure.containerapps.sandbox import EgressRule as AcasEgressRule
 
         _egress_key(spec)
+        hosts: list[EgressHostRule] = []
+        rules: list[AcasEgressRule] = []
+        for entry in spec.egress_allow:
+            if isinstance(entry, EgressRule) and entry.methods is not None:
+                rules.append(
+                    AcasEgressRule(
+                        match=EgressRuleMatch(
+                            host=entry.host.lower(), methods=sorted(entry.methods)
+                        ),
+                        action=EgressRuleAction(type="Allow"),
+                    )
+                )
+            else:
+                hosts.append(EgressHostRule(pattern=str(entry).lower(), action="Allow"))
         return EgressPolicy(
             default_action="Deny",
             traffic_inspection="Full",
-            host_rules=[
-                EgressHostRule(pattern=str(host), action="Allow") for host in spec.egress_allow
-            ],
+            host_rules=hosts,
+            rules=rules,
         )
 
     async def _configure(self, sandbox_client: Any) -> None:

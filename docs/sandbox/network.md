@@ -62,7 +62,7 @@ Pass a sequence of entries. A bare string is refused instead of being treated as
 | Hyperlight | Runtime HTTP permissions; closed or exact-host allowlisting with standard-method rules, without wildcards or path rules |
 | In-process fake | Test declarations only; no network containment |
 
-ACAS refuses a warm sandbox requested with a different mode or normalized host set through `AcasEgressPolicyConflict`. Dispose it or use a different key. The conflict does not evict the original sandbox.
+ACAS refuses a warm sandbox requested with a different mode, normalized host set or method policy through `AcasEgressPolicyConflict`. Dispose it or use a different key. The conflict does not evict the original sandbox.
 
 Docker and WSLC need proxy configuration before they can serve a nonempty allowlist. The workload has no direct external route through the configured topology. Proxy environment variables help clients find the proxy; those variables are not the boundary.
 
@@ -94,7 +94,7 @@ Any method-limited rule adds `Capability.EGRESS_METHODS` to `required_capabiliti
 
 The contract restricts the verb, not a client's spelling convention. A backend cannot admit a different verb through case handling. The declaration does not promise whether a client spelling such as `get` is accepted.
 
-Docker and WSLC advertise `EGRESS_METHODS` when their iron-proxy image is configured. The proxy terminates guest TLS to inspect the method. Hyperlight advertises it for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS: its runtime checks each request's method before connecting and refuses TRACE, CONNECT and every custom token. ACAS withholds this capability.
+Docker and WSLC advertise `EGRESS_METHODS` when their iron-proxy image is configured. The proxy terminates guest TLS to inspect the method. Hyperlight advertises it for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS: its runtime checks each request's method before connecting and refuses TRACE, CONNECT and every custom token. ACAS advertises the [qualified HTTPS subset](backends/acas.md#network-policy): GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, PROPFIND, X-CUSTOM and literal `*`. Other ACAS tokens refuse; plaintext HTTP and nonstandard-port support are not promised.
 
 An explicit `EGRESS_METHODS` requirement remains a requirement even if a later spec replacement removes method rules. `GET` still sends query text, headers and other data outward; it is not a confidentiality exemption or a read-only guarantee.
 
@@ -136,7 +136,7 @@ Egress is not an ingress policy. It does not promise that guest code cannot list
 |---|---|---|
 | Exact egress mode and host-rule matching | Implemented | [#34](https://github.com/sokolaidev/maf-extensions/issues/34) (closed); [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed); [#524](https://github.com/sokolaidev/maf-extensions/issues/524) (closed); [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged); [#1126](https://github.com/sokolaidev/maf-extensions/issues/1126) (closed); [#1138](https://github.com/sokolaidev/maf-extensions/pull/1138) (merged); [#1461](https://github.com/sokolaidev/maf-extensions/issues/1461) (closed) by [#1469](https://github.com/sokolaidev/maf-extensions/pull/1469) (merged) |
 | Backend enforcement | Implemented with backend-specific limits | [Backend guides](backends/README.md) |
-| Method and path rules | Core, Docker and WSLC implemented; Hyperlight method rules implemented; ACAS adoption remains open | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged) |
+| Method and path rules | Core, Docker and WSLC implemented; Hyperlight and qualified ACAS method rules implemented | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged); [#1507](https://github.com/sokolaidev/maf-extensions/issues/1507) (closed) by [#1520](https://github.com/sokolaidev/maf-extensions/pull/1520) (merged); [#1508](https://github.com/sokolaidev/maf-extensions/issues/1508) (closed) by [#1520](https://github.com/sokolaidev/maf-extensions/pull/1520) (merged) |
 | IPv6 upstream addresses | Docker private HTTP/TLS and denials measured; WSLC denials measured, private IPv6 blocked by engine network support | [#1407](https://github.com/sokolaidev/maf-extensions/issues/1407) (open); [#1409](https://github.com/sokolaidev/maf-extensions/pull/1409) (merged) |
 | Deployment default allowlists | Unimplemented | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) |
 | Attached-authority destinations | Core admission and Docker/WSLC external gateways implemented | [Host identity status](hosts.md#status) |

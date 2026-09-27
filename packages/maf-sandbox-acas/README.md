@@ -87,13 +87,17 @@ Byte caps, timeouts, root images and disposal do not close the path race. Select
 
 ## Network and identity
 
-The spec supplies network policy. The backend applies default deny and one allow rule per permitted host. It provides no method-level enforcement declaration or egress observations.
+The spec supplies network policy. The backend applies full inspection and default deny, preserves host-wide entries, and translates method-scoped entries into advanced rules without a host-wide fallback. `EGRESS_METHODS` declares GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, PROPFIND, X-CUSTOM and literal `*`. CONNECT and other unqualified tokens refuse at router selection and direct acquisition. HTTPS enforcement is qualified; plaintext HTTP remained blocked in the measured policies, and nonstandard ports remain unqualified. There are no egress observations from the adapter. See the [network contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/acas.md#network-policy).
 
 A warm instance keeps its original network policy. Changing mode or hosts raises `AcasEgressPolicyConflict`. Coordinate active calls and dispose that kind successfully before changing policy, or use another key.
 
 Managed identity configured on the sandbox group is deployment-owned authority. The host must route workloads to groups with the intended permissions. The adapter performs no ARM assignment discovery and does not apply core `ATTACHED_IDENTITY` opt-in or retention checks to that identity.
 
 The host's SDK credential remains outside the guest. Deleting sandboxes does not revoke group principals or previously issued tokens.
+
+To report deployment identity, set `group_identity=AcasGroupIdentity()` on `AcasSandboxConfig` for `SHARED`, or `AcasGroupIdentity(IdentityScope.PER_SCOPE, scope_id="tenant-a")` for a group whose exposed principals are all exclusive to that scope. The latter rejects other caller scopes before credentials or service access on every acquisition; cleanup remains available. `PER_SANDBOX` is refused. The default `None` means unreported; `AcasGroupIdentity(IdentityScope.NONE)` explicitly asserts absence.
+
+Observers and effective state receive `ConfiguredIdentity`, including guest token access for a nonempty group identity. Serialized state marks it as host configuration with no authority deadline and excludes the scope identifier. It neither enables `ATTACHED_IDENTITY` nor changes ordinary workload opt-in. The host still provisions assignments and grants; the adapter performs no identity discovery or header injection. See [configured group identity](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/acas.md#report-configured-group-identity) for the configuration example and limits.
 
 ## Host-selected credentials
 

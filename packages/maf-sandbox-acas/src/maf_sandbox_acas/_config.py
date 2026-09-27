@@ -15,12 +15,43 @@ here and a kind never learns where its image is stored.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
+
+from maf_sandbox import ConfiguredIdentity, IdentityScope
 
 from ._credentials import AcasCredentialResolver
 
-__all__ = ["AcasSandboxConfig"]
+__all__ = ["AcasGroupIdentity", "AcasSandboxConfig"]
+
+
+@dataclass(frozen=True)
+class AcasGroupIdentity:
+    """Host assertion covering all group principals, without ARM discovery.
+
+    PER_SCOPE requires principal exclusivity and restricts acquisition to scope_id.
+    Cleanup does not inherit that restriction or revoke shared principals.
+    """
+
+    scope: IdentityScope = IdentityScope.SHARED
+    scope_id: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", IdentityScope(str(self.scope)))
+        if self.scope is IdentityScope.PER_SANDBOX:
+            raise ValueError("group identity cannot declare PER_SANDBOX")
+        if self.scope is IdentityScope.PER_SCOPE:
+            if not isinstance(self.scope_id, str) or not self.scope_id.strip():
+                raise ValueError("PER_SCOPE group identity requires a nonempty scope_id")
+        elif self.scope_id is not None:
+            raise ValueError("scope_id is only valid for PER_SCOPE group identity")
+
+    @property
+    def declaration(self) -> ConfiguredIdentity:
+        """The public description, excluding the host's scope identifier."""
+        return ConfiguredIdentity(
+            scope=self.scope, guest_token_endpoint=self.scope is not IdentityScope.NONE
+        )
 
 
 @dataclass(frozen=True)
@@ -60,8 +91,13 @@ class AcasSandboxConfig:
     max_clients_per_loop: int = 32
     client_wait_seconds: float = 30.0
     client_close_seconds: float = 30.0
+    group_identity: AcasGroupIdentity | None = None
 
     def __post_init__(self) -> None:
+        if self.group_identity is not None and not isinstance(
+            cast(object, self.group_identity), AcasGroupIdentity
+        ):
+            raise TypeError("group_identity must be AcasGroupIdentity")
         if self.credential_resolver is not None and not callable(self.credential_resolver):
             raise ValueError("credential_resolver must be callable")
         if type(self.max_clients_per_loop) is not int or self.max_clients_per_loop < 1:

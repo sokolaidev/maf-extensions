@@ -98,9 +98,11 @@ The command deadline includes retrieval and scratch cleanup. Failure deletion ha
 
 ## Network policy
 
-Each create sets full traffic inspection and default deny. `ALLOWLIST` adds the hosts in `spec.egress_allow`; `CLOSED` adds none. `UNRESTRICTED` and `EGRESS_METHODS` are refused.
+Each create sets full traffic inspection and default deny. `ALLOWLIST` adds the hosts in `spec.egress_allow`; `CLOSED` adds none. Bare hosts retain host-wide rules. An `EgressRule` with methods becomes an advanced allow rule, without a host-wide allow for that entry. Matching allow rules combine, including exact/wildcard overlap. `UNRESTRICTED`, path rules and attached-authority rules are refused.
 
-A held sandbox records its mode and case-insensitive host set. An equivalent policy reuses it. A changed policy raises `AcasEgressPolicyConflict` before resume and preserves the old instance.
+`EGRESS_METHODS` supports the qualified HTTPS tokens GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, PROPFIND, X-CUSTOM and literal `*`. CONNECT and other unqualified tokens refuse both at router selection and direct acquisition. The finite declaration is not a claim about every valid HTTP token. Full-inspection plaintext HTTP remained blocked in the measured host-wide and method-scoped policies; nonstandard ports remain unqualified. GET-only is not a read-only or body-free guarantee.
+
+A held sandbox records its mode, case-insensitive hosts and method sets. Equivalent host/rule/method ordering reuses it. A changed policy raises `AcasEgressPolicyConflict` before resume and preserves the old instance and cleanup ownership.
 
 To change policy, coordinate active calls, dispose that kind and require successful completion, or choose a new key. `router.dispose_kind(...)` must return `True`; direct `backend.dispose(..., kind=...)` must return `None`.
 
@@ -122,6 +124,37 @@ Ordinary workloads can access that configured authority without opting into the 
 
 The host must route workloads to groups with the intended permissions. Use separate groups when workloads need separate authority. Sandbox deletion is not principal revocation. The host's [control-plane credential](acas-credentials.md) stays outside the guest and is separate from group identity and host-tool user credentials.
 
+### Report configured group identity
+
+Set `AcasSandboxConfig.group_identity` to an `AcasGroupIdentity` to describe the deployment to acquisition observers and `EffectiveState`. This supplies `BackendDeclarations.configured_identity`, a host assertion with no ARM discovery, audience confinement or enforced authority deadline. It does not configure Azure assignments or add `ATTACHED_IDENTITY` support.
+
+```python
+from maf_sandbox import IdentityScope
+from maf_sandbox_acas import AcasGroupIdentity, AcasSandboxConfig
+
+config = AcasSandboxConfig(
+    endpoint="https://management.example.azuredevcompute.io",
+    group_identity=AcasGroupIdentity(
+        scope=IdentityScope.PER_SCOPE,
+        scope_id="tenant-a",
+    ),
+)
+```
+
+| Configuration | Meaning |
+|---|---|
+| `group_identity=None` (default) | Identity is unreported; this does not assert an identity-free group |
+| `AcasGroupIdentity(IdentityScope.NONE)` | The host asserts that the group exposes no configured identity |
+| `AcasGroupIdentity()` | Group identity is `SHARED` across caller scopes |
+| `AcasGroupIdentity(IdentityScope.PER_SCOPE, scope_id=...)` | All exposed principals are exclusive to this caller scope; acquisition rejects any other scope |
+| `PER_SANDBOX` | Refused: group identity cannot establish per-sandbox sharing |
+
+The `PER_SCOPE` check raises `AcasIdentityScopeMismatch` before credential resolution or service access for cold and warm acquisition. The host supplies the trusted `SandboxKey.scope` and provisions principal exclusivity across the deployment; a separate group alone does not establish exclusivity if its principals are shared elsewhere. Every replica must use the same deployment facts. Identity assignment changes require corresponding host configuration changes. Cleanup is not restricted by this acquisition check, so a backend can still delete owned resources from a previous configuration.
+
+Every non-`NONE` ACAS description reports `guest_token_endpoint=True`. This acknowledges the additional authority surface measured in [M1](https://github.com/sokolaidev/maf-extensions/issues/1164); it is not a live availability check. It describes all principals exposed by the group, not a selected identity. The adapter applies no identity header transforms, and egress audiences do not constrain token acquisition. The host remains responsible for grants, sharing and every other deployment-configured authority surface.
+
+Effective state serializes the description with `provenance="host_configuration"` and `authority_lifetime_seconds=null`. It omits `scope_id` and principal identifiers. Ordinary workloads need no new opt-in; strict attached-identity requests remain refused. Idle and stopped-retention settings remain the lifecycle behavior above, and cleanup claims neither shared-principal nor issued-token revocation.
+
 ## Verification
 
 Offline tests cover request construction, capability checks, file handling and failure cleanup. The live ACAS suite checks the service, including detachment, call scope, file behavior and allowed/denied hosts. It requires Azure credentials and suitable images.
@@ -133,10 +166,11 @@ The broader metadata, private-network, host-path and host-socket isolation probe
 | Area | State | Tracking |
 |---|---|---|
 | Execution, files, call scope and disposal | Implemented with the limits above | [Package README](../../../packages/maf-sandbox-acas/README.md) |
-| Group-configured identity | Supported through trusted host configuration | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
+| Group-configured identity | Supported through trusted host configuration | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
+| Configured identity description | Implemented; reports sharing and guest token access, with acquisition scope checks | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
 | Native read/stat/list path race | Open; no atomic service primitive | [#1336](https://github.com/sokolaidev/maf-extensions/issues/1336) (open), waiting on [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) (open) |
 | Typed SDK file metadata | Open; adapter requires raw flags | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) (open) |
 | Special-file classification | Open; regular files cannot be distinguished reliably | [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) (open) |
 | Working-directory preparation authority | Bounded; setup creates missing directories as the guest and refuses if that creation fails | [#1339](https://github.com/sokolaidev/maf-extensions/issues/1339) (closed) by [#1379](https://github.com/sokolaidev/maf-extensions/pull/1379) (merged) |
-| Method-level network policy | Withheld pending full validation | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open) |
+| Method-level network policy | Qualified HTTPS subset implemented; remaining parent validation is separate | [#1507](https://github.com/sokolaidev/maf-extensions/issues/1507) (closed) by [#1520](https://github.com/sokolaidev/maf-extensions/pull/1520) (merged); [#1508](https://github.com/sokolaidev/maf-extensions/issues/1508) (closed) by [#1520](https://github.com/sokolaidev/maf-extensions/pull/1520) (merged); [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open) |
 | Broader isolation probes | Not implemented | untracked |

@@ -1,14 +1,59 @@
 # ACA Sandboxes research
 
-> Consolidated research record for ACAS host credentials, exec byte capture and method-scoped egress, measured 2026-09-10 through 2026-09-14. The implemented operational contracts live in [`../backends/acas.md`](../backends/acas.md), [`../backends/acas-credentials.md`](../backends/acas-credentials.md), [`../exec-output.md`](../exec-output.md) and [`../network.md`](../network.md). This record keeps the source evidence, measurements and remaining limits without repeating those guides.
+> Consolidated research record for ACAS host credentials, exec byte capture and method-scoped egress, with a follow-up method qualification on 2026-09-26 and a proposed group-identity declaration model for #1170. The implemented operational contracts live in [`../backends/acas.md`](../backends/acas.md), [`../backends/acas-credentials.md`](../backends/acas-credentials.md), [`../exec-output.md`](../exec-output.md) and [`../network.md`](../network.md). This record keeps the source evidence, measurements and remaining limits without repeating those guides.
 
 ## Conclusions at a glance
 
 - ACAS control-plane credentials are host-owned and selected per request. Acquired wrappers capture a non-secret authority binding; later disposal resolves cleanup authority independently so another replica can clean up after the creator disappears. Credential objects and bearer tokens never enter the guest.
 - ACAS exec output loses arbitrary bytes before the SDK decodes it. The implemented solution uses bounded FIFO capture and chunked retrieval through guest execution, preserving exact stdout/stderr while retaining deadlines, cancellation, overflow refusal and cleanup semantics.
-- ACAS can enforce method-scoped HTTP policy on the tested HTTPS path, including custom methods, but its service matches method spelling case-insensitively and important surfaces remain unmeasured. The backend therefore withholds `EGRESS_METHODS` and refuses method-scoped rules rather than claiming literal enforcement.
+- The initial ACAS method measurements left redirects, precedence and plaintext HTTP unqualified. The 2026-09-26 follow-up below qualifies a finite HTTPS token set, exact/wildcard union and policy-safe adapter reuse. CONNECT and arbitrary tokens remain outside that declaration; plaintext HTTP did not reach the recording origins.
 - ACAS working-directory preparation preserves existing directories and creates missing directories with guest authority, refusing if that creation fails. The service stat exposes no ownership, so the host-authority file plane — which mints root-owned directories — cannot be bounded by an ownership check and is not used for preparation.
 - ACAS remains the reference `MICROVM` backend and the only shipped backend that declares directory listing. It is a remote, billable service: live evidence is separate from offline tests and must be run with disposable groups and explicit cleanup.
+
+## Group identity declaration proposal for #1170
+
+The separate description model was adopted for implementation. The operational API and its limits live in [configured group identity](../backends/acas.md#report-configured-group-identity) and [host-configured identity descriptions](../hosts.md#host-configured-identity-descriptions). The proposal below records the decision and alternatives.
+
+This proposal preserves the configuration decision in [#1243](https://github.com/sokolaidev/maf-extensions/pull/1243): the host selects group assignments, permissions and sharing; acquisition neither reads ARM assignments nor requires an identity-free group. It addresses [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170)'s remaining declaration question. It is not an implemented API or an adopted change to the core authority contract.
+
+### Why the existing declaration cannot describe it
+
+`AttachedIdentity` promises a complete set of bounded authority channels and a positive, platform-enforced lifetime from creation. Its only channel is destination- and audience-bound egress header injection. ACAS group configuration establishes neither promise: [M1](https://github.com/sokolaidev/maf-extensions/issues/1164) found a guest token endpoint outside the header rules, and [M7](https://github.com/sokolaidev/maf-extensions/issues/1167) did not establish an absolute authority deadline. A configured idle or stopped-retention interval cannot supply the missing lifetime. Tokens already issued and the principal shared by other sandboxes have separate lifetimes.
+
+The router rejects authority-bearing specs for ACAS because the backend does not declare `ATTACHED_IDENTITY`. The adapter does not implement identity header transforms. A declaration must not advertise header injection until the adapter translates and applies those rules and preserves their identity during reuse. Successful platform measurements alone do not supply that implementation.
+
+### Proposed separation
+
+Add an optional host-configured identity description beside the existing enforced attachment declaration. Carry it through `BackendDeclarations`, acquisition events and `EffectiveState`, with its provenance and lack of an enforced authority deadline explicit in the serialized value. The purpose is to let a host inspect and record the configured authority of the backend that served a call. It does not satisfy `Capability.ATTACHED_IDENTITY`, grant a workload permission, or make `max_identity_retention_seconds` apply to ACAS group identity.
+
+| Property | Proposed meaning | Owner |
+|---|---|---|
+| Declaration omitted | Group identity is unreported; absence is not evidence of an identity-free deployment | Host |
+| `NONE` | Host asserts that the selected group exposes no configured identity | Host |
+| `SHARED` | Group authority can be shared across caller scopes | Host |
+| `PER_SCOPE` | Every principal exposed by the group is exclusive to one configured caller scope | Host provisions exclusivity; adapter rejects acquisition for another scope |
+| `PER_SANDBOX` | Unsupported for group-configured identity | Adapter rejects configuration |
+| Guest token access | Available authority includes the group token endpoint; egress audiences do not constrain token acquisition | Host declaration, informed by M1 |
+| Authority deadline | No enforced maximum is declared | Core representation and adapter |
+| Principal identifiers | Omitted from persisted effective state | Host retains assignment details in deployment configuration |
+
+A group can expose several principals. Any sharing statement must cover all of them: one scope-exclusive principal beside a cross-scope principal is `SHARED`. A group per scope is insufficient if a principal is also assigned elsewhere. The adapter can check the requested scope before resolving credentials or contacting the service; it cannot prove the host's exclusivity assertion. That check must cover cold and warm acquisition. Cleanup remains able to reach owned resources and must never revoke the group's principals.
+
+Ordinary specs continue to work with configured groups, including when this description is supplied. The existing strict attachment admission remains separate: a workload requiring `ATTACHED_IDENTITY` is still refused on ACAS. No new spec opt-in or router-wide default refusal is introduced by merely reporting deployment facts. An application may inspect the description when selecting its backends, but core must not present that description as verified policy enforcement.
+
+### Alternatives and decision needed
+
+One alternative extends `AttachedIdentity` with a guest-token channel and an explicitly unbounded lifetime. That changes its existing meaning and requires distinct host and workload acceptance, channel matching, information-flow handling and migration rules. Making the lifetime nullable alone would silently weaken the contract. This proposal does not adopt that change.
+
+Another alternative keeps the existing deployment-configuration boundary without adding a description API. It is sufficient if hosts have no consumer for recording configured identity alongside served backend state. In that case #1170 can be resolved by documenting that decision rather than adding unused vocabulary. The separate description is useful only if that visibility is wanted; it does not enable identity access that ACAS lacks today.
+
+### Implementation and verification boundary
+
+After adoption, implement the description in core and the ACAS configuration together. Advance both ends of ACAS's core dependency range to the release carrying the new surface; leave samples floors for their separate release sequence. Do not add principal minting or host-tool sandbox identity dispatch, which belong to #566, or service header injection as an incidental addition.
+
+Focused checks must establish configuration validation, omitted versus explicitly absent identity, serialized provenance and lifetime, `PER_SCOPE` refusal before any credential resolution on cold and warm acquisition, ordinary workload compatibility, and continued refusal of strict attached-identity requests. Existing acquisition observers must receive the description of the backend actually selected, including per-spec routing. An offline result cannot establish assignment, endpoint availability, token permissions or lifetime in a live deployment.
+
+No new Azure measurement accompanies this proposal. M1 and M7 remain evidence for their measured service/API/image configuration. A metadata-only implementation makes no new service-integration claim; any later header-rule implementation needs live positive and negative controls, reuse checks and verified cleanup before claiming support.
 
 ## Host-selected credentials
 
@@ -110,6 +155,33 @@ A live reuse measurement acquired a host-wide allowlist, changed the same key/ki
 The backend declares `{Egress.ALLOWLIST, Egress.CLOSED}` and never `UNRESTRICTED`; ACAS cannot express an unrestricted mode because the service policy is deny-by-default. A method-scoped rule therefore refuses at router preflight and direct backend acquisition with `SandboxCapabilityNotSupported`. The service measurement is evidence for a future capability, not its implementation acceptance.
 
 When method scope is eventually reconsidered, acceptance must cover an endpoint that accepts both GET and POST, a control policy where POST reaches, a scoped policy where GET reaches and POST is denied, custom methods, case behavior, redirects, precedence, wildcard overlap and the non-TLS path. A backend must declare enforceable tokens and compare policy changes during warm reuse; a raw SDK method field is not enough.
+
+### Follow-up qualification — 2026-09-26
+
+Issues [#1507](https://github.com/sokolaidev/maf-extensions/issues/1507) and [#1508](https://github.com/sokolaidev/maf-extensions/issues/1508) were measured together against baseline `0c5a0f7c`, the proposed adapter, `azure-containerapps-sandbox==0.1.0b4`, API `2026-02-01-preview`, host CPython 3.13.12 and the prebuilt `python-3.13` guest. Two temporary recording origins served HTTP on port 80 and valid public HTTPS on port 443. Origin receipts were collected independently over an authenticated host-side endpoint. Only synthetic request IDs and methods were recorded; resource identifiers and origin addresses are excluded from this record.
+
+The raw-SDK matrix covered 20 policy executions across three runs: 418 guest requests, 147 origin receipts and 246 checked HTTPS hops, including redirects. The adapter matrix covered 15 policies: 294 requests, 100 receipts and 166 checked HTTPS hops. Every accepted HTTPS hop required its matching origin receipt; every denied HTTPS hop required a service 403 and denial reason, with no corresponding receipt. These counts exclude the adapter's shared conformance probe, which separately recorded exactly the allowed GET and the all-method control POST, with no scoped POST. Every matrix verified an empty probe-owned sandbox inventory after disposal.
+
+| Case | Measured result |
+|---|---|
+| GET-only versus all-method control | GET reached; scoped POST was denied; control POST reached. HEAD, PUT, PATCH, DELETE, OPTIONS and TRACE were also denied under GET-only policy. |
+| Standard-method set | GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS and TRACE reached under the named set. PROPFIND, X-CUSTOM and `*` were denied. |
+| Custom-method set | PROPFIND and X-CUSTOM reached when named and denied under GET-only policy; unnamed standard methods were denied. |
+| Literal `*` | Reached only when named or unscoped. A `*`-only rule denied GET and the other tested tokens; it was not a wildcard. |
+| CONNECT | No successful origin control: the HTTPS control and CONNECT-only policy reset the connection. This request shape does not qualify CONNECT support or prove a general CONNECT denial. |
+| Exact/wildcard overlap | Exact POST plus wildcard GET admitted both on the exact host and only GET on its sibling, in both rule orders. An overlapping all-method entry admitted all tested methods, matching allow-rule union. |
+| Explicit allow/deny precedence | Deny-POST before allow-all denied POST; the reverse order admitted POST. The adapter emits only allow actions. |
+| Mixed legacy host rules and advanced method rules | Unscoped hosts retained their tested HTTPS access; scoped-only hosts retained method restrictions. Exact and wildcard overlap combined as allow rules. |
+| 302/303/307/308 redirects | Each hop was checked. GET-only redirects to an unlisted origin were denied there. POST-only 302/303 changed to GET and were denied at the next hop; 307/308 preserved POST and reached an allowed destination. |
+| Plaintext HTTP and scheme changes | No HTTP request reached either origin under host-wide or advanced rules. Standard verbs returned service 403; custom verbs disconnected. HTTPS-to-HTTP redirects also stopped. A separate host-side HTTP request reached the origin with 200. This bounds observed service behavior; a failed HTTP control is not evidence that plaintext method matching works. |
+| Nonstandard TLS port | An additional all-method control to the public TLS test endpoint on port 1012 returned curl status `000` for GET and POST. With no successful control, no nonstandard-port enforcement claim follows. |
+| Adapter reuse | Every policy reused under reversed rule/method ordering and uppercase host spelling. A changed method policy refused, then the original policy reacquired the same instance. Per-policy disposal and final scope purge succeeded. |
+
+**Adoption decision.** Declare only the eleven measured literal tokens: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE, PROPFIND, X-CUSTOM and `*`. Refuse CONNECT and other unqualified tokens before borrowing credentials or provisioning, including direct acquisition. Preserve bare-host rules, translate scoped entries only to advanced rules, and include method sets in the creation-policy identity. Case handling does not warrant a separate refusal under the core uppercase-token contract. Path rules, attached-authority rules, plaintext HTTP support, arbitrary tokens and nonstandard ports are not qualified by these measurements. GET-only remains capable of outbound data transfer.
+
+**Reproduction.** [`acas_egress_origin.py`](../../../scripts/acas_egress_origin.py) is a standard-library recording origin listening on port 8080. Host it twice behind valid TLS with plaintext ingress also enabled; set a host-only `PROBE_TOKEN` for receipt retrieval. Keep a local JSON config with `endpoint`, `subscription_id`, `resource_group`, `sandbox_group`, `hosts` (the two FQDNs, sharing a wildcard suffix) and `token`. Do not commit that deployment-specific file. Run `uv run python scripts/probe_acas_egress.py --config <local-config> --output <local-report> --live` for SDK qualification, then repeat with `--adapter` for adapter conformance and reuse. `--case` selects a named policy. The script sanitizes hostnames in reports and verifies probe-sandbox cleanup; the host must delete its recording-origin deployments afterward. The opt-in pytest entry uses `MAF_ACAS_EGRESS_PROBE_CONFIG` and otherwise skips. This is live service evidence for the measured configurations, not an exhaustive protocol or containment proof.
+
+The service's documented [rule evaluation order and inspection modes](https://learn.microsoft.com/en-us/azure/container-apps/sandboxes-egress-policies) agree with the measured first-match action behavior; they do not replace the live origin controls.
 
 ## Working-directory preparation authority
 

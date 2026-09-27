@@ -36,6 +36,7 @@ __all__ = [
     "BackendDeclarations",
     "Capability",
     "Cleanup",
+    "ConfiguredIdentity",
     "DeclaredOutput",
     "DisposalCode",
     "DisposalFailure",
@@ -366,6 +367,25 @@ class AttachedIdentity:
 
 
 NO_ATTACHED_IDENTITY = AttachedIdentity()
+
+
+@dataclass(frozen=True)
+class ConfiguredIdentity:
+    """Host-reported deployment identity, without enforced audience or lifetime bounds.
+
+    This describes configuration, not discovered assignments or ATTACHED_IDENTITY support.
+    Scope covers every exposed principal; NONE is an explicit host assertion of absence.
+    """
+
+    scope: IdentityScope = IdentityScope.NONE
+    guest_token_endpoint: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", IdentityScope(str(self.scope)))
+        if type(self.guest_token_endpoint) is not bool:
+            raise TypeError("guest_token_endpoint must be bool")
+        if self.scope is IdentityScope.NONE and self.guest_token_endpoint:
+            raise ValueError("NONE configured identity cannot expose a guest token endpoint")
 
 
 def _has_whitespace_or_control(value: str) -> bool:
@@ -1725,6 +1745,9 @@ class BackendDeclarations:
 
     #: Hold one call through delivery and cleanup, regardless of the workload's preference.
     requires_exclusive_admission: bool = False
+
+    #: Host configuration only. None means unreported, not an identity-free deployment.
+    configured_identity: ConfiguredIdentity | None = None
 
 
 @runtime_checkable
