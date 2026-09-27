@@ -149,19 +149,53 @@ For registry-free development verification, the builder also emits `bundle.json.
 
 ## Upgrade and rollback
 
-Keep the previous runtime digest, its build record, the application command, template settings and plugin manifest until a replacement passes acceptance. Validate each new digest with a fresh ownership scope on the intended node pool: run positive execution/reset, files, allowlist and failure probes, then measure the actual application's image pull, startup and memory/storage peaks. The packaging smoke check cannot replace those probes.
+Upgrade the runtime and the device plugin separately. Until a replacement passes, keep the previous runtime digest and its verification record, the controller release it ran with, the application command, the template settings and the plugin manifest. The steps below were measured on a Standard AKS pool from the Ubuntu row of the platform matrix, with runtime 0.5.0 and 0.6.0 and plugins `51d7dab` and `fc71b45`, in [#1512](https://github.com/sokolaidev/maf-extensions/issues/1512), [#1513](https://github.com/sokolaidev/maf-extensions/issues/1513) and [#1514](https://github.com/sokolaidev/maf-extensions/issues/1514). The times quoted are those runs, not guarantees.
 
-Change the trusted host's template for newly created pods. Let existing owners finish or retire them through the controller and confirm termination before reusing their scopes. An image update does not transfer a running VM's state. Roll back by restoring the previous digest and compatible template for new pods; an unresolved cleanup ledger still blocks replacement after rollback. The controller and the image exchange unversioned lifecycle messages, so run both from the same `maf-sandbox-hyperlight` release and upgrade or roll them back together.
+### Runtime
 
-Treat device-plugin upgrades separately. The rendered DaemonSet uses `OnDelete`, so changing its manifest does not restart existing plugin pods, and `kubectl rollout status` refuses to wait on it. Cordon and drain affected nodes under the operator's maintenance process, confirm owner cleanup, then replace plugin pods and verify registration, CDI contents and actual VM creation before returning nodes to service. Restore the prior manifest and repeat verification to roll back. A healthy device count alone does not establish device usability: the pinned upstream plugin checks device-path presence and does not repair missing or stale CDI during its health loop.
+1. Verify the candidate digest as described under [Verify a published runtime](#verify-a-published-runtime). This is a production gate the measured runs did not exercise: their candidates were unsigned ([#1424](https://github.com/sokolaidev/maf-extensions/issues/1424)), so they were pulled by digest and checked against their build records instead.
+2. Validate it with fresh ownership scopes on the intended pool. `positive`, `files` and `allowlist` exit 0; `timeout`, `cancel`, `owner-death`, `worker-death` and `output-limit` retire the pod with 70; `oom` ends with 137. Measure the actual application's pull, startup and memory peaks as well. The probe measured a pull under 3 seconds, acquisition about 2.1 seconds and a memory peak about 1.91 GB of the 4 GiB limit. The packaging smoke check cannot replace these probes.
+3. Switch the trusted host to the candidate image and to the controller from the same `maf-sandbox-hyperlight` release. The controller and the image exchange unversioned lifecycle messages, and nothing detects a mismatched pair. The one pair measured, a 0.5.0 image under a 0.6.0 controller, exited 71 with no reason, the same result as a pod that never started ([#1510](https://github.com/sokolaidev/maf-extensions/issues/1510)). Another pair may fail differently, or not at all.
+4. Let existing owners finish, or retire them through their controller. A new owner on a scope that is still held is refused before anything is created; today that refusal is a raw `kubectl` error ([#1522](https://github.com/sokolaidev/maf-extensions/issues/1522)). Once the earlier owner's cleanup is confirmed, the scope accepts the candidate. New pods run the selected digest, and no VM state carries over from the previous pod.
+5. To roll back, restore the previous digest, its template and its controller release. A reservation left by one release was recovered by the other release's `recover` in both directions between 0.5.0 and 0.6.0; a 0.5.0 controller cannot return the retirement reason, which it predates.
 
-Check which plugin image each node actually runs before uncordoning it:
+### Device plugin
+
+The rendered DaemonSet uses `OnDelete`, so a changed manifest leaves every node on its old plugin until that node's plugin pod is deleted, and `kubectl rollout status` refuses to wait on it. Replace one node at a time:
+
+1. Apply the new manifest. `plugin-status` (below) now fails each node, naming the pod's older revision and its digest.
+2. Cordon the node and drain it with `kubectl drain NODE --ignore-daemonsets --delete-emptydir-data --force`. `--force` is required because the controller's pods declare no Kubernetes controller. Eviction retires each owner with exit 70 and reason `pod termination requested`, and the controller confirms cleanup; the drains measured took 10 to 13 seconds. If the owning controller is gone, the pod waits on its finalizer and the drain waits with it. Run `recover` with the same identity; do not remove the finalizer.
+3. Record the checksum of the CDI spec the running plugin wrote. `kubectl debug` does not attach without `-i`; it prints the name of the pod it created, `node-debugger-NODE-…`, which the next commands take as `DEBUG_POD`. Read `/host/run/cdi`, not `/host/var/run/cdi`, which is an absolute symlink.
+
+   ```sh
+   kubectl debug node/NODE -n hyperlight-system --profile=general --image=python:3.13.12-slim-bookworm@sha256:3121f8b0804aa3698ab750d9a39ea4a42657a385c9b133722b915e55c51551a6 -- sha256sum /host/run/cdi/hyperlight.json
+   kubectl -n hyperlight-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/DEBUG_POD --timeout=120s
+   kubectl -n hyperlight-system logs DEBUG_POD
+   kubectl -n hyperlight-system delete pod DEBUG_POD
+   ```
+
+4. Delete the node's plugin pod and run `plugin-status` until this node's row reports `verified`. The command exits nonzero until every plugin-enabled node has been replaced, so read the node's row and its `reasons` rather than the exit code. A ready plugin pod is not yet an advertised device: one replacement read allocation 0 at 8 seconds and 1 at about 24; others advertised within 6 seconds.
+5. While the node is still cordoned, read the checksum again with the commands from step 3 and compare. The plugin rewrites the spec at start; its content did not change between these two plugins.
+6. Check guest execution on the node, which can only happen once it is uncordoned: a cordoned node refuses the controller's pods, and the probe then waits out its startup budget, about 200 seconds, and raises `TimeoutError` naming the node as unschedulable. First pause new sessions on the trusted hosts; otherwise an application pod can take the node's allocation before the probe does. The controller's pods select any node labelled `hyperlight.dev/hypervisor=kvm`, so on a pool with more than one node, also cordon the other plugin-enabled nodes, noting which were cordoned already; otherwise the probe can pass on an untouched node. Their running owners are unaffected. Then uncordon the node and run a `positive` probe. If it passes, uncordon only the nodes you cordoned for it and resume new sessions. If it fails, cordon the node again. The measured pools had one node, so the multi-node gate is untested.
+7. To roll back, run `plugin-status --image PREVIOUS_REFERENCE` before restoring anything: it verifies each node still running the previous plugin, and those nodes need nothing. Then apply the previous manifest in place of step 1, and repeat steps 2 to 6 on every node that reports the new plugin.
+
+Check which plugin image each node actually runs:
 
 ```sh
 uv run python scripts/hyperlight_aks.py plugin-status --namespace hyperlight-system --kubeconfig /path/to/kubeconfig --context verified-cluster
 ```
 
 The report lists every node labelled `hyperlight.dev/enabled=true` with its advertised allocation, cordon state and every plugin pod on it: the digest containerd resolved, readiness, restarts, whether it is terminating, controlled by the DaemonSet and on its newest revision. Only controlled pods count toward the verdict. It exits nonzero when a node has no single ready plugin pod, carries a plugin-labelled pod the DaemonSet does not control, runs a pod whose revision is older than the DaemonSet's newest one, resolved a digest other than the expected one, or advertises no allocation. The expected digest is the DaemonSet's. To check a node against a rollback target before the DaemonSet is restored, pass `--image` with its digest-pinned reference; the pod's older revision is then reported but does not fail the node. It reads pods, nodes, the DaemonSet and its ControllerRevisions only. Right after an apply it refuses until the DaemonSet controller has observed the new template; run it again. It does not read CDI files or create a VM, so a verified row is not device usability.
+
+### When a candidate fails
+
+- **A runtime digest that does not pull** fails the pod's startup: `supervise` raises `TimeoutError` after its startup budget, about 200 seconds, with cleanup confirmed. On the bundle path the reason reads only `PodInitializing` ([#1521](https://github.com/sokolaidev/maf-extensions/issues/1521)). The same scope then accepts the previous candidate.
+- **A plugin digest that does not pull** fails closed: the node's allocation fell to 0 within 14 seconds, so no application pod lands there. `OnDelete` does not replace the stuck pod after the manifest is restored; delete it, and the node advertised again 16 seconds later.
+- **A missing or stale CDI spec** is invisible to `plugin-status` and to the plugin's own health loop ([#1423](https://github.com/sokolaidev/maf-extensions/issues/1423)). Application pods fail with `CreateContainerError: … unresolvable CDI devices`, which `supervise` reports after its startup budget. Restarting the plugin pod rewrote the spec.
+
+### Not yet measured
+
+These runs did not cover Azure Linux pools, a plugin swap while a scope's cleanup is still pending, a kubelet restart or several nodes during maintenance, or a controller and image pair across 0.6.0 and a later release, whose lifecycle handshake has changed since. Plugin images carry no attestation ([#1424](https://github.com/sokolaidev/maf-extensions/issues/1424)).
 
 ## Failure and recovery
 
