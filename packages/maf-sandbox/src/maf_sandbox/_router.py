@@ -67,6 +67,7 @@ from ._protocol import (
     BackendDeclarations,
     Capability,
     Cleanup,
+    ConfiguredIdentity,
     DisposalCode,
     DisposalFailure,
     EgressRule,
@@ -426,6 +427,12 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
             )
         return DEFAULT_BACKEND_DECLARATIONS
     if isinstance(declared, BackendDeclarations):
+        if declared.configured_identity is not None and not isinstance(
+            cast(object, declared.configured_identity), ConfiguredIdentity
+        ):
+            raise SandboxBackendNotPermitted(
+                f"sandbox backend {backend.name!r} configured_identity must be ConfiguredIdentity"
+            )
         if type(declared.requires_exclusive_admission) is not bool:
             raise SandboxBackendNotPermitted(
                 f"sandbox backend {backend.name!r} requires_exclusive_admission must be bool"

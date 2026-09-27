@@ -21,7 +21,7 @@ from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequen
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import wraps
 from hashlib import sha256
 from time import monotonic
@@ -39,6 +39,7 @@ from maf_sandbox import (
     EgressRule,
     EntryKind,
     ExecResult,
+    IdentityScope,
     Isolation,
     IsolationScope,
     OsFamily,
@@ -107,6 +108,7 @@ __all__ = [
     "BACKEND_NAME",
     "AcasEgressPolicyConflict",
     "AcasEntryPayloadIncomplete",
+    "AcasIdentityScopeMismatch",
     "AcasSandboxBackend",
 ]
 
@@ -1277,6 +1279,10 @@ class _AcasSandbox:
         )
 
 
+class AcasIdentityScopeMismatch(PermissionError):
+    """The caller scope differs from the host-configured group identity scope."""
+
+
 class AcasSandboxBackend:
     """Hands out microVM-isolated sandboxes from an Azure Container Apps sandbox group."""
 
@@ -1325,7 +1331,11 @@ class AcasSandboxBackend:
 
     @property
     def declarations(self) -> BackendDeclarations:
-        return _DECLARATIONS
+        identity = self._config.group_identity
+        return replace(
+            _DECLARATIONS,
+            configured_identity=None if identity is None else identity.declaration,
+        )
 
     # -- client -------------------------------------------------------------------
 
@@ -1392,6 +1402,13 @@ class AcasSandboxBackend:
                 different egress policy. Dispose it before changing policy, or use another
                 key. Capture-invalidated instances are deleted before replacement.
         """
+        identity = self._config.group_identity
+        if (
+            identity is not None
+            and identity.scope is IdentityScope.PER_SCOPE
+            and key.scope != identity.scope_id
+        ):
+            raise AcasIdentityScopeMismatch("ACAS group identity belongs to another caller scope")
         _sandbox_labels(key, spec)
         async with self._acquire_lock((*_key_prefix(key), spec.kind)):
             await self._prepare_acquire(key, spec)

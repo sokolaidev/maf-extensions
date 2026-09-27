@@ -1,6 +1,6 @@
 # ACA Sandboxes research
 
-> Consolidated research record for ACAS host credentials, exec byte capture and method-scoped egress, with a follow-up method qualification on 2026-09-26. The implemented operational contracts live in [`../backends/acas.md`](../backends/acas.md), [`../backends/acas-credentials.md`](../backends/acas-credentials.md), [`../exec-output.md`](../exec-output.md) and [`../network.md`](../network.md). This record keeps the source evidence, measurements and remaining limits without repeating those guides.
+> Consolidated research record for ACAS host credentials, exec byte capture and method-scoped egress, with a follow-up method qualification on 2026-09-26 and a proposed group-identity declaration model for #1170. The implemented operational contracts live in [`../backends/acas.md`](../backends/acas.md), [`../backends/acas-credentials.md`](../backends/acas-credentials.md), [`../exec-output.md`](../exec-output.md) and [`../network.md`](../network.md). This record keeps the source evidence, measurements and remaining limits without repeating those guides.
 
 ## Conclusions at a glance
 
@@ -9,6 +9,51 @@
 - The initial ACAS method measurements left redirects, precedence and plaintext HTTP unqualified. The 2026-09-26 follow-up below qualifies a finite HTTPS token set, exact/wildcard union and policy-safe adapter reuse. CONNECT and arbitrary tokens remain outside that declaration; plaintext HTTP did not reach the recording origins.
 - ACAS working-directory preparation preserves existing directories and creates missing directories with guest authority, refusing if that creation fails. The service stat exposes no ownership, so the host-authority file plane — which mints root-owned directories — cannot be bounded by an ownership check and is not used for preparation.
 - ACAS remains the reference `MICROVM` backend and the only shipped backend that declares directory listing. It is a remote, billable service: live evidence is separate from offline tests and must be run with disposable groups and explicit cleanup.
+
+## Group identity declaration proposal for #1170
+
+The separate description model was adopted for implementation. The operational API and its limits live in [configured group identity](../backends/acas.md#report-configured-group-identity) and [host-configured identity descriptions](../hosts.md#host-configured-identity-descriptions). The proposal below records the decision and alternatives.
+
+This proposal preserves the configuration decision in [#1243](https://github.com/sokolaidev/maf-extensions/pull/1243): the host selects group assignments, permissions and sharing; acquisition neither reads ARM assignments nor requires an identity-free group. It addresses [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170)'s remaining declaration question. It is not an implemented API or an adopted change to the core authority contract.
+
+### Why the existing declaration cannot describe it
+
+`AttachedIdentity` promises a complete set of bounded authority channels and a positive, platform-enforced lifetime from creation. Its only channel is destination- and audience-bound egress header injection. ACAS group configuration establishes neither promise: [M1](https://github.com/sokolaidev/maf-extensions/issues/1164) found a guest token endpoint outside the header rules, and [M7](https://github.com/sokolaidev/maf-extensions/issues/1167) did not establish an absolute authority deadline. A configured idle or stopped-retention interval cannot supply the missing lifetime. Tokens already issued and the principal shared by other sandboxes have separate lifetimes.
+
+The router rejects authority-bearing specs for ACAS because the backend does not declare `ATTACHED_IDENTITY`. The adapter does not implement identity header transforms. A declaration must not advertise header injection until the adapter translates and applies those rules and preserves their identity during reuse. Successful platform measurements alone do not supply that implementation.
+
+### Proposed separation
+
+Add an optional host-configured identity description beside the existing enforced attachment declaration. Carry it through `BackendDeclarations`, acquisition events and `EffectiveState`, with its provenance and lack of an enforced authority deadline explicit in the serialized value. The purpose is to let a host inspect and record the configured authority of the backend that served a call. It does not satisfy `Capability.ATTACHED_IDENTITY`, grant a workload permission, or make `max_identity_retention_seconds` apply to ACAS group identity.
+
+| Property | Proposed meaning | Owner |
+|---|---|---|
+| Declaration omitted | Group identity is unreported; absence is not evidence of an identity-free deployment | Host |
+| `NONE` | Host asserts that the selected group exposes no configured identity | Host |
+| `SHARED` | Group authority can be shared across caller scopes | Host |
+| `PER_SCOPE` | Every principal exposed by the group is exclusive to one configured caller scope | Host provisions exclusivity; adapter rejects acquisition for another scope |
+| `PER_SANDBOX` | Unsupported for group-configured identity | Adapter rejects configuration |
+| Guest token access | Available authority includes the group token endpoint; egress audiences do not constrain token acquisition | Host declaration, informed by M1 |
+| Authority deadline | No enforced maximum is declared | Core representation and adapter |
+| Principal identifiers | Omitted from persisted effective state | Host retains assignment details in deployment configuration |
+
+A group can expose several principals. Any sharing statement must cover all of them: one scope-exclusive principal beside a cross-scope principal is `SHARED`. A group per scope is insufficient if a principal is also assigned elsewhere. The adapter can check the requested scope before resolving credentials or contacting the service; it cannot prove the host's exclusivity assertion. That check must cover cold and warm acquisition. Cleanup remains able to reach owned resources and must never revoke the group's principals.
+
+Ordinary specs continue to work with configured groups, including when this description is supplied. The existing strict attachment admission remains separate: a workload requiring `ATTACHED_IDENTITY` is still refused on ACAS. No new spec opt-in or router-wide default refusal is introduced by merely reporting deployment facts. An application may inspect the description when selecting its backends, but core must not present that description as verified policy enforcement.
+
+### Alternatives and decision needed
+
+One alternative extends `AttachedIdentity` with a guest-token channel and an explicitly unbounded lifetime. That changes its existing meaning and requires distinct host and workload acceptance, channel matching, information-flow handling and migration rules. Making the lifetime nullable alone would silently weaken the contract. This proposal does not adopt that change.
+
+Another alternative keeps the existing deployment-configuration boundary without adding a description API. It is sufficient if hosts have no consumer for recording configured identity alongside served backend state. In that case #1170 can be resolved by documenting that decision rather than adding unused vocabulary. The separate description is useful only if that visibility is wanted; it does not enable identity access that ACAS lacks today.
+
+### Implementation and verification boundary
+
+After adoption, implement the description in core and the ACAS configuration together. Advance both ends of ACAS's core dependency range to the release carrying the new surface; leave samples floors for their separate release sequence. Do not add principal minting or host-tool sandbox identity dispatch, which belong to #566, or service header injection as an incidental addition.
+
+Focused checks must establish configuration validation, omitted versus explicitly absent identity, serialized provenance and lifetime, `PER_SCOPE` refusal before any credential resolution on cold and warm acquisition, ordinary workload compatibility, and continued refusal of strict attached-identity requests. Existing acquisition observers must receive the description of the backend actually selected, including per-spec routing. An offline result cannot establish assignment, endpoint availability, token permissions or lifetime in a live deployment.
+
+No new Azure measurement accompanies this proposal. M1 and M7 remain evidence for their measured service/API/image configuration. A metadata-only implementation makes no new service-integration claim; any later header-rule implementation needs live positive and negative controls, reuse checks and verified cleanup before claiming support.
 
 ## Host-selected credentials
 

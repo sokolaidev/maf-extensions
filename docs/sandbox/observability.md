@@ -96,6 +96,8 @@ See the [package guide](../../packages/maf-sandbox-otel/README.md) for wiring, s
 
 `effective_state_middleware()` writes JSON-serializable `EffectiveState` records to `AgentSession.state["maf_sandbox.served"]`.
 
+`configured_identity` records the served backend's optional host-reported identity description: sharing scope and guest token endpoint access, with `provenance="host_configuration"` and `authority_lifetime_seconds=null`. A null description means unreported; a description with scope `none` is an explicit host assertion of absence. Neither is a discovery result. Scope identifiers and principal identifiers are omitted. The separate `attached_identity` field describes the enforced core contract.
+
 ```python
 from agent_framework import Agent
 
