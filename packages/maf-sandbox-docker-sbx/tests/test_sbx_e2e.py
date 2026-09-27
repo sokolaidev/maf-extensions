@@ -224,11 +224,16 @@ def test_exec_suite_the_deadline_and_the_output_bound(tmp_path, image):
             )
             assert left.stdout.strip() == "0", left
             assert sandbox.instance_id not in backend.retired
-            wrapped = await sandbox.exec(["id", "-u"], working_directory=".", timeout=30)
-            direct = subprocess.run([_SBX, "exec", sandbox.name, "id", "-u"], capture_output=True)
-            assert wrapped.stdout.strip() == direct.stdout.decode().strip() != "", (wrapped, direct)
+            ids = "id -u; id -g"
+            wrapped = await sandbox.exec(ids, working_directory=".", timeout=30)
+            direct = subprocess.run(
+                [_SBX, "exec", sandbox.name, "sh", "-c", ids], capture_output=True
+            )
+            assert wrapped.stdout.split() == direct.stdout.decode().split(), (wrapped, direct)
+            assert len(wrapped.stdout.split()) == 2, wrapped
+            # A user namespace never reaches the guest's real root, Docker's template included.
             sudo = await sandbox.exec("sudo -n true", working_directory=".", timeout=30)
-            print(f"uid {wrapped.stdout.strip()}; sudo -n true: exit {sudo.exit_code}")
+            assert sudo.exit_code != 0, sudo
             missing = await sandbox.exec(["pwd"], working_directory="/nowhere", timeout=30)
             assert missing.exit_code == 125 and "nowhere" in missing.stderr, missing
             await assert_exec_conformance(_subject(backend, sandbox, links))

@@ -101,11 +101,11 @@ _MARKER = ".maf-sbx-workspace"
 
 #: Runs every command, in three stages the script reaches by running itself again (``$1``).
 #: ``sbx`` grants the mount capability only to Docker's own templates, so ``enter`` makes a user
-#: and mount namespace where the caller is root; the next stage binds the workspace at the storage
-#: base's parent, then maps the caller back to its own uid and gid before ``run`` starts the
-#: command.  A failure before ``run`` prints no nonce.  argv arrives base64-encoded behind an
-#: ``x`` so no argument is empty, which ``sbx`` refuses.  The nonce on stderr marks where the
-#: guest's own stderr begins.  ``setsid`` gives the command its own process group, recorded in
+#: and mount namespace where the caller is root; ``bind`` binds the workspace at the storage base's
+#: parent, then maps the caller back to the uid and gid its namespace maps root to, before ``run``
+#: starts the command.  A failure before ``run`` prints no nonce.  argv arrives base64-encoded
+#: behind an ``x`` so no argument is empty, which ``sbx`` refuses.  The nonce on stderr marks where
+#: the guest's own stderr begins.  ``setsid`` gives the command its own process group, recorded in
 #: the pid file, so a deadline can kill the whole group.  The command runs only if no cancel file
 #: exists once its group is recorded; see ``_KILL_SCRIPT`` for why that closes the race.
 _EXEC_SCRIPT = r"""s=$1 k=$2 n=$3 f=$4 p=$5 m=$6 q=$7
@@ -113,15 +113,17 @@ shift 7
 case $k in
 enter)
   exec unshare --user --mount --map-root-user -- \
-    sh -c "$s" maf-sbx "$s" "$(id -u):$(id -g)" "$n" "$f" "$p" "$m" "$q" "$@"
+    sh -c "$s" maf-sbx "$s" bind "$n" "$f" "$p" "$m" "$q" "$@"
   ;;
-run) ;;
-*)
+bind)
   mount --bind -- "$m" "$p" || exit 125
   if [ ! -e "$p/$q" ]; then printf '%s-unmounted\n' "$n" >&2; exit 1; fi
-  exec unshare --user --map-user="${k%:*}" --map-group="${k#*:}" -- \
+  read -r _ u _ < /proc/self/uid_map && read -r _ g _ < /proc/self/gid_map || exit 125
+  exec unshare --user --map-user="$u" --map-group="$g" -- \
     sh -c "$s" maf-sbx "$s" run "$n" "$f" "$p" "$m" "$q" "$@"
   ;;
+run) ;;
+*) exit 125 ;;
 esac
 printf '%s\n' "$n" >&2
 d() { printf %s "${1#x}" | base64 -d && printf x; }

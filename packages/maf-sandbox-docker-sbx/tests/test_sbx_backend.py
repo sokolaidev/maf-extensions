@@ -1313,9 +1313,11 @@ _HAS_TOOLS = _SH is not None and all(shutil.which(tool) for tool in ("setsid", "
 
 
 #: Stand-ins that keep every stage of the wrapper but need no namespace privilege: `unshare`
-#: runs what follows its `--`, and `mount` records its arguments.
+#: records its options and runs what follows its `--`, and `mount` records its arguments.
 _UNSHARE_STUB = """#!/bin/sh
-while [ "$1" != "--" ]; do shift; done
+o=
+while [ "$1" != "--" ]; do o="$o $1"; shift; done
+printf '%s\\n' "${o# }" >> "$(dirname "$0")/unshares"
 shift
 exec "$@"
 """
@@ -1353,6 +1355,15 @@ class TestTheWrapperInARealShell:
         assert result.returncode == 0
         mounts = (tmp_path / "stubs" / "mounts").read_text()
         assert mounts == f"--bind -- /guest/ws {tmp_path / 'parent'}\n"
+
+    @pytest.mark.skipif(not Path("/proc/self/uid_map").exists(), reason="needs /proc id maps")
+    def test_the_command_is_mapped_to_the_ids_its_namespace_maps_root_to(self, tmp_path):
+        self._run(tmp_path, ["true"])
+        outer = [Path(f"/proc/self/{kind}_map").read_text().split()[1] for kind in ("uid", "gid")]
+        assert (tmp_path / "stubs" / "unshares").read_text().splitlines() == [
+            "--user --mount --map-root-user",
+            f"--user --map-user={outer[0]} --map-group={outer[1]}",
+        ]
 
     def test_argv_arrives_verbatim_including_empty_arguments(self, tmp_path):
         result = self._run(tmp_path, ["printf", "[%s]", "", "a b", "$HOME", "x\ny\n", ""])
