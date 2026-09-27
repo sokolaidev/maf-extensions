@@ -203,7 +203,9 @@ def plugin_rollout(
             reasons.append(f"{len(live)} running plugin pods, expected one")
         else:
             [pod] = live
-            if not pod["current_revision"]:
+            # A rollback target is checked before the DaemonSet is restored, so its pods
+            # are necessarily on an older revision.
+            if not image and not pod["current_revision"]:
                 reasons.append("the plugin pod predates the DaemonSet template; delete it")
             if pod["running_digest"] != expected:
                 reasons.append("the running plugin digest is not the expected one")

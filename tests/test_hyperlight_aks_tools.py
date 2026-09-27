@@ -259,6 +259,13 @@ def test_an_explicit_image_checks_a_rollback_before_the_daemonset_is_restored():
     assert report["reasons"] == ["the running plugin digest is not the expected one"]
 
 
+def test_a_rollback_target_verifies_on_its_older_revision():
+    old = plugin_pod(image=PREVIOUS_PLUGIN, revision="old")
+    [report] = rollout([old], [plugin_node()], PREVIOUS_PLUGIN)
+    assert report["verified"]
+    assert report["pods"][0]["current_revision"] is False
+
+
 def test_a_template_match_is_not_enough_when_the_node_resolved_another_digest():
     pod = plugin_pod(imageID="ghcr.io/hyperlight-dev/hyperlight-device-plugin@sha256:" + "b" * 64)
     [report] = rollout([pod], [plugin_node()])
