@@ -22,6 +22,11 @@ REASON_LIMIT = 1024
 PLATFORM_EXIT = 78
 PLATFORM_REFUSAL = "maf-hyperlight: unsupported platform: "
 TERMINATION_LOG = "/dev/termination-log"
+PING_SECONDS = 1.0
+LEASE_SECONDS = 5.0
+ACK_SECONDS = 3.0
+# PID 1 answers a begin within this long, so the owner's socket must wait at least as long.
+BEGIN_WAIT = LEASE_SECONDS + ACK_SECONDS
 
 
 def frame(message: dict[str, object]) -> bytes:
@@ -118,7 +123,9 @@ class PodJob:
         self.closed = False
         self.request("validate")
 
-    def request(self, operation: str, **fields: object) -> dict[str, object]:
+    def request(
+        self, operation: str, *, timeout: float | None = None, **fields: object
+    ) -> dict[str, object]:
         """Authenticate the local supervisor and bind every request to this pod generation."""
         if os.getpid() != self.owner:
             raise HyperlightWorkerError("a forked process cannot use another pod owner")
@@ -129,7 +136,7 @@ class PodJob:
             **fields,
         }
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(self.timeout)
+            connection.settimeout(self.timeout if timeout is None else timeout)
             connection.connect(POD_SOCKET)
             peer = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
             pid, uid, _ = struct.unpack("3i", peer)
@@ -172,7 +179,12 @@ class PodJob:
         remaining = deadline - time.monotonic()
         if not math.isfinite(remaining) or remaining <= 0:
             raise TimeoutError("pod operation expired before submission")
-        self.request("begin", deadline=deadline, expires_at=time.time() + remaining)
+        self.request(
+            "begin",
+            timeout=max(self.timeout, min(remaining, BEGIN_WAIT) + 1),
+            deadline=deadline,
+            expires_at=time.time() + remaining,
+        )
 
     def end(self) -> None:
         """Clear the registered operation after the worker has replied."""

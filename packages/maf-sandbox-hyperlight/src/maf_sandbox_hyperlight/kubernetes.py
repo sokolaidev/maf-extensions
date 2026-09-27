@@ -21,6 +21,7 @@ from maf_sandbox import SandboxKey
 
 from ._pod import (
     FRAME_LIMIT,
+    PING_SECONDS,
     PLATFORM_EXIT,
     PLATFORM_REFUSAL,
     REASON_LIMIT,
@@ -813,7 +814,7 @@ class HyperlightPodController:
                 return "reconnection was not confirmed"
             if now >= next_ping:
                 send("ping")
-                next_ping = now + 1
+                next_ping = now + PING_SECONDS
             try:
                 message = messages.get(timeout=0.05)
             except queue.Empty:

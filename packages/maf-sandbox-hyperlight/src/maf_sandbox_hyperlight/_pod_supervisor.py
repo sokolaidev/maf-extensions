@@ -21,7 +21,11 @@ from types import FrameType
 from typing import cast
 
 from ._pod import (
+    ACK_SECONDS,
+    BEGIN_WAIT,
     FRAME_LIMIT,
+    LEASE_SECONDS,
+    PING_SECONDS,
     PLATFORM_EXIT,
     PLATFORM_REFUSAL,
     REASON_LIMIT,
@@ -35,7 +39,6 @@ from ._pod import (
 from ._pod_config import POD_BINDING, POD_SOCKET, HyperlightPodConfig, PodLaunch
 from ._wire import HyperlightPodDetached, HyperlightWorkerError
 
-LEASE_SECONDS = 5.0
 STARTUP_SECONDS = 60.0
 PR_GET_DUMPABLE = 3
 PR_SET_DUMPABLE = 4
@@ -123,6 +126,7 @@ class Supervisor:
         self.expires_at: float | None = None
         self.key: str | None = None
         self.counter = 0
+        self.resumed_at = -math.inf
         self.connected = False
         self.oom_kills = _oom_kills()
 
@@ -303,15 +307,23 @@ class Supervisor:
             raise HyperlightWorkerError("unknown pod lifecycle operation")
 
     def await_ack(self) -> bool:
-        """Wait up to three seconds; in continuity mode, a quiet controller until it is stale."""
+        """Wait for the controller's acknowledgement; never longer than the owner's socket waits.
+
+        In continuity mode a quiet controller is waited for until it is stale, and a controller
+        that resumes gets ACK_SECONDS from its resume to acknowledge.
+        """
         assert self.deadline is not None
-        limit = time.monotonic() + 3
+        started = time.monotonic()
         while not self.ack.wait(0.05):
             now = time.monotonic()
-            if now >= self.deadline or (self.continuity and now >= self.fresh):
+            if now >= self.deadline or now >= started + BEGIN_WAIT:
                 return False
-            # A controller that pinged within the last two seconds is refusing, not gone.
-            if now >= limit and (not self.continuity or now < self.fresh - LEASE_SECONDS + 2):
+            if self.continuity and now >= self.fresh:
+                return False
+            # A controller that has not missed two pings is refusing, not gone.
+            limit = max(started, self.resumed_at) + ACK_SECONDS
+            pinging = now < self.fresh - LEASE_SECONDS + 2 * PING_SECONDS
+            if now >= limit and (not self.continuity or pinging):
                 return False
         return True
 
@@ -404,6 +416,7 @@ class Supervisor:
             self.renew()
         elif operation == "resume" and self.connected and self.continuity:
             self.renew()
+            self.resumed_at = time.monotonic()
             self.emit(
                 "resumed",
                 sequence=self.sequence,

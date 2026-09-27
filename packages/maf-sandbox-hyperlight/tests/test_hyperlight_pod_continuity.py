@@ -24,6 +24,7 @@ from maf_sandbox_hyperlight import (
     HyperlightSandboxConfig,
     HyperlightWorkerError,
     _backend,
+    _pod,
     _pod_supervisor,
     _process,
     kubernetes,
@@ -218,6 +219,63 @@ def test_a_pinging_controller_that_never_acknowledges_still_retires(pid1, monkey
         pinger.join()
     assert pid1.reason == "controller did not acknowledge the deadline"
     assert time.monotonic() - started < 5
+
+
+def test_the_owner_waits_for_begin_longer_than_pid1_can_hold_it(monkeypatch):
+    job = object.__new__(PodJob)
+    job.timeout = 3.0
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(job, "request", lambda operation, **fields: sent.append(fields) or {})
+    job.begin(time.monotonic() + 60)
+    job.begin(time.monotonic() + 2)
+    assert sent[0]["timeout"] > _pod.BEGIN_WAIT
+    assert 2 < cast("float", sent[1]["timeout"]) and sent[1]["timeout"] >= job.timeout
+
+
+def test_repeated_resumes_cannot_hold_a_begin_past_its_bound(pid1, monkeypatch):
+    monkeypatch.setattr(_pod_supervisor, "BEGIN_WAIT", 1.0)
+    monkeypatch.setattr(_pod_supervisor, "ACK_SECONDS", 0.4)
+    monkeypatch.setattr(pid1, "emit", lambda event, **fields: None)
+    stop = threading.Event()
+
+    def resume_without_ack():
+        while not stop.wait(0.1):
+            pid1.renew()
+            pid1.resumed_at = time.monotonic()
+
+    resumer = threading.Thread(target=resume_without_ack, daemon=True)
+    resumer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(HyperlightWorkerError):
+            pid1.handle(
+                {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
+            )
+    finally:
+        stop.set()
+        resumer.join()
+    assert time.monotonic() - started < 1.5
+
+
+def test_an_acknowledgement_just_after_a_late_resume_is_accepted(pid1, monkeypatch):
+    monkeypatch.setattr(_pod_supervisor, "LEASE_SECONDS", 1.0)
+    monkeypatch.setattr(_pod_supervisor, "ACK_SECONDS", 0.3)
+    monkeypatch.setattr(_pod_supervisor, "PING_SECONDS", 0.1)
+    monkeypatch.setattr(pid1, "emit", lambda event, **fields: None)
+    pid1.renew()
+
+    def reconnect():
+        # The controller comes back after the acknowledgement window, then acknowledges.
+        time.sleep(0.6)
+        pid1.controller_message(sealed("resume", 1))
+        time.sleep(0.2)
+        pid1.controller_message(sealed("ack", 2, sequence=1))
+
+    controller = threading.Thread(target=reconnect, daemon=True)
+    controller.start()
+    pid1.handle({"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10})
+    controller.join()
+    assert pid1.deadline is not None and not pid1.retired.is_set()
 
 
 def test_resume_reports_the_call_state_the_lost_events_carried(pid1, monkeypatch):
