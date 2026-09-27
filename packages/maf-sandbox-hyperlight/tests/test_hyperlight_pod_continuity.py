@@ -7,6 +7,7 @@ import io
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -483,6 +484,65 @@ def test_a_stale_begin_and_a_resume_agree_on_whether_the_call_runs(pid1, monkeyp
     state.ready = True
     replay(delivered, state)
     assert (state.deadline is not None) == admitted == (pid1.deadline is not None)
+
+
+@pytest.mark.parametrize(
+    "recovery,connected,reason",
+    [
+        (30, True, "controller recovery window expired"),
+        (30, False, "controller never sent its hello"),
+        (0, True, "controller lease or native deadline expired"),
+        (0, False, "controller lease or native deadline expired"),
+    ],
+)
+def test_a_lapsed_lease_names_which_controller_was_lost(monkeypatch, recovery, connected, reason):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    subject = Supervisor(replace(LAUNCH, recovery_seconds=recovery), ["application"])
+    subject.connected = connected
+    assert subject.lapse_reason() == reason
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="PID 1's run loop is Linux-only")
+def test_a_pod_whose_hello_never_came_records_that_reason(tmp_path):
+    log = tmp_path / "termination-log"
+    binding = {
+        "owner": LAUNCH.owner,
+        "generation": "generation",
+        "memory_limit_bytes": 1,
+        "hello_digest": LAUNCH.hello_digest,
+        "recovery_seconds": 1,
+    }
+    program = "\n".join(
+        [
+            "import json, os, sys",
+            "from maf_sandbox_hyperlight import _pod_supervisor",
+            f"os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(binding)!r}",
+            "os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'",
+            f"_pod_supervisor.TERMINATION_LOG = {str(log)!r}",
+            "_pod_supervisor.STARTUP_SECONDS = 0",
+            "_pod_supervisor.verify_init = lambda launch: {}",
+            "_pod_supervisor._oom_kills = lambda: 0",
+            "sys.argv = ['supervisor', 'app']",
+            "_pod_supervisor.main()",
+        ]
+    )
+    # The real run loop, with an attach that stays open and never writes a hello.
+    pid1 = subprocess.Popen(
+        [sys.executable, "-c", program],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert pid1.wait(timeout=20) == 70
+    finally:
+        if pid1.poll() is None:
+            pid1.kill()
+        assert pid1.stdin is not None and pid1.stderr is not None
+        pid1.stdin.close()
+        pid1.stderr.close()
+        pid1.wait(timeout=10)
+    assert log.read_text(encoding="utf-8") == "controller never sent its hello"
 
 
 def test_default_mode_has_no_resume(monkeypatch):

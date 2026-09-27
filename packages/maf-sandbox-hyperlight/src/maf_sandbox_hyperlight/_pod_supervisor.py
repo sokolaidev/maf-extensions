@@ -400,6 +400,14 @@ class Supervisor:
         finally:
             self.closing = False
 
+    def lapse_reason(self) -> str:
+        """Why the lease lapsed; continuity mode tells a lost controller from one never bound."""
+        if not self.continuity:
+            return "controller lease or native deadline expired"
+        if self.connected:
+            return "controller recovery window expired"
+        return "controller never sent its hello"
+
     def renew(self) -> None:
         self.fresh = time.monotonic() + LEASE_SECONDS
         self.lease = self.fresh + self.launch.recovery_seconds
@@ -469,9 +477,9 @@ class Supervisor:
                         raise HyperlightWorkerError("controller lifecycle write was incomplete")
                 now = time.monotonic()
                 deadline = self.deadline
-                if self.continuity and self.connected and now >= self.lease:
-                    self.retire("controller recovery window expired")
-                if now >= self.lease or (deadline is not None and now >= deadline):
+                if now >= self.lease:
+                    self.retire(self.lapse_reason())
+                if deadline is not None and now >= deadline:
                     self.retire("controller lease or native deadline expired")
                 if self.retired.is_set():
                     break
