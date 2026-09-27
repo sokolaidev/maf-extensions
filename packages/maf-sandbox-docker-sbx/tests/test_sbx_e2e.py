@@ -234,6 +234,17 @@ def test_exec_suite_the_deadline_and_the_output_bound(tmp_path, image):
             # A user namespace never reaches the guest's real root, Docker's template included.
             sudo = await sandbox.exec("sudo -n true", working_directory=".", timeout=30)
             assert sudo.exit_code != 0, sudo
+            # The namespace maps the caller's own ids and no others.
+            uid = wrapped.stdout.split()[0]
+            owner = await sandbox.exec(
+                ["stat", "-c", "%u", "/etc/passwd"], working_directory=".", timeout=30
+            )
+            assert owner.stdout.strip() == ("0" if uid == "0" else "65534"), owner
+            given = await sandbox.exec(
+                "touch given && chown 4321 given", working_directory=".", timeout=30
+            )
+            print(f"uid {uid}: /etc/passwd owner {owner.stdout.strip()}, chown {given.exit_code}")
+            assert given.exit_code != 0, given
             missing = await sandbox.exec(["pwd"], working_directory="/nowhere", timeout=30)
             assert missing.exit_code == 125 and "nowhere" in missing.stderr, missing
             await assert_exec_conformance(_subject(backend, sandbox, links))
