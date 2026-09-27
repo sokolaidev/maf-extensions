@@ -136,7 +136,13 @@ def test_ci_only_gates_image_and_its_success_artifact():
             )
             gated.append(step["name"])
         if "check_hyperlight_linux.py" in step.get("run", ""):
-            assert step["if"] == "needs.changes.outputs.code == 'true'"
+            if step["name"] == "HTTPS method conformance on Linux KVM":
+                assert (
+                    step["if"]
+                    == "github.event_name == 'workflow_dispatch' && inputs.hyperlight_https"
+                )
+            else:
+                assert step["if"] == "needs.changes.outputs.code == 'true'"
             assert not step.get("continue-on-error")
     assert gated == [
         "Build and verify the Hyperlight runtime image",

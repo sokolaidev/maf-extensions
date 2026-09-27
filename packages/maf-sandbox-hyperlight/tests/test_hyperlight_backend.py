@@ -247,8 +247,14 @@ def test_method_rules_reach_both_schemes_and_are_part_of_the_policy(backend):
     asyncio.run(check())
 
 
-def test_method_rules_route_to_hyperlight_only_within_its_tokens():
-    router = SandboxRouter([HyperlightSandboxBackend()])
+@pytest.mark.parametrize("method", ["TRACE", "CONNECT", "PROPFIND", "X-CUSTOM", "*"])
+def test_method_rules_route_to_hyperlight_only_within_its_tokens(method, monkeypatch):
+    def unexpected(*args: object):
+        raise AssertionError("unsupported methods must not enter the SDK worker")
+
+    monkeypatch.setattr(_backend, "Worker", unexpected)
+    backend = HyperlightSandboxBackend()
+    router = SandboxRouter([backend])
     scoped = replace(
         SPEC, egress=Egress.ALLOWLIST, egress_allow=(EgressRule("example.com", methods=("GET",)),)
     )
@@ -256,10 +262,13 @@ def test_method_rules_route_to_hyperlight_only_within_its_tokens():
     custom = replace(
         SPEC,
         egress=Egress.ALLOWLIST,
-        egress_allow=(EgressRule("example.com", methods=("PROPFIND",)),),
+        egress_allow=(EgressRule("example.com", methods=(method,)),),
     )
-    with pytest.raises(SandboxCapabilityNotSupported, match="PROPFIND"):
+    with pytest.raises(SandboxCapabilityNotSupported):
         router.ensure_can_serve(custom)
+    with pytest.raises(SandboxCapabilityNotSupported):
+        asyncio.run(backend.acquire(KEY, custom))
+    assert not backend._sandboxes
 
 
 def test_backend_objects_and_event_loops_share_the_full_key(backend):
