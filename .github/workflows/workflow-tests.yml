@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       hyperlight_provenance:
-        description: "Build, attest and verify temporary Hyperlight runtime images in the live registry"
+        description: "Build, attest and verify temporary Hyperlight runtime images in isolated registries"
         type: boolean
         default: false
 
@@ -28,7 +28,6 @@ jobs:
       id-token: write
       attestations: write
     uses: ./.github/workflows/hyperlight-provenance.yml
-    secrets: inherit
 
   changes:
     name: What affects workflow behavior

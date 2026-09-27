@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import check_hyperlight_provenance_live as live
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.workflow
 
 
 @pytest.mark.parametrize(
@@ -90,14 +91,16 @@ def test_workflow_separates_signing_verification_and_cleanup():
     assert jobs["build"]["permissions"]["attestations"] == "write"
     assert jobs["verify"]["permissions"]["attestations"] == "read"
     assert jobs["verify"]["needs"] == "build"
-    assert jobs["cleanup"]["if"] == "always()"
-    assert set(jobs["cleanup"]["needs"]) == {"build", "verify"}
+    assert "id-token" not in jobs["verify"]["permissions"]
+    for job in jobs.values():
+        assert job["steps"][-1]["if"] == "always()"
     assert all(job["runs-on"] == "ubuntu-latest" for job in jobs.values())
-    assert all(job["environment"] == "live-verify" for job in jobs.values())
+    assert all("environment" not in job for job in jobs.values())
+    assert "secrets." not in yaml.safe_dump(workflow)
     caller = yaml.safe_load((ROOT / ".github/workflows/workflow-tests.yml").read_text())["jobs"][
         "hyperlight-provenance"
     ]
     assert (
         caller["if"] == "github.event_name == 'workflow_dispatch' && inputs.hyperlight_provenance"
     )
-    assert caller["secrets"] == "inherit"
+    assert "secrets" not in caller

@@ -7,14 +7,13 @@ permissions:
   contents: read
 
 env:
-  REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
-  TEST_REPOSITORY: hyperlight-provenance-test/run-${{ github.run_id }}-${{ github.run_attempt }}
+  REGISTRY_IMAGE: registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+  IMAGE: localhost:5000/hyperlight-runtime
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    environment: live-verify
     permissions:
       contents: read
       id-token: write
@@ -33,43 +32,25 @@ jobs:
         run: |
           uv run --locked python scripts/build_hyperlight_aks_image.py \
             --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag hyperlight-provenance:runtime
-      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Resolve the configured registry
-        env:
-          REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          REGISTRY_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
-        run: |
-          set -euo pipefail
-          az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registries=$(az acr list --resource-group "$REGISTRY_GROUP" -o json)
-          registry=$(printf '%s' "$registries" | jq -ce --arg input "$REGISTRY" \
-            '. as $all | ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $configured | [.[] | select((.loginServer | ascii_downcase) == $configured or (.name | ascii_downcase) == $configured)] | if length == 1 then .[0] else error("configured registry mismatch: visible=" + ($all | length | tostring) + ", input_length=" + ($input | length | tostring) + ", normalized_length=" + ($configured | length | tostring) + ", hostname=" + ($configured | endswith(".azurecr.io") | tostring)) end')
-          name=$(printf '%s' "$registry" | jq -er '.name')
-          server=$(printf '%s' "$registry" | jq -er '.loginServer')
-          echo "::add-mask::$name"
-          echo "::add-mask::$server"
-          echo "REGISTRY=$name" >> "$GITHUB_ENV"
-          echo "REGISTRY_SERVER=$server" >> "$GITHUB_ENV"
       - name: Publish isolated test candidates
         id: publish
-        shell: bash
         run: |
           set -euo pipefail
-          az acr login --name "$REGISTRY" --output none
-          server="$REGISTRY_SERVER"
-          image="$server/$TEST_REPOSITORY"
-          docker tag hyperlight-provenance:runtime "$image:runtime"
-          docker push "$image:runtime"
+          mkdir -p "$RUNNER_TEMP/registry-data"
+          docker run --detach --name hyperlight-provenance-registry \
+            --publish 127.0.0.1:5000:5000 \
+            --volume "$RUNNER_TEMP/registry-data:/var/lib/registry" "$REGISTRY_IMAGE"
+          curl --fail --silent --retry 20 --retry-connrefused --retry-delay 1 http://localhost:5000/v2/
+          docker tag hyperlight-provenance:runtime "$IMAGE:runtime"
+          docker push "$IMAGE:runtime"
           # A changed manifest has no attestation even though its layers are the signed runtime's.
           printf 'FROM hyperlight-provenance:runtime\nLABEL provenance-test="unsigned"\n' \
-            | docker build --tag "$image:unsigned" -
-          docker push "$image:unsigned"
-          digest=$(az acr manifest show-metadata --registry "$REGISTRY" --name "$TEST_REPOSITORY:runtime" --query digest -o tsv)
-          unsigned_digest=$(az acr manifest show-metadata --registry "$REGISTRY" --name "$TEST_REPOSITORY:unsigned" --query digest -o tsv)
+            | docker build --tag "$IMAGE:unsigned" -
+          docker push "$IMAGE:unsigned"
+          runtime=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:runtime")
+          unsigned=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:unsigned")
+          digest="${runtime##*@}"
+          unsigned_digest="${unsigned##*@}"
           test "$digest" != "$unsigned_digest"
           inputs_sha256=$(sha256sum "$RUNNER_TEMP/hyperlight-image/build-inputs.json" | cut -d ' ' -f 1)
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
@@ -78,11 +59,23 @@ jobs:
       - name: Attest the runtime digest with GitHub OIDC
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          # The signed logical name keeps private registry identifiers out of public attestations.
           subject-name: hyperlight-runtime-integration
           subject-digest: ${{ steps.publish.outputs.digest }}
           push-to-registry: false
           create-storage-record: false
+      - name: Preserve the registry's exact manifests and blobs
+        run: |
+          set -euo pipefail
+          docker stop hyperlight-provenance-registry
+          sudo tar -C "$RUNNER_TEMP/registry-data" -czf "$RUNNER_TEMP/registry-data.tar.gz" .
+      - name: Transfer the registry to a fresh runner
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hyperlight-provenance-registry
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          path: ${{ runner.temp }}/registry-data.tar.gz
       - name: Retain clean build inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -91,15 +84,19 @@ jobs:
           path: |
             ${{ runner.temp }}/hyperlight-image/source.json
             ${{ runner.temp }}/hyperlight-image/build-inputs.json
+      - name: Remove the temporary registry
+        if: always()
+        run: |
+          if docker container inspect hyperlight-provenance-registry >/dev/null 2>&1; then
+            docker rm --force hyperlight-provenance-registry
+          fi
 
   verify:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: live-verify
     permissions:
       contents: read
-      id-token: write
       attestations: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -107,28 +104,20 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Resolve the configured registry
-        env:
-          REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          REGISTRY_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          name: hyperlight-provenance-registry
+          path: ${{ runner.temp }}
+      - name: Restore the exact registry contents on a fresh runner
         run: |
           set -euo pipefail
-          az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registries=$(az acr list --resource-group "$REGISTRY_GROUP" -o json)
-          registry=$(printf '%s' "$registries" | jq -ce --arg input "$REGISTRY" \
-            '. as $all | ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $configured | [.[] | select((.loginServer | ascii_downcase) == $configured or (.name | ascii_downcase) == $configured)] | if length == 1 then .[0] else error("configured registry mismatch: visible=" + ($all | length | tostring) + ", input_length=" + ($input | length | tostring) + ", normalized_length=" + ($configured | length | tostring) + ", hostname=" + ($configured | endswith(".azurecr.io") | tostring)) end')
-          name=$(printf '%s' "$registry" | jq -er '.name')
-          server=$(printf '%s' "$registry" | jq -er '.loginServer')
-          echo "::add-mask::$name"
-          echo "::add-mask::$server"
-          echo "REGISTRY=$name" >> "$GITHUB_ENV"
-          echo "REGISTRY_SERVER=$server" >> "$GITHUB_ENV"
-      - name: Verify signed runtime and refusal cases on a fresh runner
+          mkdir -p "$RUNNER_TEMP/registry-data"
+          sudo tar -C "$RUNNER_TEMP/registry-data" -xzf "$RUNNER_TEMP/registry-data.tar.gz"
+          docker run --detach --name hyperlight-provenance-registry \
+            --publish 127.0.0.1:5000:5000 \
+            --volume "$RUNNER_TEMP/registry-data:/var/lib/registry" "$REGISTRY_IMAGE"
+          curl --fail --silent --retry 20 --retry-connrefused --retry-delay 1 http://localhost:5000/v2/
+      - name: Verify signed runtime and refusal cases
         env:
           GH_TOKEN: ${{ github.token }}
           DIGEST: ${{ needs.build.outputs.digest }}
@@ -136,64 +125,20 @@ jobs:
           INPUTS_SHA256: ${{ needs.build.outputs.inputs_sha256 }}
           SIGNER: https://github.com/${{ github.repository }}/.github/workflows/hyperlight-provenance.yml@${{ github.ref }}
         run: |
-          set -euo pipefail
-          az acr login --name "$REGISTRY" --output none
-          server="$REGISTRY_SERVER"
           uv run --locked python scripts/check_hyperlight_provenance_live.py \
-            --image "$server/$TEST_REPOSITORY@$DIGEST" \
-            --unsigned-image "$server/$TEST_REPOSITORY@$UNSIGNED_DIGEST" \
+            --image "$IMAGE@$DIGEST" --unsigned-image "$IMAGE@$UNSIGNED_DIGEST" \
             --signer-identity "$SIGNER" --source-revision "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
             --build-inputs-sha256 "$INPUTS_SHA256" --output "$RUNNER_TEMP/provenance-evidence"
-      - name: Retain public verification evidence
+      - name: Retain verification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hyperlight-provenance-verification
           if-no-files-found: error
           path: ${{ runner.temp }}/provenance-evidence/*.json
-
-  cleanup:
-    if: always()
-    needs: [build, verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: live-verify
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Resolve the configured registry
-        env:
-          REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          REGISTRY_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+      - name: Remove the temporary registry
+        if: always()
         run: |
-          set -euo pipefail
-          az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registries=$(az acr list --resource-group "$REGISTRY_GROUP" -o json)
-          registry=$(printf '%s' "$registries" | jq -ce --arg input "$REGISTRY" \
-            '. as $all | ($input | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $configured | [.[] | select((.loginServer | ascii_downcase) == $configured or (.name | ascii_downcase) == $configured)] | if length == 1 then .[0] else error("configured registry mismatch: visible=" + ($all | length | tostring) + ", input_length=" + ($input | length | tostring) + ", normalized_length=" + ($configured | length | tostring) + ", hostname=" + ($configured | endswith(".azurecr.io") | tostring)) end')
-          name=$(printf '%s' "$registry" | jq -er '.name')
-          server=$(printf '%s' "$registry" | jq -er '.loginServer')
-          echo "::add-mask::$name"
-          echo "::add-mask::$server"
-          echo "REGISTRY=$name" >> "$GITHUB_ENV"
-          echo "REGISTRY_SERVER=$server" >> "$GITHUB_ENV"
-      - name: Remove only this run's test repository
-        run: |
-          set -euo pipefail
-          repository="hyperlight-provenance-test/run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          test "$TEST_REPOSITORY" = "$repository"
-          repositories=$(az acr repository list --name "$REGISTRY" -o tsv)
-          if printf '%s\n' "$repositories" | grep -Fxq "$repository"; then
-            az acr repository delete --name "$REGISTRY" --repository "$repository" --yes --output none
-          fi
-          repositories=$(az acr repository list --name "$REGISTRY" -o tsv)
-          if printf '%s\n' "$repositories" | grep -Fxq "$repository"; then
-            echo "::error::test repository remains after cleanup"
-            exit 1
+          if docker container inspect hyperlight-provenance-registry >/dev/null 2>&1; then
+            docker rm --force hyperlight-provenance-registry
           fi
