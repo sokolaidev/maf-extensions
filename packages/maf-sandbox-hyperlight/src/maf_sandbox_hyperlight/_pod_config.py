@@ -17,6 +17,7 @@ from ._wire import HyperlightWorkerError
 
 POD_BINDING = "/run/maf-hyperlight/session/binding.json"
 POD_SOCKET = "/run/maf-hyperlight/session/control.sock"
+RECOVERY_LIMIT = 600
 
 
 def ownership_name(key: SandboxKey, kind: str) -> str:
@@ -132,8 +133,11 @@ class PodLaunch:
     def __post_init__(self) -> None:
         _check_fields(self.owner, self.pod_uid, self.generation)
         _check_memory(self.memory_limit_bytes)
-        if type(self.recovery_seconds) is not int or self.recovery_seconds < 0:
-            raise ValueError("pod recovery_seconds must be a non-negative integer")
+        if (
+            type(self.recovery_seconds) is not int
+            or not 0 <= self.recovery_seconds <= RECOVERY_LIMIT
+        ):
+            raise ValueError(f"pod recovery_seconds must be 0 to {RECOVERY_LIMIT}")
         _check_digest(self.hello_digest)
 
     def bind(self, identity: dict[str, object]) -> HyperlightPodConfig:
