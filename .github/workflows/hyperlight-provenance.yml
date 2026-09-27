@@ -41,10 +41,11 @@ jobs:
       - name: Resolve the configured registry
         env:
           REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          REGISTRY_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
         run: |
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registry=$(az acr list -o json | jq -ce --arg input "$REGISTRY" \
+          registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
             '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
@@ -113,10 +114,11 @@ jobs:
       - name: Resolve the configured registry
         env:
           REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          REGISTRY_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
         run: |
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registry=$(az acr list -o json | jq -ce --arg input "$REGISTRY" \
+          registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
             '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')
@@ -166,10 +168,11 @@ jobs:
       - name: Resolve the configured registry
         env:
           REGISTRY_SUBSCRIPTION: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          REGISTRY_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
         run: |
           set -euo pipefail
           az account set --subscription "$REGISTRY_SUBSCRIPTION"
-          registry=$(az acr list -o json | jq -ce --arg input "$REGISTRY" \
+          registry=$(az acr list --resource-group "$REGISTRY_GROUP" -o json | jq -ce --arg input "$REGISTRY" \
             '[.[] | select(.loginServer == $input or .name == $input)] | if length == 1 then .[0] else error("configured test registry not found uniquely") end')
           name=$(printf '%s' "$registry" | jq -er '.name')
           server=$(printf '%s' "$registry" | jq -er '.loginServer')

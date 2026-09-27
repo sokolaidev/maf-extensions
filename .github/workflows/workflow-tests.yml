@@ -6,15 +6,30 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      hyperlight_provenance:
+        description: "Build, attest and verify temporary Hyperlight runtime images in the live registry"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: workflow-tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: workflow-tests-${{ inputs.hyperlight_provenance && 'hyperlight-provenance' || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !inputs.hyperlight_provenance }}
 
 jobs:
+  hyperlight-provenance:
+    name: Verify signed Hyperlight runtime
+    if: github.event_name == 'workflow_dispatch' && inputs.hyperlight_provenance
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/hyperlight-provenance.yml
+    secrets: inherit
+
   changes:
     name: What affects workflow behavior
     runs-on: ubuntu-latest

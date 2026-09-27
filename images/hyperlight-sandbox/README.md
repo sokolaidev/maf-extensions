@@ -47,10 +47,10 @@ The output retains the verified attestation bundles, expected policy, image iden
 
 ### Exercise signing and verification in CI
 
-Dispatch the existing live workflow against a reviewed branch to build and attest a temporary candidate, then verify it on a fresh GitHub-hosted runner:
+Dispatch the workflow-test suite against a reviewed branch to build and attest a temporary candidate, then verify it on a fresh GitHub-hosted runner:
 
 ```sh
-gh workflow run verify-live.yml --ref YOUR_BRANCH -f package=maf-sandbox-hyperlight -f source=branch
+gh workflow run workflow-tests.yml --ref YOUR_BRANCH -f hyperlight_provenance=true
 ```
 
 This explicit selection calls [the signed-runtime integration workflow](../../.github/workflows/hyperlight-provenance.yml). It uses the `live-verify` environment's existing Azure OIDC identity and `ACAS_SANDBOX_REGISTRY`, which must allow pushing, pulling and deleting its dedicated test repository. It builds clean workspace wheels, signs the published SHA-256 digest with GitHub OIDC, and exercises the verifier with the exact signer, source commit, source ref and prepared build-input hash. Refusal cases change each policy value and present an unsigned image with a modified manifest. Every refusal must remove a seeded success record, and a final positive check must still pass.

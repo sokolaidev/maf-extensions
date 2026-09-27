@@ -94,11 +94,10 @@ def test_workflow_separates_signing_verification_and_cleanup():
     assert set(jobs["cleanup"]["needs"]) == {"build", "verify"}
     assert all(job["runs-on"] == "ubuntu-latest" for job in jobs.values())
     assert all(job["environment"] == "live-verify" for job in jobs.values())
-    caller = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text())["jobs"][
+    caller = yaml.safe_load((ROOT / ".github/workflows/workflow-tests.yml").read_text())["jobs"][
         "hyperlight-provenance"
     ]
     assert (
-        caller["if"]
-        == "github.event_name == 'workflow_dispatch' && inputs.package == 'maf-sandbox-hyperlight' && inputs.source == 'branch'"
+        caller["if"] == "github.event_name == 'workflow_dispatch' && inputs.hyperlight_provenance"
     )
     assert caller["secrets"] == "inherit"
