@@ -271,9 +271,22 @@ class TestHostChecks:
         sbx.mcp_payload = json.dumps({"gateway": {"name": "LOCAL"}, "servers": []}).encode()
         asyncio.run(backend.check_host())
 
-    def test_a_lapsed_login_names_sbx_login(self, backend, sbx):
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            # What `sbx` 0.45.1 printed on Linux after `sbx logout`: `ls`, then `mcp ls`.
+            b"error: Not authenticated to Docker\n  try: sbx login\n",
+            (
+                b"error: query MCP gateway mode from sandboxd (is the daemon running and up to "
+                b"date?): get MCP gateway mode: request failed: 401 Unauthorized: user is not "
+                b"authenticated to Docker: no default account profile set: secret not found no "
+                b"valid user session found, please sign in to Docker to proceed\n  try: sbx login\n"
+            ),
+        ],
+    )
+    def test_a_lapsed_login_names_sbx_login(self, backend, sbx, stderr):
         async def lapsed(*args: str, timeout: float | None = None) -> _Result:
-            return _Result(1, b"", b"error: not logged in; run sbx login\n")
+            return _Result(1, b"", stderr)
 
         backend._sbx = lapsed  # type: ignore[method-assign]
         with pytest.raises(SbxLoginRequired, match="Run `sbx login`"):

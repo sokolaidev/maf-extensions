@@ -68,10 +68,23 @@ jobs:
       - name: Run the live suite
         run: |
           set -euo pipefail
-          # `-ra` because the module skips itself without MAF_SANDBOX_SBX_E2E; a skip here is a
-          # bug. `--durations` records whether the runner is fast enough to keep.
-          uv run pytest -q -ra -s --durations=0 \
-            packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py
+          # A skip here is a bug: the module skips itself without MAF_SANDBOX_SBX_E2E.
+          # `--durations` records whether the runner is fast enough to keep.
+          uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py | tee suite.log
+          ! grep -q '^SKIPPED' suite.log
+
+      - name: Run the host-state refusals and faults
+        env:
+          # Each test changes host-wide sbx state and restores it; this runner has no other user.
+          MAF_SANDBOX_SBX_E2E_HOST: "1"
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
+        run: |
+          set -euo pipefail
+          # The forwarding tests need a host agent to forward.
+          eval "$(ssh-agent -s)"
+          uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee host.log
+          ! grep -q '^SKIPPED' host.log
 
       - name: Remove leftover sandboxes
         if: always()
