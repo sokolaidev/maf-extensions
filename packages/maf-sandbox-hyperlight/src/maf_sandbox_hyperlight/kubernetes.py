@@ -133,6 +133,7 @@ class _Session:
     platform: dict[str, str] = field(default_factory=dict[str, str])
     interruptions: list[str] = field(default_factory=list[str])
     interrupted: str = ""
+    ended_at: float = 0.0
     counter: int = 0
     sequence: int = 0
     deadline: float | None = None
@@ -670,7 +671,7 @@ class HyperlightPodController:
         ended = self._attach_once(name, session, resume_by=None)
         while ended and session.recovery:
             session.interrupted, session.resumed = ended, False
-            recover_by = time.monotonic() + session.recovery
+            recover_by = session.ended_at + session.recovery
             while not session.resumed:
                 if time.monotonic() >= recover_by or session.expired():
                     return
@@ -706,6 +707,8 @@ class HyperlightPodController:
         try:
             return self._supervise(stream, session, readers, resume_by=resume_by)
         finally:
+            # The recovery window runs from here, not from after the cleanup below.
+            session.ended_at = time.monotonic()
             if stream.poll() is None:
                 stream.terminate()
             try:

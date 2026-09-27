@@ -571,6 +571,7 @@ class Reattaching(HyperlightPodController):
 
     def _attach_once(self, name, session, *, resume_by):
         self.attaches.append(resume_by)
+        session.ended_at = time.monotonic()
         ended, resumed = self.outcomes.pop(0)
         if resumed:
             session.reconcile(
@@ -644,6 +645,31 @@ def test_a_bound_that_passes_during_the_pod_check_prevents_the_reattach(during_c
     )
     controller._hold(NAME, "c1", state)
     assert len(controller.attaches) == 1 and not state.resumed
+
+
+def test_the_recovery_window_starts_before_the_old_attach_is_cleaned_up(monkeypatch):
+    attempts: list[float | None] = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+
+    def slow_to_reap(name):
+        # A kubectl that takes longer to reap than the whole recovery window.
+        return SimpleNamespace(
+            poll=lambda: 0,
+            wait=lambda timeout: time.sleep(1.2),
+            stdin=None,
+            stdout=None,
+            stderr=None,
+        )
+
+    def supervise(stream, session, readers, *, resume_by):
+        attempts.append(resume_by)
+        return "attach stream closed"
+
+    monkeypatch.setattr(controller, "_attach", slow_to_reap)
+    monkeypatch.setattr(controller, "_supervise", supervise)
+    monkeypatch.setattr(controller, "_same_container", lambda name, container, session: True)
+    controller._hold(NAME, "c1", session(recovery=1))
+    assert attempts == [None]
 
 
 def test_an_unreachable_api_retires_when_the_window_closes():
