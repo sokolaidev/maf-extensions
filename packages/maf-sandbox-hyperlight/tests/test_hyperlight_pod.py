@@ -48,6 +48,7 @@ from maf_sandbox_hyperlight.kubernetes import (
     HyperlightPodCleanupPending,
     HyperlightPodController,
     HyperlightPodPlatformError,
+    HyperlightPodReserved,
     HyperlightPodTemplate,
     confirmed_exit,
     ownership_name,
@@ -1009,6 +1010,48 @@ def rejected_create(message):
 
 
 QUOTA_REJECTION = 'Error from server (Forbidden): error when creating "STDIN": exceeded quota\n'
+
+
+class LedgerRefusingController(FakeController):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def api(self, *arguments, body=None):
+        self.calls.append((arguments, copy.deepcopy(body)))
+        assert arguments[0] == "create" and body is not None and body["kind"] == "ConfigMap"
+        raise self.error
+
+
+def ledger_exists(name: str) -> str:
+    return f'Error from server (AlreadyExists): error when creating "STDIN": configmaps "{name}" already exists\n'
+
+
+@pytest.mark.parametrize("warning", ["", "Warning: admission policy reports a warning\n"])
+def test_a_reserved_scope_is_refused_by_name_and_nothing_is_created(warning):
+    controller = LedgerRefusingController(
+        rejected_create(warning + ledger_exists(ownership_name(KEY, KIND)))
+    )
+    with pytest.raises(HyperlightPodReserved, match="recover it with the same identity"):
+        controller.supervise(KEY, KIND, TEMPLATE)
+    assert [args[0] for args, _ in controller.calls] == ["create"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        rejected_create(ledger_exists("maf-hl-another-scope")),
+        rejected_create(QUOTA_REJECTION),
+        subprocess.CalledProcessError(
+            1, ["kubectl", "create"], output="{}", stderr=ledger_exists(ownership_name(KEY, KIND))
+        ),
+        subprocess.TimeoutExpired(["kubectl", "create"], 15),
+    ],
+)
+def test_other_ledger_create_failures_are_not_reported_as_reserved(error):
+    controller = LedgerRefusingController(error)
+    with pytest.raises(type(error)):
+        controller.supervise(KEY, KIND, TEMPLATE)
 
 
 @pytest.mark.parametrize(
