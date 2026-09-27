@@ -6,7 +6,7 @@ FROM ${BASE}
 USER root
 RUN rm -rf /maf-sandbox \
     && if command -v tdnf >/dev/null; then \
-         tdnf install -y bash util-linux coreutils && tdnf clean all; \
+         tdnf install -y bash util-linux coreutils shadow-utils && tdnf clean all; \
        elif command -v apt-get >/dev/null; then \
          apt-get update && apt-get install -y --no-install-recommends bash util-linux mount \
          && rm -rf /var/lib/apt/lists/*; \
