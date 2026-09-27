@@ -65,6 +65,9 @@ jobs:
           sbx settings set ssh.agentForwardingEnabled false
           sbx daemon restart
 
+      - name: Probe image requirements (temporary)
+        run: bash .probe/probe.sh
+
       - name: Run the live suite
         run: |
           set -euo pipefail
