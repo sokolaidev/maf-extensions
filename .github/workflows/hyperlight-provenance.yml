@@ -40,7 +40,7 @@ jobs:
           docker run --detach --name hyperlight-provenance-registry \
             --publish 127.0.0.1:5000:5000 \
             --volume "$RUNNER_TEMP/registry-data:/var/lib/registry" "$REGISTRY_IMAGE"
-          curl --fail --silent --retry 20 --retry-connrefused --retry-delay 1 http://localhost:5000/v2/
+          curl --fail --silent --show-error --max-time 2 --retry 20 --retry-all-errors --retry-delay 1 http://localhost:5000/v2/
           docker tag hyperlight-provenance:runtime "$IMAGE:runtime"
           docker push "$IMAGE:runtime"
           # A changed manifest has no attestation even though its layers are the signed runtime's.
@@ -116,7 +116,7 @@ jobs:
           docker run --detach --name hyperlight-provenance-registry \
             --publish 127.0.0.1:5000:5000 \
             --volume "$RUNNER_TEMP/registry-data:/var/lib/registry" "$REGISTRY_IMAGE"
-          curl --fail --silent --retry 20 --retry-connrefused --retry-delay 1 http://localhost:5000/v2/
+          curl --fail --silent --show-error --max-time 2 --retry 20 --retry-all-errors --retry-delay 1 http://localhost:5000/v2/
       - name: Verify signed runtime and refusal cases
         env:
           GH_TOKEN: ${{ github.token }}
