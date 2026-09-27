@@ -24,6 +24,9 @@ API key in this program, the same wiring samples 01, 03, 05, 06 and 08 use.
 The boundary is a container, the egress is closed, and the guest image carries a
 renderer and nothing else — this directory's README says what each of those costs.
 Read it, along with the prerequisites and the environment variables, first.
+
+`SAMPLE_BACKEND=docker-sbx` renders in a Docker Sandboxes microVM on this machine instead,
+through `maf_sandbox_docker_sbx`, which clears the router's default `microvm` floor.
 """
 
 # /// script
@@ -33,6 +36,7 @@ Read it, along with the prerequisites and the environment variables, first.
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-docker",
+#     "maf-sandbox-docker-sbx>=0.2.0",
 #     "maf-sandbox>=0.45",
 # ]
 # ///
@@ -41,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -63,6 +68,7 @@ from maf_sandbox.maf import (
     make_caller_context,
 )
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +91,7 @@ OUTPUT_DIR = Path(__file__).parent / "out"
 
 #: The image is a local reference (for example `diagram-sandbox:local`); the sample builds it and
 #: the backend runs what is on this machine. See the README on why an unqualified tag is safe here.
+#: On `docker-sbx` it names a template loaded with `sbx template load`.
 SANDBOX_VARS = ("DIAGRAM_SANDBOX_IMAGE",)
 
 #: Everything the chat model needs. No key: auth is `DefaultAzureCredential`, which an
@@ -97,11 +104,22 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
+    backend_name = os.environ.get("SAMPLE_BACKEND", "docker")
+    if backend_name not in ("docker", "docker-sbx"):
+        print("SAMPLE_BACKEND must be docker or docker-sbx.", file=sys.stderr)
+        return 2
     env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
+    if backend_name == "docker-sbx":
+        backend = SbxSandboxBackend(SbxSandboxConfig())
+        # A microVM clears the router's default floor.
+        floor = Isolation.MICROVM
+    else:
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        # Below the router's default `microvm` floor; opted down explicitly.
+        floor = Isolation.CONTAINER
 
     # `on_failure` runs *after* the framework has acted on `failed_reclaim_policy`, so it
     # reports rather than decides; the README says what each policy costs. `DISPOSE` and
@@ -132,10 +150,9 @@ async def run() -> int:
             file=sys.stderr,
         )
 
-    # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter(
         [backend],
-        min_isolation=Isolation.CONTAINER,
+        min_isolation=floor,
         reclaim=ReclaimConfig(
             timeout=30.0,
             failed_reclaim_policy=FailedReclaimPolicy.DISPOSE,

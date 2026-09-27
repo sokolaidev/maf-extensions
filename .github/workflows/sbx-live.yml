@@ -43,27 +43,10 @@ jobs:
         run: uv sync --locked
 
       - name: Install and prepare sbx
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
-        run: |
-          set -euo pipefail
-          # Docker's apt repository, the one `get.docker.com` with REPO_ONLY=1 configures.
-          sudo install -m 0755 -d /etc/apt/keyrings
-          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-          sudo chmod a+r /etc/apt/keyrings/docker.asc
-          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $codename stable" \
-            | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-          sudo apt-get update -q
-          sudo apt-get install -y -q docker-sbx
-          sudo chmod 666 /dev/kvm
-          sbx version
-          printf '%s' "$DOCKER_PAT" | sbx login --username "$DOCKER_USERNAME" --password-stdin
-          sbx policy init deny-all
-          # The backend refuses a host that forwards its SSH agent into sandboxes.
-          sbx settings set ssh.agentForwardingEnabled false
-          sbx daemon restart
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
 
       - name: Load the test templates
         run: |

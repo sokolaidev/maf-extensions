@@ -21,6 +21,10 @@ The boundary is a container, not a VM, and the egress is closed rather than
 allowlisted.  Both are honest downgrades from sample 01, and this directory's
 README says what each of them costs — read it, along with the prerequisites and
 the environment variables, before running this.
+
+`SAMPLE_BACKEND=docker-sbx` runs the same workload in a Docker Sandboxes microVM on this
+machine instead, through `maf_sandbox_docker_sbx`.  That backend clears the router's default
+`microvm` floor, so the router keeps it.
 """
 
 # /// script
@@ -31,6 +35,7 @@ the environment variables, before running this.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
+#     "maf-sandbox-docker-sbx>=0.2.0",
 #     "maf-sandbox>=0.45",
 # ]
 # ///
@@ -38,6 +43,7 @@ the environment variables, before running this.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 from pathlib import Path
@@ -50,6 +56,7 @@ from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 
 # A sandbox is keyed by the caller's scope, thread and agent directory.  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
@@ -74,7 +81,8 @@ _PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
 
 #: Everything the sandbox backend needs. `BICEP_SANDBOX_IMAGE` is a local image
 #: reference (for example `bicep-sandbox:local`); there is no registry to qualify
-#: it, because the backend runs what is already on this machine.
+#: it, because the backend runs what is already on this machine. On `docker-sbx` it names a
+#: template loaded with `sbx template load`.
 SANDBOX_VARS = ("BICEP_SANDBOX_IMAGE",)
 
 #: Everything the chat model needs. No key: auth is `DefaultAzureCredential`, which
@@ -84,14 +92,22 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
+    backend_name = os.environ.get("SAMPLE_BACKEND", "docker")
+    if backend_name not in ("docker", "docker-sbx"):
+        print("SAMPLE_BACKEND must be docker or docker-sbx.", file=sys.stderr)
+        return 2
     env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
-
-    # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    if backend_name == "docker-sbx":
+        # A microVM clears the router's default floor, so the router keeps it.
+        router = SandboxRouter([SbxSandboxBackend(SbxSandboxConfig())])
+    else:
+        # Below the router's default `microvm` floor; opted down explicitly.
+        router = SandboxRouter(
+            [DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER
+        )
 
     store = InMemoryAgentFileStore()
     await store.write(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_text())
@@ -102,7 +118,7 @@ async def run() -> int:
         lambda: THREAD_ID,
     )
 
-    # egress=CLOSED: this backend runs the container with no network, so the workload runs
+    # egress=CLOSED: both backends run the guest with no network, so the workload runs
     # closed. A template that referenced an AVM module would report the restore shortfall at
     # runtime; this sample's template uses none, so it completes fully offline.
     tools = make_bicep_tools(

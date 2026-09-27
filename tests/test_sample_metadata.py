@@ -342,7 +342,7 @@ def test_no_readme_still_tells_a_reader_to_pip_install():
 # ---------------------------------------------------------------------------
 
 #: A floor on a distribution this repository publishes: `maf-sandbox-docker>=0.4`.
-_REPO_FLOOR = re.compile(r"^(maf-sandbox(?:-[a-z]+)?)\s*>=\s*(\d+(?:\.\d+)*)\s*$")
+_REPO_FLOOR = re.compile(r"^(maf-sandbox(?:-[a-z]+)*)\s*>=\s*(\d+(?:\.\d+)*)\s*$")
 
 _PACKAGES = Path(__file__).resolve().parent.parent / "packages"
 
@@ -410,6 +410,14 @@ class TestAFloorNamesAVersionThatExists:
         released = _released(self._changelog("0.4.1", "0.4.0"))
         assert _names_a_released_version((0, 4, 1), released)
         assert not _names_a_released_version((0, 4, 2), released)
+
+    @pytest.mark.parametrize(
+        "dependency",
+        ["maf-sandbox>=0.44", "maf-sandbox-docker>=0.4", "maf-sandbox-docker-sbx>=0.2"],
+    )
+    def test_every_repository_package_name_is_read(self, dependency):
+        match = _REPO_FLOOR.match(dependency)
+        assert match and match.group(1) == dependency.split(">=")[0]
 
     def test_a_later_release_does_not_vouch_for_a_version_that_was_skipped(self):
         # `>=0.5` is unresolvable while only 0.4 and 0.6 exist, which is exactly the shape a
