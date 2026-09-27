@@ -134,16 +134,37 @@ def _digest(image: str) -> str:
     return match.group(1) if match else ""
 
 
-def plugin_rollout(daemonset: dict, pods: list[dict], nodes: list[dict], image: str = "") -> list:
+def _owned_by(resource: dict, owner: dict) -> bool:
+    return any(
+        reference.get("controller") is True and reference.get("uid") == owner["metadata"]["uid"]
+        for reference in resource["metadata"].get("ownerReferences", [])
+    )
+
+
+def current_revision(daemonset: dict, revisions: list[dict]) -> str:
+    """The DaemonSet's newest ControllerRevision hash, which its up-to-date pods carry."""
+    owned = [item for item in revisions if _owned_by(item, daemonset)]
+    if not owned:
+        raise ValueError("the DaemonSet owns no ControllerRevision")
+    newest = max(owned, key=lambda item: item["revision"])
+    return newest["metadata"].get("labels", {}).get("controller-revision-hash", "")
+
+
+def plugin_rollout(
+    daemonset: dict, revision: str, pods: list[dict], nodes: list[dict], image: str = ""
+) -> list:
     """Report each plugin-enabled node's running plugin image; `OnDelete` never replaces it."""
     template = daemonset["spec"]["template"]["spec"]["containers"][0]["image"]
     expected = _digest(image or template)
     if not expected:
         raise ValueError("the expected plugin image must be digest-pinned")
+    if not revision:
+        raise ValueError("the DaemonSet's current revision is unknown")
     reports = []
     for node in nodes:
         name = node["metadata"]["name"]
-        placed = [pod for pod in pods if pod["spec"].get("nodeName") == name]
+        here = [pod for pod in pods if pod["spec"].get("nodeName") == name]
+        placed = [pod for pod in here if _owned_by(pod, daemonset)]
         live = [pod for pod in placed if not pod["metadata"].get("deletionTimestamp")]
         report = {
             "name": name,
@@ -159,6 +180,8 @@ def plugin_rollout(daemonset: dict, pods: list[dict], nodes: list[dict], image: 
             "restarts": 0,
         }
         reasons = []
+        if len(placed) < len(here):
+            reasons.append("a plugin-labelled pod is not controlled by the DaemonSet")
         if len(live) < len(placed):
             reasons.append("a plugin pod is still terminating")
         if len(live) != 1:
@@ -176,7 +199,7 @@ def plugin_rollout(daemonset: dict, pods: list[dict], nodes: list[dict], image: 
                     "restarts": status.get("restartCount", 0),
                 }
             )
-            if report["template_image"] != template:
+            if pod["metadata"].get("labels", {}).get("controller-revision-hash") != revision:
                 reasons.append("the plugin pod predates the DaemonSet template; delete it")
             if report["running_digest"] != expected:
                 reasons.append("the running plugin digest is not the expected one")
@@ -232,11 +255,15 @@ def main() -> None:
         if not (args.kubeconfig and args.context):
             parser.error("plugin-status requires kubeconfig and context")
         scope = ("-n", args.namespace, "-o", "json")
+        selector = ("-l", "app.kubernetes.io/name=hyperlight-device-plugin")
+        daemonset = _kubectl(args, "get", "daemonset", "hyperlight-device-plugin", *scope)
         reports = plugin_rollout(
-            _kubectl(args, "get", "daemonset", "hyperlight-device-plugin", *scope),
-            _kubectl(
-                args, "get", "pods", "-l", "app.kubernetes.io/name=hyperlight-device-plugin", *scope
-            )["items"],
+            daemonset,
+            current_revision(
+                daemonset,
+                _kubectl(args, "get", "controllerrevisions", *selector, *scope)["items"],
+            ),
+            _kubectl(args, "get", "pods", *selector, *scope)["items"],
             _kubectl(args, "get", "nodes", "-l", "hyperlight.dev/enabled=true", "-o", "json")[
                 "items"
             ],

@@ -127,7 +127,7 @@ Check which plugin image each node actually runs before uncordoning it:
 uv run python scripts/hyperlight_aks.py plugin-status --namespace hyperlight-system --kubeconfig /path/to/kubeconfig --context verified-cluster
 ```
 
-The report lists every node labelled `hyperlight.dev/enabled=true` with its plugin pod, the digest containerd resolved for it, readiness, restarts, advertised allocation and cordon state. It exits nonzero when a node has no single ready plugin pod, still runs a pod created from an earlier DaemonSet template, resolved a digest other than the expected one, or advertises no allocation. The expected digest is the DaemonSet's; pass `--image` with a digest-pinned reference to check a node against another one. It reads pods, nodes and the DaemonSet only. It does not read CDI files or create a VM, so a verified row is not device usability.
+The report lists every node labelled `hyperlight.dev/enabled=true` with its plugin pod, the digest containerd resolved for it, readiness, restarts, advertised allocation and cordon state. It counts only pods the DaemonSet controls. It exits nonzero when a node has no single ready plugin pod, carries a plugin-labelled pod the DaemonSet does not control, runs a pod whose revision is older than the DaemonSet's newest one, resolved a digest other than the expected one, or advertises no allocation. The expected digest is the DaemonSet's; pass `--image` with a digest-pinned reference to check a node against another one. It reads pods, nodes, the DaemonSet and its ControllerRevisions only. It does not read CDI files or create a VM, so a verified row is not device usability.
 
 ## Failure and recovery
 

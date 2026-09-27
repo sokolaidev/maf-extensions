@@ -14,7 +14,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_hyperlight_aks_image
-from hyperlight_aks import PLUGIN_IMAGE, node_report, plugin_rollout, render_plugin
+from hyperlight_aks import (
+    PLUGIN_IMAGE,
+    current_revision,
+    node_report,
+    plugin_rollout,
+    render_plugin,
+)
 
 
 @pytest.mark.parametrize("namespace", ["", "-a", "a-", "a.b", "A", "a" * 64])
@@ -148,17 +154,33 @@ def test_an_unmeasured_or_unadvertised_node_is_reported(change, reason):
 
 
 PREVIOUS_PLUGIN = "ghcr.io/hyperlight-dev/hyperlight-device-plugin:51d7dab@sha256:" + "a" * 64
+DAEMONSET_UID = "ds-uid"
 
 
 def plugin_daemonset(image: str = PLUGIN_IMAGE) -> dict[str, Any]:
-    return {"spec": {"template": {"spec": {"containers": [{"image": image}]}}}}
+    return {
+        "metadata": {"uid": DAEMONSET_UID},
+        "spec": {"template": {"spec": {"containers": [{"image": image}]}}},
+    }
 
 
-def plugin_pod(node: str = "node", image: str = PLUGIN_IMAGE, **status: Any) -> dict[str, Any]:
+def controlled_by(uid: str) -> list[dict[str, Any]]:
+    return [{"kind": "DaemonSet", "uid": uid, "controller": True}]
+
+
+def plugin_pod(
+    node: str = "node",
+    image: str = PLUGIN_IMAGE,
+    revision: str = "current",
+    owner: str | None = DAEMONSET_UID,
+    **status: Any,
+) -> dict[str, Any]:
     terminating = status.pop("terminating", False)
     return {
         "metadata": {
             "name": f"plugin-{node}",
+            "labels": {"controller-revision-hash": revision},
+            **({"ownerReferences": controlled_by(owner)} if owner else {}),
             **({"deletionTimestamp": "2026-09-26T00:00:00Z"} if terminating else {}),
         },
         "spec": {"nodeName": node, "containers": [{"image": image}]},
@@ -184,30 +206,47 @@ def plugin_node(name: str = "node", allocatable: str = "1", **spec: Any) -> dict
     }
 
 
+def rollout(pods: list[dict[str, Any]], nodes: list[dict[str, Any]], image: str = "") -> list:
+    return plugin_rollout(plugin_daemonset(), "current", pods, nodes, image)
+
+
 def test_a_node_running_the_daemonsets_plugin_is_verified_while_cordoned():
-    [report] = plugin_rollout(plugin_daemonset(), [plugin_pod()], [plugin_node(unschedulable=True)])
+    [report] = rollout([plugin_pod()], [plugin_node(unschedulable=True)])
     assert report["verified"] and report["cordoned"]
     assert report["running_digest"] == PLUGIN_IMAGE.rpartition("@")[2]
 
 
 def test_ondelete_leaves_the_previous_plugin_running_until_its_pod_is_deleted():
-    pods = [plugin_pod("upgraded"), plugin_pod("stale", PREVIOUS_PLUGIN)]
-    nodes = [plugin_node("upgraded"), plugin_node("stale")]
-    upgraded, stale = plugin_rollout(plugin_daemonset(), pods, nodes)
+    pods = [plugin_pod("upgraded"), plugin_pod("stale", PREVIOUS_PLUGIN, revision="old")]
+    upgraded, stale = rollout(pods, [plugin_node("upgraded"), plugin_node("stale")])
     assert upgraded["verified"] and not stale["verified"]
     assert any("predates the DaemonSet template" in item for item in stale["reasons"])
     assert any("not the expected one" in item for item in stale["reasons"])
 
 
+def test_a_template_change_that_keeps_the_image_still_marks_the_pod_stale():
+    [report] = rollout([plugin_pod(revision="old")], [plugin_node()])
+    assert report["reasons"] == ["the plugin pod predates the DaemonSet template; delete it"]
+
+
 def test_an_explicit_image_checks_a_rollback_before_the_daemonset_is_restored():
-    [report] = plugin_rollout(plugin_daemonset(), [plugin_pod()], [plugin_node()], PREVIOUS_PLUGIN)
+    [report] = rollout([plugin_pod()], [plugin_node()], PREVIOUS_PLUGIN)
     assert report["reasons"] == ["the running plugin digest is not the expected one"]
 
 
 def test_a_template_match_is_not_enough_when_the_node_resolved_another_digest():
     pod = plugin_pod(imageID="ghcr.io/hyperlight-dev/hyperlight-device-plugin@sha256:" + "b" * 64)
-    [report] = plugin_rollout(plugin_daemonset(), [pod], [plugin_node()])
+    [report] = rollout([pod], [plugin_node()])
     assert report["reasons"] == ["the running plugin digest is not the expected one"]
+
+
+@pytest.mark.parametrize("owner", [None, "another-daemonset"])
+def test_a_same_labelled_pod_cannot_stand_in_for_the_daemonsets_pod(owner):
+    [alone] = rollout([plugin_pod(owner=owner)], [plugin_node()])
+    assert not alone["verified"]
+    assert "0 running plugin pods, expected one" in alone["reasons"]
+    [beside] = rollout([plugin_pod(), plugin_pod(owner=owner)], [plugin_node()])
+    assert beside["reasons"] == ["a plugin-labelled pod is not controlled by the DaemonSet"]
 
 
 @pytest.mark.parametrize(
@@ -223,13 +262,36 @@ def test_a_template_match_is_not_enough_when_the_node_resolved_another_digest():
     ],
 )
 def test_a_node_without_one_ready_advertising_plugin_is_reported(pods, node, reason):
-    [report] = plugin_rollout(plugin_daemonset(), pods, [node])
+    [report] = rollout(pods, [node])
     assert not report["verified"]
     assert any(reason in item for item in report["reasons"])
 
 
-def test_the_expected_plugin_image_must_be_digest_pinned():
+def test_the_expected_plugin_image_and_revision_must_be_known():
     with pytest.raises(ValueError, match="digest-pinned"):
-        plugin_rollout(plugin_daemonset("plugin:latest"), [], [])
+        plugin_rollout(plugin_daemonset("plugin:latest"), "current", [], [])
     with pytest.raises(ValueError, match="digest-pinned"):
-        plugin_rollout(plugin_daemonset(), [], [], "plugin:latest")
+        plugin_rollout(plugin_daemonset(), "current", [], [], "plugin:latest")
+    with pytest.raises(ValueError, match="revision is unknown"):
+        plugin_rollout(plugin_daemonset(), "", [], [])
+
+
+def controller_revision(number: int, value: str, owner: str = DAEMONSET_UID) -> dict[str, Any]:
+    return {
+        "metadata": {
+            "labels": {"controller-revision-hash": value},
+            "ownerReferences": controlled_by(owner),
+        },
+        "revision": number,
+    }
+
+
+def test_the_current_revision_is_the_daemonsets_newest_one():
+    revisions = [
+        controller_revision(2, "current"),
+        controller_revision(1, "old"),
+        controller_revision(9, "foreign", owner="another-daemonset"),
+    ]
+    assert current_revision(plugin_daemonset(), revisions) == "current"
+    with pytest.raises(ValueError, match="owns no ControllerRevision"):
+        current_revision(plugin_daemonset(), revisions[2:])
