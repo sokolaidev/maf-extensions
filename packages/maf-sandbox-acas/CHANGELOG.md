@@ -4,6 +4,14 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.27.2...maf-sandbox-acas-v0.28.0) (2026-09-28)
+
+
+### Features
+
+* **acas:** enforce HTTPS method rules with policy-safe reuse ([#1520](https://github.com/sokolaidev/maf-extensions/issues/1520)) ([20e359f](https://github.com/sokolaidev/maf-extensions/commit/20e359f82fb7c67bb7ad91c33fc876e7aea0c005))
+* report configured ACAS identity and enforce its caller scope ([#1528](https://github.com/sokolaidev/maf-extensions/issues/1528)) ([ded5f75](https://github.com/sokolaidev/maf-extensions/commit/ded5f753367610bd38a410f402828aea7b9c3a38))
+
 ## [0.27.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.27.1...maf-sandbox-acas-v0.27.2) (2026-09-26)
 
 
