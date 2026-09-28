@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.45.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.44.0...maf-sandbox-v0.45.0) (2026-09-27)
+
+
+### Features
+
+* report configured ACAS identity and enforce its caller scope ([#1528](https://github.com/sokolaidev/maf-extensions/issues/1528)) ([ded5f75](https://github.com/sokolaidev/maf-extensions/commit/ded5f753367610bd38a410f402828aea7b9c3a38))
+
 ## [0.44.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.43.0...maf-sandbox-v0.44.0) (2026-09-25)
 
 
