@@ -173,7 +173,34 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                         != owner
                     ):
                         raise RuntimeError("probe resource ownership changed")
-                    require(kubectl("delete", kind, name, "--wait=true", "--timeout=90s"))
+                    api = (
+                        "/api/v1"
+                        if kind == "Namespace"
+                        else "/apis/admissionregistration.k8s.io/v1"
+                    )
+                    collection = {
+                        "Namespace": "namespaces",
+                        "ValidatingAdmissionPolicy": "validatingadmissionpolicies",
+                        "ValidatingAdmissionPolicyBinding": "validatingadmissionpolicybindings",
+                    }[kind]
+                    require(
+                        kubectl(
+                            "delete",
+                            "--raw",
+                            f"{api}/{collection}/{name}",
+                            "-f",
+                            "-",
+                            payload={
+                                "apiVersion": "v1",
+                                "kind": "DeleteOptions",
+                                "preconditions": {
+                                    field: current["metadata"][field]
+                                    for field in ("uid", "resourceVersion")
+                                },
+                            },
+                        )
+                    )
+                    require(kubectl("wait", "--for=delete", kind, name, "--timeout=90s"))
                     if require(
                         kubectl("get", kind, name, "--ignore-not-found", "-o", "json")
                     ).strip():

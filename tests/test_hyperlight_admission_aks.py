@@ -42,6 +42,8 @@ FORBIDDEN_GRANTS = {
         "ownership-policy",
         "ownership-binding",
         "ownership-missing-label",
+        "race-label",
+        "race-replacement",
         *FORBIDDEN_GRANTS,
     ],
 )
@@ -105,6 +107,7 @@ def test_probe_ownership_and_cleanup(
                 "ValidatingAdmissionPolicyBinding",
             }:
                 key = (obj["kind"], obj["metadata"]["name"])
+                obj["metadata"].update(uid=f"uid-{len(created)}", resourceVersion="1")
                 resources[key] = obj
                 created.append(key)
                 if failure == "create-response" and obj["kind"] == "ValidatingAdmissionPolicy":
@@ -139,10 +142,45 @@ def test_probe_ownership_and_cleanup(
                 "",
             )
         elif action == "delete":
-            deleted.append((args[1], args[2]))
+            if "--raw" in args:
+                url = args[args.index("--raw") + 1]
+                collection, name = url.rsplit("/", 2)[-2:]
+                kind = {
+                    "namespaces": "Namespace",
+                    "validatingadmissionpolicies": "ValidatingAdmissionPolicy",
+                    "validatingadmissionpolicybindings": "ValidatingAdmissionPolicyBinding",
+                }[collection]
+                expected_api = (
+                    "/api/v1" if kind == "Namespace" else "/apis/admissionregistration.k8s.io/v1"
+                )
+                assert url == f"{expected_api}/{collection}/{name}"
+                assert args[-2:] == ["-f", "-"]
+                options = json.loads(kwargs["input"])
+                assert options["kind"] == "DeleteOptions"
+                assert options["apiVersion"] == "v1"
+                preconditions = options["preconditions"]
+                key = (kind, name)
+                assert preconditions == {
+                    field: resources[key]["metadata"][field] for field in ("uid", "resourceVersion")
+                }
+            else:
+                key = (args[1], args[2])
+                preconditions = {}
+            deleted.append(key)
             if failure == "cleanup":
                 return subprocess.CompletedProcess(command, 1, "", "failed delete")
-            del resources[(args[1], args[2])]
+            if failure in {"race-label", "race-replacement"} and key == ("Namespace", namespace):
+                metadata = resources[key]["metadata"]
+                metadata["labels"]["hyperlight-admission-probe"] = "another-owner"
+                if failure == "race-label":
+                    metadata["resourceVersion"] = "2"
+                else:
+                    metadata["uid"] = "replacement-uid"
+            if any(
+                resources[key]["metadata"][field] != value for field, value in preconditions.items()
+            ):
+                return subprocess.CompletedProcess(command, 1, "", "409 Conflict")
+            del resources[key]
         return subprocess.CompletedProcess(command, 0, output, "")
 
     def matrix(*args: Any) -> tuple[str, list[dict[str, str]]]:
@@ -163,7 +201,9 @@ def test_probe_ownership_and_cleanup(
     if failure:
         with pytest.raises(
             (RuntimeError, ValueError, subprocess.TimeoutExpired),
-            match="probe cleanup incomplete" if foreign_key else None,
+            match="probe cleanup incomplete"
+            if foreign_key or failure in {"race-label", "race-replacement"}
+            else None,
         ):
             aks.check(tmp_path / "policy.json", tmp_path / "config", "context", output)
         assert not output.exists()
@@ -179,6 +219,13 @@ def test_probe_ownership_and_cleanup(
         assert len(resources) == 1
     elif failure == "cleanup":
         assert len(resources) == 4
+    elif failure in {"race-label", "race-replacement"}:
+        assert set(resources) == {("Namespace", namespace)}
+        assert (
+            resources[("Namespace", namespace)]["metadata"]["labels"]["hyperlight-admission-probe"]
+            == "another-owner"
+        )
+        assert ("Namespace", namespace) in deleted
     elif foreign_key:
         assert set(resources) == {foreign_key}
         assert foreign_key not in deleted
