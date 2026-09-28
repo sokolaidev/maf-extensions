@@ -48,6 +48,10 @@ class HyperlightPodPlatformError(HyperlightWorkerError):
     """The node the pod landed on fails a pod-mode requirement; its cleanup is confirmed."""
 
 
+class HyperlightPodReserved(HyperlightWorkerError):
+    """Another owner, running or awaiting cleanup, holds the scope; nothing was created."""
+
+
 @dataclass(frozen=True)
 class HyperlightPodTemplate:
     """An immutable image and application command with aggregate container resource budgets.
@@ -585,23 +589,31 @@ class HyperlightPodController:
             )
         except HyperlightWorkerError as error:
             raise ValueError("the ownership identity exceeds a lifecycle frame") from error
-        ledger = self.api(
-            "create",
-            "-f",
-            "-",
-            "-o",
-            "json",
-            body={
-                "apiVersion": "v1",
-                "kind": "ConfigMap",
-                "metadata": {
-                    "name": name,
-                    "namespace": self.namespace,
-                    "labels": {_LABEL: name},
+        try:
+            ledger = self.api(
+                "create",
+                "-f",
+                "-",
+                "-o",
+                "json",
+                body={
+                    "apiVersion": "v1",
+                    "kind": "ConfigMap",
+                    "metadata": {
+                        "name": name,
+                        "namespace": self.namespace,
+                        "labels": {_LABEL: name},
+                    },
+                    "data": {"generation": generation, "state": "allocating", "pod_uid": ""},
                 },
-                "data": {"generation": generation, "state": "allocating", "pod_uid": ""},
-            },
-        )
+            )
+        except subprocess.CalledProcessError as error:
+            if _ledger_exists(error, name):
+                raise HyperlightPodReserved(
+                    "the ownership scope is already reserved; once its owner has stopped, "
+                    "recover it with the same identity"
+                ) from error
+            raise
         started = time.monotonic()
         try:
             pod = self.api("create", "-f", "-", "-o", "json", body=manifest)
@@ -1008,19 +1020,31 @@ def _startup_blocker(pod: dict[str, object]) -> str:
     return f": {name}: {waiting['reason']}: {str(waiting.get('message', ''))[:1024]}"
 
 
-def _create_rejected(error: BaseException, name: str) -> bool:
-    """Recognize kubectl server refusals; unknown output and transport errors retain ownership."""
-    if (
-        not isinstance(error, subprocess.CalledProcessError)
-        or error.returncode != 1
-        or error.stdout
-        or not isinstance(error.stderr, str)
-    ):
-        return False
+def _server_refusal(error: subprocess.CalledProcessError) -> str:
+    """kubectl's refusal text without warnings, or empty when the failure is not one."""
+    if error.returncode != 1 or error.stdout or not isinstance(error.stderr, str):
+        return ""
     lines = error.stderr.splitlines()
     while lines and lines[0].startswith("Warning: "):
         lines.pop(0)
-    message = "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _ledger_exists(error: subprocess.CalledProcessError, name: str) -> bool:
+    return bool(
+        re.match(
+            r'\AError from server \(AlreadyExists\): error when creating "STDIN": '
+            rf'configmaps "{re.escape(name)}" already exists\s*\Z',
+            _server_refusal(error),
+        )
+    )
+
+
+def _create_rejected(error: BaseException, name: str) -> bool:
+    """Recognize kubectl server refusals; unknown output and transport errors retain ownership."""
+    if not isinstance(error, subprocess.CalledProcessError):
+        return False
+    message = _server_refusal(error)
     return bool(
         re.match(
             r'\AError from server \((?:Forbidden|BadRequest)\): error when creating "STDIN": ',
