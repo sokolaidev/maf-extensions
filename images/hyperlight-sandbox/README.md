@@ -164,7 +164,7 @@ Upgrade the runtime and the device plugin separately. Until a replacement passes
 The rendered DaemonSet uses `OnDelete`, so a changed manifest leaves every node on its old plugin until that node's plugin pod is deleted, and `kubectl rollout status` refuses to wait on it. Replace one node at a time:
 
 1. Apply the new manifest. `plugin-status` (below) now fails each node, naming the pod's older revision and its digest.
-2. Cordon the node and drain it with `kubectl drain NODE --ignore-daemonsets --delete-emptydir-data --force`. `--force` is required because the controller's pods declare no Kubernetes controller. Eviction retires each owner with exit 70 and reason `pod termination requested`, and the controller confirms cleanup; the drains measured took 10 to 13 seconds. If the owning controller is gone, the pod waits on its finalizer and the drain waits with it. Run `recover` with the same identity; do not remove the finalizer.
+2. Cordon the node and drain it with `kubectl drain NODE --ignore-daemonsets --delete-emptydir-data --force`. `--force` is required because the controller's pods declare no Kubernetes controller. Eviction retires each owner with exit 70 and reason `pod termination requested`, and the controller confirms cleanup; the drains measured took 10 to 13 seconds. If the owning controller is gone, the pod waits on its finalizer and the drain waits with it, until its own timeout. Run `recover` with the same identity; do not remove the finalizer. The plugin can be replaced before that: the reservation holds across the swap, a second owner on that scope is refused with `HyperlightPodReserved`, and `recover` completes the earlier owner afterwards.
 3. Record the checksum of the CDI spec the running plugin wrote. `kubectl debug` does not attach without `-i`; it prints the name of the pod it created, `node-debugger-NODE-…`, which the next commands take as `DEBUG_POD`. Read `/host/run/cdi`, not `/host/var/run/cdi`, which is an absolute symlink.
 
    ```sh
@@ -174,7 +174,7 @@ The rendered DaemonSet uses `OnDelete`, so a changed manifest leaves every node 
    kubectl -n hyperlight-system delete pod DEBUG_POD
    ```
 
-4. Delete the node's plugin pod and run `plugin-status` until this node's row reports `verified`. The command exits nonzero until every plugin-enabled node has been replaced, so read the node's row and its `reasons` rather than the exit code. A ready plugin pod is not yet an advertised device: one replacement read allocation 0 at 8 seconds and 1 at about 24; others advertised within 6 seconds.
+4. Delete the node's plugin pod and run `plugin-status` until this node's row reports `verified`. The command exits nonzero until every plugin-enabled node has been replaced, so read the node's row and its `reasons` rather than the exit code. A ready plugin pod is not yet an advertised device, and one reading is not enough: one replacement read allocation 0 at 8 seconds and 1 at about 24, and another advertised at 5 seconds, dropped to 0 and returned within about 20.
 5. While the node is still cordoned, read the checksum again with the commands from step 3 and compare. The plugin rewrites the spec at start; its content did not change between these two plugins.
 6. Check guest execution on the node, which can only happen once it is uncordoned: a cordoned node refuses the controller's pods, and the probe then waits out its startup budget, about 200 seconds, and raises `TimeoutError` naming the node as unschedulable. First pause new sessions on the trusted hosts; otherwise an application pod can take the node's allocation before the probe does. The controller's pods select any node labelled `hyperlight.dev/hypervisor=kvm`, so on a pool with more than one node, also cordon the other plugin-enabled nodes, noting which were cordoned already; otherwise the probe can pass on an untouched node. Their running owners are unaffected. Then uncordon the node and run a `positive` probe. If it passes, uncordon only the nodes you cordoned for it and resume new sessions. If it fails, cordon the node again. The measured pools had one node, so the multi-node gate is untested.
 7. To roll back, run `plugin-status --image PREVIOUS_REFERENCE` before restoring anything: it verifies each node still running the previous plugin, and those nodes need nothing. Then apply the previous manifest in place of step 1, and repeat steps 2 to 6 on every node that reports the new plugin.
@@ -195,7 +195,7 @@ The report lists every node labelled `hyperlight.dev/enabled=true` with its adve
 
 ### Not yet measured
 
-These runs did not cover Azure Linux pools, a plugin swap while a scope's cleanup is still pending, a kubelet restart or several nodes during maintenance, or a controller and image pair across 0.6.0 and a later release, whose lifecycle handshake has changed since. Plugin images carry no attestation ([#1424](https://github.com/sokolaidev/maf-extensions/issues/1424)).
+These runs did not cover Azure Linux pools, a kubelet restart or several nodes during maintenance, or a controller and image pair across 0.6.0 and a later release, whose lifecycle handshake has changed since. Plugin images carry no attestation ([#1424](https://github.com/sokolaidev/maf-extensions/issues/1424)).
 
 ## Failure and recovery
 
