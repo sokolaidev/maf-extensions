@@ -133,10 +133,11 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                 ]
                 for verb, resource, ns, expected in checks:
                     result = kubectl("auth", "can-i", verb, resource, "-n", ns, identity=identity)
-                    allowed = result.stdout.strip() == "yes"
+                    decision = result.stdout.strip().partition(" - ")[0]
+                    allowed = decision == "yes"
                     if (
-                        result.stdout.strip() not in {"yes", "no"}
-                        or result.returncode not in {0, 1}
+                        decision not in {"yes", "no"}
+                        or result.returncode != (0 if allowed else 1)
                         or allowed != expected
                     ):
                         raise RuntimeError(

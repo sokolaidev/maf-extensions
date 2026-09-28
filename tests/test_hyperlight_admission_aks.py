@@ -18,10 +18,12 @@ pytestmark = pytest.mark.workflow
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "create-response", "authorization", "cleanup", "collision"]
+    "failure",
+    [None, "create-response", "authorization", "authorization-response", "cleanup", "collision"],
 )
+@pytest.mark.parametrize("denial", ["no", "no - Azure does not have opinion for this user."])
 def test_probe_ownership_and_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None, denial: str
 ) -> None:
     namespace = "hyperlight-admission-test"
     image = "registry.example/runtime@sha256:" + "a" * 64
@@ -86,7 +88,14 @@ def test_probe_ownership_and_cleanup(
             if failure == "authorization" and resource.startswith("validatingadmissionpolicies"):
                 allowed = True
             return subprocess.CompletedProcess(
-                command, 0 if allowed else 1, "yes" if allowed else "no", ""
+                command,
+                0 if allowed else 1,
+                "no unexpected"
+                if failure == "authorization-response"
+                else "yes"
+                if allowed
+                else denial,
+                "",
             )
         elif action == "delete":
             if failure == "cleanup":
