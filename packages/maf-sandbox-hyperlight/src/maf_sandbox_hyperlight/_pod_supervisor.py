@@ -422,14 +422,19 @@ class Supervisor:
         self.fresh = time.monotonic() + LEASE_SECONDS
         self.lease = self.fresh + self.launch.recovery_seconds
 
-    def authenticate(self, message: dict[str, object]) -> dict[str, object]:
-        """Every attacher shares stdin in continuity mode, so each frame proves the secret."""
+    def authenticate(self, message: dict[str, object]) -> dict[str, object] | None:
+        """Every attacher shares stdin in continuity mode, so each frame proves the secret.
+
+        None for an authentic frame a newer one superseded, as a dead attach delivers late.
+        """
         if self.key is None:
             raise HyperlightWorkerError("controller message before its hello")
         body = unseal(message, self.key)
         counter = body.get("counter")
-        if type(counter) is not int or counter <= self.counter:
+        if type(counter) is not int:
             raise HyperlightWorkerError("stale controller message")
+        if counter <= self.counter:
+            return None
         self.counter = counter
         return body
 
@@ -452,7 +457,10 @@ class Supervisor:
             self.launch.bind(message)
             return
         if self.continuity:
-            message = self.authenticate(message)
+            body = self.authenticate(message)
+            if body is None:
+                return
+            message = body
         if operation == "ping" and self.connected:
             # Once stale, only a resume renews: late frames from a dead attach must not.
             if time.monotonic() < self.fresh:

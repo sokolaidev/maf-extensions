@@ -132,17 +132,30 @@ def pid1(monkeypatch):
     return subject
 
 
-def test_continuity_refuses_an_unsealed_or_replayed_controller_message(pid1):
+def test_continuity_refuses_an_unsealed_or_replayed_controller_message(pid1, monkeypatch):
+    emitted = []
+    monkeypatch.setattr(pid1, "emit", lambda event, **fields: emitted.append(event))
     before = pid1.lease
     with pytest.raises(HyperlightWorkerError, match="unauthenticated"):
         pid1.controller_message(
             {"op": "ping", "pod_uid": "pod-uid", "generation": "generation", "counter": 1}
         )
     assert pid1.lease == before
-    pid1.controller_message(sealed("ping", 1))
-    for counter in (1, 0, "2"):
-        with pytest.raises(HyperlightWorkerError, match="stale"):
-            pid1.controller_message(sealed("ping", counter))
+    pid1.controller_message(sealed("ping", 3))
+    renewed = pid1.lease
+    # Superseded frames, such as a dead attach delivers late, neither act nor retire.
+    for message in (
+        sealed("ping", 3),
+        sealed("ping", 0),
+        sealed("ack", 2, sequence=0),
+        sealed("resume", 1),
+        sealed("stop", 2),
+    ):
+        pid1.controller_message(message)
+    assert pid1.lease == renewed and pid1.counter == 3 and emitted == ["alive"]
+    assert not pid1.retired.is_set() and not pid1.ack.is_set()
+    with pytest.raises(HyperlightWorkerError, match="stale"):
+        pid1.controller_message(sealed("ping", "4"))
     pid1.controller_message(sealed("ping", 5))
     assert pid1.counter == 5
 
@@ -1472,7 +1485,8 @@ def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monk
         assert all(not thread.is_alive() for thread in threads)
 
 
-def test_a_session_survives_a_partition_that_holds_the_attach_open(monkeypatch):
+@pytest.mark.parametrize("late", ["before-resume", "after-resume"])
+def test_a_session_survives_a_partition_that_holds_the_attach_open(monkeypatch, late):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     monkeypatch.setattr(_pod_supervisor, "LEASE_SECONDS", 1.0)
     monkeypatch.setattr(kubernetes, "LEASE_SECONDS", 1.0)
@@ -1506,17 +1520,23 @@ def test_a_session_survives_a_partition_that_holds_the_attach_open(monkeypatch):
         wait_for(lambda: state.interrupted == "pod stopped answering")
         assert first.returncode is not None and first.held
 
-        # The held pings arrive after the controller gave up on that attach; they renew nothing.
-        counter = pid1.counter
-        first.heal()
-        wait_for(lambda: pid1.counter > counter)
-        assert time.monotonic() >= pid1.fresh
-        with pytest.raises(HyperlightPodDetached):
-            pid1.handle({"op": "validate"})
+        if late == "before-resume":
+            # The held pings arrive after the controller gave up on that attach; they renew nothing.
+            counter = pid1.counter
+            first.heal()
+            wait_for(lambda: pid1.counter > counter)
+            assert time.monotonic() >= pid1.fresh
+            with pytest.raises(HyperlightPodDetached):
+                pid1.handle({"op": "validate"})
         pod.reachable.set()
         wait_for(lambda: len(pod.attaches) == 2 and state.resumed)
         assert state.interruptions == ["pod stopped answering"]
         assert (state.sequence, state.deadline) == (1, None)
+        if late == "after-resume":
+            # Superseded frames reach PID 1 ahead of the new attach's next ones, and are ignored.
+            counter = pid1.counter
+            first.heal()
+            assert pid1.counter == counter
         pid1.handle({"op": "begin", "deadline": time.monotonic() + 30, "expires_at": call})
         wait_for(lambda: state.sequence == 2 and state.deadline == call)
         pid1.handle({"op": "end"})
