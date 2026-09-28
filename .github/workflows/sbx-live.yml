@@ -9,6 +9,7 @@ on:
       - "packages/maf-sandbox/src/**"
       - "packages/maf-sandbox-docker-sbx/**"
       - ".github/workflows/sbx-live.yml"
+      - ".github/actions/setup-sbx/**"
   schedule:
     # Offset from Docker live at 04:50 UTC.
     - cron: "20 5 * * *"

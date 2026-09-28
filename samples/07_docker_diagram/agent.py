@@ -112,15 +112,6 @@ async def run() -> int:
     if env is None:
         return 2
 
-    if backend_name == "docker-sbx":
-        backend = SbxSandboxBackend(SbxSandboxConfig())
-        # A microVM clears the router's default floor.
-        floor = Isolation.MICROVM
-    else:
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-        # Below the router's default `microvm` floor; opted down explicitly.
-        floor = Isolation.CONTAINER
-
     # `on_failure` runs *after* the framework has acted on `failed_reclaim_policy`, so it
     # reports rather than decides; the README says what each policy costs. `DISPOSE` and
     # `timeout` are written out at their defaults because leaving them unset is still a
@@ -150,15 +141,21 @@ async def run() -> int:
             file=sys.stderr,
         )
 
-    router = SandboxRouter(
-        [backend],
-        min_isolation=floor,
-        reclaim=ReclaimConfig(
-            timeout=30.0,
-            failed_reclaim_policy=FailedReclaimPolicy.DISPOSE,
-            on_failure=note_reclaim_failure,
-        ),
+    reclaim = ReclaimConfig(
+        timeout=30.0,
+        failed_reclaim_policy=FailedReclaimPolicy.DISPOSE,
+        on_failure=note_reclaim_failure,
     )
+    if backend_name == "docker-sbx":
+        # A microVM clears the router's default floor, so the router keeps it.
+        router = SandboxRouter([SbxSandboxBackend(SbxSandboxConfig())], reclaim=reclaim)
+    else:
+        # Below the router's default `microvm` floor; opted down explicitly.
+        router = SandboxRouter(
+            [DockerSandboxBackend(DockerSandboxConfig())],
+            min_isolation=Isolation.CONTAINER,
+            reclaim=reclaim,
+        )
 
     context = make_caller_context(
         list_no_files,

@@ -1,7 +1,8 @@
 name: Set up Docker Sandboxes
 description: >-
   Install sbx from Docker's apt repository, sign in, and leave the host in the state
-  maf-sandbox-docker-sbx accepts: deny-all policy, SSH agent forwarding off. Linux runners only.
+  maf-sandbox-docker-sbx accepts: deny-all policy, SSH agent forwarding off. Also opts the rest
+  of the job out of sbx telemetry. Linux runners only.
 inputs:
   docker-username:
     description: Docker account the access token belongs to
@@ -19,6 +20,9 @@ runs:
         DOCKER_PAT: ${{ inputs.docker-pat }}
       run: |
         set -euo pipefail
+        # Every later step of the caller's job runs sbx too.
+        export SBX_NO_TELEMETRY=1
+        echo "SBX_NO_TELEMETRY=1" >> "$GITHUB_ENV"
         if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PAT" ]; then
           echo "::error::DOCKER_USERNAME and DOCKER_PAT must be set to sign sbx in."
           exit 1
