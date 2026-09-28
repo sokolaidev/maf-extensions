@@ -97,6 +97,9 @@ def test_a_timeout_reports_and_the_next_command_starts_cold():
 
     async def scenario():
         try:
+            # Warm first, so the short deadline lands on the command and not on a cold create.
+            warm = await adapter.aexecute("true")
+            assert warm.exit_code == 0
             slow = await adapter.aexecute("sleep 30", timeout=2)
             assert slow.exit_code is None
             assert "2 seconds" in slow.output

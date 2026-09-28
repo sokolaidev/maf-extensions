@@ -1473,6 +1473,56 @@ class TestAcquireRecoversFromANameConflict:
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         assert sandbox.container_name == _NAME
 
+    def test_a_name_taken_before_its_container_is_visible_is_adopted_once_it_is(self):
+        """The daemon reserves a name before ``inspect`` can see the container behind it."""
+        base = _machine()
+        attempts = 0
+
+        def responder(args):
+            nonlocal attempts
+            if args[0] == "run":
+                attempts += 1
+                return _DockerResult(125, b"", "Conflict. The container name is already in use")
+            if attempts >= 2:
+                return _machine(running=[_NAME])(args)
+            return base(args)
+
+        backend, fake = _backend_with(responder)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert sandbox.container_name == _NAME
+        assert len(fake.matching("run", "-d", "--name", _NAME)) == 2
+
+    def test_a_name_released_by_a_failed_create_is_created_on_the_retry(self):
+        base = _machine()
+        attempts = 0
+
+        def responder(args):
+            nonlocal attempts
+            if args[0] == "run":
+                attempts += 1
+                if attempts == 1:
+                    return _DockerResult(125, b"", "Conflict. The container name is already in use")
+                return _DockerResult(0, b"", "")
+            if attempts >= 2:
+                return _machine(running=[_NAME])(args)
+            return base(args)
+
+        backend, fake = _backend_with(responder)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert sandbox.container_name == _NAME
+        assert fake.matching("start") == []
+
+    def test_a_name_that_stays_taken_with_nothing_to_adopt_fails_within_the_command_timeout(self):
+        overrides = {
+            ("run",): _DockerResult(125, b"", "Conflict. The container name is already in use")
+        }
+        backend, fake = _backend_with(
+            _machine(overrides=overrides), DockerSandboxConfig(command_timeout_seconds=0.6)
+        )
+        with pytest.raises(RuntimeError, match="could not create container"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert len(fake.matching("run", "-d", "--name", _NAME)) >= 2
+
     def test_any_other_create_failure_still_raises(self):
         overrides = {("run",): _DockerResult(1, b"", "disk full")}
         backend, _ = _backend_with(_machine(overrides=overrides))
