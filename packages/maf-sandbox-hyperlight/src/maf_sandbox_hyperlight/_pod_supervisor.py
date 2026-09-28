@@ -297,6 +297,7 @@ class Supervisor:
                         break
                     now = time.monotonic()
                     if self.continuity and now >= self.fresh:
+                        self.emit("end", sequence=self.sequence)
                         self.deadline = self.expires_at = None
                         raise HyperlightPodDetached(
                             "the pod's controller disconnected before the call"
