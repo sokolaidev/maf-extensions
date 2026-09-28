@@ -139,7 +139,12 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                         or result.returncode not in {0, 1}
                         or allowed != expected
                     ):
-                        raise RuntimeError("unexpected application/controller authorization")
+                        raise RuntimeError(
+                            f"unexpected {name} authorization: {verb} {resource} "
+                            f"in {'target' if ns == namespace else 'outside'}; "
+                            f"expected {expected}, got {result.stdout.strip()!r} "
+                            f"(exit {result.returncode}): {result.stderr}"
+                        )
                     permission_cases.append(
                         {
                             "identity": name,
