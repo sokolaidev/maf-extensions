@@ -19,7 +19,19 @@ pytestmark = pytest.mark.workflow
 
 @pytest.mark.parametrize(
     "failure",
-    [None, "create-response", "authorization", "authorization-response", "cleanup", "collision"],
+    [
+        None,
+        "create-response",
+        "authorization",
+        "authorization-response",
+        "cleanup",
+        "collision",
+        "ownership-namespace",
+        "ownership-outside",
+        "ownership-policy",
+        "ownership-binding",
+        "ownership-missing-label",
+    ],
 )
 @pytest.mark.parametrize("denial", ["no", "no - Azure does not have opinion for this user."])
 def test_probe_ownership_and_cleanup(
@@ -44,6 +56,17 @@ def test_probe_ownership_and_cleanup(
     }
     resources: dict[tuple[str, str], Any] = {}
     created: list[tuple[str, str]] = []
+    deleted: list[tuple[str, str]] = []
+    foreign_key = {
+        "ownership-namespace": ("Namespace", namespace),
+        "ownership-outside": ("Namespace", namespace + "-outside"),
+        "ownership-policy": ("ValidatingAdmissionPolicy", "hyperlight-runtime-" + namespace),
+        "ownership-binding": (
+            "ValidatingAdmissionPolicyBinding",
+            "hyperlight-runtime-" + namespace,
+        ),
+        "ownership-missing-label": ("ValidatingAdmissionPolicy", "hyperlight-runtime-" + namespace),
+    }.get(failure or "")
     exercised = []
     if failure == "collision":
         resources[("Namespace", namespace)] = {"metadata": {"labels": {}}}
@@ -98,6 +121,7 @@ def test_probe_ownership_and_cleanup(
                 "",
             )
         elif action == "delete":
+            deleted.append((args[1], args[2]))
             if failure == "cleanup":
                 return subprocess.CompletedProcess(command, 1, "", "failed delete")
             del resources[(args[1], args[2])]
@@ -105,6 +129,12 @@ def test_probe_ownership_and_cleanup(
 
     def matrix(*args: Any) -> tuple[str, list[dict[str, str]]]:
         exercised.append(args)
+        if foreign_key:
+            labels = resources[foreign_key]["metadata"]["labels"]
+            if failure == "ownership-missing-label":
+                del labels["hyperlight-admission-probe"]
+            else:
+                labels["hyperlight-admission-probe"] = "another-owner"
         return "v1.35.7", [{"case": "shared-matrix", "result": "allowed"}]
 
     monkeypatch.setattr(aks, "prepare", prepare)
@@ -113,7 +143,10 @@ def test_probe_ownership_and_cleanup(
     output = tmp_path / "result.json"
     output.write_text("stale success", encoding="utf-8")
     if failure:
-        with pytest.raises((RuntimeError, ValueError, subprocess.TimeoutExpired)):
+        with pytest.raises(
+            (RuntimeError, ValueError, subprocess.TimeoutExpired),
+            match="probe cleanup incomplete" if foreign_key else None,
+        ):
             aks.check(tmp_path / "policy.json", tmp_path / "config", "context", output)
         assert not output.exists()
     else:
@@ -128,6 +161,10 @@ def test_probe_ownership_and_cleanup(
         assert len(resources) == 1
     elif failure == "cleanup":
         assert len(resources) == 4
+    elif foreign_key:
+        assert set(resources) == {foreign_key}
+        assert foreign_key not in deleted
+        assert set(deleted) == set(created) - {foreign_key}
     else:
         assert not resources
 

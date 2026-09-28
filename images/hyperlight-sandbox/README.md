@@ -106,7 +106,7 @@ uv run python scripts/check_hyperlight_admission_aks.py \
 
 The command freshly verifies the candidate before cluster changes, refuses resource-name collisions, and creates two temporary Restricted namespaces plus the generated policy/binding. Temporary application and controller service accounts exercise authorization; the controller gets only the repository's existing namespace Role. The probe checks that neither identity can alter admission resources, read secrets or create pods outside the test namespace. It uses the same 17 admission cases as KIND and keeps the probe pod behind a scheduling gate, so it neither pulls the runtime on a node nor executes a guest. Reuse separately recorded pull and guest-execution evidence for the relevant candidate instead of treating API admission as execution.
 
-Cleanup verifies the probe ownership label, removes its resources and checks their absence before writing success. The output includes full signed verification/promotion material and can contain private registry identifiers; retain it in operator-controlled storage and publish only a redacted summary. This is a temporary acceptance probe, not installation of a retained policy in a serving namespace.
+Cleanup verifies the probe ownership label, removes its resources and checks their absence before writing success. The output includes full signed verification/promotion material and can contain private registry identifiers; retain it in operator-controlled storage and publish only a redacted summary. The result covers the temporary namespaces and service accounts only. It does not validate the serving namespace or actual application/controller identities, including their identity-specific bindings. [#1539](https://github.com/sokolaidev/maf-extensions/issues/1539) still requires acceptance in the intended application namespace with its real identities and recorded cleanup or retention.
 
 ## Supported platforms
 
@@ -206,7 +206,7 @@ The report lists every node labelled `hyperlight.dev/enabled=true` with its adve
 
 - **A runtime digest that does not pull** fails the pod's startup: `supervise` raises `TimeoutError` after its startup budget, about 200 seconds, with cleanup confirmed. The reason names the container whose image did not pull, which on the bundle path is the `bootstrap` init container. The same scope then accepts the previous candidate.
 - **A plugin digest that does not pull** fails closed: the node's allocation fell to 0 within 14 seconds, so no application pod lands there. `OnDelete` does not replace the stuck pod after the manifest is restored; delete it, and the node advertised again 16 seconds later.
-- **A missing or stale CDI spec** is invisible to `plugin-status` and to the plugin's own health loop ([#1423](https://github.com/sokolaidev/maf-extensions/issues/1423)). Application pods fail with `CreateContainerError: â€¦ unresolvable CDI devices`, which `supervise` reports after its startup budget. Restarting the plugin pod rewrote the spec.
+- **A missing or stale CDI spec** is invisible to `plugin-status` and to the plugin's own health loop ([#1423](https://github.com/sokolaidev/maf-extensions/issues/1423)). Application pods fail with `CreateContainerError: … unresolvable CDI devices`, which `supervise` reports after its startup budget. Restarting the plugin pod rewrote the spec.
 
 ### Not yet measured
 
