@@ -1523,13 +1523,17 @@ def test_a_session_survives_a_partition_that_holds_the_attach_open(monkeypatch):
         wait_for(lambda: state.deadline is None)
         assert not pid1.retired.is_set()
     finally:
+        # An expired session stops the controller before the pipe's descriptor can be reused.
+        state.session_deadline = 0
         stop.set()
         pid1.retire("test finished")
         for attach in pod.attaches:
             attach.drop()
-        os.close(stdin_write)
-        for thread in threads:
+        for thread in threads[1:]:
             thread.join(timeout=5)
+        os.close(stdin_write)
+        threads[0].join(timeout=5)
+        assert all(not thread.is_alive() for thread in threads)
 
 
 @pytest.mark.parametrize("budget", [0, 25], ids=["hello-lost", "hello-torn"])
@@ -1562,10 +1566,13 @@ def test_a_first_attach_that_dies_before_its_hello_is_recovered(monkeypatch, bud
         assert pid1.connected and not pid1.retired.is_set()
         assert state.ready and state.platform == {"kernel": "k"}
     finally:
+        state.session_deadline = 0
         stop.set()
         pid1.retire("test finished")
         for attach in pod.attaches:
             attach.drop()
-        os.close(stdin_write)
-        for thread in threads:
+        for thread in threads[1:]:
             thread.join(timeout=5)
+        os.close(stdin_write)
+        threads[0].join(timeout=5)
+        assert all(not thread.is_alive() for thread in threads)
