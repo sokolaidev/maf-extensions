@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.7.3...maf-sandbox-otel-v0.7.4) (2026-09-28)
+
+
+### Fixes
+
+* require maf-sandbox 0.45.0 in the dependents, and admit the 0.45 line ([#1546](https://github.com/sokolaidev/maf-extensions/issues/1546)) ([2c01a73](https://github.com/sokolaidev/maf-extensions/commit/2c01a738790c4ea2ba452c250715226916c20d20))
+
 ## [0.7.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.7.2...maf-sandbox-otel-v0.7.3) (2026-09-26)
 
 

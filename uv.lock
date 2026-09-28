@@ -1294,7 +1294,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bicep"
-version = "0.21.2"
+version = "0.21.3"
 source = { editable = "packages/maf-sandbox-bicep" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1309,7 +1309,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-codeact"
-version = "0.21.1"
+version = "0.21.2"
 source = { editable = "packages/maf-sandbox-codeact" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1395,7 +1395,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-otel"
-version = "0.7.3"
+version = "0.7.4"
 source = { editable = "packages/maf-sandbox-otel" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1410,7 +1410,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-terraform"
-version = "0.5.2"
+version = "0.5.3"
 source = { editable = "packages/maf-sandbox-terraform" }
 dependencies = [
     { name = "agent-framework-core" },
