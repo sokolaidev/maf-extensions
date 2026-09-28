@@ -927,6 +927,119 @@ def test_an_unconfirmed_resume_gives_up_at_its_bound():
     assert ended == "reconnection was not confirmed" and not state.resumed
 
 
+def supervise_events(state, events, *, resuming=True):
+    source, sink = os.pipe()
+    stopped = threading.Event()
+    readers: list[threading.Thread] = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    with open(source, "rb") as control:
+        stream = SimpleNamespace(
+            stdout=control,
+            stderr=io.BytesIO(),
+            stdin=io.BytesIO(),
+            poll=lambda: 0 if stopped.is_set() else None,
+        )
+        try:
+            for event in events:
+                os.write(sink, frame({"pod_uid": "pod-uid", "generation": "generation", **event}))
+            return controller._supervise(
+                stream,
+                state,
+                readers,
+                resume_by=time.monotonic() + 0.2 if resuming else None,
+            )
+        finally:
+            stopped.set()
+            os.close(sink)
+            for reader in readers:
+                reader.join(timeout=2)
+                assert not reader.is_alive()
+
+
+@pytest.mark.parametrize("previous_active", [False, True])
+def test_reattach_reconciles_a_withdrawal_before_its_resume_snapshot(
+    pid1, previous_active, monkeypatch
+):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    state.sequence = pid1.sequence = 2
+    state.deadline = time.time() + 10 if previous_active else None
+
+    def miss_ack(_started):
+        pid1.fresh = time.monotonic() - 1
+        return False
+
+    monkeypatch.setattr(pid1, "await_ack", miss_ack)
+    with pytest.raises(HyperlightPodDetached):
+        pid1.handle(
+            {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
+        )
+    assert pid1.outgoing.get_nowait()["event"] == "begin"
+    withdrawn = pid1.outgoing.get_nowait()
+    pid1.controller_message(sealed("resume", 1))
+    snapshot = pid1.outgoing.get_nowait()
+    assert withdrawn["event"] == "end" and snapshot["event"] == "resumed"
+    assert (
+        supervise_events(
+            state,
+            [
+                withdrawn,
+                snapshot,
+                {"event": "begin", "sequence": 4, "expires_at": time.time() + 10},
+                {"event": "end", "sequence": 4},
+            ],
+        )
+        == ""
+    )
+    assert state.resumed and state.sequence == 4 and state.deadline is None
+    assert not pid1.retired.is_set()
+
+
+@pytest.mark.parametrize("sequence", [0, 2, True, 1.0, "1"])
+def test_reattach_rejects_an_invalid_withdrawal_sequence(sequence):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    with pytest.raises(HyperlightWorkerError, match="lifecycle"):
+        supervise_events(state, [{"event": "end", "sequence": sequence}])
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_a_withdrawal_without_begin_requires_an_unconfirmed_resume(resuming):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    state.resumed = resuming
+    with pytest.raises(HyperlightWorkerError, match="lifecycle"):
+        supervise_events(state, [{"event": "end", "sequence": 1}], resuming=resuming)
+
+
+@pytest.mark.parametrize(
+    "following",
+    [
+        {"event": "end", "sequence": 1},
+        {"event": "begin", "sequence": 1, "expires_at": FUTURE},
+        {"event": "resumed", "sequence": 0, "expires_at": None, "acknowledged": False},
+        {"event": "resumed", "sequence": 1, "expires_at": FUTURE, "acknowledged": False},
+        {"event": "resumed", "sequence": 1, "expires_at": None, "acknowledged": True},
+    ],
+)
+def test_a_deferred_withdrawal_requires_a_matching_idle_snapshot(following):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    with pytest.raises(HyperlightWorkerError):
+        supervise_events(state, [{"event": "end", "sequence": 1}, following])
+    assert state.sequence == 0 and not state.resumed
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_a_deferred_withdrawal_preserves_deadlines_until_confirmed(active):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    deadline = state.deadline = time.time() + 0.05 if active else None
+    ended = supervise_events(state, [{"event": "end", "sequence": 1}])
+    assert ended == ("" if active else "reconnection was not confirmed")
+    assert state.sequence == 0 and state.deadline == deadline and not state.resumed
+
+
 def test_a_refused_begin_reaches_the_backend_unwrapped(monkeypatch):
     job = object.__new__(PodJob)
 
