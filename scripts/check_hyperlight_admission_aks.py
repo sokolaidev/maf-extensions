@@ -121,14 +121,14 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                 checks = [
                     ("create", "pods", namespace, name == "controller"),
                     ("create", "pods", outside, False),
-                    ("get", "secrets", namespace, False),
+                    *[(verb, "secrets", namespace, False) for verb in ("get", "list", "watch")],
                     *[
                         (verb, resource, namespace, False)
                         for resource in (
                             "validatingadmissionpolicies.admissionregistration.k8s.io",
                             "validatingadmissionpolicybindings.admissionregistration.k8s.io",
                         )
-                        for verb in ("create", "update", "patch", "delete")
+                        for verb in ("create", "update", "patch", "delete", "deletecollection")
                     ],
                 ]
                 for verb, resource, ns, expected in checks:

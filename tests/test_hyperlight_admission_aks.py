@@ -16,6 +16,17 @@ import prepare_hyperlight_admission as admission
 
 pytestmark = pytest.mark.workflow
 
+FORBIDDEN_GRANTS = {
+    f"grant-{identity}-{verb}-{resource}": (identity, verb, resource)
+    for identity in ("controller", "application")
+    for verb, resource in (
+        ("list", "secrets"),
+        ("watch", "secrets"),
+        ("deletecollection", "validatingadmissionpolicies.admissionregistration.k8s.io"),
+        ("deletecollection", "validatingadmissionpolicybindings.admissionregistration.k8s.io"),
+    )
+}
+
 
 @pytest.mark.parametrize(
     "failure",
@@ -31,6 +42,7 @@ pytestmark = pytest.mark.workflow
         "ownership-policy",
         "ownership-binding",
         "ownership-missing-label",
+        *FORBIDDEN_GRANTS,
     ],
 )
 @pytest.mark.parametrize("denial", ["no", "no - Azure does not have opinion for this user."])
@@ -110,6 +122,12 @@ def test_probe_ownership_and_cleanup(
             )
             if failure == "authorization" and resource.startswith("validatingadmissionpolicies"):
                 allowed = True
+            if identity and FORBIDDEN_GRANTS.get(failure or "") == (
+                identity.rsplit(":", 1)[1],
+                verb,
+                resource,
+            ):
+                allowed = True
             return subprocess.CompletedProcess(
                 command,
                 0 if allowed else 1,
@@ -153,7 +171,7 @@ def test_probe_ownership_and_cleanup(
         aks.check(tmp_path / "policy.json", tmp_path / "config", "context", output)
         report = json.loads(output.read_text())
         assert report["probe_resources_removed"] is True
-        assert len(report["permissions"]) == 22
+        assert len(report["permissions"]) == 30
         assert report["promotion"]["verifications"][0]["image"] == image
         assert len(exercised) == 1
     if failure == "collision":
