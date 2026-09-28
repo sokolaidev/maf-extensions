@@ -454,7 +454,10 @@ class Supervisor:
         if self.continuity:
             message = self.authenticate(message)
         if operation == "ping" and self.connected:
-            self.renew()
+            # Once stale, only a resume renews: late frames from a dead attach must not.
+            if time.monotonic() < self.fresh:
+                self.renew()
+                self.emit("alive")
         elif operation == "resume" and self.connected and self.continuity:
             with self.lifecycle:
                 self.renew()

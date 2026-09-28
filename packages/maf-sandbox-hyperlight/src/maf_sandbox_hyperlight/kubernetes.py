@@ -21,6 +21,7 @@ from maf_sandbox import SandboxKey
 
 from ._pod import (
     FRAME_LIMIT,
+    LEASE_SECONDS,
     LIFECYCLE_PROTOCOL,
     PING_SECONDS,
     PLATFORM_EXIT,
@@ -836,10 +837,14 @@ class HyperlightPodController:
             send("resume")
         next_ping = 0.0
         withdrawn_sequence: int | None = None
+        # PID 1 answers every ping it renews on, so silence means a hung or stale attach.
+        heard: float | None = None
         while stream.poll() is None:
             if transport_closed.is_set():
                 return "attach stream closed"
             now = time.monotonic()
+            if heard is not None and now >= heard + LEASE_SECONDS:
+                return "pod stopped answering"
             if session.expired():
                 send("stop")
                 return ""
@@ -856,7 +861,10 @@ class HyperlightPodController:
                 session.generation
             ):
                 raise HyperlightWorkerError("attach stream belongs to another pod generation")
+            heard = time.monotonic()
             event = message.get("event")
+            if event == "alive":
+                continue
             if withdrawn_sequence is not None and (
                 event != "resumed"
                 or message.get("sequence") != withdrawn_sequence

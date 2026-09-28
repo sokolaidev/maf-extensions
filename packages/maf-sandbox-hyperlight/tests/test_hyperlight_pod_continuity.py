@@ -168,6 +168,30 @@ def test_hello_keeps_the_secret_that_seals_every_later_message(pid1, monkeypatch
     assert pid1.lease - pid1.fresh == pytest.approx(LAUNCH.recovery_seconds)
 
 
+def test_a_ping_renews_and_is_answered_only_while_the_lease_is_fresh(pid1, monkeypatch):
+    emitted = []
+    monkeypatch.setattr(pid1, "emit", lambda event, **fields: emitted.append(event))
+    pid1.controller_message(sealed("ping", 1))
+    assert emitted == ["alive"]
+    pid1.fresh = time.monotonic() - 1
+    lease = pid1.lease
+    pid1.controller_message(sealed("ping", 2))
+    assert emitted == ["alive"] and pid1.lease == lease and pid1.counter == 2
+    assert not pid1.retired.is_set()
+    pid1.controller_message(sealed("resume", 3))
+    pid1.controller_message(sealed("ping", 4))
+    assert emitted == ["alive", "resumed", "alive"] and pid1.fresh > time.monotonic()
+
+
+def test_default_mode_answers_each_ping(monkeypatch):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    subject = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])
+    subject.connected = True
+    subject.renew()
+    subject.controller_message({"op": "ping", "pod_uid": "pod-uid", "generation": "generation"})
+    assert subject.outgoing.get_nowait()["event"] == "alive"
+
+
 def test_a_detached_pod_refuses_new_calls_without_retiring(pid1):
     pid1.fresh = time.monotonic() - 1
     for operation in ({"op": "validate"}, {"op": "begin", "deadline": 0, "expires_at": 0}):
@@ -1042,6 +1066,40 @@ def test_a_deferred_withdrawal_preserves_deadlines_until_confirmed(active):
     assert state.sequence == 0 and state.deadline == deadline and not state.resumed
 
 
+@pytest.mark.parametrize("answered", [False, True])
+def test_an_attach_the_pod_stops_answering_ends(monkeypatch, answered):
+    monkeypatch.setattr(kubernetes, "LEASE_SECONDS", 0.3)
+    state = session(recovery=30)
+    state.ready = True
+    source, sink = os.pipe()
+    stopped = threading.Event()
+    readers: list[threading.Thread] = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    with open(source, "rb") as control:
+        stream = SimpleNamespace(
+            stdout=control,
+            stderr=io.BytesIO(),
+            stdin=io.BytesIO(),
+            poll=lambda: 0 if stopped.is_set() else None,
+            returncode=0,
+        )
+        if answered:
+            os.write(
+                sink, frame({"event": "alive", "pod_uid": "pod-uid", "generation": "generation"})
+            )
+        else:
+            # Silence before PID 1's first answer is its startup, which PID 1 bounds itself.
+            threading.Timer(0.8, stopped.set).start()
+        try:
+            ended = controller._supervise(stream, state, readers)
+        finally:
+            stopped.set()
+            os.close(sink)
+            for reader in readers:
+                reader.join(timeout=2)
+    assert ended == ("pod stopped answering" if answered else "attach exited with 0")
+
+
 def test_a_refused_begin_reaches_the_backend_unwrapped(monkeypatch):
     job = object.__new__(PodJob)
 
@@ -1158,15 +1216,30 @@ class Attach:
         self.pod_stdin = stdin
         self.returncode: int | None = None
         self.guard = threading.Lock()
+        # A partition: nothing reaches either side, and what the controller wrote arrives late.
+        self.stalled = False
+        self.held: list[bytes] = []
 
     def deliver(self, payload: bytes) -> None:
         with self.guard:
-            if self.returncode is None:
+            if self.returncode is None and not self.stalled:
                 os.write(self.sink, payload)
+
+    def heal(self) -> None:
+        """The held frames reach PID 1 even when this attach's process has since exited."""
+        with self.guard:
+            self.stalled = False
+            for payload in self.held:
+                os.write(self.pod_stdin, payload)
+            self.held.clear()
 
     def write(self, payload: bytes) -> None:
         if self.returncode is not None:
             raise BrokenPipeError
+        with self.guard:
+            if self.stalled:
+                self.held.append(payload)
+                return
         if self.budget is not None and len(payload) > self.budget:
             # The attach dies partway through this write.
             os.write(self.pod_stdin, payload[: self.budget])
@@ -1315,6 +1388,7 @@ def test_a_session_survives_an_interrupted_attach_end_to_end(monkeypatch):
 
 def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    monkeypatch.setattr(kubernetes, "LEASE_SECONDS", 1.0)
     pid1 = Supervisor(LAUNCH, ["application"])
     pid1.worker = 100
     monkeypatch.setattr(
@@ -1377,14 +1451,15 @@ def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monk
                 write(payload)
             for payload in pending_events:
                 deliver(payload)
-        wait_for(lambda: time.monotonic() < pid1.fresh)
+        # The late pings cannot renew a stale PID 1, so the controller resumes on a new attach.
+        wait_for(lambda: state.resumed and time.monotonic() < pid1.fresh)
         pid1.handle(
             {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
         )
         pid1.handle({"op": "end"})
         wait_for(lambda: state.sequence == 2 and state.deadline is None)
         assert not errors and not pid1.retired.is_set()
-        assert len(pod.attaches) == 1 and not state.interruptions
+        assert len(pod.attaches) == 2 and state.interruptions == ["pod stopped answering"]
     finally:
         state.session_deadline = 0
         stop.set()
@@ -1395,6 +1470,66 @@ def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monk
         for thread in threads:
             thread.join(timeout=5)
         assert all(not thread.is_alive() for thread in threads)
+
+
+def test_a_session_survives_a_partition_that_holds_the_attach_open(monkeypatch):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    monkeypatch.setattr(_pod_supervisor, "LEASE_SECONDS", 1.0)
+    monkeypatch.setattr(kubernetes, "LEASE_SECONDS", 1.0)
+    monkeypatch.setattr(kubernetes, "PING_SECONDS", 0.2)
+    pid1 = Supervisor(replace(LAUNCH, recovery_seconds=5), ["application"])
+    pid1.worker = 100
+    monkeypatch.setattr(
+        pid1, "start_owner", lambda binding: pid1.emit("ready", owner_pid=2, platform={})
+    )
+    stdin_read, stdin_write = os.pipe()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=os.fdopen(stdin_read, "rb")))
+    pod = Pod(pid1, stdin_write)
+    state = session(recovery=5)
+    stop = threading.Event()
+    threads = [
+        threading.Thread(target=pid1.read_controller, daemon=True),
+        threading.Thread(target=pump, args=(pid1, pod, stop), daemon=True),
+        threading.Thread(target=pod._hold, args=(NAME, "c1", state), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        wait_for(lambda: state.ready and pid1.connected)
+        first = pod.attaches[0]
+        pod.reachable.clear()
+        first.stalled = True
+        # A call begun in the partition is withdrawn once PID 1's lease goes stale.
+        call = time.time() + 30
+        with pytest.raises(HyperlightPodDetached):
+            pid1.handle({"op": "begin", "deadline": time.monotonic() + 30, "expires_at": call})
+        wait_for(lambda: state.interrupted == "pod stopped answering")
+        assert first.returncode is not None and first.held
+
+        # The held pings arrive after the controller gave up on that attach; they renew nothing.
+        counter = pid1.counter
+        first.heal()
+        wait_for(lambda: pid1.counter > counter)
+        assert time.monotonic() >= pid1.fresh
+        with pytest.raises(HyperlightPodDetached):
+            pid1.handle({"op": "validate"})
+        pod.reachable.set()
+        wait_for(lambda: len(pod.attaches) == 2 and state.resumed)
+        assert state.interruptions == ["pod stopped answering"]
+        assert (state.sequence, state.deadline) == (1, None)
+        pid1.handle({"op": "begin", "deadline": time.monotonic() + 30, "expires_at": call})
+        wait_for(lambda: state.sequence == 2 and state.deadline == call)
+        pid1.handle({"op": "end"})
+        wait_for(lambda: state.deadline is None)
+        assert not pid1.retired.is_set()
+    finally:
+        stop.set()
+        pid1.retire("test finished")
+        for attach in pod.attaches:
+            attach.drop()
+        os.close(stdin_write)
+        for thread in threads:
+            thread.join(timeout=5)
 
 
 @pytest.mark.parametrize("budget", [0, 25], ids=["hello-lost", "hello-torn"])
