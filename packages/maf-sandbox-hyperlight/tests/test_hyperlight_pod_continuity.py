@@ -195,7 +195,7 @@ def test_a_begin_the_controller_never_saw_is_withdrawn_once_it_is_stale(pid1, mo
             {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
         )
     assert time.monotonic() - started < 2
-    assert emitted == ["begin"] and pid1.sequence == 1
+    assert emitted == ["begin", "end"] and pid1.sequence == 1
     assert pid1.deadline is None and pid1.expires_at is None and not pid1.retired.is_set()
 
 
@@ -927,6 +927,119 @@ def test_an_unconfirmed_resume_gives_up_at_its_bound():
     assert ended == "reconnection was not confirmed" and not state.resumed
 
 
+def supervise_events(state, events, *, resuming=True):
+    source, sink = os.pipe()
+    stopped = threading.Event()
+    readers: list[threading.Thread] = []
+    controller = HyperlightPodController(kubeconfig="config", context="context", namespace="agents")
+    with open(source, "rb") as control:
+        stream = SimpleNamespace(
+            stdout=control,
+            stderr=io.BytesIO(),
+            stdin=io.BytesIO(),
+            poll=lambda: 0 if stopped.is_set() else None,
+        )
+        try:
+            for event in events:
+                os.write(sink, frame({"pod_uid": "pod-uid", "generation": "generation", **event}))
+            return controller._supervise(
+                stream,
+                state,
+                readers,
+                resume_by=time.monotonic() + 0.2 if resuming else None,
+            )
+        finally:
+            stopped.set()
+            os.close(sink)
+            for reader in readers:
+                reader.join(timeout=2)
+                assert not reader.is_alive()
+
+
+@pytest.mark.parametrize("previous_active", [False, True])
+def test_reattach_reconciles_a_withdrawal_before_its_resume_snapshot(
+    pid1, previous_active, monkeypatch
+):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    state.sequence = pid1.sequence = 2
+    state.deadline = time.time() + 10 if previous_active else None
+
+    def miss_ack(_started):
+        pid1.fresh = time.monotonic() - 1
+        return False
+
+    monkeypatch.setattr(pid1, "await_ack", miss_ack)
+    with pytest.raises(HyperlightPodDetached):
+        pid1.handle(
+            {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
+        )
+    assert pid1.outgoing.get_nowait()["event"] == "begin"
+    withdrawn = pid1.outgoing.get_nowait()
+    pid1.controller_message(sealed("resume", 1))
+    snapshot = pid1.outgoing.get_nowait()
+    assert withdrawn["event"] == "end" and snapshot["event"] == "resumed"
+    assert (
+        supervise_events(
+            state,
+            [
+                withdrawn,
+                snapshot,
+                {"event": "begin", "sequence": 4, "expires_at": time.time() + 10},
+                {"event": "end", "sequence": 4},
+            ],
+        )
+        == ""
+    )
+    assert state.resumed and state.sequence == 4 and state.deadline is None
+    assert not pid1.retired.is_set()
+
+
+@pytest.mark.parametrize("sequence", [0, 2, True, 1.0, "1"])
+def test_reattach_rejects_an_invalid_withdrawal_sequence(sequence):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    with pytest.raises(HyperlightWorkerError, match="lifecycle"):
+        supervise_events(state, [{"event": "end", "sequence": sequence}])
+
+
+@pytest.mark.parametrize("resuming", [False, True])
+def test_a_withdrawal_without_begin_requires_an_unconfirmed_resume(resuming):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    state.resumed = resuming
+    with pytest.raises(HyperlightWorkerError, match="lifecycle"):
+        supervise_events(state, [{"event": "end", "sequence": 1}], resuming=resuming)
+
+
+@pytest.mark.parametrize(
+    "following",
+    [
+        {"event": "end", "sequence": 1},
+        {"event": "begin", "sequence": 1, "expires_at": FUTURE},
+        {"event": "resumed", "sequence": 0, "expires_at": None, "acknowledged": False},
+        {"event": "resumed", "sequence": 1, "expires_at": FUTURE, "acknowledged": False},
+        {"event": "resumed", "sequence": 1, "expires_at": None, "acknowledged": True},
+    ],
+)
+def test_a_deferred_withdrawal_requires_a_matching_idle_snapshot(following):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    with pytest.raises(HyperlightWorkerError):
+        supervise_events(state, [{"event": "end", "sequence": 1}, following])
+    assert state.sequence == 0 and not state.resumed
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_a_deferred_withdrawal_preserves_deadlines_until_confirmed(active):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    deadline = state.deadline = time.time() + 0.05 if active else None
+    ended = supervise_events(state, [{"event": "end", "sequence": 1}])
+    assert ended == ("" if active else "reconnection was not confirmed")
+    assert state.sequence == 0 and state.deadline == deadline and not state.resumed
+
+
 def test_a_refused_begin_reaches_the_backend_unwrapped(monkeypatch):
     job = object.__new__(PodJob)
 
@@ -1196,6 +1309,90 @@ def test_a_session_survives_an_interrupted_attach_end_to_end(monkeypatch):
         os.close(stdin_write)
         for thread in threads:
             thread.join(timeout=5)
+
+
+def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monkeypatch):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    pid1 = Supervisor(LAUNCH, ["application"])
+    pid1.worker = 100
+    monkeypatch.setattr(
+        pid1, "start_owner", lambda binding: pid1.emit("ready", owner_pid=2, platform={})
+    )
+    stdin_read, stdin_write = os.pipe()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=os.fdopen(stdin_read, "rb")))
+    pod = Pod(pid1, stdin_write)
+    state = session()
+    stop = threading.Event()
+    errors = []
+
+    def hold():
+        try:
+            pod._hold(NAME, "c1", state)
+        except HyperlightWorkerError as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=pid1.read_controller, daemon=True),
+        threading.Thread(target=pump, args=(pid1, pod, stop), daemon=True),
+        threading.Thread(target=hold, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        wait_for(lambda: state.ready and pid1.connected)
+        attach = pod.attaches[0]
+        write, deliver = attach.write, attach.deliver
+        pending_writes, pending_events = [], []
+        transport = threading.RLock()
+        blocked = True
+
+        def buffer_write(payload):
+            with transport:
+                if blocked:
+                    pending_writes.append(payload)
+                else:
+                    write(payload)
+
+        def buffer_event(payload):
+            with transport:
+                if blocked:
+                    pending_events.append(payload)
+                else:
+                    deliver(payload)
+
+        monkeypatch.setattr(attach, "write", buffer_write)
+        monkeypatch.setattr(attach, "deliver", buffer_event)
+        # Both directions remain connected while frames wait for the network to recover.
+        pid1.fresh = time.monotonic() + 0.2
+        with pytest.raises(HyperlightPodDetached, match="disconnected"):
+            pid1.handle(
+                {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
+            )
+        wait_for(lambda: pid1.outgoing.empty() and bool(pending_events))
+        with transport:
+            blocked = False
+            for payload in pending_writes:
+                write(payload)
+            for payload in pending_events:
+                deliver(payload)
+        wait_for(lambda: time.monotonic() < pid1.fresh)
+        pid1.handle(
+            {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
+        )
+        pid1.handle({"op": "end"})
+        wait_for(lambda: state.sequence == 2 and state.deadline is None)
+        assert not errors and not pid1.retired.is_set()
+        assert len(pod.attaches) == 1 and not state.interruptions
+    finally:
+        state.session_deadline = 0
+        stop.set()
+        pid1.retire("test finished")
+        for attach in pod.attaches:
+            attach.drop()
+        os.close(stdin_write)
+        for thread in threads:
+            thread.join(timeout=5)
+        assert all(not thread.is_alive() for thread in threads)
 
 
 @pytest.mark.parametrize("budget", [0, 25], ids=["hello-lost", "hello-torn"])

@@ -822,6 +822,7 @@ class HyperlightPodController:
                 send("hello", **session.identity)
             send("resume")
         next_ping = 0.0
+        withdrawn_sequence: int | None = None
         while stream.poll() is None:
             if transport_closed.is_set():
                 return "attach stream closed"
@@ -843,6 +844,13 @@ class HyperlightPodController:
             ):
                 raise HyperlightWorkerError("attach stream belongs to another pod generation")
             event = message.get("event")
+            if withdrawn_sequence is not None and (
+                event != "resumed"
+                or message.get("sequence") != withdrawn_sequence
+                or message.get("expires_at") is not None
+                or message.get("acknowledged") is not False
+            ):
+                raise HyperlightWorkerError("resume snapshot does not confirm the withdrawal")
             if event == "begin":
                 expires = message.get("expires_at")
                 if (
@@ -862,11 +870,21 @@ class HyperlightPodController:
                 and session.deadline is not None
             ):
                 session.deadline = None
+            elif (
+                event == "end"
+                and resume_by is not None
+                and not session.resumed
+                and type(sequence := message.get("sequence")) is int
+                and sequence == session.sequence + 1
+            ):
+                # Keep the last known deadline until the snapshot confirms the withdrawn call.
+                withdrawn_sequence = sequence
             elif event == "ready" and not session.ready:
                 session.ready = True
                 session.observe(message.get("platform"))
             elif event == "resumed" and resume_by is not None and not session.resumed:
                 session.reconcile(message, send)
+                withdrawn_sequence = None
             else:
                 raise HyperlightWorkerError("invalid pod lifecycle event")
         return f"attach exited with {stream.returncode}"
