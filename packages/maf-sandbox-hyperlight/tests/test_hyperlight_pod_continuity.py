@@ -195,7 +195,7 @@ def test_a_begin_the_controller_never_saw_is_withdrawn_once_it_is_stale(pid1, mo
             {"op": "begin", "deadline": time.monotonic() + 10, "expires_at": time.time() + 10}
         )
     assert time.monotonic() - started < 2
-    assert emitted == ["begin"] and pid1.sequence == 1
+    assert emitted == ["begin", "end"] and pid1.sequence == 1
     assert pid1.deadline is None and pid1.expires_at is None and not pid1.retired.is_set()
 
 
@@ -1196,6 +1196,90 @@ def test_a_session_survives_an_interrupted_attach_end_to_end(monkeypatch):
         os.close(stdin_write)
         for thread in threads:
             thread.join(timeout=5)
+
+
+def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monkeypatch):
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    pid1 = Supervisor(LAUNCH, ["application"])
+    pid1.worker = 100
+    monkeypatch.setattr(
+        pid1, "start_owner", lambda binding: pid1.emit("ready", owner_pid=2, platform={})
+    )
+    stdin_read, stdin_write = os.pipe()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=os.fdopen(stdin_read, "rb")))
+    pod = Pod(pid1, stdin_write)
+    state = session()
+    stop = threading.Event()
+    errors = []
+
+    def hold():
+        try:
+            pod._hold(NAME, "c1", state)
+        except HyperlightWorkerError as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=pid1.read_controller, daemon=True),
+        threading.Thread(target=pump, args=(pid1, pod, stop), daemon=True),
+        threading.Thread(target=hold, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        wait_for(lambda: state.ready and pid1.connected)
+        attach = pod.attaches[0]
+        write, deliver = attach.write, attach.deliver
+        pending_writes, pending_events = [], []
+        transport = threading.RLock()
+        blocked = True
+
+        def buffer_write(payload):
+            with transport:
+                if blocked:
+                    pending_writes.append(payload)
+                else:
+                    write(payload)
+
+        def buffer_event(payload):
+            with transport:
+                if blocked:
+                    pending_events.append(payload)
+                else:
+                    deliver(payload)
+
+        monkeypatch.setattr(attach, "write", buffer_write)
+        monkeypatch.setattr(attach, "deliver", buffer_event)
+        # Both directions remain connected while frames wait for the network to recover.
+        pid1.fresh = time.monotonic() + 0.2
+        with pytest.raises(HyperlightPodDetached, match="disconnected"):
+            pid1.handle(
+                {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
+            )
+        wait_for(lambda: pid1.outgoing.empty() and bool(pending_events))
+        with transport:
+            blocked = False
+            for payload in pending_writes:
+                write(payload)
+            for payload in pending_events:
+                deliver(payload)
+        wait_for(lambda: time.monotonic() < pid1.fresh)
+        pid1.handle(
+            {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
+        )
+        pid1.handle({"op": "end"})
+        wait_for(lambda: state.sequence == 2 and state.deadline is None)
+        assert not errors and not pid1.retired.is_set()
+        assert len(pod.attaches) == 1 and not state.interruptions
+    finally:
+        state.session_deadline = 0
+        stop.set()
+        pid1.retire("test finished")
+        for attach in pod.attaches:
+            attach.drop()
+        os.close(stdin_write)
+        for thread in threads:
+            thread.join(timeout=5)
+        assert all(not thread.is_alive() for thread in threads)
 
 
 @pytest.mark.parametrize("budget", [0, 25], ids=["hello-lost", "hello-torn"])
