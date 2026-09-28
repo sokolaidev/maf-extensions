@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.6.0...maf-sandbox-hyperlight-v0.7.0) (2026-09-28)
+
+
+### Features
+
+* **hyperlight:** keep a Kubernetes pod session through a brief controller attach interruption ([#1519](https://github.com/sokolaidev/maf-extensions/issues/1519)) ([bf378de](https://github.com/sokolaidev/maf-extensions/commit/bf378de7d242b84e26419845f110db7ba25215ed))
+
+
+### Fixes
+
+* **hyperlight:** bind a Kubernetes pod only to the controller that created it ([#1506](https://github.com/sokolaidev/maf-extensions/issues/1506)) ([69e3805](https://github.com/sokolaidev/maf-extensions/commit/69e3805357447459d746ce4fc51ec7801f2ceecf))
+* **hyperlight:** name the blocked container when a Kubernetes pod never starts ([#1544](https://github.com/sokolaidev/maf-extensions/issues/1544)) ([865abd4](https://github.com/sokolaidev/maf-extensions/commit/865abd4051eb657de5a3107b759144962c1497ea))
+* **hyperlight:** preserve sessions through brief API partitions ([#1548](https://github.com/sokolaidev/maf-extensions/issues/1548)) ([70554d7](https://github.com/sokolaidev/maf-extensions/commit/70554d7b5ffb31b448c4d3e0b8ff2abaeff40801))
+* **hyperlight:** refuse a still-reserved Kubernetes scope with a named error ([#1545](https://github.com/sokolaidev/maf-extensions/issues/1545)) ([a800bbb](https://github.com/sokolaidev/maf-extensions/commit/a800bbb19854b4bc6975fd362909660b112547af))
+* require maf-sandbox 0.45.0 in the dependents, and admit the 0.45 line ([#1546](https://github.com/sokolaidev/maf-extensions/issues/1546)) ([2c01a73](https://github.com/sokolaidev/maf-extensions/commit/2c01a738790c4ea2ba452c250715226916c20d20))
+
 ## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.5.1...maf-sandbox-hyperlight-v0.6.0) (2026-09-26)
 
 
