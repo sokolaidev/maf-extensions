@@ -865,9 +865,12 @@ class HyperlightPodController:
             event = message.get("event")
             if event == "alive":
                 continue
+            sequence = message.get("sequence")
+            # `True == 1` and `1.0 == 1`: only an exact int names a call.
+            sequence = sequence if type(sequence) is int else None
             if withdrawn_sequence is not None and (
                 event != "resumed"
-                or message.get("sequence") != withdrawn_sequence
+                or sequence != withdrawn_sequence
                 or message.get("expires_at") is not None
                 or message.get("acknowledged") is not False
             ):
@@ -877,7 +880,7 @@ class HyperlightPodController:
                 if (
                     not session.ready
                     or session.deadline is not None
-                    or message.get("sequence") != session.sequence + 1
+                    or sequence != session.sequence + 1
                     or not _finite(expires)
                     or cast("float", expires) <= time.time()
                 ):
@@ -885,17 +888,13 @@ class HyperlightPodController:
                 session.sequence += 1
                 session.deadline = float(cast("float", expires))
                 send("ack", sequence=session.sequence)
-            elif (
-                event == "end"
-                and message.get("sequence") == session.sequence
-                and session.deadline is not None
-            ):
+            elif event == "end" and sequence == session.sequence and session.deadline is not None:
                 session.deadline = None
             elif (
                 event == "end"
                 and resume_by is not None
                 and not session.resumed
-                and type(sequence := message.get("sequence")) is int
+                and sequence is not None
                 and sequence == session.sequence + 1
             ):
                 # Keep the last known deadline until the snapshot confirms the withdrawn call.
