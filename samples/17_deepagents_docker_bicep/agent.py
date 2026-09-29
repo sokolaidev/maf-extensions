@@ -135,7 +135,7 @@ INSTRUCTIONS = (
 def build_model() -> tuple[BaseChatModel, DefaultAzureCredential | None] | None:
     """One client library, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
-    Samples 09 and 13 make the same split on the framework's own client. Returns the model and
+    Samples 09 and 13 make the same split on the framework's own clients. Returns the model and
     the credential to close, or ``None`` when the environment names an endpoint and then does
     not say which deployment to reach on it.
     """

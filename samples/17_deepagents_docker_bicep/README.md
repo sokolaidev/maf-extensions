@@ -18,7 +18,7 @@ What it gives up, and this sample says out loud: the agent writes the shell. `bi
 
 SARIF rather than the plain format for a measured reason: with an error in the file — and `no-unused-params` is promoted to one by `bicepconfig.json` — the plain format prints the error alone, and the two warnings beside it go unseen. The SARIF document carries all three, which is why `bicep_validate` reads that and nothing else.
 
-**Two roads to a model, as samples 09 and 13 take them**, in `langchain-openai`'s terms. With `AZURE_OPENAI_ENDPOINT` set, `AzureChatOpenAI` reaches an Azure OpenAI deployment with `DefaultAzureCredential` — no key in the tree, which is what lets this sample have a live job. Unset, `ChatOpenAI` talks to any OpenAI-compatible endpoint, a local server included, and defaults to Ollama's. One `build_model` decides, on one variable.
+**Two roads to a model, as samples 09 and 13 take them**, in `langchain-openai`'s terms. With `AZURE_OPENAI_ENDPOINT` set, `AzureChatOpenAI` reaches an Azure OpenAI deployment over the Responses API (`use_responses_api=True`) with `DefaultAzureCredential` — no key in the tree, which is what lets this sample have a live job. gpt-5.6 and later refuse tools over chat completions while reasoning is on. Unset, `ChatOpenAI` talks to any OpenAI-compatible endpoint, a local server included, and defaults to Ollama's. One `build_model` decides, on one variable.
 
 ## Prerequisites
 

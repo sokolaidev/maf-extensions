@@ -7,8 +7,8 @@ floor of the isolation ladder (:data:`~maf_sandbox.Isolation.NONE`, no boundary 
 The egress is **honest**: a no-boundary backend cannot confine egress, so it declares the one
 mode it enforces — ``UNRESTRICTED`` — and the Bicep tool is wired to run in that mode. The
 router serves the pairing because the mode asked and the mode enforced agree; why running
-unconfined is acceptable for this dev workload is argued in ``README.md``. One
-``OpenAIChatCompletionClient`` serves Azure OpenAI in CI and a local Ollama server by default,
+unconfined is acceptable for this dev workload is argued in ``README.md``. ``OpenAIChatClient``
+serves Azure OpenAI in CI and ``OpenAIChatCompletionClient`` a local Ollama server by default,
 branched on ``AZURE_OPENAI_ENDPOINT``.
 
 The walkthrough and environment variables are in ``README.md``; read it first.
@@ -35,7 +35,7 @@ from pathlib import Path
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
 from agent_framework import Agent, InMemoryAgentFileStore
-from agent_framework.openai import OpenAIChatCompletionClient
+from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
 from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
@@ -100,10 +100,10 @@ async def run() -> int:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
 
-    # One client class, two endpoints, branched on a single variable. CI sets
-    # AZURE_OPENAI_ENDPOINT and reaches Azure OpenAI with a federated credential (no key); a
-    # developer's machine leaves it unset and the client talks to a local Ollama server with
-    # defaults — zero configuration. The two paths are mutually exclusive.
+    # Two endpoints, branched on a single variable. CI sets AZURE_OPENAI_ENDPOINT and reaches
+    # Azure OpenAI with a federated credential (no key) over the Responses API, the one surface
+    # where gpt-5.6 and later accept tools with reasoning on; a developer's machine leaves it
+    # unset and talks chat completions to a local Ollama server — zero configuration.
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     credential = None
     if azure_endpoint:
@@ -113,7 +113,7 @@ async def run() -> int:
         from azure.identity.aio import DefaultAzureCredential
 
         credential = DefaultAzureCredential()
-        client = OpenAIChatCompletionClient(
+        client = OpenAIChatClient(
             model=env["AZURE_OPENAI_CHAT_MODEL"],
             azure_endpoint=azure_endpoint,
             credential=credential,

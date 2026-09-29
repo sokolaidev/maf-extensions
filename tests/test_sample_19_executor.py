@@ -886,7 +886,25 @@ class TestTheModelWiring:
         assert credential is not None
         assert type(model).__name__ == "AzureOpenAIChatCompletionClient"
         assert "parallel_tool_calls" not in model._create_args  # pyright: ignore[reportPrivateUsage]
+        assert "extra_body" not in model._create_args  # pyright: ignore[reportPrivateUsage]
         asyncio.run(credential.close())
+
+    @pytest.mark.parametrize("deployment", ["gpt-5.6-luna", "gpt-6-luna", "GPT-6", "gpt-5.10"])
+    def test_a_deployment_that_refuses_tools_with_reasoning_turns_it_off(
+        self, monkeypatch: pytest.MonkeyPatch, deployment: str
+    ):
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
+        monkeypatch.setenv("AZURE_OPENAI_CHAT_MODEL", deployment)
+        model, credential = sample_19.build_model()
+        assert credential is not None
+        assert model._create_args["extra_body"] == {"reasoning_effort": "none"}  # pyright: ignore[reportPrivateUsage]
+        asyncio.run(credential.close())
+
+    @pytest.mark.parametrize(
+        "deployment", ["gpt-5", "gpt-5-mini", "gpt-5.1-codex", "gpt-5.5", "o3"]
+    )
+    def test_an_older_deployment_keeps_its_reasoning(self, deployment: str):
+        assert sample_19._tool_compatible_reasoning(deployment) == {}  # pyright: ignore[reportPrivateUsage]
 
     def test_an_endpoint_without_a_deployment_is_reported_not_run(
         self, monkeypatch: pytest.MonkeyPatch, capsys
