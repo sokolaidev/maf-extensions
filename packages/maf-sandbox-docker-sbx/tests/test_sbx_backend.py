@@ -467,6 +467,14 @@ class TestExec:
         asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=5))
         assert sbx.timeouts[before:] == [5]
 
+    def test_an_image_the_probe_fails_on_names_what_the_backend_needs(self, backend, sbx):
+        sbx.exec_hook = lambda args: _Result(
+            127, b"", f"{args[8]}\nmaf-sbx: the image has no rm\n".encode()
+        )
+        with pytest.raises(SbxError, match="unshare that takes --map-user and --map-group"):
+            asyncio.run(backend.acquire(KEY, _spec(image="example/bare")))
+        assert sbx.sandboxes == {}
+
     def test_an_image_that_cannot_start_names_bash(self, backend, sbx, tmp_path):
         real = sbx.__call__
 
