@@ -1,4 +1,4 @@
-"""Samples 13 and 17 reach Azure over the Responses API and a local server over chat completions.
+"""Samples 09, 13 and 17 reach Azure over the Responses API and a local server over chat completions.
 
 gpt-5.6 and later refuse function tools over chat completions while reasoning is on, and both
 samples hand the model tools. Sample 19's AutoGen road is pinned in its own suite.
@@ -35,6 +35,7 @@ def _load(directory: str) -> ModuleType:
         sys.modules.pop("_scaffold", None)
 
 
+sample_09 = _load("09_inprocess_bicep")
 sample_13 = _load("13_bicep_fix_loop")
 sample_17 = _load("17_deepagents_docker_bicep")
 
@@ -43,6 +44,32 @@ sample_17 = _load("17_deepagents_docker_bicep")
 def azure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
     monkeypatch.setenv("AZURE_OPENAI_CHAT_MODEL", "gpt-6-luna")
+
+
+class TestSample09:
+    def test_the_azure_road_is_the_responses_client(self, azure: None):
+        configured = sample_09.build_client()
+        assert configured is not None
+        client, credential = configured
+        assert type(client).__name__ == "OpenAIChatClient"
+        assert credential is not None
+        asyncio.run(credential.close())
+
+    def test_the_local_road_stays_on_chat_completions(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+        configured = sample_09.build_client()
+        assert configured is not None
+        client, credential = configured
+        assert type(client).__name__ == "OpenAIChatCompletionClient"
+        assert credential is None
+
+    def test_an_endpoint_without_a_model_is_reported_not_run(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
+        monkeypatch.delenv("AZURE_OPENAI_CHAT_MODEL", raising=False)
+        assert sample_09.build_client() is None
+        assert "AZURE_OPENAI_CHAT_MODEL" in capsys.readouterr().err
 
 
 class TestSample13:

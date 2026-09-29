@@ -250,9 +250,8 @@ def build_client() -> tuple[SupportsChatGetResponse[Any], DefaultAzureCredential
     """Two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
     Azure is reached over the Responses API, where gpt-5.6 and later accept tools with reasoning
-    on; a local server over chat completions, the surface it implements well. Sample 09 makes the
-    same split inline. Factored out here, so the credential handed back is
-    named rather than inferred. Returns the client and that credential to close, or ``None`` when
+    on; a local server over chat completions, the surface it implements well. Sample 09's
+    `build_client`, unchanged. Returns the client and the credential to close, or ``None`` when
     the environment names an endpoint and then does not say which model to reach on it.
     """
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
