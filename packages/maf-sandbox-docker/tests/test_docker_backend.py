@@ -1523,6 +1523,24 @@ class TestAcquireRecoversFromANameConflict:
             asyncio.run(backend.acquire(_KEY, _SPEC))
         assert len(fake.matching("run", "-d", "--name", _NAME)) >= 2
 
+    def test_a_slow_adopt_cannot_stretch_the_retry_past_the_command_timeout(self):
+        overrides = {
+            ("run",): _DockerResult(125, b"", "Conflict. The container name is already in use")
+        }
+        backend, _ = _backend_with(
+            _machine(overrides=overrides), DockerSandboxConfig(command_timeout_seconds=0.5)
+        )
+
+        async def slow_adopt(name, spec):
+            await asyncio.sleep(5)
+            return False
+
+        backend._adopt = slow_adopt  # type: ignore[method-assign]
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="already in use"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert time.monotonic() - started < 2
+
     def test_any_other_create_failure_still_raises(self):
         overrides = {("run",): _DockerResult(1, b"", "disk full")}
         backend, _ = _backend_with(_machine(overrides=overrides))
