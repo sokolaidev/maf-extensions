@@ -33,6 +33,12 @@ FORBIDDEN_GRANTS = {
     [
         None,
         "create-response",
+        "create-missing-uid",
+        "create-empty-uid",
+        "replacement-namespace",
+        "replacement-outside",
+        "replacement-policy",
+        "replacement-binding",
         "authorization",
         "authorization-response",
         "cleanup",
@@ -81,6 +87,16 @@ def test_probe_ownership_and_cleanup(
         ),
         "ownership-missing-label": ("ValidatingAdmissionPolicy", "hyperlight-runtime-" + namespace),
     }.get(failure or "")
+    replacement_key = {
+        "replacement-namespace": ("Namespace", namespace),
+        "replacement-outside": ("Namespace", namespace + "-outside"),
+        "replacement-policy": ("ValidatingAdmissionPolicy", "hyperlight-runtime-" + namespace),
+        "replacement-binding": (
+            "ValidatingAdmissionPolicyBinding",
+            "hyperlight-runtime-" + namespace,
+        ),
+    }.get(failure or "")
+    uncertain_key = ("ValidatingAdmissionPolicy", "hyperlight-runtime-" + namespace)
     exercised = []
     if failure == "collision":
         resources[("Namespace", namespace)] = {"metadata": {"labels": {}}}
@@ -112,7 +128,13 @@ def test_probe_ownership_and_cleanup(
                 created.append(key)
                 if failure == "create-response" and obj["kind"] == "ValidatingAdmissionPolicy":
                     raise subprocess.TimeoutExpired(command, 120)
-            output = json.dumps(obj)
+            response = json.loads(json.dumps(obj))
+            if obj["kind"] == "ValidatingAdmissionPolicy":
+                if failure == "create-missing-uid":
+                    del response["metadata"]["uid"]
+                elif failure == "create-empty-uid":
+                    response["metadata"]["uid"] = ""
+            output = json.dumps(response)
         elif action == "auth":
             verb, resource = args[2:4]
             target = args[args.index("-n") + 1]
@@ -185,6 +207,11 @@ def test_probe_ownership_and_cleanup(
 
     def matrix(*args: Any) -> tuple[str, list[dict[str, str]]]:
         exercised.append(args)
+        if failure is None:
+            for resource in resources.values():
+                resource["metadata"]["resourceVersion"] = "2"
+        if replacement_key:
+            resources[replacement_key]["metadata"]["uid"] = "replacement-uid"
         if foreign_key:
             labels = resources[foreign_key]["metadata"]["labels"]
             if failure == "ownership-missing-label":
@@ -204,9 +231,20 @@ def test_probe_ownership_and_cleanup(
             match="probe cleanup incomplete"
             if foreign_key or failure in {"race-label", "race-replacement"}
             else None,
-        ):
+        ) as error:
             aks.check(tmp_path / "policy.json", tmp_path / "config", "context", output)
         assert not output.exists()
+        if failure == "cleanup":
+            for kind, name in created:
+                assert f"{kind}/{name}: RuntimeError: failed delete" in str(error.value)
+        elif failure in {"race-label", "race-replacement"}:
+            assert f"Namespace/{namespace}: RuntimeError: 409 Conflict" in str(error.value)
+        elif replacement_key:
+            assert "/".join(replacement_key) in str(error.value)
+            assert "probe resource UID changed" in str(error.value)
+        elif failure in {"create-response", "create-missing-uid", "create-empty-uid"}:
+            assert "/".join(uncertain_key) in str(error.value)
+            assert "probe resource creation UID unavailable" in str(error.value)
     else:
         aks.check(tmp_path / "policy.json", tmp_path / "config", "context", output)
         report = json.loads(output.read_text())
@@ -226,6 +264,14 @@ def test_probe_ownership_and_cleanup(
             == "another-owner"
         )
         assert ("Namespace", namespace) in deleted
+    elif replacement_key:
+        assert set(resources) == {replacement_key}
+        assert replacement_key not in deleted
+        assert set(deleted) == set(created) - {replacement_key}
+    elif failure in {"create-response", "create-missing-uid", "create-empty-uid"}:
+        assert set(resources) == {uncertain_key}
+        assert uncertain_key not in deleted
+        assert set(deleted) == set(created) - {uncertain_key}
     elif foreign_key:
         assert set(resources) == {foreign_key}
         assert foreign_key not in deleted

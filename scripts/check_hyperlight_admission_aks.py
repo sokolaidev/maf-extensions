@@ -95,9 +95,16 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                 )
             ).strip():
                 raise ValueError("probe resource already exists")
+        created_uids: dict[tuple[str, str], str] = {}
         try:
             for obj in objects:
-                require(kubectl("create", "-f", "-", "-o", "json", payload=obj))
+                created = json.loads(
+                    require(kubectl("create", "-f", "-", "-o", "json", payload=obj))
+                )
+                uid = created["metadata"].get("uid")
+                if not isinstance(uid, str) or not uid:
+                    raise RuntimeError("probe create response has no UID")
+                created_uids[(obj["kind"], obj["metadata"]["name"])] = uid
             role = yaml.safe_load(
                 (ROOT / "images/hyperlight-sandbox/controller-role.yaml").read_text()
             )
@@ -173,6 +180,13 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                         != owner
                     ):
                         raise RuntimeError("probe resource ownership changed")
+                    uid = created_uids.get((kind, name))
+                    if uid is None:
+                        raise RuntimeError(
+                            "probe resource creation UID unavailable; manual cleanup required"
+                        )
+                    if current["metadata"].get("uid") != uid:
+                        raise RuntimeError("probe resource UID changed")
                     api = (
                         "/api/v1"
                         if kind == "Namespace"
@@ -194,8 +208,8 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                                 "apiVersion": "v1",
                                 "kind": "DeleteOptions",
                                 "preconditions": {
-                                    field: current["metadata"][field]
-                                    for field in ("uid", "resourceVersion")
+                                    "uid": uid,
+                                    "resourceVersion": current["metadata"]["resourceVersion"],
                                 },
                             },
                         )
@@ -206,7 +220,7 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                     ).strip():
                         raise RuntimeError("probe resource survived cleanup")
                 except Exception as exc:
-                    cleanup_errors.append(f"{kind}: {type(exc).__name__}")
+                    cleanup_errors.append(f"{kind}/{name}: {type(exc).__name__}: {exc}")
             if cleanup_errors:
                 raise RuntimeError("probe cleanup incomplete: " + ", ".join(cleanup_errors))
         record = {
