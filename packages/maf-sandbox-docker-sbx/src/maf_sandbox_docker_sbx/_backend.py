@@ -357,6 +357,24 @@ class _SbxSandbox:
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
+        return await self.exec_bounded(
+            command,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=_OUTPUT_LIMIT,
+        )
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """``exec`` with a combined stdout and stderr budget, enforced as the output arrives."""
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
         cwd = self._cwd(working_directory)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         if not argv:
@@ -368,6 +386,7 @@ class _SbxSandbox:
             timeout=timeout,
             mount=self._mount,
             instance=self._instance_id,
+            max_output_bytes=max_output_bytes,
         )
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
@@ -508,10 +527,12 @@ class SbxSandboxBackend:
 
     # --- the CLI ------------------------------------------------------------------------
 
-    async def _sbx(self, *args: str, timeout: float | None = None) -> _Result:
+    async def _sbx(
+        self, *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+    ) -> _Result:
         """Run one ``sbx`` command; a timeout kills the client and raises ``TimeoutError``.
 
-        Output past ``_OUTPUT_LIMIT`` kills it too and raises ``SandboxExecOutputLimitExceeded``.
+        Output past ``output_limit`` kills it too and raises ``SandboxExecOutputLimitExceeded``.
         """
         process = await asyncio.create_subprocess_exec(
             self._config.sbx_path,
@@ -522,7 +543,7 @@ class SbxSandboxBackend:
         )
         stdout, stderr = await read_bounded_process_output(
             process,
-            max_output_bytes=_OUTPUT_LIMIT,
+            max_output_bytes=output_limit,
             timeout=timeout if timeout is not None else self._config.command_timeout_seconds,
         )
         return _Result(cast(int, process.returncode), stdout, stderr)
@@ -536,10 +557,12 @@ class SbxSandboxBackend:
         timeout: float,
         mount: _Mount,
         instance: str,
+        max_output_bytes: int = _OUTPUT_LIMIT,
     ) -> ExecResult:
         """Run ``argv`` in ``cwd`` under the wrapper, killing its process group at ``timeout``.
 
-        Output past ``_OUTPUT_LIMIT`` ends the command the same way, then raises.
+        Output past ``max_output_bytes``, the wrapper's own nonce line included, ends the command
+        the same way, then raises.
         """
         nonce = secrets.token_hex(12)
         pid_file = f"/tmp/maf-sbx-{nonce}.pgid"
@@ -551,7 +574,7 @@ class SbxSandboxBackend:
             *(_encode(arg) for arg in argv),
         )
         try:
-            result = await self._sbx(*args, timeout=timeout)
+            result = await self._sbx(*args, timeout=timeout, output_limit=max_output_bytes)
         except (
             TimeoutError,
             SandboxExecOutputLimitExceeded,

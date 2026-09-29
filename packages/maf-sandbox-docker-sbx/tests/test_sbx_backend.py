@@ -24,7 +24,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxSpec,
 )
-from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
+from maf_sandbox.bounded_exec import BoundedExec, SandboxExecOutputLimitExceeded
 
 from maf_sandbox_docker_sbx import (
     SbxDaemonFault,
@@ -87,11 +87,15 @@ class FakeSbx:
         self.ids: dict[str, str] = {}
         self.agent_socket = False
         self.kill_result = _ok()
+        self.output_limits: list[int] = []
         backend._sbx = self  # type: ignore[method-assign]
 
-    async def __call__(self, *args: str, timeout: float | None = None) -> _Result:
+    async def __call__(
+        self, *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+    ) -> _Result:
         self.calls.append(args)
         self.timeouts.append(timeout)
+        self.output_limits.append(output_limit)
         if self.lost_engine and args[0] not in ("settings", "mcp"):
             # What a daemon that has lost its engine measured: an empty listing, and every
             # sandbox command refused.
@@ -298,7 +302,9 @@ class TestHostChecks:
         ],
     )
     def test_a_lapsed_login_names_sbx_login(self, backend, sbx, stderr):
-        async def lapsed(*args: str, timeout: float | None = None) -> _Result:
+        async def lapsed(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             return _Result(1, b"", stderr)
 
         backend._sbx = lapsed  # type: ignore[method-assign]
@@ -395,7 +401,9 @@ class TestAcquire:
     def test_a_refused_create_leaves_no_workspace(self, backend, sbx, tmp_path):
         real = sbx.__call__
 
-        async def refused(*args: str, timeout: float | None = None) -> _Result:
+        async def refused(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 return _Result(1, b"", b"error: pull access denied for example/missing\n")
             return await real(*args, timeout=timeout)
@@ -419,7 +427,9 @@ class TestAcquire:
             asyncio.run(backend.acquire(KEY, _spec()))
 
     def test_a_create_conflict_the_listing_missed_is_a_daemon_fault(self, backend, sbx):
-        async def conflicted(*args: str, timeout: float | None = None) -> _Result:
+        async def conflicted(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 return _Result(1, b"", b"error: sandbox 'x' already exists\n")
             return await FakeSbx.__call__(sbx, *args, timeout=timeout)
@@ -427,6 +437,45 @@ class TestAcquire:
         backend._sbx = conflicted  # type: ignore[method-assign]
         with pytest.raises(SbxDaemonFault, match="sbx daemon restart"):
             asyncio.run(backend.acquire(KEY, _spec()))
+
+
+class TestBoundedExec:
+    def test_the_sandbox_offers_bounded_exec(self, backend, sbx):
+        assert isinstance(asyncio.run(backend.acquire(KEY, _spec())), BoundedExec)
+
+    def test_the_budget_reaches_the_read_and_exec_keeps_the_default(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        before = len(sbx.calls)
+        asyncio.run(
+            sandbox.exec_bounded(["true"], working_directory=".", timeout=10, max_output_bytes=64)
+        )
+        asyncio.run(sandbox.exec(["true"], working_directory=".", timeout=10))
+        assert sbx.output_limits[before:] == [64, _OUTPUT_LIMIT]
+
+    def test_an_overflow_ends_the_command_and_raises(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+
+        def overflow(_args: tuple[str, ...]) -> _Result:
+            raise SandboxExecOutputLimitExceeded("over budget")
+
+        sbx.exec_hook = overflow
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                sandbox.exec_bounded(["yes"], working_directory=".", timeout=10, max_output_bytes=8)
+            )
+        assert sbx.calls[-1][:5] == ("exec", sandbox.name, "sh", "-c", _KILL_SCRIPT)
+
+    @pytest.mark.parametrize("budget", [0, -1, True, 1.5])
+    def test_a_budget_that_is_not_a_positive_integer_is_refused(self, backend, sbx, budget):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        before = len(sbx.calls)
+        with pytest.raises(ValueError, match="positive integer"):
+            asyncio.run(
+                sandbox.exec_bounded(
+                    ["true"], working_directory=".", timeout=10, max_output_bytes=budget
+                )
+            )
+        assert len(sbx.calls) == before
 
 
 class TestExec:
@@ -478,7 +527,9 @@ class TestExec:
     def test_an_image_that_cannot_start_names_bash(self, backend, sbx, tmp_path):
         real = sbx.__call__
 
-        async def no_bash(*args: str, timeout: float | None = None) -> _Result:
+        async def no_bash(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "exec":
                 # What `sbx` 0.45.1 printed for an image without /bin/bash.
                 return _Result(
@@ -586,7 +637,9 @@ class TestCancellation:
         real = sbx.__call__
         name = sandbox_name("maf", KEY, "kind")
 
-        async def raced(*args: str, timeout: float | None = None) -> _Result:
+        async def raced(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 # Another process's create won the name and is still setting up: no record yet.
                 other = tmp_path / "root" / name / "ws-other"
@@ -605,7 +658,9 @@ class TestCancellation:
     def test_a_create_stopped_part_way_is_removed(self, backend, sbx, tmp_path):
         real = sbx.__call__
 
-        async def stopped(*args: str, timeout: float | None = None) -> _Result:
+        async def stopped(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 await real(*args, timeout=timeout)  # the daemon finishes it
                 raise asyncio.CancelledError
@@ -679,7 +734,9 @@ class TestAnExpiredCommand:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         real = sbx.__call__
 
-        async def unspawnable(*args: str, timeout: float | None = None) -> _Result:
+        async def unspawnable(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if _KILL_SCRIPT in args:
                 raise FileNotFoundError("sbx is gone")
             if _EXEC_SCRIPT in args:
@@ -779,7 +836,9 @@ class TestTheOutputBound:
         sandbox = asyncio.run(backend.acquire(KEY, _spec()))
         real = sbx.__call__
 
-        async def flooding_kill(*args: str, timeout: float | None = None) -> _Result:
+        async def flooding_kill(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if _KILL_SCRIPT in args:
                 raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
             if _EXEC_SCRIPT in args:
@@ -799,7 +858,9 @@ class TestCleanupSurvivesCancellation:
         killing = asyncio.Event()
         killed: list[bool] = []
 
-        async def slow_kill(*args: str, timeout: float | None = None) -> _Result:
+        async def slow_kill(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if _EXEC_SCRIPT in args:
                 raise TimeoutError
             if _KILL_SCRIPT in args:
@@ -832,7 +893,9 @@ class TestCleanupSurvivesCancellation:
         async def scenario() -> None:
             killing, release = asyncio.Event(), asyncio.Event()
 
-            async def gated_kill(*args: str, timeout: float | None = None) -> _Result:
+            async def gated_kill(
+                *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+            ) -> _Result:
                 if _EXEC_SCRIPT in args:
                     raise TimeoutError
                 if _KILL_SCRIPT in args:
@@ -863,7 +926,9 @@ class TestCleanupSurvivesCancellation:
         async def scenario() -> None:
             removing, release = asyncio.Event(), asyncio.Event()
 
-            async def gated_rm(*args: str, timeout: float | None = None) -> _Result:
+            async def gated_rm(
+                *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+            ) -> _Result:
                 if args == ("exec", name, "sh", "-c", "pwd -P"):
                     return _Result(1, b"", b"error: setup failed\n")
                 if args[:2] == ("rm", "--force"):
@@ -893,7 +958,9 @@ class TestCleanupSurvivesCancellation:
         async def scenario() -> None:
             setting_up = asyncio.Event()
 
-            async def gone(*args: str, timeout: float | None = None) -> _Result:
+            async def gone(
+                *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+            ) -> _Result:
                 if args == ("exec", name, "sh", "-c", "pwd -P"):
                     setting_up.set()
                     await asyncio.sleep(3600)
@@ -917,7 +984,9 @@ class TestCleanupSurvivesCancellation:
         async def scenario() -> None:
             created, listing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-            async def gated(*args: str, timeout: float | None = None) -> _Result:
+            async def gated(
+                *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+            ) -> _Result:
                 if args[0] == "create":
                     await real(*args, timeout=timeout)
                     created.set()
@@ -953,7 +1022,9 @@ class TestACreateWhoseClientStopped:
         real = sbx.__call__
         listings: list[None] = []
 
-        async def stopped_client(*args: str, timeout: float | None = None) -> _Result:
+        async def stopped_client(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 await real(*args, timeout=timeout)
                 sbx.unlisted.add(name)
@@ -1028,7 +1099,9 @@ class TestARecreatedSandbox:
         real = sbx.__call__
         mounted: list[Path] = []
 
-        async def watching(*args: str, timeout: float | None = None) -> _Result:
+        async def watching(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 mounted.append(Path(args[-1]))
                 assert list(Path(args[-1]).iterdir()) == []
@@ -1046,7 +1119,9 @@ class TestAnInterruptedRecreate:
         del sbx.sandboxes[sandbox.name]  # removed outside the backend; its record stays
         real = sbx.__call__
 
-        async def interrupted(*args: str, timeout: float | None = None) -> _Result:
+        async def interrupted(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 await real(*args, timeout=timeout)  # the daemon finishes it
                 raise asyncio.CancelledError
@@ -1081,7 +1156,9 @@ class TestTheRecord:
         real = sbx.__call__
         seen: list[bool] = []
 
-        async def watching(*args: str, timeout: float | None = None) -> _Result:
+        async def watching(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if _MOUNT_POINT_SCRIPT in args:
                 seen.append((tmp_path / "root" / args[3] / "meta.json").exists())
             return await real(*args, timeout=timeout)
@@ -1109,7 +1186,9 @@ class TestCreateRace:
         real = sbx.__call__
         name = sandbox_name("maf", KEY, "kind")
 
-        async def lost(*args: str, timeout: float | None = None) -> _Result:
+        async def lost(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 # The winner mounts a workspace of its own, as every create does.
                 winner = tmp_path / "root" / name / "ws-winner"
@@ -1148,7 +1227,9 @@ class TestCreateRace:
         real = sbx.__call__
         name = sandbox_name("maf", KEY, "kind")
 
-        async def refused(*args: str, timeout: float | None = None) -> _Result:
+        async def refused(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 # Another process's create landed meanwhile, on a workspace of its own.
                 other = tmp_path / "root" / name / "ws-other"
@@ -1168,7 +1249,9 @@ class TestCreateRace:
         self._race(backend, sbx, tmp_path, winner_is_up=True)
         raced = backend._sbx
 
-        async def interrupted(*args: str, timeout: float | None = None) -> _Result:
+        async def interrupted(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             if args[0] == "create":
                 await raced(*args, timeout=timeout)
                 raise asyncio.CancelledError
@@ -1277,7 +1360,9 @@ class TestDisposal:
         assert len(sbx.sandboxes) == 1
 
     def test_a_failed_listing_is_reported(self, backend, sbx):
-        async def unlisted(*args: str, timeout: float | None = None) -> _Result:
+        async def unlisted(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             return _Result(1, b"", b"error: daemon down\n")
 
         backend._sbx = unlisted  # type: ignore[method-assign]
@@ -1298,7 +1383,9 @@ class TestANameReusedByAnotherProcess:
         real = sbx.__call__
         replacements: list[str] = []
 
-        async def racing(*args: str, timeout: float | None = None) -> _Result:
+        async def racing(
+            *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
+        ) -> _Result:
             result = await real(*args, timeout=timeout)
             if args[:2] == ("rm", "--force") and not replacements:
                 replacements.append((await other.acquire(KEY, _spec())).instance_id)
