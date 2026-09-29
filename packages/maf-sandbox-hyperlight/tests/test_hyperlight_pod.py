@@ -284,8 +284,14 @@ _pod_supervisor.main()
 
 @pytest.mark.parametrize(
     "spoken",
-    [None, LIFECYCLE_PROTOCOL + 1, str(LIFECYCLE_PROTOCOL)],
-    ids=["an older controller", "a newer controller", "a malformed number"],
+    [None, LIFECYCLE_PROTOCOL + 1, str(LIFECYCLE_PROTOCOL), True, float(LIFECYCLE_PROTOCOL)],
+    ids=[
+        "an older controller",
+        "a newer controller",
+        "a string",
+        "a boolean equal to one",
+        "a float equal to the number",
+    ],
 )
 def test_a_controller_speaking_another_protocol_is_refused_before_the_binding_is_read(
     tmp_path, spoken
@@ -1294,6 +1300,16 @@ def test_cleanup_saves_the_reason_with_its_termination_receipt():
     )
     receipts = [body for args, body in controller.calls if args[0] == "replace" and "data" in body]
     assert receipts[0]["data"]["reason"] == "controller stream closed"
+
+
+def test_a_receipt_keeps_the_fields_an_earlier_release_recovers_from():
+    # A rollback hands this receipt to an older controller, whose recover reads only these.
+    controller = FakeController(pod=exiting_pod("controller stream closed"))
+    controller.recover_exit(KEY, KIND)
+    receipts = [body for args, body in controller.calls if args[0] == "replace" and "data" in body]
+    data = receipts[0]["data"]
+    assert data["state"] == "stopped" and data["pod_uid"] == "pod-uid"
+    assert isinstance(data["exit_code"], str) and int(data["exit_code"]) == 70
 
 
 def test_saved_reason_survives_pod_deletion():

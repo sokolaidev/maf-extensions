@@ -534,7 +534,8 @@ def main() -> None:
         fields = json.loads(os.environ["MAF_HYPERLIGHT_POD_BINDING"])
         # Checked before anything else in the binding, whose other fields may not parse.
         spoken = _spoken_protocol(fields)
-        if spoken != LIFECYCLE_PROTOCOL:
+        # JSON true and 1.0 compare equal to 1 in Python; only an integer is a protocol number.
+        if type(spoken) is not int or spoken != LIFECYCLE_PROTOCOL:
             message = (
                 f"{PROTOCOL_REFUSAL}the controller speaks {spoken!r}, "
                 f"this image speaks {LIFECYCLE_PROTOCOL}"
