@@ -84,10 +84,11 @@ class TestBranch:
         result = run("samples/05_docker_bicep", "--source", "branch")
         assert result.returncode == 0, result.stderr
         words = result.stdout.split()
-        assert words.count("--with") == 3
+        assert words.count("--with") == 4
         assert set(words) - {"--with"} == {
             "./packages/maf-sandbox-bicep",
             "./packages/maf-sandbox-docker",
+            "./packages/maf-sandbox-docker-sbx",
             "./packages/maf-sandbox",
         }
 

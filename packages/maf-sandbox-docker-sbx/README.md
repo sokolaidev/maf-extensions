@@ -96,7 +96,7 @@ File methods reach only paths under the storage base's parent. Any other absolut
 
 ## Commands
 
-`exec` runs argv verbatim, with separate, byte-exact streams and the command's own exit code. Every command runs through a small `sh` wrapper. The image needs `sh`, `base64`, `setsid`, `mount`, `unshare` from util-linux 2.38 or later, `mkdir`, `cat`, `rm` and `sleep`, and acquire checks for all of them:
+`exec` runs argv verbatim, with separate, byte-exact streams and the command's own exit code. Every command runs through a small `sh` wrapper. The image needs `sh`, `base64`, `setsid`, `mount`, `unshare` with `--map-user` and `--map-group` (util-linux 2.37.2 on Ubuntu 22.04 has both), `mkdir`, `cat`, `rm` and `sleep`, and acquire checks for all of them:
 
 - argv is base64-encoded, because `sbx` refuses an empty argument;
 - a nonce on stderr marks where the command's own stderr starts, so a missing sandbox is never read as a command that exited 1;

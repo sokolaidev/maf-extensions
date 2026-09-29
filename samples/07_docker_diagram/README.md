@@ -98,6 +98,7 @@ There is **no workload package** to install — the kind is `diagram_kind.py`, r
 | `DIAGRAM_SANDBOX_IMAGE` | The image built above — for example `diagram-sandbox:local`. An unqualified single-name tag: Docker resolves it to its official `docker.io/library/` namespace, which no third party can publish to, so if you skip the build the backend's pull fails cleanly rather than fetching a different image. Build it first and it runs from this machine. (To pin it to the local daemon regardless, qualify it — `localhost/diagram-sandbox:local` — and tag the build to match.) |
 | `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
+| `SAMPLE_BACKEND` | Optional. `docker` (the default) or `docker-sbx`; see [On Docker Sandboxes](#on-docker-sandboxes) |
 
 With `DIAGRAM_SANDBOX_IMAGE` or either required model variable unset, the program says which and exits non-zero rather than running. That is deliberate: `make_diagram_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
@@ -139,6 +140,19 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 **Measured separately, and not from this sample**: the ownership behaviour above, on three images (root, non-root, non-root with the work directory pre-owned) against three kind shapes. [#680](https://github.com/sokolaidev/maf-extensions/issues/680) carries that table; nothing in `samples/` reproduces it, because doing so would mean shipping an image built to be wrong.
 
 **Gated in CI.** `verify-live.yml` builds the image above on the runner and runs this sample on demand and once after each release of `maf-sandbox` or `maf-sandbox-docker`. Its check reads the landed PNG's own header rather than the model's account of it (`scripts/check_live_diagram_sample.py`): a turn that describes a diagram it never rendered writes the same paragraph as one that did, so the file is the evidence. The docker **backend** beneath it is exercised more often still — `test_docker_e2e.py` runs a real container on every pull request, `FILES_OUT` stat-and-read path included.
+
+## On Docker Sandboxes
+
+`SAMPLE_BACKEND=docker-sbx` renders in a Docker Sandboxes microVM on this machine, through [`maf-sandbox-docker-sbx`](../../packages/maf-sandbox-docker-sbx/README.md). That backend is `MICROVM`, so the router keeps its default floor. It needs `sbx` installed and signed in, with SSH agent forwarding off and no MCP server registered; the backend's README says how. The `diagram-sandbox` image already has what the backend needs, so it loads as it is built:
+
+```bash
+docker build -t diagram-sandbox:local images/diagram-sandbox
+docker save -o diagram-sandbox.tar diagram-sandbox:local
+sbx template load diagram-sandbox.tar
+SAMPLE_BACKEND=docker-sbx DIAGRAM_SANDBOX_IMAGE=diagram-sandbox:local uv run samples/07_docker_diagram/agent.py
+```
+
+`verify-live.yml` runs this variant as its own job, against the same check, after each release of `maf-sandbox` or `maf-sandbox-docker-sbx`.
 
 ## Troubleshooting
 

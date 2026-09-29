@@ -90,8 +90,15 @@ def test_every_library_import_is_declared(sample: Path):
     )
 
 
-#: A released version, as release-please writes its changelog headings, newest first.
-_CHANGELOG_HEADING = re.compile(r"(?m)^## \[(\d+(?:\.\d+)*)\]")
+#: A released version, as release-please writes its changelog headings, newest first. It links a
+#: heading to a compare view only when an earlier tag exists, so a package's first release is a
+#: bare `## 0.1.0 (date)` and every later one `## [0.2.0](...)`.
+_CHANGELOG_HEADING = re.compile(r"(?m)^## (?:\[(\d+(?:\.\d+)*)\]|(\d+(?:\.\d+)*) )")
+
+
+def _headings(changelog: str) -> list[str]:
+    """Every version a changelog's release headings name, newest first."""
+    return [linked or bare for linked, bare in _CHANGELOG_HEADING.findall(changelog)]
 
 
 def _minor(version: str) -> tuple[int, int]:
@@ -115,7 +122,7 @@ def _previous_release(changelog: str) -> tuple[int, int]:
     does. The changelog records what actually shipped, and release-please writes it in the same
     commit that bumps the version, so the two cannot disagree.
     """
-    minors = [_minor(version) for version in _CHANGELOG_HEADING.findall(changelog)]
+    minors = [_minor(version) for version in _headings(changelog)]
     assert minors, "the changelog names no release"
     for minor in minors[1:]:
         if minor != minors[0]:
@@ -342,17 +349,14 @@ def test_no_readme_still_tells_a_reader_to_pip_install():
 # ---------------------------------------------------------------------------
 
 #: A floor on a distribution this repository publishes: `maf-sandbox-docker>=0.4`.
-_REPO_FLOOR = re.compile(r"^(maf-sandbox(?:-[a-z]+)?)\s*>=\s*(\d+(?:\.\d+)*)\s*$")
+_REPO_FLOOR = re.compile(r"^(maf-sandbox(?:-[a-z]+)*)\s*>=\s*(\d+(?:\.\d+)*)\s*$")
 
 _PACKAGES = Path(__file__).resolve().parent.parent / "packages"
 
 
 def _released(changelog: str) -> list[tuple[int, ...]]:
     """Every version this package's changelog records, newest first."""
-    return [
-        tuple(int(part) for part in heading.split("."))
-        for heading in _CHANGELOG_HEADING.findall(changelog)
-    ]
+    return [tuple(int(part) for part in heading.split(".")) for heading in _headings(changelog)]
 
 
 def _names_a_released_version(floor: tuple[int, ...], released: list[tuple[int, ...]]) -> bool:
@@ -410,6 +414,18 @@ class TestAFloorNamesAVersionThatExists:
         released = _released(self._changelog("0.4.1", "0.4.0"))
         assert _names_a_released_version((0, 4, 1), released)
         assert not _names_a_released_version((0, 4, 2), released)
+
+    @pytest.mark.parametrize(
+        "dependency",
+        ["maf-sandbox>=0.44", "maf-sandbox-docker>=0.4", "maf-sandbox-docker-sbx>=0.2"],
+    )
+    def test_every_repository_package_name_is_read(self, dependency):
+        match = _REPO_FLOOR.match(dependency)
+        assert match and match.group(1) == dependency.split(">=")[0]
+
+    def test_a_first_release_heading_has_no_link(self):
+        changelog = "# Changelog\n\n## [0.1.10](https://example.invalid) (x)\n\n## 0.1.0 (x)\n"
+        assert _released(changelog) == [(0, 1, 10), (0, 1, 0)]
 
     def test_a_later_release_does_not_vouch_for_a_version_that_was_skipped(self):
         # `>=0.5` is unresolvable while only 0.4 and 0.6 exist, which is exactly the shape a

@@ -47,6 +47,7 @@ uv run agent.py
 | `BICEP_SANDBOX_IMAGE` | Local image reference, e.g. `bicep-sandbox:local`. No registry qualifies it — the backend runs what is already on this machine |
 | `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
+| `SAMPLE_BACKEND` | Optional. `docker` (the default) or `docker-sbx`; see [On Docker Sandboxes](#on-docker-sandboxes) |
 
 With any of the first three unset the program says which and exits non-zero, rather than running. That is deliberate: `make_bicep_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
@@ -78,6 +79,22 @@ Three diagnostics, the same three sample 01 gets from a microVM in Azure. Sample
 There is not even a difference in where the config came from: sample 01, sample 02 and this one all run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/maf-sandbox/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
 
 That sameness is what makes this sample worth gating: `verify-live.yml` builds the image on the runner and runs this and sample 01 against **sample 01's assertion**, on demand and once after each release of `maf-sandbox`, `maf-sandbox-bicep` or `maf-sandbox-docker`. One workload, one compiler, two backends — so a red here while sample 01 is green is a statement about the Docker backend, not about Bicep.
+
+## On Docker Sandboxes
+
+`SAMPLE_BACKEND=docker-sbx` runs the same turn in a Docker Sandboxes microVM on this machine, through [`maf-sandbox-docker-sbx`](../../packages/maf-sandbox-docker-sbx/README.md). That backend is `MICROVM`, so the router keeps its default floor instead of lowering it to `CONTAINER`. Egress stays closed.
+
+It needs `sbx` installed and signed in, with SSH agent forwarding off and no MCP server registered; the backend's README says how. The image needs one more layer, from [`images/sbx-template`](../../images/sbx-template/), and then loads as an `sbx` template:
+
+```bash
+docker build -t bicep-sandbox:local images/bicep-sandbox
+docker build --build-arg BASE=bicep-sandbox:local -t bicep-sandbox:sbx images/sbx-template
+docker save -o bicep-sandbox-sbx.tar bicep-sandbox:sbx
+sbx template load bicep-sandbox-sbx.tar
+SAMPLE_BACKEND=docker-sbx BICEP_SANDBOX_IMAGE=bicep-sandbox:sbx uv run samples/05_docker_bicep/agent.py
+```
+
+That layer removes the image's own `bicepconfig.json`. The diagnostics do not change, because `bicep_validate` stages the kind's configuration into every call. `verify-live.yml` runs this variant as its own job, against the same assertion, after each release of `maf-sandbox`, `maf-sandbox-bicep` or `maf-sandbox-docker-sbx`.
 
 ## Troubleshooting
 

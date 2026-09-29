@@ -32,8 +32,9 @@ name: Verify (live)
 # dispatches a host tool from a program in the sandbox back into the host and gates on which route
 # carried the data, run on either backend via SAMPLE_BACKEND (the `sample-15` and
 # `sample-15-docker` jobs) — its leftover-traffic act the one part docker cannot supply. 07 lands
-# one too, through a kind written in the sample instead of the packaged one, and pairs with 08 on
-# this side of the machine rather than across backends. 09 runs 01's bicep workload against the
+# one too, through a kind written in the sample instead of the packaged one. 05 and 07 also pair
+# with a `-docker-sbx` job, the same workload in a Docker Sandboxes microVM on the runner, so a
+# red on one side alone names that backend. 09 runs 01's bicep workload against the
 # CLI on the runner itself, so it pairs with nothing and names no backend. 13 repairs Bicep
 # over multiple turns. 18 repairs draw.io XML, verifies storage read-back, reports each call's
 # duration and removes its diagram and sandboxes. 19 returns the same Fibonacci answer through
@@ -43,7 +44,8 @@ name: Verify (live)
 #
 # This is the half of issue #33 that runs after a release rather than on a pull request. The
 # ACAS jobs each create a billable Azure sandbox and need a subscription; the docker jobs create
-# a container on the runner and need no sandbox configuration; 09 needs neither. **A job that
+# a container on the runner and need no sandbox configuration; the docker-sbx jobs create a
+# microVM on the runner and need a Docker account to sign `sbx` in; 09 needs neither. **A job that
 # calls no model and reads no variable carries no `environment:` and no `permissions:` block**,
 # because it mints no token — stated as the rule rather than a list, which is what went stale
 # here before. It runs on demand, and once after each release that could change what a sample
@@ -57,6 +59,8 @@ name: Verify (live)
 # environment variables on the `live-verify` environment. The ACAS jobs read the sandbox
 # configuration as well as the model's; every other job that calls a model reads only the
 # model's, whether its guest is built here or pulled; a job that calls no model reads nothing.
+# The docker-sbx jobs also read the repository secrets DOCKER_USERNAME and DOCKER_PAT, a Docker
+# account and a read-only access token, to sign `sbx` in.
 # See docs/maintainers.md.
 #
 # PEP 723 metadata is the single dependency source; `--no-project` ensures uv resolves its
@@ -596,6 +600,109 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample05-out.txt "$PACKAGE" "$VERSION"
+  sample-05-docker-sbx:
+    name: samples/05_docker_bicep against a live Docker Sandboxes microVM
+    # Sample 05 with `SAMPLE_BACKEND=docker-sbx`: the same image, given the layer
+    # images/sbx-template adds, loaded as an sbx template, and the same assertion. Runs for the
+    # router (maf-sandbox), the backend (maf-sandbox-docker-sbx) and the kind (maf-sandbox-bicep).
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-bicep", "maf-sandbox-docker-sbx"]'), inputs.package)
+    # The hosted image where an sbx VM boots; arm64 and macOS runners cannot start one.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: live-verify
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL DOCKER_USERNAME DOCKER_PAT; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live configuration is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install and prepare sbx
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
+
+      - name: Build the sandbox image and load it as an sbx template
+        run: |
+          set -euo pipefail
+          docker build -t bicep-sandbox:local images/bicep-sandbox
+          docker build --build-arg BASE=bicep-sandbox:local -t bicep-sandbox:sbx images/sbx-template
+          docker save -o "$RUNNER_TEMP/bicep-sandbox.tar" bicep-sandbox:sbx
+          sbx template load "$RUNNER_TEMP/bicep-sandbox.tar"
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Run sample 05 on docker-sbx and assert the diagnostics came back
+        env:
+          SAMPLE_BACKEND: docker-sbx
+          BICEP_SANDBOX_IMAGE: bicep-sandbox:sbx
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/05_docker_bicep --source "$SOURCE")"
+          uv run --no-project $source_args samples/05_docker_bicep/agent.py | tee /tmp/sample05-sbx-out.txt
+          python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample05-sbx-out.txt
+
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample05-sbx-out.txt "$PACKAGE" "$VERSION"
   sample-06:
     name: samples/06_docker_codeact against a live container
     # The same task and assertion as sample-03, but the sandbox is a Docker container on this
@@ -817,6 +924,111 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample07-out.txt "$PACKAGE" "$VERSION"
+  sample-07-docker-sbx:
+    name: samples/07_docker_diagram against a live Docker Sandboxes microVM
+    # Sample 07 with `SAMPLE_BACKEND=docker-sbx`, on the same image loaded unchanged as an sbx
+    # template, and the same assertion. No kind package is involved, so it runs for the router
+    # (maf-sandbox) and the backend (maf-sandbox-docker-sbx).
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker-sbx"]'), inputs.package)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: live-verify
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL DOCKER_USERNAME DOCKER_PAT; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live configuration is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install and prepare sbx
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
+
+      # Debian with bash and util-linux already meets the backend's requirements, so the image
+      # loads as it is built.
+      - name: Build the sandbox image and load it as an sbx template
+        run: |
+          set -euo pipefail
+          docker build -t diagram-sandbox:local images/diagram-sandbox
+          docker save -o "$RUNNER_TEMP/diagram-sandbox.tar" diagram-sandbox:local
+          sbx template load "$RUNNER_TEMP/diagram-sandbox.tar"
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Run sample 07 on docker-sbx and assert a rendered PNG came back out
+        env:
+          SAMPLE_BACKEND: docker-sbx
+          DIAGRAM_SANDBOX_IMAGE: diagram-sandbox:local
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          rm -rf samples/07_docker_diagram/out
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/07_docker_diagram --source "$SOURCE")"
+          uv run --no-project $source_args samples/07_docker_diagram/agent.py | tee /tmp/sample07-sbx-out.txt
+          python3 "$HARNESS"/scripts/check_live_diagram_sample.py \
+            /tmp/sample07-sbx-out.txt samples/07_docker_diagram/out/diagram.png
+
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample07-sbx-out.txt "$PACKAGE" "$VERSION"
   sample-08:
     name: samples/08_docker_codeact_files against a live container
     # Both of the packaged CodeAct kind's file channels, in one turn: a file store file in and a
