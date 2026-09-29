@@ -132,7 +132,7 @@ def pid1(monkeypatch):
     return subject
 
 
-def test_continuity_refuses_an_unsealed_or_replayed_controller_message(pid1, monkeypatch):
+def test_continuity_refuses_unsealed_and_ignores_superseded_controller_messages(pid1, monkeypatch):
     emitted = []
     monkeypatch.setattr(pid1, "emit", lambda event, **fields: emitted.append(event))
     before = pid1.lease
