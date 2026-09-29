@@ -20,6 +20,11 @@ directory's README: the agent writes the shell, and Deep Agents' file tools need
 The model is samples 09 and 13's two roads in `langchain-openai`'s terms: an Azure OpenAI
 deployment reached with `DefaultAzureCredential` when `AZURE_OPENAI_ENDPOINT` is set, and any
 OpenAI-compatible endpoint otherwise.
+
+`SAMPLE_BACKEND=docker-sbx` runs the same turn in a Docker Sandboxes microVM through
+`maf_sandbox_docker_sbx`, which clears the router's default `microvm` floor.  That backend
+mounts the workspace where the image keeps `bicepconfig.json`, so the host uploads the same
+file beside `main.bicep`.
 """
 
 # /// script
@@ -35,6 +40,7 @@ OpenAI-compatible endpoint otherwise.
 #     "langchain-openai",
 #     "maf-sandbox-deepagents",
 #     "maf-sandbox-docker",
+#     "maf-sandbox-docker-sbx>=0.3.0",
 #     "maf-sandbox>=0.45",
 # ]
 # ///
@@ -55,6 +61,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from maf_sandbox import Isolation, SandboxKey, SandboxRouter
 from maf_sandbox_deepagents import MafSandbox, deepagents_spec
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 
 if TYPE_CHECKING:
     # The runtime import stays inside `build_model`, so a local run loads no Azure SDK at all.
@@ -70,6 +77,10 @@ AGENT_DIR = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
 
+#: The configuration the Docker image bakes in at the storage base. On `docker-sbx` the
+#: workspace is mounted over that directory, so the host uploads this copy instead.
+BICEP_CONFIG = Path(__file__).resolve().parents[2] / "images" / "bicep-sandbox" / "bicepconfig.json"
+
 #: Deep Agents' shell tool, the one this sample counts results from. What it returned is what the
 #: live check reads: the model writes the prose around it, the sandbox writes this.
 EXECUTE_TOOL = "execute"
@@ -80,7 +91,8 @@ EXECUTE_TOOL = "execute"
 _DIAGNOSTIC = '"ruleId"'
 
 #: Everything the sandbox backend needs. `BICEP_SANDBOX_IMAGE` is a local image reference
-#: (for example `bicep-sandbox:local`); the backend runs what is already on this machine.
+#: (for example `bicep-sandbox:local`); the backend runs what is already on this machine. On
+#: `docker-sbx` it names a template loaded with `sbx template load`.
 SANDBOX_VARS = ("BICEP_SANDBOX_IMAGE",)
 
 #: What the Azure road needs beyond the endpoint that selects it. No key: auth is
@@ -186,7 +198,11 @@ def final_reply(reply: dict[str, object]) -> str:
 
 
 async def run() -> int:
-    """Wire the stack, run one turn, and take the container down again."""
+    """Wire the stack, run one turn, and take the sandbox down again."""
+    backend_name = os.environ.get("SAMPLE_BACKEND", "docker")
+    if backend_name not in ("docker", "docker-sbx"):
+        print("SAMPLE_BACKEND must be docker or docker-sbx.", file=sys.stderr)
+        return 2
     env = require_env_vars(SANDBOX_VARS)
     if env is None:
         return 2
@@ -195,11 +211,16 @@ async def run() -> int:
         return 2
     model, credential = configured
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
-    # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    if backend_name == "docker-sbx":
+        # A microVM clears the router's default floor, so the router keeps it.
+        router = SandboxRouter([SbxSandboxBackend(SbxSandboxConfig())])
+    else:
+        # Below the router's default `microvm` floor; opted down explicitly.
+        router = SandboxRouter(
+            [DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER
+        )
 
-    # Closed egress: the spec names no host, so the container runs with no network. The
+    # Closed egress: the spec names no host, so the guest runs with no network. The
     # template uses no modules, so nothing needs restoring and the compile completes offline.
     spec = deepagents_spec(env["BICEP_SANDBOX_IMAGE"])
     key = SandboxKey(scope=SCOPE, thread_id=THREAD_ID, agent_dir=AGENT_DIR)
@@ -209,12 +230,13 @@ async def run() -> int:
     try:
         # The host puts the file in the sandbox. Deep Agents' `write_file` would first run a
         # Python preflight in the guest, and this image has none; the adapter's own upload does not.
-        (uploaded,) = await sandbox.aupload_files(
-            [(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_bytes())]
-        )
-        if uploaded.error is not None:
-            print(f"Upload of {BICEP_FILE} refused: {uploaded.error}", file=sys.stderr)
-            return 2
+        files = [(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_bytes())]
+        if backend_name == "docker-sbx":
+            files.append((BICEP_CONFIG.name, BICEP_CONFIG.read_bytes()))
+        for uploaded in await sandbox.aupload_files(files):
+            if uploaded.error is not None:
+                print(f"Upload of {uploaded.path} refused: {uploaded.error}", file=sys.stderr)
+                return 2
 
         agent = create_deep_agent(
             model=model,

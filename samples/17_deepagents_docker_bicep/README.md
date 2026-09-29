@@ -51,6 +51,7 @@ uv run agent.py
 | `OPENAI_CHAT_MODEL` | The model name the endpoint serves. Defaults to Ollama's `minimax-m3:cloud` |
 | `OPENAI_BASE_URL` | The endpoint. Unset it is Ollama's `http://localhost:11434/v1`, so reaching OpenAI itself means naming `https://api.openai.com/v1` here |
 | `OPENAI_API_KEY` | Key for that endpoint. A local server that ignores it still wants something non-empty, so a placeholder is substituted |
+| `SAMPLE_BACKEND` | Optional. `docker` (the default) or `docker-sbx`; see [On Docker Sandboxes](#on-docker-sandboxes) |
 
 With the image reference unset, or with an endpoint named and no deployment beside it, the program says which variable is missing and exits non-zero rather than running.
 
@@ -81,6 +82,20 @@ The upload, the first operation, pays for creating the container. The model writ
 Only the prose above the heading is the model's; the block under it is the tool's own output, and the `[measured]` lines are the sample vouching for a number. That split earned its keep on the first live run: `gpt-4o-mini` through OpenRouter ran both commands and listed all three diagnostics, and reported every one of them as an error — the SARIF under its prose shows two of them carry no level, which means warning. The block is what to read, and [`scripts/check_live_deepagents_sample.py`](../../scripts/check_live_deepagents_sample.py) is what reads it after a release: the rule ids, the promoted level, and the reply naming what the compiler reported.
 
 The prefixes say which stream a line came from, and the two commands answer on different ones: `bicep build` writes its SARIF to `stderr`, which the adapter prefixes, and `bicep lint` writes the same document to `stdout`, which it does not. Both carry all three diagnostics — sample 05's: `BCP035` for the missing `sku`, `no-unused-params` as an **error**, and `use-recent-api-versions` — the second printing as an error rather than its built-in warning is the visible proof that `bicepconfig.json` at `/maf-sandbox/work` was found.
+
+## On Docker Sandboxes
+
+`SAMPLE_BACKEND=docker-sbx` runs the same turn in a Docker Sandboxes microVM on this machine, through [`maf-sandbox-docker-sbx`](../../packages/maf-sandbox-docker-sbx/README.md). That backend is `MICROVM`, so the router keeps its default floor. It needs `sbx` installed and signed in, with SSH agent forwarding off and no MCP server registered; the backend's README says how. The image takes the layer from [`images/sbx-template`](../../images/sbx-template/), as sample 05's does:
+
+```bash
+docker build -t bicep-sandbox:local images/bicep-sandbox
+docker build --build-arg BASE=bicep-sandbox:local -t bicep-sandbox:sbx images/sbx-template
+docker save -o bicep-sandbox-sbx.tar bicep-sandbox:sbx
+sbx template load bicep-sandbox-sbx.tar
+SAMPLE_BACKEND=docker-sbx BICEP_SANDBOX_IMAGE=bicep-sandbox:sbx uv run samples/17_deepagents_docker_bicep/agent.py
+```
+
+The backend mounts the workspace over `/maf-sandbox/work`, where the image keeps its `bicepconfig.json`, and that layer removes the directory. Here the model runs `bicep` itself, and nothing stages a configuration for it the way `bicep_validate` does. So on `docker-sbx` the host uploads [the image's `bicepconfig.json`](../../images/bicep-sandbox/bicepconfig.json) next to `main.bicep`. The compiler then lints with the same rules on both backends. `verify-live.yml` runs this variant as its own job, against the same check, after each release of `maf-sandbox`, `maf-sandbox-deepagents` or `maf-sandbox-docker-sbx`.
 
 ## Troubleshooting
 
