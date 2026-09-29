@@ -32,8 +32,9 @@ name: Verify (live)
 # dispatches a host tool from a program in the sandbox back into the host and gates on which route
 # carried the data, run on either backend via SAMPLE_BACKEND (the `sample-15` and
 # `sample-15-docker` jobs) — its leftover-traffic act the one part docker cannot supply. 07 lands
-# one too, through a kind written in the sample instead of the packaged one, and pairs with 08 on
-# this side of the machine rather than across backends. 09 runs 01's bicep workload against the
+# one too, through a kind written in the sample instead of the packaged one. 05 and 07 also pair
+# with a `-docker-sbx` job, the same workload in a Docker Sandboxes microVM on the runner, so a
+# red on one side alone names that backend. 09 runs 01's bicep workload against the
 # CLI on the runner itself, so it pairs with nothing and names no backend. 13 repairs Bicep
 # over multiple turns. 18 repairs draw.io XML, verifies storage read-back, reports each call's
 # duration and removes its diagram and sandboxes. 19 returns the same Fibonacci answer through
@@ -43,7 +44,8 @@ name: Verify (live)
 #
 # This is the half of issue #33 that runs after a release rather than on a pull request. The
 # ACAS jobs each create a billable Azure sandbox and need a subscription; the docker jobs create
-# a container on the runner and need no sandbox configuration; 09 needs neither. **A job that
+# a container on the runner and need no sandbox configuration; the docker-sbx jobs create a
+# microVM on the runner and need a Docker account to sign `sbx` in; 09 needs neither. **A job that
 # calls no model and reads no variable carries no `environment:` and no `permissions:` block**,
 # because it mints no token — stated as the rule rather than a list, which is what went stale
 # here before. It runs on demand, and once after each release that could change what a sample
@@ -57,6 +59,8 @@ name: Verify (live)
 # environment variables on the `live-verify` environment. The ACAS jobs read the sandbox
 # configuration as well as the model's; every other job that calls a model reads only the
 # model's, whether its guest is built here or pulled; a job that calls no model reads nothing.
+# The docker-sbx jobs also read the repository secrets DOCKER_USERNAME and DOCKER_PAT, a Docker
+# account and a read-only access token, to sign `sbx` in.
 # See docs/maintainers.md.
 #
 # PEP 723 metadata is the single dependency source; `--no-project` ensures uv resolves its
