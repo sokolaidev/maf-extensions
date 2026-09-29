@@ -21,9 +21,12 @@ from maf_sandbox import SandboxKey
 
 from ._pod import (
     FRAME_LIMIT,
+    LIFECYCLE_PROTOCOL,
     PING_SECONDS,
     PLATFORM_EXIT,
     PLATFORM_REFUSAL,
+    PROTOCOL_EXIT,
+    PROTOCOL_REFUSAL,
     REASON_LIMIT,
     frame,
     seal,
@@ -46,6 +49,13 @@ class HyperlightPodCleanupPending(HyperlightWorkerError):
 
 class HyperlightPodPlatformError(HyperlightWorkerError):
     """The node the pod landed on fails a pod-mode requirement; its cleanup is confirmed."""
+
+
+class HyperlightPodProtocolMismatch(HyperlightWorkerError):
+    """The pod's image speaks another lifecycle protocol than this controller; cleanup is confirmed.
+
+    Only images that carry the check refuse; an older image fails however its release does.
+    """
 
 
 class HyperlightPodReserved(HyperlightWorkerError):
@@ -220,6 +230,7 @@ def pod_manifest(
     name = ownership_name(key, kind)
     # Pod readers see only the digest; the identity itself arrives over the attach stream.
     binding = {
+        "protocol": LIFECYCLE_PROTOCOL,
         "owner": name,
         "generation": generation,
         "memory_limit_bytes": template.memory_limit_bytes,
@@ -642,6 +653,8 @@ class HyperlightPodController:
             outcome = self.recover_exit(key, kind, timeout=cleanup_timeout, retire=True)
         if outcome.exit_code == PLATFORM_EXIT and outcome.reason.startswith(PLATFORM_REFUSAL):
             raise HyperlightPodPlatformError(outcome.reason)
+        if outcome.exit_code == PROTOCOL_EXIT and outcome.reason.startswith(PROTOCOL_REFUSAL):
+            raise HyperlightPodProtocolMismatch(outcome.reason)
         return HyperlightPodResult(
             uid,
             outcome.exit_code,

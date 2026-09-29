@@ -32,6 +32,7 @@ from maf_sandbox_hyperlight import (
 )
 from maf_sandbox_hyperlight._pod import (
     FRAME_LIMIT,
+    LIFECYCLE_PROTOCOL,
     PodJob,
     frame,
     refusal,
@@ -506,6 +507,7 @@ def test_a_lapsed_lease_names_which_controller_was_lost(monkeypatch, recovery, c
 def test_a_pod_whose_hello_never_came_records_that_reason(tmp_path):
     log = tmp_path / "termination-log"
     binding = {
+        "protocol": LIFECYCLE_PROTOCOL,
         "owner": LAUNCH.owner,
         "generation": "generation",
         "memory_limit_bytes": 1,

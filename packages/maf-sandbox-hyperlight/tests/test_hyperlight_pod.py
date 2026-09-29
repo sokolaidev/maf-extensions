@@ -36,6 +36,7 @@ from maf_sandbox_hyperlight import (
 )
 from maf_sandbox_hyperlight._pod import (
     FRAME_LIMIT,
+    LIFECYCLE_PROTOCOL,
     REASON_LIMIT,
     TERMINATION_LOG,
     frame,
@@ -48,6 +49,7 @@ from maf_sandbox_hyperlight.kubernetes import (
     HyperlightPodCleanupPending,
     HyperlightPodController,
     HyperlightPodPlatformError,
+    HyperlightPodProtocolMismatch,
     HyperlightPodReserved,
     HyperlightPodTemplate,
     confirmed_exit,
@@ -163,6 +165,7 @@ def test_manifest_uses_upstream_resource_with_private_container_limits():
     env = {item["name"]: item.get("value") for item in container["env"]}
     launch = json.loads(env["MAF_HYPERLIGHT_POD_BINDING"])
     assert launch["owner"] == pod["metadata"]["name"] == ownership_name(key, kind)
+    assert launch["protocol"] == LIFECYCLE_PROTOCOL
     assert all(value not in serialized for value in (key.scope, key.thread_id, key.agent_id, kind))
     assert pod["metadata"]["finalizers"]
 
@@ -248,6 +251,7 @@ def test_cgroup_v1_or_missing_swap_accounting_names_the_requirement(controls, mi
 
 def test_platform_refusal_reaches_the_termination_message_with_its_own_exit(tmp_path):
     launch = {
+        "protocol": LIFECYCLE_PROTOCOL,
         "owner": LAUNCH.owner,
         "generation": "generation",
         "memory_limit_bytes": 1,
@@ -275,6 +279,44 @@ _pod_supervisor.main()
     assert result.returncode == 78
     assert log.read_text() == (
         "maf-hyperlight: unsupported platform: KVM initialization failed (Permission denied)"
+    )
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [None, LIFECYCLE_PROTOCOL + 1, str(LIFECYCLE_PROTOCOL), True, float(LIFECYCLE_PROTOCOL)],
+    ids=[
+        "an older controller",
+        "a newer controller",
+        "a string",
+        "a boolean equal to one",
+        "a float equal to the number",
+    ],
+)
+def test_a_controller_speaking_another_protocol_is_refused_before_the_binding_is_read(
+    tmp_path, spoken
+):
+    # Nothing else in this binding would parse, so only the protocol check can refuse it.
+    launch = {} if spoken is None else {"protocol": spoken}
+    log = tmp_path / "termination-log"
+    program = f"""
+import os
+from maf_sandbox_hyperlight import _pod_supervisor
+os.environ['MAF_HYPERLIGHT_POD_BINDING'] = {json.dumps(launch)!r}
+os.environ['MAF_HYPERLIGHT_POD_UID'] = 'pod-uid'
+_pod_supervisor.TERMINATION_LOG = {str(log)!r}
+_pod_supervisor.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", program, "application"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 76
+    assert log.read_text() == (
+        f"maf-hyperlight: lifecycle protocol mismatch: the controller speaks {spoken!r}, "
+        f"this image speaks {LIFECYCLE_PROTOCOL}"
     )
 
 
@@ -604,6 +646,7 @@ def test_same_uid_process_cannot_open_an_undumpable_supervisor_stdin():
 @pytest.mark.parametrize("error", ["SystemExit(0)", "KeyboardInterrupt()"])
 def test_init_forces_failure_exit_without_waiting_for_python_threads(error):
     launch = {
+        "protocol": LIFECYCLE_PROTOCOL,
         "owner": LAUNCH.owner,
         "generation": "generation",
         "memory_limit_bytes": 1,
@@ -635,6 +678,7 @@ import json, os
 from maf_sandbox_hyperlight import _pod_supervisor
 os.environ['MAF_HYPERLIGHT_POD_BINDING'] = json.dumps(
     {{
+        "protocol": {LIFECYCLE_PROTOCOL},
         "owner": {LAUNCH.owner!r},
         "generation": "generation",
         "memory_limit_bytes": 1,
@@ -937,6 +981,24 @@ def test_platform_refusal_raises_after_confirmed_cleanup():
     assert not controller.ledger and not controller.pod
 
 
+def test_a_protocol_refusal_raises_its_own_error_after_cleanup():
+    reason = (
+        "maf-hyperlight: lifecycle protocol mismatch: the controller speaks 1, this image speaks 2"
+    )
+    pod = refused_pod(reason)
+    pod["status"]["containerStatuses"][0]["state"]["terminated"]["exitCode"] = 76
+    controller = SupervisingController(pod)
+    with pytest.raises(HyperlightPodProtocolMismatch, match="this image speaks 2"):
+        controller.supervise(KEY, KIND, TEMPLATE)
+    assert not controller.ledger and not controller.pod
+
+
+def test_an_application_exit_76_is_not_a_protocol_refusal():
+    pod = refused_pod("application protocol error")
+    pod["status"]["containerStatuses"][0]["state"]["terminated"]["exitCode"] = 76
+    assert SupervisingController(pod).supervise(KEY, KIND, TEMPLATE).exit_code == 76
+
+
 def test_an_application_exit_78_is_not_a_platform_refusal():
     controller = SupervisingController(refused_pod("application configuration error"))
     assert controller.supervise(KEY, KIND, TEMPLATE).exit_code == 78
@@ -1215,6 +1277,15 @@ def test_recovery_finishes_after_pod_deletion_when_proof_was_saved():
     assert not controller.ledger
 
 
+def test_a_receipt_from_a_release_without_reasons_still_recovers():
+    # Releases before 0.6.0 saved no reason; a rollback can leave their receipt behind.
+    controller = FakeController(pod={})
+    controller.ledger["data"] = {"generation": "g", "pod_uid": "pod-uid", "state": "stopped"}
+    controller.ledger["data"]["exit_code"] = "70"
+    assert controller.recover_exit(KEY, KIND) == kubernetes.HyperlightPodExit(70, "")
+    assert not controller.ledger
+
+
 def exiting_pod(message: object) -> dict[str, Any]:
     pod = terminal_pod()
     terminated = pod["status"]["containerStatuses"][0]["state"]["terminated"]
@@ -1229,6 +1300,16 @@ def test_cleanup_saves_the_reason_with_its_termination_receipt():
     )
     receipts = [body for args, body in controller.calls if args[0] == "replace" and "data" in body]
     assert receipts[0]["data"]["reason"] == "controller stream closed"
+
+
+def test_a_receipt_keeps_the_fields_an_earlier_release_recovers_from():
+    # A rollback hands this receipt to an older controller, whose recover reads only these.
+    controller = FakeController(pod=exiting_pod("controller stream closed"))
+    controller.recover_exit(KEY, KIND)
+    receipts = [body for args, body in controller.calls if args[0] == "replace" and "data" in body]
+    data = receipts[0]["data"]
+    assert data["state"] == "stopped" and data["pod_uid"] == "pod-uid"
+    assert isinstance(data["exit_code"], str) and int(data["exit_code"]) == 70
 
 
 def test_saved_reason_survives_pod_deletion():

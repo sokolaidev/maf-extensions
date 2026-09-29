@@ -21,6 +21,10 @@ FRAME_LIMIT = 8192
 REASON_LIMIT = 1024
 PLATFORM_EXIT = 78
 PLATFORM_REFUSAL = "maf-hyperlight: unsupported platform: "
+# Bump whenever a controller and a pod supervisor from different releases stop working together.
+LIFECYCLE_PROTOCOL = 1
+PROTOCOL_EXIT = 76
+PROTOCOL_REFUSAL = "maf-hyperlight: lifecycle protocol mismatch: "
 TERMINATION_LOG = "/dev/termination-log"
 PING_SECONDS = 1.0
 LEASE_SECONDS = 5.0

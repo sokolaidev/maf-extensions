@@ -25,9 +25,12 @@ from ._pod import (
     BEGIN_WAIT,
     FRAME_LIMIT,
     LEASE_SECONDS,
+    LIFECYCLE_PROTOCOL,
     PING_SECONDS,
     PLATFORM_EXIT,
     PLATFORM_REFUSAL,
+    PROTOCOL_EXIT,
+    PROTOCOL_REFUSAL,
     REASON_LIMIT,
     TERMINATION_LOG,
     frame,
@@ -88,6 +91,12 @@ def make_undumpable() -> None:
     prctl = ctypes.CDLL(None, use_errno=True).prctl
     if prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 or prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) != 0:
         raise HyperlightWorkerError("pod supervisor could not become non-dumpable")
+
+
+def _spoken_protocol(binding: object) -> object:
+    if not isinstance(binding, dict):
+        return None
+    return cast("dict[str, object]", binding).get("protocol")
 
 
 def _refuse_platform(reason: str) -> None:
@@ -523,6 +532,18 @@ def main() -> None:
     reason = ""
     try:
         fields = json.loads(os.environ["MAF_HYPERLIGHT_POD_BINDING"])
+        # Checked before anything else in the binding, whose other fields may not parse.
+        spoken = _spoken_protocol(fields)
+        # JSON true and 1.0 compare equal to 1 in Python; only an integer is a protocol number.
+        if type(spoken) is not int or spoken != LIFECYCLE_PROTOCOL:
+            message = (
+                f"{PROTOCOL_REFUSAL}the controller speaks {spoken!r}, "
+                f"this image speaks {LIFECYCLE_PROTOCOL}"
+            )
+            with suppress(OSError, ValueError):
+                print(message, file=sys.stderr, flush=True)
+            record_reason(message)
+            os._exit(PROTOCOL_EXIT)
         launch = PodLaunch(
             fields.get("owner"),
             os.environ["MAF_HYPERLIGHT_POD_UID"],
