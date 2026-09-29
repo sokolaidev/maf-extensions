@@ -477,7 +477,11 @@ class Supervisor:
                     acknowledged=self.ack.is_set(),
                     platform=self.platform,
                 )
-        elif operation == "ack" and message.get("sequence") == self.sequence:
+        elif (
+            operation == "ack"
+            and type(sequence := message.get("sequence")) is int
+            and sequence == self.sequence
+        ):
             self.ack.set()
         elif operation == "stop":
             self.retire("controller retired the session")

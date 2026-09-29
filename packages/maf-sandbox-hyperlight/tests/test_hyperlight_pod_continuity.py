@@ -160,6 +160,31 @@ def test_continuity_refuses_unsealed_and_ignores_superseded_controller_messages(
     assert pid1.counter == 5
 
 
+def test_an_ack_names_only_the_current_call_by_exact_int(pid1, monkeypatch):
+    pid1.sequence = 1
+    for counter, sequence in enumerate((0, 2, True, 1.0, "1"), start=1):
+        with pytest.raises(HyperlightWorkerError, match="invalid controller lifecycle"):
+            pid1.controller_message(sealed("ack", counter, sequence=sequence))
+    assert not pid1.ack.is_set() and not pid1.retired.is_set()
+    pid1.controller_message(sealed("ack", 6, sequence=1))
+    assert pid1.ack.is_set()
+    monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
+    default = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])
+    default.connected, default.sequence = True, 1
+    default.renew()
+    for sequence in (True, 1.0):
+        with pytest.raises(HyperlightWorkerError, match="invalid controller lifecycle"):
+            default.controller_message(
+                {
+                    "op": "ack",
+                    "pod_uid": "pod-uid",
+                    "generation": "generation",
+                    "sequence": sequence,
+                }
+            )
+    assert not default.ack.is_set()
+
+
 def test_default_mode_needs_no_seal(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     subject = Supervisor(replace(LAUNCH, recovery_seconds=0), ["application"])
@@ -1042,6 +1067,22 @@ def test_reattach_rejects_an_invalid_withdrawal_sequence(sequence):
         supervise_events(state, [{"event": "end", "sequence": sequence}])
 
 
+@pytest.mark.parametrize("sequence", [True, 1.0])
+@pytest.mark.parametrize("event", ["begin", "end"])
+def test_a_call_event_needs_an_exact_int_sequence(event, sequence):
+    state = session(deadline=time.monotonic() + 0.5)
+    state.ready = True
+    if event == "end":
+        state.sequence, state.deadline = 1, FUTURE
+    with pytest.raises(HyperlightWorkerError, match="invalid"):
+        supervise_events(
+            state,
+            [{"event": event, "sequence": sequence, "expires_at": FUTURE}],
+            resuming=False,
+        )
+    assert state.sequence == (0 if event == "begin" else 1)
+
+
 @pytest.mark.parametrize("resuming", [False, True])
 def test_a_withdrawal_without_begin_requires_an_unconfirmed_resume(resuming):
     state = session(deadline=time.monotonic() + 0.5)
@@ -1331,6 +1372,16 @@ def wait_for(condition, timeout: float = 5) -> None:
         time.sleep(0.01)
 
 
+def admit(pid1: Supervisor, message: dict[str, object]) -> None:
+    """Fail with the supervisor's retirement reason, which the raised error omits."""
+    try:
+        pid1.handle(message)
+    except HyperlightWorkerError:
+        if not pid1.retired.is_set():
+            raise
+        pytest.fail(f"PID 1 retired: {pid1.cause.get('reason')}")
+
+
 def test_a_session_survives_an_interrupted_attach_end_to_end(monkeypatch):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     monkeypatch.setattr(_pod_supervisor, "LEASE_SECONDS", 1.5)
@@ -1399,9 +1450,19 @@ def test_a_session_survives_an_interrupted_attach_end_to_end(monkeypatch):
             thread.join(timeout=5)
 
 
-def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monkeypatch):
+@pytest.mark.parametrize("late_ack", [False, True], ids=["prompt-ack", "late-ack"])
+def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monkeypatch, late_ack):
     monkeypatch.setattr(_pod_supervisor, "_oom_kills", lambda: 0)
     monkeypatch.setattr(kubernetes, "LEASE_SECONDS", 1.0)
+    if late_ack:
+        # The withdrawn call's ack trails pings the stall buffered, which reach PID 1 first.
+        def slow_seal(message, secret):
+            if message.get("op") == "ack" and message.get("sequence") == 1:
+                time.sleep(0.3)
+            return seal(message, secret)
+
+        monkeypatch.setattr(kubernetes, "seal", slow_seal)
+        monkeypatch.setattr(kubernetes, "PING_SECONDS", 0.05)
     pid1 = Supervisor(LAUNCH, ["application"])
     pid1.worker = 100
     monkeypatch.setattr(
@@ -1466,8 +1527,8 @@ def test_a_withdrawn_begin_does_not_overlap_after_a_stalled_attach_recovers(monk
                 deliver(payload)
         # The late pings cannot renew a stale PID 1, so the controller resumes on a new attach.
         wait_for(lambda: state.resumed and time.monotonic() < pid1.fresh)
-        pid1.handle(
-            {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
+        admit(
+            pid1, {"op": "begin", "deadline": time.monotonic() + 30, "expires_at": time.time() + 30}
         )
         pid1.handle({"op": "end"})
         wait_for(lambda: state.sequence == 2 and state.deadline is None)
