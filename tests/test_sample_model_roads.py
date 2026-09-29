@@ -1,7 +1,7 @@
 """Samples 09, 13 and 17 reach Azure over the Responses API and a local server over chat completions.
 
-gpt-5.6 and later refuse function tools over chat completions while reasoning is on, and both
-samples hand the model tools. Sample 19's AutoGen road is pinned in its own suite.
+gpt-5.6 and later refuse function tools over chat completions while reasoning is on, and all
+three samples hand the model tools. Sample 19's AutoGen road is pinned in its own suite.
 """
 
 from __future__ import annotations

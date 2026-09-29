@@ -132,7 +132,7 @@ WORK_PRODUCT = (
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
 IMAGE = os.environ.get("BICEP_SANDBOX_IMAGE") or "bicep-sandbox:local"
 
-#: Sample 09's split, unchanged: two endpoints, branched on one variable.
+#: The same local defaults as sample 09, so the two samples reach one Ollama model by default.
 DEFAULT_LOCAL_MODEL = "minimax-m3:cloud"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 LOCAL_API_KEY_PLACEHOLDER = "ollama"
@@ -250,8 +250,8 @@ def build_client() -> tuple[SupportsChatGetResponse[Any], DefaultAzureCredential
     """Two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
     Azure is reached over the Responses API, where gpt-5.6 and later accept tools with reasoning
-    on; a local server over chat completions, the surface it implements well. Sample 09's
-    `build_client`, unchanged. Returns the client and the credential to close, or ``None`` when
+    on; a local server over chat completions, the surface it implements well. The same split as
+    sample 09's `build_client`. Returns the client and the credential to close, or ``None`` when
     the environment names an endpoint and then does not say which model to reach on it.
     """
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
