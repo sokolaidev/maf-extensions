@@ -40,7 +40,7 @@ file beside `main.bicep`.
 #     "langchain-openai",
 #     "maf-sandbox-deepagents",
 #     "maf-sandbox-docker",
-#     "maf-sandbox-docker-sbx>=0.2.0",
+#     "maf-sandbox-docker-sbx>=0.3.0",
 #     "maf-sandbox>=0.45",
 # ]
 # ///
