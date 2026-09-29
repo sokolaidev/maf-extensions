@@ -7,9 +7,9 @@ floor of the isolation ladder (:data:`~maf_sandbox.Isolation.NONE`, no boundary 
 The egress is **honest**: a no-boundary backend cannot confine egress, so it declares the one
 mode it enforces — ``UNRESTRICTED`` — and the Bicep tool is wired to run in that mode. The
 router serves the pairing because the mode asked and the mode enforced agree; why running
-unconfined is acceptable for this dev workload is argued in ``README.md``. One
-``OpenAIChatCompletionClient`` serves Azure OpenAI in CI and a local Ollama server by default,
-branched on ``AZURE_OPENAI_ENDPOINT``.
+unconfined is acceptable for this dev workload is argued in ``README.md``. ``build_client``
+reaches Azure OpenAI in CI and a local Ollama server by default, branched on
+``AZURE_OPENAI_ENDPOINT``.
 
 The walkthrough and environment variables are in ``README.md``; read it first.
 """
@@ -32,14 +32,18 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
-from agent_framework import Agent, InMemoryAgentFileStore
-from agent_framework.openai import OpenAIChatCompletionClient
+from agent_framework import Agent, InMemoryAgentFileStore, SupportsChatGetResponse
+from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
 from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from no_isolation_backend import NoIsolationBackend
+
+if TYPE_CHECKING:
+    from azure.identity.aio import DefaultAzureCredential
 
 # Keyed by the caller's scope, thread and agent directory; constants here since this
 # program serves one request.
@@ -73,6 +77,40 @@ DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 LOCAL_API_KEY_PLACEHOLDER = "ollama"
 
 
+def build_client() -> tuple[SupportsChatGetResponse[Any], DefaultAzureCredential | None] | None:
+    """Two endpoints, branched on `AZURE_OPENAI_ENDPOINT`. CI sets it; a laptop does not.
+
+    Azure is reached with a federated credential (no key) over the Responses API, the one surface
+    where gpt-5.6 and later accept tools with reasoning on; a local Ollama server over chat
+    completions, with zero configuration. Returns the client and the credential to close, or
+    ``None`` when the environment names an endpoint and then does not say which model to reach.
+    """
+    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    if not azure_endpoint:
+        return (
+            OpenAIChatCompletionClient(
+                model=os.environ.get("OPENAI_CHAT_MODEL") or DEFAULT_LOCAL_MODEL,
+                base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_LOCAL_BASE_URL,
+                api_key=LOCAL_API_KEY_PLACEHOLDER,
+            ),
+            None,
+        )
+    env = require_env_vars(("AZURE_OPENAI_CHAT_MODEL",))
+    if env is None:
+        return None
+    from azure.identity.aio import DefaultAzureCredential
+
+    credential = DefaultAzureCredential()
+    return (
+        OpenAIChatClient(
+            model=env["AZURE_OPENAI_CHAT_MODEL"],
+            azure_endpoint=azure_endpoint,
+            credential=credential,
+        ),
+        credential,
+    )
+
+
 async def run() -> int:
     """Wire the stack, run one turn, and dispose the (no-isolation) sandbox."""
     # The backend: a host work directory per sandbox, the bicepconfig.json seeded at its root,
@@ -100,30 +138,10 @@ async def run() -> int:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
 
-    # One client class, two endpoints, branched on a single variable. CI sets
-    # AZURE_OPENAI_ENDPOINT and reaches Azure OpenAI with a federated credential (no key); a
-    # developer's machine leaves it unset and the client talks to a local Ollama server with
-    # defaults — zero configuration. The two paths are mutually exclusive.
-    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-    credential = None
-    if azure_endpoint:
-        env = require_env_vars(("AZURE_OPENAI_CHAT_MODEL",))
-        if env is None:
-            return 2
-        from azure.identity.aio import DefaultAzureCredential
-
-        credential = DefaultAzureCredential()
-        client = OpenAIChatCompletionClient(
-            model=env["AZURE_OPENAI_CHAT_MODEL"],
-            azure_endpoint=azure_endpoint,
-            credential=credential,
-        )
-    else:
-        client = OpenAIChatCompletionClient(
-            model=os.environ.get("OPENAI_CHAT_MODEL") or DEFAULT_LOCAL_MODEL,
-            base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_LOCAL_BASE_URL,
-            api_key=LOCAL_API_KEY_PLACEHOLDER,
-        )
+    configured = build_client()
+    if configured is None:
+        return 2
+    client, credential = configured
 
     try:
         agent = Agent(

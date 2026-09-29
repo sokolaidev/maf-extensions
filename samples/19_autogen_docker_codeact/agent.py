@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars
 from autogen_agentchat.agents import AssistantAgent
@@ -120,9 +120,8 @@ MAX_OUTPUT_BYTES = 1_048_576
 CLEANUP_TIMEOUT_SECONDS = 30.0
 
 #: The Azure OpenAI API version this client speaks. `AzureOpenAIChatCompletionClient` requires
-#: one and has no default; the value is the one `agent-framework`'s chat-completions client picks
-#: for itself, so this sample and samples 09 and 13 reach one deployment over one surface.
-AZURE_API_VERSION = "2024-12-01-preview"
+#: one and has no default; the value is the one sample 17's `AzureChatOpenAI` passes.
+AZURE_API_VERSION = "2025-04-01-preview"
 
 #: What a token for an Azure OpenAI deployment is minted against.
 AZURE_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -138,6 +137,10 @@ AZURE_MODEL_VARS = ("AZURE_OPENAI_CHAT_MODEL",)
 DEFAULT_LOCAL_MODEL = "minimax-m3:cloud"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 LOCAL_API_KEY_PLACEHOLDER = "ollama"
+
+#: A deployment named for gpt-5.6 or later, which refuses tools over chat completions unless
+#: reasoning is off. AutoGen has no Responses API client, so this sample turns reasoning off.
+_REASONING_BLOCKS_TOOLS = re.compile(r"gpt-(?:5\.(?:[6-9]|\d{2,})|[6-9]|\d{2,})(?!\d)")
 
 
 def _model_info(family: str) -> ModelInfo:
@@ -348,6 +351,13 @@ def _render(result: ExecResult) -> str:
     return "\n\n".join(sections) if sections else "(the program printed nothing)"
 
 
+def _tool_compatible_reasoning(deployment: str) -> dict[str, Any]:
+    """The request body a chat-completions tool call needs on `deployment`, if any."""
+    if _REASONING_BLOCKS_TOOLS.match(deployment.lower()):
+        return {"extra_body": {"reasoning_effort": "none"}}
+    return {}
+
+
 def build_model() -> tuple[ChatCompletionClient, DefaultAzureCredential | None] | None:
     """One client library, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
@@ -386,6 +396,7 @@ def build_model() -> tuple[ChatCompletionClient, DefaultAzureCredential | None] 
             # Sample 06's prerequisite: the deployment is a reasoning model, and `gpt-5.4` is
             # not one of the names AutoGen knows.
             model_info=_model_info(ModelFamily.GPT_5),
+            **_tool_compatible_reasoning(env["AZURE_OPENAI_CHAT_MODEL"]),
         ),
         credential,
     )

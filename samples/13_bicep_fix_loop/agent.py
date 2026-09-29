@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import (
     MEASURED,
@@ -51,8 +51,13 @@ from _scaffold import (
     result_text,
     tool_results,
 )
-from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
-from agent_framework.openai import OpenAIChatCompletionClient
+from agent_framework import (
+    Agent,
+    FileAccessProvider,
+    InMemoryAgentFileStore,
+    SupportsChatGetResponse,
+)
+from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
 from maf_sandbox import Cleanup, Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
@@ -127,7 +132,7 @@ WORK_PRODUCT = (
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
 IMAGE = os.environ.get("BICEP_SANDBOX_IMAGE") or "bicep-sandbox:local"
 
-#: Sample 09's split, unchanged: one client class, two endpoints, branched on one variable.
+#: The same local defaults as sample 09, so the two samples reach one Ollama model by default.
 DEFAULT_LOCAL_MODEL = "minimax-m3:cloud"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
 LOCAL_API_KEY_PLACEHOLDER = "ollama"
@@ -241,11 +246,12 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     return content or ""
 
 
-def build_client() -> tuple[OpenAIChatCompletionClient, DefaultAzureCredential | None] | None:
-    """One client class, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
+def build_client() -> tuple[SupportsChatGetResponse[Any], DefaultAzureCredential | None] | None:
+    """Two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
-    Sample 09 makes the same split inline. Factored out here, so the credential handed back is
-    named rather than inferred. Returns the client and that credential to close, or ``None`` when
+    Azure is reached over the Responses API, where gpt-5.6 and later accept tools with reasoning
+    on; a local server over chat completions, the surface it implements well. The same split as
+    sample 09's `build_client`. Returns the client and the credential to close, or ``None`` when
     the environment names an endpoint and then does not say which model to reach on it.
     """
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
@@ -265,7 +271,7 @@ def build_client() -> tuple[OpenAIChatCompletionClient, DefaultAzureCredential |
 
     credential = DefaultAzureCredential()
     return (
-        OpenAIChatCompletionClient(
+        OpenAIChatClient(
             model=env["AZURE_OPENAI_CHAT_MODEL"],
             azure_endpoint=azure_endpoint,
             credential=credential,

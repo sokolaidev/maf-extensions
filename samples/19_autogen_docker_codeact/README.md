@@ -26,7 +26,7 @@ AutoGen is in maintenance mode — its README says it will not receive new featu
 
 ## Two roads to a model, as samples 09 and 13 take them
 
-In `autogen-ext`'s terms. With `AZURE_OPENAI_ENDPOINT` set, `AzureOpenAIChatCompletionClient` reaches an Azure OpenAI deployment with `DefaultAzureCredential` — no key in the tree, which is what lets this sample have a live job. Unset, `OpenAIChatCompletionClient` talks to any OpenAI-compatible endpoint, a local server included, and defaults to Ollama's. One `build_model` decides, on one variable.
+In `autogen-ext`'s terms. With `AZURE_OPENAI_ENDPOINT` set, `AzureOpenAIChatCompletionClient` reaches an Azure OpenAI deployment with `DefaultAzureCredential` — no key in the tree, which is what lets this sample have a live job. AutoGen speaks only chat completions, where gpt-5.6 and later refuse tools while reasoning is on, so for a deployment whose name reads as gpt-5.6 or later the client sends `reasoning_effort: none`. Unset, `OpenAIChatCompletionClient` talks to any OpenAI-compatible endpoint, a local server included, and defaults to Ollama's. One `build_model` decides, on one variable.
 
 Both roads pass a `model_info`, because AutoGen only knows OpenAI's model names: a deployment named `gpt-5.4` — or a local `minimax-m3:cloud` — is not one, and the client refuses to guess. The declared capabilities say what the deployment must actually have here, `function_calling` above all: the agent has to call the tool.
 
