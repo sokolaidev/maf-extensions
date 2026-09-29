@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.2.1...maf-sandbox-docker-sbx-v0.3.0) (2026-09-29)
+
+
+### Features
+
+* **docker-sbx:** serve exec_bounded, so Deep Agents and other callers can set their own output budget ([#1576](https://github.com/sokolaidev/maf-extensions/issues/1576)) ([0090ebe](https://github.com/sokolaidev/maf-extensions/commit/0090ebeb85b89c24d38a378193c5ac35002198e0))
+
+
+### Fixes
+
+* **docker-sbx:** name the unshare options an image needs instead of a util-linux version ([#1574](https://github.com/sokolaidev/maf-extensions/issues/1574)) ([ddeceb2](https://github.com/sokolaidev/maf-extensions/commit/ddeceb24267625dd15e929a9d4828d909cf0b7f1))
+
 ## [0.2.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.2.0...maf-sandbox-docker-sbx-v0.2.1) (2026-09-28)
 
 
