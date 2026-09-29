@@ -1,7 +1,5 @@
-# Adapts an image for maf-sandbox-docker-sbx:
-#   docker build --build-arg BASE=bicep-sandbox:local -t bicep-sandbox:sbx images/sbx-template
-# It adds bash and util-linux, and removes /maf-sandbox, where the backend mounts the workspace.
-# The build fails if the base's unshare cannot map ids, rather than the image failing at acquire.
+# /maf-sandbox goes because the backend mounts the workspace there and refuses an image that has it.
+# A base whose unshare cannot map ids fails here, not at acquire.
 ARG BASE
 FROM ${BASE}
 USER root

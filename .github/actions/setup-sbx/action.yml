@@ -2,7 +2,7 @@ name: Set up Docker Sandboxes
 description: >-
   Install sbx from Docker's apt repository, sign in, and leave the host in the state
   maf-sandbox-docker-sbx accepts: deny-all policy, SSH agent forwarding off. Also opts the rest
-  of the job out of sbx telemetry. Linux runners only.
+  of the job out of sbx telemetry. Ubuntu runners only: it adds Docker's Ubuntu apt repository.
 inputs:
   docker-username:
     description: Docker account the access token belongs to

@@ -975,8 +975,8 @@ jobs:
     # Required for the called jobs' own `environment: live-verify` secrets to resolve, which
     # reads as redundant and is not: a called workflow gets that environment's `vars` from the
     # `environment:` key alone, but its secrets arrive empty unless the caller inherits
-    # (actions/runner#4453). Nothing here has a secret of its own to pass — the repository and
-    # the organisation both hold none — so inheriting costs nothing and is the whole mechanism.
+    # (actions/runner#4453). It also passes the repository secrets DOCKER_USERNAME and
+    # DOCKER_PAT, which the docker-sbx jobs sign `sbx` in with.
     secrets: inherit
 
   # A live check that never started cannot say so itself: a run displaced from its concurrency
