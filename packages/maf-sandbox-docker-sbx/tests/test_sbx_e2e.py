@@ -224,6 +224,21 @@ def test_exec_suite_the_deadline_and_the_output_bound(tmp_path, image):
             )
             assert left.stdout.strip() == "0", left
             assert sandbox.instance_id not in backend.retired
+            small = await sandbox.exec_bounded(
+                ["echo", "within"], working_directory=".", timeout=30, max_output_bytes=4096
+            )
+            assert (small.exit_code, small.stdout) == (0, "within\n"), small
+            started = time.monotonic()
+            with pytest.raises(SandboxExecOutputLimitExceeded):
+                await sandbox.exec_bounded(
+                    "sleep 300 & yes", working_directory=".", timeout=120, max_output_bytes=4096
+                )
+            # A 4 KiB budget ends the flood long before the 8 MiB default would.
+            assert time.monotonic() - started < 30, time.monotonic() - started
+            left = await sandbox.exec(
+                "ps -eo args | grep -cE '^(yes|sleep 300)$'", working_directory=".", timeout=30
+            )
+            assert left.stdout.strip() == "0", left
             ids = "id -u; id -g"
             wrapped = await sandbox.exec(ids, working_directory=".", timeout=30)
             direct = subprocess.run(
