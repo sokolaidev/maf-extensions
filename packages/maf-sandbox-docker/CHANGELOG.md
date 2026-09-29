@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.1...maf-sandbox-docker-v0.24.2) (2026-09-29)
+
+
+### Fixes
+
+* **docker:** recover when a cancelled create still holds the container name ([#1563](https://github.com/sokolaidev/maf-extensions/issues/1563)) ([d93d84f](https://github.com/sokolaidev/maf-extensions/commit/d93d84ff6693296d7c6cebc49f97c233b0e69955))
+
 ## [0.24.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.0...maf-sandbox-docker-v0.24.1) (2026-09-28)
 
 
