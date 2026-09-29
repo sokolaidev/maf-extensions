@@ -116,7 +116,7 @@ jobs:
           OFFLINE_GROUP: ${{ matrix.group }}
         # Local `poe test` keeps running the complete suite serially.
         run: >-
-          uv run python -m pytest -q -n auto --dist worksteal -p scripts.offline_test_shards
+          uv run python -m pytest -q -n auto -p scripts.offline_test_shards
           --offline-group "$OFFLINE_GROUP" --durations=40
           --junitxml="$RUNNER_TEMP/offline-suite.xml" -o junit_family=xunit1
 

@@ -131,7 +131,7 @@ def test_offline_groups_keep_full_discovery_parallel_workers_and_required_result
     assert not check.get("continue-on-error", False)
     assert check["env"] == {"OFFLINE_GROUP": "${{ matrix.group }}"}
     assert check["run"] == (
-        "uv run python -m pytest -q -n auto --dist worksteal -p scripts.offline_test_shards "
+        "uv run python -m pytest -q -n auto -p scripts.offline_test_shards "
         '--offline-group "$OFFLINE_GROUP" --durations=40 '
         '--junitxml="$RUNNER_TEMP/offline-suite.xml" -o junit_family=xunit1'
     )

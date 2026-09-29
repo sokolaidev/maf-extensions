@@ -46,8 +46,6 @@ def run_suite(suite: Path, report: str, *args: str) -> subprocess.CompletedProce
             "-p",
             "scripts.offline_test_shards",
             "-q",
-            "--dist",
-            "worksteal",
             "--junitxml",
             str(suite / report),
             *args,
