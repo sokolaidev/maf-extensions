@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.7.0...maf-sandbox-hyperlight-v0.8.0) (2026-09-29)
+
+
+### Features
+
+* **hyperlight:** refuse a Kubernetes pod whose controller speaks another lifecycle protocol ([#1566](https://github.com/sokolaidev/maf-extensions/issues/1566)) ([3b02024](https://github.com/sokolaidev/maf-extensions/commit/3b02024df0af60745479218d4e7673d037f50bc5))
+
+
+### Fixes
+
+* **hyperlight:** keep a Kubernetes pod session through a controller-to-API partition that lasts up to its recovery window ([#1559](https://github.com/sokolaidev/maf-extensions/issues/1559)) ([b45530f](https://github.com/sokolaidev/maf-extensions/commit/b45530f7054b90a2ac226fcf4cddefe8199ae974))
+* **hyperlight:** name a Kubernetes pod call only by an exact int sequence ([#1568](https://github.com/sokolaidev/maf-extensions/issues/1568)) ([9c0cd20](https://github.com/sokolaidev/maf-extensions/commit/9c0cd203fc0da94a54e925cbd82adb88f11151e5))
+
 ## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.6.0...maf-sandbox-hyperlight-v0.7.0) (2026-09-28)
 
 
