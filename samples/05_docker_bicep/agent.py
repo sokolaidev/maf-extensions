@@ -91,7 +91,7 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
 async def run() -> int:
-    """Wire the stack, run one turn, and take the container down again."""
+    """Wire the stack, run one turn, and take the sandbox down again."""
     backend_name = os.environ.get("SAMPLE_BACKEND", "docker")
     if backend_name not in ("docker", "docker-sbx"):
         print("SAMPLE_BACKEND must be docker or docker-sbx.", file=sys.stderr)

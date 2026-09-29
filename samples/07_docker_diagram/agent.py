@@ -103,7 +103,7 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
 async def run() -> int:
-    """Wire the stack, run one turn, and take the container down again."""
+    """Wire the stack, run one turn, and take the sandbox down again."""
     backend_name = os.environ.get("SAMPLE_BACKEND", "docker")
     if backend_name not in ("docker", "docker-sbx"):
         print("SAMPLE_BACKEND must be docker or docker-sbx.", file=sys.stderr)
@@ -206,7 +206,7 @@ async def run() -> int:
         print(quoted(response.text))
     finally:
         # Cleanup first, reporting after, and the order is the point: a `print` can raise on a
-        # stream that has gone, and this `finally` is the only thing that takes the container
+        # stream that has gone, and this `finally` is the only thing that takes the sandbox
         # down. Nothing that merely says what happened may run before the things that make it
         # happen.
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
