@@ -1,6 +1,6 @@
 name: Tests
 
-# The hermetic gate is sharded across six jobs, joined by the required
+# The gate is sharded across parallel jobs, joined by the required
 # `Python (pytest + ruff + pyright)` context. Docker live coverage runs after merge
 # and daily in `docker-live.yml`; documentation checks live in `docs.yml`.
 #
@@ -352,12 +352,9 @@ jobs:
         # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
 
-  # Everything that builds a wheel or reads the index. Its own shard because its failures are
-  # a different class from the rest of this workflow: the last two steps read PyPI, so a red
-  # here can be the *index's* state rather than this diff's. A packaging red should not
-  # read as "pytest failed".
+  # Wheel validation and sample compatibility run alongside dependent compatibility.
   packaging:
-    name: Packaging & published-index checks
+    name: Packaging & sample compatibility
     needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -433,36 +430,10 @@ jobs:
           set -euo pipefail
           python3 scripts/check_suite_installs_together.py --whole-set --local-core
 
-      # The gate publish-packages.yml runs before an upload, brought forward to the pull
-      # request. It reads each range off the wheel `dist/` already holds and runs that
-      # package's suite against every published core the range admits — the pairing a consumer
-      # gets, and the one the offline suite never exercises because `[tool.uv.sources]` points
-      # `maf-sandbox` at the workspace (#628).
-      #
-      # On every code pull request rather than only on a Release PR: a Release PR is generated
-      # from commits already merged, so a failure there is one whose fix is a *different* pull
-      # request. Run here, the same failure is an edit to the pull request that caused it. A
-      # Release PR changes a dependent's version and so reaches this too, which is where it is
-      # the last word before a merge that publishes.
-      - name: Each dependent against the published cores it admits
-        if: needs.changes.outputs.code == 'true'
-        # `--local-core` is the fallback when nothing published satisfies a dependent's range:
-        # the suite runs against the core this checkout built instead of refusing. Only here.
-        # publish-packages.yml passes no flag, so an upload still needs a published core.
-        run: |
-          set -euo pipefail
-          for package_dir in packages/*/; do
-            package="$(basename "$package_dir")"
-            if [ "$package" != "maf-sandbox" ]; then
-              python3 scripts/check_dependent_works_with_published_cores.py \
-                "$package" dist/"${package//-/_}"-*.whl --local-core "$CORE_WHEEL"
-            fi
-          done
-
       # The same question asked of `samples/`, which declares a PEP 723 block rather than a
       # range and so is reached by no gate above (#725).
       #
-      # `--local-core` on the same terms as the step above, and it substitutes every wheel
+      # `--local-core` on the same terms as the dependent checks, and it substitutes every wheel
       # `dist/` holds rather than the core alone. Passing it unconditionally means the second
       # refusal — a floor no published core satisfies — is not reachable here; a Release PR
       # merged and never published is `report_stuck_releases.py`'s signal, not this one's.
@@ -472,6 +443,49 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check_samples_against_declared_core.py --local-core "$CORE_WHEEL"
+
+  # Each shard builds all siblings for the local-core fallback. Building locally avoids
+  # an artifact-transfer dependency before compatibility checks can start.
+  published-cores:
+    name: Published-core compatibility (${{ matrix.shard }})
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        if: needs.changes.outputs.code == 'true'
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: uv sync --locked
+
+      - name: Build every wheel for compatibility checks
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          set -euo pipefail
+          for package in packages/*/; do
+            uv build --package "$(basename "$package")"
+          done
+
+      # The checker still tests every admitted published core. Only when none is
+      # admitted does it use the local core; the upload gate keeps refusing that case.
+      - name: Each dependent against the published cores it admits
+        if: needs.changes.outputs.code == 'true'
+        env:
+          SHARD_INDEX: ${{ strategy.job-index }}
+          SHARD_COUNT: ${{ strategy.job-total }}
+        run: >-
+          python3 scripts/run_published_core_shard.py
+          --shard "$SHARD_INDEX" --shards "$SHARD_COUNT"
 
   # The required aggregate context runs no checks of its own: it fails unless every
   # shard above succeeded.
@@ -483,7 +497,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, fast, pre-commit, types, packaging]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
