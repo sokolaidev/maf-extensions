@@ -12,6 +12,7 @@ WORKFLOW = yaml.safe_load(
     (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
 )
 JOBS = WORKFLOW["jobs"]
+pytestmark = pytest.mark.workflow
 
 #: The join job, keyed by the name `main` requires rather than by its job id.
 _REQUIRED_CONTEXT = "Python (pytest + ruff + pyright)"
@@ -86,6 +87,36 @@ class TestTheShardsNeverSkipWholesale:
             if key == "changes" or job.get("name") == _REQUIRED_CONTEXT:
                 continue
             assert "changes" in job.get("needs", []), f"{key} does not wait for `changes`"
+
+
+def test_published_core_shards_run_alongside_packaging_with_complete_wheel_sets():
+    job = JOBS["published-cores"]
+    assert job["needs"] == JOBS["packaging"]["needs"] == "changes"
+    assert job["strategy"] == {"fail-fast": False, "matrix": {"shard": [1, 2]}}
+    steps = job["steps"]
+    build = next(
+        step for step in steps if step.get("name") == "Build every wheel for compatibility checks"
+    )
+    assert "for package in packages/*/" in build["run"]
+    assert 'uv build --package "$(basename "$package")"' in build["run"]
+    check = next(
+        step for step in steps if "scripts/run_published_core_shard.py" in step.get("run", "")
+    )
+    assert check["env"] == {
+        "SHARD_INDEX": "${{ strategy.job-index }}",
+        "SHARD_COUNT": "${{ strategy.job-total }}",
+    }
+    assert '--shard "$SHARD_INDEX" --shards "$SHARD_COUNT"' in check["run"]
+    assert steps.index(build) < steps.index(check)
+    for step in steps[1:]:
+        assert step["if"] == "needs.changes.outputs.code == 'true'"
+        assert not step.get("continue-on-error", False)
+    assert not job.get("continue-on-error", False)
+    packaging = "\n".join(step.get("run", "") for step in JOBS["packaging"]["steps"])
+    assert "check_samples_against_declared_core.py" in packaging
+    assert "check_suite_installs_together.py --whole-set --local-core" in packaging
+    assert "run_published_core_shard.py" not in packaging
+    assert "check_dependent_works_with_published_cores.py" not in packaging
 
 
 def test_public_https_relay_requires_explicit_dispatch_opt_in():
