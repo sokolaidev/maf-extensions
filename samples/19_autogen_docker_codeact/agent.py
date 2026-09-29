@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars
 from autogen_agentchat.agents import AssistantAgent
@@ -351,7 +351,7 @@ def _render(result: ExecResult) -> str:
     return "\n\n".join(sections) if sections else "(the program printed nothing)"
 
 
-def _tool_compatible_reasoning(deployment: str) -> dict[str, dict[str, str]]:
+def _tool_compatible_reasoning(deployment: str) -> dict[str, Any]:
     """The request body a chat-completions tool call needs on `deployment`, if any."""
     if _REASONING_BLOCKS_TOOLS.match(deployment.lower()):
         return {"extra_body": {"reasoning_effort": "none"}}

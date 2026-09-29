@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import (
     MEASURED,
@@ -51,7 +51,12 @@ from _scaffold import (
     result_text,
     tool_results,
 )
-from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
+from agent_framework import (
+    Agent,
+    FileAccessProvider,
+    InMemoryAgentFileStore,
+    SupportsChatGetResponse,
+)
 from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
 from maf_sandbox import Cleanup, Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
@@ -241,9 +246,7 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     return content or ""
 
 
-def build_client() -> (
-    tuple[OpenAIChatClient | OpenAIChatCompletionClient, DefaultAzureCredential | None] | None
-):
+def build_client() -> tuple[SupportsChatGetResponse[Any], DefaultAzureCredential | None] | None:
     """Two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
     Azure is reached over the Responses API, where gpt-5.6 and later accept tools with reasoning

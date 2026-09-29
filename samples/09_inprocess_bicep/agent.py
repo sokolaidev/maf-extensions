@@ -32,9 +32,10 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
-from agent_framework import Agent, InMemoryAgentFileStore
+from agent_framework import Agent, InMemoryAgentFileStore, SupportsChatGetResponse
 from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
 from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
@@ -106,6 +107,7 @@ async def run() -> int:
     # unset and talks chat completions to a local Ollama server — zero configuration.
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     credential = None
+    client: SupportsChatGetResponse[Any]
     if azure_endpoint:
         env = require_env_vars(("AZURE_OPENAI_CHAT_MODEL",))
         if env is None:
