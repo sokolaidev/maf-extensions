@@ -43,6 +43,8 @@ Type checking comes in two passes. The per-package one is **strict** and covers 
 
 CI runs all of that, plus something worth knowing about: it builds each wheel, installs it into a clean environment and *uses* it. That catches the class of defect no test here can see — a missing `py.typed`, a file the build backend never included, an import that only resolved because the workspace had every sibling on the path.
 
+The offline CI suite runs in two jobs: tests collected under `packages/`, and all other collected tests. Both use the same full pytest discovery and `-n auto`; [`scripts/offline_test_shards.py`](scripts/offline_test_shards.py) partitions the collection, so new packages and new configured test roots need no matrix edit. The required Python check waits for both jobs and fails if either fails. Local `uv run poe gate` still runs the complete suite. Each CI job retains an `offline-suite-timings-*` JUnit artifact for 14 days and prints its slowest tests; compare the reports' total per-file test times when reassessing the balance.
+
 ## Adding a sample
 
 A numbered sample is a consumer of published packages and a live verification target. Add its program, workflow wiring, evidence checker and tests together. [Sample 18](samples/18_acas_drawio_repair/) and its `sample-18` job in [Verify (live)](.github/workflows/verify-live.yml) provide a complete example, including artifact cleanup and per-call timing logs. [Sample 20](samples/20_terraform_validation/) shows one program with four backend/engine jobs and a shared engine-identity and per-call disposal check.
