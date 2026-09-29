@@ -123,6 +123,7 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                     f"--serviceaccount={namespace}:controller",
                 )
             )
+            admission_names = {obj["kind"]: obj["metadata"]["name"] for obj in admission["items"]}
             for name in ("controller", "application"):
                 identity = f"system:serviceaccount:{namespace}:{name}"
                 checks = [
@@ -130,10 +131,23 @@ def check(policy: Path, kubeconfig: Path, context: str, output: Path) -> None:
                     ("create", "pods", outside, False),
                     *[(verb, "secrets", namespace, False) for verb in ("get", "list", "watch")],
                     *[
-                        (verb, resource, namespace, False)
-                        for resource in (
-                            "validatingadmissionpolicies.admissionregistration.k8s.io",
-                            "validatingadmissionpolicybindings.admissionregistration.k8s.io",
+                        (
+                            verb,
+                            f"{resource}/{admission_names[kind]}"
+                            if verb in {"update", "patch", "delete"}
+                            else resource,
+                            namespace,
+                            False,
+                        )
+                        for kind, resource in (
+                            (
+                                "ValidatingAdmissionPolicy",
+                                "validatingadmissionpolicies.admissionregistration.k8s.io",
+                            ),
+                            (
+                                "ValidatingAdmissionPolicyBinding",
+                                "validatingadmissionpolicybindings.admissionregistration.k8s.io",
+                            ),
                         )
                         for verb in ("create", "update", "patch", "delete", "deletecollection")
                     ],

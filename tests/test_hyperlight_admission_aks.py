@@ -26,6 +26,21 @@ FORBIDDEN_GRANTS = {
         ("deletecollection", "validatingadmissionpolicybindings.admissionregistration.k8s.io"),
     )
 }
+FORBIDDEN_GRANTS.update(
+    {
+        f"grant-named-{identity}-{verb}-{resource}": (
+            identity,
+            verb,
+            resource + "/hyperlight-runtime-hyperlight-admission-test",
+        )
+        for identity in ("controller", "application")
+        for verb in ("update", "patch", "delete")
+        for resource in (
+            "validatingadmissionpolicies.admissionregistration.k8s.io",
+            "validatingadmissionpolicybindings.admissionregistration.k8s.io",
+        )
+    }
+)
 
 
 @pytest.mark.parametrize(
@@ -234,6 +249,10 @@ def test_probe_ownership_and_cleanup(
         ) as error:
             aks.check(tmp_path / "policy.json", tmp_path / "config", "context", output)
         assert not output.exists()
+        if failure in FORBIDDEN_GRANTS:
+            identity, verb, resource = FORBIDDEN_GRANTS[failure]
+            assert f"unexpected {identity} authorization: {verb} {resource}" in str(error.value)
+            assert not exercised
         if failure == "cleanup":
             for kind, name in created:
                 assert f"{kind}/{name}: RuntimeError: failed delete" in str(error.value)
