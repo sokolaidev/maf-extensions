@@ -120,8 +120,8 @@ MAX_OUTPUT_BYTES = 1_048_576
 CLEANUP_TIMEOUT_SECONDS = 30.0
 
 #: The Azure OpenAI API version this client speaks. `AzureOpenAIChatCompletionClient` requires
-#: one and has no default; the value is the one sample 17's `AzureChatOpenAI` passes, so the two
-#: samples reach one deployment over one surface.
+#: one and has no default; the value is the one `agent-framework`'s chat-completions client picks
+#: for itself, so this sample and samples 09 and 13 reach one deployment over one surface.
 AZURE_API_VERSION = "2024-12-01-preview"
 
 #: What a token for an Azure OpenAI deployment is minted against.

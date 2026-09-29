@@ -88,9 +88,8 @@ SANDBOX_VARS = ("BICEP_SANDBOX_IMAGE",)
 AZURE_MODEL_VARS = ("AZURE_OPENAI_CHAT_MODEL",)
 
 #: The Azure OpenAI API version this client speaks. `AzureChatOpenAI` requires one and has no
-#: default; the value is the one `agent-framework`'s chat-completions client picks for itself,
-#: so this sample and samples 09 and 13 reach one deployment over one surface.
-AZURE_API_VERSION = "2024-12-01-preview"
+#: default; the Responses API it uses needs 2025-03-01-preview or later.
+AZURE_API_VERSION = "2025-04-01-preview"
 
 #: What a token for an Azure OpenAI deployment is minted against.
 AZURE_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -149,6 +148,8 @@ def build_model() -> tuple[BaseChatModel, DefaultAzureCredential | None] | None:
             azure_endpoint=azure_endpoint,
             azure_deployment=env["AZURE_OPENAI_CHAT_MODEL"],
             api_version=AZURE_API_VERSION,
+            # A reasoning deployment refuses function tools over chat completions.
+            use_responses_api=True,
             # The async half of the pair: the agent is awaited, and a synchronous provider
             # would mint its token on the event loop's thread.
             azure_ad_async_token_provider=get_bearer_token_provider(credential, AZURE_SCOPE),
@@ -178,8 +179,9 @@ def final_reply(reply: dict[str, object]) -> str:
     messages = reply.get("messages", [])
     assert isinstance(messages, list)
     for message in reversed(messages):
-        if isinstance(message, AIMessage) and message.content:
-            return str(message.content)
+        # The Responses API can answer in content blocks rather than one string.
+        if isinstance(message, AIMessage) and message.text:
+            return message.text
     return ""
 
 
