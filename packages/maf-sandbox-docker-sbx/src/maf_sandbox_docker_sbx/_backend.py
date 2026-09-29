@@ -976,8 +976,8 @@ class SbxSandboxBackend:
         if probe.exit_code != 0 or probe.stdout != token:
             raise SbxError(
                 f"the guest could not read the workspace at {mount.parent!r}; the image needs sh, "
-                "base64, setsid, mount, unshare (util-linux 2.38 or later), mkdir, cat, rm and "
-                "sleep for this backend: "
+                "base64, setsid, mount, an unshare that takes --map-user and --map-group, mkdir, "
+                "cat, rm and sleep for this backend: "
                 f"{probe.stderr.strip()}"
             )
 
