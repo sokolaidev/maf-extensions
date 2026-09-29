@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -34,32 +35,15 @@ def _require(result: subprocess.CompletedProcess[str]) -> str:
     return result.stdout
 
 
-def check(bundle_path: Path, output: Path) -> None:
-    """Use an isolated KIND context; retain successful evidence only after cluster cleanup."""
-    if bundle_path.resolve() == output.resolve():
-        raise ValueError("bundle and output must be different files")
-    output.unlink(missing_ok=True)
-    raw = bundle_path.read_bytes()
-    bundle = json.loads(raw)
-    namespace = bundle["namespace"]
-    approved = bundle["verifications"][0]["image"]
+def exercise_admission(
+    kubectl: Callable[..., subprocess.CompletedProcess[str]],
+    namespace: str,
+    approved: str,
+    outside_namespace: str,
+) -> tuple[str, list[dict[str, str]]]:
+    """Probe an installed policy; the caller owns namespaces, the probe pod and cleanup."""
     refused = "unapproved.example/runtime@sha256:" + "0" * 64
-    name = "hyperlight-admission-" + uuid.uuid4().hex[:8]
-    clusters = _require(_command(["kind", "get", "clusters"])).splitlines()
-    if name in clusters:
-        raise RuntimeError("refusing to reuse an existing cluster")
-    prefix = [
-        "docker",
-        "exec",
-        "-i",
-        f"{name}-control-plane",
-        "kubectl",
-        "--kubeconfig=/etc/kubernetes/admin.conf",
-    ]
     cases: list[dict[str, str]] = []
-
-    def kubectl(*args: str, payload: object | None = None) -> subprocess.CompletedProcess[str]:
-        return _command([*prefix, *args], payload)
 
     def expect(label: str, result: subprocess.CompletedProcess[str], deny: bool = False) -> None:
         if deny:
@@ -103,6 +87,145 @@ def check(bundle_path: Path, output: Path) -> None:
     def create(label: str, value: dict[str, Any], deny: bool = False) -> None:
         expect(label, kubectl("create", "--dry-run=server", "-f", "-", payload=value), deny)
 
+    version = json.loads(_require(kubectl("version", "-o", "json")))["serverVersion"]["gitVersion"]
+    deadline = time.monotonic() + 60
+    while True:
+        policy = json.loads(
+            _require(
+                kubectl(
+                    "get",
+                    "validatingadmissionpolicy",
+                    f"hyperlight-runtime-{namespace}",
+                    "-o",
+                    "json",
+                )
+            )
+        )
+        status = policy.get("status", {})
+        if status.get("observedGeneration") == policy["metadata"]["generation"]:
+            if status.get("typeChecking", {}).get("expressionWarnings"):
+                raise RuntimeError(f"admission type-check warnings: {status}")
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("admission policy status did not become ready")
+        time.sleep(1)
+    wrong = copy.deepcopy(pod)
+    wrong["spec"]["containers"][0]["image"] = refused
+    # The admission evaluator observes bindings asynchronously.
+    while True:
+        result = kubectl("create", "--dry-run=server", "-f", "-", payload=wrong)
+        if result.returncode:
+            expect("binding-ready", result, True)
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("admission binding did not enforce denials")
+        time.sleep(1)
+    create("approved-runtime", pod)
+    for label, image in (
+        ("tag", approved.split("@", 1)[0] + ":latest"),
+        ("wrong-digest", approved.split("@", 1)[0] + "@sha256:" + "0" * 64),
+        ("wrong-registry", "unapproved.example/runtime@" + approved.split("@", 1)[1]),
+    ):
+        value = copy.deepcopy(pod)
+        value["spec"]["containers"][0]["image"] = image
+        create(label, value, True)
+    value = copy.deepcopy(pod)
+    value["spec"]["containers"].append({**container, "name": "other", "image": refused})
+    create("additional-container", value, True)
+    for sidecar in (False, True):
+        value = copy.deepcopy(pod)
+        init = {**container, "name": "init"}
+        if sidecar:
+            init["restartPolicy"] = "Always"
+        value["spec"]["initContainers"] = [init]
+        suffix = "sidecar" if sidecar else "init"
+        create("approved-" + suffix, value)
+        init["image"] = refused
+        create("unapproved-" + suffix, value, True)
+    value = copy.deepcopy(wrong)
+    value["metadata"]["labels"] = {"admission": "disabled"}
+    create("labels-cannot-opt-out", value, True)
+    value = copy.deepcopy(pod)
+    value["spec"]["volumes"] = [{"name": "oci", "image": {"reference": refused}}]
+    create("image-volume", value, True)
+    value = copy.deepcopy(wrong)
+    value["metadata"]["namespace"] = outside_namespace
+    create("outside-namespace", value)
+    _require(kubectl("create", "-f", "-", payload=pod))
+    for label, image, deny in (
+        ("approved-update", approved, False),
+        ("unapproved-update", refused, True),
+    ):
+        patch = json.dumps({"spec": {"containers": [{**container, "image": image}]}})
+        expect(
+            label,
+            kubectl(
+                "patch",
+                "pod",
+                "runtime",
+                "-n",
+                namespace,
+                "--type=merge",
+                "--patch",
+                patch,
+                "--dry-run=server",
+            ),
+            deny,
+        )
+    for label, image, deny in (
+        ("approved-ephemeral", approved, False),
+        ("unapproved-ephemeral", refused, True),
+    ):
+        value = json.loads(
+            _require(kubectl("get", "pod", "runtime", "-n", namespace, "-o", "json"))
+        )
+        value["spec"]["ephemeralContainers"] = [
+            {
+                **container,
+                "name": "debug",
+                "image": image,
+            }
+        ]
+        expect(
+            label,
+            kubectl(
+                "replace",
+                "--raw",
+                f"/api/v1/namespaces/{namespace}/pods/runtime/ephemeralcontainers?dryRun=All",
+                "-f",
+                "-",
+                payload=value,
+            ),
+            deny,
+        )
+    return version, cases
+
+
+def check(bundle_path: Path, output: Path) -> None:
+    """Use an isolated KIND context; retain successful evidence only after cluster cleanup."""
+    if bundle_path.resolve() == output.resolve():
+        raise ValueError("bundle and output must be different files")
+    output.unlink(missing_ok=True)
+    raw = bundle_path.read_bytes()
+    bundle = json.loads(raw)
+    namespace = bundle["namespace"]
+    approved = bundle["verifications"][0]["image"]
+    name = "hyperlight-admission-" + uuid.uuid4().hex[:8]
+    clusters = _require(_command(["kind", "get", "clusters"])).splitlines()
+    if name in clusters:
+        raise RuntimeError("refusing to reuse an existing cluster")
+    prefix = [
+        "docker",
+        "exec",
+        "-i",
+        f"{name}-control-plane",
+        "kubectl",
+        "--kubeconfig=/etc/kubernetes/admin.conf",
+    ]
+
+    def kubectl(*args: str, payload: object | None = None) -> subprocess.CompletedProcess[str]:
+        return _command([*prefix, *args], payload)
+
     with tempfile.TemporaryDirectory() as temporary:
         try:
             _require(
@@ -122,122 +245,10 @@ def check(bundle_path: Path, output: Path) -> None:
                     ]
                 )
             )
-            version = json.loads(_require(kubectl("version", "-o", "json")))["serverVersion"][
-                "gitVersion"
-            ]
             _require(kubectl("create", "namespace", namespace))
             _require(kubectl("create", "namespace", "outside-runtime"))
             _require(kubectl("apply", "-f", "-", payload=bundle["admission"]))
-            deadline = time.monotonic() + 60
-            while True:
-                policy = json.loads(
-                    _require(
-                        kubectl(
-                            "get",
-                            "validatingadmissionpolicy",
-                            f"hyperlight-runtime-{namespace}",
-                            "-o",
-                            "json",
-                        )
-                    )
-                )
-                status = policy.get("status", {})
-                if status.get("observedGeneration") == policy["metadata"]["generation"]:
-                    if status.get("typeChecking", {}).get("expressionWarnings"):
-                        raise RuntimeError(f"admission type-check warnings: {status}")
-                    break
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("admission policy status did not become ready")
-                time.sleep(1)
-            wrong = copy.deepcopy(pod)
-            wrong["spec"]["containers"][0]["image"] = refused
-            # The admission evaluator observes bindings asynchronously.
-            while True:
-                result = kubectl("create", "--dry-run=server", "-f", "-", payload=wrong)
-                if result.returncode:
-                    expect("binding-ready", result, True)
-                    break
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("admission binding did not enforce denials")
-                time.sleep(1)
-            create("approved-runtime", pod)
-            for label, image in (
-                ("tag", approved.split("@", 1)[0] + ":latest"),
-                ("wrong-digest", approved.split("@", 1)[0] + "@sha256:" + "0" * 64),
-                ("wrong-registry", "unapproved.example/runtime@" + approved.split("@", 1)[1]),
-            ):
-                value = copy.deepcopy(pod)
-                value["spec"]["containers"][0]["image"] = image
-                create(label, value, True)
-            value = copy.deepcopy(pod)
-            value["spec"]["containers"].append({**container, "name": "other", "image": refused})
-            create("additional-container", value, True)
-            for sidecar in (False, True):
-                value = copy.deepcopy(pod)
-                init = {**container, "name": "init"}
-                if sidecar:
-                    init["restartPolicy"] = "Always"
-                value["spec"]["initContainers"] = [init]
-                suffix = "sidecar" if sidecar else "init"
-                create("approved-" + suffix, value)
-                init["image"] = refused
-                create("unapproved-" + suffix, value, True)
-            value = copy.deepcopy(wrong)
-            value["metadata"]["labels"] = {"admission": "disabled"}
-            create("labels-cannot-opt-out", value, True)
-            value = copy.deepcopy(pod)
-            value["spec"]["volumes"] = [{"name": "oci", "image": {"reference": refused}}]
-            create("image-volume", value, True)
-            value = copy.deepcopy(wrong)
-            value["metadata"]["namespace"] = "outside-runtime"
-            create("outside-namespace", value)
-            _require(kubectl("create", "-f", "-", payload=pod))
-            for label, image, deny in (
-                ("approved-update", approved, False),
-                ("unapproved-update", refused, True),
-            ):
-                patch = json.dumps({"spec": {"containers": [{**container, "image": image}]}})
-                expect(
-                    label,
-                    kubectl(
-                        "patch",
-                        "pod",
-                        "runtime",
-                        "-n",
-                        namespace,
-                        "--type=merge",
-                        "--patch",
-                        patch,
-                        "--dry-run=server",
-                    ),
-                    deny,
-                )
-            for label, image, deny in (
-                ("approved-ephemeral", approved, False),
-                ("unapproved-ephemeral", refused, True),
-            ):
-                value = json.loads(
-                    _require(kubectl("get", "pod", "runtime", "-n", namespace, "-o", "json"))
-                )
-                value["spec"]["ephemeralContainers"] = [
-                    {
-                        **container,
-                        "name": "debug",
-                        "image": image,
-                    }
-                ]
-                expect(
-                    label,
-                    kubectl(
-                        "replace",
-                        "--raw",
-                        f"/api/v1/namespaces/{namespace}/pods/runtime/ephemeralcontainers?dryRun=All",
-                        "-f",
-                        "-",
-                        payload=value,
-                    ),
-                    deny,
-                )
+            version, cases = exercise_admission(kubectl, namespace, approved, "outside-runtime")
         finally:
             _require(_command(["kind", "delete", "cluster", "--name", name]))
             if name in _require(_command(["kind", "get", "clusters"])).splitlines():
