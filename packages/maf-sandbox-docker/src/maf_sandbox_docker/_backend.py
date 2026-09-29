@@ -162,6 +162,9 @@ _NO_SUCH = "no such"
 #: What `run --name` reports when a *container* name is taken — the create failure that is
 #: recoverable by adopting the existing one (`Conflict. The container name … is already in use`).
 _ALREADY_IN_USE = "already in use"
+#: How long to wait between attempts on a taken name nothing could adopt. The daemon reserves
+#: a name before `inspect` can see its container, so a create still in flight looks like this.
+_NAME_SETTLE_DELAY_S = 0.25
 #: What `network create` reports for a name already taken (`network with name … already
 #: exists`) — a different string from the container conflict above, and adopting the existing
 #: network is how warm reuse of an allowlisted sandbox works on the second acquire.
@@ -3443,13 +3446,31 @@ class DockerSandboxBackend:
         args += ["--label", f"{_LABEL_WORK_DIR}={work_dir}"]
         args += [image, "sleep", "infinity"]
 
-        result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
-        if result.returncode != 0:
-            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(name, spec):
-                logger.info("container %s already existed; adopted it instead of creating", name)
-                return image
-            raise RuntimeError(f"docker could not create container {name}: {result.stderr.strip()}")
-        return image
+        # One budget over every run and adopt: a taken name is retried until it can be adopted
+        # or is released.
+        conflict: str | None = None
+        budget = asyncio.timeout(self._config.command_timeout_seconds)
+        try:
+            async with budget:
+                while True:
+                    result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
+                    if result.returncode == 0:
+                        return image
+                    if _ALREADY_IN_USE not in result.stderr.lower():
+                        raise RuntimeError(
+                            f"docker could not create container {name}: {result.stderr.strip()}"
+                        )
+                    conflict = result.stderr.strip()
+                    if await self._adopt(name, spec):
+                        logger.info(
+                            "container %s already existed; adopted it instead of creating", name
+                        )
+                        return image
+                    await asyncio.sleep(_NAME_SETTLE_DELAY_S)
+        except TimeoutError:
+            if conflict is None or not budget.expired():
+                raise
+        raise RuntimeError(f"docker could not create container {name}: {conflict}")
 
     def _hardening(self, *, drop_capabilities: bool) -> list[str]:
         """The ``run`` flags bounding a container the guest can drive: workload or proxy."""
