@@ -29,7 +29,7 @@ The spec does not declare an OS family. The host must select an image that suppo
 
 ![All selected files are staged before compilation. For each file, Bicep builds the template or parameter file, then lints it. The host's network mode applies to every phase: closed access disables restore; other modes permit restore within their limits. The tool formats every phase report. Restore failures, timeouts and execution or report-parsing failures leave validation incomplete. Other diagnostics report compiler errors and warnings. No diagnostics covers only what was checked; hidden or empty output does not establish success. Every normal return includes fixed guidance, and core cleans up.](../assets/bicep-validation-flow.svg)
 
-All files are staged before compilation so local modules and parameter-file references resolve together. The call directory also holds compiled output, the module cache and the temporary profile.
+All files are staged before compilation so local modules and parameter-file references resolve together. The call directory also holds compiled output, the default module cache and the temporary profile. A host may point `cacheRootDirectory` in its supplied config at a prepared image's baked cache.
 
 The packaged config is the default. The host may pass JSON text as `config` to `make_bicep_tools`; the factory validates it at attachment and rejects linter rule IDs outside the packaged catalog. A supplied config replaces the packaged policy, so the host controls rule levels and disabled rules. Bicep merges the selected config with its own defaults. Every call uploads its own config before compilation, including on warm reuse. An upload failure stops validation. A manifest permits 63 source files and reserves the remaining transfer slot for configuration. The image supplies the compiler; its version is independent of the catalog's source release.
 
@@ -52,7 +52,7 @@ The host chooses the mode. The package fixes the restore allowlist:
 
 Both destinations in each pair are needed. The allowlist does not grant Azure Resource Manager access or supply credentials. Sandbox identity remains host configuration.
 
-`CLOSED` adds `--no-restore` to build, parameter-build and lint commands. Local templates and local modules still work. Unavailable external modules produce diagnostics and a `MODULE RESTORE FAILED` banner.
+`CLOSED` adds `--no-restore` to build, parameter-build and lint commands. Local templates and local modules still work. The optional [prepared Bicep image](../../../images/bicep-sandbox/README.md#prepared-avm-profile) also supports pinned AVM modules offline: pass its prepared config through `config`, or add its `cacheRootDirectory` to the host's own policy and disable `use-recent-module-versions`. The image contains a selected module set with a digest-locked manifest and build receipt. The kind does not discover or override cache configuration from the image. Unavailable external modules, including unbaked versions, produce diagnostics and a `MODULE RESTORE FAILED` banner.
 
 The banner is returned for BCP190, BCP191 or BCP192. It tells the model that module type checking is incomplete. An empty or hidden diagnostic report is not proof of a successful validation.
 

@@ -1,0 +1,25 @@
+{
+  "bicep_version": "0.46.1",
+  "excluded": [
+    {
+      "reason": "This initial profile covers virtual networks and storage accounts only; add reviewed pins to the policy before using other resources offline.",
+      "selection": "other avm/res modules and versions"
+    },
+    {
+      "reason": "Pattern and utility modules are outside this resource-module profile.",
+      "selection": "avm/ptn/* and avm/utl/*"
+    }
+  ],
+  "modules": [
+    {
+      "manifest_sha256": "0e56bad0810f3f1d17306c6e29500664b8267322bed5efd730ac25fc3d450e1f",
+      "reference": "br/public:avm/res/network/virtual-network:0.7.2"
+    },
+    {
+      "manifest_sha256": "bd2a2a8bb43bc1ba6ce00c6ad49dba0111374133e76f52b0ece2418364da4a40",
+      "reference": "br/public:avm/res/storage/storage-account:0.31.0"
+    }
+  ],
+  "policy_sha256": "82b0081bd17559bc31ef46aef2c396975668c4aa950ed4e4a2bba1d42505e98c",
+  "schema": 1
+}

@@ -1,6 +1,6 @@
 # `bicep-sandbox` — the image `bicep_validate` runs in
 
-Two layers on Azure Linux: a pinned Bicep CLI, and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. That is the whole image. It carries no agent code, no Python, and nothing of the host application — the sandbox runs a compiler and nothing else, and *what* to compile arrives at run time as files the tool writes in.
+The base image has two layers on Azure Linux: a pinned Bicep CLI, and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. The optional [prepared profile](#prepared-avm-profile) adds a verified module cache for closed-network validation. Neither runtime image carries agent code or Python; files to compile arrive at run time.
 
 Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas_bicep/) boots it as a disk image in an Azure Container Apps sandbox group; [`samples/02_wslc_bicep`](../../samples/02_wslc_bicep/) runs it as a local container under `wslc`. Sharing it is deliberate: the two samples exist to show that only the backend changes, and they would not be comparable if each validated against a compiler of its own.
 
@@ -38,7 +38,52 @@ wslc build -t bicep-sandbox:local images/bicep-sandbox
 
 That is sample 02, and it is the whole story there — `wslc` runs what is already on the machine, so there is nothing to push and nothing to import. Docker and podman take the same arguments (`docker build -t bicep-sandbox:local images/bicep-sandbox`).
 
-Everything below is sample 01: getting the same image into an Azure sandbox group, which takes two more steps than people expect.
+The registry and import steps below apply to either profile.
+
+## Prepared AVM profile
+
+[`prepared.Dockerfile`](prepared.Dockerfile) restores the explicit selection in [`dependencies.bicep-avm.policy.json`](dependencies.bicep-avm.policy.json) at build time. The initial profile contains `br/public:avm/res/network/virtual-network:0.7.2` and `br/public:avm/res/storage/storage-account:0.31.0`. Other resource modules and versions, plus pattern and utility modules, are excluded with reasons in the policy and manifest. This is a small selected profile, not the complete AVM catalog.
+
+From the repository root:
+
+```bash
+docker build -t bicep-sandbox:0.46.1-1 images/bicep-sandbox
+uv run python scripts/build_bicep_prepared_image.py --base-image bicep-sandbox:0.46.1-1
+```
+
+The helper prints a tag of the form `bicep-sandbox:0.46.1-prepared-1-<manifest-sha256-prefix>`. Supply `--tag` to choose another name. Use a trusted base built from this checkout; the builder checks its CLI version. Deploy the resulting immutable image ID or registry digest. Changing the module set changes the default tag and the `org.maf-sandbox.bicep.manifest-sha256` label. Changes to preparation or configuration require a new image revision even if the module manifest is unchanged.
+
+The dependency [manifest](dependencies.bicep-avm.json) locks each version to its OCI manifest SHA-256. Preparation compares the restored manifest with that pin, then checks the compiled template and optional source archive against the manifest's layer digests and sizes. It refuses changed artifacts. A separate build step loads every selected module with `--no-restore` and networking disabled. Python is used only in the preparation stage. The final image contains `/opt/maf-bicep/cache` and `/opt/maf-bicep/dependencies.json`, a receipt recording the CLI version, policy and manifest fingerprints, module pins and cached file hashes. Cache files have their write bits removed; the backend's filesystem boundary still supplies enforcement.
+
+Pass the [prepared configuration](prepared.bicepconfig.json) explicitly as the existing factory's `config` argument, together with `egress=Egress.CLOSED`. For a host running from this checkout:
+
+```python
+from pathlib import Path
+
+from maf_sandbox import Egress
+from maf_sandbox_bicep import make_bicep_tools
+
+tools = make_bicep_tools(
+    router, file_store, "validator", context,
+    image=prepared_image,
+    egress=Egress.CLOSED,
+    config=Path("images/bicep-sandbox/prepared.bicepconfig.json").read_text(encoding="utf-8"),
+)
+```
+
+An installed host can copy that JSON into its own configuration. Hosts with an existing policy should retain it, add `"cacheRootDirectory": "/opt/maf-bicep/cache"` at the top level and set `analyzers.core.rules.use-recent-module-versions.level` to `"off"`. No image marker overrides host policy. The kind stages the supplied config in every fresh call directory, so nested templates and parameter files find the same cache despite `HOME="$PWD"`. Without that config, the kind uses its packaged policy and the empty per-call cache, even when the image is prepared.
+
+All phases retain `--no-restore`. An unbaked module or version still reports BCP190 and `MODULE RESTORE FAILED`, with an incomplete result and no verdict. The version-currency linter is disabled because it needs the online module index; reviewing and updating the pinned policy owns currency for this profile. The image and its build-time registry artifacts remain part of the host's trusted compiler supply chain; closed runtime egress alone does not establish their provenance.
+
+To change the selected modules, edit the policy, regenerate the manifest, review its pins and exclusions, then rebuild under a new revision:
+
+```bash
+uv run python scripts/bicep_dependencies.py lock
+```
+
+Locking reaches MCR. Normal image builds use the committed lock and never refresh it automatically. The floating Azure Linux base and its package repositories mean the image is not byte-for-byte reproducible; the receipt pins the module content, not the whole operating system.
+
+For full tool-call verification, set `MAF_BICEP_PREPARED_IMAGE` to the built image ID or tag and run `uv run pytest -q tests/test_bicep_prepared_offline.py`. The tests inspect Docker's `NetworkMode=none` and cover clean network/storage templates, module parameter errors, an unbaked version, omitted cache config, a custom host rule, nested sources, parameter files and repeated calls in one sandbox. The existing Docker live workflow builds this profile and runs those checks after merge and on its daily schedule. These checks do not establish an ACAS import or WSLC runtime result.
 
 ## Push it to a registry
 
@@ -97,7 +142,7 @@ Then point the sample at it — `ACAS_SANDBOX_REGISTRY=<name>.azurecr.io` and `B
 
 ## What it may reach at run time
 
-Nothing in this image needs the network to start; the CLI is already inside it. Once a validation runs, egress is Deny-default with exactly four hosts allowed — `mcr.microsoft.com`, `*.data.mcr.microsoft.com`, `aka.ms` and `live-data.bicep.azure.com` — fixed in `bicep_sandbox_spec` rather than left to configuration, because a deployment that could widen them could undo the containment the whole design rests on. Those four are what module restore needs and no more; ARM is not among them.
+Nothing in this image needs the network to start; the CLI is already inside it. By default, validation uses Deny-default egress with exactly four hosts allowed — `mcr.microsoft.com`, `*.data.mcr.microsoft.com`, `aka.ms` and `live-data.bicep.azure.com` — fixed in `bicep_sandbox_spec`. Those four are what module restore needs; ARM is not among them. A host can instead choose `Egress.CLOSED`, using local modules or the prepared profile's baked pins and explicit cache configuration.
 
 Build time is a different question and a different machine: the `Dockerfile` downloads the CLI from `github.com`, which the sandbox never does. Adding anything to this image that needs a fifth host at run time will fail closed, which is the intended direction of that failure.
 
