@@ -20,7 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from maf_sandbox import Capability, SandboxKey, SandboxSpec
+from maf_sandbox import Capability, Egress, SandboxKey, SandboxSpec
 
 from maf_sandbox_docker_sbx import (
     SbxDaemonFault,
@@ -199,3 +199,67 @@ def test_a_lost_engine_is_a_fault_and_not_an_absent_sandbox(tmp_path):
                 assert await backend.dispose(key) is None
 
         asyncio.run(scenario())
+
+
+def _allowlist(*hosts: str) -> SandboxSpec:
+    return SandboxSpec(
+        kind="e2e",
+        requires=frozenset({Capability.EXEC}),
+        egress=Egress.ALLOWLIST,
+        egress_allow=hosts,
+    )
+
+
+def test_a_global_allow_added_later_retires_an_allowlisted_sandbox(tmp_path):
+    _needs_host_changes("the test adds a global allow rule")
+    late = f"maf-e2e-{uuid.uuid4().hex[:8]}.test"
+    backend = _backend(tmp_path)
+    key = _key("drift")
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(key, _allowlist("example.com"))
+            ran = await sandbox.exec(["true"], working_directory=".", timeout=60)
+            assert ran.exit_code == 0, ran
+            _checked("policy", "allow", "network", late)
+            try:
+                checked = json.loads(
+                    _sbx(
+                        "policy", "check", "network", "--json", "--sandbox", sandbox.name, late
+                    ).stdout
+                )
+                print(f"{late} for the sandbox once allowed globally: {checked.get('allowed')}")
+                with pytest.raises(SbxHostNotConfined, match="retired"):
+                    await sandbox.exec(["true"], working_directory=".", timeout=60)
+                assert sandbox.instance_id in backend.retired
+                replacement = await backend.acquire(key, _allowlist("example.com"))
+                assert replacement.instance_id != sandbox.instance_id
+                checked = json.loads(
+                    _sbx(
+                        "policy", "check", "network", "--json", "--sandbox", replacement.name, late
+                    ).stdout
+                )
+                assert checked.get("allowed") is False, checked
+            finally:
+                _checked("policy", "rm", "network", "--resource", late, "--force")
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+
+
+def test_a_custom_secret_for_an_allowed_host_is_refused(tmp_path):
+    _needs_host_changes("the test stores a custom secret")
+    placeholder = f"maf-e2e-{uuid.uuid4().hex[:12]}"
+    _checked(
+        *("secret", "set-custom", "--host", "api.example.com", "--env", "MAF_E2E_KEY"),
+        *("--value", "not-a-secret", "--placeholder", placeholder),
+    )
+    try:
+        backend = _backend(tmp_path)
+        key = _key("secret")
+        with pytest.raises(SbxHostNotConfined, match="MAF_E2E_KEY"):
+            asyncio.run(backend.acquire(key, _allowlist("*.example.com")))
+        assert not _listed(sandbox_name("maf", key, "e2e"))
+    finally:
+        _checked("secret", "rm", "--placeholder", placeholder, "--force")
