@@ -18,9 +18,12 @@ import pytest
 from maf_sandbox import (
     Capability,
     Egress,
+    EgressRule,
+    HttpMethod,
     Isolation,
     OsFamily,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxSpec,
 )
@@ -88,7 +91,60 @@ class FakeSbx:
         self.agent_socket = False
         self.kill_result = _ok()
         self.output_limits: list[int] = []
+        self.global_allows: list[str] = []
+        self.sandbox_rules: dict[str, list[dict[str, object]]] = {}
+        self.secrets: dict[str, object] = {
+            "secrets": [],
+            "custom_secrets": [],
+            "shadowed_services": [],
+            "env_only_count": 0,
+        }
+        self.governance: object = {"active": False}
+        self.check_result: _Result | None = None
         backend._sbx = self  # type: ignore[method-assign]
+
+    def _rules(self, name: str | None) -> bytes:
+        rules: list[dict[str, object]] = [
+            {
+                "id": "default-fs-read-allow-all",
+                "scope": "global",
+                "resource_type": "filesystem:read",
+                "decision": "allow",
+                "resources": ["**"],
+                "status": "active",
+            }
+        ]
+        if self.global_allows:
+            rules.append(
+                {
+                    "id": "default-ai-services",
+                    "scope": "global",
+                    "resource_type": "network",
+                    "decision": "allow",
+                    "resources": list(self.global_allows),
+                    "status": "active",
+                }
+            )
+        if name is not None:
+            rules += self.sandbox_rules.get(name, [])
+        return json.dumps({"rules": rules}).encode()
+
+    def _add_rule(self, decision: str, name: str, rest: tuple[str, ...]) -> None:
+        flags = {"--method", "--path", "--protocol"}
+        values = {rest[i + 1] for i, item in enumerate(rest[:-1]) if item in flags}
+        resource = next(item for item in rest if item not in flags and item not in values)
+        rule: dict[str, object] = {
+            "id": f"rule-{len(self.calls)}",
+            "scope": f"sandbox:{name}",
+            "resource_type": "network",
+            "decision": decision,
+            "resources": resource.split(","),
+            "status": "active",
+        }
+        for i, item in enumerate(rest[:-1]):
+            if item in flags:
+                rule[item.lstrip("-")] = rest[i + 1]
+        self.sandbox_rules.setdefault(name, []).append(rule)
 
     async def __call__(
         self, *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
@@ -124,12 +180,34 @@ class FakeSbx:
                 if name in self.ids or any(call[:4] == args[:4] for call in self.calls[:-1]):
                     self.ids[name] = f"id-{name}-{len(self.calls)}"
                 self.sandboxes[name] = args[-1]
+                self.sandbox_rules[name] = []
+                self._add_rule("deny", name, ("**",))
                 return _ok()
             case ("rm", "--force", name):
                 if self.rm_result is not None:
                     return self.rm_result
                 if self.sandboxes.pop(name, None) is None:
                     return _Result(1, b"", f"error: sandbox '{name}' not found\n".encode())
+                self.sandbox_rules.pop(name, None)
+                return _ok()
+            case ("policy", "check", "network", "--json", _host):
+                if self.check_result is not None:
+                    return self.check_result
+                # Measured with sbx 0.45.1: a denied host exits 1 with the whole verdict.
+                verdict = {"allowed": False, "governance": self.governance}
+                return _Result(1, json.dumps(verdict).encode(), b"")
+            case ("secret", "ls", "--json"):
+                return _ok(json.dumps(self.secrets).encode())
+            case ("policy", "ls", "--json"):
+                return _ok(self._rules(None))
+            case ("policy", "ls", name, "--json"):
+                return _ok(self._rules(name))
+            case ("policy", ("allow" | "deny") as decision, "network", "--sandbox", name, *rest):
+                self._add_rule(decision, name, tuple(rest))
+                return _ok()
+            case ("policy", "rm", "network", "--sandbox", name, "--resource", resource, "--force"):
+                for rule in self.sandbox_rules.get(name, []):
+                    rule["resources"] = [r for r in rule["resources"] if r != resource]  # type: ignore[union-attr]
                 return _ok()
             case ("exec", _name, "sh", "-c", _script, "maf-sbx", "/run/ssh-agent.sock"):
                 return _Result(1 if self.agent_socket else 0, b"", b"")
@@ -196,13 +274,14 @@ def sbx(backend: SbxSandboxBackend) -> FakeSbx:
 
 
 class TestDeclarations:
-    def test_microvm_closed_posix_and_the_workspace_capabilities(self, backend):
+    def test_microvm_closed_or_allowlisted_posix_and_the_workspace_capabilities(self, backend):
         declared = backend.declarations
         assert backend.isolation is Isolation.MICROVM
         assert isinstance(backend, SandboxBackend)
-        assert declared.egress_modes == frozenset({Egress.CLOSED})
+        assert declared.egress_modes == frozenset({Egress.CLOSED, Egress.ALLOWLIST})
         assert declared.os_families == frozenset({OsFamily.POSIX})
         assert declared.observes_egress is False
+        assert declared.egress_method_tokens == frozenset(str(m) for m in HttpMethod)
         assert declared.capabilities == frozenset(
             {
                 Capability.EXEC,
@@ -211,6 +290,8 @@ class TestDeclarations:
                 Capability.FILES_LIST,
                 Capability.FILES_DELETE,
                 Capability.RECLAIM,
+                Capability.EGRESS_METHODS,
+                Capability.EGRESS_PATHS,
             }
         )
 
@@ -370,11 +451,9 @@ class TestAcquire:
         with pytest.raises(ValueError, match="parent"):
             asyncio.run(backend.acquire(KEY, _spec(work_dir="/work")))
 
-    def test_only_closed_egress_is_served(self, backend, sbx):
-        with pytest.raises(ValueError, match="CLOSED"):
-            asyncio.run(
-                backend.acquire(KEY, _spec(egress=Egress.ALLOWLIST, egress_allow=("a.example",)))
-            )
+    def test_open_egress_is_refused(self, backend, sbx):
+        with pytest.raises(ValueError, match="CLOSED and Egress.ALLOWLIST"):
+            asyncio.run(backend.acquire(KEY, _spec(egress=Egress.UNRESTRICTED)))
 
     def test_a_warm_acquire_adopts_and_refuses_a_changed_base(self, backend, sbx):
         first = asyncio.run(backend.acquire(KEY, _spec()))
@@ -437,6 +516,272 @@ class TestAcquire:
         backend._sbx = conflicted  # type: ignore[method-assign]
         with pytest.raises(SbxDaemonFault, match="sbx daemon restart"):
             asyncio.run(backend.acquire(KEY, _spec()))
+
+
+def _allowlist(*entries: str | EgressRule) -> SandboxSpec:
+    return _spec(egress=Egress.ALLOWLIST, egress_allow=entries)
+
+
+def _policy_calls(sbx: FakeSbx) -> list[tuple[str, ...]]:
+    return [
+        call for call in sbx.calls if call[0] == "policy" and call[1] in ("allow", "deny", "rm")
+    ]
+
+
+class TestAllowlist:
+    def test_rules_are_set_before_the_deny_all_rule_is_lifted(self, backend, sbx):
+        sbx.global_allows = ["pypi.org:443", "api.anthropic.com:443", "**.openai.com:443"]
+        spec = _allowlist(
+            "pypi.org",
+            "*.example.com",
+            EgressRule("postman-echo.com", methods=(HttpMethod.GET,), paths=("/get", "/v1/*")),
+            EgressRule("api.example.org", paths=("/status",)),
+        )
+        sandbox = asyncio.run(backend.acquire(KEY, spec))
+        name = sandbox.name
+        scoped = ("policy", "allow", "network", "--sandbox", name)
+        assert _policy_calls(sbx) == [
+            (
+                *("policy", "deny", "network", "--sandbox", name, "--protocol", "tcp,udp"),
+                "**.openai.com:443,api.anthropic.com:443,example.com",
+            ),
+            (*scoped, "pypi.org,**.example.com"),
+            (*scoped, "postman-echo.com", "--method", "GET", "--path", "/get"),
+            (*scoped, "postman-echo.com", "--method", "GET", "--path", "/v1/**"),
+            (*scoped, "api.example.org", "--method", "ANY", "--path", "/status"),
+            ("policy", "rm", "network", "--sandbox", name, "--resource", "**", "--force"),
+        ]
+        # Every guest command of the create ran while the sandbox was still closed.
+        lifted = sbx.calls.index(_policy_calls(sbx)[-1])
+        assert all(call[0] != "exec" for call in sbx.calls[lifted:])
+
+    def test_a_closed_sandbox_gets_no_policy_calls(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        assert not [call for call in sbx.calls if call[0] in ("policy", "secret")]
+
+    @pytest.mark.parametrize(
+        ("global_allow", "requested"),
+        [
+            ("**.github.com", "api.github.com"),
+            ("**", "example.com"),
+            ("api.github.com:443", EgressRule("api.github.com", methods=(HttpMethod.GET,))),
+            ("*.example.com", "api.example.com"),
+        ],
+    )
+    def test_a_global_allow_wider_than_a_requested_host_is_refused(
+        self, backend, sbx, global_allow, requested
+    ):
+        sbx.global_allows = [global_allow]
+        with pytest.raises(SbxHostNotConfined, match="Narrow or remove the global rule"):
+            asyncio.run(backend.acquire(KEY, _allowlist(requested)))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    @pytest.mark.parametrize(
+        ("secrets", "match"),
+        [
+            ({"secrets": [{"scope": "global", "type": "service", "name": "github"}]}, "github"),
+            ({"env_only_count": 1}, "host environment"),
+            (
+                {"custom_secrets": [{"scope": "global", "targets": ["*.example.com"], "env": "K"}]},
+                "custom secret 'K'",
+            ),
+        ],
+    )
+    def test_a_secret_the_allowlist_could_carry_is_refused(self, backend, sbx, secrets, match):
+        sbx.secrets = {**sbx.secrets, **secrets}
+        with pytest.raises(SbxHostNotConfined, match=match):
+            asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_a_custom_secret_for_other_hosts_or_sandboxes_is_not_refused(self, backend, sbx):
+        sbx.secrets["custom_secrets"] = [
+            {"scope": "global", "targets": ["api.other.io"], "env": "A"},
+            {"scope": "sandbox:someone-else", "targets": ["api.example.com"], "env": "B"},
+        ]
+        asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+
+    @pytest.mark.parametrize(
+        ("governance", "error", "match"),
+        [
+            ({"active": True}, SbxHostNotConfined, "governance is active"),
+            (None, SbxError, "did not say whether governance is active"),
+            ({}, SbxError, "did not say whether governance is active"),
+            ({"active": 1}, SbxError, "did not say whether governance is active"),
+            ({"active": 0}, SbxError, "did not say whether governance is active"),
+        ],
+    )
+    def test_governance_active_or_unreported_is_refused(
+        self, backend, sbx, governance, error, match
+    ):
+        sbx.governance = governance
+        with pytest.raises(error, match=match):
+            asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+
+    def test_a_method_token_beyond_the_declared_verbs_is_refused(self, backend, sbx):
+        rule = EgressRule("api.example.com", methods=("PROPFIND",))
+        with pytest.raises(SandboxCapabilityNotSupported, match="PROPFIND"):
+            asyncio.run(backend.acquire(KEY, _allowlist(rule)))
+        assert not sbx.calls
+
+    def test_a_reordered_but_equal_allowlist_adopts_the_warm_sandbox(self, backend, sbx):
+        first = EgressRule("api.example.com", methods=("POST", "GET"), paths=("/b", "/a"))
+        again = EgressRule("api.example.com", methods=("GET", "POST"), paths=("/a", "/b"))
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist(first)))
+        assert (
+            asyncio.run(backend.acquire(KEY, _allowlist(again))).instance_id == sandbox.instance_id
+        )
+
+    @pytest.mark.parametrize(
+        ("code", "verdict"),
+        [
+            (2, {"allowed": False, "governance": {"active": False}}),
+            (1, {"allowed": True, "governance": {"active": False}}),
+            (1, {"governance": {"active": False}}),
+            (0, {"allowed": False, "governance": {"active": False}}),
+            (0, {"allowed": 1, "governance": {"active": False}}),
+            (1, {"allowed": 0, "governance": {"active": False}}),
+            (1, ["allowed", False]),
+        ],
+    )
+    def test_a_policy_check_that_is_not_a_verdict_is_refused(self, backend, sbx, code, verdict):
+        sbx.check_result = _Result(code, json.dumps(verdict).encode(), b"error: daemon\n")
+        with pytest.raises(SbxError, match="sbx policy check"):
+            asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_an_allowed_probe_exits_zero_and_passes(self, backend, sbx):
+        verdict = {"allowed": True, "governance": {"active": False}}
+        sbx.check_result = _ok(json.dumps(verdict).encode())
+        asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+
+    def test_an_authority_rule_is_refused(self, backend, sbx):
+        rule = EgressRule("api.example.com", authority="api://example")
+        with pytest.raises(ValueError, match="authority"):
+            asyncio.run(backend.acquire(KEY, _allowlist(rule)))
+
+    def test_a_global_allow_added_later_refuses_the_command_and_retires(self, backend, sbx):
+        sbx.global_allows = ["api.anthropic.com:443"]
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        sbx.global_allows.append("late.test")
+        ran = sum(_EXEC_SCRIPT in call for call in sbx.calls)
+        with pytest.raises(SbxHostNotConfined, match="'late.test' was added"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        assert sum(_EXEC_SCRIPT in call for call in sbx.calls) == ran
+        assert sandbox.instance_id in backend.retired
+        replacement = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        assert replacement.instance_id != sandbox.instance_id
+        denied = [call for call in _policy_calls(sbx) if call[1] == "deny"][-1]
+        assert denied[-1] == "api.anthropic.com:443,late.test"
+
+    def test_a_later_global_allow_the_allowlist_covers_is_not_drift(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org", "*.example.com")))
+        sbx.global_allows = ["pypi.org:443", "**.example.com"]
+        asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+
+    def test_a_removed_deny_or_an_added_allow_is_drift(self, backend, sbx):
+        sbx.global_allows = ["api.anthropic.com:443"]
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        sbx.sandbox_rules[sandbox.name][1]["resources"] = []
+        with pytest.raises(SbxHostNotConfined, match="own rules were changed"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        again = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        asyncio.run(sbx("policy", "allow", "network", "--sandbox", again.name, "evil.test"))
+        with pytest.raises(SbxHostNotConfined, match="own rules were changed"):
+            asyncio.run(again.exec("true", working_directory=".", timeout=5))
+
+    def test_a_scoped_rule_widened_on_the_same_host_is_drift(self, backend, sbx):
+        rule = EgressRule("api.example.com", methods=(HttpMethod.GET,), paths=("/v1/*",))
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist(rule)))
+        rules = sbx.sandbox_rules[sandbox.name]
+        scoped = next(r for r in rules if r.get("method") == "GET")
+        rules.remove(scoped)
+        asyncio.run(sbx("policy", "allow", "network", "--sandbox", sandbox.name, "api.example.com"))
+        with pytest.raises(SbxHostNotConfined, match="own rules were changed"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+
+    def test_an_empty_allowlist_stays_closed_whatever_the_host_posture(self, backend, sbx):
+        sbx.global_allows = ["**"]
+        sbx.governance = {"active": True}
+        sbx.secrets["secrets"] = [{"scope": "global", "type": "service", "name": "github"}]
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist()))
+        assert not [call for call in sbx.calls if call[0] in ("policy", "secret")]
+        assert sbx.sandbox_rules[sandbox.name][0]["resources"] == ["**"]
+        asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        with pytest.raises(ValueError, match="before changing its egress"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+
+    def test_a_wildcard_beside_a_scoped_rule_for_its_bare_name_is_refused(self, backend, sbx):
+        scoped = EgressRule("example.com", methods=(HttpMethod.GET,))
+        with pytest.raises(ValueError, match="cannot be enforced"):
+            asyncio.run(backend.acquire(KEY, _allowlist("*.example.com", scoped)))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_a_service_secret_stored_later_is_drift(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        sbx.secrets["secrets"] = [{"scope": "global", "type": "service", "name": "github"}]
+        with pytest.raises(SbxHostNotConfined, match="retired"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+
+    @pytest.mark.parametrize("call", ["remove", "reclaim"])
+    def test_a_removal_after_drift_starts_no_guest_program(self, backend, sbx, tmp_path, call):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        asyncio.run(sandbox.write_file("gone/file", b"x", working_directory="."))
+        sbx.global_allows = ["late.test"]
+        ran = sum(_EXEC_SCRIPT in c for c in sbx.calls)
+        with pytest.raises(SbxHostNotConfined, match="late.test"):
+            if call == "remove":
+                asyncio.run(sandbox.remove("gone", working_directory=".", recursive=True))
+            else:
+                asyncio.run(sandbox.reclaim("gone", working_directory=".", timeout=5))
+        assert sum(_EXEC_SCRIPT in c for c in sbx.calls) == ran
+        with pytest.raises(SbxError, match="may reach more than its allowlist"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+
+    def test_a_drift_retirement_is_named_in_another_process(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        sbx.global_allows = ["late.test"]
+        with pytest.raises(SbxHostNotConfined):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        other = SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+        assert other._is_retired(sandbox.name, sandbox.instance_id)
+        assert "allowlist" in (other.retirement_reason(sandbox.instance_id) or "")
+
+    def test_governance_activated_later_is_drift(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        sbx.governance = {"active": True}
+        with pytest.raises(SbxHostNotConfined, match="governance is active"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        assert sandbox.instance_id in backend.retired
+
+    def test_a_warm_acquire_checks_again_and_refuses_changed_egress(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        with pytest.raises(ValueError, match="before changing its egress"):
+            asyncio.run(backend.acquire(KEY, _allowlist("pypi.org", "example.com")))
+        with pytest.raises(ValueError, match="before changing its egress"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.global_allows = ["late.test"]
+        with pytest.raises(SbxHostNotConfined, match="late.test"):
+            asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+
+    def test_a_closed_sandbox_is_not_adopted_as_an_allowlist(self, backend, sbx):
+        asyncio.run(backend.acquire(KEY, _spec()))
+        with pytest.raises(ValueError, match="before changing its egress"):
+            asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+
+    def test_a_failed_rule_removes_the_sandbox(self, backend, sbx):
+        sbx.exec_hook = lambda _args: None
+        original = sbx.__call__
+
+        async def refusing(*args: str, **kwargs: object) -> _Result:
+            if args[:2] == ("policy", "allow"):
+                return _Result(1, b"", b"error: invalid resource\n")
+            return await original(*args, **kwargs)  # type: ignore[arg-type]
+
+        backend._sbx = refusing  # type: ignore[method-assign]
+        with pytest.raises(SbxError, match="allowing the requested hosts"):
+            asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        assert sbx.sandboxes == {}
 
 
 class TestBoundedExec:

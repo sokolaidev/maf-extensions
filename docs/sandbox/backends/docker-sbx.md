@@ -8,8 +8,8 @@ Docker Sandboxes runs one microVM with its own Linux kernel per sandbox, through
 |---|---|
 | Host | `sbx` installed and signed in; SSH agent forwarding off; no MCP server registered; an event loop that supports subprocesses |
 | Isolation | `MICROVM` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` |
-| Network | `CLOSED` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `EGRESS_METHODS`, `EGRESS_PATHS` |
+| Network | `CLOSED`; `ALLOWLIST` while the host's global rules and secrets leave it exact |
 | Guest OS | POSIX |
 | Sharing | `CONVERSATION` |
 | Transfer limits | `DEFAULT_SANDBOX_LIMITS` |
@@ -38,6 +38,14 @@ Both remove in the guest, at the guest's own authority, but they check different
 
 The image needs `/bin/sh` and `/bin/bash`, without which `sbx` cannot start it, and `base64`, `setsid`, `mount`, `unshare` with `--map-user` and `--map-group` (util-linux 2.37.2 on Ubuntu 22.04 has both), `mkdir`, `cat`, `rm` and `sleep`. Acquire checks for all of them.
 
+## Network
+
+Every sandbox is created with a per-sandbox `--deny-network "**"`, which beats every global allow rule, so a `CLOSED` sandbox has no network whatever the host's policy says.
+
+An `ALLOWLIST` sandbox gets per-sandbox rules while that deny still holds, and the deny is removed last. Within one sandbox's rules a deny beats an allow, and a sandbox's rules beat the global ones for the hosts they name. So the backend denies every active global allow for the sandbox, except one whose hosts are all requested already. A global allow that admits a requested host and more cannot be denied without denying that host, so acquire refuses it with `SbxHostNotConfined`. `*.x` becomes `sbx`'s `**.x` plus a deny for `x`, and each method and path pair of an `EgressRule` becomes one HTTP rule, enforced by the proxy over HTTPS as well. Measured with `sbx` v0.46.0 on the `ubuntu-24.04` runner: the Balanced preset's 194 global allows are denied in one call of about 0.6 s.
+
+Acquire also refuses while a service secret is stored globally or for the sandbox, since `sbx` does not report which domains it is injected into; while a custom secret targets a host the allowlist reaches; and while organization governance is active, under which local rules do not apply. The host can change any of this after acquire, so every command first reads the sandbox's rules, the secrets and the governance state again, three `sbx` calls run together. When a new global allow admits a host beyond the allowlist, a service secret or a custom secret for an allowed host appears, governance becomes active, or any of the sandbox's own rules differs from what `sbx` reported when the sandbox opened, compared whole rather than by host, the command is refused and the sandbox retired, and the next acquire replaces it. A new global allow whose hosts the allowlist already admits for every request changes nothing, so it is left in place. A process already running keeps that access until it ends.
+
 ## Ownership and disposal
 
 `sbx` has no labels. A sandbox's name is a prefix plus digests of the conversation, the whole key and the kind, and its workspace directory has the same name. Disposal runs `sbx rm --force` on every matching name from the listing and from the workspace directories. Each create makes its own workspace inside the name's directory, and the removal frees the name for any process. So a disposal then deletes only what the directory held before the removal: the removed instance's workspace, or for a purge by name, everything there was. It deletes the directory itself only once it is empty, so a replacement another process creates after the removal stays intact. Removing one instance is exact only up to the name. `sbx rm` takes a name, and answers "not found" for a local sandbox's id. So the backend checks the id in the listing, then removes by name. Another process could remove that instance and get its replacement listed in between, taking the replacement with it. That needs over a second, against the milliseconds between the check and the removal. A create whose client is stopped can still be finished by the daemon, which with `sbx` 0.45.1 listed such a sandbox up to 0.4 s later. So the backend watches the listing for 10 seconds, removes the sandbox if it appears with this create's workspace, and otherwise keeps the workspace. When the daemon loses its engine, it lists no sandboxes, and the directories are what still find them. A daemon reporting "backend unavailable" raises `SbxDaemonFault`, and a disposal reports it as `unreachable`.
@@ -49,15 +57,15 @@ The image needs `/bin/sh` and `/bin/bash`, without which `sbx` cannot start it, 
 | `run_code` | Any image is accepted, so the runtime is the image's. |
 | `reset` | A delete and recreate from a saved template would meet the contract, at the cost of a fresh create. Not built. |
 | `HOST_TOOLS` | An idle sandbox stops 30 seconds after its last session and kills every process. The host-tool transport is not measured against that. |
-| `ALLOWLIST` | Global allow rules apply to running sandboxes, so an exact allowlist depends on host state that can change after acquire. |
 | `CALL` scope | Not declared; a create costs about 4 seconds on a warm host. |
 
 ## Status
 
 | Area | State | Reference |
 |---|---|---|
-| Backend at the `MICROVM` floor, `CLOSED` only | Implemented; live suite green with `sbx` v0.45.1 on Windows 11, and on `ubuntu-24.04` nightly by [`sbx-live.yml`](../../../.github/workflows/sbx-live.yml) | [#1412](https://github.com/sokolaidev/maf-extensions/issues/1412) (open) |
+| Backend at the `MICROVM` floor, `CLOSED` | Implemented; live suite green with `sbx` v0.45.1 on Windows 11, and on `ubuntu-24.04` nightly by [`sbx-live.yml`](../../../.github/workflows/sbx-live.yml) | [#1412](https://github.com/sokolaidev/maf-extensions/issues/1412) (open) |
 | Linux link behaviour in the workspace | Measured: the guest creates links, and the plane never follows them | [#1500](https://github.com/sokolaidev/maf-extensions/issues/1500) (closed) by [#1505](https://github.com/sokolaidev/maf-extensions/pull/1505) (merged) |
 | Templates other than Docker's | Implemented; the live suite runs on two Debian templates, one with an `agent` user and one running as root | [#1531](https://github.com/sokolaidev/maf-extensions/issues/1531) (closed) by [#1533](https://github.com/sokolaidev/maf-extensions/pull/1533) (merged) |
 | macOS link behaviour in the workspace | Not measured; the hosted `macos-15` runner cannot boot a sandbox | [#1499](https://github.com/sokolaidev/maf-extensions/issues/1499) (open) |
-| `ALLOWLIST`, `HOST_TOOLS`, `SNAPSHOT` | Not implemented | untracked |
+| `ALLOWLIST` with method and path rules | Implemented; the live suite runs the `EGRESS` and `EGRESS_METHODS` conformance suites, and the host-state suite a global allow added after acquire | [#1582](https://github.com/sokolaidev/maf-extensions/issues/1582) (closed) by [#1583](https://github.com/sokolaidev/maf-extensions/pull/1583) (merged), [#1502](https://github.com/sokolaidev/maf-extensions/issues/1502) (closed) by [#1583](https://github.com/sokolaidev/maf-extensions/pull/1583) (merged) |
+| `HOST_TOOLS`, `SNAPSHOT` | Not implemented | untracked |

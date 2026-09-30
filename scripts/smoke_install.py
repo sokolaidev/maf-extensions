@@ -492,11 +492,14 @@ def _smoke_maf_sandbox_docker_sbx() -> str:
     backend = SbxSandboxBackend(SbxSandboxConfig())
     if backend.isolation != Isolation.MICROVM:
         raise SystemExit(f"FAIL: docker-sbx declares {backend.isolation!r}, expected microvm")
-    if backend.declarations.egress_modes != frozenset({Egress.CLOSED}):
+    if backend.declarations.egress_modes != frozenset({Egress.CLOSED, Egress.ALLOWLIST}):
         raise SystemExit(f"FAIL: docker-sbx egress {backend.declarations.egress_modes!r}")
     if Capability.FILES_LIST not in backend.declarations.capabilities:
         raise SystemExit("FAIL: docker-sbx lost its host-side listing")
-    return "the backend constructs at the microVM rung with CLOSED egress"
+    for rules in (Capability.EGRESS_METHODS, Capability.EGRESS_PATHS):
+        if rules not in backend.declarations.capabilities:
+            raise SystemExit(f"FAIL: docker-sbx lost {rules}")
+    return "the backend constructs at the microVM rung with CLOSED and ALLOWLIST egress"
 
 
 def _smoke_maf_sandbox_wslc() -> str:

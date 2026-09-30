@@ -57,9 +57,9 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 | Setting | Behavior |
 |---|---|
 | Isolation | `MICROVM` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `EGRESS_METHODS`, `EGRESS_PATHS` |
 | Guest OS | POSIX |
-| Network | `CLOSED` |
+| Network | `CLOSED`, `ALLOWLIST` with method and path rules |
 | Isolation scope | `CONVERSATION` |
 | Egress observation | No |
 | Command output | 8 MiB of stdout and stderr together, or the budget a caller passes to `exec_bounded`; more kills the command and refuses the call |
@@ -109,7 +109,18 @@ A missing working directory exits 125 with the shell's message on stderr.
 
 Every sandbox is created with `--deny-network "**"`. A per-sandbox deny beats every global allow rule and every allow added later, so the sandbox has no network whatever the host's global policy says. A denied raw TCP connection still connects to Docker's proxy and then carries no data.
 
-`ALLOWLIST` is not declared. Global allow rules apply to every sandbox, including running ones, so an exact allowlist would depend on host state that can change after acquire.
+`Egress.ALLOWLIST` opens exactly the hosts in `egress_allow`, with `EgressRule` methods and paths enforced by the `sbx` proxy, so the backend declares `EGRESS_METHODS` and `EGRESS_PATHS`. The sandbox is created closed, gets its rules, and only then loses the `**` deny, so no command runs while it is open wider. `api.example.com` allows that host on every port. `*.example.com` allows subdomains at any depth and denies `example.com` itself unless it is listed too. Listing `example.com` beside it only with a method or path rule is refused, since `sbx` cannot keep that rule next to the wildcard. An empty `egress_allow` keeps the sandbox closed and needs none of the host checks below. A path `/v1/*` allows `/v1` and everything under it. `authority` rules are refused.
+
+Global allow rules apply to every sandbox, so the backend reads them at acquire and denies each one for the new sandbox. That works only when the host's state lets the allowlist be exact, and acquire refuses with `SbxHostNotConfined` when it does not:
+
+- a global allow that admits a requested host and more, such as `**.github.com` when `api.github.com` is requested, since denying it would deny the requested host too. A global allow that admits only requested hosts is left in place. The global `**` rule of `sbx policy init allow-all` is always refused;
+- a stored service secret, global or for this sandbox, since `sbx` does not report which domains it is injected into. Remove it with `sbx secret rm`. The same goes for secrets `sbx` takes from the host environment;
+- a custom secret whose target the allowlist reaches;
+- active organization governance, under which this host's rules do not apply.
+
+The host can change this state after acquire. So before every command, and at every warm acquire, the backend reads the rules, the secrets and the governance state again. If a new global allow admits a host beyond the allowlist, a service secret or a custom secret for an allowed host appears, governance becomes active, or any of the sandbox's own rules differs from what `sbx` reported when it opened, the command is refused and the sandbox retired; the next acquire replaces it with fresh rules. A new global allow whose hosts the allowlist already admits for every request is left in place. A process already running when the host changes keeps that access until it ends.
+
+A sandbox keeps the allowlist it was created with. Acquiring its key with different `egress` or `egress_allow` raises `ValueError`; dispose it first.
 
 ## Ownership, cleanup and retention
 
@@ -121,8 +132,8 @@ Nothing expires on its own. A sandbox left behind by a crashed host keeps its `c
 
 ## Verification
 
-The live suite in `tests/test_sbx_e2e.py` runs the shared storage-base, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `RECLAIM`, reach and `EXEC` conformance suites against a real sandbox, and checks by response content that the network is closed. Set `MAF_SANDBOX_SBX_E2E=1`, and `MAF_SANDBOX_SBX_PATH` when `sbx` is not on `PATH`.
+The live suite in `tests/test_sbx_e2e.py` runs the shared storage-base, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `RECLAIM`, reach, `EXEC`, `EGRESS` and `EGRESS_METHODS` conformance suites against a real sandbox, checks by response content that the network is closed, and checks that wildcard and path rules admit what they name and nothing else. Set `MAF_SANDBOX_SBX_E2E=1`, and `MAF_SANDBOX_SBX_PATH` when `sbx` is not on `PATH`.
 
-`tests/test_sbx_e2e_host.py` checks the refusals and faults that depend on host-wide state: SSH agent forwarding, a registered MCP server, a lapsed login, and a daemon that has lost its engine (its `docker.sock` hidden). Most of these tests change that state and put it back, so they also need `MAF_SANDBOX_SBX_E2E_HOST=1`. Set it only on a host no one else is using. The login test logs back in with `DOCKER_USERNAME` and `DOCKER_PAT`.
+`tests/test_sbx_e2e_host.py` checks the refusals and faults that depend on host-wide state: SSH agent forwarding, a registered MCP server, a lapsed login, a daemon that has lost its engine (its `docker.sock` hidden), a global allow added after acquire, and a custom secret for an allowed host. Most of these tests change that state and put it back, so they also need `MAF_SANDBOX_SBX_E2E_HOST=1`. Set it only on a host no one else is using. The login test logs back in with `DOCKER_USERNAME` and `DOCKER_PAT`.
 
 Tested with `sbx` v0.45.1 on Windows 11 and on GitHub's `ubuntu-24.04` runner, where the live suite runs nightly. Not tested on macOS. `sbx` is closed source and in early access, and its behaviour has changed between releases, so re-run the live suite on every `sbx` version you install.

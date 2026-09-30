@@ -27,7 +27,7 @@ import secrets
 import shutil
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -38,9 +38,11 @@ from maf_sandbox import (
     Egress,
     EntryKind,
     ExecResult,
+    HttpMethod,
     Isolation,
     IsolationScope,
     OsFamily,
+    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxSpec,
@@ -61,6 +63,18 @@ from maf_sandbox.paths import (
 )
 
 from ._config import SbxSandboxConfig
+from ._egress import (
+    EgressPlan,
+    PostureRefused,
+    Requested,
+    drift,
+    fingerprint,
+    global_allows,
+    own_rules,
+    plan_for,
+    posture_refusal,
+    requested,
+)
 from ._plane import WorkspacePlane
 
 if TYPE_CHECKING:
@@ -87,9 +101,14 @@ _CAPABILITIES = frozenset(
         Capability.FILES_LIST,
         Capability.FILES_DELETE,
         Capability.RECLAIM,
+        Capability.EGRESS_METHODS,
+        Capability.EGRESS_PATHS,
     }
 )
+#: Every verb the live suite has seen `sbx policy allow network --method` accept.
+_METHOD_TOKENS = frozenset(str(method) for method in HttpMethod)
 _DEFAULT_BASE = "/maf-sandbox/work"
+_CLEANUP_FAILED = "an expired command's cleanup failed, so it may still run there"
 #: Every create mounts a fresh directory of its own, so `sbx ls` names whose create made a
 #: sandbox and no VM ever mounts an earlier one's files.
 _WORKSPACE_PREFIX = "ws-"
@@ -301,6 +320,14 @@ def _guest_stderr(stderr: bytes, nonce: str) -> bytes | None:
     return None if at < 0 else stderr[at + len(marker) :]
 
 
+@dataclass(frozen=True)
+class _Allowlist:
+    """An ``ALLOWLIST`` sandbox's requested hosts, and the rules that were set for them."""
+
+    entries: tuple[Requested, ...]
+    plan: EgressPlan
+
+
 class _SbxSandbox:
     """One acquired sandbox: ``exec`` through the wrapper, files through the host plane."""
 
@@ -312,6 +339,7 @@ class _SbxSandbox:
         base: str,
         plane: WorkspacePlane,
         mount: _Mount,
+        allowlist: _Allowlist | None = None,
     ) -> None:
         self._backend = backend
         self._name = name
@@ -319,6 +347,7 @@ class _SbxSandbox:
         self._base = base
         self._plane = plane
         self._mount = mount
+        self._allowlist = allowlist
 
     @property
     def instance_id(self) -> str:
@@ -340,11 +369,15 @@ class _SbxSandbox:
     def mount(self) -> _Mount:
         return self._mount
 
+    @property
+    def allowlist(self) -> _Allowlist | None:
+        return self._allowlist
+
     def _refuse_if_retired(self) -> None:
-        if self._instance_id in self._backend.retired:
+        reason = self._backend.retirement_reason(self._instance_id)
+        if reason is not None:
             raise SbxError(
-                f"sandbox {self._name} was retired: an expired command's cleanup failed, so it "
-                "may still run there. Acquire again for a replacement."
+                f"sandbox {self._name} was retired: {reason}. Acquire again for a replacement."
             )
 
     def _cwd(self, working_directory: str) -> str:
@@ -379,6 +412,23 @@ class _SbxSandbox:
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         if not argv:
             raise ValueError("an argv sequence needs at least one element")
+        return await self._run(argv, cwd=cwd, timeout=timeout, max_output_bytes=max_output_bytes)
+
+    async def _run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: str,
+        timeout: float,
+        max_output_bytes: int = _OUTPUT_LIMIT,
+    ) -> ExecResult:
+        """Start a guest program once the allowlist is known to still hold.
+
+        Every guest program goes through here: the image is the caller's, so its `rm` can use
+        the network as well as any command can.
+        """
+        if self._allowlist is not None:
+            await self._backend.check_allowlist(self._name, self._instance_id, self._allowlist)
         return await self._backend.run_in_guest(
             self._name,
             argv,
@@ -466,14 +516,11 @@ class _SbxSandbox:
         # In the guest rather than on the host: a guest that looked a name up keeps seeing it
         # for seconds after the host deletes it.  The guest's authority reaches only its own
         # VM and this workspace, so a swapped component redirects nothing it could not delete.
-        result = await self._backend.run_in_guest(
+        result = await self._run(
             # `-f` alone refuses a directory, so one swapped in after the host's stat survives.
-            self._name,
             ["rm", "-rf" if recursive else "-f", "--", guest],
             cwd="/",
             timeout=timeout,
-            mount=self._mount,
-            instance=self._instance_id,
         )
         if result.exit_code != 0:
             raise OSError(
@@ -491,10 +538,11 @@ class SbxSandboxBackend:
         self._config = config if config is not None else SbxSandboxConfig()
         self._declarations = BackendDeclarations(
             capabilities=_CAPABILITIES,
-            egress_modes=frozenset({Egress.CLOSED}),
+            egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
             os_families=frozenset({OsFamily.POSIX}),
             isolation_scopes=frozenset({IsolationScope.CONVERSATION}),
             observes_egress=False,
+            egress_method_tokens=_METHOD_TOKENS,
         )
         # Per loop, because an asyncio.Lock binds to the loop that first waits on it; counted, so
         # the last caller out drops the entry and the table holds only names in use.
@@ -502,7 +550,7 @@ class SbxSandboxBackend:
         self._locks_guard = threading.Lock()
         #: Instances an expired command may still start or run in: every handle to one refuses,
         #: and acquire replaces it.  By instance, so a replacement under the same name is not.
-        self._retired: set[str] = set()
+        self._retired: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -524,6 +572,10 @@ class SbxSandboxBackend:
     def retired(self) -> frozenset[str]:
         """Instance ids no handle may use again."""
         return frozenset(self._retired)
+
+    def retirement_reason(self, instance: str) -> str | None:
+        """Why ``instance`` was retired, or ``None`` while it may be used."""
+        return self._retired.get(instance)
 
     # --- the CLI ------------------------------------------------------------------------
 
@@ -627,16 +679,20 @@ class SbxSandboxBackend:
             logger.warning("docker-sbx: the kill in %s failed: %s", name, error)
             killed = False
         if not killed:
-            self._retired.add(instance)
-            await asyncio.to_thread(self._record_retirement, name, instance)
+            await self._retire(name, instance, _CLEANUP_FAILED)
 
-    def _record_retirement(self, name: str, instance: str) -> None:
+    async def _retire(self, name: str, instance: str, reason: str) -> None:
+        self._retired[instance] = reason
+        await asyncio.to_thread(self._record_retirement, name, instance, reason)
+
+    def _record_retirement(self, name: str, instance: str, reason: str) -> None:
         """Mark the record, so a later process replaces the instance too; never raises."""
         meta = self._read_meta(name)
         if meta is None or meta.get("instance_id") != instance:
             return
         try:
-            _write_record(self._directory(name) / _META, {**meta, "retired": True})
+            record = {**meta, "retired": True, "retired_reason": reason}
+            _write_record(self._directory(name) / _META, record)
         except OSError as error:
             logger.warning("docker-sbx: could not record %s as retired: %s", name, error)
 
@@ -645,7 +701,8 @@ class SbxSandboxBackend:
             return True
         meta = self._read_meta(name) or {}
         if meta.get("retired") is True and meta.get("instance_id") == instance:
-            self._retired.add(str(instance))
+            reason = meta.get("retired_reason")
+            self._retired[str(instance)] = reason if isinstance(reason, str) else _CLEANUP_FAILED
             return True
         return False
 
@@ -763,8 +820,14 @@ class SbxSandboxBackend:
     # --- acquire ------------------------------------------------------------------------
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _SbxSandbox:
-        if spec.egress is not Egress.CLOSED:
-            raise ValueError(f"{BACKEND_NAME} enforces only Egress.CLOSED")
+        if spec.egress not in (Egress.CLOSED, Egress.ALLOWLIST):
+            raise ValueError(f"{BACKEND_NAME} enforces only Egress.CLOSED and Egress.ALLOWLIST")
+        entries = requested(spec.egress_allow) if spec.egress is Egress.ALLOWLIST else None
+        unsupported = {m for e in entries or () for m in e.methods or ()} - _METHOD_TOKENS
+        if unsupported:
+            raise SandboxCapabilityNotSupported(
+                f"{BACKEND_NAME} cannot enforce egress methods {sorted(unsupported)}"
+            )
         base = _storage_base(spec)
         name = sandbox_name(self._config.name_prefix, key, spec.kind)
         await self.check_host()
@@ -778,9 +841,13 @@ class SbxSandboxBackend:
             if row is None and self._read_meta(name) is not None:
                 await self._confirm_absent(name)
             if row is None:
-                sandbox, created = await self._create(name, key, spec, base)
+                # An empty allowlist admits nothing, which the create's deny-all rule already does.
+                plan = await self._plan_allowlist(name, entries) if entries else None
+                sandbox, created = await self._create(name, key, spec, base, entries, plan)
             else:
-                sandbox, created = self._adopt(key, name, row, spec, base), False
+                sandbox, created = self._adopt(key, name, row, spec, base, entries), False
+                if sandbox.allowlist is not None:
+                    await self.check_allowlist(name, sandbox.instance_id, sandbox.allowlist)
             try:
                 await ensure_guest_work_dir(
                     spec,
@@ -796,7 +863,13 @@ class SbxSandboxBackend:
             return sandbox
 
     def _adopt(
-        self, key: SandboxKey, name: str, row: dict[str, object], spec: SandboxSpec, base: str
+        self,
+        key: SandboxKey,
+        name: str,
+        row: dict[str, object],
+        spec: SandboxSpec,
+        base: str,
+        entries: tuple[Requested, ...] | None,
     ) -> _SbxSandbox:
         meta = self._read_meta(name)
         if meta is None:
@@ -830,13 +903,31 @@ class SbxSandboxBackend:
                 f"{meta.get('image')!r} and image_id {meta.get('image_id')!r}; dispose it "
                 "before changing any of them"
             )
+        wanted = None if entries is None else fingerprint(entries)
+        if meta.get("egress_allow") != wanted:
+            raise ValueError(
+                f"sandbox {name} was created with egress allowlist {meta.get('egress_allow')!r}; "
+                "dispose it before changing its egress"
+            )
+        allowlist = None
+        if entries:
+            plan = EgressPlan.from_record(meta.get("egress_plan"))
+            if plan is None:
+                raise SbxError(f"sandbox {name}'s record does not say which rules it was given")
+            allowlist = _Allowlist(entries, plan)
         guest_mount = meta.get("guest_mount")
         if not isinstance(guest_mount, str):
             raise SbxError(f"sandbox {name}'s record does not say where its workspace is mounted")
-        return self._sandbox(name, row, base, guest_mount, workspace)
+        return self._sandbox(name, row, base, guest_mount, workspace, allowlist)
 
     def _sandbox(
-        self, name: str, row: dict[str, object], base: str, guest_mount: str, workspace: Path
+        self,
+        name: str,
+        row: dict[str, object],
+        base: str,
+        guest_mount: str,
+        workspace: Path,
+        allowlist: _Allowlist | None = None,
     ) -> _SbxSandbox:
         instance_id = row.get("id")
         if not isinstance(instance_id, str) or not instance_id:
@@ -846,10 +937,16 @@ class SbxSandboxBackend:
             )
         mount = _Mount(guest_mount, posixpath.dirname(base), workspace)
         plane = WorkspacePlane(workspace, posixpath.dirname(base))
-        return _SbxSandbox(self, name, instance_id, base, plane, mount)
+        return _SbxSandbox(self, name, instance_id, base, plane, mount, allowlist)
 
     async def _create(
-        self, name: str, key: SandboxKey, spec: SandboxSpec, base: str
+        self,
+        name: str,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        base: str,
+        entries: tuple[Requested, ...] | None,
+        plan: EgressPlan | None,
     ) -> tuple[_SbxSandbox, bool]:
         """The sandbox, and whether this call created it rather than adopting a winner's."""
         directory = self._directory(name)
@@ -864,7 +961,11 @@ class SbxSandboxBackend:
             "image": spec.image,
             "image_id": spec.image_id,
             "workspace": workspace.name,
+            "egress_allow": None if entries is None else fingerprint(entries),
         }
+        allowlist = None
+        if entries and plan is not None:
+            allowlist = _Allowlist(entries, plan)
         args = [
             "create",
             "shell",
@@ -894,7 +995,7 @@ class SbxSandboxBackend:
         if created.returncode != 0:
             await asyncio.to_thread(_remove_if_empty, workspace, directory)
             if _ALREADY_EXISTS in created.stderr_text:
-                return await self._adopt_the_winner(key, name, spec, base), False
+                return await self._adopt_the_winner(key, name, spec, base, entries), False
             raise _failure(f"sbx create {name}", created)
         try:
             mounted = await self._run_setup(
@@ -910,6 +1011,12 @@ class SbxSandboxBackend:
             await self._make_mount_point(name, sandbox.mount)
             await self._prove_the_mount(sandbox)
             await self.check_sandbox(name)
+            if allowlist is not None:
+                allowlist = _Allowlist(
+                    allowlist.entries, await self._open_allowlist(name, allowlist.plan)
+                )
+                meta["egress_plan"] = allowlist.plan.record()
+                sandbox = self._sandbox(name, row, base, guest_mount, workspace, allowlist)
             # Last, so a record another process can read means the sandbox is ready to serve.
             meta["instance_id"] = sandbox.instance_id
             await asyncio.to_thread(_write_record, directory / _META, meta)
@@ -954,6 +1061,100 @@ class SbxSandboxBackend:
         if checked.returncode != 0:
             raise _failure(f"checking sandbox {name} for a forwarded SSH agent", checked)
 
+    # --- the allowlist ------------------------------------------------------------------
+
+    async def _plan_allowlist(self, name: str, entries: tuple[Requested, ...]) -> EgressPlan:
+        """The rules that give ``name`` exactly ``entries``; refuses a host posture in the way."""
+        governed, listed, policy = await asyncio.gather(
+            self._governed(entries),
+            self._sbx("secret", "ls", "--json"),
+            self._sbx("policy", "ls", "--json"),
+        )
+        for what, result in (("sbx secret ls", listed), ("sbx policy ls", policy)):
+            if result.returncode != 0:
+                raise _failure(what, result)
+        refusal = posture_refusal(entries, listed.stdout, name, governed=governed)
+        if refusal is not None:
+            raise SbxHostNotConfined(refusal)
+        try:
+            return plan_for(entries, global_allows(policy.stdout))
+        except PostureRefused as refused:
+            raise SbxHostNotConfined(str(refused)) from None
+
+    async def _governed(self, entries: tuple[Requested, ...]) -> bool:
+        """Whether organization governance is active, under which local rules do not apply."""
+        probe = entries[0].domain if entries else "example.invalid"
+        checked = await self._sbx("policy", "check", "network", "--json", probe)
+        try:
+            verdict: object = json.loads(checked.stdout)
+        except ValueError:
+            raise _failure("sbx policy check", checked) from None
+        fields = cast("dict[str, object]", verdict) if isinstance(verdict, dict) else {}
+        allowed = fields.get("allowed")
+        # A denial exits 1 with a whole verdict; only that and an allowed exit 0 are answers.
+        if not isinstance(allowed, bool) or checked.returncode != (0 if allowed else 1):
+            raise _failure("sbx policy check", checked)
+        governance = fields.get("governance")
+        active = (
+            cast("dict[str, object]", governance).get("active")
+            if isinstance(governance, dict)
+            else None
+        )
+        if not isinstance(active, bool):
+            raise SbxError(
+                "`sbx policy check --json` did not say whether governance is active, so whether "
+                "this host's rules apply cannot be told; refusing rather than assuming they do"
+            )
+        return active
+
+    async def _open_allowlist(self, name: str, plan: EgressPlan) -> EgressPlan:
+        """Set the plan's rules, then lift the create's ``**`` deny, which beat them until now.
+
+        Returns the plan with the sandbox's rules as ``sbx`` now reports them, which every later
+        check compares against.
+        """
+        scoped = ("policy", "allow", "network", "--sandbox", name)
+        if plan.denies:
+            await self._run_setup(
+                "denying the global allows",
+                *("policy", "deny", "network", "--sandbox", name, "--protocol", "tcp,udp"),
+                ",".join(plan.denies),
+            )
+        if hosts := [args[0] for args in plan.allows if len(args) == 1]:
+            await self._run_setup("allowing the requested hosts", *scoped, ",".join(hosts))
+        for args in plan.allows:
+            if len(args) > 1:
+                await self._run_setup(f"allowing requests to {args[0]}", *scoped, *args)
+        await self._run_setup(
+            "lifting the deny-all rule",
+            *("policy", "rm", "network", "--sandbox", name, "--resource", "**", "--force"),
+        )
+        listed = await self._run_setup(
+            "reading the sandbox's rules", "policy", "ls", name, "--json"
+        )
+        return replace(plan, rules=own_rules(listed.stdout, name))
+
+    async def check_allowlist(self, name: str, instance: str, allowlist: _Allowlist) -> None:
+        """Refuse, and retire the instance, once the host's rules or secrets widen its egress."""
+        governed, policy, listed = await asyncio.gather(
+            self._governed(allowlist.entries),
+            self._sbx("policy", "ls", name, "--json"),
+            self._sbx("secret", "ls", "--json"),
+        )
+        for what, result in (("sbx policy ls", policy), ("sbx secret ls", listed)):
+            if result.returncode != 0:
+                raise _failure(what, result)
+        reason = drift(allowlist.entries, allowlist.plan, policy.stdout, name) or posture_refusal(
+            allowlist.entries, listed.stdout, name, governed=governed
+        )
+        if reason is None:
+            return
+        await self._retire(name, instance, f"it may reach more than its allowlist: {reason}")
+        raise SbxHostNotConfined(
+            f"sandbox {name} may reach more than its allowlist: {reason}. It is retired; "
+            "acquire again for a replacement."
+        )
+
     async def _confirm_absent(self, name: str) -> None:
         """Ask a sandbox the listing omits whether it is there, since a lost engine lists none."""
         answered = await self._sbx("exec", name, "sh", "-c", ":")
@@ -966,7 +1167,12 @@ class SbxSandboxBackend:
             raise _failure(f"checking whether sandbox {name} is there", answered)
 
     async def _adopt_the_winner(
-        self, key: SandboxKey, name: str, spec: SandboxSpec, base: str
+        self,
+        key: SandboxKey,
+        name: str,
+        spec: SandboxSpec,
+        base: str,
+        entries: tuple[Requested, ...] | None,
     ) -> _SbxSandbox:
         """Serve the sandbox a concurrent create made, which the conflict proved exists."""
         row = (await self._listing()).get(name)
@@ -980,7 +1186,10 @@ class SbxSandboxBackend:
             raise SbxError(
                 f"sandbox {name} is being created by another process; acquire again once it is up"
             )
-        return self._adopt(key, name, row, spec, base)
+        sandbox = self._adopt(key, name, row, spec, base, entries)
+        if sandbox.allowlist is not None:
+            await self.check_allowlist(name, sandbox.instance_id, sandbox.allowlist)
+        return sandbox
 
     async def _prove_the_mount(self, sandbox: _SbxSandbox) -> None:
         """Have the guest read, through the mount and the wrapper, a file the host just wrote."""

@@ -5,7 +5,9 @@ not on ``PATH``.  The host must pass the backend's own checks — SSH agent forw
 server registered — except on a host whose settings the tester may not change, where
 ``MAF_SANDBOX_SBX_E2E_ACCEPT_HOST=1`` skips those two checks.  ``test_sbx_e2e_host.py`` asserts
 them.  ``MAF_SANDBOX_SBX_E2E_IMAGES`` names templates, comma-separated, that the file, exec and
-egress tests also run on, beside Docker's default one.
+egress tests also run on, beside Docker's default one.  The allowlist tests set rules scoped to
+their own sandboxes only, and refuse on a host whose global rules or secrets reach the hosts they
+allow.
 """
 
 from __future__ import annotations
@@ -20,10 +22,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from maf_sandbox import Capability, EntryKind, SandboxKey, SandboxSpec
+from maf_sandbox import (
+    Capability,
+    Egress,
+    EgressRule,
+    EntryKind,
+    HttpMethod,
+    SandboxKey,
+    SandboxSpec,
+)
 from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
 from maf_sandbox.conformance import (
+    ExecEgressMethodsSubject,
     PosixGuestSubject,
+    assert_egress_conformance,
+    assert_egress_methods_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
@@ -290,6 +303,78 @@ def test_egress_is_closed_by_content(tmp_path, image):
                 assert result.exit_code != 0 or "Blocked" in result.stdout, result
         finally:
             assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+
+
+async def _fetch(sandbox, url: str) -> str:
+    result = await sandbox.exec(
+        ["sh", "-c", 'curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$0"', url],
+        working_directory=".",
+        timeout=60,
+    )
+    return result.stdout.strip()
+
+
+@_BY_IMAGE
+def test_an_allowlist_admits_its_hosts_and_nothing_else(tmp_path, image):
+    backend = _backend(tmp_path)
+    key = _key("allow")
+    spec = _spec(
+        image=image,
+        egress=Egress.ALLOWLIST,
+        egress_allow=(EgressRule("example.com", paths=("/",)), "*.python.org"),
+    )
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(key, spec)
+            await assert_egress_conformance(
+                _subject(backend, sandbox, []),
+                allowed_url="https://example.com/",
+                denied_url="https://pypi.org/simple/",
+            )
+            # `*.python.org` admits subdomains at any depth and never the bare name.
+            assert (await _fetch(sandbox, "https://www.python.org/"))[0] == "2"
+            assert await _fetch(sandbox, "https://python.org/") == "403"
+            # A path rule admits that path alone.
+            assert await _fetch(sandbox, "https://example.com/other") == "403"
+            again = await backend.acquire(key, spec)
+            assert again.instance_id == sandbox.instance_id
+            assert (await _fetch(again, "https://example.com/"))[0] == "2"
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+
+
+def test_method_and_path_rules_are_enforced(tmp_path):
+    backend = _backend(tmp_path)
+    scoped_key, control_key = _key("methods"), _key("control")
+    paths = ("/anything/*",)
+    get_only = EgressRule("httpbin.org", methods=(HttpMethod.GET,), paths=paths)
+    # Every verb the backend declares, so sbx is seen to accept each one.
+    every = EgressRule("httpbin.org", methods=tuple(HttpMethod), paths=paths)
+
+    async def scenario():
+        try:
+            capabilities = backend.declarations.capabilities
+            scoped = await backend.acquire(
+                scoped_key, _spec(egress=Egress.ALLOWLIST, egress_allow=(get_only,))
+            )
+            control = await backend.acquire(
+                control_key, _spec(egress=Egress.ALLOWLIST, egress_allow=(every,))
+            )
+            await assert_egress_methods_conformance(
+                ExecEgressMethodsSubject(scoped, capabilities, "."),
+                ExecEgressMethodsSubject(control, capabilities, "."),
+                allowed_url="https://httpbin.org/anything/probe",
+            )
+            assert (await _fetch(scoped, "https://httpbin.org/anything"))[0] == "2"
+            assert await _fetch(scoped, "https://httpbin.org/get") == "403"
+        finally:
+            assert await backend.dispose(scoped_key) is None
+            assert await backend.dispose(control_key) is None
 
     asyncio.run(scenario())
 
