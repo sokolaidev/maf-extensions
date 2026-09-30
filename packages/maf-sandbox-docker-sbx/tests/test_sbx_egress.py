@@ -74,8 +74,8 @@ def test_an_overlapping_global_allow_refuses_the_plan():
 def test_methods_and_paths_become_one_http_rule_per_path():
     rule = EgressRule("api.example.com", methods=("GET", "HEAD"), paths=("/v1/*", "/health"))
     assert plan_for(requested((rule,)), frozenset()).allows == (
-        ("api.example.com", "--method", "GET,HEAD", "--path", "/v1/**"),
         ("api.example.com", "--method", "GET,HEAD", "--path", "/health"),
+        ("api.example.com", "--method", "GET,HEAD", "--path", "/v1/**"),
     )
     methods_only = EgressRule("api.example.com", methods=("POST",))
     assert plan_for(requested((methods_only,)), frozenset()).allows == (

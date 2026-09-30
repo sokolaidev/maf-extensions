@@ -69,8 +69,10 @@ def requested(entries: Sequence[str | EgressRule]) -> tuple[Requested, ...]:
         if isinstance(entry, EgressRule):
             if entry.authority is not None:
                 raise ValueError("this backend attaches no identity, so it refuses authority rules")
-            methods = None if entry.methods is None else tuple(str(m) for m in entry.methods)
-            out.append(Requested(entry.host.lower(), methods, entry.paths))
+            # The spec treats both as sets, so an order is not part of the policy.
+            methods = None if entry.methods is None else tuple(sorted(map(str, entry.methods)))
+            paths = None if entry.paths is None else tuple(sorted(entry.paths))
+            out.append(Requested(entry.host.lower(), methods, paths))
         else:
             out.append(Requested(entry.lower(), None, None))
     return tuple(out)

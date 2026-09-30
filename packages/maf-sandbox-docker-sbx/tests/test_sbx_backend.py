@@ -23,6 +23,7 @@ from maf_sandbox import (
     Isolation,
     OsFamily,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxSpec,
 )
@@ -608,6 +609,20 @@ class TestAllowlist:
         sbx.governance = governance
         with pytest.raises(error, match=match):
             asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+
+    def test_a_method_token_beyond_the_declared_verbs_is_refused(self, backend, sbx):
+        rule = EgressRule("api.example.com", methods=("PROPFIND",))
+        with pytest.raises(SandboxCapabilityNotSupported, match="PROPFIND"):
+            asyncio.run(backend.acquire(KEY, _allowlist(rule)))
+        assert not sbx.calls
+
+    def test_a_reordered_but_equal_allowlist_adopts_the_warm_sandbox(self, backend, sbx):
+        first = EgressRule("api.example.com", methods=("POST", "GET"), paths=("/b", "/a"))
+        again = EgressRule("api.example.com", methods=("GET", "POST"), paths=("/a", "/b"))
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist(first)))
+        assert (
+            asyncio.run(backend.acquire(KEY, _allowlist(again))).instance_id == sandbox.instance_id
+        )
 
     def test_an_authority_rule_is_refused(self, backend, sbx):
         rule = EgressRule("api.example.com", authority="api://example")

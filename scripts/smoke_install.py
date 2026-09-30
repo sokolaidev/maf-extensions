@@ -496,8 +496,9 @@ def _smoke_maf_sandbox_docker_sbx() -> str:
         raise SystemExit(f"FAIL: docker-sbx egress {backend.declarations.egress_modes!r}")
     if Capability.FILES_LIST not in backend.declarations.capabilities:
         raise SystemExit("FAIL: docker-sbx lost its host-side listing")
-    if Capability.EGRESS_METHODS not in backend.declarations.capabilities:
-        raise SystemExit("FAIL: docker-sbx lost its method rules")
+    for rules in (Capability.EGRESS_METHODS, Capability.EGRESS_PATHS):
+        if rules not in backend.declarations.capabilities:
+            raise SystemExit(f"FAIL: docker-sbx lost {rules}")
     return "the backend constructs at the microVM rung with CLOSED and ALLOWLIST egress"
 
 

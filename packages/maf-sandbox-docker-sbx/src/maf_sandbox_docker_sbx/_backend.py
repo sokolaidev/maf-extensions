@@ -42,6 +42,7 @@ from maf_sandbox import (
     Isolation,
     IsolationScope,
     OsFamily,
+    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxSpec,
@@ -104,7 +105,7 @@ _CAPABILITIES = frozenset(
         Capability.EGRESS_PATHS,
     }
 )
-#: The verbs `sbx policy allow network --method` is known to take.
+#: Every verb the live suite has seen `sbx policy allow network --method` accept.
 _METHOD_TOKENS = frozenset(str(method) for method in HttpMethod)
 _DEFAULT_BASE = "/maf-sandbox/work"
 #: Every create mounts a fresh directory of its own, so `sbx ls` names whose create made a
@@ -800,6 +801,11 @@ class SbxSandboxBackend:
         if spec.egress not in (Egress.CLOSED, Egress.ALLOWLIST):
             raise ValueError(f"{BACKEND_NAME} enforces only Egress.CLOSED and Egress.ALLOWLIST")
         entries = requested(spec.egress_allow) if spec.egress is Egress.ALLOWLIST else None
+        unsupported = {m for e in entries or () for m in e.methods or ()} - _METHOD_TOKENS
+        if unsupported:
+            raise SandboxCapabilityNotSupported(
+                f"{BACKEND_NAME} cannot enforce egress methods {sorted(unsupported)}"
+            )
         base = _storage_base(spec)
         name = sandbox_name(self._config.name_prefix, key, spec.kind)
         await self.check_host()
