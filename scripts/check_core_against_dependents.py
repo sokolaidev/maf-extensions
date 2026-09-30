@@ -15,13 +15,12 @@ Two halves, and the difference between them is the point:
 - **branch** — each dependent as it stands in this checkout, built and run against the same
   core. This is what is *about to be* installed.
 
-A breaking core makes them disagree, and the disagreement is the useful part. Published failing
-while branch passes says the break is real and already handled — those packages simply have to
-publish. Both failing says nothing has handled it yet. Only the second is a reason to reconsider
-the change rather than the order.
+A breaking core can make them disagree: published tests fail while adapted branch tests pass.
+Inspect the failure diagnostics first; environment and test-collection errors do not establish
+a compatibility break.
 
-Both halves refuse. The escape from a published-half refusal is not to weaken the gate: it is to
-release at a version *outside* those ceilings, with `Release-As:` in the commit footer, so the
+Both halves refuse. For a confirmed compatibility break, release at a version *outside* those
+ceilings, with `Release-As:` in the commit footer, so the
 break is out of reach of everything already installed and each dependent adopts on its own
 schedule. See `docs/release-compatibility.md`.
 
@@ -97,20 +96,29 @@ def dependent_wheels(dist_dir: Path) -> dict[str, Path]:
 
 
 def recover_tests(tag: str, distribution: str, into: Path) -> Path | None:
-    """Extract ``distribution``'s test tree as it stood at ``tag``, or None if the tag is absent.
+    """Extract tagged tests and optional sibling scripts, or None if tests cannot be recovered.
 
-    From the tag rather than from PyPI because no sdist in this repository ships its tests, so a
-    published version's suite exists only here. `git archive` rather than a worktree: nothing
-    needs a checkout, and the tests import nothing from outside their own tree.
+    Tests load package scripts by relative path. Keep both at the same release revision without
+    extracting ``src/``, so imports still exercise the installed wheel.
     """
     listed = subprocess.run(
         ["git", "tag", "--list", tag], cwd=_ROOT, capture_output=True, text=True, check=False
     )
     if listed.returncode != 0 or not listed.stdout.strip():
         return None
+    test_path = f"packages/{distribution}/tests"
+    paths = subprocess.run(
+        ["git", "ls-tree", "--name-only", tag, "--", test_path, f"packages/{distribution}/scripts"],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if paths.returncode != 0 or test_path not in paths.stdout.splitlines():
+        return None
     into.mkdir(parents=True, exist_ok=True)
     archived = subprocess.run(
-        ["git", "archive", tag, f"packages/{distribution}/tests"],
+        ["git", "archive", tag, *paths.stdout.splitlines()],
         cwd=_ROOT,
         capture_output=True,
         check=False,
@@ -144,7 +152,7 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
             ["uv", "venv", str(environment)], capture_output=True, text=True, check=False
         )
         if created.returncode != 0:
-            return False, created.stderr.strip().splitlines()[-1] if created.stderr else "no venv"
+            return False, (created.stdout + created.stderr).strip() or "no venv"
         python = _python_in(environment)
         wheel = core.resolve()
         override = Path(directory) / "override.txt"
@@ -167,8 +175,9 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
             check=False,
         )
         if installed.returncode != 0:
-            tail = installed.stderr.strip().splitlines()
-            return False, "the environment would not build: " + (tail[-1] if tail else "")
+            return False, "the environment would not build: " + (
+                installed.stdout + installed.stderr
+            ).strip()
         ran = subprocess.run(
             [str(python), "-m", "pytest", str(tests), "-q", "-p", "no:cacheprovider"],
             capture_output=True,
@@ -176,8 +185,10 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
             cwd=_ROOT,
             check=False,
         )
-        output = (ran.stdout + ran.stderr).strip().splitlines()
-        return ran.returncode == 0, output[-1] if output else ""
+        output = (ran.stdout + ran.stderr).strip()
+        if ran.returncode != 0:
+            return False, output or f"pytest exited with code {ran.returncode}"
+        return True, output.splitlines()[-1] if output else ""
 
 
 def assess_branch(core_wheel: Path, wheels: dict[str, Path]) -> list[Result]:
@@ -251,9 +262,10 @@ def main(argv: list[str]) -> int:
         halves = {result.half for result in failed}
         if halves == {"published"}:
             print(
-                "every failure is in the published half, so the break is real and already "
-                "handled here — release outside those ceilings with `Release-As:` rather than "
-                "weakening this, and let each dependent adopt on its own schedule",
+                "every failure is in the published half; inspect the diagnostics above before "
+                "concluding there is a compatibility break. For a confirmed break, release "
+                "outside those ceilings with `Release-As:` and let each dependent adopt on "
+                "its own schedule",
                 file=sys.stderr,
             )
         print(f"{len(failed)} suite(s) failed against {_CORE} {parsed.released}", file=sys.stderr)
