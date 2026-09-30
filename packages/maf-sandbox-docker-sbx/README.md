@@ -118,7 +118,7 @@ Global allow rules apply to every sandbox, so the backend reads them at acquire 
 - a custom secret whose target the allowlist reaches;
 - active organization governance, under which this host's rules do not apply.
 
-The host can change this state after acquire. So before every command, and at every warm acquire, the backend reads the rules, the secrets and the governance state again. If a new global allow reaches the sandbox, a service secret appears, governance becomes active, or any of the sandbox's own rules differs from what `sbx` reported when it opened, the command is refused and the sandbox retired; the next acquire replaces it with fresh rules. A process already running when the host changes keeps that access until it ends.
+The host can change this state after acquire. So before every command, and at every warm acquire, the backend reads the rules, the secrets and the governance state again. If a new global allow admits a host beyond the allowlist, a service secret or a custom secret for an allowed host appears, governance becomes active, or any of the sandbox's own rules differs from what `sbx` reported when it opened, the command is refused and the sandbox retired; the next acquire replaces it with fresh rules. A new global allow whose hosts the allowlist already admits for every request is left in place. A process already running when the host changes keeps that access until it ends.
 
 A sandbox keeps the allowlist it was created with. Acquiring its key with different `egress` or `egress_allow` raises `ValueError`; dispose it first.
 
