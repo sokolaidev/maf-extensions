@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.3.0...maf-sandbox-docker-sbx-v0.4.0) (2026-09-30)
+
+
+### Features
+
+* **docker-sbx:** serve Egress.ALLOWLIST with host, method and path rules, refusing hosts whose global rules or secrets would widen it ([#1583](https://github.com/sokolaidev/maf-extensions/issues/1583)) ([ce73a18](https://github.com/sokolaidev/maf-extensions/commit/ce73a18c372715553ad297be7b722ddb0093a7cf))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.2.1...maf-sandbox-docker-sbx-v0.3.0) (2026-09-29)
 
 
