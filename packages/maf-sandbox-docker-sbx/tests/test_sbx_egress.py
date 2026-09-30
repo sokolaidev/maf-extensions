@@ -33,6 +33,10 @@ GET_ONLY = EgressRule("pypi.org", methods=(HttpMethod.GET,))
         ("api?.example.com", "api1.example.com", "overlap"),
         ("api[12].example.com", "api3.example.com", "disjoint"),
         ("api[!1].example.com", "api2.example.com", "overlap"),
+        ("api[1-3].example.com", "api2.example.com", "overlap"),
+        ("api[!1-3].example.com", "api2.example.com", "disjoint"),
+        ("api[a-].example.com", "api-.example.com", "overlap"),
+        ("api[3-1].example.com", "api2.example.com", "overlap"),
         ("*.example.com", "*.other.com", "disjoint"),
         ("example.com", "*.example.com", "disjoint"),
         ("sub.example.com", "*.example.com", "covered"),
@@ -80,6 +84,14 @@ def test_a_service_secret_scoped_to_another_sandbox_does_not_refuse():
     assert posture_refusal(entries, other, "mine", governed=False) is None
     mine = _secrets(secrets=[{"scope": "sandbox:mine", "name": "github"}])
     assert "github" in (posture_refusal(entries, mine, "mine", governed=False) or "")
+
+
+def test_a_custom_secret_whose_range_covers_an_allowed_host_refuses():
+    entries = requested(("api2.example.com",))
+    ranged = _secrets(
+        custom_secrets=[{"scope": "global", "targets": ["api[1-3].example.com"], "env": "K"}]
+    )
+    assert "'K'" in (posture_refusal(entries, ranged, "mine", governed=False) or "")
 
 
 def test_an_inactive_sandbox_rule_is_drift():

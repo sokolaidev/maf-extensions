@@ -144,6 +144,14 @@ def _pattern(resource: str) -> tuple[str, str | None]:
     return host.lower(), port or None
 
 
+def _class_body(body: str) -> str:
+    """A bracket expression's members as a regex class body, keeping `a-z` a range."""
+    return "".join(
+        "-" if char == "-" and 0 < at < len(body) - 1 else re.escape(char)
+        for at, char in enumerate(body)
+    )
+
+
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     out = ""
     i = 0
@@ -166,11 +174,8 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
                 out += re.escape(pattern[i:])
                 break
             body = pattern[i + 1 : end]
-            out += (
-                "[^" + re.escape(body[1:]) + "]"
-                if body.startswith("!")
-                else "[" + re.escape(body) + "]"
-            )
+            negated = body.startswith("!")
+            out += ("[^" if negated else "[") + _class_body(body[negated:]) + "]"
             i = end + 1
         else:
             out += re.escape(pattern[i])
@@ -203,7 +208,10 @@ def classify(resource: str, entries: Sequence[Requested]) -> str:
     if host == "**":
         return "overlap" if entries else "disjoint"
     suffix = _literal_suffix(host)
-    exact = _glob_regex(host)
+    try:
+        exact = _glob_regex(host)
+    except re.error:
+        return "overlap"
     # `**.x` also admits `x`, which the plan denies for the sandbox unless something asks for it.
     if host in ("*." + suffix, "**." + suffix) and any(
         e.host_wide and e.wildcard and (suffix == e.domain or suffix.endswith("." + e.domain))
