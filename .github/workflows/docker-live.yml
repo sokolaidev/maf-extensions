@@ -168,6 +168,15 @@ jobs:
             packages/maf-sandbox-bicep/tests/test_bicep_confinement_e2e.py \
             packages/maf-sandbox-deepagents/tests/test_deepagents_e2e.py
 
+      - name: Validate prepared Bicep modules with closed networking
+        env:
+          MAF_BICEP_PREPARED_IMAGE: bicep-sandbox:prepared-ci
+        run: |
+          set -euo pipefail
+          uv run python scripts/build_bicep_prepared_image.py \
+            --base-image bicep-sandbox:ci --tag "$MAF_BICEP_PREPARED_IMAGE"
+          uv run pytest -q -ra tests/test_bicep_prepared_offline.py
+
       - name: Measure confinement on a rootless engine
         run: |
           set -euo pipefail

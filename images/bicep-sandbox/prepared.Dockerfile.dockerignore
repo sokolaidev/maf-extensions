@@ -1,0 +1,8 @@
+**
+!scripts/
+!scripts/bicep_dependencies.py
+!images/
+!images/bicep-sandbox/
+!images/bicep-sandbox/dependencies.bicep-avm.json
+!images/bicep-sandbox/dependencies.bicep-avm.policy.json
+!images/bicep-sandbox/prepared.bicepconfig.json
