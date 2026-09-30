@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.45.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.45.0...maf-sandbox-v0.45.1) (2026-09-30)
+
+
+### Fixes
+
+* **sandbox:** trust file-derived reports only when other sources are trusted ([#1585](https://github.com/sokolaidev/maf-extensions/issues/1585)) ([96d6b94](https://github.com/sokolaidev/maf-extensions/commit/96d6b942dd247c5e40902cafbd07ee67369ac604))
+
 ## [0.45.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.44.0...maf-sandbox-v0.45.0) (2026-09-27)
 
 
