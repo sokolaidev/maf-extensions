@@ -549,7 +549,9 @@ def test_credential_tools_require_approval_and_keep_unconfigured_hosts_quiet():
     "state,expected",
     [("trusted", "trusted"), ("untrusted", "untrusted"), ("unknown", "untrusted")],
 )
-def test_report_integrity_follows_host_file_provenance(state, expected):
+def test_report_integrity_follows_host_file_provenance(state, expected, request):
+    from importlib.metadata import distribution
+
     from maf_sandbox import FileStoreProvenance
     from maf_sandbox.maf import file_store_provenance_middleware
 
@@ -568,8 +570,21 @@ def test_report_integrity_follows_host_file_provenance(state, expected):
     assert items[0].text == COMPLETED_TEXT
     assert any(path.endswith("/input.txt") for path in sandbox.written_files)
     report = next(item for item in items if "host-backed output" in (item.text or ""))
-    assert report.additional_properties["security_label"]["integrity"] == expected
     assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
+    # Local artifacts retain the pre-release version but carry direct-URL metadata.
+    core = distribution("maf-sandbox")
+    if (
+        state == "trusted"
+        and core.version == "0.45.0"
+        and core.read_text("direct_url.json") is None
+    ):
+        request.node.add_marker(
+            pytest.mark.xfail(
+                strict=True,
+                reason="PyPI maf-sandbox 0.45.0 lacks host-file integrity promotion (#1584)",
+            )
+        )
+    assert report.additional_properties["security_label"]["integrity"] == expected
 
 
 def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_written(monkeypatch):
