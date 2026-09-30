@@ -102,6 +102,49 @@ class TestRecoveringAVersionsTests:
         assert recovered is not None, "the tagged commit carries the test tree"
         assert (recovered / "test_something.py").is_file()
 
+    def test_tagged_scripts_are_available_during_collection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        tests = _repository_with_a_tag(origin, "initial", self._DIST)
+        scripts = tests.parent / "scripts"
+        scripts.mkdir()
+        helper = scripts / "helper.py"
+        helper.write_text("VALUE = 'tagged'\n", encoding="utf-8")
+        (tests / "test_something.py").write_text(
+            "from pathlib import Path\n"
+            "from runpy import run_path\n"
+            "helper = run_path(str(Path(__file__).parents[1] / 'scripts' / 'helper.py'))\n"
+            "assert helper['VALUE'] == 'tagged'\n"
+            "def test_it():\n    assert True\n",
+            encoding="utf-8",
+        )
+        source = tests.parent / "src" / "example"
+        source.mkdir(parents=True)
+        (source / "__init__.py").write_text("", encoding="utf-8")
+        for command in (
+            ["git", "add", "-A"],
+            ["git", "commit", "-q", "-m", "test support"],
+            ["git", "tag", self._TAG],
+        ):
+            subprocess.run(command, cwd=origin, check=True, capture_output=True)
+        helper.write_text("VALUE = 'checkout'\n", encoding="utf-8")
+        monkeypatch.setattr(check, "_ROOT", origin)
+
+        recovered = check.recover_tests(self._TAG, self._DIST, tmp_path / "into")
+        assert recovered is not None
+        assert not (recovered.parent / "src").exists()
+        collected = subprocess.run(
+            [sys.executable, "-m", "pytest", str(recovered), "--collect-only", "-q"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert collected.returncode == 0, collected.stdout + collected.stderr
+        assert "1 test collected" in collected.stdout
+
     def test_a_tag_that_does_not_exist_is_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -234,6 +277,39 @@ class TestWhichCoreTheEnvironmentGets:
         assert "pytest" in recorder.install
 
 
+class TestFailureDiagnostics:
+    @pytest.mark.parametrize("stage", [0, 1, 2])
+    def test_failed_commands_retain_stdout_and_stderr(
+        self, stage: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        results = iter(
+            [subprocess.CompletedProcess([], 0, "", "")] * stage
+            + [subprocess.CompletedProcess([], 2, "traceback detail\n", "error detail\nsummary\n")]
+        )
+        monkeypatch.setattr(
+            check, "subprocess", SimpleNamespace(run=lambda *args, **kwargs: next(results))
+        )
+        passed, summary = check.run_suite([], tmp_path / "core.whl", tmp_path / "tests")
+        assert not passed
+        assert "traceback detail" in summary
+        assert "error detail" in summary
+        assert "summary" in summary
+
+    def test_successful_suites_keep_a_compact_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            check,
+            "subprocess",
+            SimpleNamespace(
+                run=lambda *args, **kwargs: subprocess.CompletedProcess(
+                    [], 0, "test progress\n1 passed\n", ""
+                )
+            ),
+        )
+        assert check.run_suite([], tmp_path / "core.whl", tmp_path / "tests") == (True, "1 passed")
+
+
 class TestBothHalvesForceIt:
     """The published half needs it too: its siblings are branch wheels carrying branch bounds."""
 
@@ -282,6 +358,35 @@ class TestBothHalvesForceIt:
 
 
 class TestTheCli:
+    def test_published_collection_errors_fail_with_diagnostics(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        _wheel(tmp_path, "maf_sandbox_acas-0.28.0-py3-none-any.whl")
+        monkeypatch.setattr(check, "assess_branch", lambda *args: [])
+        monkeypatch.setattr(
+            check,
+            "assess_published",
+            lambda *args: [
+                check.Result(
+                    "published",
+                    "maf-sandbox-acas",
+                    "0.28.0",
+                    False,
+                    "FileNotFoundError: helper.py\n3 errors during collection",
+                )
+            ],
+        )
+
+        assert (
+            check.main(["prog", "0.45.1", str(tmp_path / "core.whl"), "--dist-dir", str(tmp_path)])
+            == 1
+        )
+        captured = capsys.readouterr()
+        assert "FAIL published maf-sandbox-acas 0.28.0" in captured.out
+        assert "FileNotFoundError: helper.py" in captured.out
+        assert "inspect the diagnostics" in captured.err
+        assert "break is real" not in captured.err
+
     def test_an_empty_dist_directory_is_a_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
