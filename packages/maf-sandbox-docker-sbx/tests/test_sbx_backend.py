@@ -649,6 +649,13 @@ class TestAllowlist:
         with pytest.raises(SbxHostNotConfined, match="retired"):
             asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
 
+    def test_governance_activated_later_is_drift(self, backend, sbx):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        sbx.governance = {"active": True}
+        with pytest.raises(SbxHostNotConfined, match="governance is active"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        assert sandbox.instance_id in backend.retired
+
     def test_a_warm_acquire_checks_again_and_refuses_changed_egress(self, backend, sbx):
         asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
         with pytest.raises(ValueError, match="before changing its egress"):

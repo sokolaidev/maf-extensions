@@ -1033,15 +1033,26 @@ class SbxSandboxBackend:
 
     async def _plan_allowlist(self, name: str, entries: tuple[Requested, ...]) -> EgressPlan:
         """The rules that give ``name`` exactly ``entries``; refuses a host posture in the way."""
-        probe = entries[0].domain if entries else "example.invalid"
-        checked, listed, policy = await asyncio.gather(
-            self._sbx("policy", "check", "network", "--json", probe),
+        governed, listed, policy = await asyncio.gather(
+            self._governed(entries),
             self._sbx("secret", "ls", "--json"),
             self._sbx("policy", "ls", "--json"),
         )
         for what, result in (("sbx secret ls", listed), ("sbx policy ls", policy)):
             if result.returncode != 0:
                 raise _failure(what, result)
+        refusal = posture_refusal(entries, listed.stdout, name, governed=governed)
+        if refusal is not None:
+            raise SbxHostNotConfined(refusal)
+        try:
+            return plan_for(entries, global_allows(policy.stdout))
+        except PostureRefused as refused:
+            raise SbxHostNotConfined(str(refused)) from None
+
+    async def _governed(self, entries: tuple[Requested, ...]) -> bool:
+        """Whether organization governance is active, under which local rules do not apply."""
+        probe = entries[0].domain if entries else "example.invalid"
+        checked = await self._sbx("policy", "check", "network", "--json", probe)
         try:
             governance = cast("dict[str, object]", json.loads(checked.stdout)).get("governance")
         except ValueError:
@@ -1056,13 +1067,7 @@ class SbxSandboxBackend:
                 "`sbx policy check --json` did not say whether governance is active, so whether "
                 "this host's rules apply cannot be told; refusing rather than assuming they do"
             )
-        refusal = posture_refusal(entries, listed.stdout, name, governed=active is True)
-        if refusal is not None:
-            raise SbxHostNotConfined(refusal)
-        try:
-            return plan_for(entries, global_allows(policy.stdout))
-        except PostureRefused as refused:
-            raise SbxHostNotConfined(str(refused)) from None
+        return active is True
 
     async def _open_allowlist(self, name: str, plan: EgressPlan) -> None:
         """Set the plan's rules, then lift the create's ``**`` deny, which beat them until now."""
@@ -1085,14 +1090,16 @@ class SbxSandboxBackend:
 
     async def check_allowlist(self, name: str, instance: str, allowlist: _Allowlist) -> None:
         """Refuse, and retire the instance, once the host's rules or secrets widen its egress."""
-        policy, listed = await asyncio.gather(
-            self._sbx("policy", "ls", name, "--json"), self._sbx("secret", "ls", "--json")
+        governed, policy, listed = await asyncio.gather(
+            self._governed(allowlist.entries),
+            self._sbx("policy", "ls", name, "--json"),
+            self._sbx("secret", "ls", "--json"),
         )
         for what, result in (("sbx policy ls", policy), ("sbx secret ls", listed)):
             if result.returncode != 0:
                 raise _failure(what, result)
         reason = drift(allowlist.entries, allowlist.plan, policy.stdout, name) or posture_refusal(
-            allowlist.entries, listed.stdout, name, governed=False
+            allowlist.entries, listed.stdout, name, governed=governed
         )
         if reason is None:
             return
