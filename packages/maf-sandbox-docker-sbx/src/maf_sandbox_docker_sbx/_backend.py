@@ -1064,24 +1064,26 @@ class SbxSandboxBackend:
         probe = entries[0].domain if entries else "example.invalid"
         checked = await self._sbx("policy", "check", "network", "--json", probe)
         try:
-            verdict = cast("dict[str, object]", json.loads(checked.stdout))
+            verdict: object = json.loads(checked.stdout)
         except ValueError:
             raise _failure("sbx policy check", checked) from None
+        fields = cast("dict[str, object]", verdict) if isinstance(verdict, dict) else {}
+        allowed = fields.get("allowed")
         # A denial exits 1 with a whole verdict; only that and an allowed exit 0 are answers.
-        if (checked.returncode, verdict.get("allowed")) not in ((0, True), (1, False)):
+        if not isinstance(allowed, bool) or checked.returncode != (0 if allowed else 1):
             raise _failure("sbx policy check", checked)
-        governance = verdict.get("governance")
+        governance = fields.get("governance")
         active = (
             cast("dict[str, object]", governance).get("active")
             if isinstance(governance, dict)
             else None
         )
-        if active not in (True, False):
+        if not isinstance(active, bool):
             raise SbxError(
                 "`sbx policy check --json` did not say whether governance is active, so whether "
                 "this host's rules apply cannot be told; refusing rather than assuming they do"
             )
-        return active is True
+        return active
 
     async def _open_allowlist(self, name: str, plan: EgressPlan) -> EgressPlan:
         """Set the plan's rules, then lift the create's ``**`` deny, which beat them until now.

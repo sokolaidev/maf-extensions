@@ -606,6 +606,8 @@ class TestAllowlist:
             ({"active": True}, SbxHostNotConfined, "governance is active"),
             (None, SbxError, "did not say whether governance is active"),
             ({}, SbxError, "did not say whether governance is active"),
+            ({"active": 1}, SbxError, "did not say whether governance is active"),
+            ({"active": 0}, SbxError, "did not say whether governance is active"),
         ],
     )
     def test_governance_active_or_unreported_is_refused(
@@ -636,6 +638,9 @@ class TestAllowlist:
             (1, {"allowed": True, "governance": {"active": False}}),
             (1, {"governance": {"active": False}}),
             (0, {"allowed": False, "governance": {"active": False}}),
+            (0, {"allowed": 1, "governance": {"active": False}}),
+            (1, {"allowed": 0, "governance": {"active": False}}),
+            (1, ["allowed", False]),
         ],
     )
     def test_a_policy_check_that_is_not_a_verdict_is_refused(self, backend, sbx, code, verdict):
