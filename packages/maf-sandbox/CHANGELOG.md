@@ -4,6 +4,8 @@ All notable changes to `maf-sandbox` are documented here. The format follows [Ke
 
 ## [0.45.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.45.0...maf-sandbox-v0.45.1) (2026-09-30)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created, but it never reached PyPI. The [publish run](https://github.com/sokolaidev/maf-extensions/actions/runs/36742372879/job/109982683186) stopped before upload because the compatibility checker recovered the published ACAS tests without the package scripts they load. [#1589](https://github.com/sokolaidev/maf-extensions/pull/1589) repairs the checker; the replacement release is planned as `0.45.2`. The generated entry below records the fix included in this unpublished version.
+
 
 ### Fixes
 
