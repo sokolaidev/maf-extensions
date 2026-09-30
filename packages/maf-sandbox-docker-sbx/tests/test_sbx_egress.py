@@ -93,6 +93,12 @@ def test_a_service_secret_scoped_to_another_sandbox_does_not_refuse():
     assert posture_refusal(entries, other, "mine", governed=False) is None
     mine = _secrets(secrets=[{"scope": "sandbox:mine", "name": "github"}])
     assert "github" in (posture_refusal(entries, mine, "mine", governed=False) or "")
+    for scope in ("sandbox:not-mine", "mine-2", "sandbox:mine-2"):
+        others = _secrets(secrets=[{"scope": scope, "name": "github"}])
+        assert posture_refusal(entries, others, "mine", governed=False) is None, scope
+    for scope in ("mine", "sandbox/mine"):
+        exact = _secrets(secrets=[{"scope": scope, "name": "github"}])
+        assert posture_refusal(entries, exact, "mine", governed=False) is not None, scope
 
 
 def test_a_custom_secret_whose_range_covers_an_allowed_host_refuses():

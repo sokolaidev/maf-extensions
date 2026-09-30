@@ -228,7 +228,9 @@ def test_a_global_allow_added_later_retires_an_allowlisted_sandbox(tmp_path):
                         "policy", "check", "network", "--json", "--sandbox", sandbox.name, late
                     ).stdout
                 )
-                print(f"{late} for the sandbox once allowed globally: {checked.get('allowed')}")
+                # The drift check matters only because a later global allow reaches a running
+                # sandbox; if sbx stops doing that, this test must say so rather than pass.
+                assert checked.get("allowed") is True, checked
                 with pytest.raises(SbxHostNotConfined, match="retired"):
                     await sandbox.exec(["true"], working_directory=".", timeout=60)
                 assert sandbox.instance_id in backend.retired

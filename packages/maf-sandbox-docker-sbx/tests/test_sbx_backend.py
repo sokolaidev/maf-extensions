@@ -723,6 +723,30 @@ class TestAllowlist:
         with pytest.raises(SbxHostNotConfined, match="retired"):
             asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
 
+    @pytest.mark.parametrize("call", ["remove", "reclaim"])
+    def test_a_removal_after_drift_starts_no_guest_program(self, backend, sbx, tmp_path, call):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        asyncio.run(sandbox.write_file("gone/file", b"x", working_directory="."))
+        sbx.global_allows = ["late.test"]
+        ran = sum(_EXEC_SCRIPT in c for c in sbx.calls)
+        with pytest.raises(SbxHostNotConfined, match="late.test"):
+            if call == "remove":
+                asyncio.run(sandbox.remove("gone", working_directory=".", recursive=True))
+            else:
+                asyncio.run(sandbox.reclaim("gone", working_directory=".", timeout=5))
+        assert sum(_EXEC_SCRIPT in c for c in sbx.calls) == ran
+        with pytest.raises(SbxError, match="may reach more than its allowlist"):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+
+    def test_a_drift_retirement_is_named_in_another_process(self, backend, sbx, tmp_path):
+        sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
+        sbx.global_allows = ["late.test"]
+        with pytest.raises(SbxHostNotConfined):
+            asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
+        other = SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
+        assert other._is_retired(sandbox.name, sandbox.instance_id)
+        assert "allowlist" in (other.retirement_reason(sandbox.instance_id) or "")
+
     def test_governance_activated_later_is_drift(self, backend, sbx):
         sandbox = asyncio.run(backend.acquire(KEY, _allowlist("pypi.org")))
         sbx.governance = {"active": True}

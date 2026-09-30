@@ -108,6 +108,7 @@ _CAPABILITIES = frozenset(
 #: Every verb the live suite has seen `sbx policy allow network --method` accept.
 _METHOD_TOKENS = frozenset(str(method) for method in HttpMethod)
 _DEFAULT_BASE = "/maf-sandbox/work"
+_CLEANUP_FAILED = "an expired command's cleanup failed, so it may still run there"
 #: Every create mounts a fresh directory of its own, so `sbx ls` names whose create made a
 #: sandbox and no VM ever mounts an earlier one's files.
 _WORKSPACE_PREFIX = "ws-"
@@ -373,10 +374,10 @@ class _SbxSandbox:
         return self._allowlist
 
     def _refuse_if_retired(self) -> None:
-        if self._instance_id in self._backend.retired:
+        reason = self._backend.retirement_reason(self._instance_id)
+        if reason is not None:
             raise SbxError(
-                f"sandbox {self._name} was retired: an expired command's cleanup failed, so it "
-                "may still run there. Acquire again for a replacement."
+                f"sandbox {self._name} was retired: {reason}. Acquire again for a replacement."
             )
 
     def _cwd(self, working_directory: str) -> str:
@@ -411,6 +412,21 @@ class _SbxSandbox:
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         if not argv:
             raise ValueError("an argv sequence needs at least one element")
+        return await self._run(argv, cwd=cwd, timeout=timeout, max_output_bytes=max_output_bytes)
+
+    async def _run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: str,
+        timeout: float,
+        max_output_bytes: int = _OUTPUT_LIMIT,
+    ) -> ExecResult:
+        """Start a guest program once the allowlist is known to still hold.
+
+        Every guest program goes through here: the image is the caller's, so its `rm` can use
+        the network as well as any command can.
+        """
         if self._allowlist is not None:
             await self._backend.check_allowlist(self._name, self._instance_id, self._allowlist)
         return await self._backend.run_in_guest(
@@ -500,14 +516,11 @@ class _SbxSandbox:
         # In the guest rather than on the host: a guest that looked a name up keeps seeing it
         # for seconds after the host deletes it.  The guest's authority reaches only its own
         # VM and this workspace, so a swapped component redirects nothing it could not delete.
-        result = await self._backend.run_in_guest(
+        result = await self._run(
             # `-f` alone refuses a directory, so one swapped in after the host's stat survives.
-            self._name,
             ["rm", "-rf" if recursive else "-f", "--", guest],
             cwd="/",
             timeout=timeout,
-            mount=self._mount,
-            instance=self._instance_id,
         )
         if result.exit_code != 0:
             raise OSError(
@@ -537,7 +550,7 @@ class SbxSandboxBackend:
         self._locks_guard = threading.Lock()
         #: Instances an expired command may still start or run in: every handle to one refuses,
         #: and acquire replaces it.  By instance, so a replacement under the same name is not.
-        self._retired: set[str] = set()
+        self._retired: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -559,6 +572,10 @@ class SbxSandboxBackend:
     def retired(self) -> frozenset[str]:
         """Instance ids no handle may use again."""
         return frozenset(self._retired)
+
+    def retirement_reason(self, instance: str) -> str | None:
+        """Why ``instance`` was retired, or ``None`` while it may be used."""
+        return self._retired.get(instance)
 
     # --- the CLI ------------------------------------------------------------------------
 
@@ -662,16 +679,20 @@ class SbxSandboxBackend:
             logger.warning("docker-sbx: the kill in %s failed: %s", name, error)
             killed = False
         if not killed:
-            self._retired.add(instance)
-            await asyncio.to_thread(self._record_retirement, name, instance)
+            await self._retire(name, instance, _CLEANUP_FAILED)
 
-    def _record_retirement(self, name: str, instance: str) -> None:
+    async def _retire(self, name: str, instance: str, reason: str) -> None:
+        self._retired[instance] = reason
+        await asyncio.to_thread(self._record_retirement, name, instance, reason)
+
+    def _record_retirement(self, name: str, instance: str, reason: str) -> None:
         """Mark the record, so a later process replaces the instance too; never raises."""
         meta = self._read_meta(name)
         if meta is None or meta.get("instance_id") != instance:
             return
         try:
-            _write_record(self._directory(name) / _META, {**meta, "retired": True})
+            record = {**meta, "retired": True, "retired_reason": reason}
+            _write_record(self._directory(name) / _META, record)
         except OSError as error:
             logger.warning("docker-sbx: could not record %s as retired: %s", name, error)
 
@@ -680,7 +701,8 @@ class SbxSandboxBackend:
             return True
         meta = self._read_meta(name) or {}
         if meta.get("retired") is True and meta.get("instance_id") == instance:
-            self._retired.add(str(instance))
+            reason = meta.get("retired_reason")
+            self._retired[str(instance)] = reason if isinstance(reason, str) else _CLEANUP_FAILED
             return True
         return False
 
@@ -1127,8 +1149,7 @@ class SbxSandboxBackend:
         )
         if reason is None:
             return
-        self._retired.add(instance)
-        await asyncio.to_thread(self._record_retirement, name, instance)
+        await self._retire(name, instance, f"it may reach more than its allowlist: {reason}")
         raise SbxHostNotConfined(
             f"sandbox {name} may reach more than its allowlist: {reason}. It is retired; "
             "acquire again for a replacement."

@@ -280,8 +280,9 @@ def posture_refusal(
     payload = cast("dict[str, object]", json.loads(secrets_json))
 
     def reaches(secret: dict[str, object]) -> bool:
+        # Whatever prefix sbx puts before a sandbox's name, the name must match whole.
         scope = str(secret.get("scope"))
-        return scope == "global" or sandbox in scope
+        return scope == "global" or re.split(r"[:/]", scope)[-1] == sandbox
 
     services = cast("list[dict[str, object]]", payload.get("secrets") or [])
     mine = [s for s in services if reaches(s)]
