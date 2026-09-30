@@ -119,6 +119,30 @@ def test_published_core_shards_run_alongside_packaging_with_complete_wheel_sets(
     assert "check_dependent_works_with_published_cores.py" not in packaging
 
 
+def test_offline_groups_keep_full_discovery_parallel_workers_and_required_results():
+    job = JOBS["suite"]
+    assert job["strategy"] == {
+        "fail-fast": False,
+        "matrix": {"group": ["repository", "packages"]},
+    }
+    assert not job.get("continue-on-error", False)
+    check = next(step for step in job["steps"] if step.get("name") == "Tests")
+    assert check["if"] == "needs.changes.outputs.code == 'true'"
+    assert not check.get("continue-on-error", False)
+    assert check["env"] == {"OFFLINE_GROUP": "${{ matrix.group }}"}
+    assert check["run"] == (
+        "uv run python -m pytest -q -n auto -p scripts.offline_test_shards "
+        '--offline-group "$OFFLINE_GROUP" --durations=40 '
+        '--junitxml="$RUNNER_TEMP/offline-suite.xml" -o junit_family=xunit1'
+    )
+    report = next(
+        step for step in job["steps"] if step.get("name") == "Retain offline suite timings"
+    )
+    assert report["if"] == "always() && needs.changes.outputs.code == 'true'"
+    assert report["with"]["name"] == "offline-suite-timings-${{ matrix.group }}"
+    assert report["with"]["if-no-files-found"] == "error"
+
+
 def test_public_https_relay_requires_explicit_dispatch_opt_in():
     triggers = WORKFLOW.get("on", WORKFLOW.get(True))
     option = triggers["workflow_dispatch"]["inputs"]["hyperlight_https"]
