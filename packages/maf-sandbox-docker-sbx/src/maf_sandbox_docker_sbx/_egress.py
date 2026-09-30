@@ -26,6 +26,7 @@ __all__ = [
     "drift",
     "fingerprint",
     "global_allows",
+    "own_rules",
     "plan_for",
     "posture_refusal",
     "requested",
@@ -96,12 +97,15 @@ class EgressPlan:
     denies: tuple[str, ...]
     #: The active global allows when the plan was made; a later one widens the sandbox.
     globals: frozenset[str]
+    #: The sandbox's own rules as `sbx` reported them once they were set, each as sorted JSON.
+    rules: tuple[str, ...] = ()
 
     def record(self) -> dict[str, object]:
         return {
             "allows": [list(args) for args in self.allows],
             "denies": list(self.denies),
             "globals": sorted(self.globals),
+            "rules": list(self.rules),
         }
 
     @classmethod
@@ -116,6 +120,7 @@ class EgressPlan:
                 ),
                 tuple(str(d) for d in fields["denies"]),
                 frozenset(str(g) for g in fields["globals"]),
+                tuple(str(r) for r in fields["rules"]),
             )
         except (KeyError, TypeError):
             return None
@@ -299,11 +304,26 @@ def plan_for(entries: Sequence[Requested], globals_: frozenset[str]) -> EgressPl
         if verdict == "disjoint":
             denies.append(resource)
     for entry in entries:
-        # `*.x` is subdomains only; sbx's `**.x` also admits `x`, unless something else asks.
-        if entry.wildcard and not any(other.matches(entry.domain) for other in entries):
-            denies.append(entry.domain)
+        # `*.x` is subdomains only, and sbx's `**.x` also admits `x`. A deny for `x` beats every
+        # allow for it in the same scope, so a scoped rule for `x` cannot be kept beside it.
+        if not entry.wildcard or _covers(entries, entry.domain):
+            continue
+        if any(other.matches(entry.domain) for other in entries):
+            raise ValueError(
+                f"{entry.host!r} with a method or path rule for {entry.domain!r} cannot be "
+                f"enforced: sbx's rule for {entry.host!r} admits every request to "
+                f"{entry.domain!r}. Allow {entry.domain!r} for all requests, or drop the wildcard"
+            )
+        denies.append(entry.domain)
     allows = tuple(args for entry in entries for args in _allow_args(entry))
     return EgressPlan(allows, tuple(dict.fromkeys(denies)), globals_)
+
+
+def own_rules(policy_json: bytes, sandbox: str) -> tuple[str, ...]:
+    """The sandbox's own rules from ``sbx policy ls <sandbox> --json``, each as sorted JSON."""
+    rules = cast("list[dict[str, object]]", json.loads(policy_json).get("rules") or [])
+    scope = f"sandbox:{sandbox}"
+    return tuple(sorted(json.dumps(r, sort_keys=True) for r in rules if r.get("scope") == scope))
 
 
 def drift(
@@ -313,19 +333,6 @@ def drift(
     for resource in sorted(global_allows(policy_json) - plan.globals):
         if classify(resource, entries) != "covered":
             return f"the global allow {resource!r} was added after this sandbox opened"
-    rules = cast("list[dict[str, object]]", json.loads(policy_json).get("rules") or [])
-    own = [r for r in rules if r.get("scope") == f"sandbox:{sandbox}"]
-    if inactive := [str(r.get("id")) for r in own if r.get("status") != "active"]:
-        return f"the sandbox's rules {inactive} are no longer active"
-    denied: set[str] = set()
-    allowed: set[str] = set()
-    for rule in own:
-        resources = {str(r) for r in cast("list[object]", rule.get("resources") or [])}
-        targets = cast("list[dict[str, object]]", rule.get("http_targets") or [])
-        resources |= {str(t.get("host")) for t in targets if t.get("host")}
-        (denied if rule.get("decision") == "deny" else allowed).update(resources)
-    if missing := sorted(set(plan.denies) - denied):
-        return f"the sandbox's deny rules for {missing[:5]} were removed"
-    if extra := sorted(allowed - {args[0] for args in plan.allows}):
-        return f"allow rules for {extra[:5]} were added to the sandbox"
+    if own_rules(policy_json, sandbox) != plan.rules:
+        return "the sandbox's own rules were changed after it opened"
     return None

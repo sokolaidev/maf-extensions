@@ -27,7 +27,7 @@ import secrets
 import shutil
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -69,6 +69,7 @@ from ._egress import (
     drift,
     fingerprint,
     global_allows,
+    own_rules,
     plan_for,
     posture_refusal,
     requested,
@@ -812,7 +813,8 @@ class SbxSandboxBackend:
             if row is None and self._read_meta(name) is not None:
                 await self._confirm_absent(name)
             if row is None:
-                plan = None if entries is None else await self._plan_allowlist(name, entries)
+                # An empty allowlist admits nothing, which the create's deny-all rule already does.
+                plan = await self._plan_allowlist(name, entries) if entries else None
                 sandbox, created = await self._create(name, key, spec, base, entries, plan)
             else:
                 sandbox, created = self._adopt(key, name, row, spec, base, entries), False
@@ -880,7 +882,7 @@ class SbxSandboxBackend:
                 "dispose it before changing its egress"
             )
         allowlist = None
-        if entries is not None:
+        if entries:
             plan = EgressPlan.from_record(meta.get("egress_plan"))
             if plan is None:
                 raise SbxError(f"sandbox {name}'s record does not say which rules it was given")
@@ -934,9 +936,8 @@ class SbxSandboxBackend:
             "egress_allow": None if entries is None else fingerprint(entries),
         }
         allowlist = None
-        if entries is not None and plan is not None:
+        if entries and plan is not None:
             allowlist = _Allowlist(entries, plan)
-            meta["egress_plan"] = plan.record()
         args = [
             "create",
             "shell",
@@ -983,7 +984,10 @@ class SbxSandboxBackend:
             await self._prove_the_mount(sandbox)
             await self.check_sandbox(name)
             if allowlist is not None:
-                await self._open_allowlist(name, allowlist.plan)
+                allowlist = _Allowlist(
+                    allowlist.entries, await self._open_allowlist(name, allowlist.plan)
+                )
+                meta["egress_plan"] = allowlist.plan.record()
                 sandbox = self._sandbox(name, row, base, guest_mount, workspace, allowlist)
             # Last, so a record another process can read means the sandbox is ready to serve.
             meta["instance_id"] = sandbox.instance_id
@@ -1069,8 +1073,12 @@ class SbxSandboxBackend:
             )
         return active is True
 
-    async def _open_allowlist(self, name: str, plan: EgressPlan) -> None:
-        """Set the plan's rules, then lift the create's ``**`` deny, which beat them until now."""
+    async def _open_allowlist(self, name: str, plan: EgressPlan) -> EgressPlan:
+        """Set the plan's rules, then lift the create's ``**`` deny, which beat them until now.
+
+        Returns the plan with the sandbox's rules as ``sbx`` now reports them, which every later
+        check compares against.
+        """
         scoped = ("policy", "allow", "network", "--sandbox", name)
         if plan.denies:
             await self._run_setup(
@@ -1087,6 +1095,10 @@ class SbxSandboxBackend:
             "lifting the deny-all rule",
             *("policy", "rm", "network", "--sandbox", name, "--resource", "**", "--force"),
         )
+        listed = await self._run_setup(
+            "reading the sandbox's rules", "policy", "ls", name, "--json"
+        )
+        return replace(plan, rules=own_rules(listed.stdout, name))
 
     async def check_allowlist(self, name: str, instance: str, allowlist: _Allowlist) -> None:
         """Refuse, and retire the instance, once the host's rules or secrets widen its egress."""

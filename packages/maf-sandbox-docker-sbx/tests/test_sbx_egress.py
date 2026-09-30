@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 from maf_sandbox import EgressRule, HttpMethod
@@ -11,6 +12,7 @@ from maf_sandbox_docker_sbx._egress import (
     PostureRefused,
     classify,
     drift,
+    own_rules,
     plan_for,
     posture_refusal,
     requested,
@@ -94,20 +96,24 @@ def test_a_custom_secret_whose_range_covers_an_allowed_host_refuses():
     assert "'K'" in (posture_refusal(entries, ranged, "mine", governed=False) or "")
 
 
-def test_an_inactive_sandbox_rule_is_drift():
-    entries = requested(("pypi.org",))
-    plan = plan_for(entries, frozenset())
-    rules = [
-        {
-            "id": "r1",
-            "scope": "sandbox:mine",
-            "resource_type": "network",
-            "decision": "allow",
-            "resources": ["pypi.org"],
-            "status": "inactive",
-        }
-    ]
-    policy = json.dumps({"rules": rules}).encode()
-    assert "no longer active" in (drift(entries, plan, policy, "mine") or "")
-    rules[0]["status"] = "active"
-    assert drift(entries, plan, json.dumps({"rules": rules}).encode(), "mine") is None
+def test_drift_compares_the_whole_rule_not_its_host():
+    entries = requested((EgressRule("pypi.org", methods=("GET",)),))
+    scoped = {"id": "r1", "scope": "sandbox:mine", "decision": "allow", "resources": ["pypi.org"]}
+    scoped["methods"] = ["GET"]
+    policy = json.dumps({"rules": [scoped]}).encode()
+    plan = replace(plan_for(entries, frozenset()), rules=own_rules(policy, "mine"))
+    assert drift(entries, plan, policy, "mine") is None
+    widened = {**scoped, "id": "r2", "methods": None}
+    assert "own rules" in (
+        drift(entries, plan, json.dumps({"rules": [widened]}).encode(), "mine") or ""
+    )
+    inactive = {**scoped, "status": "inactive"}
+    assert "own rules" in (
+        drift(entries, plan, json.dumps({"rules": [inactive]}).encode(), "mine") or ""
+    )
+
+
+def test_a_wildcard_with_a_host_wide_bare_name_needs_no_deny():
+    scoped_elsewhere = EgressRule("api.example.com", methods=("GET",))
+    plan = plan_for(requested(("*.example.com", "example.com", scoped_elsewhere)), frozenset())
+    assert plan.denies == ()

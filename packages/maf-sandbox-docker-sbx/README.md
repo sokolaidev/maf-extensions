@@ -109,7 +109,7 @@ A missing working directory exits 125 with the shell's message on stderr.
 
 Every sandbox is created with `--deny-network "**"`. A per-sandbox deny beats every global allow rule and every allow added later, so the sandbox has no network whatever the host's global policy says. A denied raw TCP connection still connects to Docker's proxy and then carries no data.
 
-`Egress.ALLOWLIST` opens exactly the hosts in `egress_allow`, with `EgressRule` methods and paths enforced by the `sbx` proxy, so the backend declares `EGRESS_METHODS` and `EGRESS_PATHS`. The sandbox is created closed, gets its rules, and only then loses the `**` deny, so no command runs while it is open wider. `api.example.com` allows that host on every port. `*.example.com` allows subdomains at any depth and denies `example.com` itself unless it is listed too. A path `/v1/*` allows `/v1` and everything under it. `authority` rules are refused.
+`Egress.ALLOWLIST` opens exactly the hosts in `egress_allow`, with `EgressRule` methods and paths enforced by the `sbx` proxy, so the backend declares `EGRESS_METHODS` and `EGRESS_PATHS`. The sandbox is created closed, gets its rules, and only then loses the `**` deny, so no command runs while it is open wider. `api.example.com` allows that host on every port. `*.example.com` allows subdomains at any depth and denies `example.com` itself unless it is listed too. Listing `example.com` beside it only with a method or path rule is refused, since `sbx` cannot keep that rule next to the wildcard. An empty `egress_allow` keeps the sandbox closed and needs none of the host checks below. A path `/v1/*` allows `/v1` and everything under it. `authority` rules are refused.
 
 Global allow rules apply to every sandbox, so the backend reads them at acquire and denies each one for the new sandbox. That works only when the host's state lets the allowlist be exact, and acquire refuses with `SbxHostNotConfined` when it does not:
 
@@ -118,7 +118,7 @@ Global allow rules apply to every sandbox, so the backend reads them at acquire 
 - a custom secret whose target the allowlist reaches;
 - active organization governance, under which this host's rules do not apply.
 
-The host can change this state after acquire. So before every command, and at every warm acquire, the backend reads the rules, the secrets and the governance state again. If a new global allow reaches the sandbox, a service secret appears, governance becomes active, or the sandbox's own rules have changed, the command is refused and the sandbox retired; the next acquire replaces it with fresh rules. A process already running when the host changes keeps that access until it ends.
+The host can change this state after acquire. So before every command, and at every warm acquire, the backend reads the rules, the secrets and the governance state again. If a new global allow reaches the sandbox, a service secret appears, governance becomes active, or any of the sandbox's own rules differs from what `sbx` reported when it opened, the command is refused and the sandbox retired; the next acquire replaces it with fresh rules. A process already running when the host changes keeps that access until it ends.
 
 A sandbox keeps the allowlist it was created with. Acquiring its key with different `egress` or `egress_allow` raises `ValueError`; dispose it first.
 
