@@ -224,16 +224,29 @@ def classify(resource: str, entries: Sequence[Requested]) -> str:
     ):
         return "covered"
     for e in entries:
-        if e.wildcard:
-            if (
-                suffix == e.domain
-                or suffix.endswith("." + e.domain)
-                or e.domain.endswith("." + suffix)
-            ):
-                return "overlap"
-        elif exact.fullmatch(e.host):
+        if _may_reach_subdomain(host, e.domain) if e.wildcard else exact.fullmatch(e.host):
             return "overlap"
     return "disjoint"
+
+
+def _may_reach_subdomain(pattern: str, domain: str) -> bool:
+    """Whether a glob may match some host under ``domain``; ``True`` unless disjointness is proved.
+
+    Labels are compared from the right, each glob label against the literal one. A label holding
+    ``**`` can span any number of labels, so it proves nothing.
+    """
+    labels, wanted = pattern.split("."), domain.split(".")
+    for glob, label in zip(reversed(labels), reversed(wanted), strict=False):
+        if "**" in glob:
+            return True
+        try:
+            if not _glob_regex(glob).fullmatch(label):
+                return False
+        except re.error:
+            return True
+    # Every label was compared and none holds `**`, so the glob matches hosts of exactly its own
+    # label count, while a subdomain has more.
+    return len(labels) > len(wanted)
 
 
 def global_allows(policy_json: bytes) -> frozenset[str]:
