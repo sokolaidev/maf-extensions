@@ -60,6 +60,7 @@ Pass a sequence of entries. A bare string is refused instead of being treated as
 | Docker | `CLOSED` through no-network mode; host, method and path allowlisting through configured iron-proxy and an isolated workload network |
 | WSLC | No-network mode or configured iron-proxy; host, method and path rules with engine-specific limits |
 | Hyperlight | Runtime HTTP permissions; closed or exact-host allowlisting with standard-method rules, without wildcards or path rules |
+| Docker Sandboxes | Per-sandbox `sbx` proxy rules: a deny-all rule for `CLOSED`; host, method and path allowlisting, refused while a global allow rule or a stored secret would widen it, and rechecked before every command |
 | In-process fake | Test declarations only; no network containment |
 
 ACAS refuses a warm sandbox requested with a different mode, normalized host set or method policy through `AcasEgressPolicyConflict`. Dispose it or use a different key. The conflict does not evict the original sandbox.

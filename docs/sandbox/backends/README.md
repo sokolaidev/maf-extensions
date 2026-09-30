@@ -28,7 +28,7 @@ The router's default minimum is `MICROVM`. Docker and WSLC require an explicit h
 | Backend | Network policy | Guest OS declaration | Sharing |
 |---|---|---|---|
 | ACAS | `CLOSED`, host `ALLOWLIST` | POSIX | Conversation or call |
-| Docker Sandboxes | `CLOSED` | POSIX | Conversation |
+| Docker Sandboxes | `CLOSED`; `ALLOWLIST` with method and path rules, while host rules and secrets leave it exact | POSIX | Conversation |
 | Docker | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX when the async factory confirms a Linux daemon | Conversation or call |
 | WSLC | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX | Conversation or call |
 | Hyperlight | `CLOSED`, exact-host HTTP/HTTPS `ALLOWLIST` | None; language runtime | Conversation, one owning host process |
@@ -91,7 +91,7 @@ For implementation, use [writing a backend](writing-a-backend.md). For ACAS auth
 |---|---|---|
 | Backend selection and declarations | Implemented | [Policy and isolation](../policy-isolation.md), [capabilities](../capabilities.md) |
 | Service and container backends | Implemented with the limits above | [ACAS](acas.md), [Docker](docker.md), [WSLC](wslc.md) |
-| Local microVM backend | Implemented, `CLOSED` only; live CI added | [Docker Sandboxes](docker-sbx.md) |
+| Local microVM backend | Implemented, `CLOSED` and `ALLOWLIST`; live CI added | [Docker Sandboxes](docker-sbx.md) |
 | Packaged Python runtime | Implemented for the supported host family | [Hyperlight](hyperlight.md) |
 | Test backend | Implemented; no security boundary | [In-process](in-process.md) |
 | Credential ownership and retention | Defined per backend and deployment | [ACAS credentials](acas-credentials.md), [operations](../operations.md) |
