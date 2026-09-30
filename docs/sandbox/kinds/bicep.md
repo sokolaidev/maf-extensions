@@ -58,7 +58,7 @@ The banner is returned for BCP190, BCP191 or BCP192. It tells the model that mod
 
 ## Result labels and tool flow
 
-The compiler and its input files are sources of the diagnostic text. The kind therefore claims `untrusted` for that text, including counts.
+The compiler and its input files are sources of the diagnostic text. The kind therefore defaults to `untrusted` for that text, including counts. With `Egress.CLOSED`, at least one accepted file read and trusted evidence for every read, core labels the report trusted. The default restore allowlist keeps it untrusted, even when no restore occurs.
 
 The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `valid` or `invalid`, and only where the compiler answered for every file it was given. `completed` is false where it did not: a refused name, a file that could not be staged, a timeout, unreadable SARIF, or a module restore failure, which leaves module input type checking undone. A call that did not complete carries no verdict.
 
@@ -74,11 +74,11 @@ When diagnostics exist, a separate `trusted_output` item contains a JSON summary
 
 Files select argument references such as `files[0]` through matches against successfully staged paths. Absolute reports may include a backend-owned base; attribution requires the complete call-directory component and an exact staged path beneath it. A filename suffix alone cannot identify a file. Raw paths and hidden names never enter the summary. Unknown locations select `unattributed`; duplicate destinations use their first argument position. Records are deduplicated across phases, sorted and capped at 128. The Boolean fields `unrecognized_diagnostics`, `unattributed_locations` and `truncated` report gaps without exposing unknown text or counts. An empty selected subset does not mean the report is clean. Summary items retain the call's confidentiality. Completion and verdict still cover every requested file, including failures that prevent a definitive result.
 
-![Bicep validation is a source tool. Its wrapper declares trusted integrity to the framework while retaining an untrusted workload claim. Diagnostics are untrusted content; fixed guidance is trusted content. Both retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. Later calls to file writers or other tools face the destination's integrity and confidentiality policy.](../assets/bicep-information-flow.svg)
+![Bicep validation is a source tool. Its wrapper declares trusted integrity to the framework while retaining an untrusted workload claim. Diagnostics are trusted only with closed egress and all accepted file reads trusted; otherwise they are untrusted. Fixed guidance is trusted content. Both retain the call's effective confidentiality. FIDES shows text or a hidden reference to the model. Later calls to file writers or other tools face the destination's integrity and confidentiality policy.](../assets/bicep-information-flow.svg)
 
 The wrapper exposes `source_integrity="trusted"` and keeps the workload claim in `maf_sandbox_derived_integrity`. It rebuilds the fixed guidance on every normal return, including refusals.
 
-In a trusted conversation with automatic hiding enabled, FIDES hides the compiler's output and leaves the completion line, the verdict, any refusal and the guidance readable. The guidance says what the hidden half is and points at the verdict. Hidden content still contributes confidentiality.
+In a trusted conversation with automatic hiding enabled, FIDES hides untrusted compiler output and leaves the completion line, the verdict, any refusal and the guidance readable. The guidance says what the hidden half is and points at the verdict. Hidden content still contributes confidentiality.
 
 The host classifies results and controls destination policy. Passing hidden diagnostics to another tool remains subject to that policy. See [information flow](../information-flow.md).
 

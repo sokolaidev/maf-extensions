@@ -45,7 +45,7 @@ Both validation tools emit a `terraform_diagnostics` JSON item after completed v
 {"type":"terraform_diagnostics","diagnostics":[{"file":"files[0]","severity":"error"}],"unattributed_diagnostics":false}
 ```
 
-The [Terraform validation format](https://developer.hashicorp.com/terraform/cli/commands/validate#json-output-format) and [OpenTofu validation format](https://opentofu.org/docs/cli/commands/validate/#json-output-format) provide severity and optional source ranges without stable rule IDs. The kind selects only diagnostic presence for an input and severity. It does not derive categories or IDs from summary or detail text. Provider messages, expressions, addresses, snippets, source positions and raw counts remain untrusted.
+The [Terraform validation format](https://developer.hashicorp.com/terraform/cli/commands/validate#json-output-format) and [OpenTofu validation format](https://opentofu.org/docs/cli/commands/validate/#json-output-format) provide severity and optional source ranges without stable rule IDs. The kind selects only diagnostic presence for an input and severity. It does not derive categories or IDs from summary or detail text. Provider messages, expressions, addresses, snippets, source positions and raw counts stay in workload output, subject to the file-read checks below.
 
 Each `file` is one of the fixed references `files[0]` through `files[63]`, preserving manifest order. A diagnostic filename must exactly match a successfully staged path expressed relative to `root_module`, the CLI's working directory. This includes sibling-module paths such as `../modules/child/main.tf`. There is no basename, suffix, URI or absolute-path inference. Hidden file and root names are never emitted.
 
@@ -59,7 +59,7 @@ Set `formatting=True` to attach a separate formatting tool. Its separate name le
 
 The formatting tool accepts the same manifest and root. It runs `fmt -recursive -no-color` without dependency initialization or validation. A base image with no providers is sufficient.
 
-The result reports completion and a readable `changed` or `unchanged` verdict. Its untrusted report contains a JSON mapping from store-relative paths to whole changed files. Unchanged files are omitted. Every returned path must belong to the staged manifest. An incomplete call has no verdict or partial formatted files.
+The result reports completion and a readable `changed` or `unchanged` verdict. Its workload report contains a JSON mapping from store-relative paths to whole changed files. Unchanged files are omitted. Every returned path must belong to the staged manifest. An incomplete call has no verdict or partial formatted files.
 
 | Bound | Behavior |
 |---|---|
@@ -72,9 +72,9 @@ An oversized project needs a smaller complete manifest. A single changed file la
 
 ## Result labels and tool flow
 
-Provider programs and stored configuration are sources of the reports. Formatted file contents also come from that configuration. The kind claims `untrusted` for both validation and formatting output.
+Provider programs and stored configuration are sources of the reports. Formatted file contents also come from that configuration. The kind defaults to `untrusted` for both validation and formatting output. Egress is closed and no host-tool sources are enabled, so core labels the reports trusted after at least one accepted file read when every read is trusted. Any unknown or untrusted read makes them untrusted; no reads retain the default claim.
 
-![Terraform and OpenTofu tools return readable completion, a valid/invalid or changed/unchanged verdict when complete, diagnostic summaries, fixed failure reasons, and standing guidance. Engine reports and formatted files remain untrusted and may be hidden by FIDES. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
+![Terraform and OpenTofu tools return readable completion, a valid/invalid or changed/unchanged verdict when complete, diagnostic summaries, fixed failure reasons, and standing guidance. Engine reports and formatted files follow the host file evidence: all accepted reads trusted yields trusted output; unknown or untrusted reads yield untrusted output, which FIDES may hide. The wrapper's framework declaration is trusted, while the workload claim remains untrusted. Items retain the call's effective confidentiality. A later file-write tool can persist formatted files only after the host's integrity, confidentiality and approval checks. The validation and formatting tools themselves do not write to the host store.](../assets/terraform-information-flow.svg)
 
 The wrapper raises the framework-facing declaration to keep completion, declared verdicts, diagnostic summaries, fixed failure reasons and guidance readable. It stores the workload claim in `maf_sandbox_derived_integrity` and labels engine output separately. Hidden names suppress guest prose in reports. Summaries retain the call's effective confidentiality and never restore an already-untrusted conversation.
 
@@ -94,7 +94,7 @@ The [image guide](../../../images/terraform-sandbox/README.md) owns engine pins,
 
 Dependency preparation is a host-controlled image-build step. It downloads only approved, pinned artifacts, verifies their content and writes a provider mirror, module files and a sanitized receipt. It runs no provider executable on the host.
 
-![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model reads completion and a valid/invalid or changed/unchanged verdict when complete, with diagnostic summaries, fixed failure reasons and guidance. Engine reports and changed whole files stay untrusted. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
+![The host prepares an image online by downloading and verifying approved dependencies. Each later tool call uses a disposable sandbox with networking closed. Session reads stage the project manifest. Validation initializes without backend access, validates and checks formatting; missing dependencies leave it incomplete without downloading replacements. Formatting only runs fmt and needs no prepared providers. The model reads completion and a valid/invalid or changed/unchanged verdict when complete, with diagnostic summaries, fixed failure reasons and guidance. Engine reports and changed whole files follow the file-read integrity checks. Saving those files requires another call to host file tools under integrity, confidentiality and approval policy. Neither sandbox tool writes the agent store, and core disposes the sandbox.](../assets/terraform-offline-flow.svg)
 
 | Dependency | Supported preparation |
 |---|---|

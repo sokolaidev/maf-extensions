@@ -2445,9 +2445,9 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
 
 
 def _result_label(
-    declarations: Mapping[str, Any], fed: FedFromStore | None
+    declarations: Mapping[str, Any], fed: FedFromStore | None, *, file_trust_can_promote: bool
 ) -> dict[str, Any] | None:
-    """Weaken an explicit declaration, carrying the host's confidentiality where it set one.
+    """Apply file evidence subject to other source channels, retaining host confidentiality.
 
     A tool whose declaration was raised to trusted is labelled unconditionally: an item left
     unlabelled there would take the raised declaration.  Its confidentiality floors at
@@ -2476,8 +2476,11 @@ def _result_label(
         if raised is None:
             return None
         classified = ConfidentialityLabel.PUBLIC
-    if fed is not None and fed.weakest is not SourceIntegrity.TRUSTED:
-        declared = IntegrityLabel.UNTRUSTED
+    if fed is not None:
+        if fed.weakest is not SourceIntegrity.TRUSTED:
+            declared = IntegrityLabel.UNTRUSTED
+        elif file_trust_can_promote:
+            declared = IntegrityLabel.TRUSTED
     return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
 
 
@@ -2487,6 +2490,7 @@ def _contract_items(
     tool: str,
     declarations: Mapping[str, Any],
     fed: FedFromStore | None,
+    file_trust_can_promote: bool,
     verdicts: tuple[str | int | bool, ...],
 ) -> list[Content]:
     """Render a :class:`SandboxResult` into one item per part, labelling only the derived ones.
@@ -2532,7 +2536,7 @@ def _contract_items(
     if answer.verdict is not None:
         items.append(Content.from_text(f"Result: {answer.verdict}"))
     items.extend(Content.from_text(text) for text in answer.trusted_output)
-    label = _result_label(declarations, fed)
+    label = _result_label(declarations, fed, file_trust_can_promote=file_trust_can_promote)
     for text in answer.output:
         item = Content.from_text(text)
         if label is not None:
@@ -2549,10 +2553,11 @@ def _label_tool_result(
     call_id: str | None,
     declarations: Mapping[str, Any],
     fed: FedFromStore | None,
+    file_trust_can_promote: bool,
     contract: bool = False,
     verdicts: tuple[str | int | bool, ...] = (),
 ) -> str | list[Content]:
-    """Stamp committed guidance and weaken derived items without accepting a body's labels.
+    """Stamp committed guidance and derived items without accepting a body's labels.
 
     Refusals name positions, never content: the framework returns raised errors unlabelled.
     """
@@ -2566,7 +2571,12 @@ def _label_tool_result(
                 f"{type(result).__name__}. Answer with a SandboxResult on every path."
             )
         labelled = _contract_items(
-            result, tool=tool, declarations=declarations, fed=fed, verdicts=verdicts
+            result,
+            tool=tool,
+            declarations=declarations,
+            fed=fed,
+            file_trust_can_promote=file_trust_can_promote,
+            verdicts=verdicts,
         )
         substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
         labelled.extend(
@@ -2589,7 +2599,7 @@ def _label_tool_result(
                 f"{tool}: this tool commits to standing guidance and its body answered with a "
                 "string. Answer with the committed sentences as the last items on every path."
             )
-        label = _result_label(declarations, fed)
+        label = _result_label(declarations, fed, file_trust_can_promote=file_trust_can_promote)
         if label is None:
             return result
         return [Content.from_text(result, additional_properties={"security_label": label})]
@@ -2627,7 +2637,7 @@ def _label_tool_result(
             "guidance says what the rest of the result is worth, and a result that is nothing "
             "else says it of nothing."
         )
-    label = _result_label(declarations, fed)
+    label = _result_label(declarations, fed, file_trust_can_promote=file_trust_can_promote)
     labelled: list[Content] = []
     for item in items[:derived_count]:
         # A kind may reuse Content objects across calls, and MAF mutates their properties too.
@@ -2721,9 +2731,12 @@ def sandboxed_tool(
        must be included as trailing items. The wrapper stamps guidance trusted/public.
        A contract or guidance commitment raises the tool's declaration to ``trusted`` and
        keeps the kind's output claim on :data:`DERIVED_INTEGRITY_PROPERTY`. Derived output
-       receives that claim and the host-set confidentiality, weakened by any untrusted or
-       unestablished file read. Without either opt-in, valid source-integrity and
-       confidentiality declarations label the result; absent declarations leave it to the
+       retains host-set confidentiality. Any untrusted or unestablished read makes it
+       untrusted; all-trusted reads promote the kind's claim only when every other source
+       channel is absent or established as trusted. Configured network access and untrusted
+       or unknown host-tool sources block promotion. With no reads, the kind's claim remains.
+       Without either opt-in, valid source-integrity and confidentiality declarations label
+       the result; absent declarations leave it to the
        framework's fallback. Neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not
@@ -2967,6 +2980,9 @@ def sandboxed_tool(
         admission_timeout=admission_timeout,
         cleanup_timeout=effective_timeout,
     )
+    file_trust_can_promote = not _source_channels_not_established_as_trusted(
+        spec, frozenset({SourceChannel.FILE_STORE})
+    )
     # Materialised before the declarations, which turn on whether anything was committed, and
     # before `_committed_guidance` consumes it: a caller may pass any iterable.
     promised = tuple(standing_guidance)
@@ -3034,6 +3050,7 @@ def sandboxed_tool(
                     call_id=None,
                     declarations=attached.additional_properties or {},
                     fed=recording.fed,
+                    file_trust_can_promote=file_trust_can_promote,
                     contract=result_contract,
                     verdicts=declared_verdicts,
                 )
@@ -3114,6 +3131,7 @@ def sandboxed_tool(
                 call_id=_call_name(call) if _needs_call_id(committed) else None,
                 declarations=attached.additional_properties or {},
                 fed=recording.fed,
+                file_trust_can_promote=file_trust_can_promote,
                 contract=result_contract,
                 verdicts=declared_verdicts,
             )

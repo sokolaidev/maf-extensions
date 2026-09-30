@@ -130,13 +130,14 @@ class TestWhatTheWrapperRenders:
             ((None,), True),
         ],
     )
-    def test_a_weak_read_still_weakens_the_output_part(self, levels, weak):
+    @pytest.mark.parametrize("source", ["trusted", "untrusted"])
+    def test_file_evidence_labels_the_output_part(self, levels, weak, source):
         """The per-call fold reaches the contract exactly as it reaches a text result."""
         answer = SandboxResult(completed=True, output=("d",))
-        items = _call(_attach(answer, source="trusted", reads=levels))
+        items = _call(_attach(answer, source=source, reads=levels))
         label = _label(items[-1])
         assert label is not None
-        assert label["integrity"] == ("untrusted" if weak else "trusted")
+        assert label["integrity"] == (("untrusted" if weak else "trusted") if levels else source)
 
 
 class TestAnUnlabelledItemTakesTheToolDeclaration:

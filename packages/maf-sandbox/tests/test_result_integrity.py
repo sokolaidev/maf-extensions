@@ -1,6 +1,7 @@
-"""Per-call result labels weaken declarations using only the files the call actually read."""
+"""Per-call result labels use the host evidence for files the call actually read."""
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -9,31 +10,58 @@ from agent_framework.security import LabelTrackingFunctionMiddleware
 
 from maf_sandbox import (
     CallerContext,
+    Capability,
+    Egress,
+    HostToolAggregate,
     Isolation,
     ListedFile,
+    SandboxLimits,
     SandboxRouter,
     SandboxSpec,
     SourceChannel,
     SourceIntegrity,
+    TransferLimits,
 )
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY, SandboxToolSession, sandboxed_tool
-from maf_sandbox.testing import InMemoryStore, InProcessSandboxBackend
+from maf_sandbox.maf import (
+    DERIVED_INTEGRITY_PROPERTY,
+    SandboxResult,
+    SandboxToolSession,
+    sandboxed_tool,
+)
+from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InMemoryStore, InProcessSandboxBackend
 
 _GUIDANCE = "A hidden result is not a successful check."
 _SPEC = SandboxSpec(kind="probe", work_dir="/work")
 
 
-def _attach(build, *, source="trusted", guidance=()):
+def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False):
     return sandboxed_tool(
         build,
-        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        router=SandboxRouter(
+            [
+                InProcessSandboxBackend(
+                    declarations=replace(
+                        FAKE_BACKEND_DECLARATIONS,
+                        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities
+                        | {Capability.HOST_TOOLS},
+                        egress_modes=frozenset(Egress),
+                        limits=SandboxLimits(
+                            files_in=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 1024),
+                            files_out=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 1024),
+                        ),
+                    )
+                )
+            ],
+            min_isolation=Isolation.NONE,
+        ),
         context=CallerContext(
             current_scope=lambda: "scope",
             current_thread_id=lambda: "thread",
             list_files=InMemoryStore.list,
         ),
         agent_id="agent",
-        spec=_SPEC,
+        spec=spec,
+        result_contract=contract,
         name="probe",
         source_integrity=source,
         nothing_survives_from=(SourceChannel.FILE_STORE,) if source == "trusted" else (),
@@ -70,15 +98,13 @@ def _reading(levels, *, answer="answer", source="trusted", guidance=(), store=No
     ],
 )
 @pytest.mark.parametrize("split", [False, True])
-def test_every_result_path_is_stamped_and_a_trusted_read_never_promotes(
-    source, levels, weak, split
-):
+def test_every_result_path_uses_the_host_fold_or_the_no_read_default(source, levels, weak, split):
     answer = [Content.from_text("answer"), Content.from_text(_GUIDANCE)] if split else "answer"
     tool = _reading(levels, answer=answer, source=source, guidance=(_GUIDANCE,) if split else ())
     tool.additional_properties["confidentiality"] = "private"
     result = asyncio.run(tool.invoke(arguments={}))
     assert result[0].additional_properties["security_label"] == {
-        "integrity": "untrusted" if weak else source,
+        "integrity": ("untrusted" if weak else "trusted") if levels else source,
         "confidentiality": "private",
     }
     if split:
@@ -141,16 +167,17 @@ def test_the_host_can_replace_the_declarations_and_its_classification_is_copied(
     assert result[0].additional_properties["security_label"]["confidentiality"] == confidentiality
 
 
-def test_absent_and_refused_reads_do_not_weaken_a_call_that_received_nothing():
+@pytest.mark.parametrize("source", ["trusted", "untrusted"])
+def test_absent_and_refused_reads_keep_the_declaration(source):
     class RefusingStore(InMemoryStore):
         async def read(self, path: str) -> str | None:
             raise OSError("unavailable")
 
     for store in (InMemoryStore({}), RefusingStore({})):
-        tool = _reading([None], store=store, answer="Error: the file is unavailable")
+        tool = _reading([None], source=source, store=store, answer="Error: the file is unavailable")
         tool.additional_properties["confidentiality"] = "private"
         result = asyncio.run(tool.invoke(arguments={}))
-        assert result[0].additional_properties["security_label"]["integrity"] == "trusted"
+        assert result[0].additional_properties["security_label"]["integrity"] == source
 
 
 def test_a_refusal_after_reading_weak_content_is_demoted_too():
@@ -198,7 +225,7 @@ def test_concurrent_calls_and_reused_content_do_not_share_their_labels():
 
             return probe
 
-        tool = _attach(build, guidance=(_GUIDANCE,))
+        tool = _attach(build, source="untrusted", guidance=(_GUIDANCE,))
         tool.additional_properties["confidentiality"] = "private"
         trusted, unknown = await asyncio.gather(
             tool.invoke(arguments={"trusted": True}),
@@ -286,3 +313,83 @@ class TestTheFrameworkContractARaisedToolRestsOn:
             declarations={"source_integrity": "trusted", "confidentiality": "private"},
         )
         assert str(context.metadata["result_label"].confidentiality) == "private"
+
+
+def _spec_with_other_source(channel):
+    if channel == "closed":
+        return _SPEC
+    if channel == "empty-allowlist":
+        return replace(_SPEC, egress=Egress.ALLOWLIST)
+    if channel == "allowlist":
+        return replace(_SPEC, egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+    if channel == "unrestricted":
+        return replace(_SPEC, egress=Egress.UNRESTRICTED)
+    levels = {
+        "host-trusted": SourceIntegrity.TRUSTED,
+        "host-untrusted": SourceIntegrity.UNTRUSTED,
+        "host-pure": None,
+    }
+    surface = (
+        None
+        if channel == "host-missing"
+        else HostToolAggregate(
+            result_integrity=levels[channel],
+            outbound_caps=frozenset(),
+            identities=frozenset(),
+            requires_approval=False,
+            has_undeclared=False,
+            response_limits=TransferLimits(1024, 1024, 1),
+            max_host_tool_calls_per_run=1,
+        )
+    )
+    return replace(_SPEC, requires=_SPEC.requires | {Capability.HOST_TOOLS}, host_tools=surface)
+
+
+@pytest.mark.parametrize(
+    "channel,expected",
+    [
+        ("closed", "trusted"),
+        ("empty-allowlist", "trusted"),
+        ("allowlist", "untrusted"),
+        ("unrestricted", "untrusted"),
+        ("host-missing", "untrusted"),
+        ("host-untrusted", "untrusted"),
+        ("host-trusted", "trusted"),
+        ("host-pure", "trusted"),
+    ],
+)
+@pytest.mark.parametrize("form", ["string", "items", "guidance", "contract"])
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_trusted_files_cannot_promote_other_untrusted_sources(channel, expected, form, synchronous):
+    store = InMemoryStore({"a": "trusted file"})
+    answer = {
+        "string": "external report",
+        "items": [Content.from_text("external report")],
+        "guidance": [Content.from_text("external report"), Content.from_text(_GUIDANCE)],
+        "contract": SandboxResult(completed=True, output=("external report",)),
+    }[form]
+
+    def build(session):
+        async def read():
+            await session.read_file(store, ListedFile("a", SourceIntegrity.TRUSTED))
+            return answer
+
+        def read_synchronously():
+            return asyncio.run(read())
+
+        return read_synchronously if synchronous else read
+
+    tool = _attach(
+        build,
+        source="untrusted",
+        spec=_spec_with_other_source(channel),
+        guidance=(_GUIDANCE,) if form == "guidance" else (),
+        contract=form == "contract",
+    )
+    tool.additional_properties["confidentiality"] = "private"
+    items = asyncio.run(tool.invoke(arguments={}))
+    report = next(item for item in items if item.text == "external report")
+    assert report.additional_properties["security_label"] == {
+        "integrity": expected,
+        "confidentiality": "private",
+    }

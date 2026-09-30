@@ -145,7 +145,7 @@ With automatic hiding enabled, untrusted content is hidden while the conversatio
 
 For these mixed results, the framework-facing source declaration is trusted. The kind's output claim remains in `maf_sandbox_derived_integrity`, and core labels each derived item separately. Every shipped kind claims untrusted output.
 
-`FileStoreProvenance` records the integrity of stored text. Session reads can weaken a call's derived result; trusted reads never promote an untrusted kind. `requires_file_integrity` can refuse weak or unknown inputs before execution. The host must wire the shared provenance record into both writes and reads.
+`FileStoreProvenance` records the integrity of stored text. When a call reads files, any untrusted or unknown evidence makes its derived result untrusted. All-trusted reads promote the workload claim only when other source channels are absent or trusted; configured network access and untrusted or unknown host-tool sources block promotion. Calls that read no files keep the kind's declaration. `requires_file_integrity` can refuse weak or unknown inputs before execution. The host must wire the shared provenance record into both writes and reads.
 
 See [information flow](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) for label rules and the decided result contract. Its status table identifies the contract work that is not yet implemented.
 
