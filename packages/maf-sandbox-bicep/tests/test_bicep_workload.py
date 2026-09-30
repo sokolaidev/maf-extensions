@@ -245,7 +245,7 @@ def test_report_integrity_follows_host_file_provenance(state, expected, request)
     backend = _fake_backend(
         _KeepsWhatItWrote(default_stdout=_sarif("BCP033", "host-backed diagnostic"))
     )
-    tool = _tool(store, backend)
+    tool = _tool(store, backend, egress=Egress.CLOSED)
 
     items = _items(tool, ["main.bicep"])
 

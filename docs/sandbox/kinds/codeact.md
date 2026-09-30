@@ -14,7 +14,7 @@ See the [package README](../../../packages/maf-sandbox-codeact/README.md) for in
 | Isolation | The host's minimum; the kind does not raise it |
 | Concurrent calls | One call at a time for a conversation's sandbox |
 | Cleanup | Disposal by default; no call-directory confinement claim |
-| Workload integrity | Explicitly `untrusted` in both output modes, carried on `maf_sandbox_derived_integrity` |
+| Workload claim | Defaults to `untrusted` in both output modes, carried on `maf_sandbox_derived_integrity`; file evidence can promote the result under the source-channel checks below |
 | Result | A [`SandboxResult`](../information-flow.md#the-result-contract): completion, the verdict `ok` or `failed`, the reason a call stopped early, then the program's own text |
 
 Only enabled channels appear in the tool schema. `files` appears with a file store. `outputs` appears with `CodeactOutputs.DECLARED`. The model cannot configure the runtime, sink, registry or network policy.
@@ -85,7 +85,7 @@ Registered functions run in the host process. Guest calls to them bypass the age
 | Declared identities | Let the router reject denied identities |
 | Transport limits | Check the backend can serve the registry's file traffic |
 
-Trusted registered sources do not make CodeAct output trusted. The program, files and network remain separate sources. See [host tools](../hosts.md#host-tools-calling-outward) for registration and authority.
+Trusted registered sources alone do not make CodeAct output trusted. Core can promote the workload claim after at least one accepted file read only when every read is trusted, egress is closed and the registry has only trusted sources or no sources. Configured network access or any untrusted or unknown registered source keeps the claim untrusted. See [host tools](../hosts.md#host-tools-calling-outward) for registration and authority.
 
 The Python source never becomes a shell command. Exec without a registry uses fixed argv. The host-tool launcher uses only fixed or host-generated, quoted paths.
 
@@ -95,11 +95,11 @@ The guest program can print data from any enabled source. CodeAct therefore clai
 
 The kind uses the [result contract](../information-flow.md#the-result-contract) in **both** modes. `verdict` is `ok` or `failed`, from the program's exit status as one bit — eight bits are what a program chooses, and one is what a model can act on without the text. `completed` is false where no exit status was obtained: a refusal, a file that could not be staged, a timeout, or a transport failure. A call without an exit status carries no verdict.
 
-A call that stopped early puts a host-authored explanation in `trusted_output`, so a model can read why the call stopped. Variable diagnostics remain in untrusted `output`, including file-store names, byte counts, provider errors and partial guest stdout. Withholding mode still omits guest stdout from timeout diagnostics.
+A call that stopped early puts a host-authored explanation in `trusted_output`, so a model can read why the call stopped. Variable diagnostics remain in `output`, whose label follows the file-read and source-channel checks, including file-store names, byte counts, provider errors and partial guest stdout. Withholding mode still omits guest stdout from timeout diagnostics.
 
 Both modes are raised to `trusted` at the framework, not just the withholding one. The completion line and the verdict have to stay readable, and on `agent-framework-core` 1.19 only the tool's own declaration can keep an item there.
 
-![CodeAct declares trusted framework integrity in both modes so completion, verdict and host-authored reasons stay readable. Program text and variable diagnostics retain an untrusted workload label. Withholding mode adds trusted route guidance and omits guest stdout and stderr. Content keeps host-controlled confidentiality. FIDES shows text or hidden references to the model. The next model-called tool is checked against its integrity opt-in and confidentiality limit. Guest host-tool calls and artifact delivery belong to execute_code itself.](../assets/codeact-information-flow.svg)
+![CodeAct declares trusted framework integrity in both modes so completion, verdict and host-authored reasons stay readable. Program text and variable diagnostics follow the file-read and source-channel checks; no reads retain the untrusted workload claim. Withholding mode adds trusted route guidance and omits guest stdout and stderr. Content keeps host-controlled confidentiality. FIDES shows text or hidden references to the model. The next model-called tool is checked against its integrity opt-in and confidentiality limit. Guest host-tool calls and artifact delivery belong to execute_code itself.](../assets/codeact-information-flow.svg)
 
 The host supplies result confidentiality. Hiding applies only while the conversation is trusted, automatic hiding is enabled and the tool is not `inspect_variable`. Hidden output still affects confidentiality. See [information flow](../information-flow.md).
 
@@ -116,7 +116,7 @@ Network access, artifact delivery and guest host-tool calls happen during `execu
 | Collects artifacts on successful execution | Also collects artifacts after a failed program |
 | No standing guidance | Adds fixed guidance explaining where to retrieve output |
 
-The wrapper labels the report untrusted and the guidance trusted. Withholding prevents captured guest text from entering the result even when automatic hiding is off. It does not make the remaining facts trusted.
+The wrapper labels the report using the same file-read and source-channel checks, and labels the guidance trusted. Withholding prevents captured guest text from entering the result even when automatic hiding is off. Withholding alone does not make the remaining facts trusted.
 
 Completion and the presence of each declared file still reveal information. `files_out.max_files` bounds the number of file-presence signals per call. Repeated calls can reveal more.
 

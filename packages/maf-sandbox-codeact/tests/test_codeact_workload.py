@@ -3231,6 +3231,20 @@ def _calling_tool(sandbox: InProcessSandbox, *tools: Callable[..., Any], **kw: A
 
 
 class TestAProgramThatCallsOut:
+    def test_trusted_file_cannot_promote_an_untrusted_host_response(self):
+        @sandbox_tool(source=SourceIntegrity.UNTRUSTED, sink=None, identity=None)
+        def lookup() -> str:
+            return "external data"
+
+        sandbox = _CallingSandbox("lookup")
+        store = InMemoryStore({"input.txt": "trusted input"}, integrity=SourceIntegrity.TRUSTED)
+        tool = _calling_tool(sandbox, lookup, file_store=store)
+        items = _items(tool, "print(lookup())", files=["input.txt"])
+
+        assert sandbox.answers == [{"value": "external data"}]
+        report = next(item for item in items if "the host said external data" in (item.text or ""))
+        assert report.additional_properties["security_label"]["integrity"] == "untrusted"
+
     def test_the_registry_answers_and_the_program_reads_what_it_said(self):
         """End to end over the transport: the request the guest wrote reaches the registered
         function, its arguments arrive, and its return value is what the program prints."""

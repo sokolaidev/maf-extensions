@@ -1,6 +1,7 @@
 """Per-call result labels use the host evidence for files the call actually read."""
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -9,31 +10,58 @@ from agent_framework.security import LabelTrackingFunctionMiddleware
 
 from maf_sandbox import (
     CallerContext,
+    Capability,
+    Egress,
+    HostToolAggregate,
     Isolation,
     ListedFile,
+    SandboxLimits,
     SandboxRouter,
     SandboxSpec,
     SourceChannel,
     SourceIntegrity,
+    TransferLimits,
 )
-from maf_sandbox.maf import DERIVED_INTEGRITY_PROPERTY, SandboxToolSession, sandboxed_tool
-from maf_sandbox.testing import InMemoryStore, InProcessSandboxBackend
+from maf_sandbox.maf import (
+    DERIVED_INTEGRITY_PROPERTY,
+    SandboxResult,
+    SandboxToolSession,
+    sandboxed_tool,
+)
+from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InMemoryStore, InProcessSandboxBackend
 
 _GUIDANCE = "A hidden result is not a successful check."
 _SPEC = SandboxSpec(kind="probe", work_dir="/work")
 
 
-def _attach(build, *, source="trusted", guidance=()):
+def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False):
     return sandboxed_tool(
         build,
-        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        router=SandboxRouter(
+            [
+                InProcessSandboxBackend(
+                    declarations=replace(
+                        FAKE_BACKEND_DECLARATIONS,
+                        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities
+                        | {Capability.HOST_TOOLS},
+                        egress_modes=frozenset(Egress),
+                        limits=SandboxLimits(
+                            files_in=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 1024),
+                            files_out=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 1024),
+                        ),
+                    )
+                )
+            ],
+            min_isolation=Isolation.NONE,
+        ),
         context=CallerContext(
             current_scope=lambda: "scope",
             current_thread_id=lambda: "thread",
             list_files=InMemoryStore.list,
         ),
         agent_id="agent",
-        spec=_SPEC,
+        spec=spec,
+        result_contract=contract,
         name="probe",
         source_integrity=source,
         nothing_survives_from=(SourceChannel.FILE_STORE,) if source == "trusted" else (),
@@ -285,3 +313,83 @@ class TestTheFrameworkContractARaisedToolRestsOn:
             declarations={"source_integrity": "trusted", "confidentiality": "private"},
         )
         assert str(context.metadata["result_label"].confidentiality) == "private"
+
+
+def _spec_with_other_source(channel):
+    if channel == "closed":
+        return _SPEC
+    if channel == "empty-allowlist":
+        return replace(_SPEC, egress=Egress.ALLOWLIST)
+    if channel == "allowlist":
+        return replace(_SPEC, egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+    if channel == "unrestricted":
+        return replace(_SPEC, egress=Egress.UNRESTRICTED)
+    levels = {
+        "host-trusted": SourceIntegrity.TRUSTED,
+        "host-untrusted": SourceIntegrity.UNTRUSTED,
+        "host-pure": None,
+    }
+    surface = (
+        None
+        if channel == "host-missing"
+        else HostToolAggregate(
+            result_integrity=levels[channel],
+            outbound_caps=frozenset(),
+            identities=frozenset(),
+            requires_approval=False,
+            has_undeclared=False,
+            response_limits=TransferLimits(1024, 1024, 1),
+            max_host_tool_calls_per_run=1,
+        )
+    )
+    return replace(_SPEC, requires=_SPEC.requires | {Capability.HOST_TOOLS}, host_tools=surface)
+
+
+@pytest.mark.parametrize(
+    "channel,expected",
+    [
+        ("closed", "trusted"),
+        ("empty-allowlist", "trusted"),
+        ("allowlist", "untrusted"),
+        ("unrestricted", "untrusted"),
+        ("host-missing", "untrusted"),
+        ("host-untrusted", "untrusted"),
+        ("host-trusted", "trusted"),
+        ("host-pure", "trusted"),
+    ],
+)
+@pytest.mark.parametrize("form", ["string", "items", "guidance", "contract"])
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_trusted_files_cannot_promote_other_untrusted_sources(channel, expected, form, synchronous):
+    store = InMemoryStore({"a": "trusted file"})
+    answer = {
+        "string": "external report",
+        "items": [Content.from_text("external report")],
+        "guidance": [Content.from_text("external report"), Content.from_text(_GUIDANCE)],
+        "contract": SandboxResult(completed=True, output=("external report",)),
+    }[form]
+
+    def build(session):
+        async def read():
+            await session.read_file(store, ListedFile("a", SourceIntegrity.TRUSTED))
+            return answer
+
+        def read_synchronously():
+            return asyncio.run(read())
+
+        return read_synchronously if synchronous else read
+
+    tool = _attach(
+        build,
+        source="untrusted",
+        spec=_spec_with_other_source(channel),
+        guidance=(_GUIDANCE,) if form == "guidance" else (),
+        contract=form == "contract",
+    )
+    tool.additional_properties["confidentiality"] = "private"
+    items = asyncio.run(tool.invoke(arguments={}))
+    report = next(item for item in items if item.text == "external report")
+    assert report.additional_properties["security_label"] == {
+        "integrity": expected,
+        "confidentiality": "private",
+    }

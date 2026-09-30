@@ -76,9 +76,9 @@ The wrapper checks a returned verdict by type and text. Declaring `0` does not a
 
 `trusted_output` is a claim made by the kind author. The wrapper does not prove that the text is safe to trust. Put text whose sources are uncertain in `output`.
 
-Sandbox diagnostics, guest text and provider reports belong in `output`. Their integrity is `untrusted`. A custom tool with a justified `trusted` source declaration can retain trusted output, subject to the [file-read checks](#how-core-labels-a-call).
+Sandbox diagnostics, guest text and provider reports belong in `output`. Their default integrity is `untrusted`; the [file-read and source-channel checks](#how-core-labels-a-call) can establish trusted workload output. A custom tool with a justified `trusted` source declaration can retain trusted output, subject to those checks.
 
-A kind may also select a diagnostic summary from a package-owned finite vocabulary under the rule below. [Bicep](kinds/bicep.md) selects known rule IDs, severities and staged argument references, while its full report stays untrusted. This selection does not authorize echoing diagnostic messages or paths.
+A kind may also select a diagnostic summary from a package-owned finite vocabulary under the rule below. [Bicep](kinds/bicep.md) selects known rule IDs, severities and staged argument references, while its full report follows the workload-label checks. This selection does not authorize echoing diagnostic messages or paths.
 
 ### How the wrapper labels the fields
 
@@ -159,16 +159,16 @@ Other tools receive wrapper-written result labels only when both `source_integri
 
 ## How core labels a call
 
-When files were read, the wrapper uses the host's fold for workload integrity, including when the kind's default claim is untrusted. Every accepted read must be trusted for workload items to be trusted; unknown or untrusted evidence makes them untrusted. Calls with no accepted reads retain the kind's claim.
+When files were read, unknown or untrusted evidence makes every workload item untrusted. All-trusted reads can promote an untrusted workload claim only when every other source channel is absent or established as trusted. Calls with no accepted reads retain the kind's claim.
 
 1. The host lists files as `ListedFile(name, integrity)`.
 2. The kind reads a selected entry through `SandboxToolSession.read_file`.
 3. The session checks its source record before and after the read. A changed record makes integrity unknown.
-4. Each successful read contributes to the call's `FedFromStore` record. Its weakest integrity labels the call's workload items, with unknown evidence treated as untrusted.
+4. Each successful read contributes to the call's `FedFromStore` record. Its weakest integrity feeds the workload-label checks, with unknown evidence treated as untrusted.
 
 Empty files count as successful reads. Missing or refused reads do not. Without a session source record, only the listing's evidence is available.
 
-![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. All-trusted reads produce trusted workload items; no reads preserve the kind's claim. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
+![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. All-trusted reads produce trusted workload items only when other source channels are absent or trusted; no reads preserve the kind's claim. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
 
 When the wrapper writes labels, and the host classifies results as `private`:
 
@@ -176,12 +176,13 @@ When the wrapper writes labels, and the host classifies results as `private`:
 |---|---|---|
 | `trusted` | None, or all trusted | `trusted/private` |
 | `trusted` | Any untrusted or unknown | `untrusted/private` |
-| `untrusted` | At least one read, all trusted | `trusted/private` |
+| `untrusted` | At least one read, all trusted; other source channels absent or trusted | `trusted/private` |
+| `untrusted` | All trusted, but network or untrusted/unknown host-tool sources are enabled | `untrusted/private` |
 | `untrusted` | None, or any untrusted or unknown | `untrusted/private` |
 
 One weak read affects every workload item in the call. It does not lower the contract's first three fields or standing guidance. Each call has its own read record; the attached tool declaration is unchanged.
 
-These checks cover `SandboxToolSession.read_file`. They do not cover direct store reads, network responses or host-tool results. The kind must account for those sources separately.
+File evidence covers `SandboxToolSession.read_file`, not direct store reads. Promotion also checks the attached spec: unrestricted egress or a nonempty allowlist blocks it, even if the call makes no network request. A host-tool channel permits promotion only when its registry fold is trusted or contains no sources; an untrusted, unknown or missing fold blocks it. The wrapper does not inspect network responses or individual host-tool results. Kinds must account for any source outside these declared channels.
 
 `nothing_survives_from=(SourceChannel.FILE_STORE,)` states that file content does not affect the result. It does not bypass the read checks or prove that claim.
 

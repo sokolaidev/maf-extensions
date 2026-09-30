@@ -12,6 +12,7 @@ from agent_framework.security import (
 )
 from maf_sandbox import (
     CallerContext,
+    Egress,
     FileStoreProvenance,
     Isolation,
     IsolationScope,
@@ -90,7 +91,7 @@ def _bicep_report():
     )
 
 
-def _attach(kind, levels, *, provenance=None, mutate_during_read=False):
+def _attach(kind, levels, *, provenance=None, mutate_during_read=False, network=False):
     extension = {"bicep": "bicep", "terraform": "tf", "codeact": "txt"}[kind]
     names = [f"main.{extension}", f"second.{extension}"][: len(levels)]
 
@@ -129,9 +130,17 @@ def _attach(kind, levels, *, provenance=None, mutate_during_read=False):
             router, store, "agent", context, file_store_provenance=provenance
         )[0]
     elif kind == "bicep":
-        attached = make_bicep_tools(router, store, "agent", context)[0]
+        attached = make_bicep_tools(
+            router, store, "agent", context, egress=Egress.ALLOWLIST if network else Egress.CLOSED
+        )[0]
     else:
-        attached = make_codeact_tools(router, "agent", context, file_store=store)[0]
+        attached = make_codeact_tools(
+            router,
+            "agent",
+            context,
+            file_store=store,
+            egress_allow=("example.com",) if network else (),
+        )[0]
         arguments["code"] = "print('report')"
     return attached, arguments
 
@@ -224,3 +233,11 @@ def test_trusted_report_remains_visible_and_allows_a_following_write(kind):
         assert written == ["fixed content"]
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("kind", ["bicep", "codeact"])
+def test_trusted_files_do_not_clear_a_kinds_network_source(kind):
+    attached, arguments = _attach(kind, [SourceIntegrity.TRUSTED], network=True)
+    items = asyncio.run(attached.invoke(arguments=arguments))
+    report = next(item for item in items if _REPORT in (item.text or ""))
+    assert report.additional_properties["security_label"]["integrity"] == "untrusted"

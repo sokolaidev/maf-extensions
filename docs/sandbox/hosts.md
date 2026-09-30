@@ -203,7 +203,7 @@ One limit remains: middleware records when the writing call returns. Bytes alrea
 
 Set a tool's `additional_properties["confidentiality"]` to the classification used by the application. This classifies results. `max_allowed_confidentiality` instead limits data sent to a destination; a provenance floor instead describes file integrity.
 
-When a call reads files, core labels its derived items with the weakest host-supplied integrity: trusted when every accepted read is trusted, untrusted when any read is untrusted or unestablished. Calls that read no files keep the kind's declared claim. Shipped kinds default to untrusted when the host supplies no file labels.
+When a call reads files, core makes its derived items untrusted if any accepted read is untrusted or unestablished. All-trusted reads promote the workload claim only when other source channels are absent or trusted: configured network access and untrusted or unknown host-tool sources block promotion. Calls that read no files keep the kind's declared claim. Shipped kinds default to untrusted when the host supplies no file labels.
 
 Tools that commit guidance always label derived items. Tools without committed guidance need both valid source-integrity and explicit confidentiality declarations for core to stamp derived items. Otherwise the framework resolves their labels. [Information flow](information-flow.md#how-core-labels-a-call) defines the full rules.
 
