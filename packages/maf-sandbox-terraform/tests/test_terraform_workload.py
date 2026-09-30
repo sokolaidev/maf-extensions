@@ -422,9 +422,34 @@ def test_manifest_keeps_the_original_provenance_entry():
     assert selected[0][1] is listed
 
 
-def test_result_integrity_does_not_promote_compiler_output():
-    """The standing sentence stays trusted; the engine's own text says untrusted for itself,
-    so neither depends on which tier the framework would have answered from."""
+@pytest.mark.parametrize(
+    "state,expected",
+    [("trusted", "trusted"), ("untrusted", "untrusted"), ("unknown", "untrusted")],
+)
+def test_report_integrity_follows_host_file_provenance(state, expected):
+    from maf_sandbox import FileStoreProvenance
+    from maf_sandbox.maf import file_store_provenance_middleware
+
+    record = FileStoreProvenance(floor=None if state == "unknown" else SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    if state == "untrusted":
+        record.record("main.tf")
+    sandbox = RecordingSandbox(default_stdout=json.dumps(envelope(valid=False)))
+    tool, _, store = attach(sandbox=sandbox, file_store_provenance=record)
+    store.labels["main.tf"] = record.integrity_of("main.tf")
+
+    items = asyncio.run(tool.invoke(arguments={"files": ["main.tf"]}))
+
+    assert items[0].text == COMPLETED_TEXT
+    assert any(path.endswith("/main.tf") for path, _, _ in sandbox.uploads)
+    report = next(item for item in items if "detail" in (item.text or ""))
+    assert report.additional_properties["security_label"]["integrity"] == expected
+    assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
+    assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
+
+
+def test_unlabelled_files_keep_compiler_output_untrusted():
+    """Unknown file evidence leaves the report untrusted and guidance trusted."""
     tool, _, _ = attach()
     assert tool.additional_properties == {
         "source_integrity": "trusted",

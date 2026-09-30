@@ -224,6 +224,37 @@ def _tool(
     return tools[0]
 
 
+@pytest.mark.parametrize(
+    "state,expected",
+    [("trusted", "trusted"), ("untrusted", "untrusted"), ("unknown", "untrusted")],
+)
+def test_report_integrity_follows_host_file_provenance(state, expected):
+    from maf_sandbox import FileStoreProvenance, SourceIntegrity
+    from maf_sandbox.maf import file_store_provenance_middleware
+
+    record = FileStoreProvenance(floor=None if state == "unknown" else SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    if state == "untrusted":
+        record.record("main.bicep")
+    store = InMemoryStore(
+        {"main.bicep": "param count int = 'wrong'"},
+        integrity=record.integrity_of("main.bicep"),
+    )
+    backend = _fake_backend(
+        _KeepsWhatItWrote(default_stdout=_sarif("BCP033", "host-backed diagnostic"))
+    )
+    tool = _tool(store, backend)
+
+    items = _items(tool, ["main.bicep"])
+
+    assert items[0].text == COMPLETED_TEXT
+    assert {_store_part(path) for path in _written(backend)} == {"main.bicep"}
+    report = next(item for item in items if "host-backed diagnostic" in (item.text or ""))
+    assert report.additional_properties["security_label"]["integrity"] == expected
+    assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
+    assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
+
+
 def test_integrity_admission_skips_a_refused_file_and_compiles_the_rest(monkeypatch):
     from functools import partial
 

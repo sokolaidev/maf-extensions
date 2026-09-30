@@ -545,6 +545,33 @@ def test_credential_tools_require_approval_and_keep_unconfigured_hosts_quiet():
     assert make_codeact_tools(None, "agent", _context(), credential_retention_seconds=0) == []
 
 
+@pytest.mark.parametrize(
+    "state,expected",
+    [("trusted", "trusted"), ("untrusted", "untrusted"), ("unknown", "untrusted")],
+)
+def test_report_integrity_follows_host_file_provenance(state, expected):
+    from maf_sandbox import FileStoreProvenance
+    from maf_sandbox.maf import file_store_provenance_middleware
+
+    record = FileStoreProvenance(floor=None if state == "unknown" else SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    if state == "untrusted":
+        record.record("input.txt")
+    store = InMemoryStore(
+        {"input.txt": "host-backed output"}, integrity=record.integrity_of("input.txt")
+    )
+    sandbox = _ScriptedSandbox(ExecResult(stdout="host-backed output"))
+    tool = _tool(_backend(sandbox), file_store=store)
+
+    items = _items(tool, "print(open('input.txt').read())", files=["input.txt"])
+
+    assert items[0].text == COMPLETED_TEXT
+    assert any(path.endswith("/input.txt") for path in sandbox.written_files)
+    report = next(item for item in items if "host-backed output" in (item.text or ""))
+    assert report.additional_properties["security_label"]["integrity"] == expected
+    assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
+
+
 def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_written(monkeypatch):
     from functools import partial
 
