@@ -2447,7 +2447,7 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
 def _result_label(
     declarations: Mapping[str, Any], fed: FedFromStore | None, *, file_trust_can_promote: bool
 ) -> dict[str, Any] | None:
-    """Use the host's file fold when present, retaining its result confidentiality.
+    """Apply file evidence subject to other source channels, retaining host confidentiality.
 
     A tool whose declaration was raised to trusted is labelled unconditionally: an item left
     unlabelled there would take the raised declaration.  Its confidentiality floors at
@@ -2731,8 +2731,10 @@ def sandboxed_tool(
        must be included as trailing items. The wrapper stamps guidance trusted/public.
        A contract or guidance commitment raises the tool's declaration to ``trusted`` and
        keeps the kind's output claim on :data:`DERIVED_INTEGRITY_PROPERTY`. Derived output
-       receives the host-set confidentiality and the weakest integrity of the files read,
-       treating unestablished reads as untrusted. With no reads, they retain the kind's claim.
+       retains host-set confidentiality. Any untrusted or unestablished read makes it
+       untrusted; all-trusted reads promote the kind's claim only when every other source
+       channel is absent or established as trusted. Configured network access and untrusted
+       or unknown host-tool sources block promotion. With no reads, the kind's claim remains.
        Without either opt-in, valid source-integrity and confidentiality declarations label
        the result; absent declarations leave it to the
        framework's fallback. Neither the declaration nor another call is changed.
