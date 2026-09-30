@@ -159,16 +159,16 @@ Other tools receive wrapper-written result labels only when both `source_integri
 
 ## How core labels a call
 
-The wrapper can lower workload integrity after a file read. It never raises it because a file was trusted.
+When files were read, the wrapper uses the host's fold for workload integrity, including when the kind's default claim is untrusted. Every accepted read must be trusted for workload items to be trusted; unknown or untrusted evidence makes them untrusted. Calls with no accepted reads retain the kind's claim.
 
 1. The host lists files as `ListedFile(name, integrity)`.
 2. The kind reads a selected entry through `SandboxToolSession.read_file`.
 3. The session checks its source record before and after the read. A changed record makes integrity unknown.
-4. Each successful read contributes to the call's `FedFromStore` record. Unknown or untrusted integrity weakens the call's workload items.
+4. Each successful read contributes to the call's `FedFromStore` record. Its weakest integrity labels the call's workload items, with unknown evidence treated as untrusted.
 
 Empty files count as successful reads. Missing or refused reads do not. Without a session source record, only the listing's evidence is available.
 
-![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. Other reads preserve the kind's claim. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
+![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. All-trusted reads produce trusted workload items; no reads preserve the kind's claim. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
 
 When the wrapper writes labels, and the host classifies results as `private`:
 
@@ -176,7 +176,8 @@ When the wrapper writes labels, and the host classifies results as `private`:
 |---|---|---|
 | `trusted` | None, or all trusted | `trusted/private` |
 | `trusted` | Any untrusted or unknown | `untrusted/private` |
-| `untrusted` | Any, or none | `untrusted/private` |
+| `untrusted` | At least one read, all trusted | `trusted/private` |
+| `untrusted` | None, or any untrusted or unknown | `untrusted/private` |
 
 One weak read affects every workload item in the call. It does not lower the contract's first three fields or standing guidance. Each call has its own read record; the attached tool declaration is unchanged.
 

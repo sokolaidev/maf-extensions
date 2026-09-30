@@ -208,7 +208,7 @@ With guidance or the result contract, core always labels workload items. Without
 
 The default provenance floor is unknown. Assert a trusted floor only for files the host can establish as trusted, and observe writes. [Host wiring](../hosts.md#file-store-provenance--what-a-kind-reads-and-what-it-is-worth) describes record lifetime and concurrent-write limits.
 
-Trusted files never promote this checker's untrusted workload claim. The report remains untrusted. Guidance stays trusted, with the call's effective confidentiality.
+When every file read is trusted, this checker's report is trusted. Any untrusted or unknown read makes the report untrusted; no reads retain its untrusted workload claim. Guidance stays trusted, with the call's effective confidentiality.
 
 ## Verify the contract
 

@@ -2447,7 +2447,7 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
 def _result_label(
     declarations: Mapping[str, Any], fed: FedFromStore | None
 ) -> dict[str, Any] | None:
-    """Weaken an explicit declaration, carrying the host's confidentiality where it set one.
+    """Use the host's file fold when present, retaining its result confidentiality.
 
     A tool whose declaration was raised to trusted is labelled unconditionally: an item left
     unlabelled there would take the raised declaration.  Its confidentiality floors at
@@ -2476,8 +2476,12 @@ def _result_label(
         if raised is None:
             return None
         classified = ConfidentialityLabel.PUBLIC
-    if fed is not None and fed.weakest is not SourceIntegrity.TRUSTED:
-        declared = IntegrityLabel.UNTRUSTED
+    if fed is not None:
+        declared = (
+            IntegrityLabel.TRUSTED
+            if fed.weakest is SourceIntegrity.TRUSTED
+            else IntegrityLabel.UNTRUSTED
+        )
     return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
 
 
@@ -2552,7 +2556,7 @@ def _label_tool_result(
     contract: bool = False,
     verdicts: tuple[str | int | bool, ...] = (),
 ) -> str | list[Content]:
-    """Stamp committed guidance and weaken derived items without accepting a body's labels.
+    """Stamp committed guidance and derived items without accepting a body's labels.
 
     Refusals name positions, never content: the framework returns raised errors unlabelled.
     """
@@ -2721,9 +2725,10 @@ def sandboxed_tool(
        must be included as trailing items. The wrapper stamps guidance trusted/public.
        A contract or guidance commitment raises the tool's declaration to ``trusted`` and
        keeps the kind's output claim on :data:`DERIVED_INTEGRITY_PROPERTY`. Derived output
-       receives that claim and the host-set confidentiality, weakened by any untrusted or
-       unestablished file read. Without either opt-in, valid source-integrity and
-       confidentiality declarations label the result; absent declarations leave it to the
+       receives the host-set confidentiality and the weakest integrity of the files read,
+       treating unestablished reads as untrusted. With no reads, they retain the kind's claim.
+       Without either opt-in, valid source-integrity and confidentiality declarations label
+       the result; absent declarations leave it to the
        framework's fallback. Neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not

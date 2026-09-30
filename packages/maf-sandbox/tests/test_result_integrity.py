@@ -1,4 +1,4 @@
-"""Per-call result labels weaken declarations using only the files the call actually read."""
+"""Per-call result labels use the host evidence for files the call actually read."""
 
 import asyncio
 from typing import Any
@@ -70,15 +70,13 @@ def _reading(levels, *, answer="answer", source="trusted", guidance=(), store=No
     ],
 )
 @pytest.mark.parametrize("split", [False, True])
-def test_every_result_path_is_stamped_and_a_trusted_read_never_promotes(
-    source, levels, weak, split
-):
+def test_every_result_path_uses_the_host_fold_or_the_no_read_default(source, levels, weak, split):
     answer = [Content.from_text("answer"), Content.from_text(_GUIDANCE)] if split else "answer"
     tool = _reading(levels, answer=answer, source=source, guidance=(_GUIDANCE,) if split else ())
     tool.additional_properties["confidentiality"] = "private"
     result = asyncio.run(tool.invoke(arguments={}))
     assert result[0].additional_properties["security_label"] == {
-        "integrity": "untrusted" if weak else source,
+        "integrity": ("untrusted" if weak else "trusted") if levels else source,
         "confidentiality": "private",
     }
     if split:
@@ -141,16 +139,17 @@ def test_the_host_can_replace_the_declarations_and_its_classification_is_copied(
     assert result[0].additional_properties["security_label"]["confidentiality"] == confidentiality
 
 
-def test_absent_and_refused_reads_do_not_weaken_a_call_that_received_nothing():
+@pytest.mark.parametrize("source", ["trusted", "untrusted"])
+def test_absent_and_refused_reads_keep_the_declaration(source):
     class RefusingStore(InMemoryStore):
         async def read(self, path: str) -> str | None:
             raise OSError("unavailable")
 
     for store in (InMemoryStore({}), RefusingStore({})):
-        tool = _reading([None], store=store, answer="Error: the file is unavailable")
+        tool = _reading([None], source=source, store=store, answer="Error: the file is unavailable")
         tool.additional_properties["confidentiality"] = "private"
         result = asyncio.run(tool.invoke(arguments={}))
-        assert result[0].additional_properties["security_label"]["integrity"] == "trusted"
+        assert result[0].additional_properties["security_label"]["integrity"] == source
 
 
 def test_a_refusal_after_reading_weak_content_is_demoted_too():
@@ -198,7 +197,7 @@ def test_concurrent_calls_and_reused_content_do_not_share_their_labels():
 
             return probe
 
-        tool = _attach(build, guidance=(_GUIDANCE,))
+        tool = _attach(build, source="untrusted", guidance=(_GUIDANCE,))
         tool.additional_properties["confidentiality"] = "private"
         trusted, unknown = await asyncio.gather(
             tool.invoke(arguments={"trusted": True}),
