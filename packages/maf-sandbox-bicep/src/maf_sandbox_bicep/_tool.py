@@ -287,10 +287,8 @@ def make_bicep_tools(
         spec=bicep_sandbox_spec(image, image_id, egress=egress),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
-        # The diagnostics are the compiler's own bytes, over template content read from
-        # the file store, and neither is established. Declared rather than omitted because a
-        # declaration replaces the other two tiers, and neither is this kind's to answer for
-        # — `information-flow.md` carries why.
+        # Untrusted is the fallback when file provenance cannot establish the report.
+        # Core computes per-call labels from file evidence and the enabled source channels.
         source_integrity=SourceIntegrity.UNTRUSTED,
         # Completion and verdict remain readable when the compiler's text is hidden.
         result_contract=True,

@@ -333,15 +333,15 @@ def make_codeact_tools(
             withholding it would report a dropped output as a program that printed nothing.
 
             **The result is a list of content items.** A completed call normally returns a
-            completion line, an ``ok`` or ``failed`` verdict, an explicitly untrusted report,
+            completion line, an ``ok`` or ``failed`` verdict, a separately labelled report,
             and trusted route guidance. An incomplete call has no verdict and may include a
             host-authored explanation before its variable diagnostics. Completion, verdict,
             and host explanations inherit the framework-facing declaration; the wrapper
-            labels the report untrusted and the fixed guidance trusted. Guidance is emitted
-            on every return path, including refusals, and carries the host-generated folder
-            when the sink declares ``per_call``. With a trusted conversation and automatic
-            hiding enabled, FIDES can hide the report while leaving these trusted items
-            readable. Host-controlled confidentiality still applies; see
+            applies its per-call integrity checks to the report and labels fixed guidance
+            trusted. Guidance is emitted on every return path, including refusals, and carries
+            the host-generated folder when the sink declares ``per_call``. With a trusted
+            conversation and automatic hiding enabled, FIDES can hide the report while leaving
+            these trusted items readable. Host-controlled confidentiality still applies; see
             ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
@@ -572,8 +572,8 @@ def make_codeact_tools(
         ),
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # Guest text and output-presence bits require an explicit untrusted workload claim;
-        # neither the input labels nor the host's default can establish their integrity.
+        # Untrusted is the fallback for guest text and output-presence bits. Core computes
+        # per-call report labels from file evidence and the enabled source channels.
         source_integrity=SourceIntegrity.UNTRUSTED,
         # Both modes need a raised framework declaration to keep contract items readable.
         result_contract=True,
