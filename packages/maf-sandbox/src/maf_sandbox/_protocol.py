@@ -964,8 +964,9 @@ class SandboxSpec:
     :data:`Egress.ALLOWLIST` run — the hostnames reached, **everything not listed denied** — and
     is consulted only in that mode.  A non-empty ``egress_allow`` therefore requires
     ``egress is Egress.ALLOWLIST``, refused here otherwise: naming hosts with no network to reach
-    them on is incoherent, not resolved into a surprise.  The ``CLOSED`` default keeps the
-    fail-closed property: a spec that says nothing about egress gets no network.  Each entry is
+    them on is incoherent, not resolved into a surprise. Conversely, ``ALLOWLIST`` requires at
+    least one host; a workload reaching no hosts must say ``CLOSED``. The default keeps the
+    fail-closed property: a spec that says nothing about egress gets no network. Each entry is
     **one hostname**, optionally behind a single ``*.`` wildcard label, and anything else is
     refused here rather than handed on — a bare ``*`` most of all, which names every host and is
     :data:`Egress.UNRESTRICTED` under the allowlist's name.
@@ -1146,13 +1147,15 @@ class SandboxSpec:
                 "would be read one character at a time"
             )
         if not isinstance(allow, Iterable):
-            raise TypeError(
-                f"egress_allow must be a sequence of hostnames, got {allow!r}; an allowlist "
-                "that allows nothing is ()"
-            )
+            raise TypeError(f"egress_allow must be a sequence of hostnames, got {allow!r}")
         # Materialised before the mode check reads it: a one-shot iterable is truthy whatever
         # it would yield, and the fold below would spend it.
         object.__setattr__(self, "egress_allow", tuple(cast("Iterable[Any]", allow)))
+        if self.egress is Egress.ALLOWLIST and not self.egress_allow:
+            raise ValueError(
+                "Egress.ALLOWLIST requires a non-empty egress_allow; use Egress.CLOSED "
+                "for a workload that reaches no hosts."
+            )
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
             hosts = ", ".join(str(entry) for entry in self.egress_allow)
             raise ValueError(

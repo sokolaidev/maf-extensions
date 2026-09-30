@@ -54,5 +54,7 @@ def test_only_the_ipv4_subnets_of_the_sandbox_network_are_read() -> None:
 
 def test_the_policy_leaves_the_tunnel_to_the_entrypoint() -> None:
     """An image whose entrypoint does not bind the sandbox network starts no tunnel at all."""
-    spec = SandboxSpec(kind="test", image="image", egress=Egress.ALLOWLIST)
+    spec = SandboxSpec(
+        kind="test", image="image", egress=Egress.ALLOWLIST, egress_allow=("example.com",)
+    )
     assert "tunnel_listen" not in json.loads(base64.b64decode(encoded_policy(spec)))["proxy"]

@@ -58,7 +58,7 @@ The banner is returned for BCP190, BCP191 or BCP192. It tells the model that mod
 
 ## Result labels and tool flow
 
-The compiler and its input files are sources of the diagnostic text. The kind therefore defaults to `untrusted` for that text, including counts. With `Egress.CLOSED`, at least one accepted file read and trusted evidence for every read, core labels the report trusted. The default restore allowlist keeps it untrusted, even when no restore occurs.
+The compiler and its input files are sources of the diagnostic text. The kind therefore defaults to `untrusted` for that text, including counts. With `Egress.CLOSED`, at least one accepted file read and trusted evidence for every read, core labels the report trusted. The default restore allowlist keeps it untrusted, even when no restore occurs, unless the host passes `egress_integrity=SourceIntegrity.TRUSTED` to `make_bicep_tools`. That declaration vouches for all four registry hosts and permits the same file-based promotion under `ALLOWLIST`. Untrusted or unestablished file reads still make the report untrusted. The claim is refused with `CLOSED` or `UNRESTRICTED` and does not change confidentiality.
 
 The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `valid` or `invalid`, and only where the compiler answered for every file it was given. `completed` is false where it did not: a refused name, a file that could not be staged, a timeout, unreadable SARIF, or a module restore failure, which leaves module input type checking undone. A call that did not complete carries no verdict.
 

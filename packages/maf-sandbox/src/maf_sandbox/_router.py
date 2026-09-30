@@ -70,6 +70,7 @@ from ._protocol import (
     ConfiguredIdentity,
     DisposalCode,
     DisposalFailure,
+    Egress,
     EgressRule,
     Identity,
     IdentityScope,
@@ -1140,6 +1141,11 @@ class SandboxRouter:
         Callers guarantee at least one candidate. :meth:`ensure_can_serve` is where the
         no-backend case returns instead — nothing runs there, so nothing reaches anything.
         """
+        if spec.egress == Egress.ALLOWLIST and not spec.egress_allow:
+            raise ValueError(
+                "Egress.ALLOWLIST requires a non-empty egress_allow; use Egress.CLOSED "
+                "for a workload that reaches no hosts."
+            )
         self._refuse_host_denials(spec)
         served, passed_over = self._route(spec)
         if served is None:
@@ -1412,6 +1418,7 @@ class SandboxRouter:
         returns: nothing runs, so nothing reaches anything.
 
         Raises:
+            ValueError: when ``ALLOWLIST`` names no hosts; use ``CLOSED`` instead.
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
             SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
             SandboxBackendNotPermitted: when the backend's declarations cannot be read, or

@@ -241,9 +241,15 @@ class TestAllowEntryGrammar:
         assert built.egress_allow == ()
         assert built.egress is Egress.CLOSED
 
+    @pytest.mark.parametrize("hosts", [(), [], iter(())])
+    @pytest.mark.parametrize("mode", [Egress.ALLOWLIST, "allowlist"])
+    def test_allowlist_requires_at_least_one_host(self, hosts, mode):
+        with pytest.raises(ValueError, match="non-empty egress_allow.*Egress.CLOSED"):
+            SandboxSpec(kind="test", egress=mode, egress_allow=hosts)
+
 
 class TestMethodRouting:
-    @pytest.mark.parametrize("entries", [("example.com",), (EgressRule("example.com"),), ()])
+    @pytest.mark.parametrize("entries", [("example.com",), (EgressRule("example.com"),)])
     @pytest.mark.parametrize("selection", [Selection.FIXED, Selection.PER_SPEC])
     def test_removing_method_scope_serves_an_ordinary_backend(
         self, entries: tuple[str | EgressRule, ...], selection: Selection

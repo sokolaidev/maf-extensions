@@ -34,7 +34,7 @@ _GUIDANCE = "A hidden result is not a successful check."
 _SPEC = SandboxSpec(kind="probe", work_dir="/work")
 
 
-def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False):
+def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False, **kwargs):
     return sandboxed_tool(
         build,
         router=SandboxRouter(
@@ -66,6 +66,7 @@ def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False)
         source_integrity=source,
         nothing_survives_from=(SourceChannel.FILE_STORE,) if source == "trusted" else (),
         standing_guidance=guidance,
+        **kwargs,
     )[0]
 
 
@@ -318,8 +319,6 @@ class TestTheFrameworkContractARaisedToolRestsOn:
 def _spec_with_other_source(channel):
     if channel == "closed":
         return _SPEC
-    if channel == "empty-allowlist":
-        return replace(_SPEC, egress=Egress.ALLOWLIST)
     if channel == "allowlist":
         return replace(_SPEC, egress=Egress.ALLOWLIST, egress_allow=("example.com",))
     if channel == "unrestricted":
@@ -349,7 +348,6 @@ def _spec_with_other_source(channel):
     "channel,expected",
     [
         ("closed", "trusted"),
-        ("empty-allowlist", "trusted"),
         ("allowlist", "untrusted"),
         ("unrestricted", "untrusted"),
         ("host-missing", "untrusted"),
@@ -393,3 +391,117 @@ def test_trusted_files_cannot_promote_other_untrusted_sources(channel, expected,
         "integrity": expected,
         "confidentiality": "private",
     }
+
+
+@pytest.mark.parametrize(
+    "egress_integrity", [None, SourceIntegrity.UNTRUSTED, SourceIntegrity.TRUSTED]
+)
+@pytest.mark.parametrize(
+    "levels",
+    [[], [SourceIntegrity.TRUSTED], [SourceIntegrity.TRUSTED, SourceIntegrity.UNTRUSTED], [None]],
+)
+@pytest.mark.parametrize("contract", [False, True])
+def test_egress_trust_clears_only_the_network_source(egress_integrity, levels, contract):
+    store = InMemoryStore({"a": "content"})
+
+    def build(session):
+        async def read():
+            for level in levels:
+                await session.read_file(store, ListedFile("a", level))
+            return SandboxResult(completed=True, output=("report",)) if contract else "report"
+
+        return read
+
+    tool = _attach(
+        build,
+        source="untrusted",
+        spec=_spec_with_other_source("allowlist"),
+        contract=contract,
+        egress_integrity=egress_integrity,
+        outbound_max_confidentiality="private",
+    )
+    tool.additional_properties["confidentiality"] = "private"
+    items = asyncio.run(tool.invoke(arguments={}))
+    report = next(item for item in items if item.text == "report")
+    expected = (
+        "trusted"
+        if egress_integrity is SourceIntegrity.TRUSTED and levels == [SourceIntegrity.TRUSTED]
+        else "untrusted"
+    )
+    assert report.additional_properties["security_label"] == {
+        "integrity": expected,
+        "confidentiality": "private",
+    }
+    assert tool.additional_properties["max_allowed_confidentiality"] == "private"
+    claim = DERIVED_INTEGRITY_PROPERTY if contract else "source_integrity"
+    assert tool.additional_properties[claim] == "untrusted"
+
+
+@pytest.mark.parametrize("channel", ["closed", "unrestricted"])
+def test_trusted_egress_requires_an_allowlist_at_attach(channel):
+    with pytest.raises(ValueError, match="egress_integrity=TRUSTED requires Egress.ALLOWLIST"):
+        _attach(
+            lambda _: pytest.fail("body must not be built"),
+            source="untrusted",
+            spec=_spec_with_other_source(channel),
+            egress_integrity=SourceIntegrity.TRUSTED,
+        )
+
+
+def test_an_unknown_egress_integrity_is_refused_at_attach():
+    with pytest.raises(ValueError, match="SourceIntegrity"):
+        _attach(lambda _: None, source="untrusted", egress_integrity="unknown")
+
+
+@pytest.mark.parametrize("mapping", [False, True])
+def test_trusting_egress_does_not_license_a_blanket_trusted_output(mapping):
+    with pytest.raises(ValueError, match="network"):
+        _attach(
+            lambda _: pytest.fail("body must not be built"),
+            spec=_spec_with_other_source("allowlist"),
+            egress_integrity=SourceIntegrity.TRUSTED,
+            declarations={"source_integrity": "trusted"} if mapping else None,
+        )
+
+
+def test_unconfigured_hosts_still_attach_nothing():
+    for router in (None, SandboxRouter([])):
+        assert (
+            sandboxed_tool(
+                lambda _: pytest.fail("body must not be built"),
+                router=router,
+                context=CallerContext(
+                    current_scope=lambda: "scope",
+                    current_thread_id=lambda: "thread",
+                    list_files=InMemoryStore.list,
+                ),
+                spec=_SPEC,
+                name="probe",
+                egress_integrity=SourceIntegrity.TRUSTED,
+            )
+            == []
+        )
+
+
+@pytest.mark.parametrize(
+    "channel,expected",
+    [("host-trusted", "trusted"), ("host-untrusted", "untrusted"), ("host-missing", "untrusted")],
+)
+def test_trusting_egress_does_not_clear_host_tool_sources(channel, expected):
+    spec = replace(
+        _spec_with_other_source(channel), egress=Egress.ALLOWLIST, egress_allow=("example.com",)
+    )
+
+    def build(session):
+        async def read():
+            await session.read_file(
+                InMemoryStore({"a": "content"}), ListedFile("a", SourceIntegrity.TRUSTED)
+            )
+            return "report"
+
+        return read
+
+    tool = _attach(build, source="untrusted", spec=spec, egress_integrity=SourceIntegrity.TRUSTED)
+    tool.additional_properties["confidentiality"] = "public"
+    items = asyncio.run(tool.invoke(arguments={}))
+    assert items[0].additional_properties["security_label"]["integrity"] == expected

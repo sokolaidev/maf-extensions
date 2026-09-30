@@ -23,7 +23,7 @@ unrestricted  <  allowlist  <  closed
 | `ALLOWLIST` | Only destinations in `egress_allow` are permitted |
 | `CLOSED` | Outbound network access is denied |
 
-The spec defaults to `CLOSED`. A nonempty `egress_allow` requires `ALLOWLIST`. An empty allowlist permits no destinations.
+The spec defaults to `CLOSED`. A nonempty `egress_allow` requires `ALLOWLIST`, and `ALLOWLIST` requires at least one host. An empty allowlist is refused at construction and attachment; use `CLOSED` for a workload that reaches no destinations.
 
 The router checks membership in `backend.declarations.egress_modes`. It does not replace the requested mode with a more open or more restrictive mode. An empty backend declaration refuses every workload with `SandboxEgressNotEnforced`.
 
@@ -71,7 +71,7 @@ The packaged proxy is built from pinned iron-proxy source with a local policy pa
 
 Public destinations require TLS on every port. Private destinations also require TLS unless the host explicitly sets `allow_private_http=True` on the Docker or WSLC config for development or test use. That option permits plaintext only when the listed host's actual resolved address is private. An HTTP redirect requires a new request through the same policy. Client libraries must use the injected proxy and CA environment or configure equivalent trust; the network topology blocks direct outbound routing.
 
-An empty allowlist uses a network with no outbound destinations. It still answers the requested `ALLOWLIST` policy. A proxy that cannot establish its outbound connection causes refusal.
+A proxy that cannot establish its outbound connection causes refusal.
 
 The [Docker](backends/docker.md) and [WSLC](backends/wslc.md) guides describe topology, DNS limits and tested behavior. In particular, do not infer complete DNS confinement from CONNECT enforcement. Egress observations also cover only the windows the backend can attribute; see [observability](observability.md).
 

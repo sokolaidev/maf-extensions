@@ -46,7 +46,9 @@ def test_scoped_rules_are_serialized_for_iron_proxy() -> None:
 
 def test_inspected_gateways_are_denied_without_denying_all_private_addresses() -> None:
     addresses = network_gateways([{"Gateway": "172.17.0.1"}, {"Gateway": "fd42:1407::1"}])
-    spec = SandboxSpec(kind="test", image="image", egress=Egress.ALLOWLIST)
+    spec = SandboxSpec(
+        kind="test", image="image", egress=Egress.ALLOWLIST, egress_allow=("example.com",)
+    )
     policy = json.loads(base64.b64decode(encoded_policy(spec, control_addresses=addresses)))
     denied = policy["proxy"]["upstream_deny_cidrs"]
     assert "172.17.0.1/32" in denied
@@ -138,5 +140,7 @@ def test_only_the_ipv4_subnets_of_the_sandbox_network_are_read() -> None:
 
 def test_the_policy_leaves_the_tunnel_to_the_entrypoint() -> None:
     """An image whose entrypoint does not bind the sandbox network starts no tunnel at all."""
-    spec = SandboxSpec(kind="test", image="image", egress=Egress.ALLOWLIST)
+    spec = SandboxSpec(
+        kind="test", image="image", egress=Egress.ALLOWLIST, egress_allow=("example.com",)
+    )
     assert "tunnel_listen" not in json.loads(base64.b64decode(encoded_policy(spec)))["proxy"]

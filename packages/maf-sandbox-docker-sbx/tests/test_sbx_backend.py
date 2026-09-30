@@ -700,16 +700,10 @@ class TestAllowlist:
         with pytest.raises(SbxHostNotConfined, match="own rules were changed"):
             asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
 
-    def test_an_empty_allowlist_stays_closed_whatever_the_host_posture(self, backend, sbx):
-        sbx.global_allows = ["**"]
-        sbx.governance = {"active": True}
-        sbx.secrets["secrets"] = [{"scope": "global", "type": "service", "name": "github"}]
-        sandbox = asyncio.run(backend.acquire(KEY, _allowlist()))
-        assert not [call for call in sbx.calls if call[0] in ("policy", "secret")]
-        assert sbx.sandbox_rules[sandbox.name][0]["resources"] == ["**"]
-        asyncio.run(sandbox.exec("true", working_directory=".", timeout=5))
-        with pytest.raises(ValueError, match="before changing its egress"):
-            asyncio.run(backend.acquire(KEY, _spec()))
+    def test_an_empty_allowlist_is_refused_before_acquiring(self, backend, sbx):
+        with pytest.raises(ValueError, match="non-empty egress_allow"):
+            asyncio.run(backend.acquire(KEY, _allowlist()))
+        assert sbx.calls == []
 
     def test_a_wildcard_beside_a_scoped_rule_for_its_bare_name_is_refused(self, backend, sbx):
         scoped = EgressRule("example.com", methods=(HttpMethod.GET,))

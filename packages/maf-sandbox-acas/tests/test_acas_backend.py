@@ -4907,7 +4907,6 @@ class TestEgressPolicy:
             (Egress.ALLOWLIST, ("a.example", "b.example"), Egress.ALLOWLIST, ("a.example",)),
             (Egress.ALLOWLIST, ("a.example",), Egress.CLOSED, ()),
             (Egress.CLOSED, (), Egress.ALLOWLIST, ("a.example",)),
-            (Egress.ALLOWLIST, (), Egress.CLOSED, ()),
         ],
     )
     def test_changed_policy_refuses_without_touching_the_original(

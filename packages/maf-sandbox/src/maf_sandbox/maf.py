@@ -928,13 +928,7 @@ def make_caller_context(
 
 
 def _reaches_the_network(spec: SandboxSpec) -> bool:
-    """Whether this workload can reach a host outside its sandbox.
-
-    Both halves are load-bearing, and one predicate answers for the confidentiality cap and the
-    trusted-claim refusal alike.  An ``unrestricted`` run names nothing and reaches everything,
-    so the mode has to be read; an ``allowlist`` run with an empty list reaches nothing, so the
-    payload has to be read too.
-    """
+    """Whether this workload can reach a host outside its sandbox, regardless of source trust."""
     return spec.egress is Egress.UNRESTRICTED or bool(spec.egress_allow)
 
 
@@ -2682,6 +2676,7 @@ def sandboxed_tool(
     admission_timeout: float | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
+    egress_integrity: SourceIntegrity | None = None,
     logger: logging.Logger | None = None,
 ) -> list[Any]:
     """Return the one-tool list for a sandbox workload, or ``[]`` when no sandbox is available.
@@ -2733,8 +2728,9 @@ def sandboxed_tool(
        keeps the kind's output claim on :data:`DERIVED_INTEGRITY_PROPERTY`. Derived output
        retains host-set confidentiality. Any untrusted or unestablished read makes it
        untrusted; all-trusted reads promote the kind's claim only when every other source
-       channel is absent or established as trusted. Configured network access and untrusted
-       or unknown host-tool sources block promotion. With no reads, the kind's claim remains.
+       channel is absent or established as trusted. Network access without a host trust claim
+       and untrusted or unknown host-tool sources block promotion. With no reads, the kind's
+       claim remains.
        Without either opt-in, valid source-integrity and confidentiality declarations label
        the result; absent declarations leave it to the
        framework's fallback. Neither the declaration nor another call is changed.
@@ -2810,6 +2806,11 @@ def sandboxed_tool(
             every readable file. Unestablished integrity is below every level, so requiring
             ``trusted`` refuses every file in a store whose integrity is unestablished. This
             checks reads independently of result declarations and confidentiality labels.
+        egress_integrity: The host's trust in the network source. ``TRUSTED`` requires a
+            non-empty ``ALLOWLIST`` and permits file-based promotion when every other source
+            is trusted. ``None`` and ``UNTRUSTED`` keep network access blocking promotion.
+            This does not vouch for output, bypass file evidence, or change confidentiality.
+            It applies independently of ``declarations``.
         also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. For a workload carrying something out through a channel
             the spec cannot show — a wired host-tool registry, say — so the confidentiality
@@ -2886,6 +2887,15 @@ def sandboxed_tool(
     """
     if router is None or not router.enabled:
         return []
+    if egress_integrity is not None:
+        egress_integrity = SourceIntegrity(egress_integrity)
+    if egress_integrity is SourceIntegrity.TRUSTED and (
+        spec.egress is not Egress.ALLOWLIST or not spec.egress_allow
+    ):
+        raise ValueError(
+            f"{name}: egress_integrity=TRUSTED requires Egress.ALLOWLIST with a non-empty "
+            "egress_allow; it cannot vouch for CLOSED or UNRESTRICTED egress."
+        )
     if agent_id is None:
         if agent_dir is None:
             raise TypeError("agent_id is required")
@@ -2980,8 +2990,11 @@ def sandboxed_tool(
         admission_timeout=admission_timeout,
         cleanup_timeout=effective_timeout,
     )
+    established_for_file_promotion = {SourceChannel.FILE_STORE}
+    if egress_integrity is SourceIntegrity.TRUSTED:
+        established_for_file_promotion.add(SourceChannel.EGRESS)
     file_trust_can_promote = not _source_channels_not_established_as_trusted(
-        spec, frozenset({SourceChannel.FILE_STORE})
+        spec, frozenset(established_for_file_promotion)
     )
     # Materialised before the declarations, which turn on whether anything was committed, and
     # before `_committed_guidance` consumes it: a caller may pass any iterable.

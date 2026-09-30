@@ -54,7 +54,7 @@ Use `sandbox_outputs_read_tools` to expose named listing and reading tools for t
 
 The host supplies `outbound_max_confidentiality` in its own classification vocabulary. Core places it in the tool's `max_allowed_confidentiality` declaration when the tool has an outbound channel. It does not invent a cap or order host-specific values.
 
-An outbound channel includes unrestricted networking, a nonempty allowlist, landed outputs, opted-in attached authority, or host-tool activity identified through `also_carries_out`. An empty allowlist alone carries nothing out.
+An outbound channel includes unrestricted networking, a nonempty allowlist, landed outputs, opted-in attached authority, or host-tool activity identified through `also_carries_out`. `ALLOWLIST` requires at least one host; workloads reaching no hosts use `CLOSED`. Trusting an allowlist's integrity does not remove this outbound channel or its confidentiality cap.
 
 `HostToolAggregate.outbound_caps` contains every registered sink cap as an unordered set. The host must reconcile them; core cannot infer which arbitrary host string is strictest. CodeAct also accounts for undeclared host tools.
 
@@ -203,7 +203,7 @@ One limit remains: middleware records when the writing call returns. Bytes alrea
 
 Set a tool's `additional_properties["confidentiality"]` to the classification used by the application. This classifies results. `max_allowed_confidentiality` instead limits data sent to a destination; a provenance floor instead describes file integrity.
 
-When a call reads files, core makes its derived items untrusted if any accepted read is untrusted or unestablished. All-trusted reads promote the workload claim only when other source channels are absent or trusted: configured network access and untrusted or unknown host-tool sources block promotion. Calls that read no files keep the kind's declared claim. Shipped kinds default to untrusted when the host supplies no file labels.
+When a call reads files, core makes its derived items untrusted if any accepted read is untrusted or unestablished. All-trusted reads promote the workload claim only when other source channels are absent or trusted. A host can pass `egress_integrity=SourceIntegrity.TRUSTED` to `sandboxed_tool`, or a kind factory exposing it such as `make_bicep_tools`, to establish a nonempty allowlist as a trusted source. Without that claim, network access blocks promotion. Untrusted or unknown host-tool sources still block it. Calls that read no files keep the kind's declared claim. Shipped kinds default to untrusted when the host supplies no file labels.
 
 Tools that commit guidance always label derived items. Tools without committed guidance need both valid source-integrity and explicit confidentiality declarations for core to stamp derived items. Otherwise the framework resolves their labels. [Information flow](information-flow.md#how-core-labels-a-call) defines the full rules.
 
