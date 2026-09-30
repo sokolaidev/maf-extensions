@@ -91,22 +91,28 @@ def _bicep_report():
     )
 
 
-def _attach(kind, levels, *, provenance=None, mutate_during_read=False, network=False):
+def _attach(kind, levels, *, provenance=None, mutation=None, network=False):
     extension = {"bicep": "bicep", "terraform": "tf", "codeact": "txt"}[kind]
     names = [f"main.{extension}", f"second.{extension}"][: len(levels)]
 
     class Store(InMemoryStore):
         async def read(self, name):
             content = await super().read(name)
-            if mutate_during_read:
+            if mutation in {"during-read", "changed-back"}:
                 assert provenance is not None
                 provenance.record(name)
+                if mutation == "changed-back":
+                    provenance.forget(name)
             return content
 
     store = Store(dict.fromkeys(names, _REPORT))
 
     async def listing(_store):
-        return [ListedFile(name, level) for name, level in zip(names, levels, strict=True)]
+        entries = [ListedFile(name, level) for name, level in zip(names, levels, strict=True)]
+        if mutation == "after-listing":
+            assert provenance is not None
+            provenance.record(names[0])
+        return entries
 
     context = CallerContext(
         current_scope=lambda: "scope",
@@ -131,7 +137,12 @@ def _attach(kind, levels, *, provenance=None, mutate_during_read=False, network=
         )[0]
     elif kind == "bicep":
         attached = make_bicep_tools(
-            router, store, "agent", context, egress=Egress.ALLOWLIST if network else Egress.CLOSED
+            router,
+            store,
+            "agent",
+            context,
+            egress=Egress.ALLOWLIST if network else Egress.CLOSED,
+            file_store_provenance=provenance,
         )[0]
     else:
         attached = make_codeact_tools(
@@ -139,6 +150,7 @@ def _attach(kind, levels, *, provenance=None, mutate_during_read=False, network=
             "agent",
             context,
             file_store=store,
+            file_store_provenance=provenance,
             egress_allow=("example.com",) if network else (),
         )[0]
         arguments["code"] = "print('report')"
@@ -181,19 +193,23 @@ def test_shipped_reports_use_the_weakest_host_file_label(kind, levels, expected)
         ("trusted", "trusted"),
         ("untrusted", "untrusted"),
         ("unknown", "untrusted"),
-        ("changed", "untrusted"),
+        ("after-listing", "untrusted"),
+        ("during-read", "untrusted"),
+        ("changed-back", "untrusted"),
     ],
 )
-def test_terraform_report_uses_stable_provenance(state, expected):
+@pytest.mark.parametrize("kind", ["bicep", "terraform", "codeact"])
+def test_shipped_report_uses_stable_provenance(kind, state, expected):
     record = FileStoreProvenance(floor=None if state == "unknown" else SourceIntegrity.TRUSTED)
     file_store_provenance_middleware(record)
     if state == "untrusted":
-        record.record("main.tf")
+        extension = {"bicep": "bicep", "terraform": "tf", "codeact": "txt"}[kind]
+        record.record(f"main.{extension}")
     attached, arguments = _attach(
-        "terraform",
+        kind,
         [SourceIntegrity.TRUSTED],
         provenance=record,
-        mutate_during_read=state == "changed",
+        mutation=state,
     )
     items = asyncio.run(attached.invoke(arguments=arguments))
     report = next(item for item in items if _REPORT in (item.text or ""))

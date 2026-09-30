@@ -270,24 +270,13 @@ def test_report_integrity_follows_host_file_provenance(state, expected, request)
     assert report.additional_properties["security_label"]["integrity"] == expected
 
 
-def test_integrity_admission_skips_a_refused_file_and_compiles_the_rest(monkeypatch):
-    from functools import partial
-
+def test_integrity_admission_skips_a_refused_file_and_compiles_the_rest():
     from maf_sandbox import FileStoreProvenance, SourceIntegrity
-    from maf_sandbox.maf import file_store_provenance_middleware, sandboxed_tool
+    from maf_sandbox.maf import file_store_provenance_middleware
 
     record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
     file_store_provenance_middleware(record)
     record.record("weak.bicep")
-    monkeypatch.setattr(
-        _tool_module,
-        "sandboxed_tool",
-        partial(
-            sandboxed_tool,
-            file_store_provenance=record,
-            requires_file_integrity=SourceIntegrity.TRUSTED,
-        ),
-    )
     backend = _fake_backend()
     tool = _tool(
         InMemoryStore(
@@ -295,6 +284,8 @@ def test_integrity_admission_skips_a_refused_file_and_compiles_the_rest(monkeypa
             integrity=SourceIntegrity.TRUSTED,
         ),
         backend,
+        file_store_provenance=record,
+        requires_file_integrity=SourceIntegrity.TRUSTED,
     )
 
     out = _run(tool, ["weak.bicep", "trusted.bicep"])

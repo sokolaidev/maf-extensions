@@ -80,7 +80,14 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from agent_framework import AgentFileStore
-    from maf_sandbox import HostToolAggregate, HostToolRegistry, LandedArtifact, Sandbox, SandboxKey
+    from maf_sandbox import (
+        FileStoreProvenance,
+        HostToolAggregate,
+        HostToolRegistry,
+        LandedArtifact,
+        Sandbox,
+        SandboxKey,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +293,8 @@ def make_codeact_tools(
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,
     credential_retention_seconds: int | None = None,
+    file_store_provenance: FileStoreProvenance | None = None,
+    requires_file_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -306,6 +315,10 @@ def make_codeact_tools(
         file_store: The agent's file store. Given one, the tool takes a ``files``
             parameter and shares those files into the sandbox; the caller's listing is the
             authority on which names exist, exactly as it is for the Bicep kind.
+        file_store_provenance: The store's provenance record, rechecked around each file read.
+            Without one, the listing's integrity label stands.
+        requires_file_integrity: Minimum integrity for file reads after the provenance fold.
+            ``None`` disables admission; a refusal stops the call before staging or execution.
         output_sink: Where produced files land. Required by any mode but
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
@@ -575,6 +588,8 @@ def make_codeact_tools(
         # Untrusted is the fallback for guest text and output-presence bits. Core computes
         # per-call report labels from file evidence and the enabled source channels.
         source_integrity=SourceIntegrity.UNTRUSTED,
+        file_store_provenance=file_store_provenance,
+        requires_file_integrity=requires_file_integrity,
         # Both modes need a raised framework declaration to keep contract items readable.
         result_contract=True,
         verdicts=CODEACT_VERDICTS,
