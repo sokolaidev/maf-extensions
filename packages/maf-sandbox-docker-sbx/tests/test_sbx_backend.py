@@ -100,6 +100,7 @@ class FakeSbx:
             "env_only_count": 0,
         }
         self.governance: object = {"active": False}
+        self.check_result: _Result | None = None
         backend._sbx = self  # type: ignore[method-assign]
 
     def _rules(self, name: str | None) -> bytes:
@@ -190,7 +191,11 @@ class FakeSbx:
                 self.sandbox_rules.pop(name, None)
                 return _ok()
             case ("policy", "check", "network", "--json", _host):
-                return _ok(json.dumps({"allowed": False, "governance": self.governance}).encode())
+                if self.check_result is not None:
+                    return self.check_result
+                # Measured with sbx 0.45.1: a denied host exits 1 with the whole verdict.
+                verdict = {"allowed": False, "governance": self.governance}
+                return _Result(1, json.dumps(verdict).encode(), b"")
             case ("secret", "ls", "--json"):
                 return _ok(json.dumps(self.secrets).encode())
             case ("policy", "ls", "--json"):
@@ -623,6 +628,26 @@ class TestAllowlist:
         assert (
             asyncio.run(backend.acquire(KEY, _allowlist(again))).instance_id == sandbox.instance_id
         )
+
+    @pytest.mark.parametrize(
+        ("code", "verdict"),
+        [
+            (2, {"allowed": False, "governance": {"active": False}}),
+            (1, {"allowed": True, "governance": {"active": False}}),
+            (1, {"governance": {"active": False}}),
+            (0, {"allowed": False, "governance": {"active": False}}),
+        ],
+    )
+    def test_a_policy_check_that_is_not_a_verdict_is_refused(self, backend, sbx, code, verdict):
+        sbx.check_result = _Result(code, json.dumps(verdict).encode(), b"error: daemon\n")
+        with pytest.raises(SbxError, match="sbx policy check"):
+            asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
+        assert not any(call[0] == "create" for call in sbx.calls)
+
+    def test_an_allowed_probe_exits_zero_and_passes(self, backend, sbx):
+        verdict = {"allowed": True, "governance": {"active": False}}
+        sbx.check_result = _ok(json.dumps(verdict).encode())
+        asyncio.run(backend.acquire(KEY, _allowlist("api.example.com")))
 
     def test_an_authority_rule_is_refused(self, backend, sbx):
         rule = EgressRule("api.example.com", authority="api://example")

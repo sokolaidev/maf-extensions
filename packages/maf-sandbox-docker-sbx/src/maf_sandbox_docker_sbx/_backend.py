@@ -1064,9 +1064,13 @@ class SbxSandboxBackend:
         probe = entries[0].domain if entries else "example.invalid"
         checked = await self._sbx("policy", "check", "network", "--json", probe)
         try:
-            governance = cast("dict[str, object]", json.loads(checked.stdout)).get("governance")
+            verdict = cast("dict[str, object]", json.loads(checked.stdout))
         except ValueError:
             raise _failure("sbx policy check", checked) from None
+        # A denial exits 1 with a whole verdict; only that and an allowed exit 0 are answers.
+        if (checked.returncode, verdict.get("allowed")) not in ((0, True), (1, False)):
+            raise _failure("sbx policy check", checked)
+        governance = verdict.get("governance")
         active = (
             cast("dict[str, object]", governance).get("active")
             if isinstance(governance, dict)
