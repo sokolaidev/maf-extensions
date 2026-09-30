@@ -34,6 +34,8 @@ Build the [Bicep image](https://github.com/sokolaidev/maf-extensions/blob/main/i
 
 The tool reads only requested names from the caller's listing. It stages all selected files before compiling, so local modules and parameter-file references resolve together.
 
+Pass `file_store_provenance=record` to recheck the same `FileStoreProvenance` record used by the host's `file_store_provenance_middleware` around each file read. The read folds the recorded integrity with the listing's label; a record change during the read leaves integrity unestablished. Set `requires_file_integrity=SourceIntegrity.TRUSTED` to skip files whose read-time integrity is weaker or unestablished and leave validation incomplete. Both options default to `None`, preserving listing-only labels and allowing reads without an integrity requirement.
+
 Templates use `bicep build`; parameter files use `bicep build-params`. The tool also runs lint as applicable. Commands are fixed templates with validated paths. Model text is passed as file content.
 
 The image supplies the CLI. The package supplies a complete `bicepconfig.json` by default. A host can pass `config=Path("bicepconfig.json").read_text(encoding="utf-8")` to `make_bicep_tools` to use its own policy. The factory validates the JSON and refuses linter rule IDs absent from the packaged catalog. It captures the config at attachment and stages it before compilation in each fresh call directory below `/maf-sandbox/work`. Bicep finds that configuration by walking up from the source. A config upload failure leaves validation incomplete. Each call also owns its generated files, `HOME`, `TMPDIR` and module cache. A manifest accepts at most 63 source files, reserving one transfer slot for the config.

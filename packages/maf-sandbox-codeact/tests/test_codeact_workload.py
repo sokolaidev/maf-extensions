@@ -587,27 +587,18 @@ def test_report_integrity_follows_host_file_provenance(state, expected, request)
     assert report.additional_properties["security_label"]["integrity"] == expected
 
 
-def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_written(monkeypatch):
-    from functools import partial
-
+def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_written():
     from maf_sandbox import FileStoreProvenance
-    from maf_sandbox.maf import file_store_provenance_middleware, sandboxed_tool
+    from maf_sandbox.maf import file_store_provenance_middleware
 
     record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
     file_store_provenance_middleware(record)
     record.record("weak.csv")
-    monkeypatch.setattr(
-        _tool_module,
-        "sandboxed_tool",
-        partial(
-            sandboxed_tool,
-            file_store_provenance=record,
-            requires_file_integrity=SourceIntegrity.TRUSTED,
-        ),
-    )
     sandbox = _ScriptedSandbox()
     tool = _tool(
         _backend(sandbox),
+        file_store_provenance=record,
+        requires_file_integrity=SourceIntegrity.TRUSTED,
         file_store=InMemoryStore(
             {"trusted.csv": "allowed", "weak.csv": "secret"}, integrity=SourceIntegrity.TRUSTED
         ),

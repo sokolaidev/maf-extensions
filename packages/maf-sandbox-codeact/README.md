@@ -50,6 +50,8 @@ These channels operate during `execute_code`. Hiding its final report does not u
 
 Inputs must appear in `CallerContext.list_files`. They are staged under their listed names, so a program can open `data/sales.csv`. The listing controls which files are shared; it does not make their contents trustworthy.
 
+Pass `file_store_provenance=record` to recheck the same `FileStoreProvenance` record used by the host's `file_store_provenance_middleware` around each input read. The read folds the recorded integrity with the listing's label; a record change during the read leaves integrity unestablished. Set `requires_file_integrity=SourceIntegrity.TRUSTED` to stop the call before staging or execution if any selected file's read-time integrity is weaker or unestablished. Both options default to `None`, preserving listing-only labels and allowing reads without an integrity requirement.
+
 Choose one output mode:
 
 | Mode | Names come from |

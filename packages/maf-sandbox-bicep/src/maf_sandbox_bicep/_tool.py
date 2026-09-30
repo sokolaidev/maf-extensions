@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from agent_framework import AgentFileStore
+    from maf_sandbox import FileStoreProvenance
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,8 @@ def make_bicep_tools(
     egress: Egress = Egress.ALLOWLIST,
     config: str | None = None,
     exec_timeout_seconds: int = 120,
+    file_store_provenance: FileStoreProvenance | None = None,
+    requires_file_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Return the ``[bicep_validate]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -276,6 +279,10 @@ def make_bicep_tools(
             ``extends`` is unsupported.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
+        file_store_provenance: The store's provenance record, rechecked around each file read.
+            Without one, the listing's integrity label stands.
+        requires_file_integrity: Minimum integrity for file reads after the provenance fold.
+            ``None`` disables admission; refused files are skipped and validation is incomplete.
     """
     return sandboxed_tool(
         lambda session: _bicep_validate_tool(
@@ -290,6 +297,8 @@ def make_bicep_tools(
         # Untrusted is the fallback when file provenance cannot establish the report.
         # Core computes per-call labels from file evidence and the enabled source channels.
         source_integrity=SourceIntegrity.UNTRUSTED,
+        file_store_provenance=file_store_provenance,
+        requires_file_integrity=requires_file_integrity,
         # Completion and verdict remain readable when the compiler's text is hidden.
         result_contract=True,
         verdicts=BICEP_VERDICTS,
