@@ -160,14 +160,14 @@ jobs:
       OPENTOFU_SANDBOX_IMAGE: ${{ vars.OPENTOFU_SANDBOX_IMAGE }}
       ACAS_SANDBOX_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # The checker uses the harness's workspace; image literals still come from the ref under test.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -254,7 +254,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -262,7 +262,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -397,7 +397,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -405,7 +405,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -516,7 +516,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -524,7 +524,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -616,13 +616,13 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -725,7 +725,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -733,7 +733,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -835,7 +835,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -843,7 +843,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -939,13 +939,13 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1048,7 +1048,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1056,7 +1056,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1160,7 +1160,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1168,7 +1168,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1276,7 +1276,7 @@ jobs:
     # also calls no model, and every one of the other ten pays for inference at least, of which
     # three pay for a billable microVM as well (01, 03, 14).
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1284,7 +1284,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1359,7 +1359,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1367,7 +1367,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1485,7 +1485,7 @@ jobs:
     # either. It does create containers — seven threads' worth, one at a time — and counts them
     # with `docker ps`, which is the only evidence a purge claim is worth anything.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1493,7 +1493,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1560,7 +1560,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1568,7 +1568,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1683,7 +1683,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1691,7 +1691,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1818,7 +1818,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1826,7 +1826,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -1932,7 +1932,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1940,7 +1940,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2038,7 +2038,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -2046,7 +2046,7 @@ jobs:
       # come from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2145,7 +2145,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -2153,7 +2153,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2244,13 +2244,13 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2367,7 +2367,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -2454,12 +2454,12 @@ jobs:
       DRAWIO_SANDBOX_IMAGE: ${{ vars.DRAWIO_SANDBOX_IMAGE }}
       PYTHONUNBUFFERED: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2541,7 +2541,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -2549,7 +2549,7 @@ jobs:
       # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2650,12 +2650,12 @@ jobs:
       ENGINE_VERSION: "1.16.2"
       PYTHONUNBUFFERED: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2737,12 +2737,12 @@ jobs:
       ENGINE_VERSION: "1.12.6"
       PYTHONUNBUFFERED: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2830,12 +2830,12 @@ jobs:
       ENGINE_VERSION: "1.16.2"
       PYTHONUNBUFFERED: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
@@ -2923,12 +2923,12 @@ jobs:
       ENGINE_VERSION: "1.12.6"
       PYTHONUNBUFFERED: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
