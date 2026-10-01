@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -338,6 +340,151 @@ func TestMAFCredentialActiveUpstreamStreamExpiry(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("upstream did not observe stream cancellation")
 			}
+		})
+	}
+}
+
+type mafRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f mafRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type mafReadFunc func([]byte) (int, error)
+
+func (f mafReadFunc) Read(p []byte) (int, error) { return f(p) }
+
+func TestMAFCredentialBodyCancellation(t *testing.T) {
+	for _, phase := range []string{"before-read", "during-read", "complete"} {
+		for _, readErr := range []error{nil, io.EOF, io.ErrUnexpectedEOF} {
+			t.Run(phase+"/"+fmt.Sprint(readErr), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				reads := 0
+				transport := &http.Transport{Protocols: new(http.Protocols)}
+				transport.Protocols.SetHTTP1(true)
+				transport.RegisterProtocol("https", mafRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+					return &http.Response{Body: io.NopCloser(mafReadFunc(func(b []byte) (int, error) {
+						reads++
+						if phase == "during-read" {
+							cancel()
+						}
+						return copy(b, "tail"), readErr
+					}))}, nil
+				}))
+				p := &Proxy{transport: transport}
+				r := mafRequest("GET", "https://api.example.com/", "172.22.1.4:1234").WithContext(ctx)
+				resp, err := p.doUpstream(r)
+				require.NoError(t, err)
+				defer resp.Body.Close()
+				if phase == "before-read" {
+					cancel()
+				}
+				b := make([]byte, 8)
+				n, err := resp.Body.Read(b)
+				if phase == "complete" {
+					require.Equal(t, readErr, err)
+				} else {
+					require.ErrorIs(t, err, context.Canceled)
+				}
+				if phase == "before-read" {
+					require.Zero(t, n)
+					require.Zero(t, reads)
+				} else {
+					require.Equal(t, "tail", string(b[:n]))
+				}
+			})
+		}
+	}
+}
+
+func TestMAFCredentialDownstreamTruncation(t *testing.T) {
+	for _, http2 := range []bool{false, true} {
+		for _, contentType := range []string{"application/octet-stream", "text/event-stream"} {
+			for _, cancelled := range []bool{false, true} {
+				t.Run(fmt.Sprintf("http2=%v/%s/cancelled=%v", http2, contentType, cancelled), func(t *testing.T) {
+					release := make(chan struct{})
+					var releaseOnce sync.Once
+					unblock := func() { releaseOnce.Do(func() { close(release) }) }
+					prefix := strings.Repeat("x", 64*1024)
+					transport := &http.Transport{Protocols: new(http.Protocols)}
+					transport.Protocols.SetHTTP1(true)
+					transport.RegisterProtocol("https", mafRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+						body := io.MultiReader(strings.NewReader(prefix), mafReadFunc(func([]byte) (int, error) {
+							<-release
+							if cancelled {
+								<-r.Context().Done()
+							}
+							return 0, io.EOF
+						}))
+						return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(body)}, nil
+					}))
+					p := New(Options{Pipeline: transform.NewPipelineHolder(transform.NewPipeline(nil, transform.BodyLimits{}, testLogger())), Logger: testLogger()})
+					p.credentials = mafFixture(t, time.Minute)
+					p.transport = transport
+					downstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						ctx, cancel := context.WithCancel(r.Context())
+						defer cancel()
+						if cancelled {
+							go func() {
+								select {
+								case <-release:
+									cancel()
+								case <-ctx.Done():
+								}
+							}()
+						}
+						r = r.WithContext(ctx)
+						r.Host = "api.example.com:8443"
+						r.TLS = &tls.ConnectionState{ServerName: "api.example.com"}
+						r.RemoteAddr = "172.22.1.4:1234"
+						p.handleHTTP(w, r, nil)
+					}))
+					downstream.EnableHTTP2 = http2
+					downstream.StartTLS()
+					defer downstream.Close()
+					defer unblock()
+					client := downstream.Client()
+					client.Timeout = 10 * time.Second
+					resp, err := client.Get(downstream.URL + "/v1/items")
+					require.NoError(t, err)
+					defer resp.Body.Close()
+					require.Equal(t, http.StatusOK, resp.StatusCode)
+					require.Equal(t, http2, resp.ProtoMajor == 2)
+					first := make([]byte, 1024)
+					_, err = io.ReadFull(resp.Body, first)
+					require.NoError(t, err)
+					unblock()
+					rest, err := io.ReadAll(resp.Body)
+					if cancelled {
+						require.Error(t, err, "a truncated response must not end in clean EOF")
+						require.NotErrorIs(t, err, context.DeadlineExceeded, "the proxy must abort before the client timeout")
+					} else {
+						require.NoError(t, err)
+						require.Equal(t, prefix, string(first)+string(rest))
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMAFCredentialUnbufferedResponseFailure(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sse=%v", sse), func(t *testing.T) {
+			body := io.NopCloser(mafReadFunc(func([]byte) (int, error) {
+				return 0, context.DeadlineExceeded
+			}))
+			resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}
+			p := &Proxy{logger: testLogger()}
+			// Hide Flusher to exercise the SSE copy fallback.
+			w := struct{ http.ResponseWriter }{httptest.NewRecorder()}
+			require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+				if sse {
+					resp.Body = transform.NewBufferedBody(body, 0)
+					p.streamSSE(w, resp)
+				} else {
+					p.writeResponse(w, resp)
+				}
+			})
 		})
 	}
 }
