@@ -42,7 +42,7 @@ python scripts/verify_hyperlight_aks_image.py \
 
 Use a GitHub CLI version supporting the [attestation verification policy flags](https://cli.github.com/manual/gh_attestation_verify), with GitHub and registry authentication configured on the host, and Docker with Linux/amd64 support. The verifier requires GitHub Actions SLSA v1 provenance, the exact signer identity, source revision/ref and GitHub OIDC issuer, and refuses self-hosted runners. It verifies the signature before running image code, then pulls the same digest, resolves its immutable local image ID and applies the builder's restricted packaging check. The payload must match the expected build-input hash and clean source revision. Missing attestations, unsupported CLI flags and verification failures refuse promotion; there is no unsigned fallback.
 
-The output retains the verified attestation bundles, expected policy, image identities, timestamp and packaging report. A failed attempt removes any previous success record at that output path. Keep these records and their signed bundles in operator-controlled storage for the image's supported lifetime; the local JSON report itself is unsigned. Records may contain private registry identifiers and should not be committed to this public repository. This command does not publish/sign images, configure cluster admission, or establish KVM execution, lifecycle acceptance or plugin provenance. Admission must independently enforce the accepted policy and digest; a saved report is not an admission credential. The existing unsigned candidate and CI records cannot satisfy this gate until a trusted publishing workflow produces matching attestations.
+The output report retains expected policy, image identities, timestamp, packaging results and parsed verification diagnostics. Its sibling `<output>.evidence.zip` retains the exact registry manifest, the original downloaded `attestation-bundles.jsonl` bytes and `trusted-root.jsonl`. Before recording success, the verifier checks the manifest digest and verifies those local bytes with `--bundle` and `--custom-trusted-root`, using the same publisher/source policy without registry, GitHub or TUF retrieval. Supply `--trusted-root` for an operator-approved snapshot; otherwise GitHub CLI obtains roots through its authenticated TUF trust configuration. The report records the archive and individual file hashes. A failed attempt removes both the previous report and its reserved evidence sibling. Keep both files in operator-controlled storage for the image's supported lifetime; the JSON report itself is unsigned, and its parsed attestation representation is diagnostic rather than the retained original bundle. Records may contain private registry identifiers and should not be committed to this public repository. This command does not publish/sign images, configure cluster admission, or establish KVM execution, lifecycle acceptance or plugin provenance. Admission must independently enforce the accepted policy and digest; a saved report is not an admission credential. The existing unsigned candidate and CI records cannot satisfy this gate until a trusted publishing workflow produces matching attestations.
 
 
 ### Exercise signing and verification in CI
@@ -60,6 +60,28 @@ The test requires the exact signer, source commit, source ref and prepared build
 The same job freshly verifies the candidate again and generates namespace admission rules, then tests them against a disposable KIND Kubernetes 1.35 API server. Server-side probes cover approved images, tags, changed digests/registries, extra containers, init containers, native sidecars, ephemeral-container updates, ordinary image updates, image volumes and namespace isolation. A scheduling gate prevents the persistent probe pod from running. The cluster is removed before a successful admission report is written.
 
 This proves real GitHub OIDC signing, OCI image verification and runtime image admission in the isolated test cluster. It does not test ACR access, approve a production publisher, install or validate production AKS admission, or execute a Hyperlight guest.
+
+### Offline evidence retrieval
+
+Keep an independently reviewed receipt outside the evidence archive. It contains `archive_sha256` (64 lowercase hexadecimal characters), `trusted_root_sha256`, and `candidate` with the same five fields as the promotion policy below. Approve those values from the reviewed publisher policy, candidate digest and trusted-root acquisition; copying expectations from an untrusted report does not establish trust. A receipt is an operator integrity record, not a new signature.
+
+For a producer's original-file ZIP, use the signature-only offline entry point:
+
+```bash
+python scripts/verify_hyperlight_provenance_evidence.py --archive verification.json.evidence.zip --receipt approved-receipt.json
+```
+
+For a complete retained acceptance archive, use:
+
+```bash
+python scripts/verify_hyperlight_retained_evidence.py --archive retrieved-evidence.zip --receipt approved-receipt.json
+```
+
+Both commands authenticate the archive before extracting it into a temporary directory and reject missing or malformed hashes, altered archives, duplicate names, unsafe paths, special files and oversized archives. No separate shell hash check or manual extraction is required. Use the approved scripts from this repository, never executable code supplied by the archive. The complete-archive command has no public directory-only mode; its internal directory helper requires the independently pinned archive check first.
+
+A complete archive retains `SHA256SUMS.json`, `signed-manifest.json`, `metadata-layer.tar.gz`, `source.json`, `build-inputs.json`, `attestation-bundles.jsonl`, `trusted-root.jsonl`, `promotion.json`, `acceptance.json`, `node-pull.json`, `retention-policy.json`, `retention-hold.json`, `storage-access.json` and `storage-account.json`. Preserve the metadata layer's original compressed bytes: its digest binds source and build inputs to the signed manifest. Add the producer/promotion evidence ZIPs when archiving new reports. Retain original reports unchanged; host acceptance, packaging, access and retention records are unsigned and protected by the independently approved archive digest. They are not admission credentials. The complete verifier also checks their candidate associations, the clean source and expected build-input digest.
+
+A trust snapshot supports offline historical verification without discovering later revocations. Approve refreshed roots when importing new material. Store updated tooling, runbooks and verification results as new objects; do not overwrite held historical archives. The local offline round trip uses only retained files; operators can enforce isolation with a network-disabled verification environment.
 
 ## Prepare runtime admission
 
@@ -87,7 +109,7 @@ kubectl --kubeconfig /path/to/kubeconfig --context verified-cluster apply --dry-
 kubectl --kubeconfig /path/to/kubeconfig --context verified-cluster apply -f admission.json
 ```
 
-Review the generated manifest before applying it. The generator freshly verifies every candidate's signature, source and restricted packaging check, and emits nothing unless all candidates pass. A failed attempt removes the previous bundle at the output path. The output contains the admission resources and fresh verification records with signed bundles; keep it in operator-controlled storage for the supported image lifetime. Its enclosing JSON is unsigned and must not be accepted as an authorization credential from an untrusted caller.
+Review the generated manifest before applying it. The generator freshly verifies every candidate's signature, source and restricted packaging check, and emits nothing unless all candidates pass. A failed attempt removes the previous bundle at the output path. The output contains the admission resources and fresh verification records. Its sibling `<output>.evidence.zip` contains each candidate's original-file archive under the name referenced by that verification record. Retain both the promotion report and its evidence ZIP for the supported image lifetime; either both are replaced successfully or neither success output remains. `--trusted-root` selects an approved snapshot for every candidate. Its enclosing JSON is unsigned and must not be accepted as an authorization credential from an untrusted caller.
 
 The policy and binding deny Pod creation and updates when any normal, init, native sidecar or ephemeral container names an image outside the verified registry/repository/digest allowlist. OCI image volumes are denied. Namespace matching uses the request namespace, so changing pod labels cannot opt out. Policy evaluation fails closed. Cluster administrators must protect both admission resources from application identities, and verify the policy's type-check status and actual positive/negative API requests before granting application access to the namespace. Other namespaces, including the upstream device plugin's namespace, are outside this runtime policy.
 

@@ -25,7 +25,20 @@ SIGNER = "https://github.com/example/builders/.github/workflows/runtime.yml@refs
 def scenario(tmp_path, monkeypatch):
     commands = []
     attestation = {
-        "attestation": {"bundle": {"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json"}},
+        "attestation": {
+            "bundle": {
+                "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                "verificationMaterial": {
+                    "tlogEntries": [
+                        {
+                            "inclusionProof": {
+                                "checkpoint": {"envelope": "signed checkpoint\n\u2014 signer\n"},
+                            }
+                        }
+                    ]
+                },
+            }
+        },
         "verificationResult": {
             "statement": {
                 "predicateType": verifier.PREDICATE,
@@ -51,7 +64,9 @@ def scenario(tmp_path, monkeypatch):
             raise subprocess.CalledProcessError(1, command)
         if command[0] == "gh":
             assert commands == [command]
-            return subprocess.CompletedProcess(command, 0, json.dumps(state["attestations"]))
+            assert kwargs["encoding"] == "utf-8"
+            raw = json.dumps(state["attestations"], ensure_ascii=False).encode("utf-8")
+            return subprocess.CompletedProcess(command, 0, raw.decode(kwargs["encoding"]))
         if command[1] == "pull":
             assert command[-1] == IMAGE
             return subprocess.CompletedProcess(command, 0)
@@ -100,7 +115,7 @@ def scenario(tmp_path, monkeypatch):
 
 def test_verified_digest_and_payload_record_preserves_proof_and_policy(scenario):
     state, commands, options, output = scenario
-    report = verifier.verify_published_image(IMAGE, **options)
+    report = verifier._verify_published_image(IMAGE, **options)
     assert json.loads(output.read_text()) == report
     assert report["signed_provenance_verified"] is True
     assert report["registry_digest"] == "sha256:" + DIGEST
@@ -154,7 +169,7 @@ def test_failure_never_retains_success_or_runs_subsequent_steps(scenario, step):
     state, commands, options, output = scenario
     state["fail"] = step
     with pytest.raises(subprocess.CalledProcessError):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert commands[-1][:2] == (["docker", "rm"] if step[1] in {"create", "start"} else step)
     assert not output.exists()
     if step[0] == "gh":
@@ -166,7 +181,7 @@ def test_empty_or_malformed_verified_results_refuse_before_docker(scenario, atte
     state, commands, options, output = scenario
     state["attestations"] = attestations
     with pytest.raises(ValueError):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert len(commands) == 1
     assert not output.exists()
 
@@ -180,7 +195,7 @@ def test_unexpected_statement_refuses_before_docker(scenario, change):
     else:
         statement["predicateType"] = "https://example.com/other"
     with pytest.raises(ValueError, match="requested image"):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert len(commands) == 1
     assert not output.exists()
 
@@ -199,7 +214,7 @@ def test_authenticated_image_still_requires_matching_clean_payload(scenario, fie
     state, _, options, output = scenario
     state["smoke"]["source"][field] = value
     with pytest.raises(ValueError, match="clean source"):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert not output.exists()
 
 
@@ -207,7 +222,7 @@ def test_authenticated_image_still_requires_expected_build_inputs(scenario):
     state, _, options, output = scenario
     state["smoke"]["build_inputs_sha256"] = "c" * 64
     with pytest.raises(ValueError, match="build inputs"):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert not output.exists()
 
 
@@ -237,7 +252,7 @@ def test_invalid_operator_policy_refuses_before_external_commands(scenario, fiel
     else:
         options[field] = value
     with pytest.raises(ValueError):
-        verifier.verify_published_image(image, **options)
+        verifier._verify_published_image(image, **options)
     assert commands == []
     assert not output.exists()
 
@@ -250,7 +265,7 @@ def test_failed_record_replacement_leaves_no_success_or_temporary_file(scenario,
 
     monkeypatch.setattr(verifier.os, "replace", refuse)
     with pytest.raises(OSError, match="cannot replace"):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert list(output.parent.iterdir()) == []
 
 
@@ -259,7 +274,7 @@ def test_success_without_retained_signed_bundle_is_refused(scenario, bundle):
     state, commands, options, output = scenario
     state["attestations"][0]["attestation"]["bundle"] = bundle
     with pytest.raises(ValueError, match="invalid verification result"):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     assert len(commands) == 1
     assert not output.exists()
 
@@ -273,7 +288,7 @@ def test_smoke_refusal_removes_container_and_success_record(scenario, monkeypatc
 
     monkeypatch.setattr(builder, "_smoke_output", refuse)
     with pytest.raises(type(error), match=str(error)):
-        verifier.verify_published_image(IMAGE, **options)
+        verifier._verify_published_image(IMAGE, **options)
     create = commands[-2]
     name = create[create.index("--name") + 1]
     assert commands[-1] == ["docker", "rm", "--force", name]

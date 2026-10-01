@@ -72,9 +72,23 @@ def test_real_cli_matrix_retains_only_registry_independent_evidence(tmp_path, mo
         if error:
             assert json.loads(output.read_text())["signed_provenance_verified"] is True
             output.unlink()
+            live.sidecar_path(output).unlink(missing_ok=True)
         else:
             assert not output.exists()
-            output.write_text(json.dumps({"image": signed, "signed_provenance_verified": True}))
+            live.sidecar_path(output).write_bytes(b"original proof bytes")
+            output.write_text(
+                json.dumps(
+                    {
+                        "image": signed,
+                        "signed_provenance_verified": True,
+                        "retained_evidence": {
+                            "archive": live.sidecar_path(output).name,
+                            "archive_sha256": live.sha(live.sidecar_path(output)),
+                            "offline_verified": True,
+                        },
+                    }
+                )
+            )
         return subprocess.CompletedProcess(command, bool(error), "", error)
 
     monkeypatch.setattr(live.subprocess, "run", run)

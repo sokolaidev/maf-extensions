@@ -172,7 +172,7 @@ jobs:
         with:
           name: hyperlight-provenance-verification
           if-no-files-found: error
-          path: ${{ runner.temp }}/provenance-evidence/*.json
+          path: ${{ runner.temp }}/provenance-evidence/
       - name: Remove the temporary registry
         if: always()
         run: |

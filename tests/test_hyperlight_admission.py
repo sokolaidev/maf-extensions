@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ def test_fresh_verification_and_exact_namespace_policy(
 
     def verify(**kwargs: Any) -> dict[str, object]:
         calls.append(kwargs)
+        admission.sidecar_path(kwargs["output"]).write_bytes(kwargs["image"].encode())
         return {"fresh": kwargs["image"]}
 
     monkeypatch.setattr(admission, "verify_published_image", verify)
@@ -51,6 +53,13 @@ def test_fresh_verification_and_exact_namespace_policy(
     bundle = admission.prepare(policy, output)
     assert [call["image"] for call in calls] == [c["image"] for c in candidates]
     assert bundle == json.loads(output.read_text(encoding="utf-8"))
+    with zipfile.ZipFile(admission.sidecar_path(output)) as saved:
+        assert saved.namelist() == [
+            "candidate-0.json.evidence.zip",
+            "candidate-1.json.evidence.zip",
+        ]
+        for index, item in enumerate(candidates):
+            assert saved.read(f"candidate-{index}.json.evidence.zip") == item["image"].encode()
     vap, binding = bundle["admission"]["items"]  # type: ignore[index]
     spec = vap["spec"]
     assert spec["failurePolicy"] == "Fail"
@@ -88,15 +97,18 @@ def test_failed_candidate_removes_stale_bundle(
         calls += 1
         if calls == failed_index + 1:
             raise ValueError("refused")
+        admission.sidecar_path(kwargs["output"]).write_bytes(b"original bytes")
         return {"image": kwargs["image"]}
 
     monkeypatch.setattr(admission, "verify_published_image", verify)
     policy = write_policy(tmp_path, candidates=[candidate(), candidate("d")])
     output = tmp_path / "promotion.json"
     output.write_text("stale approval", encoding="utf-8")
+    admission.sidecar_path(output).write_bytes(b"stale proof")
     with pytest.raises(ValueError, match="refused"):
         admission.prepare(policy, output)
     assert not output.exists()
+    assert not admission.sidecar_path(output).exists()
 
 
 @pytest.mark.parametrize(
@@ -135,6 +147,36 @@ def test_policy_cannot_be_overwritten(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="different files"):
         admission.prepare(path, path)
     assert path.exists()
+
+
+@pytest.mark.parametrize("input_name", ["policy", "trusted_root"])
+@pytest.mark.parametrize("destination", ["report", "evidence"])
+def test_input_output_conflicts_name_both_inputs_and_preserve_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    input_name: str,
+    destination: str,
+) -> None:
+    policy = write_policy(tmp_path)
+    output = tmp_path / "promotion.json"
+    sidecar = admission.sidecar_path(output)
+    output.write_bytes(b"existing report")
+    sidecar.write_bytes(b"existing evidence")
+    conflicting = output if destination == "report" else sidecar
+
+    def refuse(**kwargs: Any) -> dict[str, object]:
+        pytest.fail("conflicting input must be preserved before verification")
+
+    monkeypatch.setattr(admission, "verify_published_image", refuse)
+    with pytest.raises(ValueError, match="policy and trusted_root inputs"):
+        admission.prepare(
+            conflicting if input_name == "policy" else policy,
+            output,
+            trusted_root=conflicting if input_name == "trusted_root" else None,
+        )
+    assert output.read_bytes() == b"existing report"
+    assert sidecar.read_bytes() == b"existing evidence"
+    assert policy.exists()
 
 
 @pytest.mark.parametrize("alias", ["same", "relative", "parent"])

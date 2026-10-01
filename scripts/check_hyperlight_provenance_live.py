@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from hyperlight_evidence import sha, sidecar_path
+
 VERIFIER = Path(__file__).with_name("verify_hyperlight_aks_image.py")
 
 
@@ -25,9 +27,18 @@ def check_result(
         record = json.loads(output.read_text("utf-8"))
         if record.get("signed_provenance_verified") is not True:
             raise ValueError("signed runtime verification did not retain success")
+        retained = record.get("retained_evidence")
+        if (
+            not isinstance(retained, dict)
+            or retained.get("offline_verified") is not True
+            or not sidecar_path(output).is_file()
+            or sha(sidecar_path(output)) != retained.get("archive_sha256")
+        ):
+            raise ValueError("original evidence is missing or mismatched")
     elif (
         result.returncode == 0
         or output.exists()
+        or sidecar_path(output).exists()
         or not any(
             error.casefold() in result.stderr.casefold()
             for error in ((expected_error,) if isinstance(expected_error, str) else expected_error)
@@ -51,6 +62,7 @@ def exercise(
     output.mkdir(parents=True, exist_ok=True)
     evidence = output / "verification.json"
     evidence.unlink(missing_ok=True)
+    sidecar_path(evidence).unlink(missing_ok=True)
     policy = {
         "--image": image,
         "--signer-identity": signer_identity,
@@ -131,12 +143,20 @@ def exercise(
                 {"case": name, "passed": True, "stale_record_removed": expected is not None}
             )
             print(f"PASS {name}")
+        original_bytes = sidecar_path(record_path).read_bytes()
+        accepted["retained_evidence"]["archive"] = sidecar_path(evidence).name
     accepted["integration_cases"] = results
     accepted["unsigned_registry_digest"] = unsigned_image.rsplit("@", 1)[1]
     serialized = json.dumps(accepted, indent=2, sort_keys=True)
     if image.split("/", 1)[0] in serialized:
         raise ValueError("public evidence contains a private registry identifier")
-    evidence.write_text(serialized + "\n", encoding="utf-8")
+    try:
+        sidecar_path(evidence).write_bytes(original_bytes)
+        evidence.write_text(serialized + "\n", encoding="utf-8")
+    except BaseException:
+        evidence.unlink(missing_ok=True)
+        sidecar_path(evidence).unlink(missing_ok=True)
+        raise
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(summary).open("a", encoding="utf-8") as stream:
             stream.write("### Signed runtime integration\n\n")
