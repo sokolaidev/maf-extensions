@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.21.2...maf-sandbox-codeact-v0.21.3) (2026-10-01)
+
+
+### Fixes
+
+* expose read-time file integrity checks for Bicep and CodeAct ([#1596](https://github.com/sokolaidev/maf-extensions/issues/1596)) ([da775c6](https://github.com/sokolaidev/maf-extensions/commit/da775c6ac4aa82ff27e3edb71dcd2dc384e329d4))
+
 ## [0.21.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.21.1...maf-sandbox-codeact-v0.21.2) (2026-09-28)
 
 
