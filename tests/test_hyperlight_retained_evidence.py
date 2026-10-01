@@ -146,6 +146,74 @@ def test_complete_archive(case):
     assert len(calls) == 1
 
 
+def replace_promotion(case, verifications):
+    archive, receipt, files, expected, _ = case
+    files["promotion.json"] = encoded({"verifications": verifications})
+    files["SHA256SUMS.json"] = encoded(
+        {name: digest(data) for name, data in files.items() if name != "SHA256SUMS.json"}
+    )
+    pack(archive, files)
+    expected["archive_sha256"] = evidence.sha(archive)
+    receipt.write_bytes(encoded(expected))
+
+
+@pytest.mark.parametrize("position", [0, 1, 7])
+def test_promotion_selects_receipt_candidate_at_any_position(case, position):
+    archive, receipt, files, expected, _ = case
+    selected = json.loads(files["promotion.json"])["verifications"][0]
+    others = [
+        {**selected, "image": f"registry.example/other-{index}@sha256:" + "b" * 64}
+        for index in range(7)
+    ]
+    others.insert(position, selected)
+    replace_promotion(case, others)
+    result = retained.verify(archive, receipt)
+    assert result["image_digest"] == expected["candidate"]["image"].split("@")[1]
+
+
+@pytest.mark.parametrize("kind", ["empty", "missing", "duplicate", "conflicting-duplicate"])
+def test_promotion_requires_one_candidate_match(case, kind):
+    archive, receipt, files, _, _ = case
+    selected = json.loads(files["promotion.json"])["verifications"][0]
+    other = {**selected, "image": "registry.example/other@sha256:" + "b" * 64}
+    records = {
+        "empty": [],
+        "missing": [other],
+        "duplicate": [selected, selected],
+        "conflicting-duplicate": [selected, {**selected, "registry_digest": "sha256:" + "b" * 64}],
+    }[kind]
+    replace_promotion(case, records)
+    with pytest.raises(ValueError, match="exactly one"):
+        retained.verify(archive, receipt)
+
+
+@pytest.mark.parametrize("records", [None, {}, [None]])
+def test_promotion_rejects_malformed_verifications(case, records):
+    archive, receipt, _, _, _ = case
+    replace_promotion(case, records)
+    with pytest.raises(ValueError, match="list of records"):
+        retained.verify(archive, receipt)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["registry_digest", "source_revision", "source_ref", "build_inputs_sha256", "signer_identity"],
+)
+def test_selected_promotion_still_requires_expected_digest_and_policy(case, field):
+    archive, receipt, files, _, _ = case
+    selected = json.loads(files["promotion.json"])["verifications"][0]
+    other = {**selected, "image": "registry.example/other@sha256:" + "b" * 64}
+    if field == "registry_digest":
+        selected[field] = "sha256:" + "b" * 64
+        message = "promotion image association differs"
+    else:
+        selected["policy"] = {**selected["policy"], field: "mismatched"}
+        message = "promotion policy association differs: " + field
+    replace_promotion(case, [other, selected])
+    with pytest.raises(ValueError, match=message):
+        retained.verify(archive, receipt)
+
+
 @pytest.mark.parametrize("mutation", ["hold", "policy", "acceptance"])
 def test_recomputed_inventory_cannot_replace_independent_archive_digest(case, mutation):
     archive, receipt, files, expected, calls = case

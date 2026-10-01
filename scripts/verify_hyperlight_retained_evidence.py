@@ -64,11 +64,16 @@ def _verify_directory(root: Path, expected: dict) -> dict:
     ):
         raise ValueError("source record differs from approved clean source")
     verify_bundle(root, candidate, expected["trusted_root_sha256"])
-    promotion = read(root / "promotion.json")["verifications"][0]
-    if (
-        promotion["image"] != candidate["image"]
-        or promotion["registry_digest"] != "sha256:" + image_digest
+    verifications = read(root / "promotion.json")["verifications"]
+    if not isinstance(verifications, list) or any(
+        not isinstance(record, dict) for record in verifications
     ):
+        raise ValueError("promotion verifications must be a list of records")
+    matches = [record for record in verifications if record.get("image") == candidate["image"]]
+    if len(matches) != 1:
+        raise ValueError("promotion requires exactly one verification for the candidate image")
+    promotion = matches[0]
+    if promotion["registry_digest"] != "sha256:" + image_digest:
         raise ValueError("promotion image association differs")
     for key in ("source_revision", "source_ref", "build_inputs_sha256", "signer_identity"):
         if promotion["policy"][key] != candidate[key]:
