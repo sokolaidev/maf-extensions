@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.2...maf-sandbox-docker-v0.24.3) (2026-10-01)
+
+
+### Fixes
+
+* **docker:** recommend closed egress when isolated networking is unavailable ([#1605](https://github.com/sokolaidev/maf-extensions/issues/1605)) ([d7560ef](https://github.com/sokolaidev/maf-extensions/commit/d7560efe6845936ab88e61037ec27d877ffd0f7d))
+
 ## [0.24.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.1...maf-sandbox-docker-v0.24.2) (2026-09-29)
 
 
