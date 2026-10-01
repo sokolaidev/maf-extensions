@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.21.3...maf-sandbox-codeact-v0.21.4) (2026-10-01)
+
+
+### Fixes
+
+* require maf-sandbox 0.46.0 in the dependents, and admit the 0.46 line ([#1619](https://github.com/sokolaidev/maf-extensions/issues/1619)) ([868fb2d](https://github.com/sokolaidev/maf-extensions/commit/868fb2d457409ccf099052333d473598db290f84))
+
+
+### Documentation
+
+* record completed method-scoped egress support ([#1615](https://github.com/sokolaidev/maf-extensions/issues/1615)) ([b2f308b](https://github.com/sokolaidev/maf-extensions/commit/b2f308bc20d423ad3c06d8674bc92f088caefed9))
+
 ## [0.21.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.21.2...maf-sandbox-codeact-v0.21.3) (2026-10-01)
 
 
