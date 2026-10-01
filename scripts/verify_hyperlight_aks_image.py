@@ -5,20 +5,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import tempfile
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from build_hyperlight_aks_image import SOURCE_URL, verify_image
+from hyperlight_evidence import sha, sidecar_path, validate_candidate, verify_bundle
 
 REPOSITORY = "sokolaidev/maf-extensions"
 PREDICATE = "https://slsa.dev/provenance/v1"
 ISSUER = "https://token.actions.githubusercontent.com"
 
 
-def verify_published_image(
+def _verify_published_image(
     image: str,
     *,
     signer_identity: str,
@@ -29,28 +30,15 @@ def verify_published_image(
 ) -> dict[str, object]:
     """Require host-selected provenance policy and payload hashes; retain success only at the end."""
     output.unlink(missing_ok=True)
-    component = r"[a-z0-9]+(?:[._-][a-z0-9]+)*"
-    if not re.fullmatch(
-        rf"{component}(?::[0-9]+)?/{component}(?:/{component})*@sha256:[0-9a-f]{{64}}",
-        image,
-    ):
-        raise ValueError(
-            "image must name an explicit registry/repository and SHA-256 digest, without a tag"
-        )
-    registry = image.split("/", 1)[0]
-    if "." not in registry and ":" not in registry and registry != "localhost":
-        raise ValueError("image must name an explicit registry, not a Docker Hub shorthand")
-    if not re.fullmatch(r"[0-9a-f]{40}", source_revision):
-        raise ValueError("source revision must be a full Git commit SHA")
-    if not re.fullmatch(r"[0-9a-f]{64}", build_inputs_sha256):
-        raise ValueError("build inputs must have a SHA-256 digest")
-    if not re.fullmatch(r"refs/(?:heads|tags)/[^\s@]+", source_ref):
-        raise ValueError("source ref must be an explicit branch or tag ref")
-    if not re.fullmatch(
-        r"https://github\.com/[\w.-]+/[\w.-]+/\.github/workflows/[\w.-]+\.ya?ml@(?:refs/(?:heads|tags)/[^\s@]+|[0-9a-f]{40})",
-        signer_identity,
-    ):
-        raise ValueError("signer identity must name an exact GitHub workflow and ref")
+    validate_candidate(
+        {
+            "image": image,
+            "signer_identity": signer_identity,
+            "source_revision": source_revision,
+            "source_ref": source_ref,
+            "build_inputs_sha256": build_inputs_sha256,
+        }
+    )
     result = subprocess.run(
         [
             "gh",
@@ -78,6 +66,7 @@ def verify_published_image(
         check=True,
         stdout=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     )
     attestations = json.loads(result.stdout)
     digest = image.rsplit("@sha256:", 1)[1]
@@ -112,6 +101,7 @@ def verify_published_image(
         check=True,
         stdout=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     smoke = verify_image(image_id, build_inputs_sha256)
     source = smoke.get("source")
@@ -149,6 +139,103 @@ def verify_published_image(
     return record
 
 
+def verify_published_image(
+    image: str,
+    *,
+    signer_identity: str,
+    source_revision: str,
+    source_ref: str,
+    build_inputs_sha256: str,
+    output: Path,
+    trusted_root: Path | None = None,
+) -> dict[str, object]:
+    """Retain original bytes after online, payload and offline checks pass."""
+    output = output.absolute()
+    sidecar = sidecar_path(output)
+    if trusted_root is not None and trusted_root.resolve() in {
+        output.resolve(),
+        sidecar.resolve(),
+    }:
+        raise ValueError("trust input and outputs must be different files")
+    output.unlink(missing_ok=True)
+    sidecar.unlink(missing_ok=True)
+    candidate = {
+        "image": image,
+        "signer_identity": signer_identity,
+        "source_revision": source_revision,
+        "source_ref": source_ref,
+        "build_inputs_sha256": build_inputs_sha256,
+    }
+    try:
+        with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+            root = Path(temporary)
+            staged = root / "verification.json"
+            record = _verify_published_image(**candidate, output=staged)
+            manifest = subprocess.run(
+                ["docker", "buildx", "imagetools", "inspect", "--raw", image],
+                check=True,
+                stdout=subprocess.PIPE,
+                timeout=60,
+            ).stdout
+            (root / "signed-manifest.json").write_bytes(manifest)
+            if sha(root / "signed-manifest.json") != image.rsplit("@sha256:", 1)[1]:
+                raise ValueError("registry manifest bytes differ from approved digest")
+            subprocess.run(
+                [
+                    "gh",
+                    "attestation",
+                    "download",
+                    str(root / "signed-manifest.json"),
+                    "--hostname",
+                    "github.com",
+                    "--repo",
+                    REPOSITORY,
+                    "--predicate-type",
+                    PREDICATE,
+                ],
+                cwd=root,
+                check=True,
+                stdout=subprocess.PIPE,
+                timeout=60,
+            )
+            downloads = list(root.glob("sha256*.jsonl"))
+            if len(downloads) != 1:
+                raise ValueError("missing or ambiguous downloaded attestation bundle")
+            downloads[0].rename(root / "attestation-bundles.jsonl")
+            trust_bytes = (
+                trusted_root.read_bytes()
+                if trusted_root is not None
+                else subprocess.run(
+                    ["gh", "attestation", "trusted-root", "--hostname", "github.com"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    timeout=60,
+                ).stdout
+            )
+            (root / "trusted-root.jsonl").write_bytes(trust_bytes)
+            trust_hash = sha(root / "trusted-root.jsonl")
+            verify_bundle(root, candidate, trust_hash)
+            files = ("signed-manifest.json", "attestation-bundles.jsonl", "trusted-root.jsonl")
+            with zipfile.ZipFile(root / "evidence.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+                for name in files:
+                    archive.write(root / name, name)
+            record["retained_evidence"] = {
+                "archive": sidecar.name,
+                "archive_sha256": sha(root / "evidence.zip"),
+                "files": {name: sha(root / name) for name in files},
+                "trusted_root_sha256": trust_hash,
+                "offline_verified": True,
+            }
+            staged.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(root / "evidence.zip", sidecar)
+            os.replace(staged, output)
+            return record
+    except BaseException:
+        output.unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
+        raise
+
+
 def main() -> None:
     """Verify a digest against explicit operator policy; do not publish or deploy it."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -166,6 +253,11 @@ def main() -> None:
     parser.add_argument(
         "--output", required=True, type=Path, help="Local provenance verification record"
     )
+    parser.add_argument(
+        "--trusted-root",
+        type=Path,
+        help="Operator-approved snapshot; otherwise use GitHub CLI authenticated TUF roots",
+    )
     args = parser.parse_args()
     verify_published_image(
         args.image,
@@ -174,6 +266,7 @@ def main() -> None:
         source_ref=args.source_ref,
         build_inputs_sha256=args.build_inputs_sha256,
         output=args.output,
+        trusted_root=args.trusted_root,
     )
     print(f"Verified published runtime; evidence: {args.output}")
 
