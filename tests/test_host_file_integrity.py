@@ -91,7 +91,7 @@ def _bicep_report():
     )
 
 
-def _attach(kind, levels, *, provenance=None, mutation=None, network=False):
+def _attach(kind, levels, *, provenance=None, mutation=None, network=False, egress_integrity=None):
     extension = {"bicep": "bicep", "terraform": "tf", "codeact": "txt"}[kind]
     names = [f"main.{extension}", f"second.{extension}"][: len(levels)]
 
@@ -143,6 +143,7 @@ def _attach(kind, levels, *, provenance=None, mutation=None, network=False):
             context,
             egress=Egress.ALLOWLIST if network else Egress.CLOSED,
             file_store_provenance=provenance,
+            egress_integrity=egress_integrity,
         )[0]
     else:
         attached = make_codeact_tools(
@@ -155,6 +156,51 @@ def _attach(kind, levels, *, provenance=None, mutation=None, network=False):
         )[0]
         arguments["code"] = "print('report')"
     return attached, arguments
+
+
+@pytest.mark.parametrize(
+    "levels,expected",
+    [
+        ([SourceIntegrity.TRUSTED], "trusted"),
+        ([SourceIntegrity.TRUSTED, SourceIntegrity.UNTRUSTED], "untrusted"),
+        ([SourceIntegrity.TRUSTED, None], "untrusted"),
+    ],
+)
+def test_bicep_reports_accept_host_trusted_registry_sources(levels, expected):
+    attached, arguments = _attach(
+        "bicep", levels, network=True, egress_integrity=SourceIntegrity.TRUSTED
+    )
+    attached.additional_properties["confidentiality"] = "private"
+    items = asyncio.run(attached.invoke(arguments=arguments))
+    report = next(item for item in items if _REPORT in (item.text or ""))
+    assert report.additional_properties["security_label"] == {
+        "integrity": expected,
+        "confidentiality": "private",
+    }
+    assert attached.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
+
+
+def test_bicep_refuses_trusted_egress_in_closed_mode():
+    with pytest.raises(ValueError, match="egress_integrity=TRUSTED"):
+        _attach("bicep", [SourceIntegrity.TRUSTED], egress_integrity=SourceIntegrity.TRUSTED)
+
+
+@pytest.mark.parametrize("mutation", [None, "after-listing", "during-read", "changed-back"])
+def test_bicep_trusted_egress_keeps_read_time_provenance_checks(mutation):
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    attached, arguments = _attach(
+        "bicep",
+        [SourceIntegrity.TRUSTED],
+        network=True,
+        egress_integrity=SourceIntegrity.TRUSTED,
+        provenance=record,
+        mutation=mutation,
+    )
+    items = asyncio.run(attached.invoke(arguments=arguments))
+    report = next(item for item in items if _REPORT in (item.text or ""))
+    expected = "trusted" if mutation is None else "untrusted"
+    assert report.additional_properties["security_label"]["integrity"] == expected
 
 
 @pytest.mark.parametrize("kind", ["bicep", "terraform", "codeact"])

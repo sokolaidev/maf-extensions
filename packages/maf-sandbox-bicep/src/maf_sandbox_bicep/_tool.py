@@ -245,6 +245,7 @@ def make_bicep_tools(
     image_id: str | None = None,
     egress: Egress = Egress.ALLOWLIST,
     config: str | None = None,
+    egress_integrity: SourceIntegrity | None = None,
     exec_timeout_seconds: int = 120,
     file_store_provenance: FileStoreProvenance | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
@@ -277,6 +278,10 @@ def make_bicep_tools(
         config: Host-supplied ``bicepconfig.json`` text. Defaults to the packaged policy.
             Linter rule IDs must belong to the packaged catalog. Config inheritance via
             ``extends`` is unsupported.
+        egress_integrity: The host's trust in the registry hosts. ``TRUSTED`` permits trusted
+            file reads to promote the report under ``ALLOWLIST``; refused under ``CLOSED``
+            and ``UNRESTRICTED``.
+            Left unset, network access keeps reports untrusted even when no restore occurs.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
         file_store_provenance: The store's provenance record, rechecked around each file read.
@@ -299,6 +304,7 @@ def make_bicep_tools(
         source_integrity=SourceIntegrity.UNTRUSTED,
         file_store_provenance=file_store_provenance,
         requires_file_integrity=requires_file_integrity,
+        egress_integrity=egress_integrity,
         # Completion and verdict remain readable when the compiler's text is hidden.
         result_contract=True,
         verdicts=BICEP_VERDICTS,

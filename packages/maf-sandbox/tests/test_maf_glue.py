@@ -464,19 +464,6 @@ class TestTheTrustedClaimIsCheckedAgainstTheSpec:
             "source_integrity": "trusted"
         }
 
-    def test_an_allowlist_naming_no_host_reaches_nothing_and_is_not_refused(self):
-        """The mode is half the answer and the payload is the other half: an allowlist run with
-        an empty list reaches nothing at all."""
-        spec = SandboxSpec(
-            kind="test",
-            work_dir="/w",
-            requires=frozenset({Capability.EXEC}),
-            egress=Egress.ALLOWLIST,
-        )
-        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
-            "source_integrity": "trusted"
-        }
-
     def test_every_open_channel_is_named_in_one_refusal(self):
         with pytest.raises(ValueError) as refusal:
             sandbox_tool_declarations(_SPEC, source_integrity="trusted")
@@ -499,16 +486,6 @@ class TestTheTrustedClaimIsCheckedAgainstTheSpec:
         assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {
             "max_allowed_confidentiality": "private"
         }
-
-    def test_an_allowlist_naming_no_host_is_not_capped(self):
-        """The other half of the same predicate: it reaches nothing, so there is no flow to gate."""
-        spec = SandboxSpec(
-            kind="test",
-            work_dir="/w",
-            requires=frozenset({Capability.EXEC}),
-            egress=Egress.ALLOWLIST,
-        )
-        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {}
 
     def test_a_trusted_fold_establishes_that_channel_with_no_escape_needed(self):
         spec = _serving_host_tools(_a_fold(SourceIntegrity.TRUSTED))

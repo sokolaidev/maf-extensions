@@ -434,7 +434,13 @@ class TestTheDeclarationsObject:
         router = SandboxRouter([_BackendDeclaringNothing()])
         for mode in Egress:
             with pytest.raises(SandboxEgressNotEnforced):
-                router.ensure_can_serve(SandboxSpec(kind="test", egress=mode))
+                router.ensure_can_serve(
+                    SandboxSpec(
+                        kind="test",
+                        egress=mode,
+                        egress_allow=("example.com",) if mode is Egress.ALLOWLIST else (),
+                    )
+                )
 
     def test_the_two_charitable_fields_are_still_read_charitably(self):
         """Which gate a nothing-declaring backend reaches says how each field was read: the
@@ -1231,6 +1237,16 @@ class TestEgressRule:
     _ALLOWLIST_SPEC = SandboxSpec(
         kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("example.invalid",)
     )
+
+    @pytest.mark.parametrize("mode", [Egress.ALLOWLIST, "allowlist"])
+    def test_an_empty_allowlist_bypassing_construction_is_refused(self, mode):
+        spec = SandboxSpec(kind="test")
+        object.__setattr__(spec, "egress", mode)
+        with pytest.raises(ValueError, match="non-empty egress_allow.*Egress.CLOSED"):
+            self._router(Egress.ALLOWLIST).ensure_can_serve(spec)
+        with pytest.raises(ValueError, match="non-empty egress_allow.*Egress.CLOSED"):
+            asyncio.run(self._router(Egress.ALLOWLIST).acquire(SandboxKey("s", "t", "a"), spec))
+
     _UNRESTRICTED_SPEC = SandboxSpec(kind="bicep", egress=Egress.UNRESTRICTED)
 
     def _router(self, *modes: Egress) -> SandboxRouter:
