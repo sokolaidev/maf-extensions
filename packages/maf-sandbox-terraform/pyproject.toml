@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
-dependencies = ["maf-sandbox>=0.45.0,<0.46", "agent-framework-core>=1.19.0,<1.20"]
+dependencies = ["maf-sandbox>=0.46.0,<0.47", "agent-framework-core>=1.19.0,<1.20"]
 
 [project.urls]
 Homepage = "https://www.sokol.ai"
