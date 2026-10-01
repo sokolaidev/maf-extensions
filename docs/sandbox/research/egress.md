@@ -1,6 +1,6 @@
 # Egress research
 
-> Consolidated research record for the egress mode model and method-scoped allow entries, measured and decided across 2025–2026. The resolved operational contract lives in [`../network.md`](../network.md); this record keeps the design arguments, migration evidence, backend boundaries and live-measurement limits without repeating the full network guide.
+> Consolidated research record for the egress mode model and method-scoped allow entries, measured and decided across 2025–2026. The resolved operational contract lives in [`../network.md`](../network.md); this record keeps the design arguments, migration evidence, backend boundaries and live-measurement limits without repeating the full network guide. The backend method-support statements below predate adoption in Docker/WSLC ([#1409](https://github.com/sokolaidev/maf-extensions/pull/1409)), Hyperlight ([#1448](https://github.com/sokolaidev/maf-extensions/pull/1448), HTTPS validation [#1526](https://github.com/sokolaidev/maf-extensions/pull/1526)) and ACAS ([#1520](https://github.com/sokolaidev/maf-extensions/pull/1520)); current support and qualified limits are in [HTTP method restrictions](../network.md#http-method-restrictions).
 
 ## Decision at a glance
 

@@ -114,7 +114,7 @@ AKS probes cover both the historical delegated-cgroup path and this explicit con
 | Area | State | Tracking |
 |---|---|---|
 | Packaged runtime, reset and worker containment | Implemented on the supported WHP/KVM family | [Package README](../../../packages/maf-sandbox-hyperlight/README.md) |
-| Method-scoped egress | Implemented for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; path rules not declared | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged) |
+| Method-scoped egress | Implemented for GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; adapter HTTPS conformance measured on WHP/KVM; path rules not declared | [#377](https://github.com/sokolaidev/maf-extensions/issues/377) (open); [#1448](https://github.com/sokolaidev/maf-extensions/pull/1448) (merged); [#1509](https://github.com/sokolaidev/maf-extensions/issues/1509) (closed) by [#1526](https://github.com/sokolaidev/maf-extensions/pull/1526) (merged) |
 | Additional channels | Separate work; runtime support is available | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open) |
 | AKS hosting | Feasibility measured; deployment work remains open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Upstream AKS device deployment | Pinned overlay implemented; plugin upgrade and rollback measured; stale-CDI repair and production operational validation remain | [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open); [#1513](https://github.com/sokolaidev/maf-extensions/issues/1513) (closed) by [#1534](https://github.com/sokolaidev/maf-extensions/pull/1534) (merged) |

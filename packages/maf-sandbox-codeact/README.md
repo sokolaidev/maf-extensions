@@ -104,7 +104,7 @@ A nonempty registry requires `HOST_TOOLS` and `FILES_OUT` as well as `EXEC` and 
 
 Transport traffic counts toward backend transfer limits. Set response limits to fit your functions; broad defaults can make the tool fail attachment. Model-named files live separately from transport files. Without a registry, `program.py` is reserved.
 
-Network access is closed unless `egress_allow` names hosts. An allowed host can receive any data the program can read. A method-scoped `EgressRule` also requires `EGRESS_METHODS`, which no shipped backend declares.
+Network access is closed unless `egress_allow` names hosts. An allowed host can receive any data the program can read. A method-scoped `EgressRule` also requires `EGRESS_METHODS` and support for every requested token. Docker and WSLC enforce it with a configured iron-proxy image; Hyperlight and ACAS declare finite supported token sets. See the [HTTP method contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/network.md#http-method-restrictions) for backend limits. GET-only rules can still send data through queries, headers and request bodies.
 
 See [host-tool controls](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#calling-host-tools) for registration, identities and limits.
 
