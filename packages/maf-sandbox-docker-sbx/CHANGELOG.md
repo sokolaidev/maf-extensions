@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.4.0...maf-sandbox-docker-sbx-v0.4.1) (2026-10-01)
+
+
+### Documentation
+
+* document closed egress for Docker Sandboxes ([#1606](https://github.com/sokolaidev/maf-extensions/issues/1606)) ([5b70026](https://github.com/sokolaidev/maf-extensions/commit/5b70026dda8fb1ca68ce49f6a7a79caf5f3d5b04))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.3.0...maf-sandbox-docker-sbx-v0.4.0) (2026-09-30)
 
 
