@@ -61,6 +61,8 @@ jobs:
           done
 
       - name: Measure host-tools lifecycle
+        env:
+          SBX_MEASUREMENT_SET: extended
         run: |
           set -euo pipefail
           uv run python scripts/measure_sbx_host_tools.py 2>&1 | tee sbx-host-tools.log

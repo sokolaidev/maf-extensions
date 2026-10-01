@@ -82,6 +82,8 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
     stop = threading.Event()
     monitor: threading.Thread | None = None
     held: asyncio.Task[Any] | None = None
+    sibling: asyncio.Task[Any] | None = None
+    fault: asyncio.Task[Any] | None = None
     effects: list[str] = []
     record("begin", case=label)
     try:
@@ -97,7 +99,7 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
         @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
         async def async_tool() -> str:
             record("tool_started", case=label)
-            if mode == "slow_async":
+            if mode in {"slow_async", "forced_stop"}:
                 await asyncio.sleep(45)
             effects.append("effect")
             record("tool_effect", case=label, count=len(effects))
@@ -112,7 +114,13 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
             return "answer"
 
         registry.register(sync_tool if mode == "slow_sync" else async_tool, name="probe")
-        delay = 45 if mode == "idle" else 120 if mode in {"timeout", "cancel"} else 0
+        delay = (
+            45
+            if mode == "idle"
+            else 120
+            if mode in {"timeout", "cancel", "concurrent_cancel"}
+            else 0
+        )
         program = (
             "import os, time\nfrom pathlib import Path\nimport maf_host_tools\n"
             "Path('pid').write_text(str(os.getpid()))\n"
@@ -147,6 +155,36 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
         monitor = threading.Thread(target=observe, args=(sandbox.name, stop, label), daemon=True)
         monitor.start()
         began = time.monotonic()
+        if mode == "concurrent_cancel":
+            other = guest_run_layout("/maf-sandbox/work/sibling")
+            await sandbox.write_file(
+                other.program,
+                program.replace("time.sleep(120)", "time.sleep(12)"),
+                working_directory=".",
+            )
+            await sandbox.write_file(
+                other.shim, host_tool_shim(call_timeout=90), working_directory="."
+            )
+            sibling = asyncio.create_task(
+                host_tool_calls_over_exec(
+                    sandbox, HostToolRun(registry, key=key), other, timeout=40
+                )
+            )
+        if mode == "forced_stop":
+
+            async def stop_guest() -> None:
+                await asyncio.sleep(10)
+                stopped = await asyncio.to_thread(
+                    subprocess.run,
+                    ["sbx", "stop", sandbox.name],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=True,
+                )
+                record("forced_stop", case=label, exit_code=stopped.returncode)
+
+            fault = asyncio.create_task(stop_guest())
         transport = asyncio.create_task(
             host_tool_calls_over_exec(
                 sandbox,
@@ -156,7 +194,7 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
                 interpreter="python3",
             )
         )
-        if mode == "cancel":
+        if mode in {"cancel", "concurrent_cancel"}:
             await asyncio.sleep(6)
             transport.cancel()
         try:
@@ -181,6 +219,25 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
                 signal=getattr(error, "signal", None),
                 reach=getattr(error, "reach", None),
             )
+        if fault is not None:
+            await fault
+            fault = None
+        if sibling is not None:
+            try:
+                sibling_result = await sibling
+                record(
+                    "sibling_result",
+                    case=label,
+                    exit_code=sibling_result.exit_code,
+                    stdout=sibling_result.stdout,
+                    stderr=sibling_result.stderr,
+                    effects=len(effects),
+                )
+            except Exception as error:
+                record(
+                    "sibling_error", case=label, error_type=type(error).__name__, detail=str(error)
+                )
+            sibling = None
         stop.set()
         await asyncio.to_thread(monitor.join, 12)
         if held is not None:
@@ -223,6 +280,11 @@ async def measure(mode: str, image: str | None, keepalive: bool = False) -> None
         raise
     finally:
         stop.set()
+        for pending in (sibling, fault):
+            if pending is not None:
+                pending.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await pending
         if held is not None:
             held.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -261,6 +323,11 @@ async def main() -> None:
         ("timeout", "maf-sbx-e2e-agent:local", True),
         ("cancel", "maf-sbx-e2e-agent:local", True),
     ]
+    if os.environ.get("SBX_MEASUREMENT_SET") == "extended":
+        cases = [
+            ("concurrent_cancel", "maf-sbx-e2e-agent:local", True),
+            ("forced_stop", "maf-sbx-e2e-agent:local", True),
+        ]
     for mode, image, keepalive in cases:
         await measure(mode, image, keepalive)
     record("complete", cases=len(cases), capability_declared=False)
