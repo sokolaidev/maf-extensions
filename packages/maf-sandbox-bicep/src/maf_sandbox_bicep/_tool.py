@@ -279,7 +279,8 @@ def make_bicep_tools(
             Linter rule IDs must belong to the packaged catalog. Config inheritance via
             ``extends`` is unsupported.
         egress_integrity: The host's trust in the registry hosts. ``TRUSTED`` permits trusted
-            file reads to promote the report under ``ALLOWLIST``; refused under ``CLOSED``.
+            file reads to promote the report under ``ALLOWLIST``; refused under ``CLOSED``
+            and ``UNRESTRICTED``.
             Left unset, network access keeps reports untrusted even when no restore occurs.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
