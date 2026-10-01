@@ -2514,7 +2514,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/drawio-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: drawio-live-log
           path: ${{ runner.temp }}/drawio-live.log
@@ -2710,7 +2710,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-docker-terraform-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: terraform-docker-terraform-live-log
           path: ${{ runner.temp }}/terraform-docker-terraform-live.log
@@ -2797,7 +2797,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-docker-opentofu-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: terraform-docker-opentofu-live-log
           path: ${{ runner.temp }}/terraform-docker-opentofu-live.log
@@ -2890,7 +2890,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-acas-terraform-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: terraform-acas-terraform-live-log
           path: ${{ runner.temp }}/terraform-acas-terraform-live.log
@@ -2983,7 +2983,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-acas-opentofu-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: terraform-acas-opentofu-live-log
           path: ${{ runner.temp }}/terraform-acas-opentofu-live.log
