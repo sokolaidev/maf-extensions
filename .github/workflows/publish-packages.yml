@@ -101,7 +101,7 @@ jobs:
       # Full history, because this job runs the whole suite and part of that suite reads the
       # repository's tags. A shallow checkout makes those tests answer about the checkout
       # rather than about the code, which is how a green pull request became a failed publish.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -341,7 +341,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -383,7 +383,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         with:
           persist-credentials: false
@@ -473,7 +473,7 @@ jobs:
     steps:
       # Full history and tags: the published half recovers each version's suite with
       # `git archive <tag>`, and a shallow clone carries no tags to archive from.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         with:
           fetch-depth: 0
@@ -538,7 +538,7 @@ jobs:
       #
       # Sparse, because this job mints the publishing credential: the two paths the check
       # reads, and nothing else.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: >-
           needs.build.outputs.package == 'maf-sandbox'
           && needs.build.outputs.target == 'pypi'
@@ -648,7 +648,7 @@ jobs:
     outputs:
       live_check: ${{ steps.decide.outputs.live_check }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.build.outputs.package == 'maf-sandbox'
         with:
           path: release-guard
@@ -702,7 +702,7 @@ jobs:
       # Scoped to this job alone; every other job in this workflow stays read-only.
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -899,7 +899,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: |
             scripts
