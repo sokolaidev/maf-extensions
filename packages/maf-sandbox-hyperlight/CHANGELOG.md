@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.8.0...maf-sandbox-hyperlight-v0.8.1) (2026-10-01)
+
+
+### Fixes
+
+* require maf-sandbox 0.46.0 in the dependents, and admit the 0.46 line ([#1619](https://github.com/sokolaidev/maf-extensions/issues/1619)) ([868fb2d](https://github.com/sokolaidev/maf-extensions/commit/868fb2d457409ccf099052333d473598db290f84))
+
 ## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.7.0...maf-sandbox-hyperlight-v0.8.0) (2026-09-29)
 
 
