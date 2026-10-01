@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.46.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.45.2...maf-sandbox-v0.46.0) (2026-10-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* reject empty egress allowlists and let hosts trust network sources ([#1594](https://github.com/sokolaidev/maf-extensions/issues/1594))
+
+### Features
+
+* reject empty egress allowlists and let hosts trust network sources ([#1594](https://github.com/sokolaidev/maf-extensions/issues/1594)) ([719ce60](https://github.com/sokolaidev/maf-extensions/commit/719ce60b91478496ed0afe2f8b8fb23482dd8d45))
+
 ## [0.45.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.45.1...maf-sandbox-v0.45.2) (2026-09-30)
 
 
