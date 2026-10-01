@@ -98,7 +98,9 @@ def prepare(
     if policy_path.resolve() in {output.resolve(), sidecar.resolve()} or (
         trusted_root is not None and trusted_root.resolve() in {output.resolve(), sidecar.resolve()}
     ):
-        raise ValueError("policy and output must be different files")
+        raise ValueError(
+            "policy and trusted_root inputs must be different files from the output and evidence archive"
+        )
     output.unlink(missing_ok=True)
     sidecar.unlink(missing_ok=True)
     policy = json.loads(policy_path.read_text(encoding="utf-8"))

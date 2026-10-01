@@ -46,7 +46,7 @@ def _verify_directory(root: Path, expected: dict) -> dict:
         raise ValueError("metadata layer differs from signed manifest")
     with tarfile.open(root / "metadata-layer.tar.gz", "r:gz") as layer:
         for name in ("source.json", "build-inputs.json"):
-            matches = [m for m in layer.getmembers() if m.name.lstrip("./") == "opt/" + name]
+            matches = [m for m in layer.getmembers() if m.name in {"opt/" + name, "./opt/" + name}]
             if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 1048576:
                 raise ValueError("metadata layer lacks a unique bounded regular file")
             stream = layer.extractfile(matches[0])

@@ -149,6 +149,36 @@ def test_policy_cannot_be_overwritten(tmp_path: Path) -> None:
     assert path.exists()
 
 
+@pytest.mark.parametrize("input_name", ["policy", "trusted_root"])
+@pytest.mark.parametrize("destination", ["report", "evidence"])
+def test_input_output_conflicts_name_both_inputs_and_preserve_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    input_name: str,
+    destination: str,
+) -> None:
+    policy = write_policy(tmp_path)
+    output = tmp_path / "promotion.json"
+    sidecar = admission.sidecar_path(output)
+    output.write_bytes(b"existing report")
+    sidecar.write_bytes(b"existing evidence")
+    conflicting = output if destination == "report" else sidecar
+
+    def refuse(**kwargs: Any) -> dict[str, object]:
+        pytest.fail("conflicting input must be preserved before verification")
+
+    monkeypatch.setattr(admission, "verify_published_image", refuse)
+    with pytest.raises(ValueError, match="policy and trusted_root inputs"):
+        admission.prepare(
+            conflicting if input_name == "policy" else policy,
+            output,
+            trusted_root=conflicting if input_name == "trusted_root" else None,
+        )
+    assert output.read_bytes() == b"existing report"
+    assert sidecar.read_bytes() == b"existing evidence"
+    assert policy.exists()
+
+
 @pytest.mark.parametrize("alias", ["same", "relative", "parent"])
 def test_live_check_preserves_aliased_bundle(
     tmp_path: Path,

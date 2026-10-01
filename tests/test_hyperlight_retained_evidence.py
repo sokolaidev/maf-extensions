@@ -146,6 +146,69 @@ def test_complete_archive(case):
     assert len(calls) == 1
 
 
+def replace_metadata_layer(case, name, member_names):
+    archive, receipt, files, expected, _ = case
+    layer_bytes = io.BytesIO()
+    with tarfile.open(fileobj=layer_bytes, mode="w:gz") as layer:
+        for metadata in ("source.json", "build-inputs.json"):
+            for path in member_names if metadata == name else ["opt/" + metadata]:
+                member = tarfile.TarInfo(path)
+                member.size = len(files[metadata])
+                layer.addfile(member, io.BytesIO(files[metadata]))
+    files["metadata-layer.tar.gz"] = layer_bytes.getvalue()
+    files["signed-manifest.json"] = encoded(
+        {"layers": [{"digest": "sha256:" + digest(files["metadata-layer.tar.gz"])}]}
+    )
+    candidate = expected["candidate"]
+    candidate["image"] = "registry.example/runtime@sha256:" + digest(files["signed-manifest.json"])
+    promotion = json.loads(files["promotion.json"])
+    promotion["verifications"][0].update(
+        image=candidate["image"], registry_digest=candidate["image"].split("@")[1], policy=candidate
+    )
+    files["promotion.json"] = encoded(promotion)
+    files["acceptance.json"] = encoded({"candidate": candidate, "passed": True})
+    node = json.loads(files["node-pull.json"])
+    node["image"] = candidate["image"]
+    files["node-pull.json"] = encoded(node)
+    files["SHA256SUMS.json"] = encoded(
+        {
+            filename: digest(data)
+            for filename, data in files.items()
+            if filename != "SHA256SUMS.json"
+        }
+    )
+    pack(archive, files)
+    expected["archive_sha256"] = evidence.sha(archive)
+    receipt.write_bytes(encoded(expected))
+
+
+@pytest.mark.parametrize("name", ["source.json", "build-inputs.json"])
+@pytest.mark.parametrize("prefix", ["", "./"])
+def test_metadata_paths_allow_exact_name_or_one_dot_prefix(case, name, prefix):
+    archive, receipt, _, _, _ = case
+    replace_metadata_layer(case, name, [prefix + "opt/" + name])
+    assert retained.verify(archive, receipt)["metadata_bound_to_signed_manifest"] is True
+
+
+@pytest.mark.parametrize("name", ["source.json", "build-inputs.json"])
+@pytest.mark.parametrize("prefix", ["../", "../../", "/", "//", ".//", "././", ".../"])
+def test_metadata_paths_refuse_noncanonical_names(case, name, prefix):
+    archive, receipt, _, _, calls = case
+    replace_metadata_layer(case, name, [prefix + "opt/" + name])
+    with pytest.raises(ValueError, match="metadata layer lacks a unique bounded regular file"):
+        retained.verify(archive, receipt)
+    assert not calls
+
+
+@pytest.mark.parametrize("name", ["source.json", "build-inputs.json"])
+def test_metadata_paths_refuse_duplicate_allowed_spellings(case, name):
+    archive, receipt, _, _, calls = case
+    replace_metadata_layer(case, name, ["opt/" + name, "./opt/" + name])
+    with pytest.raises(ValueError, match="metadata layer lacks a unique bounded regular file"):
+        retained.verify(archive, receipt)
+    assert not calls
+
+
 def replace_promotion(case, verifications):
     archive, receipt, files, expected, _ = case
     files["promotion.json"] = encoded({"verifications": verifications})
