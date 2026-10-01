@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.4.1...maf-sandbox-docker-sbx-v0.4.2) (2026-10-01)
+
+
+### Fixes
+
+* require maf-sandbox 0.46.0 in the dependents, and admit the 0.46 line ([#1619](https://github.com/sokolaidev/maf-extensions/issues/1619)) ([868fb2d](https://github.com/sokolaidev/maf-extensions/commit/868fb2d457409ccf099052333d473598db290f84))
+
+
+### Documentation
+
+* **docker-sbx:** record verified backend delivery and remaining validation ([#1616](https://github.com/sokolaidev/maf-extensions/issues/1616)) ([dd358f3](https://github.com/sokolaidev/maf-extensions/commit/dd358f3a9fbd6adafd8552f282fa238d1447cc14))
+
 ## [0.4.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.4.0...maf-sandbox-docker-sbx-v0.4.1) (2026-10-01)
 
 
