@@ -348,7 +348,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
@@ -392,7 +392,7 @@ jobs:
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         with:
           name: dist-${{ needs.build.outputs.package }}
@@ -483,7 +483,7 @@ jobs:
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         with:
           name: dist-${{ needs.build.outputs.package }}
@@ -550,7 +550,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
@@ -558,7 +558,7 @@ jobs:
       # The build job recorded which (distribution, version) pairs it tested; the import re-check
       # below diffs the current admitting set against it. Only the core on the real index uploaded
       # one, so this download is gated to match — download-artifact errors if the artifact is absent.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: >-
           needs.build.outputs.package == 'maf-sandbox'
           && needs.build.outputs.target == 'pypi'
@@ -658,7 +658,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.build.outputs.package == 'maf-sandbox'
         with:
           name: dist-${{ needs.build.outputs.package }}
@@ -666,7 +666,7 @@ jobs:
 
       # Only the core on the real index uploaded one; download-artifact errors if absent, so this
       # download is gated to match.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: needs.build.outputs.package == 'maf-sandbox'
         with:
           name: admitting-snapshot
