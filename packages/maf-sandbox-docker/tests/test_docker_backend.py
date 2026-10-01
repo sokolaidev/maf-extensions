@@ -5772,8 +5772,10 @@ class TestAnEngineThatWillNotBuildAnUnaddressedBridge:
         backend, _ = _backend_with(
             _machine(overrides={("network", "create"): self._REJECTED}), config=_ALLOW_CONFIG
         )
-        with pytest.raises(RuntimeError, match="28.0.0"):
+        with pytest.raises(RuntimeError, match="28.0.0") as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "'closed'" in str(raised.value)
+        assert "empty allowlist" not in str(raised.value)
 
     def test_no_workload_is_started_on_the_weaker_topology_instead(self):
         backend, fake = _backend_with(
