@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.21.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.21.3...maf-sandbox-bicep-v0.21.4) (2026-10-01)
+
+
+### Fixes
+
+* expose read-time file integrity checks for Bicep and CodeAct ([#1596](https://github.com/sokolaidev/maf-extensions/issues/1596)) ([da775c6](https://github.com/sokolaidev/maf-extensions/commit/da775c6ac4aa82ff27e3edb71dcd2dc384e329d4))
+
 ## [0.21.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.21.2...maf-sandbox-bicep-v0.21.3) (2026-09-28)
 
 
