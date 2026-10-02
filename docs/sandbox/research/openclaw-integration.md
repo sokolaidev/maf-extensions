@@ -1,6 +1,6 @@
 # OpenClaw integration research and first-delivery proposal
 
-> Research and initial design recorded on 2026-10-02, followed by an adversarial review that narrows the first deliverable and identifies four design prerequisites. The proposed first deliverable is a closed-network Bicep validator exposed as an OpenClaw tool. No OpenClaw adapter, MCP service or runtime qualification is delivered by this record.
+> Research and initial design recorded on 2026-10-02, followed by adversarial review and a supervised Bicep stdio MCP prototype. The prototype implements the narrow first operation; it does not establish OpenClaw host compatibility or unattended lifecycle qualification. Evidence and remaining acceptance work are separated below.
 
 The suite can add focused workload tools, enforced guest networking and reusable conformance scenarios to OpenClaw. Begin with a bounded validation operation through MCP or a thin tool plugin. A complete sandbox backend is a separate feasibility project because its interactive process and workspace contracts exceed the suite's current common execution interface.
 
@@ -8,7 +8,7 @@ The suite can add focused workload tools, enforced guest networking and reusable
 
 The investigation inspected [OpenClaw PR #97086](https://github.com/openclaw/openclaw/pull/97086), its review discussion and merged tree `008f04a65650f364ddbe40f1697f3c1b020bba97`; OpenClaw main at `df93a28f0bc58c41023326a734e3838bb356eea4`; Microsoft MXC tag `v0.9.0`; and suite source at `8161cfdc761557800d18d918a79f2731deb1a488`. The documentation branch starts at `63c0e97dbf39a0d976b07ffb9437317170f1a26d`; the intervening suite change reports credential-expired proxy streams as interrupted. Live OpenClaw documentation was read on 2026-10-02 and may evolve independently of those source snapshots.
 
-The evidence is source, documentation and published author reports. No OpenClaw or MXC runtime was installed or executed during this investigation. No performance, cost, containment, cross-platform compatibility or production-readiness result was measured. Existing suite tests and upstream reports identify available evidence; they do not qualify the proposed integration.
+The original investigation used source, documentation and published author reports. No OpenClaw or MXC runtime was installed or executed. Subsequent prototype tests are recorded separately below; they do not establish performance, cost, cross-platform compatibility or production readiness. Existing suite tests and upstream reports identify available evidence; they do not qualify the proposed integration.
 
 Three independent reviewers subsequently challenged the proposal at suite commit `386e711bbaf9e0456254db89d71b30aad46d3d56`. Their findings were checked against source, and a controlled asynchronous fake-execution probe confirmed the Bicep cancellation behavior described below. That probe executed the Python wrapper only; it did not launch Docker, Bicep or OpenClaw. The review found four P2 design gaps and no demonstrated P1 vulnerability. The source links in the review section identify the assessed snapshot rather than making claims about future versions.
 
@@ -58,7 +58,7 @@ OpenClaw's [secret egress proxy](https://docs.openclaw.ai/gateway/secrets/secret
 
 ## Proposed first deliverable: closed-network Bicep validation
 
-The revised proposal exposes one fixed validation operation to OpenClaw, with a Python service calling the existing Bicep kind through the router. Prefer local stdio MCP with uniform policy for one trusted local operator. OpenClaw already supports [MCP servers](https://docs.openclaw.ai/tools/mcp), but the suite does not yet provide this service. Prove one end-to-end operation before committing to a broader framework-neutral API or additional tools. Bicep is a bounded integration experiment; demand from OpenClaw users has not been established.
+The revised proposal exposes one fixed validation operation to OpenClaw, with a Python service calling the existing Bicep kind through the router. Local stdio MCP with uniform policy for one trusted local operator is implemented by the supervised prototype below. OpenClaw already supports [MCP servers](https://docs.openclaw.ai/tools/mcp); its actual host path remains to be qualified with this service. Prove one end-to-end operation before committing to a broader framework-neutral API or additional tools. Bicep is a bounded integration experiment; demand from OpenClaw users has not been established.
 
 The inspected general MCP [materialization path](https://github.com/openclaw/openclaw/blob/df93a28f0bc58c41023326a734e3838bb356eea4/src/agents/agent-bundle-mcp-materialize.ts) forwards cancellation to the [runtime](https://github.com/openclaw/openclaw/blob/df93a28f0bc58c41023326a734e3838bb356eea4/src/agents/agent-bundle-mcp-runtime.ts), whose tool call sends the tool name and arguments without trusted agent/session identity. The first service can generate request-local ownership internally and apply the same policy to every admitted caller. Per-agent authorization and cross-call artifact access remain outside its contract. A tool plugin is an alternative only if a later requirement needs a trusted host integration that MCP does not supply. The proposed operation follows OpenClaw's MCP tool authorization; it does not inherit command, working-directory or file-bound host-exec approvals.
 
@@ -121,6 +121,18 @@ Cancellation tests must interrupt an active compiler phase and measure guest sto
 
 No automatic workspace access, artifact download, persistent result store, formatting, Terraform plan/apply/destroy, general CodeAct, network credentials, guest host-tools, interactive shell, warm reuse, remote multi-tenant service or complete OpenClaw backend is included in this first delivery. Subsequent designs must establish their own authority and lifecycle boundaries. The five design workstreams are investigation options, not a commitment to implement all of them.
 
+## Supervised prototype
+
+The [experimental source sample](../../../samples/experimental/openclaw_bicep/README.md) implements local stdio MCP using the existing packaged Bicep tool. It fixes the initial choices: inline whole-set sources, one active request, call-scoped Docker, closed networking, immutable image selection, a host-supplied compiler configuration and diagnostics-only structured results. The README owns the concrete limits, canonical source-set digest, operator startup procedure and supported dependency pins. There is no new public framework-neutral runner or published adapter package.
+
+The sample retains a durable random owner scope under an exclusive local process lock and reconciles that scope before serving requests. Every call settles before a final scope sweep; cleanup failure removes the verdict and poisons admission. Cancellation during cleanup was reproduced in adversarial implementation review and corrected by draining a separately shielded cleanup task. Regression cases distinguish compiler cancellation, request deadline, cancellation during purge and unsuccessful purge. The 120-second deadline requests cancellation; it is not a hard maximum container lifetime.
+
+Local MCP stdio execution on Windows with Docker Engine 29.8.0 serving Linux guests demonstrated valid and invalid compiler verdicts, an unavailable module returning incomplete without a verdict, selected prepared AVM resolution and container cleanup. The prepared image was local ID `sha256:0bda3505a331713614b847025ce35199f3dda5a81ea2a661130525226dbc0265`, reporting Bicep CLI 0.46.1 (`545b338e2c`); this records a tested local image, not published-image provenance. The compiler cases also passed in an isolated environment using the sample's published suite pins and MCP 1.26.0 without workspace-package fallback.
+
+A separate live test sent MCP cancellation after observing an active Bicep process, then verified removal of its exact container. Inspection confirmed network mode `none`, 1 GiB memory, one CPU, 128 PIDs, all capabilities dropped and a nonempty call label. Startup recovery removed an intentionally abandoned container in the retained owner scope while another owner's container remained running; that other container also survived cancellation. This is a targeted stale-resource recovery test, not a process-kill test at every lifecycle transition or a complete networking audit.
+
+These are service/backend observations, not execution through OpenClaw. Full Gateway authorization/result projection, worker death at each lifecycle boundary and an independent maximum-lifetime recovery owner remain unqualified. The sample is for supervised evaluation only; it does not close the design issue.
+
 ## Subsequent designs
 
 For additional workload tools, assess [Terraform](../kinds/terraform.md), [draw.io](../kinds/drawio.md) and [CodeAct](../kinds/codeact.md) independently. Formatting returns proposed content for a separate authorized save. Diagram validation is not sanitization of every embedded reference. General code execution requires a larger authority and artifact contract than a fixed validator. Avoid duplicating OpenClaw Code Mode without a concrete confined-workload benefit.
@@ -135,12 +147,12 @@ Current OpenClaw [SDK documentation](https://docs.openclaw.ai/plugins/sdk-subpat
 
 ## Status
 
-All integration opportunities remain proposed; this record delivers research and initial design only. The Bicep design is the first actionable workstream. Closing a design issue requires decisions and implementation follow-ups, not a claim that the runtime has shipped.
+The Bicep workstream has a supervised source prototype; the other integration opportunities remain proposed. Closing a design issue requires its decisions and acceptance follow-ups, not a claim that a generic MCP test qualifies the OpenClaw host integration.
 
 | Decision | State | Tracking |
 |---|---|---|
 | OpenClaw integration direction and delivery sequence | Open; research recorded | [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
-| First closed-network Bicep validation tool | Open; narrowed proposal, four review prerequisites and runtime qualification remain | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
+| First closed-network Bicep validation tool | Open; supervised stdio prototype, OpenClaw host and complete crash qualification remain | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
 | Additional workload tools and artifact delivery | Open; design follows the Bicep contract | [#1639](https://github.com/sokolaidev/maf-extensions/issues/1639) (open) |
 | Enforced egress and credential mediation | Open; backend-specific design required | [#1640](https://github.com/sokolaidev/maf-extensions/issues/1640) (open) |
 | Conformance and installed-package qualification | Open; scenario and harness design required | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (open) |
