@@ -2882,8 +2882,9 @@ def sandboxed_tool(
             ``trusted`` refuses every file in a store whose integrity is unestablished. This
             checks reads independently of result declarations and confidentiality labels.
         egress_integrity: The host's trust in the network source. ``TRUSTED`` requires a
-            non-empty ``ALLOWLIST`` and permits file-based promotion when every other source
-            is trusted. ``None`` and ``UNTRUSTED`` keep network access blocking promotion.
+            non-empty ``ALLOWLIST`` and permits promotion from trusted reads or, with no reads,
+            trusted call evidence when every other source is trusted. ``None`` and ``UNTRUSTED``
+            keep network access blocking promotion.
             This does not vouch for output, bypass file evidence, or change confidentiality.
             It applies independently of ``declarations``.
         also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
