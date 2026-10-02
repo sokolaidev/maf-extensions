@@ -24,7 +24,9 @@ The PEP 723 block pins the three suite distributions because the prototype proje
 
 Configure a local stdio server under `mcp.servers` using an absolute uv command, an explicit repository working directory, and the arguments above. Set `requestTimeoutMs` above the service's 120-second deadline plus cancellation settlement and cleanup; 240000 ms is a starting prototype setting, not a guaranteed upper bound. Verify discovery with `openclaw mcp doctor <server-name> --probe`, then exercise a real tool call. The [OpenClaw MCP guide](https://docs.openclaw.ai/tools/mcp) documents `command`, `args`, `cwd`, timeouts and tool policy. This service requires uniform authorization for one trusted local operator; it receives no trusted per-agent or per-session identity. MCP authorization does not inherit host-exec command or file approvals.
 
-Discovery advertises exactly one operation. A request looks like:
+Use one active OpenClaw session per retained owner directory. OpenClaw 2026.9.7 retains a separate stdio runtime per session; a second session using the same directory cannot acquire the service's ownership lock. Keep that lock intact. The [Gateway qualification record](../../../docs/sandbox/research/openclaw-gateway-qualification.md) contains the tested configuration and [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) tracks the multi-session design.
+
+The server defines exactly one tool operation. FastMCP also advertises empty resource/prompt capabilities, for which OpenClaw generates helper tools. With the configured server name `bicep`, use `tools.allow: ["bicep__bicep_validate"]` to expose only validation. In the qualified release, a normal Gateway agent turn calls it through Tool Search's `tool_call`; `/tools/invoke` returned 404 for this MCP tool in the tested setup. A request looks like:
 
 ```json
 {
@@ -61,10 +63,13 @@ The prototype reads only the framework's fixed first completion item and, for co
 
 Run `uv run pytest tests/test_openclaw_bicep_prototype.py -q` for input, authority, framing, ownership and cancellation regression tests. FastMCP transport tests verify generated schemas, rejection before coercion, bounded errors and structured error results. Set `MAF_OPENCLAW_BICEP_IMAGE` to the full prepared image ID or digest to opt into real Docker/MCP stdio tests. The live compiler cases use MAF's `MCPStdioTool` to check discovery and structured-result projection; the SDK client exercises cancellation while the compiler is active, scope recovery and preservation of another owner's container. These cases also inspect resource configuration and prepared dependency resolution.
 
-The implementation is still an experimental source sample. A generic MCP client test does not qualify OpenClaw's Gateway, authorization or result projection. Only compiler-phase cancellation is live-qualified here; interruption during acquisition/staging, daemon disconnects, worker/Gateway termination at each lifecycle boundary, Docker endpoint changes, an independent crash watchdog, and Linux/macOS host coverage remain separate acceptance work.
+The [Gateway acceptance fixture and checker](../../../docs/sandbox/research/openclaw-gateway-qualification.md#reproduce) separately exercised OpenClaw 2026.9.7 using published Python dependencies and a deterministic local provider. They verified valid/invalid/incomplete outcomes, result identities, one projected content item, unauthenticated refusal, tool allowlist denials, active-compiler client disconnection, exact-container removal and a subsequent successful call in the same session. These are real host-path tests without LLM reasoning. The JSON text mirror uses the SDK-style formatting OpenClaw recognizes for deduplication; the structured result remains authoritative.
+
+The implementation is still an experimental source sample. Only compiler-phase cancellation is live-qualified here; interruption during acquisition/staging, daemon disconnects, worker/Gateway termination at each lifecycle boundary, Docker endpoint changes, an independent crash watchdog, multi-session ownership, and Linux/macOS host coverage remain separate acceptance work.
 
 ## Status
 
 | Work | State | Tracking |
 |---|---|---|
-| Bounded Bicep integration | Supervised prototype; OpenClaw host and complete crash qualification remain open | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
+| Bounded Bicep integration | Supervised prototype; one-session Gateway path qualified with a deterministic provider, complete crash qualification remains | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
+| OpenClaw session ownership | Design required before multiple sessions share a service deployment | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (open) |

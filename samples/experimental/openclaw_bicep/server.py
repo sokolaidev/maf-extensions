@@ -431,7 +431,12 @@ def make_server(validator: Validator) -> BoundedFastMCP:
     ) -> Annotated[types.CallToolResult, ValidationResult]:
         result = await validator.call({"files": [file.model_dump() for file in files]})
         return types.CallToolResult(
-            content=[types.TextContent(type="text", text=json.dumps(result, ensure_ascii=True))],
+            # OpenClaw recognizes this SDK-style mirror and projects structured content once.
+            content=[
+                types.TextContent(
+                    type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
+                )
+            ],
             structuredContent=result,
             isError=result["status"] in ("error", "timeout", "cleanup_failed"),
         )

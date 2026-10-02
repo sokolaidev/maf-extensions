@@ -159,7 +159,7 @@ def test_fastmcp_schemas_dispatch_and_bounded_rejections():
                 "completed": True,
                 "verdict": "valid",
                 "status": "ok",
-                "diagnostics": "",
+                "diagnostics": "Unicode diagnostic: café",
                 "source_sha256": prototype.snapshot(data).digest,
                 "config_sha256": "b" * 64,
                 "image": IMAGE,
@@ -180,6 +180,9 @@ def test_fastmcp_schemas_dispatch_and_bounded_rejections():
             assert response.structuredContent["verdict"] == "valid"
             jsonschema.validate(response.structuredContent, tool.outputSchema)
             assert json.loads(response_text(response)) == response.structuredContent
+            assert response_text(response) == json.dumps(
+                response.structuredContent, ensure_ascii=False, indent=2
+            )
             assert calls == [arguments()]
 
             marker = "source-must-not-appear"
