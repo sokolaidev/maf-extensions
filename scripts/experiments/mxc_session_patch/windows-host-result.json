@@ -1,0 +1,24 @@
+{
+  "helper_sha256": "a767cbf187797143e1af6de86c49940265d17837efe80da141ce3db3c8fa6396",
+  "startup_index_sha256": "d3743f7ffbc3c141826ca0c3a409a7879a863801ded78552575e401bf866286a",
+  "sqlite_sha256": "f9bd3190451b09a9ab8808ed2b0162ea136deac8558b67b2c019b6e0e27fda04",
+  "before_commit_keeps_previous_checkpoint": true,
+  "interrupted_call_refuses_replay": true,
+  "committed_result_redelivery_without_execution": {
+    "after_commit": true,
+    "before_ack": true
+  },
+  "csv_to_chart": true,
+  "artifact_redelivery_identical": true,
+  "seed_result_sha256": "64d897af346d1a9de1ab16b1c691a4bf158b04b2f4eafbee09e91725c8240ca6",
+  "chart_encoded_sha256": "2ac5a4e60ff089d8a256af355020344fec33485284bc853620691f4fa55d0b4c",
+  "scope": "local process crash; no power-loss or remote-recovery qualification",
+  "initial_single_write_received_bytes": 4096,
+  "initial_single_write_incomplete_chart_refused": true,
+  "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+  "host_source_sha256": {
+    "host_store.py": "b19b996ec7eb800ff5525630630252abd31d0cd9d79b3542d1e812b86fff64ce",
+    "host_call.py": "36acf316ec3260a473f7548446b15d03da37d47e27cb0ad1973c501e83d08e18",
+    "host_probe.py": "c51c51d54dd5eaa3eb0184ce60835fd49e71b2717dd62d6c22aab3e52200f41a"
+  }
+}

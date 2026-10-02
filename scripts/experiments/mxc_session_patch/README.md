@@ -53,6 +53,10 @@ The Windows measurement used Rust 1.98.0 with `x86_64-pc-windows-gnu` and the po
 
 These controls establish native behavior on one tested host. They do not qualify power-loss durability, actual host reboot, another machine, Linux, mounted files, network enforcement, arbitrary threads/sockets, adversarial snapshot inputs, cancellation, resource quotas or stdout/stderr fidelity. Capturing after successful executions is exercised; atomic host-store commitment and acknowledgment recovery remain unimplemented. The pre-PR repository gate passed: 12,958 tests passed and 749 skipped, with lint, format, type and documentation checks also passing. Markdown-block and authenticated tracker checks passed separately. Hosted CI is a separate result.
 
+## Host publication continuation
+
+The [local publication experiment](HOST_PUBLICATION.md) adds checkpoint/result transactions, interrupted-call refusal, saved-result redelivery, and a fixed CSV-to-chart workflow. Its independent evidence and remaining transport/platform limits do not change the native results above.
+
 ## Remove or replace
 
 Stop sessions using the patched binary before switching providers. Removing source edits does not revoke an already-built binary or migrate saved state.
