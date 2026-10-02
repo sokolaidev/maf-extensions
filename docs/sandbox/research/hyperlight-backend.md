@@ -160,6 +160,68 @@ Backend-specific guest APIs belong in a separate future issue. That follow-up sh
 
 Recording this proposal adds no implementation, live-test result, profile guarantee or production acceptance evidence. The signature, profile guarantees, envelope ceilings, delivery confirmation and cancellation behavior listed above remain the prototype's open questions.
 
+## Native host-tool prototype, 2026-10-02
+
+The bounded [prototype](../../../scripts/probe_hyperlight_host_tools.py) exercised the proposed callback bridge on Windows 11 x86-64 with WHP, host Python 3.13.12 and the exactly matched 0.7.0 SDK, Wasm backend and Python guest. It started from repository commit `09b5aaab1cbfecfd79f8e15cfb4a1fb15c1a28e2`, which contains the design above. This is synthetic research evidence; no production channel, profile declaration or `HOST_TOOLS` capability was added.
+
+The final matrix covered 30 native cases and one Docker comparison, with no unexpected results under the harness's explicit positive and negative expectations. Its probe source SHA-256, normalized to UTF-8 with LF newlines, was `b47f4ec432fe107e7eb4d23457f8f6c57584f514592a602b4ad49420ff8a99df`. The measurements below retain the relevant outcomes; the raw local report also contains worker diagnostics and is not committed.
+
+A same-day follow-up tightened EOF classification to the first observed failing request value size, 16,200 ASCII bytes, independently of the 8 KiB application cap. The corrected validator accepted all 31 original recorded outcomes. A fresh four-case native run, with probe source SHA-256 `665a2269bc7c4b8987e13a29c503c6c2768d05d175b5d7a0389ac9ff715dc5cc`, again delivered 12,044-, 16,044- and 16,144-byte request payloads to the parent and observed EOF for the 16,200-character value; every worker was reaped. Offline regressions require unexpected EOF below that observed failure point to produce failed evidence and a nonzero CLI exit. This does not establish a universal native ceiling.
+
+The worker reused the adapter's contained process boundary, registered one internal `maf_dispatch` callback before warming, installed an in-memory `maf_host_tools` module and snapshotted that baseline. Each program restored the baseline and received a fresh run generation. The parent retained the registry and resolved callbacks through the real `HostToolRun.call` on its event loop. No guest files were needed for the native facade. One generic dispatcher was sufficient; native registration did not need to carry individual host callables or change between runs. Late registration after initialization raised `RuntimeError`.
+
+### Observed behavior
+
+| Probe | Observed result |
+| --- | --- |
+| Shared API on native and Docker exec | The same program round-tripped nested JSON, Unicode, booleans and null, then caught a missing-tool refusal as `HostToolError`. Both printed identical stdout and exited zero. Docker used `python:3.13-slim` and the shipped file transport. |
+| Warm reuse and authority | A second program used a fresh `HostToolRun`; policy observation retained its new context. A callback outside a live run failed before policy dispatch. A synthetic stale generation was rejected before dispatch. Offline coverage also rejected duplicate callback sequences. |
+| Policy refusals | Call cap, response cap and invalid arguments produced catchable refusals. A successful call after response refusal demonstrated continued guest execution. An oversized request that still fit the native boundary was refused before core dispatch. |
+| Cooperative callback timeout | The synthetic async callback stopped before the refusal was returned; the program caught it and successfully called another tool. |
+| Uncooperative callback, program timeout and cancellation | The worker was retired and reaped. The synthetic cancellation-resistant host task was separately released and drained after retirement; killing the worker did not itself stop that host task. |
+| Delivery counterexample | Core emitted `HostToolCalled(outcome="delivered")`, then the worker emitted its prepared-response marker, then a forced exception before native marshalling caused guest failure. Neither marker proves native acceptance. |
+| Python facilities | Guest Python reported 3.14.0. `json`, `math`, `re`, `sys`, `types` and `os` imported; `asyncio`, `datetime`, `statistics`, `pickle`, `__future__`, `threading` and `socket` did not. Importability alone does not certify every operation in a module. |
+
+Every measured native worker was reaped and its diagnostic drainer stopped; the comparison container was disposed. The host tools were synthetic async functions without credentials or external effects. This does not establish cancellation safety for blocking synchronous host functions, host identity/approval conformance, cross-process owner death, queued-work expiry, incompatible registry reuse, Linux KVM, AKS or MSHV.
+
+### The two native directions have different limits
+
+The earlier 0.4.0 measurements cannot be reused as a 0.7.0 response ceiling. At the pinned upstream commit [`6ae78065617d5603c1dd5fdbb63d62d8201ac68c`](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/6ae78065617d5603c1dd5fdbb63d62d8201ac68c/src/wasm_sandbox/src/lib.rs), `WasmComponentSandbox::with_tools` configures the guest input buffer with `config.heap_size.min(70_000_000)`. That is a source-level allocation request, not a measured usable payload maximum. This probe used a 400 MiB heap and 200 MiB stack and deliberately stopped far below that allocation.
+
+| Direction | Encoded observations | Outcome |
+| --- | --- | --- |
+| Host response to guest | ASCII strings of 8,000, 16,300, 20,000, 64,000, 256,000 and 400,000 bytes | All reached the guest at the expected length. These cases deliberately replaced the core-approved value after dispatch and bypassed its response cap; they measured transport only. |
+| Host refusal to guest | A 64,000-character refusal inside a 64,015-byte JSON envelope | Guest caught `HostToolError` and measured the full refusal. This also bypassed the application response cap. |
+| Guest request to host | JSON payloads of 8,044, 12,044, 16,044 and 16,144 UTF-8 bytes | All reached the parent callback. The first round-tripped; the larger replies were refused by the conservative core response cap. |
+| Guest request to host | JSON payload construction of 16,244 bytes and larger, through a 400,000-character value | The worker pipe closed before any callback reached the parent. Cleanup succeeded. This brackets an observed failure point; it does not measure the complete native frame or identify an exact universal ceiling. |
+| Escaping | An 812-byte response JSON string containing Unicode, quotes, backslashes and newlines required an estimated 1,318 bytes when encoded again as a native JSON string | Round-trip preserved the value. JSON string framing is content-dependent, not a fixed byte allowance. The report separately counts the complete parent-to-worker IPC envelope. |
+
+Ordinary policy cases used an 8 KiB application cap and a 512 KiB actual IPC envelope cap. The prototype's `framing_bytes=32` is a synthetic core-accounting input, not a declaration of native overhead. The estimated native JSON length models serialization of the returned string; it excludes lower-level native framing. Full strict limits still need every real representation, including refusal envelopes, bounded before publication. A parent-side request check cannot prevent a failure that happens before the native callback reaches the parent. A guest helper check can improve diagnostics but cannot constrain a guest that calls the native dispatcher directly.
+
+The current upstream [`ToolRegistry::dispatch`](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/6ae78065617d5603c1dd5fdbb63d62d8201ac68c/src/hyperlight_sandbox/src/tools.rs) calls `schema.validate(name, &args)?` when the tool has a schema, before executing its handler, unlike the older name-only observation above. For this prototype it validates the dispatcher's string argument, not the host tool's nested arguments. Core remains the policy boundary.
+
+The Python bridge's [`build_tool_registry`](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/6ae78065617d5603c1dd5fdbb63d62d8201ac68c/src/sdk/python/pyo3_common/src/lib.rs) creates a handler that obtains the callback result with `cb.call(py, (), Some(&kwargs))?`, resolves a possible coroutine, then converts it with `py_to_json(result.bind(py))`. The subsequent [`Tools<HostBindings>::dispatch` implementation for `HostState`](https://github.com/hyperlight-dev/hyperlight-sandbox/blob/6ae78065617d5603c1dd5fdbb63d62d8201ac68c/src/wasm_sandbox/src/lib.rs) serializes the dispatched value with `serde_json::to_string(&v)`. Callback completion therefore precedes this serialization; the inspected public Python API exposes no confirmation hook after it.
+
+### Consequences for the implementation
+
+The in-memory shared facade, single registered dispatcher and caller-context event-loop bridge are viable for the measured guest. A named portable profile must nevertheless specify a deliberately small language/import contract; it cannot promise ordinary CPython's standard library or infer compatibility from the host interpreter's version.
+
+The prototype does not validate the delivery contract yet. Core needs separate execution, reservation, confirmed delivery and uncertain-handoff states. Native integration needs a trustworthy acceptance hook after the relevant serialization, or another bridge with an equivalent confirmation point. A pipe write, callback return preparation, guest-controlled acknowledgement or successful program completion cannot establish per-response native acceptance. This remains a prerequisite for the Hyperlight implementation; no uncertain callback should be replayed.
+
+Request framing also remains a native integration prerequisite. The measured parent refusal is useful only after the callback arrives; direct oversized native calls must have a bounded containment outcome and must not be presented as recoverable policy refusals. Core/exec migration can use these findings to define the contract, but must not attribute a production-native capability to this prototype. [#369](https://github.com/sokolaidev/maf-extensions/issues/369) remains open.
+
+### Reproducing the bounded prototype
+
+On a WHP-capable Windows host with the locked workspace environment and Docker available, run the following with a fresh output filename. The command executes only synthetic callbacks and a local comparison container. Omit `--docker` for native-only measurements; `--case` selects individual probes. Linux requires the adapter's delegated cgroup setup and is not qualified by this Windows record.
+
+```powershell
+uv sync --locked
+uv run python scripts/probe_hyperlight_host_tools.py --live --docker --output native-channel-probe.json
+uv run pytest -q tests/test_probe_hyperlight_host_tools.py
+```
+
+The JSON report retains platform, exact dependency versions, base commit, the probe's SHA-256 over UTF-8 source with LF newlines, complete response IPC envelope byte counts, callback events and cleanup outcomes. It refuses to overwrite existing evidence and exits nonzero for unexpected results. Expected large-request pipe closure is an explicitly recognized negative observation, not native conformance. Raw worker diagnostics can contain local paths; review them before sharing the report. The offline tests cover strict IPC parsing, escaped-byte limits, stale/duplicate authority checks and false-positive evidence classification; they are not substitutes for the live run.
+
 ## Filesystem findings
 
 Runtime execution does not require file channels. The initial backend withholds `FILES_IN`, `FILES_OUT`, `FILES_LIST`, deletion and reclaim, and refuses file-enabled specs. The 0.7.0 filesystem probe explains why.
