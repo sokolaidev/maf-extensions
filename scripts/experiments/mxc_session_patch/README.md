@@ -51,7 +51,7 @@ The Windows measurement used Rust 1.98.0 with `x86_64-pc-windows-gnu` and the po
 | Explicit close | Further execution refused |
 | Truncated metadata, missing blobs, wrong compatibility key | Each refused without a success report |
 
-These controls establish native behavior on one tested host. They do not qualify power-loss durability, actual host reboot, another machine, Linux, mounted files, network enforcement, arbitrary threads/sockets, adversarial snapshot inputs, cancellation, resource quotas or stdout/stderr fidelity. Capturing after successful executions is exercised; atomic host-store commitment and acknowledgment recovery remain unimplemented. The whole maf-extensions test gate and hosted CI were not run for this bundle.
+These controls establish native behavior on one tested host. They do not qualify power-loss durability, actual host reboot, another machine, Linux, mounted files, network enforcement, arbitrary threads/sockets, adversarial snapshot inputs, cancellation, resource quotas or stdout/stderr fidelity. Capturing after successful executions is exercised; atomic host-store commitment and acknowledgment recovery remain unimplemented. The pre-PR repository gate passed: 12,958 tests passed and 749 skipped, with lint, format, type and documentation checks also passing. Markdown-block and authenticated tracker checks passed separately. Hosted CI is a separate result.
 
 ## Remove or replace
 
