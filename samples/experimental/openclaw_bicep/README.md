@@ -16,6 +16,8 @@ uv run --script samples/experimental/openclaw_bicep/server.py --image "$BICEP_IM
 
 `BICEP_OWNER_STATE_DIR` names a dedicated, trusted local directory for this deployment. Keep it outside agent-writable workspaces, retain it across restarts, and use the same Docker endpoint when restarting. Do not copy its owner file to another deployment or delete it to work around a startup refusal. Missing or corrupt existing ownership state requires operator reconciliation. The process lock excludes another service using the same state directory on this machine; it is not a distributed lease or a same-user security boundary.
 
+Before admitting work, the service syncs the owner file and, on POSIX, its directory and every ancestor so newly created state directories survive a crash on filesystems honoring `fsync`. Sync failures refuse startup; restarting retries persistence with the same owner. Windows syncs the file but has no portable directory-sync operation here, so its recovery contract covers process restarts, not host crashes or power loss. Host-crash recovery still needs platform-specific live qualification.
+
 The PEP 723 block pins the three suite distributions because the prototype projects the existing framework's fixed leading result fields. `uv run --script` resolves installed distributions rather than workspace editables. For checkout development, use `uv run python samples/experimental/openclaw_bicep/server.py` with the same arguments. Stdout is reserved for MCP; operational diagnostics go to stderr. There is no independently published adapter wheel yet.
 
 ## Connect from OpenClaw

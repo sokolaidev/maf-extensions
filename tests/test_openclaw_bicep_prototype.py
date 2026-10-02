@@ -276,6 +276,89 @@ def test_owner_is_stable_exclusive_and_corruption_fails_closed(tmp_path):
         pass
 
 
+def test_owner_persists_directory_chain_before_admission(monkeypatch, tmp_path):
+    state = tmp_path / "nested" / "state"
+    synced = []
+
+    def sync(directory):
+        assert (state / "owner").read_text()
+        synced.append(directory)
+
+    monkeypatch.setattr(prototype, "_sync_directory", sync, raising=False)
+    for _ in range(2):
+        synced.clear()
+        with prototype.ownership(state):
+            assert synced == [state, *state.parents]
+
+
+@pytest.mark.parametrize("failure", ["file", "state", "parent"])
+def test_owner_sync_failure_refuses_admission_and_retries_same_scope(
+    monkeypatch, tmp_path, failure
+):
+    state = tmp_path / "nested" / "state"
+    fsync = prototype.os.fsync
+
+    def sync_file(fd):
+        if failure == "file":
+            raise OSError("sync failed")
+        fsync(fd)
+
+    def sync_directory(directory):
+        if directory == (state if failure == "state" else state.parent):
+            raise OSError("sync failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(prototype.os, "fsync", sync_file)
+        patch.setattr(prototype, "_sync_directory", sync_directory, raising=False)
+        with pytest.raises(OSError, match="sync failed"), prototype.ownership(state):
+            pytest.fail("Ownership admitted before persistence")
+    owner = (state / "owner").read_text()
+    with prototype.ownership(state) as scope:
+        assert scope == "openclaw-bicep-" + owner
+
+
+@pytest.mark.parametrize("acquire_failure", [1, 2, None])
+@pytest.mark.parametrize("cleanup_failure", [None, "raises", "undisposed"])
+@pytest.mark.parametrize("failed_scope", [0, 1])
+def test_live_recovery_setup_always_checks_both_cleanups(
+    monkeypatch, tmp_path, acquire_failure, cleanup_failure, failed_scope
+):
+    acquired, disposed = [], []
+
+    async def acquire(key, spec):
+        acquired.append(key)
+        if len(acquired) == acquire_failure:
+            raise RuntimeError("setup failed")
+        return SimpleNamespace(instance_id="container")
+
+    async def dispose(scope, thread):
+        disposed.append((scope, thread))
+        if len(disposed) == failed_scope + 1:
+            if cleanup_failure == "raises":
+                raise RuntimeError("purge failed")
+            if cleanup_failure == "undisposed":
+                return ScopePurge(undisposed=DisposalFailure("unknown", "purge failed"))
+        return ScopePurge()
+
+    async def create(config):
+        return SimpleNamespace(acquire=acquire, dispose_scope=dispose)
+
+    def fail_transport(parameters):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setenv("MAF_OPENCLAW_BICEP_IMAGE", IMAGE)
+    monkeypatch.setattr(prototype.DockerSandboxBackend, "create", create)
+    monkeypatch.setattr(sys.modules[__name__], "stdio_client", fail_transport)
+    error = AssertionError if cleanup_failure else RuntimeError
+    message = "Live scope cleanup failed" if cleanup_failure else "setup failed"
+    with pytest.raises(error, match=message):
+        test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path)
+    assert len(disposed) == 2
+    assert disposed[0] == (acquired[0].scope, prototype.THREAD)
+    assert disposed[1][0].startswith("other-owner-")
+    assert disposed[1][1] == prototype.THREAD
+
+
 def test_reported_purge_failure_also_poisons_admission():
     async def scenario():
         backend = InProcessSandboxBackend(
@@ -681,25 +764,25 @@ def test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path):
         from maf_sandbox_bicep import bicep_sandbox_spec
 
         spec = bicep_sandbox_spec(image=image, egress=prototype.Egress.CLOSED)
-        owned = await backend.acquire(
-            SandboxKey(scope, prototype.THREAD, "validator", uuid.uuid4().hex), spec
-        )
-        unrelated = await backend.acquire(
-            SandboxKey(other, prototype.THREAD, "validator", uuid.uuid4().hex), spec
-        )
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=[
-                str(SCRIPT),
-                "--image",
-                image,
-                "--config",
-                str(ROOT / "images/bicep-sandbox/prepared.bicepconfig.json"),
-                "--state-dir",
-                str(tmp_path),
-            ],
-        )
         try:
+            owned = await backend.acquire(
+                SandboxKey(scope, prototype.THREAD, "validator", uuid.uuid4().hex), spec
+            )
+            unrelated = await backend.acquire(
+                SandboxKey(other, prototype.THREAD, "validator", uuid.uuid4().hex), spec
+            )
+            parameters = StdioServerParameters(
+                command=sys.executable,
+                args=[
+                    str(SCRIPT),
+                    "--image",
+                    image,
+                    "--config",
+                    str(ROOT / "images/bicep-sandbox/prepared.bicepconfig.json"),
+                    "--state-dir",
+                    str(tmp_path),
+                ],
+            )
             async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                 await session.initialize()
                 assert not (
@@ -747,7 +830,13 @@ def test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path):
                     await asyncio.sleep(0.1)
                 assert (await docker("ps", "-q", "--filter", f"id={unrelated.instance_id}")).strip()
         finally:
-            await backend.dispose_scope(scope, prototype.THREAD)
-            await backend.dispose_scope(other, prototype.THREAD)
+            reports = await asyncio.gather(
+                backend.dispose_scope(scope, prototype.THREAD),
+                backend.dispose_scope(other, prototype.THREAD),
+                return_exceptions=True,
+            )
+            assert all(
+                isinstance(report, ScopePurge) and report.undisposed is None for report in reports
+            ), f"Live scope cleanup failed: {reports!r}"
 
     asyncio.run(scenario())

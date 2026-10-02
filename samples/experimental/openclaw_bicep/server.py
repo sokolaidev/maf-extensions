@@ -182,9 +182,21 @@ class BoundedInput(io.TextIOBase):
         return data.decode("utf-8")
 
 
+def _sync_directory(directory: Path) -> None:
+    """Persist POSIX directory entries; Windows has no portable directory fsync."""
+    if os.name == "nt":
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 @contextlib.contextmanager
 def ownership(state_dir: Path) -> Iterator[str]:
     """Hold a local process lock while using this deployment's durable random scope."""
+    state_dir = state_dir.resolve()
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         lock_file = (state_dir / "owner.lock").open("x+b")
@@ -215,9 +227,13 @@ def ownership(state_dir: Path) -> Iterator[str]:
             with owner_file.open("x", encoding="ascii") as output:
                 output.write(owner)
                 output.flush()
-                os.fsync(output.fileno())
         if not re.fullmatch(r"[0-9a-f]{32}", owner):
             raise ValueError("Invalid owner state; operator reconciliation required.")
+        with owner_file.open("r+b") as output:
+            os.fsync(output.fileno())
+        # Repeat persistence on restart, including ancestors from interrupted initialization.
+        for directory in (state_dir, *state_dir.parents):
+            _sync_directory(directory)
         yield "openclaw-bicep-" + owner
 
 
