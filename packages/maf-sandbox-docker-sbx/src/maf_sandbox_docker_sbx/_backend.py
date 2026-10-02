@@ -61,6 +61,7 @@ from maf_sandbox.paths import (
     posix_work_dir_ancestors,
     resolve_guest_working_directory,
 )
+from maf_sandbox.run_activity import RunActivity, SandboxRunActivityLost
 
 from ._config import SbxSandboxConfig
 from ._egress import (
@@ -328,6 +329,34 @@ class _Allowlist:
     plan: EgressPlan
 
 
+@dataclass(frozen=True)
+class _HeldActivity:
+    process: asyncio.subprocess.Process
+    reader: asyncio.Task[tuple[bytes, bytes]]
+
+    @property
+    def ended(self) -> bool:
+        return self.process.returncode is not None or self.reader.done()
+
+    def check(self) -> None:
+        if self.ended:
+            raise SandboxRunActivityLost(
+                "the held sbx session ended; an in-flight host effect may have completed; "
+                "the run must not be replayed automatically"
+            )
+
+
+def _exec_args(
+    name: str, argv: Sequence[str], *, cwd: str, mount: _Mount, nonce: str, pid_file: str
+) -> tuple[str, ...]:
+    return (
+        *("exec", name, "sh", "-c", _EXEC_SCRIPT, "maf-sbx", _EXEC_SCRIPT, "enter"),
+        *(nonce, pid_file, mount.parent, mount.guest_mount, _MARKER),
+        _encode(cwd),
+        *(_encode(arg) for arg in argv),
+    )
+
+
 class _SbxSandbox:
     """One acquired sandbox: ``exec`` through the wrapper, files through the host plane."""
 
@@ -379,6 +408,15 @@ class _SbxSandbox:
             raise SbxError(
                 f"sandbox {self._name} was retired: {reason}. Acquire again for a replacement."
             )
+
+    @contextlib.asynccontextmanager
+    async def run_activity(self, *, timeout: float) -> AsyncGenerator[RunActivity]:
+        """Keep one CLI session alive until the transport has cleaned up its run."""
+        self._refuse_if_retired()
+        if self._allowlist is not None:
+            await self._backend.check_allowlist(self._name, self._instance_id, self._allowlist)
+        async with self._backend.hold_activity(self, timeout=timeout) as activity:
+            yield activity
 
     def _cwd(self, working_directory: str) -> str:
         self._refuse_if_retired()
@@ -579,6 +617,75 @@ class SbxSandboxBackend:
 
     # --- the CLI ------------------------------------------------------------------------
 
+    @contextlib.asynccontextmanager
+    async def hold_activity(
+        self, sandbox: _SbxSandbox, *, timeout: float
+    ) -> AsyncGenerator[RunActivity]:
+        """Start a held exec with a bounded receipt, then release its process group."""
+        nonce = secrets.token_hex(12)
+        pid_file = f"/tmp/maf-sbx-{nonce}.pgid"
+        ready = (nonce + "\n").encode()
+        args = _exec_args(
+            sandbox.name,
+            ["sh", "-c", 'printf "%s\\n" "$1"; while :; do sleep 3600; done', "maf-sbx", nonce],
+            cwd=sandbox.base,
+            mount=sandbox.mount,
+            nonce=nonce,
+            pid_file=pid_file,
+        )
+        process = await asyncio.create_subprocess_exec(
+            self._config.sbx_path,
+            *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=256,
+        )
+        reader: asyncio.Task[tuple[bytes, bytes]] | None = None
+        activity: _HeldActivity | None = None
+        try:
+            assert process.stdout is not None
+            async with asyncio.timeout(min(timeout, self._config.command_timeout_seconds)):
+                receipt = await process.stdout.readexactly(len(ready))
+            if receipt != ready:
+                raise SandboxRunActivityLost("the held sbx session did not confirm readiness")
+            reader = asyncio.create_task(
+                read_bounded_process_output(process, max_output_bytes=4096, timeout=None)
+            )
+            activity = _HeldActivity(process, reader)
+            activity.check()
+            yield activity
+        finally:
+            lost = activity is None or activity.ended
+
+            async def release() -> None:
+                nonlocal reader
+                try:
+                    await self._end_the_command(sandbox.name, sandbox.instance_id, pid_file)
+                finally:
+                    if reader is None:
+                        reader = asyncio.create_task(
+                            read_bounded_process_output(
+                                process, max_output_bytes=4096, timeout=None
+                            )
+                        )
+                    reader.cancel()
+                    await asyncio.gather(reader, return_exceptions=True)
+                    # A task cancelled before its first turn has not entered its cleanup.
+                    if process.returncode is None:
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
+                        with contextlib.suppress(TimeoutError):
+                            await asyncio.wait_for(process.wait(), timeout=3)
+                    if lost:
+                        await self._retire(
+                            sandbox.name,
+                            sandbox.instance_id,
+                            "the held sbx session ended unexpectedly",
+                        )
+
+            await _to_the_end(release())
+
     async def _sbx(
         self, *args: str, timeout: float | None = None, output_limit: int = _OUTPUT_LIMIT
     ) -> _Result:
@@ -619,12 +726,7 @@ class SbxSandboxBackend:
         nonce = secrets.token_hex(12)
         pid_file = f"/tmp/maf-sbx-{nonce}.pgid"
         expired = f"the command did not finish within {timeout} seconds"
-        args = (
-            *("exec", name, "sh", "-c", _EXEC_SCRIPT, "maf-sbx", _EXEC_SCRIPT, "enter"),
-            *(nonce, pid_file, mount.parent, mount.guest_mount, _MARKER),
-            _encode(cwd),
-            *(_encode(arg) for arg in argv),
-        )
+        args = _exec_args(name, argv, cwd=cwd, mount=mount, nonce=nonce, pid_file=pid_file)
         try:
             result = await self._sbx(*args, timeout=timeout, output_limit=max_output_bytes)
         except (

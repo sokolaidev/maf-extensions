@@ -27,9 +27,18 @@ from maf_sandbox import (
     Egress,
     EgressRule,
     EntryKind,
+    HostToolRegistry,
+    HostToolRun,
     HttpMethod,
+    Identity,
     SandboxKey,
+    SandboxProgramTimeout,
     SandboxSpec,
+    SourceIntegrity,
+    guest_run_layout,
+    host_tool_calls_over_exec,
+    host_tool_shim,
+    sandbox_tool,
 )
 from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
 from maf_sandbox.conformance import (
@@ -45,6 +54,7 @@ from maf_sandbox.conformance import (
     assert_reclaim_conformance,
     assert_storage_base_conformance,
 )
+from maf_sandbox.run_activity import SandboxRunActivityLost
 
 from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 from maf_sandbox_docker_sbx._backend import sandbox_name
@@ -428,3 +438,146 @@ def test_disposal_removes_the_sandbox_and_its_workspace(tmp_path):
             await backend.dispose(key)
 
     asyncio.run(scenario())
+
+
+@_BY_IMAGE
+def test_host_tools_answer_on_each_template(tmp_path, image):
+    asyncio.run(_host_tools_case(tmp_path, image, "short"))
+
+
+@pytest.mark.parametrize(
+    "mode", ["idle", "async", "sync", "timeout", "cancel", "sibling", "stop", "dispose"]
+)
+def test_host_tools_lifecycle(tmp_path, mode):
+    asyncio.run(_host_tools_case(tmp_path, None, mode))
+
+
+async def _host_tools_case(tmp_path, image, mode):
+    backend = _backend(tmp_path)
+    key = _key("host-tools")
+    effects = []
+    registry = HostToolRegistry()
+    entered = asyncio.Event()
+    tasks = []
+
+    @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+    async def probe() -> str:
+        entered.set()
+        if mode == "sync":
+            time.sleep(45)
+        elif mode in {"async", "stop", "dispose"}:
+            await asyncio.sleep(45)
+        effects.append("effect")
+        return "answer"
+
+    registry.register(probe)
+    layout = guest_run_layout(_WORK + "/run")
+    spec = SandboxSpec(kind="host-tools", image=image, egress=Egress.CLOSED)
+    started = time.monotonic()
+    try:
+        sandbox = await backend.acquire(key, spec)
+
+        async def prepare(where, delay):
+            await sandbox.write_file(
+                where.program,
+                "import os,time\nfrom pathlib import Path\nimport maf_host_tools\n"
+                f"Path('{where.work}/pid').write_text(str(os.getpid()))\n"
+                f"time.sleep({delay})\n"
+                "print('received:' + maf_host_tools.call('probe'), flush=True)\n",
+                working_directory=".",
+            )
+            await sandbox.write_file(
+                where.shim, host_tool_shim(call_timeout=90), working_directory="."
+            )
+            await sandbox.write_file(where.work + "/prepared", "", working_directory=".")
+
+        await prepare(
+            layout, 45 if mode == "idle" else 120 if mode in {"timeout", "cancel", "sibling"} else 0
+        )
+        transport = asyncio.create_task(
+            host_tool_calls_over_exec(
+                sandbox,
+                HostToolRun(registry, key=key),
+                layout,
+                timeout=6 if mode == "timeout" else 80,
+                interpreter="python3",
+            )
+        )
+        tasks.append(transport)
+        sibling = None
+        if mode == "sibling":
+            other = guest_run_layout(_WORK + "/other")
+            await prepare(other, 12)
+            sibling = asyncio.create_task(
+                host_tool_calls_over_exec(
+                    sandbox,
+                    HostToolRun(registry, key=key),
+                    other,
+                    timeout=40,
+                    interpreter="python3",
+                )
+            )
+            tasks.append(sibling)
+        if mode in {"cancel", "sibling"}:
+            await asyncio.sleep(6)
+            transport.cancel()
+        if mode in {"stop", "dispose"}:
+            await asyncio.wait_for(entered.wait(), timeout=20)
+            if mode == "stop":
+                stopped = await backend._sbx("stop", sandbox.name)
+                assert stopped.returncode == 0
+            else:
+                await backend.dispose(key, spec)
+        if mode == "timeout":
+            with pytest.raises(SandboxProgramTimeout):
+                await transport
+        elif mode in {"cancel", "sibling"}:
+            with pytest.raises(asyncio.CancelledError):
+                await transport
+        elif mode in {"stop", "dispose"}:
+            with pytest.raises(SandboxRunActivityLost, match="effect may have completed"):
+                await transport
+            assert effects == ["effect"]
+            assert backend.retirement_reason(sandbox.instance_id)
+        else:
+            result = await transport
+            assert result.exit_code == 0, result
+            assert "received:answer" in result.stdout
+            assert effects == ["effect"]
+        if sibling is not None:
+            result = await sibling
+            assert result.exit_code == 0 and "received:answer" in result.stdout
+            assert effects == ["effect"]
+        if mode not in {"stop", "dispose"}:
+            assert await sandbox.stat_file(layout.calls, working_directory=".") is None
+            pid = (
+                await sandbox.read_file(layout.work + "/pid", working_directory=".", max_bytes=64)
+            ).decode()
+            gone = await sandbox.exec(
+                ["sh", "-c", f"test ! -e /proc/{int(pid)}"], working_directory=".", timeout=10
+            )
+            assert gone.exit_code == 0
+            leftovers = await sandbox.exec(
+                ["sh", "-c", 'set -- /tmp/maf-sbx-*.pgid; test "$#" -eq 1'],
+                working_directory=".",
+                timeout=10,
+            )
+            # The inspection exec owns its own pid file while it runs.
+            assert leftovers.exit_code == 0, leftovers
+        print(
+            json.dumps(
+                {
+                    "host_tools": mode,
+                    "image": image or "default",
+                    "effects": len(effects),
+                    "seconds": round(time.monotonic() - started, 3),
+                }
+            ),
+            flush=True,
+        )
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await backend.dispose(key, spec)
