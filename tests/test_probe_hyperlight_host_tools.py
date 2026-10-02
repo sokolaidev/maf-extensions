@@ -101,9 +101,11 @@ def test_initialization_failure_is_not_a_negative_case_pass(name: str) -> None:
     assert probe.validate_reports([report]) == [name]
 
 
-def test_large_request_eof_is_an_observation_only_after_initialization() -> None:
+@pytest.mark.parametrize("size", [16200, 16300, 20000, 64000, 256000, 400000])
+def test_large_request_eof_is_an_observation_only_after_initialization(size: int) -> None:
+    name = f"native-request-{size}"
     report = {
-        "case": "native-request-16300",
+        "case": name,
         "initialized": True,
         "reaped": True,
         "error": "EOFError",
@@ -111,10 +113,46 @@ def test_large_request_eof_is_an_observation_only_after_initialization() -> None
     }
     assert probe.validate_reports([report]) == []
     report["events"] = [{"stage": "policy_enter"}]
-    assert probe.validate_reports([report]) == ["native-request-16300"]
+    assert probe.validate_reports([report]) == [name]
     report["events"] = []
-    report["case"] = "native-request-8000"
-    assert probe.validate_reports([report]) == ["native-request-8000"]
+    report["initialized"] = False
+    assert probe.validate_reports([report]) == [name]
+    report["initialized"] = True
+    report["reaped"] = False
+    assert probe.validate_reports([report]) == [name]
+
+
+@pytest.mark.parametrize("size", [8000, 12000, 16000, 16100, 16199])
+def test_eof_below_observed_failure_boundary_is_a_regression(size: int) -> None:
+    name = f"native-request-{size}"
+    report = {"case": name, "initialized": True, "reaped": True, "error": "EOFError", "events": []}
+    assert probe.validate_reports([report]) == [name]
+
+
+def test_cli_saves_failed_evidence_and_exits_nonzero_for_request_regression(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def reports(selected: list[str], docker: bool) -> list[dict[str, object]]:
+        return [
+            {
+                "case": "native-request-16100",
+                "initialized": True,
+                "reaped": True,
+                "error": "EOFError",
+                "events": [],
+            }
+        ]
+
+    output = tmp_path / "probe.json"
+    monkeypatch.setattr(probe, "run_probes", reports)
+    monkeypatch.setattr(probe, "version", lambda name: "0.7.0")
+    monkeypatch.setattr(probe.subprocess, "check_output", lambda *args, **kwargs: "baseline")
+    monkeypatch.setattr(probe.sys, "argv", [str(_SCRIPT), "--live", "--output", str(output)])
+    with pytest.raises(SystemExit, match="unexpected probe results: native-request-16100"):
+        probe.main()
+    assert json.loads(output.read_text(encoding="utf-8"))["unexpected_results"] == [
+        "native-request-16100"
+    ]
 
 
 def test_timeout_refusal_requires_confirmed_host_stop() -> None:

@@ -44,6 +44,7 @@ PACKAGES = (
 )
 WIRE_LIMIT = 512 * 1024
 APPLICATION_LIMIT = 8 * 1024
+FIRST_EOF_REQUEST_VALUE_BYTES = 16_200
 CONTEXT = contextvars.ContextVar("probe_run", default="unbound")
 SHARED_PROGRAM = """import maf_host_tools as h
 print(h.echo(value={"nested": [1, True, None, "é"]}))
@@ -595,7 +596,7 @@ def validate_reports(reports: list[dict[str, Any]]) -> list[str]:
             valid &= any(e.get("stage") == "worker_prepared" for e in events)
         elif name.startswith("native-request-") and report.get("error") == "EOFError":
             valid &= report.get("initialized") is True and not events
-            valid &= int(name.removeprefix("native-request-")) > APPLICATION_LIMIT
+            valid &= int(name.removeprefix("native-request-")) >= FIRST_EOF_REQUEST_VALUE_BYTES
         else:
             valid &= "error" not in report and result.get("exit_code") == 0
             expected = expected_stdout.get(name)
