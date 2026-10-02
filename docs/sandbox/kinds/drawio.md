@@ -16,7 +16,7 @@ See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wir
 | Cleanup | Disposal by default; no call-directory confinement claim |
 | Result integrity | Trusted completion and verdict; untrusted sink display and converter diagnostics; no standing guidance |
 
-Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide an equivalent one. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment.
+Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide an equivalent one. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment. Opt-in PNG/JPG/SVG output requires the separate [export runtime](../../../images/drawio-export/README.md) and `DrawioExport` configuration; the package README describes page selection, authorized stored-file export, limits and the supported offline resource profile.
 
 ## Result
 
@@ -89,5 +89,7 @@ Every page must succeed before collection. Missing output or failed delivery is 
 | Contract | State | Details |
 |---|---|---|
 | Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
-| Specialized automatic layouts and previews | Outside the supported contract | untracked |
+| Offline PNG, JPG and SVG export | Implementation and runtime qualification tracked | [#1654](https://github.com/sokolaidev/maf-extensions/issues/1654) (open); [decision record](../research/drawio-export.md) |
+| Container-free native rendering | Backend qualification proposed | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (open) |
+| Specialized automatic layouts | Outside the supported contract | untracked |
 | Four-field result contract | Implemented for draw.io, sample 18 and its checks | [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |

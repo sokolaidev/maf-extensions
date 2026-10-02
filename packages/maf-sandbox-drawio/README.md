@@ -42,6 +42,36 @@ The image needs Python and Graphviz. The kind requires a POSIX backend with `EXE
 
 For Docker, use `await DockerSandboxBackend.create(config)` so the backend declares POSIX. The plain constructor does not declare an OS family.
 
+## Optional image exports
+
+Build the export runtime with `docker build -t maf-drawio-export:local images/drawio-export`, then opt in through host configuration:
+
+```python
+from maf_sandbox_drawio import DrawioExport, make_drawio_tools
+
+tools = make_drawio_tools(
+    router,
+    agent_id="diagram-designer",
+    context=context,
+    sink=sink,
+    image="maf-drawio-export:local",
+    export=DrawioExport(formats=("png", "jpg", "svg")),
+    exec_timeout_seconds=120,
+)
+```
+
+Each selected page produces `diagram-1.png`, `diagram-1.jpg` and `diagram-1.svg` (and so on), alongside the editable `diagram.drawio`. Formats are a nonempty unique tuple of `png`, `jpg` and `svg`. Pages default to all pages; `pages=(2,)` selects the second page. The host can set `scale` in (0, 4], `transparent=True` for PNG/SVG, and `jpeg_quality` from 1 to 100. JPG uses an opaque background. File limits become 25 outputs, 8 MiB per file and 32 MiB total; each render is limited to 4096 pixels per axis and 16 million pixels. The execution deadline covers layout and all exports.
+
+To export an existing file, attach `make_drawio_export_tools(router, agent_id, context, sink, store, export=DrawioExport(...), image=...)`. Its `export_drawio(file)` argument must match exactly one visible store reference. The store supplies uncompressed XML text with complete geometry; the tool reads it through the caller context and does not run layout again. The stored source is not overwritten, although the returned editable copy may have normalized XML formatting.
+
+Pass the host's `file_store_provenance` and optional `requires_file_integrity` to apply the core's recorded-read and admission policy. Resource validation does not promote source integrity.
+
+The offline profile accepts bundled cloud icons (including `img/lib/azure2/...`), validated embedded PNG/JPEG/SVG images and formatting-only HTML labels. Known `https://app.diagrams.net/img/lib/...` references map to bundled assets without a request. External resources, missing assets, unsupported shapes/fonts, math, links and background resources are refused. Fonts are DejaVu Sans, Serif and Sans Mono; common Arial/Helvetica, Times New Roman and Courier New requests map to those families. Other languages may require a future expanded font profile.
+
+SVG embeds images and font data. Rich labels use `foreignObject`, so use a compatible browser viewer; arbitrary SVG consumers may display them differently. Raster and SVG export use the same native document renderer. Every requested output is checked before sink delivery, but the sink is not transactional: a later delivery failure can leave earlier files saved and returns an incomplete result.
+
+Run `uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports` to exercise real offline rendering. The image is Linux amd64; container-free execution is tracked separately in [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656). A backend must provide the installed runtime and enforce closed networking and process cleanup. Export support does not change the host's isolation floor.
+
 ## Model input
 
 Accepts one uncompressed `mxGraphModel` or an `mxfile` containing uncompressed pages:

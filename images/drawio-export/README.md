@@ -1,0 +1,16 @@
+# Offline Draw.io renderer
+
+An opt-in Linux amd64 runtime for maf-sandbox-drawio image exports. The existing drawio-sandbox image remains sufficient for editable XML output.
+
+```bash
+docker build -t maf-drawio-export:local images/drawio-export
+uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports
+```
+
+The build verifies the Draw.io Desktop 31.7.0 Debian distribution's SHA-256, installs native dependencies and a fixed DejaVu font set, and prepares /opt/maf-drawio/manifest.json. Network access is needed at build time. Deployment should pin the resulting approved image digest; Debian package updates are not a reproducible-build guarantee.
+
+install.py repacks Desktop's ASAR with guard.js to refuse missing images, unknown shapes and excessive dimensions. export.py resolves local assets, validates embedded images and HTML, runs the native exporter and validates artifacts before publishing its manifest. The host never imports or executes this runtime directly. Preserve the upstream Desktop, Electron, Draw.io and font notices shipped in the image when redistributing it; the modified export behavior is defined by these source files.
+
+The renderer runs as an unprivileged user with Electron's inner sandbox disabled. A qualified outer sandbox must enforce closed networking, CPU/memory/process limits, file confinement and process-tree disposal. Do not expose host credentials, directories or display sockets. The verification script explicitly selects container isolation; the library does not lower the host's isolation floor.
+
+For a future container-free POSIX backend, install the same runtime paths in a read-only sandbox root and run install.py during provisioning. The installer must receive the pinned, unmodified Desktop archive. Do not run it twice against an already patched archive. Runtime files require Python 3, Pillow, Graphviz, Xvfb, xauth, DejaVu fonts and the Electron shared libraries listed by the Dockerfile. This describes the bundle layout; it does not qualify Bubblewrap, Seatbelt, Windows or Hyperlight. See the [decision record](../../docs/sandbox/research/drawio-export.md).
