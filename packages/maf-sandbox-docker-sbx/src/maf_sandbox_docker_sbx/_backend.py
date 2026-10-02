@@ -421,9 +421,15 @@ class _SbxSandbox:
     async def run_activity(self, *, timeout: float) -> AsyncGenerator[RunActivity]:
         """Keep one CLI session alive until the transport has cleaned up its run."""
         self._refuse_if_retired()
-        if self._allowlist is not None:
-            await self._backend.check_allowlist(self._name, self._instance_id, self._allowlist)
-        async with self._backend.hold_activity(self, timeout=timeout) as activity:
+        async with contextlib.AsyncExitStack() as stack:
+            async with asyncio.timeout(timeout):
+                if self._allowlist is not None:
+                    await self._backend.check_allowlist(
+                        self._name, self._instance_id, self._allowlist
+                    )
+                activity = await stack.enter_async_context(
+                    self._backend.hold_activity(self, timeout=timeout)
+                )
             yield activity
 
     def _cwd(self, working_directory: str) -> str:

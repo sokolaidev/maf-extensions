@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from types import SimpleNamespace
+from contextlib import asynccontextmanager
 
 import pytest
 from maf_sandbox.run_activity import SandboxRunActivityLost
 
 from maf_sandbox_docker_sbx import SbxSandboxBackend, SbxSandboxConfig
 from maf_sandbox_docker_sbx import _backend as implementation
+from maf_sandbox_docker_sbx._egress import EgressPlan
+from maf_sandbox_docker_sbx._plane import WorkspacePlane
 
 
 def _backend(tmp_path, monkeypatch, body):
@@ -34,8 +36,77 @@ def _backend(tmp_path, monkeypatch, body):
     monkeypatch.setattr(implementation, "_exec_args", args)
     monkeypatch.setattr(backend, "_end_the_command", end)
     monkeypatch.setattr(backend, "_retire", retire)
-    sandbox = SimpleNamespace(name="test", instance_id="instance", base="/work", mount=None)
+    sandbox = implementation._SbxSandbox(
+        backend,
+        "test",
+        "instance",
+        "/work",
+        WorkspacePlane(tmp_path, "/work"),
+        implementation._Mount("/host/ws", "/work", tmp_path),
+        implementation._Allowlist((), EgressPlan((), (), frozenset())),
+    )
     return backend, sandbox, events
+
+
+@pytest.mark.parametrize("phase", ["allowlist", "process-start"])
+def test_protocol_timeout_bounds_all_acquisition(tmp_path, monkeypatch, phase):
+    backend, sandbox, events = _backend(tmp_path, monkeypatch, "pass")
+    entered = []
+
+    async def stalled(*args, **kwargs):
+        entered.append(phase)
+        await asyncio.Future()
+
+    async def allowed(*args):
+        pass
+
+    monkeypatch.setattr(backend, "check_allowlist", stalled if phase == "allowlist" else allowed)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", stalled)
+
+    async def acquire():
+        async with sandbox.run_activity(timeout=0.05):
+            pytest.fail("not ready")
+
+    async def scenario():
+        task = asyncio.create_task(acquire())
+        try:
+            done, _ = await asyncio.wait({task}, timeout=1)
+            assert done, "acquisition exceeded its timeout"
+            with pytest.raises(TimeoutError):
+                await task
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert entered == [phase]
+        assert events == []
+
+    asyncio.run(scenario())
+
+
+def test_protocol_body_and_release_outlast_acquisition_timeout(tmp_path, monkeypatch):
+    backend, sandbox, events = _backend(tmp_path, monkeypatch, "pass")
+
+    async def allowed(*args):
+        pass
+
+    @asynccontextmanager
+    async def held(*args, **kwargs):
+        try:
+            yield object()
+        finally:
+            await asyncio.sleep(0.1)
+            events.append("released")
+
+    monkeypatch.setattr(backend, "check_allowlist", allowed)
+    monkeypatch.setattr(backend, "hold_activity", held)
+
+    async def scenario():
+        async with sandbox.run_activity(timeout=0.05):
+            await asyncio.sleep(0.1)
+            events.append("body")
+        assert events == ["body", "released"]
+
+    asyncio.run(scenario())
 
 
 def test_release_reaps_client_after_guest_cleanup(tmp_path, monkeypatch):
