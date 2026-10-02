@@ -527,7 +527,7 @@ async def _host_tools_case(tmp_path, image, mode):
                 stopped = await backend._sbx("stop", sandbox.name)
                 assert stopped.returncode == 0
             else:
-                await backend.dispose(key, spec)
+                assert await backend.dispose(key, kind=spec.kind) is None
         if mode == "timeout":
             with pytest.raises(SandboxProgramTimeout):
                 await transport
@@ -580,4 +580,4 @@ async def _host_tools_case(tmp_path, image, mode):
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await backend.dispose(key, spec)
+        assert await backend.dispose(key, kind=spec.kind) is None

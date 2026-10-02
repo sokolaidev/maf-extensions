@@ -97,6 +97,7 @@ BACKEND_NAME = "docker-sbx"
 _CAPABILITIES = frozenset(
     {
         Capability.EXEC,
+        Capability.HOST_TOOLS,
         Capability.FILES_IN,
         Capability.FILES_OUT,
         Capability.FILES_LIST,

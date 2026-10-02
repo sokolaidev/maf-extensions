@@ -45,8 +45,10 @@ def test_release_reaps_client_after_guest_cleanup(tmp_path, monkeypatch):
 
     async def scenario():
         async with backend.hold_activity(sandbox, timeout=5) as activity:
+            assert isinstance(activity, implementation._HeldActivity)
             activity.check()
             assert not events
+        assert isinstance(activity, implementation._HeldActivity)
         assert activity.process.returncode is not None
         assert events == ["end"]
 
@@ -84,6 +86,7 @@ def test_unexpected_exit_is_loss_even_with_zero_status(tmp_path, monkeypatch):
     async def scenario():
         with pytest.raises(SandboxRunActivityLost):
             async with backend.hold_activity(sandbox, timeout=5) as activity:
+                assert isinstance(activity, implementation._HeldActivity)
                 await activity.reader
                 activity.check()
         assert events == ["end", "retire"]
