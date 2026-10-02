@@ -60,7 +60,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Se
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_type_hints
 from uuid import uuid4
 
 from ._cleanup import QUEUED_CALL_TIMEOUT, PendingCleanup
@@ -2438,8 +2438,63 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
     return any(CALL_ID_PLACEHOLDER in _guidance_placeholders(s) for s in committed)
 
 
+def _call_integrity(context: Any) -> SourceIntegrity | None:
+    """Read the framework's combined conversation and argument evidence for this call."""
+    from agent_framework.security import ContentLabel, IntegrityLabel
+
+    label = _framework_metadata(context).get("effective_invocation_label")
+    if not isinstance(label, ContentLabel):
+        return None
+    return (
+        SourceIntegrity.TRUSTED
+        if label.integrity is IntegrityLabel.TRUSTED
+        else SourceIntegrity.UNTRUSTED
+    )
+
+
+def _context_parameter(body: Callable[..., Any]) -> tuple[str, bool, inspect.Signature]:
+    """Preserve a body's context parameter or add a framework-only keyword parameter."""
+    from agent_framework import FunctionInvocationContext
+
+    signature = inspect.signature(body)
+    try:
+        annotations = get_type_hints(body, include_extras=True)
+    except Exception:  # noqa: BLE001
+        # Match the framework's best-effort annotation resolution.
+        annotations = {}
+    for parameter in signature.parameters.values():
+        annotation = annotations.get(parameter.name, parameter.annotation)
+        if any(
+            candidate is FunctionInvocationContext or candidate == "FunctionInvocationContext"
+            for candidate in (get_args(annotation) or (annotation,))
+        ):
+            return parameter.name, False, signature
+    name = "maf_call_context"
+    while name in signature.parameters:
+        name += "_"
+    parameters = list(signature.parameters.values())
+    position = next(
+        (i for i, p in enumerate(parameters) if p.kind is inspect.Parameter.VAR_KEYWORD),
+        len(parameters),
+    )
+    parameters.insert(
+        position,
+        inspect.Parameter(
+            name,
+            inspect.Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=FunctionInvocationContext,
+        ),
+    )
+    return name, True, signature.replace(parameters=parameters)
+
+
 def _result_label(
-    declarations: Mapping[str, Any], fed: FedFromStore | None, *, file_trust_can_promote: bool
+    declarations: Mapping[str, Any],
+    fed: FedFromStore | None,
+    *,
+    file_trust_can_promote: bool,
+    call_integrity: SourceIntegrity | None = None,
 ) -> dict[str, Any] | None:
     """Apply file evidence subject to other source channels, retaining host confidentiality.
 
@@ -2475,6 +2530,8 @@ def _result_label(
             declared = IntegrityLabel.UNTRUSTED
         elif file_trust_can_promote:
             declared = IntegrityLabel.TRUSTED
+    elif file_trust_can_promote and call_integrity is SourceIntegrity.TRUSTED:
+        declared = IntegrityLabel.TRUSTED
     return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
 
 
@@ -2485,6 +2542,7 @@ def _contract_items(
     declarations: Mapping[str, Any],
     fed: FedFromStore | None,
     file_trust_can_promote: bool,
+    call_integrity: SourceIntegrity | None,
     verdicts: tuple[str | int | bool, ...],
 ) -> list[Content]:
     """Render a :class:`SandboxResult` into one item per part, labelling only the derived ones.
@@ -2530,7 +2588,12 @@ def _contract_items(
     if answer.verdict is not None:
         items.append(Content.from_text(f"Result: {answer.verdict}"))
     items.extend(Content.from_text(text) for text in answer.trusted_output)
-    label = _result_label(declarations, fed, file_trust_can_promote=file_trust_can_promote)
+    label = _result_label(
+        declarations,
+        fed,
+        file_trust_can_promote=file_trust_can_promote,
+        call_integrity=call_integrity,
+    )
     for text in answer.output:
         item = Content.from_text(text)
         if label is not None:
@@ -2548,6 +2611,7 @@ def _label_tool_result(
     declarations: Mapping[str, Any],
     fed: FedFromStore | None,
     file_trust_can_promote: bool,
+    call_integrity: SourceIntegrity | None = None,
     contract: bool = False,
     verdicts: tuple[str | int | bool, ...] = (),
 ) -> str | list[Content]:
@@ -2570,6 +2634,7 @@ def _label_tool_result(
             declarations=declarations,
             fed=fed,
             file_trust_can_promote=file_trust_can_promote,
+            call_integrity=call_integrity,
             verdicts=verdicts,
         )
         substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
@@ -2593,7 +2658,12 @@ def _label_tool_result(
                 f"{tool}: this tool commits to standing guidance and its body answered with a "
                 "string. Answer with the committed sentences as the last items on every path."
             )
-        label = _result_label(declarations, fed, file_trust_can_promote=file_trust_can_promote)
+        label = _result_label(
+            declarations,
+            fed,
+            file_trust_can_promote=file_trust_can_promote,
+            call_integrity=call_integrity,
+        )
         if label is None:
             return result
         return [Content.from_text(result, additional_properties={"security_label": label})]
@@ -2631,7 +2701,12 @@ def _label_tool_result(
             "guidance says what the rest of the result is worth, and a result that is nothing "
             "else says it of nothing."
         )
-    label = _result_label(declarations, fed, file_trust_can_promote=file_trust_can_promote)
+    label = _result_label(
+        declarations,
+        fed,
+        file_trust_can_promote=file_trust_can_promote,
+        call_integrity=call_integrity,
+    )
     labelled: list[Content] = []
     for item in items[:derived_count]:
         # A kind may reuse Content objects across calls, and MAF mutates their properties too.
@@ -2729,8 +2804,9 @@ def sandboxed_tool(
        retains host-set confidentiality. Any untrusted or unestablished read makes it
        untrusted; all-trusted reads promote the kind's claim only when every other source
        channel is absent or established as trusted. Network access without a host trust claim
-       and untrusted or unknown host-tool sources block promotion. With no reads, the kind's
-       claim remains.
+       and untrusted or unknown host-tool sources block promotion. With no reads, trusted
+       framework conversation and argument evidence permits promotion under the same source
+       checks. Without that evidence, the kind's claim remains.
        Without either opt-in, valid source-integrity and confidentiality declarations label
        the result; absent declarations leave it to the
        framework's fallback. Neither the declaration nor another call is changed.
@@ -2807,8 +2883,9 @@ def sandboxed_tool(
             ``trusted`` refuses every file in a store whose integrity is unestablished. This
             checks reads independently of result declarations and confidentiality labels.
         egress_integrity: The host's trust in the network source. ``TRUSTED`` requires a
-            non-empty ``ALLOWLIST`` and permits file-based promotion when every other source
-            is trusted. ``None`` and ``UNTRUSTED`` keep network access blocking promotion.
+            non-empty ``ALLOWLIST`` and permits promotion from trusted reads or, with no reads,
+            trusted call evidence when every other source is trusted. ``None`` and ``UNTRUSTED``
+            keep network access blocking promotion.
             This does not vouch for output, bypass file evidence, or change confidentiality.
             It applies independently of ``declarations``.
         also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
@@ -3034,6 +3111,7 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     body = build(session)
+    context_parameter, injected_context, call_signature = _context_parameter(body)
     # Validated here rather than at first use: a sentence that cannot render is a wiring
     # mistake in a kind, and finding it at attach costs a reviewer nothing.
     committed = _committed_guidance(promised, tool=name, awaits=_awaits(body))
@@ -3043,6 +3121,12 @@ def sandboxed_tool(
         # the event loop, as it does for other synchronous tools.
         @functools.wraps(body)
         def checked(*args: Any, **kwargs: Any) -> Any:
+            call_context = (
+                kwargs.pop(context_parameter, None)
+                if injected_context
+                else kwargs.get(context_parameter)
+            )
+            call_integrity = _call_integrity(call_context)
             # No `_SandboxToolCall` — there is nothing to reclaim — so the id is minted here.
             # One all the same: every `ToolCallEnded` names its call, and a whole class of tool
             # would otherwise be the one that does not.
@@ -3064,6 +3148,7 @@ def sandboxed_tool(
                     declarations=attached.additional_properties or {},
                     fed=recording.fed,
                     file_trust_can_promote=file_trust_can_promote,
+                    call_integrity=call_integrity,
                     contract=result_contract,
                     verdicts=declared_verdicts,
                 )
@@ -3092,6 +3177,7 @@ def sandboxed_tool(
                         records,
                     )
 
+        setattr(checked, "__signature__", call_signature)
         attached = decorate(checked)
         return [attached]
     if spec.work_dir is not None and not [
@@ -3114,6 +3200,12 @@ def sandboxed_tool(
     # here for the same reason — one would become what a model reads.
     @functools.wraps(body)
     async def reclaiming(*args: Any, **kwargs: Any) -> Any:
+        call_context = (
+            kwargs.pop(context_parameter, None)
+            if injected_context
+            else kwargs.get(context_parameter)
+        )
+        call_integrity = _call_integrity(call_context)
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
         # Unconditionally, not behind `router.observer`: the two registration points are
@@ -3145,6 +3237,7 @@ def sandboxed_tool(
                 declarations=attached.additional_properties or {},
                 fed=recording.fed,
                 file_trust_can_promote=file_trust_can_promote,
+                call_integrity=call_integrity,
                 contract=result_contract,
                 verdicts=declared_verdicts,
             )
@@ -3216,6 +3309,7 @@ def sandboxed_tool(
                     recording.closed = True
                     RECORDED_CALL.reset(recorded)
 
+    setattr(reclaiming, "__signature__", call_signature)
     attached = decorate(reclaiming)
     return [attached]
 

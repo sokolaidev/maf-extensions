@@ -1,0 +1,208 @@
+diff --git a/src/backends/hyperlight/common/Cargo.toml b/src/backends/hyperlight/common/Cargo.toml
+index bbf81df..474e423 100644
+--- a/src/backends/hyperlight/common/Cargo.toml
++++ b/src/backends/hyperlight/common/Cargo.toml
+@@ -22,6 +22,7 @@ windows = { workspace = true }
+ 
+ [features]
+ default = []
++maf-session-preview = ["hyperlight"]
+ hyperlight = [
+     "dep:hyperlight-unikraft",
+     "dep:ureq",
+diff --git a/src/backends/hyperlight/common/src/lib.rs b/src/backends/hyperlight/common/src/lib.rs
+index a3e97d1..fe36387 100644
+--- a/src/backends/hyperlight/common/src/lib.rs
++++ b/src/backends/hyperlight/common/src/lib.rs
+@@ -108,6 +108,9 @@ use hyperlight_unikraft::{
+     AllowList, AppSandbox, BlockList, Mount, SandboxBuilder, Snapshot, Yield,
+ };
+ 
++#[cfg(feature = "maf-session-preview")]
++pub mod session_preview;
++
+ // -- Availability probe -------------------------------------------------------
+ 
+ /// Whether KVM is usable by this process: `/dev/kvm` opens for reading and
+diff --git a/src/backends/hyperlight/common/src/session_preview.rs b/src/backends/hyperlight/common/src/session_preview.rs
+new file mode 100644
+index 0000000..e840468
+--- /dev/null
++++ b/src/backends/hyperlight/common/src/session_preview.rs
+@@ -0,0 +1,176 @@
++// Copyright (c) Microsoft Corporation.
++// Licensed under the MIT License.
++
++//! Temporary, opt-in session primitives for microsoft/mxc#1374.
++//! Closed networking and no mounts; publication durability belongs to the host.
++
++use super::{run_with_deadline, AppSandbox, RunError, SandboxBuilder};
++use std::{
++    fmt, fs,
++    path::Path,
++    sync::Arc,
++    time::{Duration, Instant},
++};
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum State {
++    Ready,
++    Uncommitted,
++    Prepared,
++    RecoveryRequired,
++    Closed,
++}
++
++#[derive(Debug)]
++pub enum Error {
++    InvalidState(State),
++    InvalidTimeout,
++    WrongCandidate,
++    GuestExit(i32),
++    TimedOut,
++    Native(String),
++    Checkpoint(String),
++}
++impl fmt::Display for Error {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{self:?}")
++    }
++}
++impl std::error::Error for Error {}
++
++/// An opaque confirmation token bound to one candidate on one live session.
++#[derive(Clone)]
++pub struct Candidate(Arc<()>);
++
++pub struct Session {
++    guest: Option<AppSandbox>,
++    state: State,
++    candidate: Option<Candidate>,
++}
++impl Session {
++    /// Restore an explicitly selected, trusted snapshot without mounts or networking.
++    pub fn restore(snapshot: &Path) -> Result<Self, Error> {
++        let guest = SandboxBuilder::from_snapshot_dir(snapshot)
++            .and_then(|builder| builder.boot())
++            .map_err(|e| Error::Native(e.to_string()))?;
++        Ok(Self {
++            guest: Some(guest),
++            state: State::Ready,
++            candidate: None,
++        })
++    }
++
++    pub fn state(&self) -> State {
++        self.state
++    }
++
++    /// Execute once; success is uncommitted until a candidate is published by the host.
++    pub fn execute(&mut self, code: &str, timeout: Duration) -> Result<(), Error> {
++        if self.state != State::Ready {
++            return Err(Error::InvalidState(self.state));
++        }
++        if timeout.is_zero() || Instant::now().checked_add(timeout).is_none() {
++            return Err(Error::InvalidTimeout);
++        }
++        self.state = State::RecoveryRequired;
++        let mut guest = self.guest.take().ok_or(Error::InvalidState(self.state))?;
++        let outcome = run_with_deadline(&mut guest, code, timeout);
++        let _ = guest.drain_output();
++        match outcome {
++            Ok(0) => {
++                self.guest = Some(guest);
++                self.state = State::Uncommitted;
++                Ok(())
++            }
++            Ok(code) => Err(Error::GuestExit(code)),
++            Err(RunError::TimedOut(_)) => Err(Error::TimedOut),
++            Err(RunError::Failed(message)) => Err(Error::Native(message)),
++        }
++    }
++
++    /// Export into a new caller-owned directory; failure retires the uncommitted guest.
++    pub fn prepare_checkpoint(&mut self, destination: &Path) -> Result<Candidate, Error> {
++        if self.state != State::Uncommitted {
++            return Err(Error::InvalidState(self.state));
++        }
++        self.state = State::RecoveryRequired;
++        let mut guest = self.guest.take().ok_or(Error::InvalidState(self.state))?;
++        fs::create_dir(destination).map_err(|e| Error::Checkpoint(e.to_string()))?;
++        guest
++            .snapshot_to(destination)
++            .map_err(|e| Error::Checkpoint(e.to_string()))?;
++        let candidate = Candidate(Arc::new(()));
++        self.candidate = Some(candidate.clone());
++        self.guest = Some(guest);
++        self.state = State::Prepared;
++        Ok(candidate)
++    }
++
++    /// Confirm the host's durable publication assertion; this does not certify its store.
++    pub fn confirm_commit(&mut self, candidate: &Candidate) -> Result<(), Error> {
++        if self.state != State::Prepared {
++            return Err(Error::InvalidState(self.state));
++        }
++        if !self
++            .candidate
++            .as_ref()
++            .is_some_and(|current| Arc::ptr_eq(&current.0, &candidate.0))
++        {
++            return Err(Error::WrongCandidate);
++        }
++        self.candidate = None;
++        self.state = State::Ready;
++        Ok(())
++    }
++
++    /// Retire native state without deleting caller-owned checkpoint files.
++    pub fn close(&mut self) {
++        self.guest = None;
++        self.candidate = None;
++        self.state = State::Closed;
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn commit_cannot_cross_session_or_reuse_a_token() {
++        let token = Candidate(Arc::new(()));
++        let foreign = Candidate(Arc::new(()));
++        let mut session = Session {
++            guest: None,
++            state: State::Prepared,
++            candidate: Some(token.clone()),
++        };
++        assert!(matches!(
++            session.confirm_commit(&foreign),
++            Err(Error::WrongCandidate)
++        ));
++        assert_eq!(session.state(), State::Prepared);
++        session.confirm_commit(&token).unwrap();
++        assert!(matches!(
++            session.confirm_commit(&token),
++            Err(Error::InvalidState(State::Ready))
++        ));
++    }
++
++    #[test]
++    fn uncommitted_and_closed_sessions_refuse_execution() {
++        let mut session = Session {
++            guest: None,
++            state: State::Uncommitted,
++            candidate: None,
++        };
++        assert!(matches!(
++            session.execute("pass", Duration::from_secs(1)),
++            Err(Error::InvalidState(State::Uncommitted))
++        ));
++        session.close();
++        assert!(matches!(
++            session.execute("pass", Duration::from_secs(1)),
++            Err(Error::InvalidState(State::Closed))
++        ));
++    }
++}

@@ -438,3 +438,112 @@ def test_description_and_schema_expose_only_model_xml(tmp_path: Path):
         tool, _ = attach(InProcessSandbox(), tmp_path, preserve_layout=preserve)
         assert sentence in tool.description
         assert list(tool.parameters()["properties"]) == ["xml"]
+
+
+@pytest.mark.parametrize("source,expected", [(_XML, "created"), ("<mxfile>", "refused")])
+@pytest.mark.parametrize("echo_sink", [False, True])
+def test_trusted_diagram_call_keeps_the_next_gated_write_available(
+    tmp_path: Path,
+    source: str,
+    expected: str,
+    echo_sink: bool,
+):
+    from agent_framework import FunctionInvocationContext, FunctionTool
+    from agent_framework.security import (
+        LabelTrackingFunctionMiddleware,
+        PolicyEnforcementFunctionMiddleware,
+    )
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        return LandedArtifact(name=artifact.name, display=artifact.content.decode("utf-8"))
+
+    tool, _ = attach(ConverterSandbox(), tmp_path, sink=OutputSink(deliver) if echo_sink else None)
+    tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+    policy = PolicyEnforcementFunctionMiddleware()
+    wrote = []
+
+    async def write():
+        wrote.append(True)
+        return "saved"
+
+    destination = FunctionTool(
+        name="file_access_write", func=write, additional_properties={"source_integrity": "trusted"}
+    )
+
+    async def process(function, arguments):
+        context = FunctionInvocationContext(function=function, arguments=arguments)
+
+        async def call_next():
+            context.result = await function.invoke(context=context)
+
+        async def enforce():
+            await policy.process(context, call_next)
+
+        await tracker.process(context, enforce)
+        return context
+
+    async def run():
+        context = await process(tool, {"xml": source})
+        assert verdict(context.result) == expected
+        assert context.metadata["result_label"].integrity.value == "trusted"
+        assert tracker.get_context_label().integrity.value == "trusted"
+        await process(destination, {})
+
+    asyncio.run(run())
+    assert wrote == [True]
+    assert policy.get_audit_log() == []
+
+
+@pytest.mark.parametrize("weak_source", ["argument", "conversation"])
+def test_untrusted_input_cannot_promote_an_echoing_sink(tmp_path: Path, weak_source: str):
+    from agent_framework import FunctionInvocationContext, FunctionTool
+    from agent_framework.security import (
+        ConfidentialityLabel,
+        ContentLabel,
+        IntegrityLabel,
+        LabelTrackingFunctionMiddleware,
+    )
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        return LandedArtifact(name=artifact.name, display=artifact.content.decode("utf-8"))
+
+    tool, _ = attach(ConverterSandbox(), tmp_path, sink=OutputSink(deliver))
+    tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+
+    async def process(function, arguments):
+        context = FunctionInvocationContext(function=function, arguments=arguments)
+
+        async def call_next():
+            context.result = await function.invoke(context=context)
+
+        await tracker.process(context, call_next)
+        return context
+
+    async def run():
+        source = _XML
+        if weak_source == "argument":
+            reference = tracker.get_variable_store().store(
+                _XML, ContentLabel(IntegrityLabel.UNTRUSTED, ConfidentialityLabel.PRIVATE)
+            )
+            source = f"[{reference}]"
+        else:
+            await process(
+                FunctionTool(
+                    name="external",
+                    func=lambda: "untrusted content",
+                    additional_properties={
+                        "source_integrity": "untrusted",
+                        "confidentiality": "private",
+                    },
+                ),
+                {},
+            )
+        context = await process(tool, {"xml": source})
+        assert (
+            context.result[-1].additional_properties["security_label"]["integrity"] == "untrusted"
+        )
+        assert context.metadata["result_label"].integrity.value == "untrusted"
+        if weak_source == "argument":
+            assert context.metadata["result_label"].confidentiality.value == "private"
+
+    asyncio.run(run())
