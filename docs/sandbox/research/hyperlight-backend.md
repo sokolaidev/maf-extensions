@@ -508,7 +508,7 @@ The Tests workflow exposes the same Linux run through its `hyperlight_https` dis
 
 ## Core/exec migration and native publication check, 2026-10-02
 
-The first implementation defines `ProgramRequirements`, `ProgramChannel`, the live `HostToolPolicy` and explicit initial-acquisition `SandboxBackendUnavailable`. CodeAct delegates automatic execution to the retained backend channel; Docker, ACAS and Docker Sandboxes declare the exec host-tool channel, and WSLC declares its program-only variant. Program budgets are independent of shared files. `HostToolRun.call` requires trusted publication before confirmed delivery accounting. The [migration guide](../program-channels.md) describes the implemented interface and its limits.
+The first implementation, [#1664](https://github.com/sokolaidev/maf-extensions/pull/1664), defines `ProgramRequirements`, `ProgramChannel`, the live `HostToolPolicy` and explicit initial-acquisition `SandboxBackendUnavailable`. CodeAct delegates automatic execution to the retained backend channel; Docker, ACAS and Docker Sandboxes declare the exec host-tool channel, and WSLC declares its program-only variant. Program budgets are independent of shared files. `HostToolRun.call` requires trusted publication before confirmed delivery accounting. The [migration guide](../program-channels.md) describes the implemented interface and its limits.
 
 A local Docker `python:3.13-slim` conformance run verified the portable profile, two fresh policy runs on one guest, shared API values/refusals, confirmed response-file publication and revoked completed authority. This is Docker channel evidence, not qualification of ACAS, WSLC or Docker Sandboxes infrastructure.
 

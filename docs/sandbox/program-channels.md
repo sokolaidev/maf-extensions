@@ -48,6 +48,6 @@ Hyperlight's production native channel is still pending under [#369](https://git
 
 | Area | Status | Tracking |
 |---|---|---|
-| Core admission, exec channels and confirmed publication | Implemented; native integration remains open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
+| Core admission, exec channels and confirmed publication | Implemented; native integration remains open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open); core/exec by [#1664](https://github.com/sokolaidev/maf-extensions/pull/1664) (merged) |
 | Hyperlight native framing and acceptance confirmation | Not implemented | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Backend-specific guest APIs | Deferred to a separate issue; not filed | untracked |
