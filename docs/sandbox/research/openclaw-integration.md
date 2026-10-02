@@ -1,6 +1,6 @@
 # OpenClaw integration research and first-delivery proposal
 
-> Research and initial design recorded on 2026-10-02, followed by adversarial review and a supervised Bicep stdio MCP prototype. The prototype implements the narrow first operation; it does not establish OpenClaw host compatibility or unattended lifecycle qualification. Evidence and remaining acceptance work are separated below.
+> Research and initial design recorded on 2026-10-02, followed by adversarial review, a supervised Bicep stdio MCP prototype and one-session OpenClaw Gateway qualification on 2026-10-03 using a deterministic provider. Multi-session ownership, model behavior and unattended recovery remain unqualified. Evidence and remaining acceptance work are separated below.
 
 The suite can add focused workload tools, enforced guest networking and reusable conformance scenarios to OpenClaw. Begin with a bounded validation operation through MCP or a thin tool plugin. A complete sandbox backend is a separate feasibility project because its interactive process and workspace contracts exceed the suite's current common execution interface.
 

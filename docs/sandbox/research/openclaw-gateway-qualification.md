@@ -1,5 +1,7 @@
 # OpenClaw Gateway qualification of the Bicep prototype
 
+> Supervised qualification recorded on 2026-10-03. One Gateway session passed host-path checks with a deterministic provider; multi-session ownership and unattended recovery remain design work. The sample README carries the operator contract, and the integration research links the remaining decisions.
+
 This records supervised execution on 2026-10-03 through the real OpenClaw Gateway and its embedded agent runtime. A deterministic local provider selected tools and captured the results sent back to the provider; it was not an LLM and establishes no evidence about model reasoning or prompt-injection resistance. The service used the published dependency pins in the [prototype](../../../samples/experimental/openclaw_bicep/README.md), launched with `uv run --script`. The broader [integration research](openclaw-integration.md) owns the design direction.
 
 ## Tested configuration
