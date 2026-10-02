@@ -77,8 +77,43 @@ The initial recovery execution passed; a second complete execution also passed a
 
 ### Integration consequence
 
-Rich Python continuity and modified-state restoration are feasible on the tested Windows host through the underlying library. They are not supported persistent-session behavior of the unchanged MXC runner. The next integration decision is whether to extend MXC's Hyperlight session surface or own a direct Unikraft helper in this suite. Extending MXC preserves the original adapter architecture; using the lower-level helper would be a deliberate change in integration boundary. Neither approach has been implemented as a production adapter.
+Rich Python continuity and modified-state restoration are feasible on the tested Windows host through the underlying library. They are not supported persistent-session behavior of the unchanged MXC runner. The maintainer selected extending MXC's Hyperlight session API on 2026-10-02. The production adapter will use that MXC surface; the lower-level helper remains an experiment. The owning design in [PR #1650](https://github.com/sokolaidev/maf-extensions/pull/1650) records the proposed responsibility boundary and checkpoint barrier. No production session API has been implemented.
 
 ## Remaining evidence
 
 Lost acknowledgments, atomic checkpoint commitment after every successful tool call, host file/artifact consistency, compatible second-machine recovery, fencing, resource limits, general owner-death cleanup and network enforcement remain unrun. Linux/KVM, host reboot and power-loss durability have not been tested. The open-file case covers an in-guest file, not a host mount or arbitrary sockets/threads. Refusal controls cover malformed metadata, missing blobs and a mismatched compatibility key; payload corruption and adversarial snapshot inputs need separate qualification. Guest stdout/stderr separation still needs a supported native output channel or upstream change before promising the existing result contract.
+## Upstream feature-request draft
+
+Proposed title: **Hyperlight: opt-in persistent sessions with checkpoint export and restore**
+
+The following proposal is prepared for MXC's feature-request template. It has not been posted. The pinned [contributor guide](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/CONTRIBUTING.md#before-you-start-file-an-issue) asks for an issue before implementation and a written design for larger changes. Searches of open and closed MXC issues for Hyperlight snapshot/persistence did not identify an equivalent proposal on 2026-10-02. The runner at current main `298bb3909a5130cc6caed575494290fbcacf0db5` still restores its rewind baseline before subsequent executions.
+
+### Description of the new feature / enhancement
+
+Add an opt-in experimental Hyperlight session API that preserves interpreter state across executions and can export/restore a checkpoint of modified state. Keep existing one-shot requests fresh by default.
+
+Agent code-execution hosts need notebook-style Python continuity and recovery after a host process restarts. MXC's current Hyperlight runner reuses a guest but restores its baseline between executions, so retaining a runner does not retain Python variables. Its prepared startup snapshot is a different operation from capturing modified session state.
+
+We have a reproducible Windows/WHP feasibility probe using the agent rootfs from MXC v0.9.0 and pinned hyperlight-unikraft 0.14.1. A variable, pandas dataframe, NumPy array, lambda and open in-guest file survived multiple executions and disk checkpoint restoration in a new process after the original helper was killed. Changes after capture did not appear in recovered state. Malformed metadata, missing blobs and a changed compatibility key were refused. [Probe, dependency pins and evidence](https://github.com/sokolaidev/maf-extensions/blob/2797c74f8d0503d22e9b3a76c1457aa5723a05e1/scripts/experiments/mxc_hyperlight_probe.md#native-state-and-restart-experiment).
+
+These results use the underlying library directly; they do not establish a supported MXC session API, Linux qualification, host reboot/power-loss durability, remote recovery or arbitrary thread/socket recovery. We intend to contribute an implementation after agreeing the API boundary and test plan.
+
+### Proposed technical implementation details
+
+Start with an explicit Hyperlight native session abstraction. Bind the runtime/artifact identity and admitted policy at creation; reject incompatible changes instead of replacing the session with empty state. Preserve the existing one-shot runner's behavior and timeout handling.
+
+Expose the following semantics, with method names and SDK placement to agree:
+
+- Create or restore a session with an explicit runtime and currently admitted policy.
+- Execute without baseline rewind, reporting execution completion separately from durable application success.
+- Park the session and export an immutable checkpoint candidate with its runtime/artifact and compatibility metadata.
+- Keep execution blocked while the candidate is uncommitted; let the trusted host confirm publication for that candidate/generation before resuming. The confirmation is the host's assertion about its store, not MXC independently certifying storage durability.
+- Close or explicitly recover after execution, timeout, cancellation or capture failure; never silently reset a persistent session or replay its program.
+
+MXC would own native session lifetime, interruption, checkpoint capture and compatible restore. Applications would own their durable store, conversation identity, atomic checkpoint/result publication, idempotent result delivery and distributed fencing. No cloud storage dependency is needed in MXC. Host mounts and external side effects require separate consistency rules; a VM snapshot alone cannot roll them back.
+
+The first increment can qualify these native primitives without mounts and with networking closed. Then expose them through MXC's experimental engine/SDK contract and supervised out-of-process transport. Any JSON additions should use permanent locations in the mutable development schema, keep runtime experimental authorization, and include matching TypeScript SDK/contract tests. Existing stable schemas and one-shot requests must remain compatible. Do not assume existing generic provision/exec lifecycle operations already provide Hyperlight session semantics.
+
+Acceptance should include a fresh-state control, same-session variables/dataframes, restore after helper death, immutable capture boundaries, rejection of malformed/incomplete/incompatible checkpoints, failed capture/commit barriers, policy-change refusal, cancellation and disposal on Windows/WHP and Linux/KVM. An initial backend-level patch should exercise these paths before changing the wider SDK surface.
+
+Output fidelity needs a related transport work item: with the released executor, guest stdout and stderr markers both arrive on process stdout. Control messages must remain independent of guest text, and stream separation needs its own demonstrated implementation. Conditional allowlisting remains separately qualified; this proposal does not enable networking.
