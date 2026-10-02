@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 800" width="1180" height="800" role="img" aria-labelledby="codeact-title codeact-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="codeact-title">CodeAct: result facts and program text</title>
-  <desc id="codeact-desc">CodeAct is a source tool whose framework source_integrity is trusted in both output modes. Completion, the exit verdict and fixed host explanations have effective label trusted/C. Program text and variable diagnostics have effective label I/C. The workload claim remains untrusted. Withholding mode omits guest stdout and stderr and adds trusted/C route guidance. C includes host classification and any stricter argument confidentiality. FIDES shows text or a hidden reference to the model. The next model-called tool is checked using conversation and argument labels against its integrity and confidentiality declarations. Network calls, guest host-tool calls and artifact delivery are separate actions inside execute_code. I is trusted after at least one accepted file read when every read is trusted and other source channels are absent or trusted; otherwise I is untrusted.</desc>
+  <desc id="codeact-desc">CodeAct is a source tool whose framework source_integrity is trusted in both output modes. Completion, the exit verdict and fixed host explanations have effective label trusted/C. Program text and variable diagnostics have effective label I/C. The workload claim remains untrusted. Withholding mode omits guest stdout and stderr and adds trusted/C route guidance. C includes host classification and any stricter argument confidentiality. FIDES shows text or a hidden reference to the model. The next model-called tool is checked using conversation and argument labels against its integrity and confidentiality declarations. Network calls, guest host-tool calls and artifact delivery are separate actions inside execute_code. I is trusted when at least one file was read and every accepted read is trusted, or when no files were read and the framework establishes trusted conversation and argument labels. Both paths require other source channels to be absent or trusted; otherwise I is untrusted.</desc>
   <defs>
     <marker id="codeact-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
@@ -8,7 +8,7 @@
   </defs>
   <rect width="1180" height="800" rx="16" fill="#ffffff"/>
   <text x="32" y="43" font-size="25" font-weight="600" fill="#243040">CodeAct: result facts and program text</text>
-  <text x="32" y="76" font-size="17" fill="#526072">Both modes expose completion and any exit verdict. Workload labels depend on file evidence and other source channels.</text>
+  <text x="32" y="76" font-size="17" fill="#526072">Both modes expose completion and any exit verdict. Workload labels depend on file or call evidence and other source channels.</text>
   <rect x="32" y="112" width="340" height="300" rx="12" fill="#f4f5f7" stroke="#7d8694" stroke-width="1.5"/>
   <text x="52" y="148" font-size="22" font-weight="600" fill="#243040">Source tool</text>
   <text x="52" y="180" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">execute_code</text>
@@ -57,6 +57,6 @@
   <text x="32" y="679" font-size="16" fill="#526072">C = call confidentiality: the host classification plus any stricter argument confidentiality.</text>
   <text x="32" y="706" font-size="16" fill="#526072">Hiding needs auto-hide and a trusted conversation. It does not apply to inspect_variable.</text>
   <text x="32" y="733" font-size="16" fill="#526072">Network calls, guest host-tool calls and artifact delivery happen separately during execute_code.</text>
-  <text x="32" y="759" font-size="15" fill="#526072">I = trusted after at least one accepted file read, if every read is trusted and other sources are absent or trusted.</text>
-  <text x="32" y="784" font-size="15" fill="#526072">Otherwise I = untrusted. Configured network access or untrusted/unknown host-tool sources block promotion.</text>
+  <text x="32" y="759" font-size="15" fill="#526072">I = trusted for all-trusted reads, or no reads with trusted conversation and arguments.</text>
+  <text x="32" y="784" font-size="15" fill="#526072">Both paths require other sources absent or trusted. Otherwise I = untrusted.</text>
 </svg>
