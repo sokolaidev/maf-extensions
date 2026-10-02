@@ -40,6 +40,14 @@ uv run pytest -q tests/test_mxc_host_store.py
 
 The live probe creates a new private store, kills only its own host-call processes at named publication boundaries, and restarts with identical call identities. The fixed programs assert Python counter values so replay would fail. It verifies that result redelivery creates no native checkpoint candidate and that the saved chart remains byte-identical. Keep database, snapshots, diagnostics and generated programs outside Git: they contain session state and may contain host paths.
 
+## Hosted Linux runner
+
+The opt-in `mxc_recovery` input on the Tests workflow builds the locked helper against the pinned MXC commit, requires usable KVM, downloads and verifies the fixed agent rootfs, then runs both native recovery and host publication probes. Missing KVM or any failed probe fails the job. The run retains reports, hashes and diagnostics for 14 days; checkpoint blobs and the session database are excluded.
+
+```bash
+gh workflow run tests.yml --repo sokolaidev/maf-extensions --ref spike/1649-mxc-durable-publication -f mxc_recovery=true
+```
+
 ## Windows evidence
 
 The [retained Windows result](windows-host-result.json) records the helper, source and store hashes. All real host-process crash cases passed: before commit, after commit and before acknowledgment. The latest committed Python counter survived each boundary, committed retries did not execute the helper, and the original PNG result remained identical when retried after later calls. The initial 4,096-byte output truncation was refused rather than committed as an artifact.
