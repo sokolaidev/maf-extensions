@@ -105,6 +105,26 @@ ACAS and Docker support this transport. WSLC lacks the required output transfer.
 
 Each `HostToolRun` has a stable `run_id` for attribution. The supervisor cleans its transport directory; the kind collects artifacts before the wrapper cleans the call directory. [Tool-call lifetime](tool-call.md) defines process cleanup and its limits.
 
+### Backend-owned channels and automatic selection
+
+The channel contract assigns execution and transport mechanics to the backend. The kind supplies program intent, a named execution profile and the current run's policy entry point. Every host-tool call passes through `HostToolRun.call`; native registration never exposes the underlying host callable directly. Protocol declarations remain standard-library-only, and kinds do not import backends.
+
+The router selects a compatible backend and channel in host preference order, with exec-first as the default when no preference is supplied. Preference applies only within the host's permitted candidate set; it does not widen fixed routing, denied capabilities, isolation, egress or identity policy. A named execution profile defines the Python environment and shared host-tool interface a workload requires. Backends declare the profiles they satisfy. File capabilities and budgets are independent requirements, so source execution does not acquire fictitious file requirements merely because another channel uses files.
+
+Both exec and native channels expose the same `maf_host_tools` guest API, including argument, result and refusal behavior. The backend provides that interface through its own mechanism; a native implementation does not require a shim file. Backend-specific guest APIs are deferred to a separate follow-up issue. The profile's guarantees drive CodeAct instructions, so automatic selection does not promise arbitrary CPython imports or facilities.
+
+Channel limits are strict admission requirements. Requests, responses, refusals and framing must fit the channel's physical ceilings; smaller effective limits are not silently substituted. Exec channels retain their real file-transport overhead. Native callback traffic has its own budgets, separate from workload file transfers. A channel unable to support the requested profile or limits is incompatible and is skipped during selection.
+
+Only an explicitly classified availability failure during initial acquisition permits trying the next compatible option. Policy refusals, invalid configuration and failures with uncertain execution state stop the call. No automatic replay occurs after workload execution starts. Once acquired, the backend and channel stay fixed for that sandbox's lifetime; an established sandbox follows its recovery policy rather than silently moving accumulated state elsewhere.
+
+A callback is bound to one live run, including its sandbox key, caller authority and observation context. Completion, cancellation and timeout invalidate that binding. Warm reuse and snapshot preparation preserve compatible registration structure, including the sealed tool-name set where registration precedes execution, without retaining a previous run's authority. Callback waits are bounded by both their own timeout and the remaining program deadline.
+
+A timed-out host-tool call returns a bounded, recoverable refusal only when the host call has stopped cleanly and the channel can resume safely. Otherwise the run ends and the sandbox is retired. A timeout does not establish that no external effect occurred, and neither outcome authorizes an automatic host-tool retry.
+
+Host execution and response delivery are recorded separately. Response budget is reserved before delivery and delivery accounting commits only after the transport confirms acceptance or publication into the channel. This confirmation does not prove that guest code consumed the response. Failed or uncertain delivery is distinguishable from success and never triggers an automatic retry.
+
+Migration is immediate: a backend declaring `HOST_TOOLS` must implement the channel contract or attachment fails. There is no legacy compatibility adapter. The first implementation migrates all repository-owned host-tool backends and CodeAct together, with a breaking release and migration guidance. The [research and delivery plan](research/hyperlight-backend.md#host-tool-channel-design-2026-10-02) records the source evidence, prototype obligations and two implementation PRs. The status table below distinguishes this target contract from the shipped exec transport.
+
 ## Identity — whose authority sandbox work carries
 
 Control-plane credentials, host-tool authority and guest-attached authority are separate mechanisms.
@@ -225,6 +245,8 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | File-store output sink and read tools | Implemented | [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged); [#1457](https://github.com/sokolaidev/maf-extensions/issues/1457) (closed) by [#1468](https://github.com/sokolaidev/maf-extensions/pull/1468) (merged) |
 | Atomic batch delivery | Unimplemented | untracked |
 | Host-tool registry, declarations and transport | Implemented | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (closed); [#410](https://github.com/sokolaidev/maf-extensions/pull/410) (merged); [#417](https://github.com/sokolaidev/maf-extensions/issues/417) (closed) |
+| Backend-owned host-tool channels, execution profiles, automatic selection and confirmed delivery | Decided; not implemented; native conformance and exact interface remain pending | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
+| Backend-specific guest host-tool APIs | Deferred to a separate issue; not filed | untracked |
 | Host-tool identity admission and per-run minting | Implemented | [#396](https://github.com/sokolaidev/maf-extensions/issues/396) (closed); [#568](https://github.com/sokolaidev/maf-extensions/issues/568) (closed); [#446](https://github.com/sokolaidev/maf-extensions/issues/446) (closed); [#593](https://github.com/sokolaidev/maf-extensions/pull/593) (merged) |
 | Core attached-authority admission | Implemented; Docker and WSLC support bounded egress headers | [#1168](https://github.com/sokolaidev/maf-extensions/issues/1168) (closed); [#1192](https://github.com/sokolaidev/maf-extensions/pull/1192) (merged); [#567](https://github.com/sokolaidev/maf-extensions/issues/567) (closed); ACAS's declaration in [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
 | ACAS group-configured identity | Supported outside the core attached-authority contract; host description and acquisition scope checks implemented | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |

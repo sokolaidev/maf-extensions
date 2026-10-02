@@ -2,6 +2,8 @@
 
 > Consolidated research record, 2026-08-16 through 2026-09-23. It combines the Hyperlight backend design, source exploration, filesystem prerequisite and cleanup audit, Azure Container Apps feasibility audit and live ACA probe, and the AKS upstream audit and measurements. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
 
+> The [2026-10-02 host-tool channel proposal](#host-tool-channel-design-2026-10-02) adds the source audit, agreed architectural choices and remaining prototype questions for #369. Its decided target contract lives in [Host responsibilities](../hosts.md#backend-owned-channels-and-automatic-selection); the channel interface and native implementation have not shipped.
+
 ## Decision and scope
 
 `maf-sandbox-hyperlight` is a runtime-shaped `SandboxBackend` over `hyperlight-sandbox` directly. It is not an integration of `agent-framework-hyperlight`: that package's provider and `execute_code` tool are the layers this suite replaces, while the Hyperlight SDK and Wasm guest are the backend beneath the suite's protocol.
@@ -62,6 +64,101 @@ The guest's `call_tool(name, **kwargs)` is a synchronous FFI callback. Registrat
 The FFI marshals nested dictionaries, lists, strings, numbers, booleans and null. Positional arguments are rejected. Unsupported return types fall back to string conversion, which is lossy. Host exceptions become catchable guest `RuntimeError` values while the sandbox remains healthy; unregistered names use the same wrapper. Duplicate registration last-wins in the measured SDK, so the adapter must enforce the suite's own sealed-name policy before registration.
 
 The native channel supplies only name lookup. It has no call cap, response ceiling, argument policy, integrity label, identity policy or per-call approval. Those gates belong to `HostToolRun` and the core protocol. Native host tools are therefore a separate follow-up under [#369](https://github.com/sokolaidev/maf-extensions/issues/369), with the measured 16,376-byte boundary and approximately 192-byte framing as acceptance inputs.
+
+## Host-tool channel design, 2026-10-02
+
+This proposal records the decisions for [#369](https://github.com/sokolaidev/maf-extensions/issues/369), following a source and issue-state audit on 2026-10-01 and a design discussion on 2026-10-02. It proposes a backend-owned channel with automatic selection, not merely a new native callback on the existing runtime method. The agreed target behavior is in [Host responsibilities](../hosts.md#backend-owned-channels-and-automatic-selection). Exact API signatures and the first execution profile remain subject to a bounded prototype on the pinned Hyperlight stack.
+
+### Evidence and remaining gap
+
+The audit used main at [`9240d7283bd8215bb3b253c3e49d518ba1ce4cbc`](https://github.com/sokolaidev/maf-extensions/commit/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc). It read source and GitHub state; it did not execute tests or acquire a Hyperlight guest. At that observation, #369 remained open and [#425](https://github.com/sokolaidev/maf-extensions/issues/425) was closed: [#1199](https://github.com/sokolaidev/maf-extensions/pull/1199) had delivered CodeAct's explicit runtime mode. Native host tools therefore needed integration with an existing runtime path, independently of the delivered initial Hyperlight runtime and its platform work.
+
+| Audited surface | Finding | Design consequence |
+| --- | --- | --- |
+| Core [`_router.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox/src/maf_sandbox/_router.py), `fold_host_tool_call_transfer_limits` | Every spec carrying host tools receives exec/file transport overhead. | Admission must use the selected channel's resources and ceilings while preserving separate workload file limits. |
+| Core [`_protocol.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox/src/maf_sandbox/_protocol.py), `BackendDeclarations` and `Capability.HOST_TOOLS` | The declarations object already exists; `HOST_TOOLS` has no corresponding channel operation. | Extend the contract; do not repeat the completed declarations consolidation. |
+| CodeAct [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py), `_codeact_spec` and `host_tool_calls_over_exec` | Runtime mode explicitly refuses nonempty registries. Exec mode constructs the shim and layout, selects the interpreter and drives the transport. | Move transport composition into backends and connect the existing runtime consumer through the new contract. |
+| Hyperlight [`_backend.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox-hyperlight/src/maf_sandbox_hyperlight/_backend.py) and [`_worker.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox-hyperlight/src/maf_sandbox_hyperlight/_worker.py) | Acquisition rejects host tools. Initialization warms the guest and takes a snapshot without registering tool callbacks. | Registration compatibility and baseline preparation must be designed before native host tools can be declared. |
+| Hyperlight [`_process.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox-hyperlight/src/maf_sandbox_hyperlight/_process.py), `Worker.request` | The parent sends one request and reads one final response while the native worker executes. | Host-tool callbacks require a bounded exchange in both directions while the program is active. |
+| Core [`_host_tools.py`](https://github.com/sokolaidev/maf-extensions/blob/9240d7283bd8215bb3b253c3e49d518ba1ce4cbc/packages/maf-sandbox/src/maf_sandbox/_host_tools.py), `HostToolRun.call` | Policy, serialization and byte accounting are centralized, but success is recorded before the transport sends the result. | Preserve this policy entry point and add transport confirmation to delivery accounting; checking native size only after return is too late. |
+
+The audited Hyperlight package pins the SDK, Wasm backend and Python guest to 0.7.0. The 16,376-byte buffer and approximately 192-byte framing above are historical measurements from the matched 0.4.0 exploration. They are inputs to remeasure, not constants to copy into the new declaration. No current native callback capacity or cancellation result is established by this proposal.
+
+### Decisions and alternatives
+
+| Decision | Chosen direction and reason | Alternative not selected |
+| --- | --- | --- |
+| Transport ownership | Shape C: the backend owns transport resources, execution and cleanup; core retains policy through `HostToolRun.call`. This represents both file transport and native callbacks. | Transport flags or a transport axis driven by the kind leave CodeAct composing execution-specific mechanics. |
+| Execution selection | The router automatically selects a compatible backend and channel for the workload's requirements. | Requiring the host to select CodeAct's exec/runtime variant for every attachment. This changes the earlier explicit-selection recommendation; that mode's shipped existence remains a foundation. |
+| Preference | The host orders eligible candidates; exec-first is the default without a preference. | A universal runtime-first choice or a fixed preference the host cannot override. |
+| Acquisition fallback | Try the next compatible option only for a classified availability failure during initial acquisition, before workload execution. | Stop on every availability failure, or replay after execution starts or its start becomes uncertain. Policy/configuration failures stop the call. |
+| Guest API | Preserve `maf_host_tools` across transports, including arguments, results and refusals. | Backend-specific guest APIs are deferred to a separate follow-up issue, not rejected permanently. No such issue has been filed by this record. |
+| Limits | Strict admission, including framing and refusal envelopes; incompatible channels are skipped without clamping. | Negotiating smaller effective limits after selecting a channel. |
+| Runtime compatibility | Named execution profiles, starting with a narrowly defined portable profile whose guarantees need validation. | Treating all Python runtimes as interchangeable or requiring one universal environment for every workload. |
+| Selection lifetime | Pin backend and channel for the sandbox's lifetime. | Per-call reselection that silently discards or moves guest state. |
+| Callback timeout | Return a recoverable refusal only after the host call stops cleanly and the channel can resume; otherwise terminate the run and retire the sandbox. | Always terminating on timeout, or resuming while a callback remains unsafe. |
+| Delivery accounting | Reserve budget before transmission and commit delivery only on transport confirmation; record host execution separately. | Counting a serialized response as delivered before the transport accepts it. |
+| Migration | Require the new contract immediately for backends declaring `HOST_TOOLS`, with a breaking release and migration guidance. | A legacy exec compatibility adapter. |
+| File requirements | Keep file capabilities and budgets independent of execution profiles. | Multiplying profiles for no-files, output-only and writable-input combinations. |
+| Delivery plan | Two implementation PRs, informed by a native prototype before finalizing the first. | One PR containing the entire core, exec and native implementation. |
+
+### Proposed contract structure
+
+The following responsibilities describe the proposed interface, not public type names or a settled signature. Protocol-facing data and structural interfaces must remain standard-library-only. A kind must not import a backend or select native SDK functions itself.
+
+| Responsibility | Information or operation the contract must carry |
+| --- | --- |
+| Workload requirements | Named execution profile, program intent, host-tool surface, independent file requirements and the existing security policy. |
+| Backend declaration | Supported profiles and channel contracts, transport-owned resources, request/response/refusal ceilings and framing rules. Declaring `HOST_TOOLS` obligates a working channel for the advertised contracts. |
+| Selection | Host preference over permitted candidates, complete compatibility checks, an immutable selected backend/channel for the acquired sandbox, and explicit availability failure classification. |
+| Program execution | Source submission, selected profile, the live run's policy entry point and deadline, with backend-owned interpreter, shim, layout and supervision where needed. |
+| Results | Guest stdout/stderr, execution outcome, trusted transport diagnostics kept distinct from guest text, and host execution/delivery observations. Preserve queue-versus-program timeout distinctions. |
+| Lifecycle | Registration and snapshot compatibility, per-run binding and invalidation, bounded cancellation, output collection before cleanup, and retirement when safety cannot be established. |
+
+Selection must check a complete candidate contract rather than replacing `EXEC` with `RUN_CODE` in one flat capability set. The backend's private transport prerequisites do not become universal workload requirements. Host-denied operations remain denied; preference and fallback cannot widen the configured routing boundary. How these requirements are represented alongside the current `SandboxSpec`, `Selection.FIXED` and `Selection.PER_SPEC` APIs remains an interface question for PR 1.
+
+CodeAct instructions must describe the requested profile's actual guarantees. The profile needs a defined Python language/version policy, guaranteed imports and facilities, source/output behavior, and the shared host-tool API. File placement and access still require their own capabilities. An arbitrary exec image cannot claim portable compatibility merely because `python3` exists, and a `RUN_CODE` declaration alone does not establish Python support. Profile naming, versioning and the first supported environment need prototype evidence before they become API.
+
+### Native callback and delivery lifecycle
+
+The parent retains the registry, host callables and caller authority. The worker registers transport trampolines compatible with the sealed tool-name set before warming and snapshotting where the native SDK requires that ordering. Registration establishes a route, not authority to execute a host tool outside a live run. The registration shape itself must be verified on the pinned SDK.
+
+For each program, the parent creates a fresh `HostToolRun` in the caller's context and binds the worker channel to that run. A callback message carries only bounded, validated protocol data. The parent resolves it through `HostToolRun.call` on the host event loop, preserving declaration and argument checks, identity/approval policy, caps, sanitized refusals and observation. No host callable or credential is serialized into the guest or worker registration.
+
+The synchronous native callback must wait with a deadline while the parent services the request. The implementation needs correlation and run-generation checks so stale, duplicated or delayed worker messages cannot spend a later run's authority or count delivery twice. Completion, timeout and cancellation must invalidate the binding before reuse. This is a proposed mechanism to enforce the agreed per-run boundary; the wire schema and correlation types are not settled.
+
+Both host-tool and remaining program deadlines constrain the callback. Cancellation must be observed by the host call, not merely by the waiting worker. Cancelling an await on a thread does not prove its callable stopped. If bounded cleanup cannot establish that the host call ended and the channel is healthy, end the run and retire the sandbox; record any unresolved host operation rather than implying worker termination undid its effects.
+
+Response handling needs two phases inside the core policy path: validate/serialize and reserve the bounded response, then commit delivery when the transport confirms acceptance or publication. Exec publication and native acceptance need explicit, testable confirmation points. A parent-to-worker pipe write alone does not establish that native marshalling accepted the response. Strict JSON, escaping, framing and refusal envelopes must fit every boundary before transmission. The prototype must determine whether the pinned SDK exposes sufficient confirmation or requires a revised bridge.
+
+Failure after host execution must not be reported as an unexecuted tool. An uncertain handoff must not be counted as confirmed delivery or automatically retried. The accounting design must settle reservation release, uncertainty and observer ordering without enabling a failed or duplicated confirmation to free budget incorrectly. These details change `HostToolRun.call` internally while preserving it as the sole policy entry point; a second dispatcher bypassing it is not an implementation option.
+
+### Prototype and acceptance
+
+Before finalizing the first PR, run a bounded prototype against the exact supported Hyperlight dependency trio. Record versions, platform, source revision, encoded sizes and observed failure outcomes. Keep synthetic callbacks separate from host credentials and external side effects. Historical measurements, mock callbacks and ordinary `RUN_CODE` tests do not establish native host-tool conformance.
+
+| Check | Required evidence |
+| --- | --- |
+| Shared guest API | The same program uses `maf_host_tools` on exec and native channels; arguments, JSON results and refusals agree. |
+| Profile guarantees | Verify the initial portable Python facilities and imports; unsupported images/profiles refuse before workload execution. |
+| Native envelopes | Measure request, response and refusal boundaries, including Unicode/escaping and actual framing; oversized values never reach an unsafe native buffer. |
+| Event-loop bridge | Service callbacks while the native run blocks, preserve caller/observation context, and reject stale or invalid worker messages. |
+| Deadlines and cancellation | Distinguish queued work, program expiry and callback timeout; prove recoverable refusal only after clean host-call termination, and retirement otherwise. |
+| Registration and reuse | Verify pre-warm registration and snapshots, reject incompatible tool-name sets, and prove no authority survives from one run into the next. |
+| Delivery | Demonstrate the confirmation point; inject failure before/after host execution and during handoff, with truthful ledgers and observations and no automatic retry. |
+
+The implementation suites must also cover host preference, both routing modes, initial availability fallback, policy/configuration refusals, strict budgets, independent file limits, sandbox-lifetime pinning, monitored wrappers, output collection and cleanup ordering. Both channel shapes must exercise the same validation, identity/approval and cap policy. Existing exec behavior needs regression coverage; Hyperlight may declare `HOST_TOOLS` only after native conformance passes on the pinned stack for each claimed family.
+
+### Two-PR implementation and follow-up
+
+1. **Core and exec migration:** settle the contract with the prototype results; add profiles, automatic selection, host preference and classified initial-acquisition fallback; make admission transport-specific; implement confirmed delivery accounting; migrate CodeAct and every repository-owned backend already declaring host tools. Missing channel implementations refuse attachment. Include breaking-change migration guidance, wrapper/conformance changes and dependency bounds needed by each adapting package. The native prototype informs this PR but does not itself enable Hyperlight's capability.
+2. **Hyperlight integration:** implement the bounded worker callback protocol, registration/snapshot compatibility, per-run authority, shared guest API, cleanup and native delivery confirmation. Connect runtime CodeAct and retain real-guest conformance evidence before declaring `HOST_TOOLS`.
+
+These are two implementation PRs, not promises of two release events. Release order must follow the repository's core/dependent publishing rules. Neither PR has a number yet. #369 remains open until both implementations and required verification are complete; a core-only change must not close it or mark native support delivered.
+
+Backend-specific guest APIs belong in a separate future issue. That follow-up should examine an explicit host-selected opt-in, truthful instructions and profile compatibility without weakening the shared API default. It is deferred and unfiled here, not an additional acceptance requirement for #369. Guest-initiated HTTP callbacks and migration of live sandbox state are outside this design.
+
+Recording this proposal adds no implementation, live-test result, profile guarantee or production acceptance evidence. The signature, profile guarantees, envelope ceilings, delivery confirmation and cancellation behavior listed above remain the prototype's open questions.
 
 ## Filesystem findings
 
