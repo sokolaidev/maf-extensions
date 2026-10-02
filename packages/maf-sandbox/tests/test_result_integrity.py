@@ -673,3 +673,26 @@ def test_concurrent_calls_keep_their_own_argument_evidence():
         return await asyncio.gather(call("own argument"), call(f"[{reference}]"))
 
     assert asyncio.run(run()) == ["trusted", "untrusted"]
+
+
+@pytest.mark.parametrize("annotation", ["optional_module.Result", "("])
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_unresolvable_return_annotations_keep_framework_attachment_fallback(
+    annotation, synchronous
+):
+    from types import SimpleNamespace
+
+    from agent_framework import FunctionTool
+
+    namespace = {"optional_module": SimpleNamespace()}
+    prefix = "" if synchronous else "async "
+    exec(f"{prefix}def probe(value: str):\n    return value", namespace)
+    body = namespace["probe"]
+    body.__annotations__["return"] = annotation
+    bare = FunctionTool(name="probe", func=body)
+    wrapped = _attach(lambda session: body, source="untrusted")
+    wrapped.additional_properties["confidentiality"] = "private"
+    assert wrapped.parameters() == bare.parameters()
+    result = asyncio.run(wrapped.invoke(arguments={"value": "report"}))
+    assert result[0].text == "report"
+    assert result[0].additional_properties["security_label"]["integrity"] == "untrusted"

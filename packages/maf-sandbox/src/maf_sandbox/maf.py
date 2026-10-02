@@ -2459,7 +2459,8 @@ def _context_parameter(body: Callable[..., Any]) -> tuple[str, bool, inspect.Sig
     signature = inspect.signature(body)
     try:
         annotations = get_type_hints(body, include_extras=True)
-    except (NameError, TypeError):
+    except Exception:  # noqa: BLE001
+        # Match the framework's best-effort annotation resolution.
         annotations = {}
     for parameter in signature.parameters.values():
         annotation = annotations.get(parameter.name, parameter.annotation)
