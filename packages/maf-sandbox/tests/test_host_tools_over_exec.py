@@ -366,6 +366,51 @@ class _ActiveGuest(_ConcurrentGuest):
 
 
 class TestRunActivity:
+    @pytest.mark.parametrize("phase", ["_stop_the_program", "_reclaim_the_transports_own"])
+    def test_loss_during_cleanup_prevents_success(self, monkeypatch, phase):
+        guest = _ActiveGuest([])
+        original = getattr(host_tools_over_exec, phase)
+
+        async def lose_during_cleanup(*args, **kwargs):
+            await asyncio.sleep(0)
+            guest.lost = True
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(host_tools_over_exec, phase, lose_during_cleanup)
+        with pytest.raises(SandboxRunActivityLost):
+            _run(guest, HostToolRun(_registry()))
+        assert guest.reclaimed and guest.released
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            host_tools_over_exec._TheRunsOwnTimeout("expired"),
+            asyncio.CancelledError(),
+            RuntimeError("backend failed"),
+        ],
+        ids=["timeout", "cancellation", "backend-error"],
+    )
+    def test_cleanup_loss_preserves_existing_failure(self, monkeypatch, error):
+        guest = _ActiveGuest([])
+        original = host_tools_over_exec._reclaim_the_transports_own
+
+        async def fail_supervision(*args, **kwargs):
+            raise error
+
+        async def lose_during_cleanup(*args, **kwargs):
+            await asyncio.sleep(0)
+            guest.lost = True
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(host_tools_over_exec, "_supervise", fail_supervision)
+        monkeypatch.setattr(
+            host_tools_over_exec, "_reclaim_the_transports_own", lose_during_cleanup
+        )
+        with pytest.raises(type(error)) as raised:
+            _run(guest, HostToolRun(_registry()))
+        assert raised.value is error
+        assert guest.reclaimed and guest.released
+
     def test_lifetime_includes_launcher_and_cleanup(self):
         guest = _ActiveGuest([("add", {"left": 2, "right": 3})])
         assert _run(guest, HostToolRun(_registry())).exit_code == 0

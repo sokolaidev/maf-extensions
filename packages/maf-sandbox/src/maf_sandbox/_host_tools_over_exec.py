@@ -942,8 +942,6 @@ async def host_tool_calls_over_exec(
                 launcher=launcher,
                 output_limit=output_limit,
             )
-            _check_activity(activity)
-            return result
         except _TheRunsOwnTimeout:
             # This run's own bound, which `_supervise` has already stopped the program for and
             # reported. Deliberately not the public type: a backend raising one of those is a
@@ -971,6 +969,8 @@ async def host_tool_calls_over_exec(
                 await _reclaim_the_transports_own(
                     sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE
                 )
+        _check_activity(activity)
+        return result
 
 
 @dataclass
