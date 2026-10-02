@@ -153,6 +153,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-bubblewrap": {
+      "package-name": "maf-sandbox-bubblewrap",
+      "exclude-paths": ["packages/maf-sandbox-bubblewrap/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-bubblewrap')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-wslc": {
       "package-name": "maf-sandbox-wslc",
       "exclude-paths": ["packages/maf-sandbox-wslc/tests"],

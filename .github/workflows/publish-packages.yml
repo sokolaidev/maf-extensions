@@ -21,6 +21,7 @@ on:
       - "maf-sandbox-v*"
       - "maf-sandbox-acas-v*"
       - "maf-sandbox-bicep-v*"
+      - "maf-sandbox-bubblewrap-v*"
       - "maf-sandbox-codeact-v*"
       - "maf-sandbox-deepagents-v*"
       - "maf-sandbox-docker-v*"
@@ -42,6 +43,7 @@ on:
           - maf-sandbox
           - maf-sandbox-acas
           - maf-sandbox-bicep
+          - maf-sandbox-bubblewrap
           - maf-sandbox-codeact
           - maf-sandbox-deepagents
           - maf-sandbox-docker

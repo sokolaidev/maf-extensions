@@ -11,6 +11,7 @@ members = [
     "maf-sandbox",
     "maf-sandbox-acas",
     "maf-sandbox-bicep",
+    "maf-sandbox-bubblewrap",
     "maf-sandbox-codeact",
     "maf-sandbox-deepagents",
     "maf-sandbox-docker",
@@ -1307,6 +1308,17 @@ requires-dist = [
     { name = "agent-framework-core", specifier = ">=1.19.0,<1.20" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
+
+[[package]]
+name = "maf-sandbox-bubblewrap"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-bubblewrap" }
+dependencies = [
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-codeact"

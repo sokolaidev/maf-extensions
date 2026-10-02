@@ -130,6 +130,7 @@ executionEnvironments = [
   { root = "packages/maf-sandbox-otel/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-tui/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-bubblewrap/tests", pythonPlatform = "Linux", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
 ]
 
 # From-the-root test runs. Each package also carries its own [tool.pytest.ini_options] for
@@ -159,6 +160,7 @@ testpaths = [
     "packages/maf-sandbox-otel/tests",
     "packages/maf-sandbox-tui/tests",
     "packages/maf-sandbox-wslc/tests",
+    "packages/maf-sandbox-bubblewrap/tests",
 ]
 faulthandler_timeout = 90.0
 

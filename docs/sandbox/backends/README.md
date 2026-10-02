@@ -20,10 +20,11 @@ See [information flow](../information-flow.md) for the source-tool, content-item
 | [Docker Sandboxes](docker-sbx.md) | `MICROVM` | Commands | Upload, read, list and delete in a host-owned workspace; removals run in the guest | Dispose or reclaim |
 | [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload, read, delete in the container root filesystem | Dispose by default; optional reclaim |
 | [WSLC](wslc.md) | `CONTAINER` | Commands | Upload | Dispose |
+| [Bubblewrap](bubblewrap.md) | `CONTAINER` | Commands without a container engine | Upload and read through no-follow guest descriptors | Dispose |
 | [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output reads and listing | Reset; dispose on failure |
 | [In-process](in-process.md) | `NONE` | Scripted test results | In-memory test store | Test implementations |
 
-The router's default minimum is `MICROVM`. Docker and WSLC require an explicit host floor of `CONTAINER`. The fake requires `NONE` and belongs only in tests.
+The router's default minimum is `MICROVM`. Docker, WSLC and Bubblewrap require an explicit host floor of `CONTAINER`. The fake requires `NONE` and belongs only in tests.
 
 | Backend | Network policy | Guest OS declaration | Sharing |
 |---|---|---|---|
@@ -31,6 +32,7 @@ The router's default minimum is `MICROVM`. Docker and WSLC require an explicit h
 | Docker Sandboxes | `CLOSED`; `ALLOWLIST` with method and path rules, while host rules and secrets leave it exact | POSIX | Conversation |
 | Docker | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX when the async factory confirms a Linux daemon | Conversation or call |
 | WSLC | `CLOSED`; `ALLOWLIST` with a configured proxy | POSIX | Conversation or call |
+| Bubblewrap | `CLOSED` | POSIX | Conversation or call; one owning host process per instance |
 | Hyperlight | `CLOSED`, exact-host HTTP/HTTPS `ALLOWLIST` | None; language runtime | Conversation, one owning host process |
 | In-process | Declarations for policy tests; no network enforcement | None by default | One shared fake; separate key/kind stores are opt-in |
 
@@ -44,12 +46,13 @@ Docker and WSLC report attributable proxy decisions when a proxy image is config
 | Docker Sandboxes | File methods reach only the storage base's parent. On Windows the plane rests on the guest being unable to create links in its workspace. |
 | Docker | Pauses the guest during path checks and archive transfers. The file view covers the root filesystem, not guest mounts such as tmpfs. |
 | WSLC | Uploads use root authority. A guest can replace a checked parent before extraction and redirect the write. |
+| Bubblewrap | Private tmpfs; no-follow guest descriptors. Metadata comes from the isolated guest broker, not a host file plane. |
 | Hyperlight | Optional output collection accepts flat names under `/output`; no input upload or listing. |
 | In-process | Exercises protocol behavior, not operating-system confinement. |
 
 ACAS permits 32 MiB per file, 128 MiB total and 128 files in each direction. Docker permits 64 MiB per file, 256 MiB total and 256 files.
 
-WSLC, Hyperlight and the fake use `DEFAULT_SANDBOX_LIMITS`: 8 MiB per file, 32 MiB total and 64 files in each direction. These ceilings do not grant an otherwise absent capability.
+WSLC, Bubblewrap, Hyperlight and the fake use `DEFAULT_SANDBOX_LIMITS`: 8 MiB per file, 32 MiB total and 64 files in each direction. These ceilings do not grant an otherwise absent capability.
 
 <a id="the-six-declarations"></a>
 

@@ -18,17 +18,23 @@ Validate every requested page and output before calling the sink. Deterministic 
 
 The runtime installer and manifest are independent of the Dockerfile. A full-OS POSIX backend can install the same files at /opt/drawio and /opt/maf-drawio and provide Python, Graphviz, Pillow, Xvfb and Electron's libraries. This is a packaging interface, not a qualified new backend. The kind requires EXEC, FILES_IN, FILES_OUT, a POSIX guest and enforced closed egress.
 
-Linux Bubblewrap is the first proposed container-engine-free target: read-only runtime files, a private work directory, isolated namespaces, denied networking and supervised descendants. It requires no OCI image or daemon, but does use kernel namespaces. Acquisition must probe prerequisites and refuse unsupported confinement. An ordinary host subprocess is not a fallback. Windows process isolation and macOS Seatbelt need separate execution, policy and Electron qualification.
+Linux Bubblewrap is the first implemented container-engine-free target: read-only runtime files, private bounded tmpfs, mandatory isolated namespaces, denied networking and supervised descendants. A delegated cgroup v2 subtree limits aggregate memory, swap, processes and CPU before the guest starts. It requires no OCI image or daemon, but does use kernel namespaces; this is the protocol's `CONTAINER` boundary. Acquisition probes prerequisites and refuses unsupported confinement. An ordinary host subprocess is not a fallback. Windows process isolation and macOS Seatbelt need separate execution, policy and Electron qualification.
 
 Keep CodeAct on Hyperlight where selected and route Draw.io through a dedicated router or explicit PER_SPEC selection. The host's isolation floor remains authoritative; no automatic downgrade from MICROVM to container or process isolation. Direct Hyperlight cannot execute this Electron workload, and Node/subprocess availability in MXC Hyperlight does not establish Chromium compatibility.
 
 ## Evidence and remaining work
 
-The implementation provides the opt-in export API, an image build, runtime validation and a real Docker verification script. Runtime qualification is recorded in the delivering pull request; neither source inspection nor unit fakes prove offline native rendering. ACAS and container-free evidence remain separate acceptance work. The existing lightweight Python/Graphviz image retains its editable-only purpose.
+The implementation provides the opt-in export API, image and native-directory provisioning, runtime validation and real Docker/Bubblewrap verification scripts. Runtime qualification is recorded in the delivering pull requests; neither source inspection nor unit fakes prove offline native rendering. ACAS remains separate acceptance work. The existing lightweight Python/Graphviz image retains its editable-only purpose.
 
 On 2026-10-03, the local Docker candidate image ID `sha256:e73c3ed0c33749973ecb13384d37284ffa6d236b35f71e9673356d899d1a0c02` passed the verification script with networking disabled. Two pages produced PNG/JPG rasters of 204 by 224 and 404 by 224 pixels and self-contained SVGs. The fixture includes a bundled Azure icon, connector, bold HTML label and accented/Greek text. A separate browser displayed the exported SVG, including its image and font content. This is a representative visual check, not an exhaustive viewer or glyph-coverage guarantee.
 
 The same candidate passed stored-reference export of page 2 at scale 2, transparent PNG, opaque JPG at quality 75, explicit refusal of remote images, missing assets, unknown shapes and excessive dimensions, and incomplete timeout handling without artifact delivery. Scope disposal succeeded and no candidate containers remained. ACAS, cancellation/owner-death fault injection and container-free rendering were not exercised by this run.
+
+### Native Linux candidate
+
+The container-free candidate was provisioned directly with debootstrap on 2026-10-03: Debian bookworm amd64, Desktop 31.7.0, Bubblewrap 0.9.0 on Ubuntu 24.04 with Linux `6.18.40.1-microsoft-standard-WSL2`. Runtime manifest SHA-256: `0c87be8da0a42148402afaf3c7652dbbe439c6d3a5f82e2f0a167f70e01fa951`. The native verifier passed the same two-page PNG/JPG/SVG, stored-reference, scale/transparency, resource-refusal and timeout cases. No Docker daemon or OCI image participated in provisioning or execution.
+
+Real Linux tests exercise the core storage-base, file-input, file-output and execution conformance suites; namespace and network denial; private broker descriptors; read-only runtime; detached descendant cleanup; cancellation; owner death; per-call separation; competing owners; stale-instance disposal; and cleanup recovery. Resource probes read back the configured CPU/memory/swap/PID limits and exhaust the private tmpfs, PID and memory limits. CPU throttling latency, every Linux distribution, native Windows/macOS, seccomp hardening and ACAS rendering are not established by this candidate. The opt-in live suite and exporter verifier must be rerun for a deployed runtime and host policy.
 
 ## Sources
 
