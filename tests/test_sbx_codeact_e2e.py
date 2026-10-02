@@ -13,6 +13,7 @@ from maf_sandbox import (
     Identity,
     SandboxRouter,
     SourceIntegrity,
+    TransferLimits,
     sandbox_tool,
 )
 from maf_sandbox_codeact import make_codeact_tools
@@ -32,7 +33,12 @@ def test_codeact_receives_a_real_host_effect(tmp_path):
                 workspace_root=tmp_path,
             )
         )
-        registry = HostToolRegistry()
+        registry = HostToolRegistry(
+            max_host_tool_calls_per_run=1,
+            response_limits=TransferLimits(
+                max_bytes_per_file=1024, max_total_bytes=1024, max_files=1
+            ),
+        )
         effects = []
 
         @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
@@ -47,7 +53,12 @@ def test_codeact_receives_a_real_host_effect(tmp_path):
             current_thread_id=lambda: "thread",
             list_files=lambda: (),
         )
-        tool = make_codeact_tools(router, "agent", context, host_tools=registry)[0]
+        limits = TransferLimits(
+            max_bytes_per_file=1024 * 1024, max_total_bytes=4 * 1024 * 1024, max_files=8
+        )
+        tool = make_codeact_tools(
+            router, "agent", context, host_tools=registry, files_in=limits, files_out=limits
+        )[0]
         body = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
         try:
             result = await body(
