@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.1...maf-sandbox-wslc-v0.26.2) (2026-10-02)
+
+
+### Fixes
+
+* require maf-sandbox 0.46.0 in the dependents, and admit the 0.46 line ([#1619](https://github.com/sokolaidev/maf-extensions/issues/1619)) ([868fb2d](https://github.com/sokolaidev/maf-extensions/commit/868fb2d457409ccf099052333d473598db290f84))
+
 ## [0.26.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.0...maf-sandbox-wslc-v0.26.1) (2026-09-28)
 
 
