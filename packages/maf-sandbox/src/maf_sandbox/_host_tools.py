@@ -55,10 +55,15 @@ from ._protocol import (
     DEFAULT_TRANSFER_LIMITS,
     INTEGRITY_RANK,
     HostToolAggregate,
+    HostToolPolicy,
     Identity,
+    Sandbox,
     SandboxKey,
     SourceIntegrity,
     TransferLimits,
+)
+from ._protocol import (
+    HostToolCallResult as HostToolCallResult,
 )
 
 #: Fallback for :class:`HostToolRun`'s ``logger`` argument — named apart from the usual
@@ -247,35 +252,6 @@ def declaration_of(func: Callable[..., Any]) -> HostToolDeclaration | None:
     """
     value = getattr(func, FLOW_DECLARED_KEY, None)
     return value if isinstance(value, HostToolDeclaration) else None
-
-
-@dataclass(frozen=True)
-class HostToolCallResult:
-    """One host-tool call's outcome: the serialized response, or the sentence the guest may see.
-
-    ``value_json`` is the tool's return value as JSON text — serialized here, host-side,
-    because the size cap is enforced on what actually crosses the boundary and a transport
-    delivers exactly these bytes, inside whatever framing it declared through
-    :meth:`HostToolRun.call`'s ``framing_bytes`` and which was capped along with them.
-    ``refusal`` is a sanitized sentence in the failure-ladder style: fixed shape, no provider
-    detail, safe to land in a transcript.  Exactly one of the
-    two is set, and :attr:`ok` says which.
-    """
-
-    value_json: str | None = None
-    refusal: str | None = None
-
-    def __post_init__(self) -> None:
-        if (self.value_json is None) == (self.refusal is None):
-            raise ValueError(
-                "a HostToolCallResult carries exactly one of value_json or refusal — both or "
-                "neither would let a caller read a refused call as a delivered one"
-            )
-
-    @property
-    def ok(self) -> bool:
-        """Whether the call delivered a response."""
-        return self.refusal is None
 
 
 class _RegistrationNotice:
@@ -829,6 +805,9 @@ class _Called:
     #: overlap, so two that start at the same total would each report the other's bytes as
     #: their own, and the one finishing second would report both.
     delivered_bytes: int = 0
+    host_started: bool = False
+    host_completed: bool = False
+    publishing: bool = False
 
 
 class HostToolRun:
@@ -884,8 +863,11 @@ class HostToolRun:
         self._key = key
         self._recorded = RECORDED_CALL.get()
         self._calls = 0
+        self._reserved = 0
+        self._reserved_bytes = 0
         self._delivered = 0
         self._delivered_bytes = 0
+        self._closed = False
         self._minted_user_identity: str | None = None
         self._mint_lock: asyncio.Lock | None = None
         self._mint_lock_loop: asyncio.AbstractEventLoop | None = None
@@ -924,6 +906,8 @@ class HostToolRun:
         reached_the_minter = False
         try:
             async with self._lock_for_this_loop():
+                if self._closed:
+                    raise RuntimeError("the host-tool run closed before identity minting")
                 # The second read. Whoever held the lock may have filled it, and that identity
                 # is this run's — minting a second beside it is the failure this method exists
                 # to avoid, not a cache miss to satisfy.
@@ -976,6 +960,8 @@ class HostToolRun:
                         ),
                     )
                     return None
+                if self._closed:
+                    raise RuntimeError("the host-tool run closed during identity minting")
                 self._minted_user_identity = answered
                 return answered
         except asyncio.CancelledError:
@@ -1022,54 +1008,35 @@ class HostToolRun:
         """
         return self._registry
 
+    @property
+    def surface(self) -> HostToolAggregate:
+        """The policy and response ceilings this run enforces."""
+        return self._registry.aggregate()
+
+    def close(self) -> None:
+        """Revoke this run's authority; transports close it on every exit path."""
+        self._closed = True
+        self._minted_user_identity = None
+
     async def call(
-        self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        publish: Callable[[HostToolCallResult], Awaitable[None]],
+        framing_bytes: int = 0,
     ) -> HostToolCallResult:
-        """Resolve, gate, validate, call and cap — the whole contract, at the one door.
+        """Apply policy, reserve a response, then await trusted transport publication.
 
-        Every call counts toward the run's cap, refused ones included: a guest
-        probing names or replaying refusals is spending the budget the cap exists to bound.
-        Exhaustion is a refusal rather than an exception so the guest program finishes and
-        reports what it has, instead of dying mid-way with the reason lost.
-
-        **Cancellation is prompt, and a cancelled call is recorded** (#355).  Nothing here
-        shields a cancel: a host tool is unbounded, so an uncancellable section would honour a
-        caller's cancel only after arbitrary third-party code chose to return. The ledger stays
-        consistent whichever await it lands on — nothing was delivered, the slot is returned —
-        and each is logged rather than left as the one outcome with no trace.
-
-        **Two awaits can take it, and they leave different things behind.** Inside the tool's
-        body, a sink's outward effect may already have fired. Inside
-        ``mint_user_identity``, for a :data:`~maf_sandbox.Identity.USER` tool, the body has not
-        run at all but a credential may already have been issued for a call that never will —
-        including for a call that was only queued behind another's mint, which spends nothing.
-        The record says which, because an operator chasing the wrong one wastes the trail.
-
-        A host that needs to *act* on it — retry, compensate — keys on the registry's
-        ``host_tool_calls_observer``, whose context exit receives the same ``CancelledError``.
-
-        Args:
-            name: The registered tool to call. Guest text — checked, never trusted.
-            arguments: Its keyword arguments, as the guest's JSON parsed.
-            framing_bytes: What the transport wraps around ``value_json`` before it crosses
-                the boundary — an envelope, a length prefix, nothing. Counted against both
-                ceilings and committed with the payload, because what a cap bounds is the
-                bytes that cross rather than the ones the host happened to serialize. A
-                transport that declares it here gets a refusal *before* the ledger is spent;
-                one that checks the total itself can only convert a committed success
-                afterwards, which leaves the run paying for a response nobody received.
+        ``publish`` must return only after the channel accepts the exact response. An
+        exception or cancellation during publication revokes the run and retains its
+        reservation: delivery is uncertain and must not be retried.
         """
-        # A transport's number rather than a guest's, so both checks raise instead of refusing.
         _refuse_non_integer("framing_bytes", framing_bytes)
         if framing_bytes < 0:
-            # A negative overhead would widen every ceiling below it by that much.
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
-        # The framing checks above raise before the observation begins: a transport's
-        # programming error is not a host-tool call, so the observer sees no enter for it —
-        # and no record either, for the same reason.
-        if self._registry.observer is None:
-            with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
-                return await self._run_host_tool_call(name, arguments, framing_bytes=framing_bytes)
+        if self._closed:
+            raise RuntimeError("the host-tool run is closed")
         called = _Called()
         started = time.monotonic()
         outcome: HostToolOutcome = "failed"
@@ -1079,38 +1046,51 @@ class HostToolRun:
                 result = await self._run_host_tool_call(
                     name, arguments, framing_bytes=framing_bytes, called=called
                 )
-        except asyncio.CancelledError:
-            # Told apart from any other escape, because only this one may have left an outward
-            # effect behind: a `_deliver` cancelled inside the tool's body has already run it.
-            outcome = "cancelled"
+                refusal = result.refusal
+                # A close during a host await must not publish through stale authority.
+                if self._closed:
+                    raise RuntimeError("the host-tool run closed before publication")
+                called.publishing = True
+                await publish(result)
+                called.publishing = False
+                if result.ok:
+                    called.delivered_bytes = (
+                        len((result.value_json or "").encode("utf-8")) + framing_bytes
+                    )
+                    self._delivered += 1
+                    self._delivered_bytes += called.delivered_bytes
+                outcome = "delivered" if result.ok else "refused"
+                return result
+        except BaseException as exc:
+            if called.publishing:
+                self.close()
+                outcome = "delivery_uncertain"
+            else:
+                outcome = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
             raise
-        except BaseException:
-            outcome = "failed"
-            raise
-        else:
-            outcome = "delivered" if result.ok else "refused"
-            refusal = result.refusal
-            return result
         finally:
-            record(
-                self._registry.observer,
-                HostToolCalled(
-                    run_id=self._run_id,
-                    key=self._key,
-                    tool=called.tool,
-                    declared=called.declared,
-                    source=called.source,
-                    sink=called.sink,
-                    identity=called.identity,
-                    outcome=outcome,
-                    refusal=refusal,
-                    response_bytes=called.delivered_bytes,
-                    calls=self._calls,
-                    seconds=time.monotonic() - started,
-                    call=call_id_of(self._recorded),
-                ),
-                self._logger,
-            )
+            if self._registry.observer is not None:
+                record(
+                    self._registry.observer,
+                    HostToolCalled(
+                        run_id=self._run_id,
+                        key=self._key,
+                        tool=called.tool,
+                        declared=called.declared,
+                        source=called.source,
+                        sink=called.sink,
+                        identity=called.identity,
+                        outcome=outcome,
+                        refusal=refusal,
+                        response_bytes=called.delivered_bytes,
+                        host_started=called.host_started,
+                        host_completed=called.host_completed,
+                        calls=self._calls,
+                        seconds=time.monotonic() - started,
+                        call=call_id_of(self._recorded),
+                    ),
+                    self._logger,
+                )
 
     async def _run_host_tool_call(
         self,
@@ -1205,14 +1185,14 @@ class HostToolRun:
         # effect happened, could not be reported, and the refusal reads like something to
         # retry. Every state below is knowable without the response: what stays in `_deliver`
         # is only what needs a size.
-        if self._delivered + 1 > limits.max_files:
+        if self._reserved + 1 > limits.max_files:
             return _refused(
                 f"Error: this run's delivered-response cap ({limits.max_files}) is "
                 "exhausted — finish with the results already delivered"
             )
         # The smallest thing that could still cross is the smallest payload *plus* whatever
         # the transport puts around it, so the framing decides exhaustion too.
-        if self._delivered_bytes + _SMALLEST_RESPONSE + framing_bytes > limits.max_total_bytes:
+        if self._reserved_bytes + _SMALLEST_RESPONSE + framing_bytes > limits.max_total_bytes:
             return _refused(
                 f"Error: this run's response byte budget ({limits.max_total_bytes}) is "
                 "exhausted — finish with the results already delivered"
@@ -1237,19 +1217,19 @@ class HostToolRun:
         # Taken now and held across everything that can suspend — the mint and the body both —
         # because two concurrent calls would otherwise read a ledger that still said zero,
         # both run, and both deliver against a cap of one.
-        self._delivered += 1
-        delivered = False
+        self._reserved += 1
+        reserved = False
         try:
             outcome = await self._deliver(name, func, provided, limits, framing_bytes, called)
-            delivered = outcome.ok
+            reserved = outcome.ok
             return outcome
         finally:
             # `finally` rather than a check on the outcome, because a cancelled call has no
             # outcome to check: `CancelledError` is a `BaseException` and walks straight past
             # one. Nothing was delivered either way, so the slot goes back. The *call*
             # count above stays spent — the attempt happened, and that is what it bounds.
-            if not delivered:
-                self._delivered -= 1
+            if not reserved:
+                self._reserved -= 1
 
     async def _deliver(
         self,
@@ -1260,14 +1240,7 @@ class HostToolRun:
         framing_bytes: int,
         called: _Called | None = None,
     ) -> HostToolCallResult:
-        """Validate, call, serialize and cap, with a response slot already reserved.
-
-        Split from :meth:`call` so that giving the slot back has exactly one site: every
-        refusal here is a ``return`` the caller sees, and none of them can forget.  The byte
-        ledger stays here instead, where a size is known — its check and its commit sit in one
-        run of statements with no ``await`` between them, which is what makes it safe from the
-        same interleaving (a caller driving one run from several *threads* is out of contract).
-        """
+        """Prepare a value and reserve its bytes without yielding between check and reservation."""
         try:
             signature = inspect.signature(func)
         except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
@@ -1303,6 +1276,10 @@ class HostToolRun:
                     "was not called — the reason is in the host's log"
                 )
             provided[_USER_IDENTITY_PARAMETER] = minted
+        if self._closed:
+            raise RuntimeError("the host-tool run closed before host execution")
+        if called is not None:
+            called.host_started = True
         try:
             result = func(**provided)
             if inspect.isawaitable(result):
@@ -1320,6 +1297,8 @@ class HostToolRun:
         except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
             self._logger.warning("host tool %r failed: %s", name, error_detail(exc))
             return _refused(f"Error: host tool {name!r} failed — the reason is in the host's log")
+        if called is not None:
+            called.host_completed = True
         try:
             # `allow_nan=False` because Python's default emits bare NaN/Infinity, which no
             # strict JSON parser on the guest side accepts — a payload delivered as success
@@ -1338,22 +1317,118 @@ class HostToolRun:
             return _refused(
                 f"Error: host tool {name!r} returned a value that cannot be carried as JSON"
             )
-        # The framing the transport declared is part of every number below. Checking the
-        # payload and committing the payload would leave the difference uncounted in both
-        # legs, and a transport left to police the shortfall itself can only do so after this
-        # method has already committed the success.
+        # Reserve the complete framed response before handing it to the transport.
         crossing = size + framing_bytes
         if crossing > limits.max_bytes_per_file:
             return _refused(
                 f"Error: host tool {name!r}'s response is {crossing} bytes and the "
                 f"per-response cap allows {limits.max_bytes_per_file}"
             )
-        if self._delivered_bytes + crossing > limits.max_total_bytes:
+        if self._reserved_bytes + crossing > limits.max_total_bytes:
             return _refused(
                 f"Error: delivering host tool {name!r}'s {crossing}-byte response would exceed "
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
-        self._delivered_bytes += crossing
-        if called is not None:
-            called.delivered_bytes = crossing
+        self._reserved_bytes += crossing
         return HostToolCallResult(value_json=encoded)
+
+
+class BoundedHostToolPolicy:
+    """Bound cooperative host calls and revoke authority before abandoning an unfinished one."""
+
+    def __init__(
+        self, policy: HostToolPolicy, sandbox: Sandbox, *, deadline: float, timeout: float
+    ) -> None:
+        self.policy, self.sandbox = policy, sandbox
+        self.deadline, self.timeout = deadline, timeout
+
+    @property
+    def surface(self) -> HostToolAggregate:
+        return self.policy.surface
+
+    def close(self) -> None:
+        self.policy.close()
+
+    async def call(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        publish: Callable[[HostToolCallResult], Awaitable[None]],
+        framing_bytes: int = 0,
+    ) -> HostToolCallResult:
+        from ._reclaim import note_unclean
+
+        remaining = min(self.timeout, self.deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("the program deadline expired before the host-tool call")
+        publishing = expired = detached = False
+
+        async def accepted(result: HostToolCallResult) -> None:
+            nonlocal publishing
+            if expired or time.monotonic() >= self.deadline:
+                raise TimeoutError("the program deadline expired before publication")
+            publishing = True
+            await publish(result)
+
+        task = asyncio.create_task(
+            self.policy.call(name, arguments, publish=accepted, framing_bytes=framing_bytes)
+        )
+        try:
+            done, _ = await asyncio.wait({task}, timeout=remaining)
+            if done:
+                return task.result()
+            expired = True
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=1.0)
+            if not done:
+                self.close()
+                note_unclean(
+                    self.sandbox, "a host-tool call did not stop within its cleanup budget"
+                )
+                detached = True
+                _retain_host_task(task)
+                raise TimeoutError("the host-tool call did not stop within its cleanup budget")
+            if not task.cancelled():
+                _consume_host_task(task)
+                self.close()
+                raise TimeoutError("the host-tool call continued after cancellation")
+            if publishing or time.monotonic() >= self.deadline:
+                self.close()
+                raise TimeoutError("the host-tool deadline expired during the run")
+            refusal = HostToolCallResult(
+                refusal="Error: the host tool timed out; effects may have occurred"
+            )
+            await publish(refusal)
+            return refusal
+        except BaseException:
+            self.close()
+            if not task.done() and not detached:
+                task.cancel()
+                done, _ = await asyncio.wait({task}, timeout=1.0)
+                if not done:
+                    note_unclean(
+                        self.sandbox, "a host-tool call did not stop within its cleanup budget"
+                    )
+                    _retain_host_task(task)
+            if task.done():
+                _consume_host_task(task)
+            raise
+
+
+def _consume_host_task(task: asyncio.Task[HostToolCallResult]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+_PENDING_HOST_CALLS: set[asyncio.Task[HostToolCallResult]] = set()
+
+
+def _retain_host_task(task: asyncio.Task[HostToolCallResult]) -> None:
+    _PENDING_HOST_CALLS.add(task)
+
+    def finished(completed: asyncio.Task[HostToolCallResult]) -> None:
+        _PENDING_HOST_CALLS.discard(completed)
+        _consume_host_task(completed)
+
+    task.add_done_callback(finished)

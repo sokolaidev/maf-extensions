@@ -18,7 +18,9 @@ README.
 from __future__ import annotations
 
 import warnings
+from typing import Any
 
+import maf_sandbox
 from _scaffold import installed_versions
 from host_tools import (
     fetch_changelog,
@@ -57,10 +59,19 @@ _ROOMY = SandboxLimits(
     files_out=TransferLimits(1 << 26, 1 << 31, 4096),
 )
 
+# This sample also supports its declared published core floor.
+_PROGRAM_SPEC: dict[str, Any] = {}
+_CHANNEL_DECLARATIONS: dict[str, Any] = {}
+_program_requirements = getattr(maf_sandbox, "ProgramRequirements", None)
+if _program_requirements is not None:
+    _PROGRAM_SPEC["program"] = _program_requirements()
+    _CHANNEL_DECLARATIONS["program_channels"] = (getattr(maf_sandbox, "ExecProgramChannel")(),)
+
 #: What a backend that would serve this sample's workload declares: the capability the surface
 #: needs, and ceilings the fold fits inside.
 _DECLARES_HOST_TOOLS = BackendDeclarations(
-    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS, Capability.FILES_OUT},
+    **_CHANNEL_DECLARATIONS,
     limits=_ROOMY,
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
 )
@@ -170,6 +181,7 @@ def act_three_permitted(surface: HostToolAggregate) -> InProcessSandboxBackend:
     )
     router = SandboxRouter([backend], min_isolation=backend.isolation)
     spec = SandboxSpec(
+        **_PROGRAM_SPEC,
         kind=KIND,
         requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
         host_tools=surface,
@@ -192,6 +204,7 @@ def act_four_refused(surface: HostToolAggregate) -> InProcessSandboxBackend:
 
     backend = InProcessSandboxBackend(declarations=_DECLARES_HOST_TOOLS)
     spec = SandboxSpec(
+        **_PROGRAM_SPEC,
         kind=KIND,
         requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
         host_tools=surface,
@@ -237,6 +250,7 @@ def act_four_refused(surface: HostToolAggregate) -> InProcessSandboxBackend:
     narrowed = narrower.aggregate()
     no_user.ensure_can_serve(
         SandboxSpec(
+            **_PROGRAM_SPEC,
             kind=KIND,
             requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
             host_tools=narrowed,

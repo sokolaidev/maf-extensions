@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
-from ._host_tools import HostToolRun
+from ._host_tools import BoundedHostToolPolicy, HostToolRun
 from ._observer import (
     ProcessCleanup,
     ProcessCleanupOutcome,
@@ -23,7 +23,7 @@ from ._observer import (
     recorded_call,
 )
 from ._process_info import ProcessAttribution, ProcessInfo, ProcessPhase
-from ._protocol import Sandbox
+from ._protocol import HostToolPolicy, Sandbox
 from .bounded_exec import BoundedExec
 
 logger = logging.getLogger(__name__)
@@ -110,9 +110,14 @@ class ProcessTracker:
     """Retain observed lineage within one physical sandbox and one run."""
 
     def __init__(
-        self, sandbox: Sandbox, run: HostToolRun, interpreter: str, directory: str
+        self, sandbox: Sandbox, run: HostToolPolicy, interpreter: str, directory: str
     ) -> None:
-        self.sandbox, self.run = sandbox, run
+        if isinstance(run, BoundedHostToolPolicy):
+            run = run.policy
+        self.sandbox = sandbox
+        self.key = run.key if isinstance(run, HostToolRun) else None
+        self.run_id = run.run_id if isinstance(run, HostToolRun) else uuid4().hex
+        self.observer = run.registry.observer if isinstance(run, HostToolRun) else None
         self.interpreter, self.directory = interpreter, directory
         self.instance_id = sandbox.instance_id
         self.pid: int | None = None
@@ -197,9 +202,9 @@ class ProcessTracker:
             self._ever_incomplete |= incomplete
             self.incomplete = self._ever_incomplete
             event = ProcessesObserved(
-                key=self.run.key,
+                key=self.key,
                 instance_id=self.instance_id,
-                run_id=self.run.run_id,
+                run_id=self.run_id,
                 snapshot_id=uuid4().hex,
                 phase=phase,
                 timestamp=timestamp,
@@ -209,11 +214,11 @@ class ProcessTracker:
                 unavailable=unavailable,
                 call=recorded_call(),
             )
-            record(self.run.registry.observer, event, logger)
+            record(self.observer, event, logger)
             logger.info(
                 "host tools: process snapshot run=%s instance=%s call=%s phase=%s pids=%s "
                 "count=%d incomplete=%s unavailable=%s",
-                self.run.run_id,
+                self.run_id,
                 self.instance_id,
                 recorded_call(),
                 phase,
@@ -232,11 +237,11 @@ class ProcessTracker:
         signal: str | None = None,
     ) -> None:
         record(
-            self.run.registry.observer,
+            self.observer,
             ProcessCleanup(
-                key=self.run.key,
+                key=self.key,
                 instance_id=self.instance_id,
-                run_id=self.run.run_id,
+                run_id=self.run_id,
                 pid=self.pid,
                 pgid=self.pgid,
                 outcome=outcome,
@@ -249,7 +254,7 @@ class ProcessTracker:
         )
         logger.info(
             "host tools: process cleanup run=%s instance=%s pid=%s pgid=%s outcome=%s reach=%s",
-            self.run.run_id,
+            self.run_id,
             self.instance_id,
             self.pid,
             self.pgid,
@@ -327,11 +332,11 @@ class ProcessTracker:
             for process in targets:
                 outcome = outcomes.get(process.identity, "unknown")
                 record(
-                    self.run.registry.observer,
+                    self.observer,
                     ProcessCleanup(
-                        key=self.run.key,
+                        key=self.key,
                         instance_id=self.instance_id,
-                        run_id=self.run.run_id,
+                        run_id=self.run_id,
                         pid=process.pid,
                         pgid=None,
                         outcome=outcome,
@@ -345,7 +350,7 @@ class ProcessTracker:
                 )
                 logger.info(
                     "host tools: descendant cleanup run=%s pid=%s outcome=%s",
-                    self.run.run_id,
+                    self.run_id,
                     process.pid,
                     outcome,
                 )

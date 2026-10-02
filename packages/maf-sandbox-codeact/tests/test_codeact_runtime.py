@@ -282,7 +282,7 @@ def test_routing_selects_a_backend_for_the_explicit_variant(selection):
     assert "4" in _run(tool)
     assert runtime.specs and not shell.specs
     if selection is Selection.FIXED:
-        with pytest.raises(SandboxCapabilityNotSupported, match="exec"):
+        with pytest.raises(SandboxCapabilityNotSupported, match="program channel"):
             make_codeact_tools(router, "analyst", _context())
 
 
