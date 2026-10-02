@@ -258,7 +258,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/mxc/target
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "2"
@@ -276,6 +275,7 @@ jobs:
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
           df -h "$RUNNER_TEMP"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mxc/target" >> "$GITHUB_ENV"
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libclang-dev
           rustup toolchain install 1.98.0 --profile minimal
