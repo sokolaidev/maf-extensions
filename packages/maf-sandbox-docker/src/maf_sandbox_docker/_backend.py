@@ -64,6 +64,7 @@ from maf_sandbox import (
     EgressDecision,
     EgressObserved,
     EgressReporter,
+    ExecProgramChannel,
     ExecResult,
     Isolation,
     IsolationScope,
@@ -1523,6 +1524,7 @@ class DockerSandboxBackend:
         if config.credential_gateway is not None:
             capabilities |= frozenset({Capability.ATTACHED_IDENTITY})
         self._declarations = BackendDeclarations(
+            program_channels=(ExecProgramChannel(),),
             attached_identity=(
                 config.credential_gateway.attached_identity
                 if config.credential_gateway is not None

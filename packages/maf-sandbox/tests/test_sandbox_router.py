@@ -48,6 +48,7 @@ from maf_sandbox import (
     NoSandboxBackend,
     OsFamily,
     OutputDisposition,
+    ProgramRequirements,
     ReclaimConfig,
     SandboxBackend,
     SandboxBackendNotPermitted,
@@ -496,7 +497,7 @@ class TestTheDeclarationsObject:
             SandboxRouter([backend]).ensure_can_serve(_SPEC)
         # Without the guard the stray attribute is ignored and `_SPEC` is served at the
         # default ceilings, which is what the backend's own declaration refuses.
-        assert backend.declarations.limits == DEFAULT_SANDBOX_LIMITS
+        assert backend.declarations.limits == FAKE_BACKEND_DECLARATIONS.limits
 
     @pytest.mark.parametrize("field", ["capabilities", "egress_modes"])
     @pytest.mark.parametrize("declared", ["exec", ["closed"], None], ids=["str", "list", "None"])
@@ -712,7 +713,7 @@ class TestRouterDenials:
         backend = InProcessSandboxBackend(
             declarations=dataclasses.replace(
                 FAKE_BACKEND_DECLARATIONS,
-                capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS, Capability.FILES_OUT},
                 limits=SandboxLimits(files_in=roomy, files_out=roomy),
             )
         )
@@ -755,6 +756,7 @@ class TestRouterDenials:
                 kind="codeact",
                 requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
                 host_tools=_a_surface(frozenset({Identity.APP})),
+                program=ProgramRequirements(max_program_bytes=1024),
             )
         )
 
@@ -891,7 +893,14 @@ class TestTransferLimits:
 #: third-party object that leaves the field unstated.  Classes, not instances, so the
 #: parametrized cases do not share one object.
 _DEFAULT_CEILING_BACKENDS = [
-    pytest.param(InProcessSandboxBackend, id="the-shared-fake"),
+    pytest.param(
+        lambda: InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, limits=DEFAULT_SANDBOX_LIMITS
+            )
+        ),
+        id="the-shared-fake",
+    ),
     pytest.param(_BackendDeclaringOnlyEgress, id="a-third-party-object"),
 ]
 
@@ -911,7 +920,14 @@ class TestTransferLimitMatch:
 
     def test_neither_fixture_states_the_ceiling_it_is_read_as(self):
         """A default nobody is on the far side of would pass by accident forever."""
-        for backend in (InProcessSandboxBackend(), _BackendDeclaringOnlyEgress()):
+        for backend in (
+            InProcessSandboxBackend(
+                declarations=dataclasses.replace(
+                    FAKE_BACKEND_DECLARATIONS, limits=DEFAULT_SANDBOX_LIMITS
+                )
+            ),
+            _BackendDeclaringOnlyEgress(),
+        ):
             assert backend.declarations.limits == DEFAULT_SANDBOX_LIMITS
 
     @pytest.mark.parametrize("backend_class", _DEFAULT_CEILING_BACKENDS)
@@ -1001,7 +1017,8 @@ class TestTheRouterFoldsADispatchSurface:
                     declarations=dataclasses.replace(
                         FAKE_BACKEND_DECLARATIONS,
                         limits=ceiling,
-                        capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                        capabilities=DEFAULT_CAPABILITIES
+                        | {Capability.HOST_TOOLS, Capability.FILES_OUT},
                     )
                 )
             ],
@@ -1016,6 +1033,7 @@ class TestTheRouterFoldsADispatchSurface:
             kind="codeact",
             requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
             host_tools=surface,
+            program=ProgramRequirements(max_program_bytes=1024),
             **{"files_in": self._SMALL, "files_out": self._SMALL, **kw},  # type: ignore[arg-type]
         )
 
@@ -1064,6 +1082,7 @@ class TestTheRouterFoldsADispatchSurface:
         )
         over = TransferLimits(max_bytes_per_file=8192, max_total_bytes=8192, max_files=2)
         spec = self._dispatching(self._surface(self._RL), files_in=over, files_out=over)
+        spec = dataclasses.replace(spec, requires=spec.requires | {Capability.FILES_OUT})
         with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out") as excinfo:
             self._router(ceiling).ensure_can_serve(spec)
         assert "folded to include" not in str(excinfo.value)
@@ -1134,7 +1153,8 @@ class TestASpecMustAdmitTheSurfaceItCarries:
                     declarations=dataclasses.replace(
                         FAKE_BACKEND_DECLARATIONS,
                         limits=SandboxLimits(files_in=wide, files_out=wide),
-                        capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                        capabilities=DEFAULT_CAPABILITIES
+                        | {Capability.HOST_TOOLS, Capability.FILES_OUT},
                     )
                 )
             ],
@@ -2966,6 +2986,7 @@ _PROTOCOL_MODULES = frozenset(
         "_process_probe",
         "_processes",
         "_protocol",
+        "_program",
         "_purger",
         "_reclaim",
         "_refusals",

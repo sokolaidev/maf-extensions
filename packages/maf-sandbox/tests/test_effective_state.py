@@ -29,6 +29,7 @@ from maf_sandbox import (
     Isolation,
     IsolationScope,
     OutputDisposition,
+    ProgramRequirements,
     SandboxAcquired,
     SandboxCapabilityNotSupported,
     SandboxKey,
@@ -81,11 +82,14 @@ def _registry() -> HostToolRegistry:
 def _spec(**overrides: Any) -> SandboxSpec:
     fields: dict[str, Any] = {
         "kind": "codeact",
+        "program": ProgramRequirements(max_program_bytes=1024),
         "image": "python:3.13",
         "egress": Egress.ALLOWLIST,
         "egress_allow": ("pypi.org",),
         "labels": {"tenant": "contoso", "cost_centre": "cc-42"},
-        "requires": frozenset({Capability.EXEC, Capability.HOST_TOOLS}),
+        "requires": frozenset(
+            {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT, Capability.HOST_TOOLS}
+        ),
         "files_in": _TINY,
         "files_out": _TINY,
         "host_tools": _registry().aggregate(),
@@ -98,7 +102,9 @@ def _backend() -> InProcessSandboxBackend:
     return InProcessSandboxBackend(
         declarations=dataclasses.replace(
             FAKE_BACKEND_DECLARATIONS,
-            capabilities=frozenset({Capability.EXEC, Capability.HOST_TOOLS, Capability.FILES_OUT}),
+            capabilities=frozenset(
+                {Capability.EXEC, Capability.FILES_IN, Capability.HOST_TOOLS, Capability.FILES_OUT}
+            ),
         )
     )
 
@@ -141,7 +147,14 @@ class TestWhatASnapshotHolds:
         backend = InProcessSandboxBackend(
             declarations=dataclasses.replace(
                 FAKE_BACKEND_DECLARATIONS,
-                capabilities=frozenset({Capability.EXEC, Capability.HOST_TOOLS}),
+                capabilities=frozenset(
+                    {
+                        Capability.EXEC,
+                        Capability.FILES_IN,
+                        Capability.FILES_OUT,
+                        Capability.HOST_TOOLS,
+                    }
+                ),
                 isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
             ),
             sandbox_per_key=True,
@@ -181,7 +194,9 @@ class TestWhatASnapshotHolds:
 
     def test_it_carries_the_declared_outputs_by_path(self):
         spec = _spec(
-            requires=frozenset({Capability.EXEC, Capability.HOST_TOOLS, Capability.FILES_OUT}),
+            requires=frozenset(
+                {Capability.EXEC, Capability.FILES_IN, Capability.HOST_TOOLS, Capability.FILES_OUT}
+            ),
             declared_outputs=(
                 DeclaredOutput(path="report.md", disposition=OutputDisposition.LAND),
             ),
@@ -192,7 +207,7 @@ class TestWhatASnapshotHolds:
     def test_it_carries_the_backend_declarations_it_was_matched_against(self):
         (state,) = _served()
         assert state.backend_capabilities == frozenset(
-            {Capability.EXEC, Capability.HOST_TOOLS, Capability.FILES_OUT}
+            {Capability.EXEC, Capability.FILES_IN, Capability.HOST_TOOLS, Capability.FILES_OUT}
         )
         assert state.backend_egress_modes == FAKE_BACKEND_DECLARATIONS.egress_modes
 
@@ -257,6 +272,8 @@ class TestPostureNeverPayload:
             "max_identity_scope",
             "max_identity_retention_seconds",
             "execution_contract",
+            "program_channel",
+            "execution_profile",
             "configured_identity",
         }
 

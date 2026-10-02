@@ -153,6 +153,7 @@ from ._outputs import (
     validate_artifact_name,
 )
 from ._process_info import ProcessAttribution, ProcessInfo, ProcessPhase
+from ._program import ExecProgramChannel
 from ._protocol import (
     CLEANUP_RANK,
     DEFAULT_BACKEND_DECLARATIONS,
@@ -179,6 +180,7 @@ from ._protocol import (
     EgressRule,
     EntryKind,
     ExecResult,
+    HostToolPolicy,
     HttpMethod,
     Identity,
     IdentityScope,
@@ -187,8 +189,11 @@ from ._protocol import (
     ListedFile,
     OsFamily,
     OutputDisposition,
+    ProgramChannel,
+    ProgramRequirements,
     Sandbox,
     SandboxBackend,
+    SandboxBackendUnavailable,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -243,6 +248,11 @@ from .file_transfer import (
 from .sync_runner import SyncRunner
 
 __all__ = [
+    "ExecProgramChannel",
+    "SandboxBackendUnavailable",
+    "HostToolPolicy",
+    "ProgramChannel",
+    "ProgramRequirements",
     "IDENTITY_SCOPE_RANK",
     "NO_ATTACHED_IDENTITY",
     "AttachedIdentity",

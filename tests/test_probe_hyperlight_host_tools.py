@@ -80,7 +80,7 @@ def test_delivery_counterexample_requires_both_observation_and_later_failure() -
         "case": "handoff-failure",
         "reaped": True,
         "result": {"exit_code": 1, "stderr": "synthetic failure before native marshalling"},
-        "events": [{"outcome": "delivered"}, {"stage": "worker_prepared"}],
+        "events": [{"outcome": "delivery_uncertain"}, {"stage": "worker_prepared"}],
     }
     assert probe.validate_reports([report]) == []
     report["events"] = [{"stage": "worker_prepared"}]

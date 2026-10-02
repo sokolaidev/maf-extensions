@@ -222,6 +222,8 @@ class SandboxAcquired(SandboxEvent):
     #: argument.
     call: str | None = None
 
+    program_channel: str | None = None
+
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.sandbox_acquired(self)
 
@@ -380,7 +382,7 @@ class EgressObserved(SandboxEvent):
 #: with — an exhausted cap, an unregistered name, a tool body that raised — because those are
 #: one shape at the door, and ``refusal`` says which.  ``"failed"`` is the door itself breaking,
 #: and ``"cancelled"`` is a call taken by a cancel, which may have left an outward effect behind.
-HostToolOutcome = Literal["delivered", "refused", "cancelled", "failed"]
+HostToolOutcome = Literal["delivered", "refused", "cancelled", "failed", "delivery_uncertain"]
 
 
 @dataclass(frozen=True)
@@ -427,6 +429,9 @@ class HostToolCalled(SandboxEvent):
     seconds: float
     #: The tool call this run belongs to — see :data:`RECORDED_CALL`.
     call: str | None = None
+
+    host_started: bool = False
+    host_completed: bool = False
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.host_tool_called(self)

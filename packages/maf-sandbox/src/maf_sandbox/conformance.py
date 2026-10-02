@@ -80,9 +80,19 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ._protocol import Capability, EntryKind, Sandbox, SandboxBackend, SandboxKey
+from ._protocol import (
+    Capability,
+    EntryKind,
+    ProgramChannel,
+    ProgramRequirements,
+    Sandbox,
+    SandboxBackend,
+    SandboxKey,
+    TransferLimits,
+)
 
 __all__ = [
+    "assert_program_channel_conformance",
     "EXEC_PROBES",
     "FILES_DELETE_PROBES",
     "FILES_IN_PROBES",
@@ -2905,3 +2915,80 @@ async def assert_call_scope_conformance(
         await run_call_scope_probes(subject, acquire_another, dispose_this_call, dispose_the_other),
         "CALL_SCOPE",
     )
+
+
+async def assert_program_channel_conformance(
+    sandbox: Sandbox,
+    channel: ProgramChannel,
+    *,
+    guest_call_path: str,
+    timeout: float = 60,
+) -> None:
+    """Verify the portable profile, shared guest API and authority revocation on a live guest.
+
+    The caller owns acquisition, physical limit admission and final sandbox disposal.
+    This probe requires a host-tool channel and runs two separate policies on one sandbox.
+    """
+    from ._host_tools import HostToolRegistry, HostToolRun, sandbox_tool
+    from ._observer import HostToolCalled, SandboxObserver
+
+    class Observer(SandboxObserver):
+        def __init__(self) -> None:
+            self.calls: list[HostToolCalled] = []
+
+        def host_tool_called(self, event: HostToolCalled) -> None:
+            self.calls.append(event)
+
+    if not channel.host_tools:
+        raise AssertionError("host-tool channel conformance requires host tools")
+    requirements = ProgramRequirements()
+    await channel.prepare(sandbox, requirements)
+    for generation in range(2):
+        effects: list[int] = []
+        observer = Observer()
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def echo(value: int) -> int:
+            effects.append(value)
+            return value
+
+        registry = HostToolRegistry(
+            observer=observer,
+            response_limits=TransferLimits(1024, 4096, 2),
+            max_host_tool_calls_per_run=3,
+        )
+        registry.register(echo)
+        run = HostToolRun(registry)
+        code = (
+            "import json,math,re,sys,types\nimport maf_host_tools as h\n"
+            f"print('answer:' + json.dumps(h.call('echo', value={generation})))\n"
+            "try:\n h.call('missing')\nexcept h.HostToolError:\n print('refused')\n"
+        )
+        result = await channel.run(
+            sandbox,
+            code,
+            requirements=requirements,
+            guest_call_path=f"{guest_call_path}/{generation}",
+            timeout=timeout,
+            policy=run,
+        )
+        if result.exit_code != 0 or result.stdout.splitlines() != [
+            f"answer:{generation}",
+            "refused",
+        ]:
+            raise AssertionError("the channel did not preserve the shared guest API")
+        if effects != [generation] or [one.outcome for one in observer.calls] != [
+            "delivered",
+            "refused",
+        ]:
+            raise AssertionError("host execution and confirmed publication did not agree")
+
+        async def publish(result: object) -> None:
+            raise AssertionError("a completed run published another response")
+
+        try:
+            await run.call("echo", {"value": generation}, publish=publish)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("the channel retained completed run authority")

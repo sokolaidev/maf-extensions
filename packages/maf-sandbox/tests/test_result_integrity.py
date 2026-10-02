@@ -15,6 +15,7 @@ from maf_sandbox import (
     HostToolAggregate,
     Isolation,
     ListedFile,
+    ProgramRequirements,
     SandboxLimits,
     SandboxRouter,
     SandboxSpec,
@@ -43,7 +44,7 @@ def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False,
                     declarations=replace(
                         FAKE_BACKEND_DECLARATIONS,
                         capabilities=FAKE_BACKEND_DECLARATIONS.capabilities
-                        | {Capability.HOST_TOOLS},
+                        | {Capability.HOST_TOOLS, Capability.FILES_OUT},
                         egress_modes=frozenset(Egress),
                         limits=SandboxLimits(
                             files_in=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 1024),
@@ -60,7 +61,9 @@ def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False,
             list_files=InMemoryStore.list,
         ),
         agent_id="agent",
-        spec=spec,
+        spec=replace(spec, program=ProgramRequirements(max_program_bytes=1024))
+        if spec.host_tools is not None
+        else spec,
         result_contract=contract,
         name="probe",
         source_integrity=source,
@@ -341,7 +344,11 @@ def _spec_with_other_source(channel):
             max_host_tool_calls_per_run=1,
         )
     )
-    return replace(_SPEC, requires=_SPEC.requires | {Capability.HOST_TOOLS}, host_tools=surface)
+    return replace(
+        _SPEC,
+        requires=_SPEC.requires | {Capability.HOST_TOOLS, Capability.FILES_OUT},
+        host_tools=surface,
+    )
 
 
 @pytest.mark.parametrize(

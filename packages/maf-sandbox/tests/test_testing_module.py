@@ -228,6 +228,8 @@ class TestInProcessSandboxBackend:
                 FAKE_BACKEND_DECLARATIONS,
                 egress_modes=frozenset(),
                 capabilities=DEFAULT_CAPABILITIES,
+                program_channels=(),
+                limits=DEFAULT_SANDBOX_LIMITS,
             )
             == BackendDeclarations()
         )
@@ -1011,8 +1013,10 @@ class TestInProcessSandboxChecksTheComponents:
 
 
 class TestInProcessSandboxBackendLimits:
-    def test_limits_default_to_default_sandbox_limits(self):
-        assert InProcessSandboxBackend().declarations.limits == DEFAULT_SANDBOX_LIMITS
+    def test_limits_default_to_room_for_program_and_transport_files(self):
+        limits = InProcessSandboxBackend().declarations.limits
+        assert DEFAULT_SANDBOX_LIMITS.files_in.within(limits.files_in)
+        assert limits.files_in.max_total_bytes > DEFAULT_SANDBOX_LIMITS.files_in.max_total_bytes
 
     def test_limits_are_configurable(self):
         custom = SandboxLimits(

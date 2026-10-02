@@ -118,6 +118,8 @@ class EffectiveState:
     #: The host's opaque execution configuration used to bind compatible reuse.
     execution_contract: str | None = None
     configured_identity: ConfiguredIdentity | None = None
+    program_channel: str | None = None
+    execution_profile: str | None = None
 
     @classmethod
     def of(cls, event: SandboxAcquired) -> EffectiveState | None:
@@ -157,6 +159,8 @@ class EffectiveState:
             max_identity_scope=spec.max_identity_scope,
             max_identity_retention_seconds=spec.max_identity_retention_seconds,
             execution_contract=spec.execution_contract,
+            program_channel=event.program_channel,
+            execution_profile=spec.program.profile if spec.program else None,
             configured_identity=None if declarations is None else declarations.configured_identity,
         )
 
@@ -207,6 +211,8 @@ class EffectiveState:
             "max_identity_scope": _named(self.max_identity_scope),
             "max_identity_retention_seconds": self.max_identity_retention_seconds,
             "execution_contract": self.execution_contract,
+            "program_channel": self.program_channel,
+            "execution_profile": self.execution_profile,
             "configured_identity": (
                 None
                 if self.configured_identity is None

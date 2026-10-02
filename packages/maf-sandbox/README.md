@@ -157,9 +157,15 @@ Use `@sandbox_tool(source=..., sink=..., identity=...)` to declare each function
 
 Application authority is allowed by default. User authority requires explicit `allowed_identities`, a host `mint_user_identity` callback and approval of the enclosing tool. Identity labels describe authority; they do not reduce the function's permissions.
 
-Call-count and response-size limits apply per run. The router can forbid the entire channel with `denied_capabilities={Capability.HOST_TOOLS}`. Docker and ACAS support the exec-based transport; WSLC and Hyperlight do not.
+Call-count and response-size limits apply per run. The router can forbid the entire channel with `denied_capabilities={Capability.HOST_TOOLS}`. Docker, ACAS and Docker Sandboxes explicitly declare the exec host-tool channel; WSLC and Hyperlight do not.
 
 See [host-tool controls](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#calling-host-tools) and [CodeAct](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-codeact/README.md) for wiring.
+
+## Program channels
+
+`SandboxSpec.program=ProgramRequirements()` requests the portable Python profile. Backends publish explicit `BackendDeclarations.program_channels`; the router selects a compatible channel in host preference order, defaults to exec first, and retains the choice for the sandbox lifetime. The channel owns its interpreter, staging and host-tool transport. Program bytes are independent of shared-file limits, while the router admits the complete physical transfer demand.
+
+`HostToolRun.call` requires a trusted `publish` callback. Response capacity is reserved before publication, and delivery is recorded only after the transport accepts the response. Publication failure closes the run and records uncertain delivery without replaying the host function. See [program channels and migration](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/program-channels.md) for custom backends, host preferences and timeout constraints.
 
 ## Call cleanup and concurrency
 
