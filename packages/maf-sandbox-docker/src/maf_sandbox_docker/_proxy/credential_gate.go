@@ -173,7 +173,20 @@ func (g *mafCredentials) authorize(req *http.Request) (*http.Request, context.Ca
 
 type mafResponseBody struct {
 	io.ReadCloser
+	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+func (b *mafResponseBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := b.ReadCloser.Read(p)
+	// Cancellation must not become a successful EOF when the transport closes.
+	if ctxErr := b.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
 }
 
 func (b *mafResponseBody) Close() error {

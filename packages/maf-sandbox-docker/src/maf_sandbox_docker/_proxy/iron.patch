@@ -36,7 +36,7 @@ index a75ada2..aeb09a7 100644
  
  // MatchAnyRule returns true if the request matches any rule in the list.
 diff --git a/internal/proxy/proxy.go b/internal/proxy/proxy.go
-index 73bde1f..22e5ea6 100644
+index 73bde1f..a2243b5 100644
 --- a/internal/proxy/proxy.go
 +++ b/internal/proxy/proxy.go
 @@ -14,10 +14,13 @@ import (
@@ -133,7 +133,39 @@ index 73bde1f..22e5ea6 100644
  				if markIfClientCancel(r, err, result) {
  					return
  				}
-@@ -937,7 +953,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -872,6 +888,7 @@ func (p *Proxy) streamSSE(w http.ResponseWriter, resp *http.Response) {
+ 	if !ok {
+ 		if _, err := io.Copy(w, reader); err != nil {
+ 			p.logger.Warn("SSE copy error", slog.String("error", err.Error()))
++			panic(http.ErrAbortHandler)
+ 		}
+ 		return
+ 	}
+@@ -889,6 +906,7 @@ func (p *Proxy) streamSSE(w http.ResponseWriter, resp *http.Response) {
+ 		if readErr != nil {
+ 			if readErr != io.EOF {
+ 				p.logger.Warn("SSE read error", slog.String("error", readErr.Error()))
++				panic(http.ErrAbortHandler)
+ 			}
+ 			break
+ 		}
+@@ -910,6 +928,7 @@ func (p *Proxy) writeResponse(w http.ResponseWriter, resp *http.Response) {
+ 		w.WriteHeader(resp.StatusCode)
+ 		if _, err := io.Copy(w, buf.StreamingReader()); err != nil {
+ 			p.logger.Warn("response body copy error", slog.String("error", err.Error()))
++			panic(http.ErrAbortHandler)
+ 		}
+ 	} else {
+ 		// Synthetic responses (e.g. reject) with plain bodies.
+@@ -917,6 +936,7 @@ func (p *Proxy) writeResponse(w http.ResponseWriter, resp *http.Response) {
+ 		if resp.Body != nil {
+ 			if _, err := io.Copy(w, resp.Body); err != nil {
+ 				p.logger.Warn("response body copy error", slog.String("error", err.Error()))
++				panic(http.ErrAbortHandler)
+ 			}
+ 		}
+ 	}
+@@ -937,7 +957,20 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  		Timeout:   30 * time.Second,
  		KeepAlive: 30 * time.Second,
  		Resolver:  resolver,
@@ -155,7 +187,7 @@ index 73bde1f..22e5ea6 100644
  	}
  	if responseHeaderTimeout <= 0 {
  		responseHeaderTimeout = config.DefaultUpstreamResponseHeaderTimeout
-@@ -959,7 +988,77 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
+@@ -959,7 +992,77 @@ func buildTransport(resolver *net.Resolver, guard *dnsguard.Guard, responseHeade
  }
  
  func (p *Proxy) doUpstream(req *http.Request) (*http.Response, error) {
@@ -177,7 +209,7 @@ index 73bde1f..22e5ea6 100644
 +		cancel()
 +		return nil, err
 +	}
-+	resp.Body = &mafResponseBody{ReadCloser: resp.Body, cancel: cancel}
++	resp.Body = &mafResponseBody{ReadCloser: resp.Body, ctx: req.Context(), cancel: cancel}
 +	return resp, nil
 +}
 +
