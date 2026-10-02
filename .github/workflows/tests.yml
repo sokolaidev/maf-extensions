@@ -272,7 +272,10 @@ jobs:
         run: |
           set -euo pipefail
           test -c /dev/kvm
-          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          printf 'KERNEL=="kvm", OWNER="%s", MODE="0600"\n' "$(id -un)" | sudo tee /etc/udev/rules.d/99-mxc-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
           test -r /dev/kvm && test -w /dev/kvm
           df -h "$RUNNER_TEMP"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mxc/target" >> "$GITHUB_ENV"
@@ -340,6 +343,13 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
               summary.write("MXC native recovery and atomic host publication passed on Linux/KVM.\n")
           PY
+
+      - name: Record final KVM device access
+        if: always() && (github.event_name == 'workflow_dispatch' && inputs.mxc_recovery)
+        run: |
+          id
+          stat /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
 
       - name: Retain MXC reports and diagnostics
         if: always() && (github.event_name == 'workflow_dispatch' && inputs.mxc_recovery)
