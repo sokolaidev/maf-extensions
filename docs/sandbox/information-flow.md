@@ -76,7 +76,7 @@ The wrapper checks a returned verdict by type and text. Declaring `0` does not a
 
 `trusted_output` is a claim made by the kind author. The wrapper does not prove that the text is safe to trust. Put text whose sources are uncertain in `output`.
 
-Sandbox diagnostics, guest text and provider reports belong in `output`. Their default integrity is `untrusted`; the [file-read and source-channel checks](#how-core-labels-a-call) can establish trusted workload output. A custom tool with a justified `trusted` source declaration can retain trusted output, subject to those checks.
+Sandbox diagnostics, guest text and provider reports belong in `output`. Their default integrity is `untrusted`; the [file-read, call-evidence and source-channel checks](#how-core-labels-a-call) can establish trusted workload output. A custom tool with a justified `trusted` source declaration can retain trusted output, subject to those checks.
 
 A kind may also select a diagnostic summary from a package-owned finite vocabulary under the rule below. [Bicep](kinds/bicep.md) selects known rule IDs, severities and staged argument references, while its full report follows the workload-label checks. This selection does not authorize echoing diagnostic messages or paths.
 
@@ -87,7 +87,7 @@ Enable the contract with `result_contract=True` and declare the allowed `verdict
 The wrapper exposes `source_integrity="trusted"` to the framework. It preserves the kind's workload claim separately as `maf_sandbox_derived_integrity`.
 
 - `completed`, `verdict` and `trusted_output` have no wrapper-written label. They inherit trusted integrity and the call's confidentiality.
-- `output` items receive a complete label based on the workload claim and file-read checks. The wrapper uses the host's confidentiality, or `public` if none is valid.
+- `output` items receive a complete label based on the workload claim, accepted file reads and call evidence, subject to the source-channel checks. The wrapper uses the host's confidentiality, or `public` if none is valid.
 - The framework keeps any stricter confidentiality from the call. A `public` stamp never lowers a private result.
 
 This arrangement lets the wrapper restrict workload output while keeping the other fields readable. A tool that keeps an untrusted framework declaration cannot make selected items trusted.
@@ -159,7 +159,7 @@ Other tools receive wrapper-written result labels only when both `source_integri
 
 ## How core labels a call
 
-When files were read, unknown or untrusted evidence makes every workload item untrusted. All-trusted reads can promote an untrusted workload claim only when every other source channel is absent or established as trusted. Calls with no accepted reads retain the kind's claim.
+When files were read, unknown or untrusted evidence makes every workload item untrusted. All-trusted reads can promote an untrusted workload claim only when every other source channel is absent or established as trusted. Calls with no accepted reads can promote the claim under the same other-source checks when the framework establishes trusted conversation and argument labels. Without that evidence, they retain the kind's claim. The wrapper snapshots the framework's `effective_invocation_label` before the body runs; it does not infer trust from argument text or the raised tool declaration.
 
 1. The host lists files as `ListedFile(name, integrity)`.
 2. The kind reads a selected entry through `SandboxToolSession.read_file`.
@@ -168,7 +168,7 @@ When files were read, unknown or untrusted evidence makes every workload item un
 
 Empty files count as successful reads. Missing or refused reads do not. Without a session source record, only the listing's evidence is available.
 
-![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. All-trusted reads produce trusted workload items only when other source channels are absent or trusted; no reads preserve the kind's claim. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
+![The host lists files with their integrity. The session checks the listing against its source record before and after a read; a changed record makes integrity unknown. Accepted reads accumulate in this call's FedFromStore record. When the wrapper writes labels, any unknown or untrusted read makes every workload item untrusted. All-trusted reads produce trusted workload items only when other source channels are absent or trusted; no reads can instead use trusted conversation and argument evidence under the same source checks, retaining the claim when that evidence is absent. The contract's first three fields and standing guidance are unaffected, and the host's result confidentiality is preserved.](assets/file-read-labels.svg)
 
 When the wrapper writes labels, and the host classifies results as `private`:
 
@@ -178,11 +178,12 @@ When the wrapper writes labels, and the host classifies results as `private`:
 | `trusted` | Any untrusted or unknown | `untrusted/private` |
 | `untrusted` | At least one read, all trusted; other source channels absent or trusted | `trusted/private` |
 | `untrusted` | All trusted, but network or untrusted/unknown host-tool sources are enabled | `untrusted/private` |
-| `untrusted` | None, or any untrusted or unknown | `untrusted/private` |
+| `untrusted` | None; trusted conversation and arguments, other sources trusted or absent | `trusted/private` |
+| `untrusted` | None without trusted call evidence, or any untrusted or unknown read | `untrusted/private` |
 
 One weak read affects every workload item in the call. It does not lower the contract's first three fields or standing guidance. Each call has its own read record; the attached tool declaration is unchanged.
 
-File evidence covers `SandboxToolSession.read_file`, not direct store reads. Promotion also checks the attached spec: unrestricted egress blocks it, and a nonempty allowlist blocks it unless the host passes `egress_integrity=SourceIntegrity.TRUSTED` at attachment, even if the call makes no network request. That claim establishes only the network source for file-based promotion; it does not license a blanket trusted output declaration or change the confidentiality cap. It is refused for `CLOSED` and `UNRESTRICTED`. A host-tool channel permits promotion only when its registry fold is trusted or contains no sources; an untrusted, unknown or missing fold blocks it. The wrapper does not inspect network responses or individual host-tool results. Kinds must account for any source outside these declared channels.
+File evidence covers `SandboxToolSession.read_file`, not direct store reads. Promotion also checks the attached spec: unrestricted egress blocks it, and a nonempty allowlist blocks it unless the host passes `egress_integrity=SourceIntegrity.TRUSTED` at attachment, even if the call makes no network request. That claim establishes only the network source for promotion based on trusted file reads or trusted call evidence when no files were read; it does not license a blanket trusted output declaration or change the confidentiality cap. It is refused for `CLOSED` and `UNRESTRICTED`. A host-tool channel permits promotion only when its registry fold is trusted or contains no sources; an untrusted, unknown or missing fold blocks it. The wrapper does not inspect network responses or individual host-tool results. Kinds must account for any source outside these declared channels.
 
 `nothing_survives_from=(SourceChannel.FILE_STORE,)` states that file content does not affect the result. It does not bypass the read checks or prove that claim.
 
@@ -235,3 +236,4 @@ For tools with standing guidance, read the workload claim from `maf_sandbox_deri
 | Wrapper owns labels, checks file reads and preserves standing guidance | Implemented | [Kind-authoring guide](kinds/writing-a-kind.md) and [host configuration](hosts.md) |
 | Four-field `SandboxResult` | Implemented in `maf-sandbox`; opt-in with `result_contract=True` | [Kind-authoring guide](kinds/writing-a-kind.md) |
 | Use the result contract in all four kinds, samples and live checks | Implemented for Bicep, Terraform/OpenTofu, CodeAct and draw.io, including their samples and live checks | Bicep by [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged); Terraform/OpenTofu by [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); draw.io by [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); CodeAct by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged), completing [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) |
+| Trusted call evidence for drawio results with no file reads | Implemented | [#1652](https://github.com/sokolaidev/maf-extensions/issues/1652) (closed) by [#1653](https://github.com/sokolaidev/maf-extensions/pull/1653) (merged) |

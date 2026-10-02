@@ -505,3 +505,194 @@ def test_trusting_egress_does_not_clear_host_tool_sources(channel, expected):
     tool.additional_properties["confidentiality"] = "public"
     items = asyncio.run(tool.invoke(arguments={}))
     assert items[0].additional_properties["security_label"]["integrity"] == expected
+
+
+@pytest.mark.parametrize(
+    "channel,expected",
+    [
+        ("closed", "trusted"),
+        ("allowlist", "untrusted"),
+        ("unrestricted", "untrusted"),
+        ("host-missing", "untrusted"),
+        ("host-untrusted", "untrusted"),
+        ("host-trusted", "trusted"),
+        ("host-pure", "trusted"),
+    ],
+)
+@pytest.mark.parametrize("form", ["string", "items", "guidance", "contract"])
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_no_reads_use_trusted_call_evidence_only_when_other_sources_allow_it(
+    channel,
+    expected,
+    form,
+    synchronous,
+):
+    answer = {
+        "string": "report",
+        "items": [Content.from_text("report")],
+        "guidance": [Content.from_text("report"), Content.from_text(_GUIDANCE)],
+        "contract": SandboxResult(completed=True, output=("report",)),
+    }[form]
+
+    def build(session):
+        async def asynchronous(value: str):
+            return answer
+
+        def synchronous_body(value: str):
+            return answer
+
+        return synchronous_body if synchronous else asynchronous
+
+    tool = _attach(
+        build,
+        source="untrusted",
+        spec=_spec_with_other_source(channel),
+        guidance=(_GUIDANCE,) if form == "guidance" else (),
+        contract=form == "contract",
+    )
+    tool.additional_properties["confidentiality"] = "private"
+    assert list(tool.parameters()["properties"]) == ["value"]
+    tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+    context = FunctionInvocationContext(function=tool, arguments={"value": "argument"})
+
+    async def call_next():
+        context.result = await tool.invoke(context=context)
+        report = next(item for item in context.result if item.text == "report")
+        assert report.additional_properties["security_label"] == {
+            "integrity": expected,
+            "confidentiality": "private",
+        }
+
+    asyncio.run(tracker.process(context, call_next))
+    if form in {"guidance", "contract"}:
+        assert context.metadata["result_label"].integrity.value == expected
+    else:
+        # The framework's unraised source declaration still restricts the result.
+        assert context.metadata["result_label"].integrity.value == "untrusted"
+
+
+@pytest.mark.parametrize("evidence", [None, "malformed", "untrusted", "trusted"])
+@pytest.mark.parametrize(
+    "levels", [[], [None], [SourceIntegrity.UNTRUSTED], [SourceIntegrity.TRUSTED]]
+)
+def test_call_evidence_is_used_only_without_accepted_reads(evidence, levels):
+    from agent_framework.security import ContentLabel, IntegrityLabel
+
+    tool = _reading(
+        levels,
+        source="untrusted",
+        guidance=(_GUIDANCE,),
+        answer=[Content.from_text("report"), Content.from_text(_GUIDANCE)],
+    )
+    context = FunctionInvocationContext(function=tool, arguments={})
+    if evidence in {"trusted", "untrusted"}:
+        context.metadata["effective_invocation_label"] = ContentLabel(
+            integrity=IntegrityLabel(evidence)
+        )
+    elif evidence is not None:
+        context.metadata["effective_invocation_label"] = evidence
+    answer = asyncio.run(tool.invoke(context=context))
+    assert answer[0].additional_properties["security_label"]["integrity"] == (
+        "trusted"
+        if levels == [SourceIntegrity.TRUSTED] or (not levels and evidence == "trusted")
+        else "untrusted"
+    )
+
+
+def test_existing_context_parameter_is_forwarded_and_snapshot_precedes_body():
+    from agent_framework.security import ContentLabel, IntegrityLabel
+
+    def build(session):
+        async def probe(ctx: FunctionInvocationContext, value: str):
+            ctx.metadata["effective_invocation_label"] = ContentLabel(
+                integrity=IntegrityLabel.TRUSTED
+            )
+            return SandboxResult(completed=True, output=(value,))
+
+        return probe
+
+    tool = _attach(build, source="untrusted", contract=True)
+    assert list(tool.parameters()["properties"]) == ["value"]
+    context = FunctionInvocationContext(function=tool, arguments={"value": "report"})
+    context.metadata["effective_invocation_label"] = ContentLabel(
+        integrity=IntegrityLabel.UNTRUSTED
+    )
+    answer = asyncio.run(tool.invoke(context=context))
+    assert answer[-1].additional_properties["security_label"]["integrity"] == "untrusted"
+
+
+@pytest.mark.parametrize("existing_context", [False, True])
+def test_context_injection_preserves_keyword_arguments_and_optional_context(existing_context):
+    def build(session):
+        async def optional(value: str, ctx: FunctionInvocationContext | None = None):
+            assert ctx is not None
+            return SandboxResult(completed=True, output=(value,))
+
+        async def colliding(maf_call_context: str, **kwargs):
+            assert not kwargs
+            return SandboxResult(completed=True, output=(maf_call_context,))
+
+        return optional if existing_context else colliding
+
+    tool = _attach(build, source="untrusted", contract=True)
+    parameter = "value" if existing_context else "maf_call_context"
+    assert list(tool.parameters()["properties"]) == [parameter]
+    result = asyncio.run(tool.invoke(arguments={parameter: "report"}))
+    assert result[-1].text == "report"
+    assert result[-1].additional_properties["security_label"]["integrity"] == "untrusted"
+
+
+def test_concurrent_calls_keep_their_own_argument_evidence():
+    from agent_framework.security import ContentLabel, IntegrityLabel
+
+    async def run():
+        both_started = asyncio.Barrier(2)
+
+        def build(session):
+            async def probe(value: str):
+                await both_started.wait()
+                return SandboxResult(completed=True, output=(value,))
+
+            return probe
+
+        tool = _attach(build, source="untrusted", contract=True)
+        tracker = LabelTrackingFunctionMiddleware()
+        reference = tracker.get_variable_store().store(
+            "hidden", ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def call(value):
+            context = FunctionInvocationContext(function=tool, arguments={"value": value})
+
+            async def call_next():
+                context.result = await tool.invoke(context=context)
+
+            await tracker.process(context, call_next)
+            return context.metadata["result_label"].integrity.value
+
+        return await asyncio.gather(call("own argument"), call(f"[{reference}]"))
+
+    assert asyncio.run(run()) == ["trusted", "untrusted"]
+
+
+@pytest.mark.parametrize("annotation", ["optional_module.Result", "("])
+@pytest.mark.parametrize("synchronous", [False, True])
+def test_unresolvable_return_annotations_keep_framework_attachment_fallback(
+    annotation, synchronous
+):
+    from types import SimpleNamespace
+
+    from agent_framework import FunctionTool
+
+    namespace = {"optional_module": SimpleNamespace()}
+    prefix = "" if synchronous else "async "
+    exec(f"{prefix}def probe(value: str):\n    return value", namespace)
+    body = namespace["probe"]
+    body.__annotations__["return"] = annotation
+    bare = FunctionTool(name="probe", func=body)
+    wrapped = _attach(lambda session: body, source="untrusted")
+    wrapped.additional_properties["confidentiality"] = "private"
+    assert wrapped.parameters() == bare.parameters()
+    result = asyncio.run(wrapped.invoke(arguments={"value": "report"}))
+    assert result[0].text == "report"
+    assert result[0].additional_properties["security_label"]["integrity"] == "untrusted"
