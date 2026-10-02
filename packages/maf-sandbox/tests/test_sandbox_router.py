@@ -2978,6 +2978,7 @@ _PROTOCOL_MODULES = frozenset(
         "file_transfer",
         "sync_runner",
         "paths",
+        "run_activity",
         "guest_access",
         "testing",
         # `_guest/` is the source maf-sandbox copies into a guest, kept as real Python. It is

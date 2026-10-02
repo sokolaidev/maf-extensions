@@ -88,6 +88,12 @@ If exact-instance disposal fails, the router retains the cleanup target and refu
 
 A successful retry clears only the targets it covers. Newer or unrelated failures remain. [Operations](operations.md) defines host recovery and scope cleanup. A `None` backend disposal result means no reported failure; it is not independent proof of deletion.
 
+## Run activity
+
+A sandbox may implement `maf_sandbox.run_activity.SandboxRunActivity` when a detached program needs an active backend session. The host-tools file transport acquires this guard before launch and holds it through in-flight host tools, process cleanup and transport-directory reclamation. Acquisition spends the run's existing deadline; the guard's lifetime can exceed it because an already-running host tool is not cancelled by that deadline. Backends without the optional surface retain their existing behavior.
+
+The transport checks the guard before launch, before each host-tool dispatch, after each effect and before returning a result. Guard loss raises `SandboxRunActivityLost`; an in-flight host effect may have completed without a delivered answer. No run or host effect is replayed. Each run owns its guard independently, so this surface does not introduce exclusive backend admission. See [Docker Sandboxes](backends/docker-sbx.md#host-tool-runs) for its held-session implementation.
+
 ## Process cleanup and observations
 
 The host-tools launcher emits a versioned receipt with the program PID and optional dedicated process-group ID. A trusted helper waits until the host has received the complete receipt, then starts the guest program. Missing or invalid receipts leave it unreleased.

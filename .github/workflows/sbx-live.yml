@@ -9,6 +9,8 @@ on:
       - "packages/maf-sandbox/src/**"
       - "packages/maf-sandbox-docker-sbx/**"
       - ".github/workflows/sbx-live.yml"
+      - "tests/test_sbx_codeact_e2e.py"
+      - "packages/maf-sandbox-codeact/src/**"
       - ".github/actions/setup-sbx/**"
   schedule:
     # Offset from Docker live at 04:50 UTC.
@@ -67,7 +69,7 @@ jobs:
           set -euo pipefail
           # A skip here is a bug: the module skips itself without MAF_SANDBOX_SBX_E2E.
           # `--durations` records whether the runner is fast enough to keep.
-          uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py | tee suite.log
+          uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py tests/test_sbx_codeact_e2e.py | tee suite.log
           ! grep -q '^SKIPPED' suite.log
 
       - name: Run the host-state refusals and faults
@@ -82,6 +84,16 @@ jobs:
           eval "$(ssh-agent -s)"
           uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee host.log
           ! grep -q '^SKIPPED' host.log
+
+      - name: Retain live evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbx-live-evidence
+          path: |
+            suite.log
+            host.log
+          retention-days: 30
 
       - name: Remove leftover sandboxes
         if: always()

@@ -53,6 +53,7 @@ import math
 import posixpath
 import re
 import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
@@ -69,6 +70,7 @@ from ._protocol import (
 )
 from ._reclaim import note_unclean
 from .paths import confine_resolve_guest_path, guest_path_relative_to
+from .run_activity import RunActivity, SandboxRunActivity
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
@@ -915,46 +917,60 @@ async def host_tool_calls_over_exec(
     # Validated before the wrapper, so a bad argument raises plainly. The run directory is
     # then left alone, which is the right way round: the caller has already written the
     # program and the shim into it and has not yet been told the call is going nowhere.
-    launcher = _WhatTheLauncherSaid(
-        tracker=ProcessTracker(sandbox, run, interpreter, layout.directory)
-    )
-    try:
-        result = await _supervise(
-            sandbox,
-            run,
-            layout,
-            timeout=timeout,
-            poll_interval=poll_interval,
-            interpreter=interpreter,
-            launcher=launcher,
-            output_limit=output_limit,
+    deadline = time.monotonic() + timeout
+    async with AsyncExitStack() as stack:
+        activity = None
+        launcher = _WhatTheLauncherSaid(
+            tracker=ProcessTracker(sandbox, run, interpreter, layout.directory)
         )
-        return result
-    except _TheRunsOwnTimeout:
-        # This run's own bound, which `_supervise` has already stopped the program for and
-        # reported. Deliberately not the public type: a backend raising one of those is a
-        # program nobody stopped, and it belongs on the path below with every other failure.
-        raise
-    finally:
         try:
-            if launcher.executed and not launcher.stopped:
-                fate, reach = await _stop_the_program(
-                    sandbox,
-                    layout,
-                    until=time.monotonic() + _PROCESS_CLEANUP_GRACE,
-                    launcher=launcher,
-                )
-                _note_unclean_stop(sandbox, fate, reach)
-            elif (
-                not launcher.executed
-                and launcher.tracker.phase == "before_launch"
-                and launcher.tracker.incomplete
-            ):
-                note_unclean(sandbox, "process cleanup verification was unavailable or incomplete")
-        finally:
-            await _reclaim_the_transports_own(
-                sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE
+            if isinstance(sandbox, SandboxRunActivity):
+                async with asyncio.timeout(timeout):
+                    activity = await stack.enter_async_context(
+                        sandbox.run_activity(timeout=timeout)
+                    )
+                activity.check()
+            result = await _supervise(
+                sandbox,
+                run,
+                layout,
+                timeout=timeout,
+                deadline=deadline,
+                activity=activity,
+                poll_interval=poll_interval,
+                interpreter=interpreter,
+                launcher=launcher,
+                output_limit=output_limit,
             )
+        except _TheRunsOwnTimeout:
+            # This run's own bound, which `_supervise` has already stopped the program for and
+            # reported. Deliberately not the public type: a backend raising one of those is a
+            # program nobody stopped, and it belongs on the path below with every other failure.
+            raise
+        finally:
+            try:
+                if launcher.executed and not launcher.stopped:
+                    fate, reach = await _stop_the_program(
+                        sandbox,
+                        layout,
+                        until=time.monotonic() + _PROCESS_CLEANUP_GRACE,
+                        launcher=launcher,
+                    )
+                    _note_unclean_stop(sandbox, fate, reach)
+                elif (
+                    not launcher.executed
+                    and launcher.tracker.phase == "before_launch"
+                    and launcher.tracker.incomplete
+                ):
+                    note_unclean(
+                        sandbox, "process cleanup verification was unavailable or incomplete"
+                    )
+            finally:
+                await _reclaim_the_transports_own(
+                    sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE
+                )
+        _check_activity(activity)
+        return result
 
 
 @dataclass
@@ -981,13 +997,14 @@ async def _supervise(
     layout: GuestRunLayout,
     *,
     timeout: float,
+    deadline: float,
+    activity: RunActivity | None,
     poll_interval: float,
     interpreter: str,
     launcher: _WhatTheLauncherSaid,
     output_limit: int | None,
 ) -> ExecResult:
     """The body of :func:`host_tool_calls_over_exec`, minus the cleanup that wraps it."""
-    deadline = time.monotonic() + timeout
     start_token = uuid4().hex
     await launcher.tracker.snapshot("before_launch", until=deadline)
     try:
@@ -1012,6 +1029,7 @@ async def _supervise(
             signal="absent",
         ) from gone
     # The upload landed; from here a program may exist, so the finally may stop-and-note.
+    _check_activity(activity)
     launcher.executed = True
     try:
         started = await sandbox.exec(
@@ -1075,6 +1093,7 @@ async def _supervise(
             launcher.pid, launcher.pgid = pid, pgid or None
             launcher.tracker.pid, launcher.tracker.pgid = launcher.pid, launcher.pgid
     if started.exit_code == 0 and launcher.pid is not None:
+        _check_activity(activity)
         try:
             await _within(
                 deadline,
@@ -1095,6 +1114,7 @@ async def _supervise(
                 signal=fate,
                 reach=reach,
             ) from gone
+    _check_activity(activity)
     await launcher.tracker.snapshot("after_launch", until=deadline)
 
     if started.exit_code != 0:
@@ -1125,6 +1145,7 @@ async def _supervise(
     request_window = 1
     hole_since: float | None = None
     while True:
+        _check_activity(activity)
         if time.monotonic() >= deadline:
             # First in the loop, so an expired run reports *itself*. Every transport call
             # below is bounded by this same deadline, and letting one of those raise instead
@@ -1190,7 +1211,7 @@ async def _supervise(
             if request_probes:
                 before = served
                 served, full_prefix = await _serve_request_probes(
-                    sandbox, run, layout, served, request_probes, deadline
+                    sandbox, run, layout, served, request_probes, deadline, activity
                 )
                 if served != before:
                     # The frontier moved, so any absence timing was for a number now behind us.
@@ -1740,6 +1761,7 @@ async def _serve_request_probes(
     served: int,
     probes: tuple[asyncio.Task[str | bool | _TooLarge | _NotText | None], ...],
     deadline: float,
+    activity: RunActivity | None = None,
 ) -> tuple[int, bool]:
     """Serve the contiguous discovered prefix in identifier order.
 
@@ -1783,7 +1805,9 @@ async def _serve_request_probes(
                 full_prefix = False
                 break
             id_str = f"{identifier:04d}"
+            _check_activity(activity)
             answer = await _answer(run, body, id_str)
+            _check_activity(activity)
             if answer is None:
                 # Only the explicit marker advances a hole. A missing speculative probe does
                 # not say the guest abandoned its identifier.
@@ -2237,3 +2261,8 @@ def _exit_code_from(recorded: str | _TooLarge | _NotText) -> int:
         return int(recorded.strip())
     except ValueError:
         return 1
+
+
+def _check_activity(activity: RunActivity | None) -> None:
+    if activity is not None:
+        activity.check()

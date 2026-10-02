@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import unicodedata
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ from maf_sandbox._shim_wire_contract import (
     assert_request_conforms,
 )
 from maf_sandbox.paths import confine_resolve_guest_path, guest_path_relative_to
+from maf_sandbox.run_activity import SandboxRunActivityLost
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
 #: `sleep(0)` is not a throttle.
@@ -326,6 +328,153 @@ def _run(
             guest, run, _LAYOUT, timeout=timeout, poll_interval=poll, output_limit=output_limit
         )
     )
+
+
+class _ActiveGuest(_ConcurrentGuest):
+    active = False
+    lost = False
+    fail_start = False
+    released = False
+
+    @asynccontextmanager
+    async def run_activity(self, *, timeout):
+        assert not self.started
+        if self.fail_start:
+            raise SandboxRunActivityLost("start failed")
+        self.active = True
+        try:
+            yield self
+        finally:
+            assert self.reclaimed
+            self.active = False
+            self.released = True
+
+    def check(self):
+        assert self.active
+        if self.lost:
+            raise SandboxRunActivityLost("lost; effect may have completed")
+
+    async def exec(self, command, *, working_directory, timeout):
+        assert self.active
+        return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+    async def reclaim(self, directory, *, working_directory, timeout):
+        assert self.active or self.fail_start
+        return await super().reclaim(
+            directory, working_directory=working_directory, timeout=timeout
+        )
+
+
+class TestRunActivity:
+    @pytest.mark.parametrize("phase", ["_stop_the_program", "_reclaim_the_transports_own"])
+    def test_loss_during_cleanup_prevents_success(self, monkeypatch, phase):
+        guest = _ActiveGuest([])
+        original = getattr(host_tools_over_exec, phase)
+
+        async def lose_during_cleanup(*args, **kwargs):
+            await asyncio.sleep(0)
+            guest.lost = True
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(host_tools_over_exec, phase, lose_during_cleanup)
+        with pytest.raises(SandboxRunActivityLost):
+            _run(guest, HostToolRun(_registry()))
+        assert guest.reclaimed and guest.released
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            host_tools_over_exec._TheRunsOwnTimeout("expired"),
+            asyncio.CancelledError(),
+            RuntimeError("backend failed"),
+        ],
+        ids=["timeout", "cancellation", "backend-error"],
+    )
+    def test_cleanup_loss_preserves_existing_failure(self, monkeypatch, error):
+        guest = _ActiveGuest([])
+        original = host_tools_over_exec._reclaim_the_transports_own
+
+        async def fail_supervision(*args, **kwargs):
+            raise error
+
+        async def lose_during_cleanup(*args, **kwargs):
+            await asyncio.sleep(0)
+            guest.lost = True
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(host_tools_over_exec, "_supervise", fail_supervision)
+        monkeypatch.setattr(
+            host_tools_over_exec, "_reclaim_the_transports_own", lose_during_cleanup
+        )
+        with pytest.raises(type(error)) as raised:
+            _run(guest, HostToolRun(_registry()))
+        assert raised.value is error
+        assert guest.reclaimed and guest.released
+
+    def test_lifetime_includes_launcher_and_cleanup(self):
+        guest = _ActiveGuest([("add", {"left": 2, "right": 3})])
+        assert _run(guest, HostToolRun(_registry())).exit_code == 0
+        assert guest.released and not guest.active
+
+    def test_acquisition_failure_never_starts_program(self):
+        guest = _ActiveGuest([])
+        guest.fail_start = True
+        with pytest.raises(SandboxRunActivityLost, match="start failed"):
+            _run(guest, HostToolRun(_registry()))
+        assert not guest.started
+        assert guest.reclaimed
+
+    def test_loss_during_effect_does_not_cancel_or_replay_it(self):
+        guest = _ActiveGuest([("effect", {})] * 4)
+        effects = []
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        async def effect() -> str:
+            assert guest.active
+            guest.lost = True
+            await asyncio.sleep(0)
+            effects.append("completed")
+            return "answer"
+
+        registry = HostToolRegistry()
+        registry.register(effect)
+        with pytest.raises(SandboxRunActivityLost, match="effect may have completed"):
+            _run(guest, HostToolRun(registry))
+        assert effects == ["completed"]
+        assert not guest.answers
+        assert guest.released
+
+    def test_effect_can_outlast_deadline_while_activity_is_held(self):
+        guest = _ActiveGuest([("effect", {})])
+        effects = []
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        async def effect() -> str:
+            await asyncio.sleep(0.1)
+            assert guest.active
+            effects.append("completed")
+            return "answer"
+
+        registry = HostToolRegistry()
+        registry.register(effect)
+        assert _run(guest, HostToolRun(registry), timeout=0.05).exit_code == 0
+        assert effects == ["completed"]
+        assert guest.released
+
+    def test_cancellation_releases_after_cleanup(self):
+        async def scenario():
+            guest = _ActiveGuest([], finish=False)
+            task = asyncio.create_task(
+                host_tool_calls_over_exec(guest, HostToolRun(_registry()), _LAYOUT, timeout=5)
+            )
+            while not guest.started:
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert guest.released
+
+        asyncio.run(scenario())
 
 
 class TestTheHappyPath:
