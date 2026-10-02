@@ -471,6 +471,134 @@ def test_cancel_during_purge_waits_and_never_claims_failed_cleanup(monkeypatch, 
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("stage", ["worker", "cleanup"])
+@pytest.mark.parametrize("timeout", [False, True])
+@pytest.mark.parametrize("failure", [False, True])
+def test_repeated_request_cancellation_retains_admission(monkeypatch, stage, timeout, failure):
+    async def scenario():
+        started, draining, cleaning, release = (asyncio.Event() for _ in range(4))
+        order = []
+        validator = prototype.Validator(
+            InProcessSandboxBackend(isolation=Isolation.CONTAINER), "owner", IMAGE, CONFIG
+        )
+
+        async def execute(**kwargs):
+            started.set()
+            if stage == "worker":
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    draining.set()
+                    await release.wait()
+                    order.append("worker settled")
+            return result()
+
+        async def purge(*args):
+            cleaning.set()
+            if stage == "cleanup":
+                await release.wait()
+            order.append("cleanup settled")
+            return ScopePurge(undisposed=DisposalFailure("unknown", "failed") if failure else None)
+
+        monkeypatch.setattr(
+            prototype, "make_bicep_tools", lambda *a, **k: [SimpleNamespace(func=execute)]
+        )
+        monkeypatch.setattr(validator.backend, "dispose_scope", purge)
+        if timeout:
+            monkeypatch.setattr(prototype, "REQUEST_SECONDS", 0.01)
+        request = asyncio.create_task(validator.call(arguments()))
+        try:
+            await (started if stage == "worker" else cleaning).wait()
+            if not timeout:
+                request.cancel()
+            if stage == "worker":
+                await draining.wait()
+            else:
+                await asyncio.sleep(0.03)
+            worker = validator.active
+            for _ in range(3):
+                request.cancel()
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert not request.done() and validator.active is worker
+                assert order == []
+                with pytest.raises(ValueError, match="busy"):
+                    await validator.call(arguments())
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert order == (
+                ["worker settled", "cleanup settled"] if stage == "worker" else ["cleanup settled"]
+            )
+            assert validator.active is None and validator.poisoned == failure
+        finally:
+            release.set()
+            await asyncio.gather(request, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("target", ["worker", "shutdown"])
+def test_repeated_cancellation_drains_cleanup_and_holds_owner_lock(monkeypatch, tmp_path, target):
+    async def scenario():
+        cleaning, release, locked = (asyncio.Event() for _ in range(3))
+        cleaned = False
+        validator = prototype.Validator(
+            InProcessSandboxBackend(isolation=Isolation.CONTAINER), "owner", IMAGE, CONFIG
+        )
+
+        async def execute(**kwargs):
+            return result()
+
+        async def purge(*args):
+            nonlocal cleaned
+            cleaning.set()
+            await release.wait()
+            cleaned = True
+            return ScopePurge()
+
+        async def shutdown():
+            with prototype.ownership(tmp_path):
+                locked.set()
+                await validator.close()
+
+        monkeypatch.setattr(
+            prototype, "make_bicep_tools", lambda *a, **k: [SimpleNamespace(func=execute)]
+        )
+        monkeypatch.setattr(validator.backend, "dispose_scope", purge)
+        request = asyncio.create_task(validator.call(arguments()))
+        await cleaning.wait()
+        worker = validator.active
+        assert worker is not None
+        cancelled = worker if target == "worker" else asyncio.create_task(shutdown())
+        try:
+            if target == "shutdown":
+                await locked.wait()
+            for _ in range(3):
+                cancelled.cancel()
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert not cancelled.done() and validator.active is worker and not cleaned
+                with pytest.raises(ValueError, match="busy"):
+                    await validator.call(arguments())
+                if target == "shutdown":
+                    with pytest.raises(OSError), prototype.ownership(tmp_path):
+                        pass
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cleaned and validator.active is None
+            with prototype.ownership(tmp_path):
+                pass
+        finally:
+            release.set()
+            await asyncio.gather(request, cancelled, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.skipif(
     not os.environ.get("MAF_OPENCLAW_BICEP_IMAGE"), reason="needs prepared Docker image"
 )

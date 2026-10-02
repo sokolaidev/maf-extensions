@@ -221,6 +221,21 @@ def ownership(state_dir: Path) -> Iterator[str]:
         yield "openclaw-bicep-" + owner
 
 
+async def drain(task: asyncio.Task[Any]) -> bool:
+    """Wait without forwarding cancellation; report interruption of this waiter."""
+    current = asyncio.current_task()
+    assert current is not None
+    interrupted = False
+    with anyio.CancelScope(shield=True):
+        while not task.done():
+            cancellations = current.cancelling()
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                interrupted |= current.cancelling() > cancellations or not task.cancelled()
+    return interrupted
+
+
 class Validator:
     """One active call, isolated from other calls and drained before scope cleanup."""
 
@@ -277,9 +292,11 @@ class Validator:
     async def _settle(self, task: asyncio.Task[dict[str, Any]]) -> None:
         if not task.cancelling():
             task.cancel()
-        with anyio.CancelScope(shield=True):
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        interrupted = await drain(task)
+        if not task.cancelled():
+            task.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
     def _answer(self, submitted: Snapshot) -> dict[str, Any]:
         return {
@@ -325,25 +342,29 @@ class Validator:
             answer.update(status="error", diagnostics="Validation failed; consult operator logs.")
         finally:
             # Sweep only after the workload's Python task has settled.
-            clean = False
-            with anyio.CancelScope(shield=True):
-                cleanup = asyncio.create_task(self.recover())
-                try:
-                    clean = await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    await cleanup
-                    raise
+            cleanup = asyncio.create_task(self.recover())
+            interrupted = await drain(cleanup)
+            clean = cleanup.result()
             answer["cleanup"] = "confirmed" if clean else "failed"
             if not clean:
                 answer.update(completed=False, verdict=None, status="cleanup_failed")
+            if interrupted:
+                raise asyncio.CancelledError
         return answer
 
     async def close(self) -> None:
         """Settle an active call before releasing the deployment lock."""
-        with anyio.CancelScope(shield=True):
+
+        async def finish() -> None:
             if self.active is not None:
                 await self._settle(self.active)
             await self.recover()
+
+        closing = asyncio.create_task(finish())
+        interrupted = await drain(closing)
+        closing.result()
+        if interrupted:
+            raise asyncio.CancelledError
 
 
 class BoundedFastMCP(FastMCP[None]):
