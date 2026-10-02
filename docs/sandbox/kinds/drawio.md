@@ -90,6 +90,6 @@ Every page must succeed before collection. Missing output or failed delivery is 
 |---|---|---|
 | Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
 | Offline PNG, JPG and SVG export | Implementation and runtime qualification tracked | [#1654](https://github.com/sokolaidev/maf-extensions/issues/1654) (open); [decision record](../research/drawio-export.md) |
-| Container-free native rendering | Backend qualification proposed | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (open) |
+| Container-free native rendering | Implemented and qualified on Linux Bubblewrap | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (closed) by [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [backend guide](../backends/bubblewrap.md) |
 | Specialized automatic layouts | Outside the supported contract | untracked |
 | Four-field result contract | Implemented for draw.io, sample 18 and its checks | [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
