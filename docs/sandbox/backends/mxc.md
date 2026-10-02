@@ -1,6 +1,6 @@
 # MXC Hyperlight design decisions
 
-MXC Hyperlight supplies a rich Python runtime for CodeAct through the sandbox router. This document records the first-version scope selected on 2026-10-02. The [status table](#status) distinguishes those requirements from implementation and validation. The [research record](../research/mxc-backend.md) contains the release assessment, rationale, candidate transport and feasibility questions.
+The selected design uses MXC Hyperlight to supply a rich Python runtime for CodeAct through the sandbox router. This document records the first-version scope selected on 2026-10-02. The [status table](#status) distinguishes those requirements from implementation and validation. The [research record](../research/mxc-backend.md) contains the release assessment, rationale, candidate transport and feasibility questions.
 
 ## Agreed scope
 
@@ -62,6 +62,35 @@ Qualification demonstrates that an allowed destination works and a forbidden des
 
 Recovery reapplies the currently authorized policy rather than restoring stale network authority. Allowlisting does not implicitly supply host credentials, enable a credential gateway or authorize runtime package installation. These remain separate host-controlled surfaces.
 
+## Selected MXC extension
+
+The maintainer selected extending MXC's Hyperlight API on 2026-10-02. The production integration remains `kind -> SandboxRouter -> MXC adapter -> MXC Hyperlight`; the direct Unikraft helper remains a feasibility experiment. Existing one-shot execution keeps its fresh-state behavior. Persistent sessions require an explicit, separately admitted experimental surface.
+
+The [native spike evidence](https://github.com/sokolaidev/maf-extensions/blob/2797c74f8d0503d22e9b3a76c1457aa5723a05e1/scripts/experiments/mxc_hyperlight_probe.md#native-state-and-restart-experiment) establishes continuity and same-machine process-restart recovery for the tested Python state on Windows. It does not establish that unchanged MXC exposes those operations. Linux, machine replacement and production durability remain separate gates.
+
+### Proposed responsibility boundary
+
+MXC would own the live native session, guest execution, interruption, quiescent checkpoint capture, compatible restore and disposal. Its session fixes the runtime, mounts and admitted policy; changing these cannot silently replace the guest with empty state. The suite would own trusted conversation identity, serialized tool calls, bounded files and artifacts, checkpoint-store credentials, atomic publication of checkpoint/result records, retry delivery and fenced ownership. Snapshot serialization alone does not implement the suite's durable completion contract.
+
+### Proposed session operations
+
+These are proposed semantics for upstream discussion, not shipped method names or an approved MXC schema.
+
+| Operation | Required behavior |
+|---|---|
+| Create | Bind an explicit runtime/artifact profile and admitted policy to a new session; no implicit network or setup download |
+| Execute | Keep interpreter state; report execution completion separately from durable tool-call success |
+| Prepare checkpoint | Freeze the completed state and export a new immutable candidate with format, runtime/artifact and compatibility metadata; do not overwrite a committed checkpoint |
+| Confirm commit | A trusted host confirms durable publication for the current candidate and generation; only then may the next execution start |
+| Restore | Validate a host-selected committed candidate against current admission and compatibility, then create a new physical session; failure cannot fall back to empty state |
+| Close | Stop execution and release native resources; do not remove caller-owned committed checkpoints |
+
+A successful execution moves the session from ready to uncommitted. It stays there through checkpoint export and durable publication; another execution is refused until the host confirms the current commit. The confirmation is a host assertion, not independent proof by MXC that remote storage is durable. A failed execution, timeout, cancellation or failed capture requires an explicit recovery/close path. A publication retry may reuse the same immutable candidate while the guest stays parked, but cannot rerun the Python program or mutate the candidate. Lost acknowledgment after publication is resolved from the host's durable call/result record.
+
+The first upstream increment should expose and test native session primitives with closed networking and no mounts, using the existing one-shot path as a fresh-state control. This is an implementation gate, not a reduction of the selected file/artifact scope. Follow with the experimental engine/SDK contract, an out-of-process control channel, bounded file consistency, durable host orchestration and both-platform qualification. Guest output must remain separate from control data; the observed merged stdout/stderr requires its own transport fix or underlying runtime change before promising stream fidelity.
+
+Any JSON additions belong in MXC's mutable development contract and require corresponding SDK changes and runtime experimental authorization. Do not retrofit fields into the shipped stable schema or assume the current generic lifecycle operations already support Hyperlight sessions. Remote storage providers and distributed leases remain host integration concerns rather than mandatory MXC dependencies.
+
 ## Implementation gates
 
 The selected product scope precedes implementation. The exact adapter API, native transport, checkpoint representation, durable storage interface and runtime distribution remain engineering decisions. The proposed package name and transport alternatives stay in the [research record](../research/mxc-backend.md#execution-transport-and-ownership).
@@ -74,11 +103,12 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 
 | Decision | State | Tracking |
 |---|---|---|
+| Extend MXC for persistent Hyperlight sessions | Selected; upstream proposal pending | [#1649](https://github.com/sokolaidev/maf-extensions/issues/1649) (open) |
 | Rich Python through MXC Hyperlight and CodeAct | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Code/text execution plus bounded file inputs and artifacts | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
-| Windows WHP and Linux KVM in the first version | Selected; live qualification unrun | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
-| Fresh state by default and optional conversation persistence | Selected; continuity mechanism unverified | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
-| Restart recovery of persistent Python state | Selected; capture/restore mechanism unverified | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
+| Windows WHP and Linux KVM in the first version | Selected; Windows native probe passed, Linux unrun | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
+| Fresh state by default and optional conversation persistence | Selected; native continuity demonstrated, MXC API unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
+| Restart recovery of persistent Python state | Selected; native process-restart probe passed, durable integration unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Checkpoint after every successful persistent call, before acknowledgment | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Host-configured recovery on another compatible machine | Selected; storage, compatibility and ownership unverified | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Closed networking and conditional enforced allowlisting | Selected; live qualification unrun | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |

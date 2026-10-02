@@ -197,6 +197,8 @@ The initial process-owned experiment would document that calls and purge reach t
 
 A proposed upstream contribution would be a Python/MAF reference integration and focused conformance cases, especially around runtime status, streams and network-policy semantics. This record does not publish an upstream issue or PR.
 
+The maintainer subsequently selected extending MXC's Hyperlight API; the [owning design](../backends/mxc.md#selected-mxc-extension) records the responsibility boundary and proposed session operations. The lower-level helper remains a feasibility probe, not the production integration route.
+
 ## Design decisions still open
 
 | Decision | Working recommendation | What changes the choice |
