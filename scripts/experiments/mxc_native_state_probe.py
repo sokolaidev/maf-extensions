@@ -25,6 +25,9 @@ def main() -> int:
     parser.add_argument("--helper", type=Path, required=True)
     parser.add_argument("--initrd", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument(
+        "--image-home", type=Path, help="Prepared MXC image home for runner controls"
+    )
     args = parser.parse_args()
     helper = args.helper.resolve(strict=True)
     initrd = args.initrd.resolve(strict=True)
@@ -42,6 +45,8 @@ def main() -> int:
             for key in ("HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TMP", "TEMP", "TMPDIR")
         }
     )
+    if args.image_home is not None:
+        env["MXC_HYPERLIGHT_HOME"] = str(args.image_home.resolve(strict=True))
     with (state / "seed.stdout").open("wb") as stdout, (state / "seed.stderr").open("wb") as stderr:
         child = subprocess.Popen(
             [str(helper), "seed", str(initrd), str(checkpoint), str(seed_report), "hold"],

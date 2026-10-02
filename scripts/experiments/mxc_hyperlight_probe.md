@@ -46,7 +46,7 @@ The lower-level [hyperlight-unikraft 0.14.1 API](https://github.com/hyperlight-d
 
 The native experiment below now exercises this path. A later experiment must coordinate session files and host-controlled atomic commitment; the library's disk snapshot alone does not establish that application contract.
 
-A helper that calls Unikraft directly would bypass MXC's current runner. Treat it as an experimental feasibility probe and identify the MXC API change or alternative integration needed before proposing it as the production adapter. No upstream issue or PR has been published.
+A helper that calls Unikraft directly would bypass MXC's current runner. Treat it as an experimental feasibility probe and identify the MXC API change or alternative integration needed before proposing it as the production adapter. The extension is proposed in [MXC #1374](https://github.com/microsoft/mxc/issues/1374); no upstream PR has been published.
 
 ## Native state and restart experiment
 
@@ -79,14 +79,18 @@ The initial recovery execution passed; a second complete execution also passed a
 
 Rich Python continuity and modified-state restoration are feasible on the tested Windows host through the underlying library. They are not supported persistent-session behavior of the unchanged MXC runner. The maintainer selected extending MXC's Hyperlight session API on 2026-10-02. The production adapter will use that MXC surface; the lower-level helper remains an experiment. The owning design in [PR #1650](https://github.com/sokolaidev/maf-extensions/pull/1650) records the proposed responsibility boundary and checkpoint barrier. No production session API has been implemented.
 
+## Removable MXC session patch
+
+The [temporary patch bundle](mxc_session_patch/README.md) now exercises persistence through an opt-in module in MXC's own Hyperlight common crate. It preserves the existing runner, isolates the temporary API behind one wrapper, and includes pinned apply/remove tooling. Windows/WHP recovery, commit barriers, stale-token refusal, failure retirement and the original fresh-state control passed through this patched MXC path. The bundle records exact evidence, reproduction and replacement steps; it remains an experiment, not a production adapter or upstream-supported API.
+
 ## Remaining evidence
 
 Lost acknowledgments, atomic checkpoint commitment after every successful tool call, host file/artifact consistency, compatible second-machine recovery, fencing, resource limits, general owner-death cleanup and network enforcement remain unrun. Linux/KVM, host reboot and power-loss durability have not been tested. The open-file case covers an in-guest file, not a host mount or arbitrary sockets/threads. Refusal controls cover malformed metadata, missing blobs and a mismatched compatibility key; payload corruption and adversarial snapshot inputs need separate qualification. Guest stdout/stderr separation still needs a supported native output channel or upstream change before promising the existing result contract.
-## Upstream feature-request draft
+## Filed upstream feature request
 
 Proposed title: **Hyperlight: opt-in persistent sessions with checkpoint export and restore**
 
-The following proposal is prepared for MXC's feature-request template. It has not been posted. The pinned [contributor guide](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/CONTRIBUTING.md#before-you-start-file-an-issue) asks for an issue before implementation and a written design for larger changes. Searches of open and closed MXC issues for Hyperlight snapshot/persistence did not identify an equivalent proposal on 2026-10-02. The runner at current main `298bb3909a5130cc6caed575494290fbcacf0db5` still restores its rewind baseline before subsequent executions.
+The following proposal was filed as [MXC #1374](https://github.com/microsoft/mxc/issues/1374), with an offer to contribute a PR after API agreement. This retained proposal describes the evidence available when the issue was filed; the temporary patch above is subsequent work. The pinned [contributor guide](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/CONTRIBUTING.md#before-you-start-file-an-issue) asks for an issue before implementation and a written design for larger changes. Searches of open and closed MXC issues for Hyperlight snapshot/persistence did not identify an equivalent proposal on 2026-10-02. The runner at current main `298bb3909a5130cc6caed575494290fbcacf0db5` still restores its rewind baseline before subsequent executions.
 
 ### Description of the new feature / enhancement
 
