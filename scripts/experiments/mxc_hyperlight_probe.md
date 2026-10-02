@@ -44,10 +44,41 @@ The pinned [MXC runner](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c43155
 
 The lower-level [hyperlight-unikraft 0.14.1 API](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/v0.14.1/src/lib.rs) exposes `AppSandbox.run`, `snapshot_to`, `restore_from` and `SandboxBuilder.from_snapshot_dir`. Its documentation describes capturing the application heap, parked threads and scheduler state at the current boundary. The [Python driver](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/v0.14.1/drivers/hl_py.h) executes source in the existing `__main__` dictionary. These are source-level reasons to try a persistent native helper; they are not measured proof of durable Python recovery.
 
-Next experiment: retain one `AppSandbox`, set a variable and dataframe, verify them on a second execution, write a snapshot after success, terminate the helper, then restore in a new process and verify the same values. Keep guest networking disabled and mounts absent for this first state test. Bind the snapshot to runtime identity and preserve the original committed snapshot during failure tests. A later experiment must coordinate session files and host-controlled atomic commitment; the library's disk snapshot alone does not establish that application contract.
+The native experiment below now exercises this path. A later experiment must coordinate session files and host-controlled atomic commitment; the library's disk snapshot alone does not establish that application contract.
 
 A helper that calls Unikraft directly would bypass MXC's current runner. Treat it as an experimental feasibility probe and identify the MXC API change or alternative integration needed before proposing it as the production adapter. No upstream issue or PR has been published.
 
+## Native state and restart experiment
+
+The [native helper](mxc_native_state/src/main.rs) uses exactly `hyperlight-unikraft` 0.14.1, with Hyperlight host/common 0.17.0 recorded in [Cargo.lock](mxc_native_state/Cargo.lock). The [supervisor](mxc_native_state_probe.py) verifies the recorded rootfs hash, supplies a minimal environment, and requires a new evidence directory. No host mounts or guest network policy are configured. This exercises Unikraft directly, bypassing MXC's runner.
+
+```text
+cargo build --locked --manifest-path scripts/experiments/mxc_native_state/Cargo.toml
+python scripts/experiments/mxc_native_state_probe.py --helper <built-helper> --initrd <verified-agent-initrd> --state-dir <new-evidence-directory>
+```
+
+On Windows, this experiment used Rust 1.98.0 targeting `x86_64-pc-windows-gnu` and portable MinGW GCC 16.2.0 (POSIX/SEH/MSVCRT). Rust and compiler tools were isolated from the user's normal environment. The GCC archive was `x86_64-16.2.0-release-posix-seh-msvcrt-rt_v14-rev1.7z`, SHA-256 `a3cfb25037981ea1cd2f4e5452fa45c700b20fffc311e5d78de90dedd142b73a`. Set that compiler's `bin` directory on the build process's PATH; ordinary Windows MSVC and Linux builds have not been qualified here. The compiler version is pinned in [rust-toolchain.toml](mxc_native_state/rust-toolchain.toml).
+
+| Native control | Measured Windows result |
+|---|---|
+| Multiple executions on one guest | Variable, dataframe update and NumPy array retained |
+| Additional interpreter state | Lambda and open guest file retained, including its seek position |
+| Capture boundary | State captured before changing the variable/dataframe to `999`; restored values match the checkpoint, not the later mutations |
+| Abrupt process termination | Supervisor killed only its owned helper after the snapshot and atomic readiness report completed |
+| Separate-process restore | New helper restored the on-disk snapshot and passed the same Python assertions |
+| Saved checkpoint stability | All recorded checkpoint-file hashes remained unchanged after restoration |
+| Truncated index | Exit 1, explicit JSON parsing error, no success report |
+| Missing snapshot blobs | Exit 1, explicit missing-blob error, no success report |
+| Altered compatibility key | Exit 1, explicit kernel/host-contract mismatch, no success report |
+
+The initial recovery execution passed; a second complete execution also passed and included all three refusal controls. The [retained result](mxc_native_state/windows-result.json) omits transient process identifiers and records that the helpers were distinct processes. The helper executable SHA-256 was `77db7ece296c0ce7a1bea4834afb243773e78bdd9c280a3943e72541fd78f751`; the snapshot compatibility key was `k5e9192dfed5c8dbb-c1`. The second snapshot's main memory blob occupied 915,845,120 bytes. This is one observed footprint for this workload, not a capacity estimate or performance benchmark.
+
+`cargo build --locked`, `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, supervisor lint/format/type checks, real helper `--help`, and a safe invalid-argument control were used for validation. The snapshot and diagnostic files remain outside Git; the retained structured result contains artifact hashes without host locations.
+
+### Integration consequence
+
+Rich Python continuity and modified-state restoration are feasible on the tested Windows host through the underlying library. They are not supported persistent-session behavior of the unchanged MXC runner. The next integration decision is whether to extend MXC's Hyperlight session surface or own a direct Unikraft helper in this suite. Extending MXC preserves the original adapter architecture; using the lower-level helper would be a deliberate change in integration boundary. Neither approach has been implemented as a production adapter.
+
 ## Remaining evidence
 
-Same-guest continuity, modified-state disk restore, lost acknowledgments, atomic commitment, file/artifact consistency, compatible second-machine recovery, fencing, resource limits, owner-death cleanup and network enforcement remain unrun. Linux/KVM has not been tested. Rust tooling was not found on the current shell PATH; building the proposed native helper needs a checked toolchain. Guest stdout/stderr separation needs a supported native output channel or upstream change before promising the existing result contract.
+Lost acknowledgments, atomic checkpoint commitment after every successful tool call, host file/artifact consistency, compatible second-machine recovery, fencing, resource limits, general owner-death cleanup and network enforcement remain unrun. Linux/KVM, host reboot and power-loss durability have not been tested. The open-file case covers an in-guest file, not a host mount or arbitrary sockets/threads. Refusal controls cover malformed metadata, missing blobs and a mismatched compatibility key; payload corruption and adversarial snapshot inputs need separate qualification. Guest stdout/stderr separation still needs a supported native output channel or upstream change before promising the existing result contract.
