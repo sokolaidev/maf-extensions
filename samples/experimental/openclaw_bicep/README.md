@@ -2,6 +2,8 @@
 
 This supervised experiment exposes one `bicep_validate` MCP tool through the existing Bicep workload, router and Docker backend. It accepts inline source bytes and returns diagnostics, completion and a verdict for that exact source set. It does not deploy resources, read an agent workspace, return artifacts or accept shell commands. The [research record](../../../docs/sandbox/research/openclaw-integration.md) owns the broader integration design.
 
+The server uses `mcp.server.fastmcp.FastMCP` bundled with the pinned `mcp==1.26.0`, compatible with MAF's SDK 1.x integration. FastMCP generates input/output schemas from typed Pydantic models. A small subclass checks raw inputs before FastMCP coercion, bounds error responses, and supplies the bounded stdio reader through the SDK's underlying server. That private transport access must be requalified when changing the SDK pin. This sample does not install the separate `fastmcp` distribution, whose current 4.x release requires SDK 2.
+
 ## Run
 
 Use Python 3.12 or newer, uv, a reachable Linux Docker daemon and the [prepared Bicep image](../../../images/bicep-sandbox/README.md#prepared-avm-profile). The image must be selected by its full local `sha256:` ID or a repository digest; mutable tags are rejected. Build or pull the intended image before starting the service. Keep its filesystem free of credentials: Bicep can read files through compile-time functions even though the submitted filenames are confined.
@@ -30,7 +32,7 @@ Discovery advertises exactly one operation. A request looks like:
 }
 ```
 
-Every supplied `.bicep` or `.bicepparam` is compiled and linted. There is no entry-point selector and no auxiliary JSON/text file support. Related files must all appear in the same request. The prepared image carries selected pinned AVM modules; it is not an offline copy of the complete registry. An unavailable dependency yields `completed=false` and `verdict=null` under `Egress.CLOSED` and `--no-restore`.
+Every supplied `.bicep` or `.bicepparam` is compiled and linted. There is no entry-point selector and no auxiliary JSON/text file support. Related files must all appear in the same request. The prepared image carries selected pinned AVM modules; it is not an offline copy of the complete registry. An uncached registry module yields `completed=false` and `verdict=null` under `Egress.CLOSED` and `--no-restore`. A missing local source file is a compiler error and yields an invalid verdict for the submitted source set.
 
 ## Bounds and lifecycle
 
@@ -55,7 +57,7 @@ The prototype reads only the framework's fixed first completion item and, for co
 
 ## Verification
 
-Run `uv run pytest tests/test_openclaw_bicep_prototype.py -q` for input, authority, framing, ownership and cancellation regression tests. Set `MAF_OPENCLAW_BICEP_IMAGE` to the full prepared image ID or digest to opt into real Docker/MCP stdio tests. The live cases exercise compiler outcomes, prepared dependency resolution, resource configuration, cancellation while the compiler is active, scope recovery and preservation of another owner's container.
+Run `uv run pytest tests/test_openclaw_bicep_prototype.py -q` for input, authority, framing, ownership and cancellation regression tests. FastMCP transport tests verify generated schemas, rejection before coercion, bounded errors and structured error results. Set `MAF_OPENCLAW_BICEP_IMAGE` to the full prepared image ID or digest to opt into real Docker/MCP stdio tests. The live compiler cases use MAF's `MCPStdioTool` to check discovery and structured-result projection; the SDK client exercises cancellation while the compiler is active, scope recovery and preservation of another owner's container. These cases also inspect resource configuration and prepared dependency resolution.
 
 The implementation is still an experimental source sample. A generic MCP client test does not qualify OpenClaw's Gateway, authorization or result projection. Only compiler-phase cancellation is live-qualified here; interruption during acquisition/staging, daemon disconnects, worker/Gateway termination at each lifecycle boundary, Docker endpoint changes, an independent crash watchdog, and Linux/macOS host coverage remain separate acceptance work.
 

@@ -11,18 +11,21 @@ import subprocess
 import sys
 import time
 import uuid
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
 import jsonschema
 import pytest
-from agent_framework import Content
+from agent_framework import Content, MCPStdioTool
 from maf_sandbox import DisposalFailure, Isolation, SandboxKey, SandboxSpec, ScopePurge
 from maf_sandbox.testing import InProcessSandboxBackend
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+from mcp.server.fastmcp import FastMCP
 from mcp.shared.exceptions import McpError
+from mcp.shared.memory import create_connected_server_and_client_session
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "samples/experimental/openclaw_bicep/server.py"
@@ -51,6 +54,13 @@ def result(completed=True, verdict="valid", diagnostic="compiler output"):
         )
     )
     return items
+
+
+def response_text(response: types.CallToolResult) -> str:
+    assert len(response.content) == 1
+    item = response.content[0]
+    assert isinstance(item, types.TextContent)
+    return item.text
 
 
 @pytest.mark.parametrize(
@@ -137,6 +147,119 @@ def test_framing_is_bounded_before_json_parse():
         prototype.BoundedInput(source).readline()
     assert source.tell() == prototype.MAX_FRAME_BYTES + 1
     assert prototype.BoundedInput(io.BytesIO(b'{"x":1}\n')).readline() == '{"x":1}\n'
+
+
+def test_fastmcp_schemas_dispatch_and_bounded_rejections():
+    async def scenario():
+        calls = []
+
+        async def validate(data):
+            calls.append(data)
+            return {
+                "completed": True,
+                "verdict": "valid",
+                "status": "ok",
+                "diagnostics": "",
+                "source_sha256": prototype.snapshot(data).digest,
+                "config_sha256": "b" * 64,
+                "image": IMAGE,
+                "cleanup": "confirmed",
+            }
+
+        server = prototype.make_server(SimpleNamespace(call=validate))
+        assert isinstance(server, FastMCP)
+        async with create_connected_server_and_client_session(server) as client:
+            tool = (await client.list_tools()).tools[0]
+            assert tool.outputSchema is not None
+            assert tool.outputSchema == prototype.OUTPUT_SCHEMA
+            assert tool.inputSchema["additionalProperties"] is False
+            jsonschema.validate(arguments(), tool.inputSchema)
+            response = await client.call_tool(prototype.TOOL, arguments())
+            assert not response.isError
+            assert response.structuredContent is not None
+            assert response.structuredContent["verdict"] == "valid"
+            jsonschema.validate(response.structuredContent, tool.outputSchema)
+            assert json.loads(response_text(response)) == response.structuredContent
+            assert calls == [arguments()]
+
+            marker = "source-must-not-appear"
+            rejected = [
+                {**arguments(), "owner": marker},
+                {"files": json.dumps(arguments()["files"])},
+                {"files": [{"path": "main.bicep", "content": 123}]},
+                {"files": [{"path": "main.bicep", "content": marker, "extra": True}]},
+                arguments(marker, name="../escape.bicep"),
+                arguments(marker * prototype.MAX_FILE_BYTES),
+                {"files": []},
+            ]
+            for data in rejected:
+                if data != rejected[4]:
+                    with pytest.raises(jsonschema.ValidationError):
+                        jsonschema.validate(data, tool.inputSchema)
+                response = await client.call_tool(prototype.TOOL, data)
+                assert response.isError and response.structuredContent is None
+                assert len(response_text(response)) < 256
+                assert marker not in response_text(response)
+            unknown = await client.call_tool(marker, arguments())
+            assert unknown.isError and marker not in response_text(unknown)
+            assert calls == [arguments()]
+            assert not (await client.list_resources()).resources
+            assert not (await client.list_prompts()).prompts
+
+    asyncio.run(scenario())
+
+
+def test_fastmcp_stdio_rejects_oversized_frame_before_parsing(monkeypatch):
+    async def scenario():
+        source = io.BytesIO(b"x" * (prototype.MAX_FRAME_BYTES + 20))
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=source))
+        monkeypatch.setattr(
+            prototype,
+            "stdio_server",
+            partial(prototype.stdio_server, stdout=anyio.wrap_file(io.StringIO())),
+        )
+        server = prototype.make_server(SimpleNamespace())
+        with pytest.raises(ExceptionGroup) as rejected:
+            await server.run_stdio_async()
+        assert "MCP frame exceeds the transport budget" in repr(rejected.value)
+        assert source.tell() == prototype.MAX_FRAME_BYTES + 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["busy", "schema", "cleanup_failed"])
+def test_fastmcp_preserves_error_semantics_without_echoing_results(failure):
+    async def scenario():
+        async def validate(data):
+            if failure == "busy":
+                raise prototype.CallRefused("Validator is busy.")
+            return {
+                "completed": False,
+                "verdict": None,
+                "status": failure,
+                "diagnostics": "private-source-marker",
+                "source_sha256": prototype.snapshot(data).digest,
+                "config_sha256": "b" * 64,
+                "image": IMAGE,
+                "cleanup": "failed",
+            }
+
+        server = prototype.make_server(SimpleNamespace(call=validate))
+        async with create_connected_server_and_client_session(server) as client:
+            response = await client.call_tool(prototype.TOOL, arguments())
+            assert response.isError
+            if failure == "cleanup_failed":
+                assert response.structuredContent is not None
+                assert response.structuredContent["status"] == "cleanup_failed"
+                assert response.structuredContent["verdict"] is None
+            else:
+                assert response.structuredContent is None
+                assert "private-source-marker" not in response_text(response)
+                assert len(response_text(response)) < 256
+            if failure == "busy":
+                assert "busy" in response_text(response)
+
+    asyncio.run(scenario())
 
 
 def test_owner_is_stable_exclusive_and_corruption_fails_closed(tmp_path):
@@ -354,8 +477,11 @@ def test_cancel_during_purge_waits_and_never_claims_failed_cleanup(monkeypatch, 
 def test_live_stdio_compiler_outcomes_and_cleanup(tmp_path):
     async def scenario():
         image = os.environ["MAF_OPENCLAW_BICEP_IMAGE"]
-        parameters = StdioServerParameters(
+        client = MCPStdioTool(
+            name="bicep",
             command=sys.executable,
+            load_prompts=False,
+            request_timeout=240,
             args=[
                 str(SCRIPT),
                 "--image",
@@ -366,8 +492,9 @@ def test_live_stdio_compiler_outcomes_and_cleanup(tmp_path):
                 str(tmp_path),
             ],
         )
-        async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
-            await session.initialize()
+        async with client:
+            session = client.session
+            assert session is not None
             tools = await session.list_tools()
             assert [t.name for t in tools.tools] == [prototype.TOOL]
             assert tools.tools[0].outputSchema == prototype.OUTPUT_SCHEMA
@@ -383,9 +510,10 @@ def test_live_stdio_compiler_outcomes_and_cleanup(tmp_path):
                     "valid",
                 ),
             ]:
-                response = await session.call_tool(prototype.TOOL, arguments(source))
-                answer = response.structuredContent
-                assert answer is not None, response
+                response = await client.call_tool(prototype.TOOL, **arguments(source))
+                assert isinstance(response, list) and len(response) == 1, response
+                assert response[0].text is not None
+                answer = json.loads(response[0].text)
                 jsonschema.validate(answer, prototype.OUTPUT_SCHEMA)
                 assert answer["verdict"] == expected, answer
                 assert answer["completed"] == (expected is not None), answer

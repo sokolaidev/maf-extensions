@@ -57,6 +57,7 @@ dev = [
     "mcp==1.26.0",
     "anyio>=4.5,<5",
     "jsonschema>=4.26,<5",
+    "pydantic>=2.11,<3",
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
