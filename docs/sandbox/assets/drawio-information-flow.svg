@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 750" width="1180" height="750" role="img" aria-labelledby="drawio-title drawio-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="drawio-title">draw.io: artifact delivery and the text result are separate</title>
-  <desc id="drawio-desc">The result contract gives draw.io trusted completion, verdict and fixed explanations, with separately labelled untrusted sink display or converter diagnostics. FIDES can hide untrusted items while leaving the verdict readable. Every item carries call confidentiality C: the host classification plus stricter argument confidentiality. Hidden text still contributes confidentiality. Later model-called tools enforce destination policy and host approvals. The artifact reaches the configured OutputSink during create_drawio.</desc>
+  <desc id="drawio-desc">The result contract gives draw.io trusted completion, verdict and fixed explanations, with separately labelled sink display or converter diagnostics. Trusted conversation and argument evidence makes these trusted; otherwise they remain untrusted. FIDES can hide untrusted items while leaving the verdict readable. Every item carries call confidentiality C: the host classification plus stricter argument confidentiality. Hidden text still contributes confidentiality. Later model-called tools enforce destination policy and host approvals. The artifact reaches the configured OutputSink during create_drawio.</desc>
   <defs>
     <marker id="drawio-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
@@ -27,7 +27,7 @@
   <text x="456" y="263" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">trusted / C</text>
   <rect x="442" y="290" width="294" height="74" rx="8" fill="#e7f5f3" stroke="#2fa8a0" stroke-width="1.5"/>
   <text x="456" y="318" font-size="17" font-weight="600" fill="#243040">Sink display or diagnostic</text>
-  <text x="456" y="348" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">untrusted / C</text>
+  <text x="456" y="348" font-size="17" font-family="ui-monospace, Consolas, monospace" fill="#243040">call integrity / C</text>
   <text x="442" y="392" font-size="17" fill="#526072">No standing guidance</text>
   <path d="M 756 260 H 794" fill="none" stroke="#7d8694" stroke-width="2" marker-end="url(#drawio-arrow)"/>
   <text x="754" y="241" font-size="14" fill="#526072">FIDES</text>
