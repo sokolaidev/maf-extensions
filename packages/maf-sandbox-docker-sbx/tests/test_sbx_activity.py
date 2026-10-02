@@ -60,7 +60,7 @@ def test_bad_receipt_retires_and_reaps(tmp_path, monkeypatch, body):
     backend, sandbox, events = _backend(tmp_path, monkeypatch, body)
 
     async def scenario():
-        with pytest.raises((SandboxRunActivityLost, asyncio.IncompleteReadError)):
+        with pytest.raises(SandboxRunActivityLost):
             async with backend.hold_activity(sandbox, timeout=5):
                 pytest.fail("not ready")
         assert events == ["end", "retire"]
@@ -116,5 +116,23 @@ def test_cancellation_during_body_still_reaps(tmp_path, monkeypatch):
             await task
         assert activities[0].process.returncode is not None
         assert events == ["end"]
+
+    asyncio.run(scenario())
+
+
+def test_excess_output_ends_and_retires_the_session(tmp_path, monkeypatch):
+    backend, sandbox, events = _backend(
+        tmp_path,
+        monkeypatch,
+        "import time; print(READY, flush=True); print('x' * 5000, flush=True); time.sleep(60)",
+    )
+
+    async def scenario():
+        with pytest.raises(SandboxRunActivityLost):
+            async with backend.hold_activity(sandbox, timeout=5) as activity:
+                assert isinstance(activity, implementation._HeldActivity)
+                await asyncio.wait({activity.reader}, timeout=5)
+                activity.check()
+        assert events == ["end", "retire"]
 
     asyncio.run(scenario())

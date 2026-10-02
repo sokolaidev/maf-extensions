@@ -57,14 +57,14 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 | Setting | Behavior |
 |---|---|
 | Isolation | `MICROVM` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `EGRESS_METHODS`, `EGRESS_PATHS` |
+| Capabilities | `EXEC`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `EGRESS_METHODS`, `EGRESS_PATHS` |
 | Guest OS | POSIX |
 | Network | `CLOSED`, `ALLOWLIST` with method and path rules |
 | Isolation scope | `CONVERSATION` |
 | Egress observation | No |
 | Command output | 8 MiB of stdout and stderr together, or the budget a caller passes to `exec_bounded`; more kills the command and refuses the call |
 
-`RUN_CODE` is not declared, because any image is accepted and the runtime is the image's. `SNAPSHOT` is not declared. `HOST_TOOLS` is not declared yet: an idle sandbox stops 30 seconds after its last `sbx` session and kills every process, and the host-tool transport has not been measured against that.
+`RUN_CODE` is not declared, because any image is accepted and the runtime is the image's. `SNAPSHOT` is not declared. `HOST_TOOLS` uses one held `sbx exec` session per transport run to prevent idle auto-stop. The session starts before guest launch and ends after process and transport-file cleanup, including when a host tool outlasts the run deadline. An unexpected session exit refuses further host calls and retires the sandbox; an in-flight host effect may already have completed, so the run must not be replayed automatically.
 
 `spec.image_id`, or else `spec.image`, is passed to `sbx create --template`, and a warm acquire refuses a spec that changes either. Without it the sandbox uses Docker's `shell` template, where commands run as `agent` (uid 1000). An image without that user runs commands as root. Commands run in a user namespace of their own, so `sudo` does not work in them, even in Docker's template. The namespace maps only the command's own uid and gid. Files owned by anyone else show as uid 65534 (`nobody`), and `chown` to another user fails, also in a template that runs as root. Permission checks still use the real owners.
 
@@ -105,6 +105,8 @@ File methods reach only paths under the storage base's parent. Any other absolut
 
 A missing working directory exits 125 with the shell's message on stderr.
 
+A host-tool run also requires `mkdir`, `mv` and `nohup`; the held-session startup checks these before releasing the transport to launch the program. The workload supplies its interpreter.
+
 ## Network access
 
 Every sandbox is created with `--deny-network "**"`. A per-sandbox deny beats every global allow rule and every allow added later, so the sandbox has no network whatever the host's global policy says. A denied raw TCP connection still connects to Docker's proxy and then carries no data.
@@ -136,4 +138,4 @@ The live suite in `tests/test_sbx_e2e.py` runs the shared storage-base, `FILES_I
 
 `tests/test_sbx_e2e_host.py` checks the refusals and faults that depend on host-wide state: SSH agent forwarding, a registered MCP server, a lapsed login, a daemon that has lost its engine (its `docker.sock` hidden), a global allow added after acquire, and a custom secret for an allowed host. Most of these tests change that state and put it back, so they also need `MAF_SANDBOX_SBX_E2E_HOST=1`. Set it only on a host no one else is using. The login test logs back in with `DOCKER_USERNAME` and `DOCKER_PAT`.
 
-Tested with `sbx` v0.45.1 on Windows 11 and on GitHub's `ubuntu-24.04` runner. The [2026-10-01 Linux live run](https://github.com/sokolaidev/maf-extensions/actions/runs/36861017552) with v0.46.0 passed 18 backend tests and 7 host-state tests; the suite runs nightly on `ubuntu-24.04`. Not tested on macOS, tracked in [#1499](https://github.com/sokolaidev/maf-extensions/issues/1499). Host-tools lifecycle validation is tracked separately in [#1614](https://github.com/sokolaidev/maf-extensions/issues/1614); `HOST_TOOLS` remains withheld. `sbx` is closed source and in early access, and its behaviour has changed between releases, so re-run the live suite on every `sbx` version you install.
+Tested with `sbx` v0.45.1 on Windows 11 and on GitHub's `ubuntu-24.04` runner. The [2026-10-01 Linux live run](https://github.com/sokolaidev/maf-extensions/actions/runs/36861017552) with v0.46.0 passed 18 backend tests and 7 host-state tests; the suite runs nightly on `ubuntu-24.04`. Not tested on macOS, tracked in [#1499](https://github.com/sokolaidev/maf-extensions/issues/1499). Host-tools lifecycle validation is tracked in [#1614](https://github.com/sokolaidev/maf-extensions/issues/1614); the recurring Linux suite covers idle and slow host tools, timeout, cancellation, sibling survival, forced stop, disposal and a CodeAct workload. Windows and macOS host-tool execution have not been measured. `sbx` is closed source and in early access, and its behaviour has changed between releases, so re-run the live suite on every `sbx` version you install.

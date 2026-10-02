@@ -204,6 +204,13 @@ done
 exec cat "$1"
 """
 
+_ACTIVITY_SCRIPT = r"""for c in mkdir mv nohup; do
+  command -v "$c" >/dev/null || exit 127
+done
+printf '%s\n' "$1"
+while :; do sleep 3600; done
+"""
+
 _NOT_FOUND = "not found"
 _ALREADY_EXISTS = "already exists"
 _UNAVAILABLE = "backend unavailable"
@@ -628,7 +635,7 @@ class SbxSandboxBackend:
         ready = (nonce + "\n").encode()
         args = _exec_args(
             sandbox.name,
-            ["sh", "-c", 'printf "%s\\n" "$1"; while :; do sleep 3600; done', "maf-sbx", nonce],
+            ["sh", "-c", _ACTIVITY_SCRIPT, "maf-sbx", nonce],
             cwd=sandbox.base,
             mount=sandbox.mount,
             nonce=nonce,
@@ -646,8 +653,13 @@ class SbxSandboxBackend:
         activity: _HeldActivity | None = None
         try:
             assert process.stdout is not None
-            async with asyncio.timeout(min(timeout, self._config.command_timeout_seconds)):
-                receipt = await process.stdout.readexactly(len(ready))
+            try:
+                async with asyncio.timeout(min(timeout, self._config.command_timeout_seconds)):
+                    receipt = await process.stdout.readexactly(len(ready))
+            except asyncio.IncompleteReadError as error:
+                raise SandboxRunActivityLost(
+                    "the held sbx session ended before readiness"
+                ) from error
             if receipt != ready:
                 raise SandboxRunActivityLost("the held sbx session did not confirm readiness")
             reader = asyncio.create_task(
@@ -670,19 +682,14 @@ class SbxSandboxBackend:
                                 process, max_output_bytes=4096, timeout=None
                             )
                         )
+                    await asyncio.sleep(0)
                     reader.cancel()
                     await asyncio.gather(reader, return_exceptions=True)
-                    # A task cancelled before its first turn has not entered its cleanup.
-                    if process.returncode is None:
-                        with contextlib.suppress(ProcessLookupError):
-                            process.kill()
-                        with contextlib.suppress(TimeoutError):
-                            await asyncio.wait_for(process.wait(), timeout=3)
-                    if lost:
+                    if lost or process.returncode is None:
                         await self._retire(
                             sandbox.name,
                             sandbox.instance_id,
-                            "the held sbx session ended unexpectedly",
+                            "the held sbx session ended unexpectedly or its client was not reaped",
                         )
 
             await _to_the_end(release())
