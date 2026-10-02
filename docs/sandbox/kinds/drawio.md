@@ -14,7 +14,7 @@ See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wir
 | Network | `CLOSED` |
 | Output | One `diagram.drawio` file, `application/xml` |
 | Cleanup | Disposal by default; no call-directory confinement claim |
-| Result integrity | Trusted completion and verdict; untrusted sink display and converter diagnostics; no standing guidance |
+| Result integrity | Trusted completion and verdict; sink display and converter diagnostics follow call integrity; no standing guidance |
 
 Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide an equivalent one. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment.
 
@@ -22,7 +22,7 @@ Build the [supplied image](../../../images/drawio-sandbox/Dockerfile) or provide
 
 The kind uses the [result contract](../information-flow.md#the-result-contract). `verdict` is `created` after artifact delivery and `refused` when the converter rejects the source or an unsupported layout request. `completed` is false, with no verdict, for invalid tool arguments, an unavailable sandbox, execution or Graphviz failures, timeouts, missing output and failed delivery. The renderer reserves exit code 2 for source rejection and exit code 3 for operational failure; other nonzero exits also report incomplete conversion.
 
-The sink's display reference and the converter's diagnostic are `output`, labelled untrusted because either can contain guest-derived text. Fixed explanations from the kind are `trusted_output`. The wrapper renders completion and verdict as separate trusted items, so a host can hide workload output while leaving the result readable.
+The sink's display reference and the converter's diagnostic are `output` because either can contain guest-derived text. With no file reads and closed egress, core promotes them when FIDES establishes trusted conversation and argument labels for this call. An untrusted conversation, expanded untrusted argument or absent call evidence keeps them untrusted. Fixed explanations from the kind are `trusted_output`. The wrapper renders completion and verdict as separate trusted items, so a host can hide workload output while leaving the result readable.
 
 ## Host configuration
 
@@ -63,9 +63,9 @@ The model owns diagram meaning, such as sequence-message order. Layout does not 
 
 ## Result labels and tool flow
 
-![The result contract gives draw.io trusted completion, verdict and fixed explanations, with separately labelled untrusted sink display or converter diagnostics. FIDES can hide untrusted items while leaving the verdict readable. Every item carries the call's confidentiality. Later model-called tools enforce destination policy. The artifact reaches the configured OutputSink during create_drawio.](../assets/drawio-information-flow.svg)
+![The result contract gives draw.io trusted completion, verdict and fixed explanations, with separately labelled sink display or converter diagnostics. These are trusted when the call's conversation and arguments are trusted; otherwise they remain untrusted. FIDES can hide untrusted items while leaving the verdict readable. Every item carries the call's confidentiality. Later model-called tools enforce destination policy. The artifact reaches the configured OutputSink during create_drawio.](../assets/drawio-information-flow.svg)
 
-The XML argument can contain expanded hidden content. Diagnostics can quote it, and the sink can compose its display from artifact bytes. The kind declares `SourceIntegrity.UNTRUSTED` for workload output. The result contract raises the attached tool's declaration to trusted and writes the untrusted label only on output items.
+The XML argument can contain expanded hidden content. Diagnostics can quote it, and the sink can compose its display from artifact bytes. The kind declares `SourceIntegrity.UNTRUSTED` for workload output. The result contract raises the attached tool's declaration to trusted and labels output items from the call evidence. A custom sink that echoes artifact bytes remains subject to these checks; host ownership of a sink alone does not establish trust.
 
 The artifact goes to the configured sink during the call. The diagram shows the text result and later model-called tools. The host supplies result confidentiality and any outward confidentiality limit; [information flow](../information-flow.md) explains the distinction.
 
