@@ -1,6 +1,6 @@
 # OpenClaw integration research and first-delivery proposal
 
-> Research and initial design recorded on 2026-10-02. The proposed first deliverable is a closed-network Bicep validator exposed as an OpenClaw tool. No OpenClaw adapter, MCP service or runtime qualification is delivered by this record.
+> Research and initial design recorded on 2026-10-02, followed by an adversarial review that narrows the first deliverable and identifies four design prerequisites. The proposed first deliverable is a closed-network Bicep validator exposed as an OpenClaw tool. No OpenClaw adapter, MCP service or runtime qualification is delivered by this record.
 
 The suite can add focused workload tools, enforced guest networking and reusable conformance scenarios to OpenClaw. Begin with a bounded validation operation through MCP or a thin tool plugin. A complete sandbox backend is a separate feasibility project because its interactive process and workspace contracts exceed the suite's current common execution interface.
 
@@ -9,6 +9,8 @@ The suite can add focused workload tools, enforced guest networking and reusable
 The investigation inspected [OpenClaw PR #97086](https://github.com/openclaw/openclaw/pull/97086), its review discussion and merged tree `008f04a65650f364ddbe40f1697f3c1b020bba97`; OpenClaw main at `df93a28f0bc58c41023326a734e3838bb356eea4`; Microsoft MXC tag `v0.9.0`; and suite source at `8161cfdc761557800d18d918a79f2731deb1a488`. The documentation branch starts at `63c0e97dbf39a0d976b07ffb9437317170f1a26d`; the intervening suite change reports credential-expired proxy streams as interrupted. Live OpenClaw documentation was read on 2026-10-02 and may evolve independently of those source snapshots.
 
 The evidence is source, documentation and published author reports. No OpenClaw or MXC runtime was installed or executed during this investigation. No performance, cost, containment, cross-platform compatibility or production-readiness result was measured. Existing suite tests and upstream reports identify available evidence; they do not qualify the proposed integration.
+
+Three independent reviewers subsequently challenged the proposal at suite commit `386e711bbaf9e0456254db89d71b30aad46d3d56`. Their findings were checked against source, and a controlled asynchronous fake-execution probe confirmed the Bicep cancellation behavior described below. That probe executed the Python wrapper only; it did not launch Docker, Bicep or OpenClaw. The review found four P2 design gaps and no demonstrated P1 vulnerability. The source links in the review section identify the assessed snapshot rather than making claims about future versions.
 
 This record owns the OpenClaw host integration and delivery sequence. It does not design a new MXC backend beneath the suite router. The existing [policy architecture](two-axis-sandbox-policy.md), [Hyperlight research](hyperlight-backend.md) and [backend authoring guide](../backends/writing-a-backend.md) own those different concerns.
 
@@ -56,18 +58,20 @@ OpenClaw's [secret egress proxy](https://docs.openclaw.ai/gateway/secrets/secret
 
 ## Proposed first deliverable: closed-network Bicep validation
 
-The initial proposal exposes one fixed validation operation to OpenClaw, with a Python service calling the existing Bicep kind through the router. Prefer local stdio MCP for the first single-owner deployment; a thin TypeScript tool plugin remains the alternative if trusted caller context or cancellation cannot be preserved through that route. OpenClaw already supports [MCP servers](https://docs.openclaw.ai/tools/mcp), but the suite does not yet provide this service. Transport selection is an acceptance decision, not an implemented interface.
+The revised proposal exposes one fixed validation operation to OpenClaw, with a Python service calling the existing Bicep kind through the router. Prefer local stdio MCP with uniform policy for one trusted local operator. OpenClaw already supports [MCP servers](https://docs.openclaw.ai/tools/mcp), but the suite does not yet provide this service. Prove one end-to-end operation before committing to a broader framework-neutral API or additional tools. Bicep is a bounded integration experiment; demand from OpenClaw users has not been established.
+
+The inspected general MCP [materialization path](https://github.com/openclaw/openclaw/blob/df93a28f0bc58c41023326a734e3838bb356eea4/src/agents/agent-bundle-mcp-materialize.ts) forwards cancellation to the [runtime](https://github.com/openclaw/openclaw/blob/df93a28f0bc58c41023326a734e3838bb356eea4/src/agents/agent-bundle-mcp-runtime.ts), whose tool call sends the tool name and arguments without trusted agent/session identity. The first service can generate request-local ownership internally and apply the same policy to every admitted caller. Per-agent authorization and cross-call artifact access remain outside its contract. A tool plugin is an alternative only if a later requirement needs a trusted host integration that MCP does not supply. The proposed operation follows OpenClaw's MCP tool authorization; it does not inherit command, working-directory or file-bound host-exec approvals.
 
 ```text
-OpenClaw tool policy and approvals
-  -> MCP adapter or thin tool plugin
-  -> Python workload service with trusted ownership and fixed policy
+OpenClaw MCP tool authorization
+  -> local stdio MCP service with fixed policy
+  -> immutable request snapshot and service-generated ownership
   -> SandboxRouter admission
-  -> configured backend and prepared Bicep image
-  -> bounded completion/verdict, diagnostics and declared artifact references
+  -> one Docker container per call and prepared Bicep image
+  -> bounded completion/verdict and diagnostics for the submitted snapshot
 ```
 
-Start with Docker and an explicitly admitted `Isolation.CONTAINER` policy for that deployment. Preserve the suite's default isolation floor; do not silently lower it. A host requiring microVM isolation needs a separately qualified compatible backend before this workload is admitted. No new MXC backend is required for the Bicep prototype.
+Start with Docker, an explicitly admitted `Isolation.CONTAINER` policy and `min_isolation_scope=IsolationScope.CALL`, so every request receives its own physical sandbox. Preserve the suite's default isolation floor; do not silently lower it. A host requiring microVM isolation needs a separately qualified compatible backend before this workload is admitted. No new MXC backend is required for the Bicep prototype.
 
 Use the existing [prepared AVM profile](../../../images/bicep-sandbox/README.md#prepared-avm-profile), an immutable deployed image reference, the host's selected Bicep configuration with the prepared cache location, and `Egress.CLOSED`. The current profile contains a small selected set of pinned modules, not the full AVM catalog. Runtime validation must retain `--no-restore`; an unprepared module must produce an incomplete result without a verdict. Build-time downloads and compiler/image provenance remain separate from runtime network closure.
 
@@ -76,23 +80,46 @@ Use the existing [prepared AVM profile](../../../images/bicep-sandbox/README.md#
 | Surface | Proposed boundary |
 |---|---|
 | Operation | One fixed Bicep validation operation; no shell command argument, deployment or arbitrary compiler flags |
-| Inputs | Explicit bounded source set and entry point; define supported file kinds, relative path grammar, count/byte ceilings and snapshot semantics in the first design |
+| Inputs | Bounded relative names plus inline UTF-8 contents for `.bicep` and `.bicepparam`; validate the entire supplied set, with no separate entry point or auxiliary JSON/text assets |
 | Host policy | Host selects image, compiler configuration, backend, isolation floor, timeouts, transfer budgets and closed networking; model arguments cannot widen them |
-| Ownership | Bind the service to a trusted local owner initially; derive finer session/agent/call context only from a trusted host channel, never model-supplied identifiers |
-| Results | Preserve `completed` separately from validation verdict, bound diagnostics and distinguish untrusted compiler text from service-authored control fields |
-| Files | Confine staging and output collection to adapter-owned roots; no arbitrary host path, home-directory or repository mount |
-| Lifecycle | Propagate cancellation and deadline, dispose after each call, expose unsuccessful cleanup and refuse reuse of uncertain state |
+| Ownership | Uniform authorization for one trusted local operator; service-generated request identities and call-scoped containers; no model-supplied owner, agent or session authority |
+| Results | Diagnostics-only structured response; preserve `completed` separately from verdict, bound compiler text and identify the submitted snapshot, compiler policy and image |
+| Files | Copy supplied bytes into an immutable request snapshot in an adapter-owned root; no automatic workspace read, host/guest path translation, repository mount or downloadable artifact |
+| Lifecycle | Specify cancellation requested, guest stopped and cleanup completed separately; bound the overall request and recovery; reconcile abandoned owned resources before admitting work after restart |
 | Distribution | Explicit Python/runtime/image prerequisites; packed installation and installed execution must be tested |
 
 Plain serialized labels do not reproduce MAF information-flow enforcement in OpenClaw. Result provenance can be preserved as metadata, but any use as authority requires host enforcement. Similarly, sandboxing this workload does not isolate the OpenClaw Gateway or other plugins. OpenClaw's [capability matrix](https://docs.openclaw.ai/gateway/sandboxing/supported-capability-matrix) describes that boundary.
 
+OpenClaw's inspected [MCP metadata validator](https://github.com/openclaw/openclaw/blob/df93a28f0bc58c41023326a734e3838bb356eea4/src/agents/mcp-tool-metadata.ts) supports `outputSchema` and `structuredContent`; its [result projection](https://github.com/openclaw/openclaw/blob/df93a28f0bc58c41023326a734e3838bb356eea4/src/agents/mcp-content.ts) preserves structured results for Code Mode and renders them for ordinary model consumption. Use a shallow fixed schema rather than invent a result transport. The schema should carry a canonical source-set digest and compiler-policy/image identity: the verdict describes those submitted bytes under that profile, not the repository's current state. Canonicalization and the mapping from existing framework results still need design and tests.
+
+### Adversarial review findings
+
+The review supports the narrowed experiment but does not establish an implementation-ready design. The four findings below concern reuse assumptions and missing lifecycle requirements, not exploitable defects demonstrated in an existing OpenClaw adapter.
+
+| Finding | Existing behavior and failure scenario | Required design correction |
+|---|---|---|
+| Cancellation is not confirmed termination | Bicep `_run_phase` shields the active execution and drains it after cancellation; Docker cancellation of the host CLI alone leaves the guest command running until disposal | Define acknowledgment, execution stop and cleanup completion separately; choose bounded draining or supervised exact-instance disposal and prove its interaction with router cleanup |
+| Worker death bypasses cleanup | Docker containers run a persistent `sleep infinity`; worker death bypasses Python `finally`, and `reap` installs no background timer | Assign a recovery owner, dedicated adapter scope/generation and startup reconciliation; define maximum resource lifetime without sweeping unrelated owners or unexpired live work |
+| Disposal is not concurrent call isolation | Bicep's spec does not request call scope, and the router defaults to conversation scope; distinct call directories can still share one container | Require call scope with internally generated identities; test simultaneous requests and cleanup ownership rather than inferring separation from disposal policy |
+| Entry-point semantics exceed the existing tool | The Bicep tool accepts only `.bicep`/`.bicepparam` and builds and lints every supplied file; supporting JSON is rejected | Adopt whole-set validation initially; separating compilation targets from staged support assets needs a distinct workload API design |
+
+These findings follow from the reviewed [Bicep tool](https://github.com/sokolaidev/maf-extensions/blob/386e711bbaf9e0456254db89d71b30aad46d3d56/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py), [Docker execution and reaper](https://github.com/sokolaidev/maf-extensions/blob/386e711bbaf9e0456254db89d71b30aad46d3d56/packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py), [router defaults](https://github.com/sokolaidev/maf-extensions/blob/386e711bbaf9e0456254db89d71b30aad46d3d56/packages/maf-sandbox/src/maf_sandbox/_router.py), [call identity and cleanup wrapper](https://github.com/sokolaidev/maf-extensions/blob/386e711bbaf9e0456254db89d71b30aad46d3d56/packages/maf-sandbox/src/maf_sandbox/maf.py) and [isolation-scope contract](https://github.com/sokolaidev/maf-extensions/blob/386e711bbaf9e0456254db89d71b30aad46d3d56/packages/maf-sandbox/src/maf_sandbox/_protocol.py).
+
+The controlled cancellation probe supplied `_run_phase` with a fake `exec` that signaled entry and waited on an event. After cancelling the phase and yielding to the event loop, the phase remained pending and `exec` had received no cancellation. Releasing the fake execution let the phase finish with `CancelledError`. This confirms the wrapper's drain behavior only; guest termination and transport settlement were not measured. In the reviewed code, the default 120-second execution timeout is spent independently for each build/lint phase, so it is not an end-to-end request deadline. The service must also define time reserved for termination and cleanup, and where cleanup failure remains observable after the client has cancelled or disconnected.
+
+Safe staged filenames do not confine paths embedded in compiler source: Bicep supports compile-time file-loading functions. Call scope prevents sibling requests from sharing a filesystem; it does not replace control of the image's readable contents. No sibling-data exfiltration was demonstrated. Similarly, setting a host timeout does not prove recovery after process death. A scoped age-based reaper is an operator maximum-lifetime policy and can remove running work; it must not be treated as an idle-resource detector.
+
+The review did not count already-disclosed choices such as numeric resource limits, framework packaging, result-label enforcement or SDK support as new defects. Resolve them in the first design rather than treating their presence in an issue as implementation evidence. Docker CPU/memory defaults are not finite workload budgets; the host profile must select and verify the actual limits.
+
 ### Design decisions and proof required
 
-The first design must resolve the public operation schema, source transport, entry-point selection, default limits, error mapping, cancellation acknowledgment, cleanup reporting and supported OpenClaw version. Compare direct use of existing framework tools with a supported framework-neutral workload runner. The protocol/router modules use the standard library, but the [installed core distribution](../../../packages/maf-sandbox/pyproject.toml) still depends on `agent-framework-core`; the packaged kinds expose framework tools. Do not describe the current distribution as dependency-free or directly embeddable in TypeScript.
+The first design must resolve the public operation schema, source-set canonicalization, concrete input/output and resource limits, error mapping, total deadline, cancellation acknowledgment, recovery ownership and supported OpenClaw version. Compare direct use of existing framework tools with the smallest supported typed-result interface; do not make a general framework-neutral redesign a prerequisite without showing why the existing surface cannot serve the prototype. The protocol/router modules use the standard library, but the [installed core distribution](../../../packages/maf-sandbox/pyproject.toml) still depends on `agent-framework-core`; the packaged kinds expose framework tools. Do not describe the current distribution as dependency-free or directly embeddable in TypeScript.
 
-Before implementation is called complete, demonstrate valid and invalid Bicep, a missing prepared dependency with no verdict, malformed/incomplete diagnostics, oversized input/output, path escapes and file replacement, concurrent caller isolation, timeout/cancellation, cleanup failure, and clean installed-package execution. Verify actual guest networking is closed and compiler policy is applied. A denied external request alone does not prove an allowlist, but this initial workload deliberately requests no outbound destinations. Keep model behavior, service control fields, runtime evidence and CI results distinguishable.
+Before implementation is called complete, demonstrate valid and invalid Bicep, a missing prepared dependency with no verdict, malformed/incomplete diagnostics, oversized input/output, rejected auxiliary assets, path escapes and file replacement, concurrent call isolation, timeout/cancellation, cleanup failure, and clean installed-package execution. Match the result's digest to the submitted bytes and prove that later workspace edits do not change what the verdict claims. Verify actual guest networking is closed and compiler policy is applied. A denied external request alone does not prove an allowlist, but this initial workload deliberately requests no outbound destinations. Keep model behavior, service control fields, runtime evidence and CI results distinguishable.
 
-No Terraform plan/apply/destroy, general CodeAct, network credentials, guest host-tools, interactive shell, warm reuse, remote multi-tenant service or complete OpenClaw backend is included in this first delivery. Subsequent designs must establish their own authority and lifecycle boundaries.
+Cancellation tests must interrupt an active compiler phase and measure guest stop and exact-container removal, not just host-future cancellation. Crash tests must kill the worker or Gateway during acquisition, staging, execution and disposal, then verify that recovery removes owned containers and staging roots without deleting another service's resources. Supervised prototype use may precede that recovery qualification; unattended use must wait. A real OpenClaw call through the installed service must establish successful, invalid, incomplete and cancellation outcomes before expanding the workstream.
+
+No automatic workspace access, artifact download, persistent result store, formatting, Terraform plan/apply/destroy, general CodeAct, network credentials, guest host-tools, interactive shell, warm reuse, remote multi-tenant service or complete OpenClaw backend is included in this first delivery. Subsequent designs must establish their own authority and lifecycle boundaries. The five design workstreams are investigation options, not a commitment to implement all of them.
 
 ## Subsequent designs
 
@@ -113,7 +140,7 @@ All integration opportunities remain proposed; this record delivers research and
 | Decision | State | Tracking |
 |---|---|---|
 | OpenClaw integration direction and delivery sequence | Open; research recorded | [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
-| First closed-network Bicep validation tool | Open; initial contract proposed | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
+| First closed-network Bicep validation tool | Open; narrowed proposal, four review prerequisites and runtime qualification remain | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
 | Additional workload tools and artifact delivery | Open; design follows the Bicep contract | [#1639](https://github.com/sokolaidev/maf-extensions/issues/1639) (open) |
 | Enforced egress and credential mediation | Open; backend-specific design required | [#1640](https://github.com/sokolaidev/maf-extensions/issues/1640) (open) |
 | Conformance and installed-package qualification | Open; scenario and harness design required | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (open) |
