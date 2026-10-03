@@ -23,4 +23,5 @@ try:
         stacklevel=2,
     )
 except MafSandboxBubblewrapExperimentalWarning:
+    # An informational notice must not prevent imports under warnings-as-errors.
     pass

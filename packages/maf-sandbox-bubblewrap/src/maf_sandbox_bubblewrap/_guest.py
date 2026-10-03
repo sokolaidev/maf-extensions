@@ -54,6 +54,7 @@ def parent(path: str, directory: str, *, create: bool = False) -> tuple[int, str
                 try:
                     os.mkdir(name, mode=0o700, dir_fd=fd)
                 except FileExistsError:
+                    # The no-follow open below still validates the existing component.
                     pass
             try:
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -74,6 +75,7 @@ def kill_children() -> None:
     try:
         os.kill(-1, signal.SIGKILL)
     except ProcessLookupError:
+        # Children may exit before namespace cleanup sends the signal.
         pass
 
 

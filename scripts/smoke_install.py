@@ -561,14 +561,15 @@ def _smoke_maf_sandbox_deepagents() -> str:
 def _smoke_maf_sandbox_bubblewrap() -> str:
     from pathlib import Path
 
-    from maf_sandbox import Egress, Isolation
-    from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
-
-    settings = BubblewrapSandboxConfig(Path.cwd(), Path.cwd(), Path.cwd())
-    assert settings.memory_bytes == 1024 * 1024 * 1024
-    assert BubblewrapSandboxBackend.isolation == Isolation.CONTAINER
-    assert BubblewrapSandboxBackend.declarations.egress_modes == frozenset({Egress.CLOSED})
     import maf_sandbox_bubblewrap
+    from maf_sandbox import Egress, Isolation
+
+    settings = maf_sandbox_bubblewrap.BubblewrapSandboxConfig(Path.cwd(), Path.cwd(), Path.cwd())
+    assert settings.memory_bytes == 1024 * 1024 * 1024
+    assert maf_sandbox_bubblewrap.BubblewrapSandboxBackend.isolation == Isolation.CONTAINER
+    assert maf_sandbox_bubblewrap.BubblewrapSandboxBackend.declarations.egress_modes == frozenset(
+        {Egress.CLOSED}
+    )
 
     module = Path(maf_sandbox_bubblewrap.__file__).parent
     assert (module / "_guest.py").is_file() and (module / "_launch.py").is_file()
