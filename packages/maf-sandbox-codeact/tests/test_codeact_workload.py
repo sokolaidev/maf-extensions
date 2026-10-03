@@ -3289,7 +3289,7 @@ class TestAProgramThatCallsOut:
 
         (layout,) = sandbox.layouts
         assert sandbox.written_files[layout.shim] == host_tool_shim(
-            frozenset({"_round_half_up"}), call_timeout=97
+            frozenset({"_round_half_up"}), call_timeout=97.0
         )
 
     def test_both_paths_use_the_backend_channels_interpreter(self, monkeypatch: pytest.MonkeyPatch):
