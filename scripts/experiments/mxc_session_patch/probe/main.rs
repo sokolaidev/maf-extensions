@@ -39,7 +39,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args().collect();
     if args.len() == 2 && args[1] == "--help" {
         println!(
-            "mxc-session-state-probe seed <initrd> <new-checkpoint> <report> [hold]\nmxc-session-state-probe restore <checkpoint> <report>\nmxc-session-state-probe call <restore> <checkpoint> <code-file> <report>\nmxc-session-state-probe call-owned <restore> <checkpoint> <code-file> <report>"
+            "mxc-session-state-probe seed <initrd> <new-checkpoint> <report> [hold]\nmxc-session-state-probe restore <checkpoint> <report>\nmxc-session-state-probe call <restore> <checkpoint> <code-file> <report>\nmxc-session-state-probe call-owned <restore> <checkpoint> <code-file> <report>\nmxc-session-state-probe execute-owned <restore> <unused-candidate> <code-file> <report>"
         );
         return Ok(());
     }
@@ -82,8 +82,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        Some(mode @ ("call" | "call-owned")) if args.len() == 6 => {
-            if mode == "call-owned" {
+        Some(mode @ ("call" | "call-owned" | "execute-owned")) if args.len() == 6 => {
+            if mode != "call" {
                 owner::watch();
             }
             if fs::metadata(&args[4])?.len() > 65536 {
@@ -92,10 +92,16 @@ fn run() -> Result<(), Box<dyn Error>> {
             let code = fs::read_to_string(&args[4])?;
             let mut sandbox = BackendSession::restore(Path::new(&args[2]))?;
             sandbox.execute(&code)?;
-            let _candidate = sandbox.capture(Path::new(&args[3]))?;
             assert!(sandbox.refuses_execution());
-            sandbox.close();
-            write_report(&args[5], serde_json::json!({"captured": true}))?;
+            if mode == "execute-owned" {
+                sandbox.close();
+                write_report(&args[5], serde_json::json!({"executed": true}))?;
+            } else {
+                let _candidate = sandbox.capture(Path::new(&args[3]))?;
+                assert!(sandbox.refuses_execution());
+                sandbox.close();
+                write_report(&args[5], serde_json::json!({"captured": true}))?;
+            }
         }
         Some("restore") if args.len() == 4 => {
             let mut sandbox = BackendSession::restore(Path::new(&args[2]))?;
