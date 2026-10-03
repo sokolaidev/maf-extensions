@@ -1,5 +1,11 @@
 // Completion must establish that every requested resource rendered within the pixel budget.
 var mafFailure = null;
+var mafIndicatorImage = mxGraph.prototype.getIndicatorImage;
+mxGraph.prototype.getIndicatorImage = function(state) {
+    var image = mafIndicatorImage.apply(this, arguments);
+    // Semicolons delimit styles; restore the validated image's data URI marker.
+    return image == null ? image : image.replace(/^(data:image\/(?:png|jpeg|svg\+xml)),/, '$1;base64,');
+};
 var mafCreateShape = mxCellRenderer.prototype.createShape;
 mxCellRenderer.prototype.createShape = function(state) {
     var shape = state.style[mxConstants.STYLE_SHAPE];
@@ -9,6 +15,11 @@ mxCellRenderer.prototype.createShape = function(state) {
     var icon = state.style.resIcon;
     if (icon && !mxStencilRegistry.getStencil(icon) && !mxCellRenderer.defaultShapes[icon]) {
         mafFailure = 'Unsupported resource icon';
+    }
+    var indicator = state.style[mxConstants.STYLE_INDICATOR_SHAPE];
+    // Indicator construction uses defaultShapes only, unlike the main shape.
+    if (indicator && !mxCellRenderer.defaultShapes[indicator]) {
+        mafFailure = 'Unsupported indicator shape';
     }
     return mafCreateShape.apply(this, arguments);
 };

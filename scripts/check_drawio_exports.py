@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
+import struct
 import xml.etree.ElementTree as ET
+import zlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,8 +33,14 @@ def diagram() -> str:
                 "id": "a",
                 "parent": "1",
                 "vertex": "1",
-                "value": f"<b>Page {page}</b><br>Résumé Ω",
-                "style": "rounded=1;html=1;fillColor="
+                "value": f"<b>Page {page}</b><br>Résumé Ω<br>fontFamily=Missing;",
+                "style": "shape=label;rounded=1;html=1;indicatorWidth=30;indicatorHeight=30;"
+                + (
+                    "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg;"
+                    if page == 1
+                    else "indicatorShape=ellipse;indicatorColor=#00ff00;"
+                )
+                + "fillColor="
                 + ("#ffcccc" if page == 1 else "#ccccff")
                 + ";",
             },
@@ -88,7 +97,15 @@ def verify_output(output: Path) -> dict[str, object]:
         root = ET.fromstring(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"
         assert f"Page {page}" in svg and "Résumé" in svg
+        assert "fontFamily=Missing;" in svg
         assert "data:image/" in svg and "data:font/ttf;base64," in svg
+        if page == 1:
+            assert any(
+                item.get("width") == "30" and item.get("height") == "30"
+                for item in root.iter("{http://www.w3.org/2000/svg}use")
+            ), "Indicator image was omitted"
+        else:
+            assert "#00ff00" in svg.lower(), "Indicator shape was omitted"
         assert "file://" not in svg and "https://" not in svg
     assert sizes[0] != sizes[2], "Page selection returned the same geometry"
     assert (output / "diagram.drawio").is_file()
@@ -156,6 +173,14 @@ async def check(image: str, output: Path, backend: SandboxBackend | None = None)
             "transparent_png": True,
             "opaque_jpg": True,
         }
+        header = b"IHDR" + struct.pack(">IIBBBBB", 6000, 6000, 8, 2, 0, 0, 0)
+        oversized = (
+            b"\x89PNG\r\n\x1a\n"
+            + struct.pack(">I", 13)
+            + header
+            + struct.pack(">I", zlib.crc32(header))
+        )
+        oversized += b"\x00\x00\x00\x00IDAT\x35\xaf\x06\x1e"
         cases = {
             "remote-image": diagram().replace(
                 "img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
@@ -163,8 +188,32 @@ async def check(image: str, output: Path, backend: SandboxBackend | None = None)
             ),
             "missing-asset": diagram().replace("Azure_OpenAI.svg", "Missing.svg"),
             "unknown-shape": diagram().replace("rounded=1", "shape=mxgraph.missing.fake"),
+            "unknown-indicator-shape": diagram().replace(
+                "indicatorShape=ellipse", "indicatorShape=missing"
+            ),
+            "absolute-indicator-image": diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=/etc/passwd",
+            ),
+            "relative-indicator-image": diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=../../secret.png",
+            ),
+            "oversized-embedded-image": diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=data:image/png," + base64.b64encode(oversized).decode(),
+            ),
             "huge-canvas": diagram().replace('width="200"', 'width="100000"'),
         }
+        for encoding in ("utf-16", "utf-32"):
+            resource = (
+                '<!DOCTYPE svg [<!ENTITY text "expanded">]>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>&text;</text></svg>'
+            ).encode(encoding)
+            cases[encoding + "-embedded-xml"] = diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=data:image/svg+xml," + base64.b64encode(resource).decode(),
+            )
         for name, xml in cases.items():
             destination = output / name
             [refusal] = make_drawio_tools(

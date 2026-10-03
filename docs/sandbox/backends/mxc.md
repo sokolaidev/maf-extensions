@@ -106,7 +106,7 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 | Extend MXC for persistent Hyperlight sessions | Selected; upstream proposal pending | [#1649](https://github.com/sokolaidev/maf-extensions/issues/1649) (open) |
 | Rich Python through MXC Hyperlight and CodeAct | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Code/text execution plus bounded file inputs and artifacts | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
-| Windows WHP and Linux KVM in the first version | Selected; Windows native probe passed, Linux unrun | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
+| Windows WHP and Linux KVM in the first version | Selected; fixed native recovery and local checkpoint/result publication probes passed independently on Windows/WHP and hosted Linux/KVM; production adapter unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open); [probe evidence and limits](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md) |
 | Fresh state by default and optional conversation persistence | Selected; native continuity demonstrated, MXC API unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Restart recovery of persistent Python state | Selected; native process-restart probe passed, durable integration unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Checkpoint after every successful persistent call, before acknowledgment | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |

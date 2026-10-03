@@ -54,6 +54,11 @@ dev = [
     "opentelemetry-sdk>=1.44,<2",
     "cryptography>=50,<51",
     "pillow>=12,<13",
+    # Experimental OpenClaw stdio prototype and its transport tests.
+    "mcp==1.26.0",
+    "anyio>=4.5,<5",
+    "jsonschema>=4.26,<5",
+    "pydantic>=2.11,<3",
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no

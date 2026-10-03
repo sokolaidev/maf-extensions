@@ -1,0 +1,6 @@
+{
+  "upstream_issue": "https://github.com/microsoft/mxc/issues/1374",
+  "sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+  "feature": "maf-session-preview",
+  "base": "86fb3d2abaf9c431556692037bff881830b543a5"
+}

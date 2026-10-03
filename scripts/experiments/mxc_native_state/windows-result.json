@@ -1,0 +1,46 @@
+{
+  "refusals": {
+    "truncated_index": 1,
+    "missing_blobs": 1,
+    "incompatible_key": 1
+  },
+  "helper_sha256": "77db7ece296c0ce7a1bea4834afb243773e78bdd9c280a3943e72541fd78f751",
+  "initrd_sha256": "8a9b9e383510dea8bb58b3aca72ac4a8d141f163f6a2fdc68af54197c5922e7e",
+  "seed": {
+    "continuity": true,
+    "hyperlight_unikraft": "0.14.1",
+    "phase": "seed",
+    "post_snapshot_mutation": true,
+    "snapshot_saved": true
+  },
+  "restore": {
+    "hyperlight_unikraft": "0.14.1",
+    "phase": "restore",
+    "restored_state_verified": true
+  },
+  "seed_killed_after_save": true,
+  "snapshot_unchanged_after_restore": true,
+  "snapshot_artifacts": {
+    "blobs/sha256/0a94a1d085df3af49c28b1f9ab84202f6eb11e2f3a5c43ad80c6e9048b35ccf1": {
+      "bytes": 915845120,
+      "sha256": "0a94a1d085df3af49c28b1f9ab84202f6eb11e2f3a5c43ad80c6e9048b35ccf1"
+    },
+    "blobs/sha256/853d3c251b46b704886703ef7eb7d2111e19c59427d326ba83a9001c76073939": {
+      "bytes": 567,
+      "sha256": "853d3c251b46b704886703ef7eb7d2111e19c59427d326ba83a9001c76073939"
+    },
+    "blobs/sha256/ea8b4c28bb4b179e44ddf5c4aa11e988d001ace01c2582103dbab91c62b668ee": {
+      "bytes": 9954,
+      "sha256": "ea8b4c28bb4b179e44ddf5c4aa11e988d001ace01c2582103dbab91c62b668ee"
+    },
+    "index.json": {
+      "bytes": 562,
+      "sha256": "c7cc7875fb9b84ad999c7dae60a1fa7843f02de3d8f8257187ab64932029a11e"
+    },
+    "oci-layout": {
+      "bytes": 30,
+      "sha256": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6"
+    }
+  },
+  "distinct_helper_processes": true
+}

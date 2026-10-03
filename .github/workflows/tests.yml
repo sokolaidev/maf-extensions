@@ -28,6 +28,10 @@ on:
   # branch, not for that.
   workflow_dispatch:
     inputs:
+      mxc_recovery:
+        description: "Qualify the experimental MXC checkpoint and host publication probes on KVM"
+        type: boolean
+        default: false
       hyperlight_https:
         description: "Run Hyperlight HTTPS method conformance through a temporary public relay"
         type: boolean
@@ -247,6 +251,121 @@ jobs:
       - name: CodeAct sample on Linux KVM
         if: needs.changes.outputs.code == 'true'
         run: sudo python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python" -- -q tests/test_sample_hyperlight_acas_live.py
+
+  mxc-recovery:
+    name: MXC checkpoint and publication (Linux KVM)
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        with:
+          persist-credentials: false
+
+      - name: Require KVM and build prerequisites
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm
+          printf 'KERNEL=="kvm", OWNER="%s", MODE="0600"\n' "$(id -un)" | sudo tee /etc/udev/rules.d/99-mxc-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          test -r /dev/kvm && test -w /dev/kvm
+          df -h "$RUNNER_TEMP"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mxc/target" >> "$GITHUB_ENV"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libclang-dev
+          rustup toolchain install 1.98.0 --profile minimal
+
+      - name: Apply pinned MXC patch and build probe
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mxc"
+          git clone --no-checkout https://github.com/microsoft/mxc.git "$RUNNER_TEMP/mxc/source"
+          git -C "$RUNNER_TEMP/mxc/source" checkout 86fb3d2abaf9c431556692037bff881830b543a5
+          python3 scripts/experiments/mxc_session_patch/patch.py apply --source "$RUNNER_TEMP/mxc/source"
+          python3 scripts/experiments/mxc_session_patch/patch.py configure --source "$RUNNER_TEMP/mxc/source" --build-dir "$RUNNER_TEMP/mxc/build"
+          cargo +1.98.0 build --locked --manifest-path "$RUNNER_TEMP/mxc/build/Cargo.toml"
+          "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --help
+
+      - name: Prepare verified agent rootfs
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: python3 scripts/experiments/mxc_session_patch/prepare_agent.py --destination "$RUNNER_TEMP/mxc/images/agent"
+
+      - name: Native state and restart controls
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: |
+          set -euo pipefail
+          python3 scripts/experiments/mxc_native_state_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --initrd "$RUNNER_TEMP/mxc/images/agent/initrd.cpio" --image-home "$RUNNER_TEMP/mxc/images" --state-dir "$RUNNER_TEMP/mxc/native"
+
+      - name: Atomic publication and lost acknowledgments
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: |
+          set -euo pipefail
+          python3 scripts/experiments/mxc_session_patch/host_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/publication"
+
+      - name: Verify both reports and record artifact identity
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, platform
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "mxc"
+          native = json.loads((root / "native/result.json").read_text())
+          publication = json.loads((root / "publication/result.json").read_text())
+          assert native["seed_killed_after_save"] and native["snapshot_unchanged_after_restore"]
+          assert native["refusals"] == dict.fromkeys(("truncated_index", "missing_blobs", "incompatible_key"), 1)
+          for key in ("commit_barrier", "continuity", "fresh_control", "post_snapshot_mutation", "snapshot_saved", "stale_token_refused"):
+              assert native["seed"][key] is True
+          for key in ("close_refused_execution", "failed_capture_retired", "guest_failure_retired", "restored_state_verified", "timeout_retired"):
+              assert native["restore"][key] is True
+          assert publication["before_commit_keeps_previous_checkpoint"]
+          assert publication["interrupted_call_refuses_replay"]
+          assert publication["committed_result_redelivery_without_execution"] == {"after_commit": True, "before_ack": True}
+          assert publication["csv_to_chart"] and publication["artifact_redelivery_identical"]
+          assert native["helper_sha256"] == publication["helper_sha256"]
+          record = {
+              "source_commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "kernel": platform.release(),
+              "architecture": platform.machine(), "host_python": platform.python_version(),
+              "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+              "patch_sha256": hashlib.sha256(Path("scripts/experiments/mxc_session_patch/session-preview.patch").read_bytes()).hexdigest(),
+              "helper_sha256": native["helper_sha256"], "native_passed": True, "publication_passed": True,
+          }
+          (root / "identity.json").write_text(json.dumps(record, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("MXC native recovery and atomic host publication passed on Linux/KVM.\n")
+          PY
+
+      - name: Record final KVM device access
+        if: always() && (github.event_name == 'workflow_dispatch' && inputs.mxc_recovery)
+        run: |
+          id
+          stat /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Retain MXC reports and diagnostics
+        if: always() && (github.event_name == 'workflow_dispatch' && inputs.mxc_recovery)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mxc-linux-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mxc/identity.json
+            ${{ runner.temp }}/mxc/native/*.json
+            ${{ runner.temp }}/mxc/native/*.stdout
+            ${{ runner.temp }}/mxc/native/*.stderr
+            ${{ runner.temp }}/mxc/publication/*.json
+            ${{ runner.temp }}/mxc/publication/*.log
+          if-no-files-found: error
+          retention-days: 14
+
 
   # Lint, format and the commit-msg tier: seconds in total, and a first answer while the
   # heavier shards are still installing.
@@ -514,7 +633,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -214,10 +214,7 @@ def _create_tool(
                 completed=refused,
                 verdict="refused" if refused else None,
                 trusted_output=(
-                    (
-                        "The converter rejected the diagram. Its own diagnostic is in the "
-                        "hidden half of this result."
-                    )
+                    "The converter rejected the diagram. Its diagnostic follows."
                     if refused
                     else "The converter could not complete the diagram.",
                 ),
@@ -250,7 +247,11 @@ def _create_tool(
             )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("create_drawio: output delivery failed: %s", error_detail(exc))
-            return _stopped("Error: delivery of diagram.drawio failed")
+            return _stopped(
+                "Error: collection or delivery of draw.io exports failed"
+                if export is not None
+                else "Error: delivery of diagram.drawio failed"
+            )
         if not landed:
             return _stopped("Error: the converter produced no diagram.drawio file")
         return SandboxResult(

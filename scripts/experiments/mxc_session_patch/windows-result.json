@@ -1,0 +1,57 @@
+{
+  "refusals": {
+    "truncated_index": 1,
+    "missing_blobs": 1,
+    "incompatible_key": 1
+  },
+  "helper_sha256": "4c6ceeae6c55a7f8092d13997707bd9c398e5258183043042b9305447a442b72",
+  "initrd_sha256": "8a9b9e383510dea8bb58b3aca72ac4a8d141f163f6a2fdc68af54197c5922e7e",
+  "seed": {
+    "commit_barrier": true,
+    "continuity": true,
+    "fresh_control": true,
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "phase": "seed",
+    "post_snapshot_mutation": true,
+    "provider": "mxc-session-preview",
+    "snapshot_saved": true,
+    "stale_token_refused": true
+  },
+  "restore": {
+    "close_refused_execution": true,
+    "failed_capture_retired": true,
+    "guest_failure_retired": true,
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "phase": "restore",
+    "provider": "mxc-session-preview",
+    "restored_state_verified": true,
+    "timeout_retired": true
+  },
+  "seed_killed_after_save": true,
+  "snapshot_unchanged_after_restore": true,
+  "snapshot_artifacts": {
+    "blobs/sha256/3faaa6491f6420fca10f6244d65570637ed5bdacd0b354ad7689fc5569425991": {
+      "bytes": 567,
+      "sha256": "3faaa6491f6420fca10f6244d65570637ed5bdacd0b354ad7689fc5569425991"
+    },
+    "blobs/sha256/883ca03d0a892e0493e3ffcea78382c2801a3ac2cea86d0f5f840e1425ddad25": {
+      "bytes": 915910656,
+      "sha256": "883ca03d0a892e0493e3ffcea78382c2801a3ac2cea86d0f5f840e1425ddad25"
+    },
+    "blobs/sha256/e1bcb3284c66c3a696c9249446572e4a326dff77ed63151ddc911aa830094a21": {
+      "bytes": 9948,
+      "sha256": "e1bcb3284c66c3a696c9249446572e4a326dff77ed63151ddc911aa830094a21"
+    },
+    "index.json": {
+      "bytes": 562,
+      "sha256": "d6456a6d9252fbe82a461b0bfa320bfa32c0b40502734b394a93c07213404190"
+    },
+    "oci-layout": {
+      "bytes": 30,
+      "sha256": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6"
+    }
+  },
+  "distinct_helper_processes": true,
+  "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+  "cargo_lock_sha256": "2ac0aad1bc37c9c7e4a1670a438b870f2528128ab14bba6379c56bf4ad01120c"
+}

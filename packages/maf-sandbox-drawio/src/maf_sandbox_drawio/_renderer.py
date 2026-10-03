@@ -513,7 +513,8 @@ def main() -> int:
         return 3
     except FileNotFoundError:
         print(
-            "The draw.io sandbox needs Python 3, Graphviz dot and the configured export runtime",
+            "The draw.io sandbox needs Python 3, Graphviz dot"
+            + (" and the configured export runtime" if args.export_config else ""),
             file=sys.stderr,
         )
         return 3

@@ -99,10 +99,16 @@ class Label(HTMLParser):
 
 
 def xml_document(data: bytes) -> ET.Element:
-    """Parse bounded XML without declarations that can expand entities."""
-    if len(data) > MAX_FILE or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+    """Parse bounded UTF-8 XML without DTD or entity declarations."""
+    if len(data) > MAX_FILE:
         raise ValueError("Unsupported or oversized XML resource")
-    return ET.fromstring(data)
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("XML resources must use UTF-8") from exc
+    if "\x00" in text or "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        raise ValueError("Unsupported XML resource")
+    return ET.fromstring(text)
 
 
 def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
@@ -172,7 +178,7 @@ def image_data(value: str) -> str:
                     raise ValueError("Image type does not match its data URI")
                 dimensions(image.width, image.height)
                 image.verify()
-    except (OSError, SyntaxError) as exc:
+    except (OSError, SyntaxError, Image.DecompressionBombError) as exc:
         raise ValueError("Invalid embedded image") from exc
     return "data:image/" + match[1] + ";base64," + base64.b64encode(data).decode("ascii")
 
@@ -197,7 +203,7 @@ def prepare_document(xml: str, manifest: dict) -> str:
                 normalized: list[str] = []
                 for part in parts:
                     key, sep, setting = part.partition("=")
-                    if key == "image":
+                    if key in {"image", "indicatorImage"}:
                         if setting.startswith("https://app.diagrams.net/img/lib/"):
                             setting = setting.removeprefix("https://app.diagrams.net/")
                         if setting in manifest["assets"]:
@@ -273,6 +279,7 @@ def run_renderer(argv: list[str], deadline: float, profile: Path) -> None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # The process group may already have exited.
                 pass
             process.wait()
             reader.join(timeout=2)
@@ -294,8 +301,25 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
     ):
         raise RuntimeError("Renderer integrity check failed")
     prepared = prepare_document(xml, manifest)
-    families = set(re.findall(r"fontFamily=([^;]+)", prepared))
-    pages = len(xml_document(xml.encode()))
+    document = xml_document(prepared.encode())
+    families = set()
+    for element in document.iter():
+        for declaration in element.get("style", "").split(";"):
+            key, separator, value = declaration.partition("=")
+            if key == "fontFamily" and separator:
+                families.add(value)
+    css = []
+    for family in sorted(families):
+        for font in manifest["font_variants"][family]:
+            data = Path(font["path"]).read_bytes()
+            if hashlib.sha256(data).hexdigest() != font["sha256"]:
+                raise RuntimeError("Font integrity check failed")
+            css.append(
+                f'@font-face{{font-family:"{family}";'
+                f"font-weight:{font['weight']};font-style:{font['style']};"
+                "src:url(data:font/ttf;base64," + base64.b64encode(data).decode() + ")}"
+            )
+    pages = len(document)
     selected = options["pages"] or list(range(1, pages + 1))
     if any(page > pages for page in selected):
         raise ValueError("Requested page is absent")
@@ -345,19 +369,6 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
                 if format == "svg":
                     root = check_svg(destination.read_bytes(), exported=True)
                     definitions = ET.SubElement(root, f"{{{SVG}}}defs")
-                    css = []
-                    for family in sorted(families):
-                        for font in manifest["font_variants"][family]:
-                            data = Path(font["path"]).read_bytes()
-                            if hashlib.sha256(data).hexdigest() != font["sha256"]:
-                                raise RuntimeError("Font integrity check failed")
-                            css.append(
-                                f'@font-face{{font-family:"{family}";'
-                                f"font-weight:{font['weight']};font-style:{font['style']};"
-                                "src:url(data:font/ttf;base64,"
-                                + base64.b64encode(data).decode()
-                                + ")}"
-                            )
                     ET.SubElement(definitions, f"{{{SVG}}}style").text = "\n".join(css)
                     destination.write_bytes(
                         ET.tostring(root, encoding="utf-8", xml_declaration=True)
