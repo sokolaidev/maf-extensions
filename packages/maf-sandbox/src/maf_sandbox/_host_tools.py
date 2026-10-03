@@ -1035,6 +1035,8 @@ class HostToolRun:
         exception or cancellation during publication revokes the run and retains its
         reservation: delivery is uncertain and must not be retried.
         """
+        if not callable(publish):
+            raise TypeError(f"publish must be callable, not {type(publish).__name__}")
         _refuse_non_integer("framing_bytes", framing_bytes)
         if framing_bytes < 0:
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
@@ -1403,6 +1405,8 @@ class BoundedHostToolPolicy:
     ) -> HostToolCallResult:
         from ._reclaim import note_unclean
 
+        if not callable(publish):
+            raise TypeError(f"publish must be callable, not {type(publish).__name__}")
         remaining = min(self.timeout, self.deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError("the program deadline expired before the host-tool call")

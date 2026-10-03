@@ -1233,12 +1233,12 @@ async def _execute(
         guest_prefix = ""
 
     names: list[str] = []
-    if runtime is not None and outputs is CodeactOutputs.DECLARED:
+    if outputs is CodeactOutputs.DECLARED:
         checked = _validated_output_names(
             declared,
             max_files=session.spec.files_out.max_files,
             reserved=reserved,
-            guest_prefix=guest_prefix,
+            guest_prefix=guest_prefix if runtime is not None else "",
             normalization=_normalization(session),
             named_by=_OUTPUTS_ARGUMENT,
             argument=_OUTPUTS_ARGUMENT,

@@ -797,3 +797,29 @@ def test_repeated_cancellation_retains_unfinished_host_work():
         assert answers == []
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize("publish", [None, 42])
+def test_invalid_publisher_is_rejected_before_host_execution(bounded, publish):
+    import time
+
+    from maf_sandbox._host_tools import BoundedHostToolPolicy
+    from maf_sandbox.testing import InProcessSandbox
+
+    run, observer, effects = _run()
+    policy = (
+        BoundedHostToolPolicy(run, InProcessSandbox(), deadline=time.monotonic() + 30, timeout=10)
+        if bounded
+        else run
+    )
+
+    async def exercise():
+        with pytest.raises(TypeError, match="publish must be callable"):
+            await policy.call("value", publish=publish)
+        assert effects == [] and observer.events == []
+        assert run._calls == run._reserved == run._reserved_bytes == 0
+        assert (await policy.call("value", publish=_accept)).ok
+        assert effects == ["executed"] and len(observer.events) == 1
+
+    asyncio.run(exercise())
