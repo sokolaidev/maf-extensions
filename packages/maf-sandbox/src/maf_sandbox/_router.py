@@ -2618,9 +2618,9 @@ class SandboxRouter:
         call's own cleanup and the separation the workload asked for.
 
         Framework cleanup supplies the retained admission to reach the serving backend without
-        reading its declarations again. Direct callers route by ``spec``; without one, a
-        per-spec router asks only backends declaring CALL scope, since deleting through a
-        conversation-scoped backend could remove a sandbox this call never owned.
+        reading its declarations again. Direct callers use the retained program backend or
+        route by ``spec``; without one, a per-spec router asks only backends declaring CALL
+        scope, since a conversation-scoped backend could delete a sandbox this call never owned.
 
         Raises:
             ValueError: when ``key`` names no call, which is a conversation's key and not this
@@ -2637,7 +2637,7 @@ class SandboxRouter:
                 "dispose_unclean(key, timeout=...) when a call could not leave it clean."
             )
         if _admission is None:
-            serving, sweep = self._serving_for_call(spec)
+            serving, sweep = self._serving_for_call(key, spec)
         else:
             serving = _admission.backend
             sweep = [serving] if _admission.served else []
@@ -2674,13 +2674,16 @@ class SandboxRouter:
             return False
 
     def _serving_for_call(
-        self, spec: SandboxSpec | None
+        self, key: SandboxKey, spec: SandboxSpec | None
     ) -> tuple[SandboxBackend | None, list[SandboxBackend]]:
         """Resolve a call-scoped delete without an admission, including host denials.
 
         Without a spec, PER_SPEC selection reaches only backends declaring CALL scope:
         a conversation-scoped backend could otherwise delete a sandbox this call never owned.
         """
+        pinned = self._program_pin(key, spec) if spec is not None else None
+        if pinned is not None:
+            return pinned.backend, [pinned.backend]
         if self._selection is not Selection.PER_SPEC:
             return self._backend, ([] if self._backend is None else [self._backend])
         if spec is None:

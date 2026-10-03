@@ -3712,9 +3712,7 @@ class TestPerSpecSelection:
         assert weak.disposed == []
 
     def test_dispose_call_deletes_on_the_backend_the_spec_routes_to(self):
-        """Recomputed rather than remembered: a `key -> backend` map would be the unbounded
-        one `_may_be_refused` already refuses for call keys, and would answer nothing on a
-        replica that did not create the sandbox."""
+        """A router without a retained acquisition can still dispose by the spec's route."""
         weak = _declaring("weak", per_call=True)
         strong = _declaring("strong", Capability.FILES_OUT, per_call=True)
         router = SandboxRouter(

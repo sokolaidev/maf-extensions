@@ -516,7 +516,7 @@ def make_codeact_tools(
         surface=surface,
         egress_allow=egress_allow if configured else (),
         runtime=runtime if configured else None,
-        program=program,
+        program=program if configured else ProgramRequirements(),
         takes_files=file_store is not None,
         credential_retention_seconds=credential_retention_seconds if configured else None,
     )

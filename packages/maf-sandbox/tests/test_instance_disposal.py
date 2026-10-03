@@ -289,3 +289,39 @@ def test_disposing_one_program_instance_preserves_its_siblings_channel():
             await router.release_call(KEY, one.kind, owner="new-one")
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", [None, "reported"])
+def test_direct_call_disposal_reaches_the_fallback_program_backend(failure):
+    from maf_sandbox import IsolationScope, ProgramRequirements, SandboxBackendUnavailable
+
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset({IsolationScope.CALL})
+    )
+    first = _Engine("first", declarations=declarations)
+    second = _Engine("second", declarations=declarations)
+    router = _router(first, second, selection=Selection.PER_SPEC)
+    key = replace(KEY, call_id="call")
+    spec = replace(SPEC, program=ProgramRequirements(), isolation_scope=IsolationScope.CALL)
+
+    async def unavailable(key, spec):
+        raise SandboxBackendUnavailable("offline")
+
+    first.acquire = unavailable
+
+    async def scenario():
+        sandbox = await router.acquire(key, spec)
+        assert sandbox in second.instances.values()
+        second.failure = failure
+        assert await router.dispose_call(key, spec=spec, timeout=1) is (failure is None)
+        assert first.attempts == []
+        assert second.attempts == [(None, None)]
+        if failure:
+            assert sandbox in second.instances.values()
+            second.failure = None
+            assert await router.dispose_call(key, spec=spec, timeout=1)
+            assert first.attempts == []
+        assert not second.instances
+        assert not router._program_pins
+
+    asyncio.run(scenario())
