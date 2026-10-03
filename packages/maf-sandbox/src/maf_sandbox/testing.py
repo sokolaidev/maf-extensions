@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from ._outputs import SandboxTransferCapExceeded
+from ._program import ExecProgramChannel
 from ._protocol import (
     DEFAULT_CAPABILITIES,
     BackendDeclarations,
@@ -37,13 +38,16 @@ from ._protocol import (
     ExecResult,
     Isolation,
     ListedFile,
+    ProgramRequirements,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
     SandboxKey,
+    SandboxLimits,
     SandboxSpec,
     ScopePurge,
     SourceIntegrity,
+    TransferLimits,
 )
 from .bounded_exec import SandboxExecOutputLimitExceeded
 from .conformance import SandboxFingerprint
@@ -60,6 +64,7 @@ from .paths import (
 )
 
 __all__ = [
+    "InProcessProgramChannel",
     "FAKE_BACKEND_DECLARATIONS",
     "InMemoryStore",
     "InProcessSandbox",
@@ -512,9 +517,21 @@ class InProcessSandbox:
         return tuple(entries)
 
 
+class InProcessProgramChannel(ExecProgramChannel):
+    """A scripted exec channel for tests; it does not execute or verify Python."""
+
+    async def prepare(self, sandbox: Sandbox, requirements: ProgramRequirements) -> None:
+        pass
+
+
 #: Defaults for offline workloads: permit attach through explicit egress modes and establish
-#: the RECLAIM rung through the fake's directory removal. Other fields keep the router defaults.
+#: the RECLAIM rung through the fake's directory removal, with room for program transport.
 FAKE_BACKEND_DECLARATIONS = BackendDeclarations(
+    program_channels=(InProcessProgramChannel(),),
+    limits=SandboxLimits(
+        files_in=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 256),
+        files_out=TransferLimits(64 * 1024 * 1024, 256 * 1024 * 1024, 256),
+    ),
     capabilities=DEFAULT_CAPABILITIES | {Capability.RECLAIM},
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
 )

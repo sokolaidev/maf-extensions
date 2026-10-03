@@ -7004,3 +7004,36 @@ class TestADoubledBraceIsUndoubled:
         )[0]
 
         assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
+
+
+@pytest.mark.parametrize("program", [False, True])
+def test_failed_reacquisition_keeps_framework_ownership_of_the_call_sandbox(program):
+    from maf_sandbox import ProgramRequirements, SandboxBackendUnavailable
+
+    backend = InProcessSandboxBackend(
+        sandbox_per_key=True,
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset({IsolationScope.CALL})
+        ),
+    )
+    router = _router(backend)
+    spec = dataclasses.replace(
+        _SPEC,
+        isolation_scope=IsolationScope.CALL,
+        program=ProgramRequirements() if program else None,
+    )
+
+    def build(session):
+        async def widget_run(target: str) -> str:
+            key = session.key()
+            assert not isinstance(await session.acquire(key), str)
+            backend.acquire_error = SandboxBackendUnavailable("offline")
+            assert isinstance(await session.acquire(key), str)
+            return "done"
+
+        return widget_run
+
+    assert _call(_attach_with(build, router, spec=spec)[0], target="x") == "done"
+    assert len(backend.keys) == 1
+    assert backend.disposed == backend.keys
+    assert not backend.sandboxes and not router._program_pins

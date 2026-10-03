@@ -70,7 +70,7 @@ def test_prepared_next_core_defers_image_until_versions_admit_it(metadata, core,
     }
     pending = compatibility.pending_adoptions(metadata(core, ranges))
     assert len(pending) == 1
-    assert "maf-sandbox-codeact requires prepared core" in pending[0]
+    assert "maf-sandbox-codeact requires prepared" in pending[0]
     ranges["maf-sandbox-hyperlight"] = ["maf-sandbox>=0.44.0,<0.45"]
     assert compatibility.pending_adoptions(metadata("0.44.0", ranges)) == []
 
@@ -177,3 +177,25 @@ def test_ci_only_gates_image_and_its_success_artifact():
     build = next(step for step in steps if step.get("name") == gated[0])
     assert "scripts/build_hyperlight_aks_image.py --require-clean" in build["run"]
     assert not build.get("continue-on-error")
+
+
+@pytest.mark.parametrize("core", ["0.46.0", "0.46.9"])
+@pytest.mark.parametrize("floor,ceiling", [("0.47.0", "0.48"), ("0.47", "0.48.0.0")])
+def test_prepared_floor_defers_image_until_core_and_both_dependents_align(
+    metadata, monkeypatch, capsys, core, floor, ceiling
+):
+    ranges = {
+        "maf-sandbox-hyperlight": ["maf-sandbox>=0.46.0,<0.47"],
+        "maf-sandbox-codeact": [f"maf-sandbox>={floor},<{ceiling}"],
+    }
+    root = metadata(core, ranges)
+    pending = compatibility.pending_adoptions(root)
+    assert len(pending) == 1 and "maf-sandbox-codeact requires prepared" in pending[0]
+    monkeypatch.setattr(compatibility, "ROOT", root)
+    compatibility.main()
+    captured = capsys.readouterr()
+    assert captured.out == "build=false\n"
+    assert "No image was built or verified" in captured.err
+    assert "Linux worker and KVM checks remain enabled" in captured.err
+    ranges["maf-sandbox-hyperlight"] = ["maf-sandbox>=0.47.0,<0.48"]
+    assert compatibility.pending_adoptions(metadata("0.47.0", ranges)) == []

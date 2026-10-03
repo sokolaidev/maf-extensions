@@ -12,6 +12,7 @@ The split is what lets the same tool run against any of them unchanged, and it i
 
 from __future__ import annotations
 
+import math
 import re
 import warnings
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -21,6 +22,11 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 __all__ = [
+    "SandboxBackendUnavailable",
+    "HostToolCallResult",
+    "HostToolPolicy",
+    "ProgramChannel",
+    "ProgramRequirements",
     "CLEANUP_RANK",
     "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
@@ -941,6 +947,114 @@ class HostToolAggregate:
 
 
 @dataclass(frozen=True)
+class ProgramRequirements:
+    """Named Python guarantees and a program budget independent of shared files."""
+
+    profile: str = "python-portable-v1"
+    max_program_bytes: int = 8 * 1024 * 1024
+    host_tool_timeout_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(cast(object, self.profile), str)
+            or not self.profile
+            or type(self.max_program_bytes) is not int
+            or self.max_program_bytes <= 0
+        ):
+            raise ValueError("a program requires a named profile and a positive byte limit")
+        if (
+            type(self.host_tool_timeout_seconds) not in (int, float)
+            or not math.isfinite(self.host_tool_timeout_seconds)
+            or self.host_tool_timeout_seconds <= 0
+        ):
+            raise ValueError("host_tool_timeout_seconds must be finite and positive")
+
+
+@dataclass(frozen=True)
+class HostToolCallResult:
+    """An admitted JSON value or a sanitized refusal, awaiting transport publication."""
+
+    value_json: str | None = None
+    refusal: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.value_json is None) == (self.refusal is None):
+            raise ValueError("a HostToolCallResult carries exactly one of value_json or refusal")
+
+    @property
+    def ok(self) -> bool:
+        """Whether policy admitted a value."""
+        return self.refusal is None
+
+
+class HostToolPolicy(Protocol):
+    """A live run's policy authority, never a registry exposed to the guest."""
+
+    @property
+    def surface(self) -> HostToolAggregate: ...
+
+    async def call(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        publish: Callable[[HostToolCallResult], Awaitable[None]],
+        framing_bytes: int = 0,
+    ) -> HostToolCallResult: ...
+
+    def close(self) -> None: ...
+
+
+class ProgramChannel(Protocol):
+    """A backend-owned execution mechanism with explicit admission and publication."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["exec", "runtime"]: ...
+
+    @property
+    def profiles(self) -> frozenset[str]: ...
+
+    @property
+    def host_tools(self) -> bool: ...
+
+    def required_capabilities(self, spec: SandboxSpec) -> frozenset[Capability]: ...
+
+    def transfer_limits(self, spec: SandboxSpec) -> SandboxLimits:
+        """Complete physical file demand, including framing; refuse incompatible channel limits."""
+        ...
+
+    def guest_working_directory(self, guest_call_path: str, *, host_tools: bool = False) -> str: ...
+
+    async def prepare(self, sandbox: Sandbox, requirements: ProgramRequirements) -> None:
+        """Verify the declared profile before any workload code executes."""
+        ...
+
+    async def run(
+        self,
+        sandbox: Sandbox,
+        code: str,
+        *,
+        requirements: ProgramRequirements,
+        guest_call_path: str,
+        timeout: float,
+        policy: HostToolPolicy | None = None,
+    ) -> ExecResult:
+        """Execute once, publish through live policy, and revoke it on every exit path."""
+        ...
+
+
+class SandboxBackendUnavailable(RuntimeError):
+    """Initial acquisition failed without retaining an instance or starting workload code.
+
+    Only this classification permits fallback. A backend must clean partial acquisition
+    before raising it; configuration, policy and uncertain cleanup failures do not qualify.
+    """
+
+
+@dataclass(frozen=True)
 class SandboxSpec:
     """What a sandbox of a given kind needs, in terms no backend is privileged by.
 
@@ -1093,6 +1207,7 @@ class SandboxSpec:
     #: Opaque workload execution configuration. A router refuses to reuse a known instance
     #: under a different value; dispose it before changing contracts. None is a contract too.
     execution_contract: str | None = None
+    program: ProgramRequirements | None = None
 
     @property
     def required_capabilities(self) -> frozenset[Capability]:
@@ -1751,6 +1866,7 @@ class BackendDeclarations:
 
     #: Host configuration only. None means unreported, not an identity-free deployment.
     configured_identity: ConfiguredIdentity | None = None
+    program_channels: tuple[ProgramChannel, ...] = ()
 
 
 @runtime_checkable

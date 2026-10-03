@@ -73,10 +73,10 @@ from .paths import confine_resolve_guest_path, guest_path_relative_to
 from .run_activity import RunActivity, SandboxRunActivity
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
-    from ._host_tools import HostToolRun
-    from ._protocol import Sandbox
+    from ._host_tools import HostToolCallResult
+    from ._protocol import HostToolPolicy, Sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -786,7 +786,7 @@ def _quote(text: str) -> str:
 
 async def host_tool_calls_over_exec(
     sandbox: Sandbox,
-    run: HostToolRun,
+    run: HostToolPolicy,
     layout: GuestRunLayout,
     *,
     timeout: float,
@@ -993,7 +993,7 @@ class _WhatTheLauncherSaid:
 
 async def _supervise(
     sandbox: Sandbox,
-    run: HostToolRun,
+    run: HostToolPolicy,
     layout: GuestRunLayout,
     *,
     timeout: float,
@@ -1620,7 +1620,7 @@ async def _marker_if_present(
 
 async def _completed(
     sandbox: Sandbox,
-    run: HostToolRun,
+    run: HostToolPolicy,
     layout: GuestRunLayout,
     finished: str | _TooLarge | _NotText,
     deadline: float,
@@ -1702,7 +1702,7 @@ async def _stat_if_present(
 
 async def _probe_exit_and_requests(
     sandbox: Sandbox,
-    run: HostToolRun,
+    run: HostToolPolicy,
     layout: GuestRunLayout,
     *,
     served: int,
@@ -1756,7 +1756,7 @@ async def _probe_exit_and_requests(
 
 async def _serve_request_probes(
     sandbox: Sandbox,
-    run: HostToolRun,
+    run: HostToolPolicy,
     layout: GuestRunLayout,
     served: int,
     probes: tuple[asyncio.Task[str | bool | _TooLarge | _NotText | None], ...],
@@ -1806,27 +1806,21 @@ async def _serve_request_probes(
                 break
             id_str = f"{identifier:04d}"
             _check_activity(activity)
-            answer = await _answer(run, body, id_str)
-            _check_activity(activity)
-            if answer is None:
-                # Only the explicit marker advances a hole. A missing speculative probe does
-                # not say the guest abandoned its identifier.
-                logger.debug(
-                    "host tools: request %s was abandoned by the guest, stepping over it",
-                    id_str,
+
+            async def publish(answer: str) -> None:
+                _check_activity(activity)
+                response_path = posixpath.join(layout.calls, f"{id_str}.response.json")
+                await _within(
+                    max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
+                    f"write the answer to {id_str}",
+                    sandbox.write_file(
+                        _layout_path(layout, response_path),
+                        answer,
+                        working_directory=layout.directory,
+                    ),
                 )
-                served += 1
-                continue
-            response_path = posixpath.join(layout.calls, f"{id_str}.response.json")
-            # A call may finish after the deadline by design. Its answer gets a fresh
-            # write grace so the effect and its record cannot be split.
-            await _within(
-                max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
-                f"write the answer to {id_str}",
-                sandbox.write_file(
-                    _layout_path(layout, response_path), answer, working_directory=layout.directory
-                ),
-            )
+
+            await _answer(run, body, id_str, publish)
             served += 1
         return served, full_prefix
     finally:
@@ -1925,55 +1919,47 @@ def _refusal(sentence: str) -> str:
 
 
 async def _answer(
-    run: HostToolRun, body: str | _TooLarge | _NotText, identifier: str
-) -> str | None:
-    """One request's JSON answer, or ``None`` when the request wants no answer at all.
-
-    ``None`` is the abandonment case and only that: a number the guest claimed and could not
-    publish under. Every other outcome, refusals included, is a sentence the guest may read.
-    """
+    run: HostToolPolicy,
+    body: str | _TooLarge | _NotText,
+    identifier: str,
+    publish: Callable[[str], Awaitable[None]],
+) -> None:
+    """Publish one response; an abandoned request has no response."""
     if isinstance(body, _TooLarge):
-        return _refusal(
-            "Error: this host-tool request is larger than the host will read — pass less, or "
-            "write what you have to a file instead"
+        await publish(
+            _refusal(
+                "Error: this host-tool request is larger than the host will read — pass less, or "
+                "write what you have to a file instead"
+            )
         )
+        return
     if isinstance(body, _NotText):
-        # The same sentence as an unparseable request, and deliberately: from the guest's
-        # side both are a request the host would not read, and neither is retryable.
-        return _refusal(_NOT_JSON)
+        await publish(_refusal(_NOT_JSON))
+        return
     try:
         parsed = cast(object, json.loads(body))
     except (ValueError, RecursionError):
-        # `RecursionError` is not a `ValueError`: a deeply nested payload, well under the size
-        # cap, would otherwise escape the supervisor and leave the detached guest waiting for
-        # an answer that is never written.
         logger.warning("host tools: request %s is not JSON, refusing it", identifier)
-        return _refusal(_NOT_JSON)
+        await publish(_refusal(_NOT_JSON))
+        return
     if not isinstance(parsed, dict):
-        return _refusal("Error: a host-tool request must be a JSON object")
+        await publish(_refusal("Error: a host-tool request must be a JSON object"))
+        return
     request = cast("dict[str, object]", parsed)
-    # Handed over as-is, casts and all: `call` is where guest data is checked, and it
-    # takes `object` to its own `isinstance` gates for exactly this reason. Narrowing here
-    # would be a second validation in the wrong process's file — and the annotations describe
-    # the contract a *host* calls under, not what a transport can promise about a JSON blob.
     if request.get("abandoned") is True:
-        # The guest's own marker for a number it took and could not use. Nothing calls
-        # and nothing is written; a guest spending its allowance on these is bounded by the
-        # same count as one spending it on refusals — see `_serving_bound`.
-        return None
+        return
     name = cast(str, request.get("name"))
     arguments = cast("Mapping[str, Any] | None", request.get("arguments"))
-    # The framing is declared, not policed afterwards. `call` charges the run for the
-    # payload *and* these bytes, so a value that only fits unwrapped is refused before the
-    # ledger is spent — checking it here could only turn a committed success into a refusal,
-    # leaving the run paying for a response that was never delivered.
-    result = await run.call(name, arguments, framing_bytes=_FRAMING_BYTES)
-    if not result.ok:
-        # `HostToolCallResult` carries exactly one of the two, enforced in its own `__post_init__`.
-        return _refusal(cast(str, result.refusal))
-    # `value_json` is already the serialized return value, capped host-side. Splicing it in as
-    # text keeps those exact bytes rather than re-serializing a parse of them.
-    return _FRAME_OPEN + (result.value_json or "null") + _FRAME_CLOSE
+
+    async def publish_result(result: HostToolCallResult) -> None:
+        answer = (
+            _refusal(cast(str, result.refusal))
+            if not result.ok
+            else _FRAME_OPEN + (result.value_json or "null") + _FRAME_CLOSE
+        )
+        await publish(answer)
+
+    await run.call(name, arguments, framing_bytes=_FRAMING_BYTES, publish=publish_result)
 
 
 class _TooLarge:
@@ -2131,7 +2117,7 @@ def _output_clause(printed: str, note: str) -> str:
 
 async def _final_output(
     sandbox: Sandbox,
-    run: HostToolRun,
+    run: HostToolPolicy,
     layout: GuestRunLayout,
     until: float,
     output_limit: int | None,
@@ -2203,7 +2189,7 @@ def _why_no_output(value: str | _TooLarge | _NotText | None) -> str:
     return ""
 
 
-def _serving_bound(run: HostToolRun) -> int:
+def _serving_bound(run: HostToolPolicy) -> int:
     """How many requests this supervisor will read before it stops reading them.
 
     Every request, not every call: a malformed one is answered before the door and so
@@ -2212,10 +2198,10 @@ def _serving_bound(run: HostToolRun) -> int:
     requests: the first request past the cap receives the single refusal that tells the guest
     the cap is gone. Past it the supervisor only waits for the program to end.
     """
-    return run.registry.max_host_tool_calls_per_run + 1
+    return run.surface.max_host_tool_calls_per_run + 1
 
 
-def _request_cap(run: HostToolRun) -> int:
+def _request_cap(run: HostToolPolicy) -> int:
     """The request ceiling, borrowed from the response one — the same concern, one vocabulary.
 
     The per-file leg only. What every request together may cost is this times
@@ -2223,10 +2209,10 @@ def _request_cap(run: HostToolRun) -> int:
     that budget is spent by responses, and sharing it would mean tightening what a tool may
     return quietly limits how many calls a guest may make.
     """
-    return run.registry.response_limits.max_bytes_per_file
+    return run.surface.response_limits.max_bytes_per_file
 
 
-def _output_cap(run: HostToolRun, output_limit: int | None = None) -> int:
+def _output_cap(run: HostToolPolicy, output_limit: int | None = None) -> int:
     """What the host will read back of the program's own output.
 
     ``output_limit`` is the caller's own bound, passed to
@@ -2243,9 +2229,7 @@ def _output_cap(run: HostToolRun, output_limit: int | None = None) -> int:
     That borrowing is a stretch of ``response_limits`` either way, which is why ``output_limit``
     exists: a caller that passes one stops the bound being a side effect of unrelated config.
     """
-    return (
-        output_limit if output_limit is not None else run.registry.response_limits.max_total_bytes
-    )
+    return output_limit if output_limit is not None else run.surface.response_limits.max_total_bytes
 
 
 def _exit_code_from(recorded: str | _TooLarge | _NotText) -> int:

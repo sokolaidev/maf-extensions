@@ -1162,7 +1162,7 @@ class TestHostToolCallsAreRecorded:
         registry = HostToolRegistry(observer=recorder)
         registry.register(_fetch, name="fetch")
 
-        result = asyncio.run(_run(registry, key=_KEY).call("fetch", {"url": "u"}))
+        result = asyncio.run(_run(registry, key=_KEY).call("fetch", {"url": "u"}, publish=_accept))
 
         event = recorder.one(HostToolCalled)
         assert event.outcome == "delivered"
@@ -1183,7 +1183,9 @@ class TestHostToolCallsAreRecorded:
         registry = HostToolRegistry(observer=recorder)
         registry.register(_fetch, name="fetch")
 
-        result = asyncio.run(_run(registry).call("fetch", {"url": "u"}, framing_bytes=7))
+        result = asyncio.run(
+            _run(registry).call("fetch", {"url": "u"}, framing_bytes=7, publish=_accept)
+        )
 
         assert result.value_json is not None
         assert recorder.one(HostToolCalled).response_bytes == (
@@ -1216,9 +1218,9 @@ class TestHostToolCallsAreRecorded:
 
         async def both() -> None:
             run = _run(registry)
-            overlapping = asyncio.create_task(run.call("slow", {"url": "u"}))
+            overlapping = asyncio.create_task(run.call("slow", {"url": "u"}, publish=_accept))
             await entered.wait()
-            await run.call("quick", {"url": "u"})
+            await run.call("quick", {"url": "u"}, publish=_accept)
             released.set()
             # Asserted rather than discarded: if the held call did not deliver, the sizes below
             # would be comparing against a refusal's zero and would pass for the wrong reason.
@@ -1235,7 +1237,7 @@ class TestHostToolCallsAreRecorded:
         registry = HostToolRegistry(observer=recorder)
         registry.register(_undeclared, name="bump")
 
-        asyncio.run(_run(registry).call("bump", {"value": 1}))
+        asyncio.run(_run(registry).call("bump", {"value": 1}, publish=_accept))
 
         event = recorder.one(HostToolCalled)
         assert (event.tool, event.declared) == ("bump", False)
@@ -1244,7 +1246,7 @@ class TestHostToolCallsAreRecorded:
     def test_a_name_that_never_resolved_is_recorded_with_no_tool(self):
         recorder = _Recorder()
 
-        asyncio.run(_run(HostToolRegistry(observer=recorder)).call("nope"))
+        asyncio.run(_run(HostToolRegistry(observer=recorder)).call("nope", publish=_accept))
 
         event = recorder.one(HostToolCalled)
         assert (event.tool, event.declared, event.outcome) == (None, False, "refused")
@@ -1258,8 +1260,8 @@ class TestHostToolCallsAreRecorded:
         run = _run(registry)
 
         async def twice() -> None:
-            await run.call("fetch", {"url": "u"})
-            await run.call("fetch", {"url": "u"})
+            await run.call("fetch", {"url": "u"}, publish=_accept)
+            await run.call("fetch", {"url": "u"}, publish=_accept)
 
         asyncio.run(twice())
 
@@ -1278,7 +1280,7 @@ class TestHostToolCallsAreRecorded:
         registry.register(vanish, name="vanish")
 
         with pytest.raises(asyncio.CancelledError):
-            asyncio.run(_run(registry).call("vanish"))
+            asyncio.run(_run(registry).call("vanish", publish=_accept))
 
         event = recorder.one(HostToolCalled)
         assert (event.outcome, event.tool, event.response_bytes) == ("cancelled", "vanish", 0)
@@ -1290,7 +1292,9 @@ class TestHostToolCallsAreRecorded:
         registry.register(_fetch, name="fetch")
 
         with pytest.raises(ValueError, match="framing_bytes"):
-            asyncio.run(_run(registry).call("fetch", {"url": "u"}, framing_bytes=-1))
+            asyncio.run(
+                _run(registry).call("fetch", {"url": "u"}, framing_bytes=-1, publish=_accept)
+            )
 
         assert recorder.events == []
 
@@ -1309,7 +1313,7 @@ class TestHostToolCallsAreRecorded:
         registry = HostToolRegistry(observer=recorder, host_tool_calls_observer=watching)
         registry.register(_fetch, name="fetch")
 
-        asyncio.run(_run(registry).call("fetch", {"url": "u"}))
+        asyncio.run(_run(registry).call("fetch", {"url": "u"}, publish=_accept))
 
         assert bracketed == ["fetch"]
         assert recorder.one(HostToolCalled).tool == "fetch"
@@ -2217,7 +2221,7 @@ class TestEveryRecordSaysWhichCallItCameFrom:
                 sandbox = await session.acquire(key)
                 assert not isinstance(sandbox, str)
                 await session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt"))
-                await _run(registry).call("fetch", {"url": "u"})
+                await _run(registry).call("fetch", {"url": "u"}, publish=_accept)
                 await collect_outputs(sandbox, _SPEC, observer=recorder, key=key)
                 note_unclean(sandbox, "a stop did not reach the program tree")
                 return "done"
@@ -2400,7 +2404,7 @@ class TestEveryRecordSaysWhichCallItCameFrom:
         registry = HostToolRegistry(observer=recorder)
         registry.register(_fetch, name="fetch")
 
-        asyncio.run(_run(registry).call("fetch", {"url": "u"}))
+        asyncio.run(_run(registry).call("fetch", {"url": "u"}, publish=_accept))
 
         assert recorder.one(HostToolCalled).call is None
 
@@ -2453,7 +2457,7 @@ class TestARouterWithNoObserverPaysNothing:
         registry = HostToolRegistry()
         registry.register(_fetch, name="fetch")
 
-        result = asyncio.run(_run(registry).call("fetch", {"url": "u"}))
+        result = asyncio.run(_run(registry).call("fetch", {"url": "u"}, publish=_accept))
         assert result.value_json == json.dumps("fetched u")
 
     def test_no_event_is_built_for_a_collection(self, monkeypatch):
@@ -2472,3 +2476,7 @@ class TestARouterWithNoObserverPaysNothing:
             collect_outputs(sandbox, _outputs_spec(DeclaredOutput(path="a.png")), sink=_Sink().sink)
         )
         assert [artifact.name for artifact in landed] == ["a.png"]
+
+
+async def _accept(result: object) -> None:
+    """Accept a policy response into this test endpoint."""

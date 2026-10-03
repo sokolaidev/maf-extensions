@@ -15,8 +15,12 @@ DEPENDENTS = ("maf-sandbox-hyperlight", "maf-sandbox-codeact")
 _RANGE = re.compile(r"maf-sandbox>=(\d+(?:\.\d+)*),<(\d+(?:\.\d+)*)")
 
 
+def _same_version(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+    return not admits(left, right) and not admits(right, left)
+
+
 def pending_adoptions(root: Path) -> list[str]:
-    """Defer adjacent core release transitions; reject other incompatible metadata."""
+    """Defer the adjacent release transition; reject unrelated incompatible metadata."""
     packages = root / "packages"
     core_text = tomllib.loads((packages / "maf-sandbox/pyproject.toml").read_text("utf-8"))[
         "project"
@@ -36,19 +40,16 @@ def pending_adoptions(root: Path) -> list[str]:
             raise ValueError(f"{name}: expected one maf-sandbox>=X,<Y requirement")
         floor, ceiling = (version(bound) for bound in match.groups())
         requirement = requirements[0]
-        prepared = (
-            floor[:2] == (core[0], core[1] + 1)
-            and not any(floor[2:])
-            and ceiling[:2] == (core[0], core[1] + 2)
-            and not any(ceiling[2:])
-        )
-        if prepared:
-            pending.append(
-                f"{name} requires prepared core {requirement}; checkout core is {core_text}"
-            )
-            continue
-        if not admits(floor, ceiling) or admits(core, floor):
+        if not admits(floor, ceiling):
             raise ValueError(f"{name}: {requirement} cannot use core {core_text}")
+        if admits(core, floor):
+            prepared = (core[0], core[1] + 1)
+            if not _same_version(floor, prepared) or not _same_version(
+                ceiling, (core[0], core[1] + 2)
+            ):
+                raise ValueError(f"{name}: {requirement} cannot use core {core_text}")
+            pending.append(f"{name} requires prepared {requirement}; checkout core is {core_text}")
+            continue
         if admits(core, ceiling):
             continue
         if admits(ceiling, core[:2]) or admits(core[:2], ceiling):
@@ -62,7 +63,7 @@ def main() -> None:
     pending = pending_adoptions(ROOT)
     if pending:
         report = (
-            "Hyperlight image build deferred while core and dependent release lines differ.\n\n"
+            "Hyperlight image build deferred until checkout core and dependent release ranges align.\n\n"
             + "\n".join(f"- {reason}" for reason in pending)
             + "\n\nNo image was built or verified. Linux worker and KVM checks remain enabled.\n"
         )

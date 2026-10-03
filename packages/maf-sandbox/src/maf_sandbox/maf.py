@@ -105,6 +105,7 @@ from ._protocol import (
     Egress,
     IsolationScope,
     ListedFile,
+    ProgramChannel,
     Sandbox,
     SandboxKey,
     SandboxSpec,
@@ -1930,6 +1931,24 @@ class SandboxToolSession:
                     "the sandbox will be cleaned before its hold is released."
                 )
         return sandbox
+
+    def prospective_program_channel(self, key: SandboxKey) -> ProgramChannel | None:
+        """Preview a channel for input validation; recheck it after acquisition."""
+        return self._router.prospective_program_channel(key, self._spec)
+
+    def program_channel(self, key: SandboxKey, sandbox: Sandbox) -> ProgramChannel:
+        """The channel retained by this open call's acquisition."""
+        call = _this_call(self)
+        if (
+            call is None
+            or call.closed
+            or not any(one is sandbox for one in call.acquired.get(key, ()))
+        ):
+            raise RuntimeError("program execution requires an acquired sandbox in an open call")
+        admission = call.entered[key, self._spec.kind]
+        if admission.channel is None:
+            raise RuntimeError("this workload did not request a program channel")
+        return admission.channel
 
     def _refused(self, exc: Exception) -> str:
         self._logger.warning(
