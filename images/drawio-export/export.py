@@ -46,6 +46,9 @@ UNSAFE = re.compile(
     r"(?:https?:|file:|ftp:|javascript:|data:|@import|(?:url|src|image-set|expression)\s*\(|\\)",
     re.I,
 )
+SVG_FONT = re.compile(
+    r"(?:\bfont(?:-[\w-]+)?\s*(?:/\*.*?\*/\s*)*:|@font-face|local\s*\()", re.I | re.S
+)
 
 
 class Label(HTMLParser):
@@ -126,6 +129,11 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
         raise ValueError("Output is not SVG")
     for element in root.iter():
         tag = element.tag.rsplit("}", 1)[-1]
+        if not exported and (
+            tag in {"text", "tspan", "tref", "textPath", "flowRoot", "flowPara", "flowSpan"}
+            or tag.startswith("font")
+        ):
+            raise ValueError("Embedded SVG text and fonts are not supported")
         if (
             exported
             and tag == "a"
@@ -141,6 +149,10 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
             raise ValueError("Embedded SVG HTML is not supported")
         for name, value in element.attrib.items():
             local = name.rsplit("}", 1)[-1]
+            if not exported and (
+                local.startswith("font") or (local == "style" and SVG_FONT.search(value))
+            ):
+                raise ValueError("Embedded SVG text and fonts are not supported")
             if local.lower().startswith("on"):
                 raise ValueError("SVG event handlers are not supported")
             if exported and (local, value) in {
@@ -157,8 +169,12 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
                     raise ValueError(
                         f"SVG has an external or unsupported resource: {local}={value[:120]}"
                     )
-        if tag == "style" and UNSAFE.search(element.text or ""):
-            raise ValueError("SVG styles must not reference resources")
+        if tag == "style":
+            css = "".join(element.itertext())
+            if not exported and SVG_FONT.search(css):
+                raise ValueError("Embedded SVG text and fonts are not supported")
+            if UNSAFE.search(css):
+                raise ValueError("SVG styles must not reference resources")
     return root
 
 

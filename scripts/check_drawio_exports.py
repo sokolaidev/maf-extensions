@@ -292,6 +292,15 @@ async def check(image: str, output: Path) -> None:
                 "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
                 "indicatorImage=data:image/svg+xml," + base64.b64encode(resource).decode(),
             )
+        for name, content in {
+            "text": '<text font-family="Missing">x</text>',
+            "css": '<style>@font-face{font-family:Missing;src:local("Missing")}</style>',
+        }.items():
+            svg = f'<svg xmlns="http://www.w3.org/2000/svg">{content}</svg>'.encode()
+            cases[f"embedded-svg-font-{name}"] = diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=data:image/svg+xml," + base64.b64encode(svg).decode(),
+            )
         for name, xml in cases.items():
             destination = output / name
             [refusal] = make_drawio_tools(
@@ -311,6 +320,8 @@ async def check(image: str, output: Path) -> None:
                 assert "Placeholder labels" in " ".join(text or "" for text in answer), answer
             if name == "embedded-svg-stylesheet":
                 assert "Processing instructions" in " ".join(text or "" for text in answer), answer
+            if name.startswith("embedded-svg-font-"):
+                assert "text and fonts" in " ".join(text or "" for text in answer), answer
             assert not destination.exists() or not list(destination.iterdir())
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(

@@ -114,7 +114,7 @@ def test_xml_processing_instructions_are_refused_before_parsing(
 def test_embedded_svg_xml_declaration_is_preserved(encoding):
     data = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<svg xmlns="http://www.w3.org/2000/svg"><text>Résumé Ω</text></svg>'
+        '<svg xmlns="http://www.w3.org/2000/svg"><title>Résumé Ω</title></svg>'
     ).encode(encoding)
     uri = "data:image/svg+xml;base64," + base64.b64encode(data).decode()
     assert RUNTIME["image_data"](uri) == uri
@@ -190,6 +190,37 @@ def test_svg_local_fragments_and_resource_free_css_survive():
     )
     uri = "data:image/svg+xml;base64," + base64.b64encode(data).decode()
     assert RUNTIME["image_data"](uri) == uri
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<text>default font</text>",
+        '<text font-family="Missing">x</text>',
+        "<tspan>x</tspan>",
+        "<textPath>x</textPath>",
+        "<flowRoot><flowPara>x</flowPara></flowRoot>",
+        '<font><font-face font-family="Missing"/></font>',
+        '<g font-family="Missing"><path d="M0 0L1 1"/></g>',
+        '<g style="font-family:Missing"/>',
+        '<g style="font:12px Missing"/>',
+        '<g style="font-family/**/:Missing"/>',
+        "<style>text {font-family:Missing}</style>",
+        '<style>@font-face {font-family:Missing;src:local("Missing")}</style>',
+    ],
+)
+def test_embedded_svg_text_and_fonts_are_refused(content):
+    data = f'<svg xmlns="http://www.w3.org/2000/svg">{content}</svg>'.encode()
+    with pytest.raises(ValueError, match="text and fonts"):
+        RUNTIME["image_data"]("data:image/svg+xml;base64," + base64.b64encode(data).decode())
+
+
+def test_native_svg_text_remains_supported():
+    data = (
+        b'<svg xmlns="http://www.w3.org/2000/svg">'
+        b'<text font-family="DejaVu Sans" style="font-weight:bold">Label</text></svg>'
+    )
+    assert RUNTIME["check_svg"](data, exported=True)[0].text == "Label"
 
 
 def test_safe_embedded_svg_and_formatting_survive():
