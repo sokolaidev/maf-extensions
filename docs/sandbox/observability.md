@@ -162,6 +162,13 @@ Cleanup reach is `group`, `program` or `nothing`. These fields do not prove full
 
 Ordinary logs carry IDs, counts and outcomes. OpenTelemetry adds summary spans and counters, plus per-process logs. Commands, usernames and paths require `record_sensitive_data=True`. Process IDs and commands are never metric labels.
 
+## Program channels and host-tool delivery
+
+`SandboxAcquired.program_channel` identifies the channel that actually acquired the sandbox, including an initial availability fallback. `EffectiveState` retains that name and the requested `execution_profile`; both are host configuration and contain no guest payload.
+
+`HostToolCalled` distinguishes `host_started` and `host_completed` from response delivery. OpenTelemetry records both execution flags. A prepared value counts as delivered only after the transport confirms publication; an interrupted publication records `delivery_uncertain` with zero confirmed response bytes. This is not proof of guest consumption, and uncertainty never authorizes an automatic retry. See [program-channel publication](program-channels.md#publication-and-timeout).
+
+
 ## Status
 
 | Decision | State | Tracking |

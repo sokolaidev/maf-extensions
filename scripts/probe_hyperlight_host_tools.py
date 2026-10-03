@@ -316,12 +316,23 @@ class Policy:
             }
         request = json.loads(message["payload"], parse_constant=reject_constant)
         token = CONTEXT.set(self.run_id)
+        prepared: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+        async def publish(result: Any) -> None:
+            prepared.set_result(result)
+            # The pinned native SDK exposes no trusted per-response acceptance hook.
+            await asyncio.Event().wait()
+
         try:
             task = asyncio.create_task(
-                self.run.call(request["name"], request["arguments"], framing_bytes=32)
+                self.run.call(
+                    request["name"], request["arguments"], framing_bytes=32, publish=publish
+                )
             )
             self.pending.add(task)
-            done, _ = await asyncio.wait({task}, timeout=self.timeout)
+            done, _ = await asyncio.wait(
+                {task, prepared}, timeout=self.timeout, return_when=asyncio.FIRST_COMPLETED
+            )
             if not done:
                 task.cancel()
                 done, _ = await asyncio.wait({task}, timeout=self.timeout)
@@ -332,14 +343,15 @@ class Policy:
                 response = '{"refusal":"Error: host tool timed out; effects may have occurred"}'
                 self.events.append({"stage": "timeout_refusal", "stopped": self.stopped.is_set()})
             else:
-                result = task.result()
+                result = prepared.result() if prepared.done() else task.result()
                 response = (
                     '{"value":' + result.value_json + "}"
                     if result.value_json is not None
                     else json.dumps({"refusal": result.refusal}, ensure_ascii=False)
                 )
-                self.events.append({"stage": "core_result", "ok": result.ok})
-            self.pending.discard(task)
+                self.events.append({"stage": "core_prepared", "ok": result.ok})
+            if task.done():
+                self.pending.discard(task)
             if self.raw_response is not None:
                 response = self.raw_response
             reply = {
@@ -364,6 +376,7 @@ class Policy:
 
     async def cleanup(self) -> None:
         """Release synthetic stubborn tasks only after the worker is retired."""
+        self.run.close()
         self.release.set()
         for task in self.pending:
             task.cancel()
@@ -381,6 +394,7 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
         cap=options.get("cap", 16),
         response_bytes=options.get("response_bytes", APPLICATION_LIMIT),
     )
+    policies = [policy]
     policy.raw_response = options.get("raw_response")
     policy.fail_before_return = options.get("fail_before_return", False)
     policy.reject_generation = options.get("reject_generation", False)
@@ -409,10 +423,11 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
             report["cancelled"] = True
         if options.get("reuse"):
             second = Policy(name + "-next")
+            policies.append(second)
+            report["reuse_events"] = second.events
             report["reuse"] = await worker.exchange(
                 {"op": "run", "run": second.run_id, "code": code}, second.service, 5
             )
-            report["reuse_events"] = second.events
             report["unbound"] = await worker.exchange({"op": "unbound"}, second.service, 5)
             report["late_registration"] = await worker.exchange(
                 {"op": "late_registration"}, second.service, 5
@@ -424,7 +439,8 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
         report["worker_exit_before_cleanup"] = worker.process.poll()
         worker.close()
         report["worker_stderr"] = worker._stderr.decode("utf-8", errors="replace")
-        await policy.cleanup()
+        for active in policies:
+            await active.cleanup()
         report["reaped"] = worker.process.poll() is not None and not worker._drainer.is_alive()
         report["events"] = policy.events
         report["seconds"] = round(time.monotonic() - started, 3)
@@ -592,7 +608,8 @@ def validate_reports(reports: list[dict[str, Any]]) -> list[str]:
         elif name == "handoff-failure":
             valid &= result.get("exit_code") == 1
             valid &= "synthetic failure before native marshalling" in result.get("stderr", "")
-            valid &= any(e.get("outcome") == "delivered" for e in events)
+            valid &= any(e.get("outcome") == "delivery_uncertain" for e in events)
+            valid &= not any(e.get("outcome") == "delivered" for e in events)
             valid &= any(e.get("stage") == "worker_prepared" for e in events)
         elif name.startswith("native-request-") and report.get("error") == "EOFError":
             valid &= report.get("initialized") is True and not events

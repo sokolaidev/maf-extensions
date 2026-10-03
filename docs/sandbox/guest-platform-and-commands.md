@@ -62,7 +62,7 @@ Does a capability depend on the guest image?
 | WSLC | `sh` for `EXEC`; true and false cases of external `/usr/bin/test`, pinned independently of `PATH`, and the image user's `sh` plus `mkdir`, `cat`, `wc`, `mv` and `rm`, for `FILES_IN` — that probe and every write run through the image user's shell. Root `/bin/sh`, `mkdir`, `chown`, `ls` and `pwd`, the image user's `mkdir` where setup leaves the base to that user, and a resolved image user, are needed only where a base has to be created, and checked there rather than at acquisition |
 | ACAS | `sh` for `EXEC`; launcher helpers for `HOST_TOOLS`; a planted-file removal check for relevant file operations |
 
-Docker and ACAS check `sh`, `mkdir`, `mv` and `nohup` when `HOST_TOOLS` is requested. Docker's engine-backed file transfers do not need command checks. A workload's interpreter remains the kind's responsibility.
+Docker and ACAS check `sh`, `mkdir`, `mv` and `nohup` when `HOST_TOOLS` is requested. Docker's engine-backed file transfers do not need command checks. A program channel owns its interpreter and verifies its declared profile; kinds that issue ordinary commands still own those command requirements.
 
 Successful command checks are cached per physical sandbox, not per image reference. Warm acquisition checks newly required operations. A replacement sandbox is checked again. Failed or interrupted checks are not cached.
 
@@ -109,5 +109,5 @@ Safe file access also depends on what happens between a check and the operation.
 | Capability checks on the acquired image | Implemented on Docker, WSLC and ACAS | [#586](https://github.com/sokolaidev/maf-extensions/issues/586) (closed); [#1089](https://github.com/sokolaidev/maf-extensions/pull/1089) (merged) |
 | Storage-base preparation and allocation | Implemented | [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (closed); [#1086](https://github.com/sokolaidev/maf-extensions/pull/1086) (merged); [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |
 | Separate guest shim | Implemented | [#357](https://github.com/sokolaidev/maf-extensions/issues/357) (closed); [#590](https://github.com/sokolaidev/maf-extensions/pull/590) (merged) |
-| Additional host-tool transports | Unimplemented; transport negotiation remains open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
+| Additional host-tool transports | Core/exec channel selection implemented; native transport remains open | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open); core/exec by [#1664](https://github.com/sokolaidev/maf-extensions/pull/1664) (merged) |
 | Filesystem behavior in protocol contracts | Decided; no separate trait declaration | untracked |

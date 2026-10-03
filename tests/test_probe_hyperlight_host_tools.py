@@ -80,7 +80,7 @@ def test_delivery_counterexample_requires_both_observation_and_later_failure() -
         "case": "handoff-failure",
         "reaped": True,
         "result": {"exit_code": 1, "stderr": "synthetic failure before native marshalling"},
-        "events": [{"outcome": "delivered"}, {"stage": "worker_prepared"}],
+        "events": [{"outcome": "delivery_uncertain"}, {"stage": "worker_prepared"}],
     }
     assert probe.validate_reports([report]) == []
     report["events"] = [{"stage": "worker_prepared"}]
@@ -167,3 +167,74 @@ def test_timeout_refusal_requires_confirmed_host_stop() -> None:
     assert probe.validate_reports([report]) == []
     report["reaped"] = False
     assert probe.validate_reports([report]) == ["callback-timeout"]
+
+
+@pytest.mark.parametrize("failure", [None, "reuse", "late_registration"])
+def test_reuse_policies_are_closed_and_drained_after_worker_retirement(monkeypatch, failure):
+    policies = []
+    workers = []
+
+    class Worker:
+        def __init__(self, config):
+            self.process = self
+            self._drainer = self
+            self._stderr = b""
+            self.retired = False
+            workers.append(self)
+
+        def poll(self):
+            return 0 if self.retired else None
+
+        def is_alive(self):
+            return not self.retired
+
+        def close(self):
+            self.retired = True
+
+        async def exchange(self, message, service, timeout):
+            if message["op"] == "init":
+                return {"op": "ready"}
+            if message["op"] == "run":
+                await service(
+                    {
+                        "op": "callback",
+                        "run": message["run"],
+                        "seq": 1,
+                        "payload": '{"name":"echo","arguments":{"value":1}}',
+                    }
+                )
+                if failure == "reuse" and message["run"].endswith("-next"):
+                    raise RuntimeError("reuse failed after callback preparation")
+            if message["op"] == failure:
+                raise RuntimeError("post-reuse operation failed")
+            return {"op": "result", "exit_code": 0}
+
+    class Policy(probe.Policy):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            policies.append(self)
+
+        async def cleanup(self):
+            assert workers[0].retired
+            await super().cleanup()
+
+    monkeypatch.setattr(probe, "ProbeWorker", Worker)
+    monkeypatch.setattr(probe, "Policy", Policy)
+
+    async def publish(result):
+        pytest.fail("closed probe policy must not publish")
+
+    async def exercise():
+        report = await probe.probe_case("reuse-check", "pass", reuse=True)
+        assert report["reaped"] and len(policies) == 2
+        assert all(not policy.pending for policy in policies)
+        for policy in policies:
+            with pytest.raises(RuntimeError, match="closed"):
+                await policy.run.call("echo", {"value": 1}, publish=publish)
+        for key in ("events", "reuse_events"):
+            assert [
+                event["outcome"] for event in report[key] if event["stage"] == "core_observation"
+            ] == ["delivery_uncertain"]
+        assert (report.get("error") == "RuntimeError") is (failure is not None)
+
+    asyncio.run(exercise())

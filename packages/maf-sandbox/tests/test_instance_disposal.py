@@ -209,3 +209,179 @@ def test_keep_preserves_access_after_instance_delete_failure():
         assert await router.acquire(KEY, SPEC) is sandbox
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_sibling_program_specs_keep_separate_backend_pins(admitted):
+    from maf_sandbox import ProgramRequirements, SandboxBackendUnavailable
+
+    first = _Engine(
+        "first",
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        ),
+    )
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS,
+        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.FILES_OUT},
+    )
+    second = _Engine("second", declarations=declarations)
+    backup = _Engine("backup", declarations=declarations)
+    router = _router(first, second, backup, selection=Selection.PER_SPEC)
+    small = replace(SPEC, program=ProgramRequirements(), requires=frozenset())
+    other = replace(small, requires=frozenset({Capability.FILES_OUT}))
+
+    async def acquire(spec, owner):
+        admission = await router.enter_call(KEY, spec, owner=owner) if admitted else None
+        try:
+            return await router.acquire(KEY, spec, _admission=admission)
+        finally:
+            if admission is not None:
+                await router.release_call(KEY, spec.kind, owner=owner)
+
+    async def scenario():
+        a = await acquire(small, "first")
+        b = await acquire(other, "second")
+        assert a is not b
+        assert a in first.instances.values() and b in second.instances.values()
+        assert await acquire(small, "reuse-first") is a
+        assert await acquire(other, "reuse-second") is b
+        assert await router.dispose_kind(KEY, SPEC.kind, instance_id=a.instance_id, timeout=1)
+
+        async def unavailable(key, spec):
+            raise SandboxBackendUnavailable("offline")
+
+        second.acquire = unavailable
+        with pytest.raises(SandboxBackendUnavailable):
+            await acquire(other, "failed-reuse")
+        assert not backup.instances
+
+    asyncio.run(scenario())
+
+
+def test_disposing_one_program_instance_preserves_its_siblings_channel():
+    from maf_sandbox import ProgramRequirements
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    original = InProcessProgramChannel(name="original")
+    engine = _Engine(declarations=replace(FAKE_BACKEND_DECLARATIONS, program_channels=(original,)))
+    router = _router(engine)
+    one = replace(SPEC, image="one", program=ProgramRequirements())
+    two = replace(one, image="two")
+
+    async def scenario():
+        a = await router.acquire(KEY, one)
+        b = await router.acquire(KEY, two)
+        await router.dispose_kind(KEY, SPEC.kind, instance_id=a.instance_id, timeout=1)
+        changed = InProcessProgramChannel(name="changed")
+        engine._declarations = replace(engine.declarations, program_channels=(changed,))
+        admission = await router.enter_call(KEY, two, owner="two")
+        try:
+            assert admission.channel is original
+            assert await router.acquire(KEY, two, _admission=admission) is b
+        finally:
+            await router.release_call(KEY, two.kind, owner="two")
+        admission = await router.enter_call(KEY, one, owner="new-one")
+        try:
+            assert admission.channel is changed
+        finally:
+            await router.release_call(KEY, one.kind, owner="new-one")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", [None, "reported"])
+def test_direct_call_disposal_reaches_the_fallback_program_backend(failure):
+    from maf_sandbox import IsolationScope, ProgramRequirements, SandboxBackendUnavailable
+
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset({IsolationScope.CALL})
+    )
+    first = _Engine("first", declarations=declarations)
+    second = _Engine("second", declarations=declarations)
+    router = _router(first, second, selection=Selection.PER_SPEC)
+    key = replace(KEY, call_id="call")
+    spec = replace(SPEC, program=ProgramRequirements(), isolation_scope=IsolationScope.CALL)
+
+    async def unavailable(key, spec):
+        raise SandboxBackendUnavailable("offline")
+
+    first.acquire = unavailable
+
+    async def scenario():
+        sandbox = await router.acquire(key, spec)
+        assert sandbox in second.instances.values()
+        second.failure = failure
+        assert await router.dispose_call(key, spec=spec, timeout=1) is (failure is None)
+        assert first.attempts == []
+        assert second.attempts == [(None, None)]
+        if failure:
+            assert sandbox in second.instances.values()
+            second.failure = None
+            assert await router.dispose_call(key, spec=spec, timeout=1)
+            assert first.attempts == []
+        assert not second.instances
+        assert not router._program_pins
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("dispose_sibling", [False, True])
+@pytest.mark.parametrize("alias", [False, True])
+def test_reset_remaps_all_program_pins_before_reuse_or_sibling_disposal(dispose_sibling, alias):
+    from maf_sandbox import ProgramRequirements, SandboxBackendUnavailable
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    original = InProcessProgramChannel(name="original")
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS,
+        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+        program_channels=(original,),
+    )
+    preferred = _Engine("preferred", declarations=declarations)
+    fallback = _Engine("fallback", declarations=declarations)
+    available = preferred.acquire
+
+    async def unavailable(key, spec):
+        raise SandboxBackendUnavailable("offline")
+
+    preferred.acquire = unavailable
+    router = _router(preferred, fallback, selection=Selection.PER_SPEC, min_cleanup=Cleanup.RESET)
+    one = replace(SPEC, image="one", program=ProgramRequirements())
+    same = replace(one, program=ProgramRequirements(max_program_bytes=1024))
+    two = replace(one, image="two")
+
+    async def scenario():
+        sandbox = await router.acquire(KEY, one)
+        assert await router.acquire(KEY, same) is sandbox
+        sibling = await router.acquire(KEY, two)
+        before = sandbox.instance_id
+        admission = await router.enter_call(KEY, one, owner="reset")
+        assert admission.rung is Cleanup.RESET
+        assert (
+            await router.finish_call(KEY, one, admission=admission, sandbox=sandbox, owner="reset")
+            is None
+        )
+        assert sandbox.instance_id != before
+        assert router.prospective_program_channel(KEY, two) is original
+        preferred.acquire = available
+        fallback._declarations = replace(
+            declarations, program_channels=(InProcessProgramChannel(name="changed"),)
+        )
+        if dispose_sibling:
+            assert await router.dispose_kind(
+                KEY, two.kind, instance_id=sibling.instance_id, timeout=1
+            )
+        spec = same if alias else one
+        admission = await router.enter_call(KEY, spec, owner="reuse")
+        try:
+            assert admission.backend is fallback
+            assert admission.channel is original
+            assert await router.acquire(KEY, spec, _admission=admission) is sandbox
+            assert admission.channel is original
+        finally:
+            await router.release_call(KEY, spec.kind, owner="reuse")
+        assert not preferred.instances
+
+    asyncio.run(scenario())

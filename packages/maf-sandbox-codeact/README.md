@@ -27,7 +27,7 @@ tools = make_codeact_tools(
 
 The host supplies the router and `CallerContext`. With no configured backend the factory returns `[]`. Unsupported requirements are refused before attachment.
 
-The default path writes `program.py` and runs it with `python3`. It requires `EXEC` and `FILES_IN`. Source text is file content, never part of the command line.
+The default path requests a backend-owned `python-portable-v1` channel, preferring exec. This profile promises Python 3.11+ with `json`, `math`, `re`, `sys` and `types`; it promises no other imports or retained state. The exec channel verifies CPython and owns `program.py`, the interpreter and any host-tool transport. Source text is file content, never part of the command line. See [channel selection and migration](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/program-channels.md).
 
 Use the [Docker sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/06_docker_codeact), [ACAS sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/03_acas_codeact) or [WSLC sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/04_wslc_codeact) for complete applications.
 
@@ -39,7 +39,7 @@ All four channels below are off by default. The host enables them when building 
 |---|---|
 | `file_store=store` | A `files` argument selecting caller-visible input files. |
 | `output_sink=sink`, `outputs=...` | Collection and delivery of named output files. |
-| `host_tools=registry` | Calls from guest Python to registered host functions, in exec mode. |
+| `host_tools=registry` | Calls from guest Python to registered host functions through a supporting program channel. |
 | `egress_allow=(...)` | Network requests to named destinations. |
 
 These channels operate during `execute_code`. Hiding its final report does not undo host calls, network requests or artifact delivery.
@@ -76,7 +76,7 @@ tools = make_codeact_tools(
 )
 ```
 
-`files_in` and `files_out` bound file count, individual bytes and total bytes. A missing declared output is reported. Artifacts carry no guest-selected media type; the host decides how to handle them.
+`files_in` and `files_out` bound shared-file count, individual bytes and total bytes. Shared inputs default to 8 MiB per file, 24 MiB total and 63 files, leaving room for the default 8 MiB program and its staging file within a 32 MiB/64-file backend ceiling. Explicit limits are preserved and the complete channel demand is checked without clamping; larger programs or host-tool transport traffic can require a backend with larger ceilings. On the automatic channel path, `program=ProgramRequirements(max_program_bytes=8 * 1024 * 1024, host_tool_timeout_seconds=30)` from `maf_sandbox` configures source bytes and callback time separately. A missing declared output is reported. Artifacts carry no guest-selected media type; the host decides how to handle them.
 
 Keep the output sink separate from the agent's writable input store. Otherwise guest code could overwrite files through a channel that bypasses the host's file-write approval. See the [files sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/08_docker_codeact_files).
 
@@ -100,7 +100,7 @@ registry.register(exchange_rate)
 
 `exchange_rate` is a host-defined function. Its body runs with host authority and bypasses ordinary agent middleware. Configure declarations, permitted identities and approval policy before exposing it. Registering a user-authority function makes the enclosing tool approval-gated.
 
-A nonempty registry requires `HOST_TOOLS` and `FILES_OUT` as well as `EXEC` and `FILES_IN`. Docker and ACAS support this transport; WSLC does not. The image needs the POSIX launcher utilities, including `sh` and `nohup`.
+A nonempty registry requires `HOST_TOOLS` and an explicit supporting program channel. Docker, ACAS and Docker Sandboxes supply the exec channel, which adds `EXEC`, `FILES_IN` and `FILES_OUT` internally. WSLC supports programs without host tools. The exec image needs the POSIX launcher utilities, including `sh` and `nohup`. Hyperlight native host tools remain pending.
 
 Transport traffic counts toward backend transfer limits. Set response limits to fit your functions; broad defaults can make the tool fail attachment. Model-named files live separately from transport files. Without a registry, `program.py` is reserved.
 

@@ -496,9 +496,9 @@ class TestConcurrentHostToolCallsCannotOversubscribeTheLedger:
         run = HostToolRun(registry)
 
         async def scenario() -> tuple[HostToolCallResult, HostToolCallResult]:
-            first = asyncio.create_task(run.call("slow", {"x": 1}))
+            first = asyncio.create_task(run.call("slow", {"x": 1}, publish=_accept))
             await entered.wait()  # the first call is inside its body, holding the one slot
-            second = asyncio.create_task(run.call("slow", {"x": 2}))
+            second = asyncio.create_task(run.call("slow", {"x": 2}, publish=_accept))
             # A task and a bounded wait rather than a plain `await`: a regression here does
             # not refuse the second call, it runs its body — which blocks on `release`, and
             # awaiting it directly would deadlock the test instead of failing it.
@@ -533,12 +533,12 @@ class TestConcurrentHostToolCallsCannotOversubscribeTheLedger:
         run = HostToolRun(registry)
 
         async def scenario() -> HostToolCallResult:
-            abandoned = asyncio.create_task(run.call("never"))
+            abandoned = asyncio.create_task(run.call("never", publish=_accept))
             await entered.wait()
             abandoned.cancel()
             await asyncio.wait([abandoned])
             assert abandoned.cancelled(), "the premise: the call was abandoned mid-body"
-            return await run.call("doubled", {"x": 21})
+            return await run.call("doubled", {"x": 21}, publish=_accept)
 
         result = asyncio.run(scenario())
         assert result.ok, result.refusal
@@ -561,7 +561,7 @@ class TestConcurrentHostToolCallsCannotOversubscribeTheLedger:
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            call = asyncio.create_task(run.call("never"))
+            call = asyncio.create_task(run.call("never", publish=_accept))
             await entered.wait()
             call.cancel()
             await asyncio.wait([call])
@@ -678,7 +678,9 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         )
         registry.register(writes, name="writes")
 
-        refused = asyncio.run(HostToolRun(registry).call("writes", {"x": 1}, framing_bytes=11))
+        refused = asyncio.run(
+            HostToolRun(registry).call("writes", {"x": 1}, framing_bytes=11, publish=_accept)
+        )
 
         assert not refused.ok
         assert refused.refusal is not None and "per-response cap" in refused.refusal
@@ -689,7 +691,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         registry = HostToolRegistry()
         registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
         with pytest.raises(ValueError, match="framing_bytes"):
-            asyncio.run(HostToolRun(registry).call("f", None, framing_bytes=-1))
+            asyncio.run(HostToolRun(registry).call("f", None, framing_bytes=-1, publish=_accept))
 
     @pytest.mark.parametrize("allowance", [float("nan"), float("inf"), 2.5, True, "8", None])
     def test_a_framing_allowance_that_is_not_a_plain_integer_is_refused(self, allowance: object):
@@ -702,7 +704,9 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         registry = HostToolRegistry()
         registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
         with pytest.raises(TypeError, match="framing_bytes"):
-            asyncio.run(HostToolRun(registry).call("f", None, framing_bytes=allowance))  # type: ignore[arg-type]
+            asyncio.run(
+                HostToolRun(registry).call("f", None, framing_bytes=allowance, publish=_accept)
+            )  # type: ignore[arg-type]
 
     def test_a_nan_framing_allowance_cannot_disable_the_byte_ledger(self):
         """The consequence, not the type: a run that admitted one would stop capping anything.
@@ -720,7 +724,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         run = HostToolRun(registry)
 
         with pytest.raises(TypeError):
-            asyncio.run(run.call("f", None, framing_bytes=float("nan")))  # type: ignore[arg-type]
+            asyncio.run(run.call("f", None, framing_bytes=float("nan"), publish=_accept))  # type: ignore[arg-type]
 
         assert _call_host_tool(run, "f").ok, "the refused call spent the budget"
         exhausted = _call_host_tool(run, "f")
@@ -739,7 +743,7 @@ class TestHostToolCallResult:
 
 
 def _call_host_tool(run: HostToolRun, name: str, arguments=None) -> HostToolCallResult:
-    return asyncio.run(run.call(name, arguments))
+    return asyncio.run(run.call(name, arguments, publish=_accept))
 
 
 def _nesting_json_refuses_to_encode() -> list[object]:
@@ -962,7 +966,9 @@ class TestServingTheUsersIdentity:
         run = HostToolRun(registry, run_id="run-7")
 
         async def _both():
-            return await asyncio.gather(run.call("whoami"), run.call("whoami"))
+            return await asyncio.gather(
+                run.call("whoami", publish=_accept), run.call("whoami", publish=_accept)
+            )
 
         first, second = asyncio.run(_both())
 
@@ -988,7 +994,9 @@ class TestServingTheUsersIdentity:
         run = HostToolRun(registry, run_id="run-7")
 
         async def _both():
-            return await asyncio.gather(run.call("whoami"), run.call("whoami"))
+            return await asyncio.gather(
+                run.call("whoami", publish=_accept), run.call("whoami", publish=_accept)
+            )
 
         first = asyncio.run(_both())
         second = asyncio.run(_both())
@@ -1029,7 +1037,7 @@ class TestServingTheUsersIdentity:
         run = HostToolRun(registry, run_id="run-7")
 
         async def _cancel_mid_mint():
-            call = asyncio.ensure_future(run.call("whoami"))
+            call = asyncio.ensure_future(run.call("whoami", publish=_accept))
             await started.wait()
             call.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1065,9 +1073,9 @@ class TestServingTheUsersIdentity:
         run = HostToolRun(registry, run_id="run-7")
 
         async def _cancel_the_waiter():
-            first = asyncio.ensure_future(run.call("whoami"))
+            first = asyncio.ensure_future(run.call("whoami", publish=_accept))
             await holding.wait()  # the lock is held by `first`'s mint
-            waiter = asyncio.ensure_future(run.call("whoami"))
+            waiter = asyncio.ensure_future(run.call("whoami", publish=_accept))
             await asyncio.sleep(0)  # let the waiter reach __aenter__ and queue behind it
             waiter.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1610,7 +1618,7 @@ class TestTheRegistryObservesEveryHostToolCall:
 
         registry.register(payload)
         run = HostToolRun(registry)
-        refused = asyncio.run(run.call("payload", {"size": 1}, framing_bytes=5))
+        refused = asyncio.run(run.call("payload", {"size": 1}, framing_bytes=5, publish=_accept))
         assert not refused.ok
         assert refused.refusal is not None and "byte budget" in refused.refusal
         assert body_calls == []
@@ -1639,9 +1647,9 @@ class TestTheRegistryObservesEveryHostToolCall:
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            first = asyncio.create_task(run.call("slow", {"x": 1}))
+            first = asyncio.create_task(run.call("slow", {"x": 1}, publish=_accept))
             await entered.wait()  # inside its body, observer still entered
-            second = asyncio.create_task(run.call("slow", {"x": 2}))
+            second = asyncio.create_task(run.call("slow", {"x": 2}, publish=_accept))
             # Pin the second observer's enter, not the host-tool call's outcome: a second that is
             # no longer observed never enters, and the wait must fail the suite instead of
             # hanging. Release only once it is in — the interleave the test exists to pin.
@@ -1677,7 +1685,7 @@ class TestTheRegistryObservesEveryHostToolCall:
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            abandoned = asyncio.create_task(run.call("never"))
+            abandoned = asyncio.create_task(run.call("never", publish=_accept))
             await entered.wait()
             abandoned.cancel()
             await asyncio.wait([abandoned])
@@ -1728,7 +1736,7 @@ class TestTheRegistryObservesEveryHostToolCall:
         registry.register(_stamped_pure())
         run = HostToolRun(registry)
         with pytest.raises(ValueError, match="framing_bytes"):
-            asyncio.run(run.call("doubled", {"x": 1}, framing_bytes=-1))
+            asyncio.run(run.call("doubled", {"x": 1}, framing_bytes=-1, publish=_accept))
         assert events == []
 
     def _observer_that_raises(self, where: str):
@@ -1893,7 +1901,7 @@ class TestTheRegistryObservesEveryHostToolCall:
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            abandoned = asyncio.create_task(run.call("never"))
+            abandoned = asyncio.create_task(run.call("never", publish=_accept))
             await entered.wait()
             abandoned.cancel()
             await asyncio.wait([abandoned])
@@ -2009,3 +2017,7 @@ class TestThePreRenameSpellingIsGone:
         # has to flag as a wrong argument name, which is the very thing being asserted.
         with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
             HostToolRegistry(**{keyword: value})
+
+
+async def _accept(result: object) -> None:
+    """Accept a policy response into this test endpoint."""
