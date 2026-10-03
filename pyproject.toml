@@ -53,6 +53,7 @@ dev = [
     # what the recorder actually put on a wire, rather than only that it returned.
     "opentelemetry-sdk>=1.44,<2",
     "cryptography>=50,<51",
+    "pillow>=12,<13",
     # Experimental OpenClaw stdio prototype and its transport tests.
     "mcp==1.26.0",
     "anyio>=4.5,<5",

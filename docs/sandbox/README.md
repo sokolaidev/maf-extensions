@@ -62,7 +62,7 @@ The suite connects sandbox implementations; it does not provide isolation by its
 |---|---|
 | [Bicep](kinds/bicep.md) | Compile and lint Bicep templates and parameter files |
 | [CodeAct](kinds/codeact.md) | Run Python with optional file inputs, artifacts and host tools |
-| [draw.io](kinds/drawio.md) | Validate and lay out editable diagrams |
+| [draw.io](kinds/drawio.md) | Validate and lay out editable diagrams; optionally export PNG/JPG/SVG |
 | [Terraform / OpenTofu](kinds/terraform.md) | Validate offline and optionally format configuration |
 
 | Backend | Execution environment |
