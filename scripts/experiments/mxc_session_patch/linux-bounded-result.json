@@ -1,6 +1,6 @@
 {
-  "helper_sha256": "06d6a66de3b40b34ac9c8eb82ee6377f06e79aec6fce7140640fa008a1396394",
-  "startup_index_sha256": "27bedbae251c0f0ad3fad70f3e44c49174fc283d876b7a07ea0a623bfc2518d4",
+  "helper_sha256": "dc89eefbf785a934c7907292e23688ff55216d7eb17d9472cb50d20ead0f33f0",
+  "startup_index_sha256": "49257032114e553e1936214ac59593960b78ed64a3440461da2b658700c6cb7e",
   "platform": "Linux",
   "architecture": "x86_64",
   "host_python": "3.12.3",
@@ -100,12 +100,12 @@
   "checkpoint_after_truncation": true,
   "guest_failure_and_timeout_refuse_publication": true,
   "scope": "bounded HostPrint text capture; no full stream or binary fidelity qualification",
-  "source_commit": "c279bbe0626b23ad44aebd033a977dca41e1cbbf",
-  "workflow_run": "https://github.com/sokolaidev/maf-extensions/actions/runs/37152285593",
+  "source_commit": "9e10213d8ca566848ec8acc9b6ede1bc185514e8",
+  "workflow_run": "https://github.com/sokolaidev/maf-extensions/actions/runs/37159683759",
   "kernel": "6.17.0-1022-azure",
   "artifact": {
-    "id": 11284817196,
-    "name": "mxc-linux-recovery-37152285593-1",
-    "sha256": "1b8cf1dc5fe42207f16f55a756ca7b8237cfa5618a64fd334a9f6cf5441bb5a0"
+    "id": 11286634373,
+    "name": "mxc-linux-recovery-37159683759-1",
+    "sha256": "5cebe0dd8b6354f51641624b645634921aa1381d0fb95c91e874e871135627c1"
   }
 }

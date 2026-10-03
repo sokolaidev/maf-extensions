@@ -1,5 +1,5 @@
 {
-  "helper_sha256": "867da61d043ebf92e7e9e71a29c7591012f873c1292e693ff85c7548e0717404",
+  "helper_sha256": "d3cff11e16164e1e3af4a101dfa8ab578268752436c78f0113f6471e2d7a6857",
   "startup_index_sha256": "d3743f7ffbc3c141826ca0c3a409a7879a863801ded78552575e401bf866286a",
   "platform": "Windows",
   "architecture": "AMD64",
@@ -100,5 +100,5 @@
   "checkpoint_after_truncation": true,
   "guest_failure_and_timeout_refuse_publication": true,
   "scope": "bounded HostPrint text capture; no full stream or binary fidelity qualification",
-  "source_commit": "c279bbe0626b23ad44aebd033a977dca41e1cbbf"
+  "source_commit": "9e10213d8ca566848ec8acc9b6ede1bc185514e8"
 }
