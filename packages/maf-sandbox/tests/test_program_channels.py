@@ -711,3 +711,89 @@ def test_serialization_timeout_refunds_only_the_unpublished_value(monkeypatch):
         assert effects == ["executed", "executed"]
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_handled_host_failures_record_completed_execution(asynchronous):
+    observer = _Observer()
+
+    def fail():
+        raise ValueError("private failure detail")
+
+    async def async_fail():
+        await asyncio.sleep(0)
+        fail()
+
+    registry = HostToolRegistry(observer=observer)
+    registry.register(
+        sandbox_tool(source=None, sink=None, identity=None)(async_fail if asynchronous else fail),
+        name="fail",
+    )
+    run = HostToolRun(registry)
+    answer = asyncio.run(run.call("fail", publish=_accept))
+    assert answer.refusal and "private failure detail" not in answer.refusal
+    (event,) = observer.events
+    assert event.host_started and event.host_completed
+    assert event.outcome == "refused" and event.response_bytes == 0
+    assert event.calls == 1
+    assert run._reserved == run._reserved_bytes == run._delivered == run._delivered_bytes == 0
+
+
+def test_repeated_cancellation_retains_unfinished_host_work():
+    import time
+
+    from maf_sandbox._host_tools import _PENDING_HOST_CALLS, BoundedHostToolPolicy
+    from maf_sandbox._reclaim import close_unclean_notes, open_unclean_notes
+    from maf_sandbox.testing import InProcessSandbox
+
+    async def exercise():
+        started, draining, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        child_tasks = []
+        answers = []
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        async def stubborn():
+            child = asyncio.current_task()
+            assert child is not None
+            child_tasks.append(child)
+            started.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    draining.set()
+            return "late value"
+
+        async def publish(result):
+            answers.append(result)
+
+        registry = HostToolRegistry()
+        registry.register(stubborn)
+        run = HostToolRun(registry)
+        sandbox = InProcessSandbox()
+        policy = BoundedHostToolPolicy(run, sandbox, deadline=time.monotonic() + 30, timeout=20)
+        notes, token = open_unclean_notes()
+        pending = asyncio.create_task(policy.call("stubborn", publish=publish))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            pending.cancel()
+            await asyncio.wait_for(draining.wait(), timeout=1)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            (child,) = child_tasks
+            assert not child.done()
+            assert child in _PENDING_HOST_CALLS
+            assert len(notes) == 1 and notes[0][0] is sandbox
+            with pytest.raises(RuntimeError, match="closed"):
+                await run.call("stubborn", publish=publish)
+            assert answers == []
+        finally:
+            release.set()
+            await asyncio.gather(pending, *child_tasks, return_exceptions=True)
+            await asyncio.sleep(0)
+            close_unclean_notes(token)
+        assert child not in _PENDING_HOST_CALLS
+        assert answers == []
+
+    asyncio.run(exercise())

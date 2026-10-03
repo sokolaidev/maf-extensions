@@ -1316,6 +1316,8 @@ class HostToolRun:
             )
             raise
         except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
+            if called is not None:
+                called.host_completed = True
             self._logger.warning("host tool %r failed: %s", name, error_detail(exc))
             return _refused(f"Error: host tool {name!r} failed — the reason is in the host's log")
         if called is not None:
@@ -1440,16 +1442,18 @@ class BoundedHostToolPolicy:
             raise TimeoutError("the host-tool deadline expired during the run")
         except BaseException:
             self.close()
-            if not task.done() and not detached:
-                task.cancel()
-                done, _ = await asyncio.wait({task}, timeout=1.0)
-                if not done:
+            try:
+                if not task.done() and not detached:
+                    task.cancel()
+                    await asyncio.wait({task}, timeout=1.0)
+            finally:
+                if task.done():
+                    _consume_host_task(task)
+                elif not detached:
                     note_unclean(
                         self.sandbox, "a host-tool call did not stop within its cleanup budget"
                     )
                     _retain_host_task(task)
-            if task.done():
-                _consume_host_task(task)
             raise
 
 
