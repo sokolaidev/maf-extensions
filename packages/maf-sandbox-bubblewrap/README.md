@@ -43,6 +43,8 @@ Key identity includes scope, thread, agent, call and kind. An exclusive host fil
 
 Lock files remain after disposal so a concurrent owner cannot lock a replacement inode under the same name. Remove the state directory only after stopping all owners; long-lived deployments should account for those small files in retention policy.
 
+Ownership records are published atomically before cgroup creation, so a host that dies during startup leaves either no cgroup or a complete cleanup record. Failed setup removes its record after cgroup cleanup succeeds. Commands whose requested timeout exceeds `max_timeout` (180 seconds by default) are rejected with `ValueError` before execution; accepted deadlines are not shortened.
+
 ## Offline Draw.io
 
 The [runtime provisioning script](https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-export/build-runtime.sh) uses debootstrap and the pinned Draw.io Desktop package directly, with the same offline assets, fonts and exporter as the image profile. Provisioning needs network access and root; rendering needs neither. Run the host outside that runtime and register this backend with `maf-sandbox-drawio`, passing the configured runtime id as `image`. Linux is the only supported host platform; native Windows and macOS backends are separate work.

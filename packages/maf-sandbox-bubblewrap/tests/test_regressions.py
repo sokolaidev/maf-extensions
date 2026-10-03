@@ -89,6 +89,58 @@ def test_write_cap_refuses_before_transport(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), 6])
+def test_invalid_exec_timeout_refuses_before_transport(tmp_path: Path, timeout: float) -> None:
+    async def run() -> None:
+        diagnostics = asyncio.create_task(asyncio.sleep(0, result=""))
+        backend = Mock(config=Mock(max_timeout=5, output_bytes=1024))
+        sandbox = _Sandbox(
+            backend,
+            "instance",
+            Mock(),
+            -1,
+            tmp_path / "record",
+            SandboxSpec(kind="exec"),
+            diagnostics,
+        )
+        sandbox._request = AsyncMock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
+        try:
+            with pytest.raises(ValueError, match="timeout"):
+                await sandbox.exec(["true"], working_directory=".", timeout=timeout)
+            sandbox._request.assert_not_called()
+            assert not sandbox.dead
+        finally:
+            await diagnostics
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("timeout", [0.5, 5])
+def test_exec_preserves_accepted_timeout(tmp_path: Path, timeout: float) -> None:
+    async def run() -> None:
+        diagnostics = asyncio.create_task(asyncio.sleep(0, result=""))
+        sandbox = _Sandbox(
+            Mock(config=Mock(max_timeout=5, output_bytes=1024)),
+            "instance",
+            Mock(),
+            -1,
+            tmp_path / "record",
+            SandboxSpec(kind="exec"),
+            diagnostics,
+        )
+        sandbox._request = AsyncMock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
+        try:
+            assert (
+                await sandbox.exec(["true"], working_directory=".", timeout=timeout)
+            ).exit_code == 0
+            assert sandbox._request.call_args.kwargs["timeout"] == timeout
+            assert sandbox._request.call_args.kwargs["transport_timeout"] == timeout
+        finally:
+            await diagnostics
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", ["malformed", "busy", "failed"])
 def test_disposal_continues_after_record_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
