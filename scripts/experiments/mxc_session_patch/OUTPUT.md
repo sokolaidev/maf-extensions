@@ -4,7 +4,7 @@
 
 ## Result
 
-Independent Windows/WHP and Linux/KVM measurements establish **no-go for guest descriptor redirection alone as a host-enforced output boundary**. [Windows evidence](windows-descriptor-result.json) and [Linux evidence](linux-descriptor-result.json) record individual outcomes and executable identities. [GitHub run 37136213341](https://github.com/sokolaidev/maf-extensions/actions/runs/37136213341) passed the complete workflow at source `5b2436f57c672889f50277d30a2083a69735b0c3`, including the existing native recovery, atomic publication and owner-liveness controls. Both output measurements use that source; later evidence/documentation edits do not change the tested programs. An ordinary PR check does not execute the opt-in runtime probe.
+Independent Windows/WHP and Linux/KVM measurements establish **no-go for guest descriptor redirection alone as a host-enforced output boundary**. [Windows evidence](windows-descriptor-result.json) and [Linux evidence](linux-descriptor-result.json) record individual outcomes and executable identities. [GitHub run 37136213341](https://github.com/sokolaidev/maf-extensions/actions/runs/37136213341) passed the complete workflow at source `5b2436f57c672889f50277d30a2083a69735b0c3`, including the existing native recovery, atomic publication and owner-liveness controls. Both retained output measurements use that source. A subsequent review fix moves descriptor and console writes outside assertions so Python optimization cannot remove them; these retained native measurements predate that fix. An ordinary PR check does not execute the opt-in runtime probe.
 
 | Control | Windows/WHP and Linux/KVM observation |
 |---|---|
@@ -21,7 +21,7 @@ The pipe measurements are observations from fixed cooperative guest programs. Th
 
 The checkpoint test preserves open file and buffered pipe descriptors, not actively draining reader threads or arbitrary descendants. No general host file-export mechanism or safe artifact collection is established. The filesystem alternative would also require a quota outside guest control. The experiment fails while querying the file-size limit, before setting it or writing the test file; the pinned kernel's `uk_sys_prlimit64` resource switch also excludes `RLIMIT_FSIZE` for setting and querying. Catching that refusal cannot provide a quota. #1668 remains open.
 
-Local verification passed 13,196 tests with 751 skipped, repository lint/format and package/root type checks, documentation checks, two Rust tests, Clippy with warnings denied, and real helper help/invalid-argument controls. The eight evidence-validator regressions are included in that count. These checks do not establish arbitrary descendant capture, reader-thread snapshot safety, native output quotas or a production backend.
+Local verification passed 13,196 tests with 751 skipped, repository lint/format and package/root type checks, documentation checks, two Rust tests, Clippy with warnings denied, and real helper help/invalid-argument controls. The eight evidence-validator regressions are included in that historical count. Subsequent subprocess regressions check complete descriptor payloads with and without Python optimization and the three console boundary writes under `-O`; Windows substitutes POSIX write calls with `os.write` adapters, while Linux executes the native calls. These checks do not establish arbitrary descendant capture, reader-thread snapshot safety, native output quotas or a production backend.
 
 ## Reproduce
 
@@ -40,7 +40,9 @@ Execute this fixed guest code with `execute-owned` and a matching startup snapsh
 ```python
 import os
 
-assert os.write(1, b"X" * 4097) == 4097
+written = os.write(1, b"X" * 4097)
+if written != 4097:
+    raise RuntimeError(f"console write returned {written}, expected 4097")
 ```
 
 The unmodified pinned console emits 4096 `X` bytes and the helper writes `{"executed": true}`. The 4095/4096 positive controls exclude a generic failure to execute or collect output. This reproducer is also run automatically by the descriptor probe.

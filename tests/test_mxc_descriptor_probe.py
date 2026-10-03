@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -70,3 +73,65 @@ def test_missing_case_is_inconclusive(evidence):
     del results["file_limit"]
     with pytest.raises(RuntimeError, match="incomplete"):
         probe.validate(results, state)
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_descriptor_fidelity_keeps_native_writes(optimized):
+    # Windows has no POSIX writev/libc.write; exercise the same workload via os.write.
+    shim = r"""
+import ctypes
+import os
+import sys
+if sys.platform == "win32":
+    sys.stdout.reconfigure(newline="\n")
+    sys.stderr.reconfigure(newline="\n")
+    class NativeWrite:
+        def __call__(self, fd, data, size):
+            return os.write(fd, data[:size])
+    class Libc:
+        write = NativeWrite()
+    ctypes.CDLL = lambda *_: Libc()
+    os.writev = lambda fd, chunks: os.write(fd, b"".join(chunks))
+    sys.platform = "linux"
+"""
+    code = (
+        shim + "\nimport runpy\nrunpy.run_path(sys.argv[1], init_globals={'MXC_CASE': 'fidelity'})"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            *(["-O"] if optimized else []),
+            "-c",
+            code,
+            str(ROOT / "descriptor_guest.py"),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    assert result.stderr == b""
+    observations = json.loads(result.stdout.decode().removeprefix("MXC_OBSERVATION:"))
+    assert len(observations) == 2
+    for fd, observation in enumerate(observations, 1):
+        expected = (
+            bytes(range(256)) * 32
+            + ("\u20ac\U0001f642\n" * 1000).encode()
+            + bytes([fd]) * 4097
+            + b"DUP\x00\xffVEC\x00\xffNATIVE\x00\xffPYTHON\n"
+        )
+        assert observation["total"] == len(expected)
+        assert observation["sha256"] == hashlib.sha256(expected).hexdigest()
+        assert observation["retained_bytes"] == len(expected)
+        assert observation["retained_sha256"] == hashlib.sha256(expected).hexdigest()
+
+
+@pytest.mark.parametrize("size", [4095, 4096, 4097])
+def test_console_workload_writes_under_optimization(size):
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", probe.console_program(size)],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    assert result.stdout == b"X" * size
+    assert result.stderr == b""

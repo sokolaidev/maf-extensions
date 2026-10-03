@@ -243,6 +243,15 @@ def validate(results: dict[str, Any], state: Path) -> dict[str, bool]:
     }
 
 
+def console_program(size: int) -> str:
+    """Generate the single-write console boundary workload."""
+    return (
+        f"import os\nwritten = os.write(1, b'X' * {size})\n"
+        f"if written != {size}:\n"
+        f"    raise RuntimeError(f'console write returned {{written}}, expected {size}')\n"
+    )
+
+
 def main() -> int:
     """Record independent outcomes for the pinned descriptor alternatives."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -271,7 +280,7 @@ def main() -> int:
         code = f"MXC_CASE = {name!r}\n" + guest
         if name.startswith("console_"):
             size = int(name.split("_")[1])
-            code = f"import os\nassert os.write(1, b'X' * {size}) == {size}\n"
+            code = console_program(size)
         result = execute(helper, startup, state, name, code, cancel=name == "cancel")
         if result["control"] is not None and not name.startswith("console_"):
             result["guest_observation"] = observation(state, name)

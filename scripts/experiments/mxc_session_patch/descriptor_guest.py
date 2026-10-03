@@ -68,10 +68,14 @@ def pipe_case(case):
                 write_all(duplicate, b"DUP\x00\xff")
                 os.close(duplicate)
                 if sys.platform == "linux":
-                    assert os.writev(fd, [b"VEC\x00", b"\xff"]) == 5
+                    written = os.writev(fd, [b"VEC\x00", b"\xff"])
+                    if written != 5:
+                        raise RuntimeError(f"writev returned {written}, expected 5")
                 else:
                     raise RuntimeError("this probe requires the Linux guest")
-                assert libc.write(fd, b"NATIVE\x00\xff", 8) == 8
+                written = libc.write(fd, b"NATIVE\x00\xff", 8)
+                if written != 8:
+                    raise RuntimeError(f"native write returned {written}, expected 8")
 
             writers = [threading.Thread(target=produce, args=(fd,)) for fd in (1, 2)]
             for thread in writers:
