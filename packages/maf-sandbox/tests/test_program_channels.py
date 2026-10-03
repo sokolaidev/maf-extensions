@@ -931,8 +931,8 @@ def test_queued_program_admission_rechecks_disposed_fallback(dispose):
 
 
 def test_host_tool_channel_uses_its_declared_working_directory(monkeypatch):
-    import maf_sandbox._program as program_module
     from maf_sandbox import ExecResult
+    from maf_sandbox import _program as program_module
     from maf_sandbox.testing import InProcessSandbox
 
     class NestedChannel(ExecProgramChannel):
@@ -960,3 +960,35 @@ def test_host_tool_channel_uses_its_declared_working_directory(monkeypatch):
     assert result.stdout == "nested"
     with pytest.raises(RuntimeError, match="closed"):
         asyncio.run(run.call("value", publish=_accept))
+
+
+@pytest.mark.parametrize("program", [None, ProgramRequirements()])
+@pytest.mark.parametrize("initial_success", [False, True])
+def test_unavailable_reacquisition_preserves_call_disposal_ownership(program, initial_success):
+    from maf_sandbox import IsolationScope
+
+    backend = InProcessSandboxBackend(
+        sandbox_per_key=True,
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset({IsolationScope.CALL})
+        ),
+    )
+    router = _router(backend)
+    key = replace(_KEY, call_id="call")
+    spec = replace(_SPEC, program=program, isolation_scope=IsolationScope.CALL)
+
+    async def exercise():
+        admission = await router.enter_call(key, spec, owner="call")
+        try:
+            if initial_success:
+                await router.acquire(key, spec, _admission=admission)
+            backend.acquire_error = SandboxBackendUnavailable("offline")
+            with pytest.raises(SandboxBackendUnavailable):
+                await router.acquire(key, spec, _admission=admission)
+            assert await router.dispose_call(key, spec=spec, _admission=admission, timeout=1)
+            assert backend.disposed == ([key] if initial_success else [])
+            assert not backend.sandboxes and not router._program_pins
+        finally:
+            await router.release_call(key, spec.kind, owner="call")
+
+    asyncio.run(exercise())

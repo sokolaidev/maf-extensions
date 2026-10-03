@@ -1935,6 +1935,7 @@ class SandboxRouter:
                 serving.backend = served
                 serving.channel = channel
             snapshot = Capability.SNAPSHOT in _declarations(served).capabilities
+            previously_served = admission is not None and admission.served
             if admission is not None:
                 admission.served = True
             try:
@@ -1949,7 +1950,7 @@ class SandboxRouter:
                 break
             except SandboxBackendUnavailable:
                 if admission is not None:
-                    admission.served = False
+                    admission.served = previously_served
                 if index + 1 == len(candidates):
                     raise
         else:
