@@ -546,6 +546,47 @@ def test_retirement_failure_retains_ownership_until_retry_settles(
     asyncio.run(scenario())
 
 
+def test_slow_initialize_cannot_allocate_after_shutdown_closes_admission():
+    async def scenario():
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
+            release = asyncio.Event()
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "slow", "version": "1"},
+                    },
+                }
+            ).encode()
+
+            async def chunks():
+                yield body[:1]
+                await release.wait()
+                yield body[1:]
+
+            pending = asyncio.create_task(
+                client.post("/mcp", headers={"content-type": "application/json"}, content=chunks())
+            )
+            try:
+                await until(lambda: app.readers == 1)
+                assert not app.sessions
+                server.should_exit = True
+                await until(lambda: not app.service.ready)
+            finally:
+                release.set()
+                response = await pending
+            assert response.status_code == 503
+            assert not app.sessions
+        assert h.closes == 1
+
+    asyncio.run(scenario())
+
+
 def test_actual_chunked_body_header_and_slow_body_limits():
     async def scenario():
         async with running(Harness().service()) as (app, client, server):

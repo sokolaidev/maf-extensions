@@ -338,6 +338,9 @@ class WorkloadHTTP:
             return
         fresh = not sid
         if fresh:
+            if not self.service.ready:
+                await Response(status_code=503)(scope, receive, send)
+                return
             if len(self.sessions) >= SESSION_LIMIT:
                 await Response(status_code=503)(scope, receive, send)
                 return
