@@ -388,7 +388,7 @@ class BubblewrapSandboxBackend:
         sandbox = await backend.acquire(key, SandboxSpec(kind="probe", requires=_CAPABILITIES))
         try:
             result = await sandbox.exec(
-                ["/bin/true"], working_directory=".", timeout=min(10, config.max_timeout)
+                ":", working_directory=".", timeout=min(10, config.max_timeout)
             )
             if result.exit_code != 0:
                 raise RuntimeError("Namespace probe failed")

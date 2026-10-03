@@ -76,6 +76,36 @@ def test_no_other_platform_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 @live
+def test_live_startup_refuses_unusable_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maf_sandbox_bubblewrap._backend as module
+
+    blocked = tmp_path / "blocked-shell"
+    blocked.write_bytes(b"")
+    blocked.chmod(0o644)
+    original = module._arguments
+
+    def arguments(settings: BubblewrapSandboxConfig) -> list[str]:
+        args = original(settings)
+        index = args.index("--")
+        args[index:index] = ["--ro-bind", str(blocked), "/bin/sh"]
+        return args
+
+    monkeypatch.setattr(module, "_arguments", arguments)
+
+    async def run() -> None:
+        settings = replace(config(), state_root=tmp_path / "state")
+        before = set(settings.cgroup_root.glob("maf-*"))
+        with pytest.raises(PermissionError):
+            await BubblewrapSandboxBackend.create(settings)
+        assert set(settings.cgroup_root.glob("maf-*")) == before
+        assert not list(settings.state_root.glob("*.json"))
+
+    asyncio.run(run())
+
+
+@live
 @pytest.mark.parametrize("suite", ["storage", "in", "out", "exec", "delete", "reclaim"])
 def test_live_protocol_conformance(suite: str) -> None:
     async def run() -> None:
