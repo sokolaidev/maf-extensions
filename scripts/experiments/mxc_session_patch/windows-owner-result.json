@@ -1,0 +1,32 @@
+{
+  "helper_sha256": "4e80692f3eaa9b5d198e84b0d3a353036cc6ae31e98c4be87ab2974059d90831",
+  "startup_index_sha256": "d3743f7ffbc3c141826ca0c3a409a7879a863801ded78552575e401bf866286a",
+  "controls": {
+    "owner_death": {
+      "exit_code": 74,
+      "stop_seconds": 0.12566949997562915
+    },
+    "cancel": {
+      "exit_code": 74,
+      "stop_seconds": 0.1399978999979794
+    },
+    "invalid_command": {
+      "exit_code": 75,
+      "stop_seconds": 0.17329679999966174
+    },
+    "missing_owner": {
+      "exit_code": 74
+    },
+    "invalid_header": {
+      "exit_code": 75
+    }
+  },
+  "scope": "Native process retirement through its private owner pipe; no descendant or distributed fencing qualification",
+  "platform": "Windows x86-64/WHP",
+  "source_base": "37187e9a92549c160e982584a2afe8c5f756786e",
+  "git_source_sha256": {
+    "probe/main.rs": "d75e7a42dc5047144776060798060f880a2ad012c29be5808bcb89e8b004553d",
+    "probe/owner.rs": "2d84ff72b38e5403e52e7a8f9627d1bbcc5b884f1bea15c54d17f7e77e00a95c",
+    "owner_probe.py": "bff5a520a9171e0d8220ac40825486c985ec63bfb470daeb12d390c706dd2b3d"
+  }
+}
