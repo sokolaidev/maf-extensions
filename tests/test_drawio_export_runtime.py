@@ -82,6 +82,44 @@ def test_utf8_xml_preserves_unicode(encoding):
     assert root[0].text == "Résumé Ω"
 
 
+@pytest.mark.parametrize("position", ["before", "inside", "after"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_xml_processing_instructions_are_refused_before_parsing(
+    monkeypatch, position, encoding, embedded
+):
+    instruction = '<?xml-stylesheet href="https://example.invalid/style.css" type="text/css"?>'
+    svg = '<svg xmlns="http://www.w3.org/2000/svg">{}</svg>'
+    xml = (
+        svg.format(instruction)
+        if position == "inside"
+        else instruction + svg.format("")
+        if position == "before"
+        else svg.format("") + instruction
+    )
+
+    def parse(*args, **kwargs):
+        pytest.fail("Processing instructions must not reach the XML parser")
+
+    monkeypatch.setattr(RUNTIME["ET"], "fromstring", parse)
+    data = xml.encode(encoding)
+    with pytest.raises(ValueError, match="Processing instructions"):
+        if embedded:
+            RUNTIME["image_data"]("data:image/svg+xml;base64," + base64.b64encode(data).decode())
+        else:
+            RUNTIME["xml_document"](data)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_embedded_svg_xml_declaration_is_preserved(encoding):
+    data = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<svg xmlns="http://www.w3.org/2000/svg"><text>Résumé Ω</text></svg>'
+    ).encode(encoding)
+    uri = "data:image/svg+xml;base64," + base64.b64encode(data).decode()
+    assert RUNTIME["image_data"](uri) == uri
+
+
 @pytest.mark.parametrize(
     "svg",
     [
