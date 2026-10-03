@@ -158,6 +158,40 @@ def test_document_refuses_unresolved_resources(attribute):
         )
 
 
+@pytest.mark.parametrize("location", ["attribute", "stylesheet"])
+@pytest.mark.parametrize(
+    "css",
+    [
+        'background-image:image-set("data:image/png;base64,AA==" 1x)',
+        'background-image:image-set("relative.png" 1x)',
+        'background-image:-webkit-image-set("/image.png" 1x)',
+        'background-image:IMAGE-SET("//example.invalid/image.png" 1x)',
+        'background-image:src("relative.png")',
+        "background-image:src(var(--image))",
+        '--image:"data:image/svg+xml;base64,AA=="',
+    ],
+)
+def test_svg_css_resources_are_refused(location, css):
+    root = ET.Element("svg", {"xmlns": "http://www.w3.org/2000/svg"})
+    if location == "attribute":
+        root.set("style", css)
+    else:
+        ET.SubElement(root, "style").text = "rect {" + css + "}"
+    data = ET.tostring(root)
+    with pytest.raises(ValueError):
+        RUNTIME["image_data"]("data:image/svg+xml;base64," + base64.b64encode(data).decode())
+
+
+def test_svg_local_fragments_and_resource_free_css_survive():
+    data = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><style>rect {fill:red;'
+        b"background-image:linear-gradient(red,blue)}</style>"
+        b'<defs><linearGradient id="paint"/></defs><rect fill="url(#paint)"/></svg>'
+    )
+    uri = "data:image/svg+xml;base64," + base64.b64encode(data).decode()
+    assert RUNTIME["image_data"](uri) == uri
+
+
 def test_safe_embedded_svg_and_formatting_survive():
     svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>'
     uri = "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()

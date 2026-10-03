@@ -15,6 +15,8 @@ Both image and indicatorImage styles require a manifest-listed asset or validate
 
 XML resources, including embedded SVGs, must use UTF-8, optionally with its byte-order mark. NUL characters, DTD/entity declarations and processing instructions other than the XML declaration are refused before XML parsing.
 
+SVG CSS must not reference resources, including data URIs, image-set() and src(). Image attributes use the separate embedded-image validator; local SVG fragment references and resource-free CSS remain supported.
+
 Enabled label placeholders are refused before rendering, including object/UserObject wrappers and indirect labels, because substitution occurs after HTML validation. Literal labels with placeholders disabled remain supported. Invalid UTF-8 or JSON in the installed runtime manifest is an incomplete runtime failure, not a content refusal.
 
 Prepared XML is limited to 8 MiB across all pages, including embedded assets, XML escaping and normalized font styles. Expansion is charged before replacement styles are retained or serialized. Each bundled asset is read and verified once per document; repeated references still consume the document budget.
