@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.2...maf-sandbox-wslc-v0.26.3) (2026-10-03)
+
+
+### Fixes
+
+* report credential-expired proxy streams as interrupted ([#1631](https://github.com/sokolaidev/maf-extensions/issues/1631)) ([63c0e97](https://github.com/sokolaidev/maf-extensions/commit/63c0e97dbf39a0d976b07ffb9437317170f1a26d))
+
 ## [0.26.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.1...maf-sandbox-wslc-v0.26.2) (2026-10-02)
 
 
