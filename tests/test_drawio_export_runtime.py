@@ -137,6 +137,40 @@ def test_embedded_svg_refuses_active_or_recursive_resources(svg):
         RUNTIME["image_data"](uri)
 
 
+@pytest.mark.parametrize("exported", [False, True])
+@pytest.mark.parametrize(
+    "content",
+    [
+        '<animateMotion dur="1s" repeatCount="indefinite" path="M0 0L10 10"/>',
+        '<animateTransform attributeName="transform" type="rotate" dur="1s" to="360"/>',
+        '<animateColor attributeName="fill" from="red" to="blue" dur="1s"/>',
+        '<mpath href="#motion"/>',
+        '<discard begin="1s"/>',
+        '<animation dur="1s"/>',
+        '<rect style="animation:spin 1s infinite"/>',
+        '<rect style="-webkit-animation-name:spin"/>',
+        '<rect style="transition:fill 1s"/>',
+        "<style>@keyframes spin {to {opacity:0}}</style>",
+        "<style>rect {animation-name:spin;animation-duration:1s}</style>",
+        "<style>rect {transition:opacity 1s}</style>",
+    ],
+)
+def test_svg_animation_is_refused(content, exported):
+    data = f'<svg xmlns="http://www.w3.org/2000/svg">{content}</svg>'.encode()
+    with pytest.raises(ValueError, match="Active SVG"):
+        RUNTIME["check_svg"](data, exported=exported)
+
+
+def test_embedded_svg_filter_images_are_refused():
+    nested = b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>'
+    uri = "data:image/svg+xml;base64," + base64.b64encode(nested).decode()
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg"><filter><feImage href="{uri}"/></filter></svg>'
+    with pytest.raises(ValueError, match="nested images"):
+        RUNTIME["image_data"](
+            "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+        )
+
+
 @pytest.mark.parametrize(
     "attribute",
     [

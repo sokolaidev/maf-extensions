@@ -66,6 +66,8 @@ Input SVG CSS must not reference resources: data URIs and the `url()`, `image-se
 
 Embedded SVG text and font declarations are refused, including those in bundled assets, to prevent unverified font substitution. This covers presentation attributes, CSS font properties, `@font-face` and `local()` sources. CSS font tokens are refused conservatively, including in comments and selectors. Convert image text to paths before embedding it; ordinary diagram labels remain supported through the verified font set.
 
+SVG resources and native SVG output must be static: animation elements, motion paths, timed discard, CSS animations/keyframes/transitions and event handlers are refused. CSS animation tokens are rejected conservatively even in comments and selectors. Embedded SVGs also refuse nested `image`, `feImage` and `use` elements.
+
 Bundled assets are verified once per document and cached. Every repeated reference still counts toward the prepared-XML budget before expanded styles are retained or serialized. Unsupported content is refused rather than silently replaced with a different rendering.
 
 Stencil lookups during native painting must resolve, including auxiliary resource, product, group and background icons. Validation follows the renderer's own lookup, preserving shape-specific prefixes and primitive backgrounds rather than treating every selector as a main shape.

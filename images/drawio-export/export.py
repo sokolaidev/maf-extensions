@@ -47,6 +47,7 @@ UNSAFE = re.compile(
     re.I,
 )
 SVG_FONT = re.compile(r"\bfont\b|local\s*\(", re.I)
+SVG_ANIMATION = re.compile(r"\b(?:animation|transition|keyframes)\b", re.I)
 
 
 class Label(HTMLParser):
@@ -141,12 +142,27 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
             element.tag = f"{{{SVG}}}g"
             element.attrib.clear()
             tag = "g"
-        if tag in {"script", "a", "iframe", "object", "embed", "audio", "video", "animate", "set"}:
+        if tag in {
+            "script",
+            "a",
+            "iframe",
+            "object",
+            "embed",
+            "audio",
+            "video",
+            "set",
+            "mpath",
+            "discard",
+        } or tag.startswith(("animate", "animation")):
             raise ValueError("Active SVG content is not supported")
         if tag == "foreignObject" and not exported:
             raise ValueError("Embedded SVG HTML is not supported")
         for name, value in element.attrib.items():
             local = name.rsplit("}", 1)[-1]
+            if local.startswith(("animation", "transition")) or (
+                local == "style" and SVG_ANIMATION.search(value)
+            ):
+                raise ValueError("Active SVG CSS is not supported")
             if not exported and (
                 local.startswith("font") or (local == "style" and SVG_FONT.search(value))
             ):
@@ -169,6 +185,8 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
                     )
         if tag == "style":
             css = "".join(element.itertext())
+            if SVG_ANIMATION.search(css):
+                raise ValueError("Active SVG CSS is not supported")
             if not exported and SVG_FONT.search(css):
                 raise ValueError("Embedded SVG text and fonts are not supported")
             if UNSAFE.search(css):
@@ -189,7 +207,7 @@ def image_data(value: str) -> str:
         )
         if match[1] == "svg+xml":
             root = xml_document(data)
-            if any(e.tag.rsplit("}", 1)[-1] in {"image", "use"} for e in root.iter()):
+            if any(e.tag.rsplit("}", 1)[-1] in {"image", "feImage", "use"} for e in root.iter()):
                 raise ValueError("Embedded SVG must not contain nested images or use elements")
             check_svg(data)
         else:
