@@ -7,6 +7,7 @@ import ctypes
 import errno
 import json
 import os
+import posixpath
 import selectors
 import signal
 import stat
@@ -28,20 +29,19 @@ class TransferCapExceeded(ValueError):
 def parts(path: str, directory: str) -> tuple[str, ...]:
     """Normalize within two confinement boundaries, without following filesystem links."""
 
-    def relative(value: str, root: PurePosixPath) -> tuple[str, ...]:
-        candidate = PurePosixPath(value)
-        if "\x00" in value or "\\" in value or ".." in candidate.parts:
+    def confined(value: str, root: str) -> str:
+        candidate = posixpath.normpath(posixpath.join(root, value))
+        prefix = root if root.endswith("/") else root + "/"
+        if candidate != root and not candidate.startswith(prefix):
             raise ValueError("Path escapes its boundary")
-        if candidate.is_absolute():
-            candidate = candidate.relative_to(root)
-        return candidate.parts
+        return candidate
 
-    work = PurePosixPath(directory)
-    if "\x00" in directory or "\\" in directory or ".." in work.parts:
-        raise ValueError("Working directory escapes its boundary")
-    if not work.is_absolute():
-        work = PurePosixPath(BASE) / work
-    return work.parts[1:] + relative(path, work)
+    if any("\x00" in value or "\\" in value for value in (path, directory)):
+        raise ValueError("Invalid guest path")
+    work = (
+        posixpath.normpath(directory) if posixpath.isabs(directory) else confined(directory, BASE)
+    )
+    return PurePosixPath(confined(path, work)).parts[1:]
 
 
 def parent(path: str, directory: str, *, create: bool = False) -> tuple[int, str]:

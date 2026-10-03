@@ -43,5 +43,5 @@ Candidate-specific measurements and remaining platform work are recorded in the 
 
 | Area | State | Reference |
 |---|---|---|
-| Native Linux rendering | Implemented; default-branch integration pending | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (open); delivered by stacked [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [decision record](../research/drawio-export.md) |
+| Native Linux rendering | Implemented | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (closed) by [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [decision record](../research/drawio-export.md) |
 | Windows and macOS native rendering | Not implemented | untracked; separate platform qualification required |

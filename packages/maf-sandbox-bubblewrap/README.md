@@ -10,7 +10,7 @@ Experimental Linux sandbox backend using Bubblewrap and cgroup v2, without Docke
 
 - Linux with unprivileged user, mount, PID, network, IPC, UTS and cgroup namespaces; Bubblewrap supporting `--disable-userns`, `--assert-userns-disabled`, `--as-pid-1` and bounded tmpfs mounts. Missing support refuses startup.
 - A private cgroup v2 delegation with `cpu`, `memory` and `pids` enabled, `memory.swap.max` and `cgroup.kill`. The host process must already belong to that delegation so it can move children into sibling groups. A systemd service with `Delegate=cpu memory pids` can provide it; the host must place itself in a leaf and enable the controllers on its empty parent. This package does not grant privileges or change host-wide policy.
-- A trusted runtime directory containing `/usr/bin/python3` and `/bin/sh`, with no host credentials or sockets. Keep it immutable while sandboxes run. Runtime, cgroup and state paths and their ancestors must be controlled by the host administrator. The state directory must be owned by the service user and mode `0700`.
+- A trusted runtime directory containing `/usr/bin/python3` and `/bin/sh`, with no host credentials or sockets. Keep it immutable while sandboxes run. Runtime, cgroup and state paths and their ancestors must be controlled by the host administrator. State and cgroup roots must resolve outside the runtime. The state directory must be owned by the service user and mode `0700`.
 
 ## Use
 

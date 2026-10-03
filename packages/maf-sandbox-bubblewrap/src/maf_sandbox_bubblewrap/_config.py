@@ -8,7 +8,8 @@ from pathlib import Path
 class BubblewrapSandboxConfig:
     """Use a trusted Linux root directory and a private delegated cgroup v2 subtree.
 
-    Runtime and state ancestors must not be writable by untrusted principals. Provision the
+    Runtime and control-directory ancestors must not be writable by untrusted principals.
+    State and cgroup roots must stay outside the runtime mounted into the guest. Provision the
     runtime separately; no archive extraction, package download or engine fallback occurs here.
     """
 

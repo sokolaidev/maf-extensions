@@ -8,6 +8,7 @@ import socket
 import sys
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -33,8 +34,8 @@ from maf_sandbox.conformance import (
     assert_storage_base_conformance,
 )
 
+import maf_sandbox_bubblewrap._backend as backend_module
 from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
-from maf_sandbox_bubblewrap._backend import FILE_LIMIT
 
 live = pytest.mark.skipif(
     sys.platform != "linux"
@@ -75,16 +76,78 @@ def test_no_other_platform_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         BubblewrapSandboxBackend(BubblewrapSandboxConfig(tmp_path, tmp_path, tmp_path))
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux host path and ownership checks")
+@pytest.mark.parametrize("field", ["state_root", "cgroup_root"])
+@pytest.mark.parametrize("location", ["nested", "equal", "alias", "outside"])
+def test_control_roots_stay_outside_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, location: str
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    settings = BubblewrapSandboxConfig(runtime, tmp_path / "state", cgroup, bwrap=Path("/bin/true"))
+    root = runtime
+    if location == "alias":
+        root = tmp_path / "alias"
+        root.symlink_to(runtime, target_is_directory=True)
+    target = root if location == "equal" else root / "control"
+    if location == "outside":
+        target = tmp_path / "runtime-sibling" / "control"
+    if field == "cgroup_root":
+        target.mkdir(parents=True, exist_ok=True)
+    settings = replace(settings, **{field: target})
+    acquire = AsyncMock(side_effect=RuntimeError("reached launch"))
+    monkeypatch.setattr(BubblewrapSandboxBackend, "acquire", acquire)
+    if location == "outside":
+        with pytest.raises(RuntimeError, match="reached launch"):
+            asyncio.run(BubblewrapSandboxBackend.create(settings))
+        acquire.assert_awaited_once()
+    else:
+        with pytest.raises(ValueError, match=f"{field} must be outside runtime_root"):
+            asyncio.run(BubblewrapSandboxBackend.create(settings))
+        acquire.assert_not_awaited()
+        if field == "state_root" and location != "equal":
+            assert not target.exists()
+
+
+@live
+def test_live_normalized_paths() -> None:
+    async def run() -> None:
+        backend = await BubblewrapSandboxBackend.create(config())
+        identity = key()
+        sandbox = await backend.acquire(identity, SandboxSpec(kind="paths"))
+        try:
+            await sandbox.write_file("a/../result", b"normalized", working_directory="a/../sub")
+            assert (
+                await sandbox.read_file("result", working_directory="sub", max_bytes=32)
+                == b"normalized"
+            )
+            entry = await sandbox.stat_file("a/../result", working_directory="sub")
+            assert entry is not None and entry.size_bytes == 10
+            result = await sandbox.exec("cat result", working_directory="a/../sub", timeout=5)
+            assert result.stdout == "normalized"
+            with pytest.raises(ValueError):
+                await sandbox.read_file("../result", working_directory="sub", max_bytes=32)
+            assert (
+                await sandbox.exec("ln -s sub link", working_directory=".", timeout=5)
+            ).exit_code == 0
+            with pytest.raises(ValueError):
+                await sandbox.read_file("a/../link/result", working_directory=".", max_bytes=32)
+        finally:
+            assert await backend.dispose(identity) is None
+
+    asyncio.run(run())
+
+
 @live
 def test_live_startup_refuses_unusable_shell(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import maf_sandbox_bubblewrap._backend as module
-
     blocked = tmp_path / "blocked-shell"
     blocked.write_bytes(b"")
     blocked.chmod(0o644)
-    original = module._arguments
+    original = backend_module._arguments
 
     def arguments(settings: BubblewrapSandboxConfig) -> list[str]:
         args = original(settings)
@@ -92,7 +155,7 @@ def test_live_startup_refuses_unusable_shell(
         args[index:index] = ["--ro-bind", str(blocked), "/bin/sh"]
         return args
 
-    monkeypatch.setattr(module, "_arguments", arguments)
+    monkeypatch.setattr(backend_module, "_arguments", arguments)
 
     async def run() -> None:
         settings = replace(config(), state_root=tmp_path / "state")
@@ -165,7 +228,7 @@ def test_live_transfer_caps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
                     "write",
                     path="result",
                     directory=".",
-                    data=base64.b64encode(bytes(FILE_LIMIT + 1)).decode(),
+                    data=base64.b64encode(bytes(backend_module.FILE_LIMIT + 1)).decode(),
                 )
             assert await sandbox.read_file("result", working_directory=".", max_bytes=5) == b"grown"
         finally:

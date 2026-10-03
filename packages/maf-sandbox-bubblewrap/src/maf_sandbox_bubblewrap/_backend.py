@@ -375,6 +375,10 @@ class BubblewrapSandboxBackend:
     async def create(cls, config: BubblewrapSandboxConfig) -> BubblewrapSandboxBackend:
         """Refuse missing runtime, resource controllers or namespace prerequisites."""
         backend = cls(config)
+        runtime = config.runtime_root.resolve()
+        for name in ("state_root", "cgroup_root"):
+            if getattr(config, name).resolve().is_relative_to(runtime):
+                raise ValueError(f"{name} must be outside runtime_root")
         for path in (config.runtime_root, config.cgroup_root, config.bwrap):
             if path.is_symlink() or not path.exists():
                 raise ValueError(f"Missing or symlinked prerequisite: {path}")
