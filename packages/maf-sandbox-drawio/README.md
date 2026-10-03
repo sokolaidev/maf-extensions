@@ -88,7 +88,7 @@ Accepts one uncompressed `mxGraphModel` or an `mxfile` containing uncompressed p
 </mxGraphModel>
 ```
 
-The output keeps native editable shapes, connectors, labels, styles, IDs, metadata and layers. It does not render a preview or fetch external resources. XML references remain in the artifact, so validation is not content sanitization.
+Editable-only output keeps native shapes, connectors, labels, styles, IDs, metadata and layers. This mode does not render a preview or fetch external resources. XML references remain in the artifact, so editable-only validation is not content sanitization. Optional image export applies the offline resource profile described above.
 
 ## Layout policy
 

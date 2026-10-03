@@ -109,6 +109,8 @@ def xml_document(data: bytes) -> ET.Element:
         raise ValueError("XML resources must use UTF-8") from exc
     if "\x00" in text or "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
         raise ValueError("Unsupported XML resource")
+    if re.search(r"<\?(?!xml[ \t\r\n])", text):
+        raise ValueError("Processing instructions are not supported")
     return ET.fromstring(text)
 
 

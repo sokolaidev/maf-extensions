@@ -263,6 +263,14 @@ async def check(image: str, output: Path) -> None:
         for tag in ("object", "UserObject"):
             for indirect in (False, True):
                 cases[f"placeholder-{tag}-{indirect}"] = placeholder_label(tag, indirect)
+        stylesheet_svg = (
+            b'<?xml-stylesheet href="https://example.invalid/style.css" type="text/css"?>'
+            b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
+        )
+        cases["embedded-svg-stylesheet"] = diagram().replace(
+            "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+            "indicatorImage=data:image/svg+xml," + base64.b64encode(stylesheet_svg).decode(),
+        )
         for encoding in ("utf-16", "utf-32"):
             resource = (
                 '<!DOCTYPE svg [<!ENTITY text "expanded">]>'
@@ -289,6 +297,8 @@ async def check(image: str, output: Path) -> None:
                 assert "Prepared document" in " ".join(text or "" for text in answer), answer
             if name.startswith("placeholder-"):
                 assert "Placeholder labels" in " ".join(text or "" for text in answer), answer
+            if name == "embedded-svg-stylesheet":
+                assert "Processing instructions" in " ".join(text or "" for text in answer), answer
             assert not destination.exists() or not list(destination.iterdir())
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(
