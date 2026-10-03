@@ -47,6 +47,7 @@ from maf_sandbox import (
     HostToolRun,
     Isolation,
     OsFamily,
+    ProgramRequirements,
     SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxProgramTimeout,
@@ -175,13 +176,18 @@ class TestCommandProbes:
         router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
         key = _key(f"e2e-command-{uuid.uuid4()}")
         spec = SandboxSpec(
-            kind="commands", image=_COMMAND_PROBE_IMAGE, requires=frozenset({capability})
+            kind="commands",
+            image=_COMMAND_PROBE_IMAGE,
+            requires=frozenset({capability}),
+            program=ProgramRequirements() if capability == Capability.HOST_TOOLS else None,
         )
 
         async def scenario():
             router.ensure_can_serve(spec)
             try:
-                with pytest.raises(SandboxCapabilityNotSupported, match=str(capability)):
+                with pytest.raises(
+                    SandboxCapabilityNotSupported, match=rf"{capability}.*command probe exited"
+                ):
                     await router.acquire(key, spec)
             finally:
                 await router.dispose(key)
