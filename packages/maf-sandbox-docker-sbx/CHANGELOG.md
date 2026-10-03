@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.4.2...maf-sandbox-docker-sbx-v0.5.0) (2026-10-03)
+
+
+### Features
+
+* support host tools in Docker Sandboxes with per-run activity guards ([#1635](https://github.com/sokolaidev/maf-extensions/issues/1635)) ([2344c81](https://github.com/sokolaidev/maf-extensions/commit/2344c8115977fe3b429241055a6a48b4c0a440c4))
+
 ## [0.4.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.4.1...maf-sandbox-docker-sbx-v0.4.2) (2026-10-01)
 
 
