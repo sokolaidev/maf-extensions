@@ -76,7 +76,7 @@ tools = make_codeact_tools(
 )
 ```
 
-`files_in` and `files_out` bound shared-file count, individual bytes and total bytes. On the automatic channel path, `program=ProgramRequirements(max_program_bytes=8 * 1024 * 1024, host_tool_timeout_seconds=30)` from `maf_sandbox` configures source bytes and callback time separately. A missing declared output is reported. Artifacts carry no guest-selected media type; the host decides how to handle them.
+`files_in` and `files_out` bound shared-file count, individual bytes and total bytes. Shared inputs default to 8 MiB per file, 24 MiB total and 63 files, leaving room for the default 8 MiB program and its staging file within a 32 MiB/64-file backend ceiling. Explicit limits are preserved and the complete channel demand is checked without clamping; larger programs or host-tool transport traffic can require a backend with larger ceilings. On the automatic channel path, `program=ProgramRequirements(max_program_bytes=8 * 1024 * 1024, host_tool_timeout_seconds=30)` from `maf_sandbox` configures source bytes and callback time separately. A missing declared output is reported. Artifacts carry no guest-selected media type; the host decides how to handle them.
 
 Keep the output sink separate from the agent's writable input store. Otherwise guest code could overwrite files through a channel that bypasses the host's file-write approval. See the [files sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/08_docker_codeact_files).
 
