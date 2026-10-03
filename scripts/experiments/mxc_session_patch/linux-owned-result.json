@@ -1,0 +1,124 @@
+{
+  "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37085668203",
+  "artifact_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37085668203/artifacts/11260214714",
+  "artifact_sha256": "c94c973c541eb61e1752b67fb898943f03582409741bd0a44421414e197f16f7",
+  "artifact_retention_days": 14,
+  "identity": {
+    "source_commit": "4bead84e554b4553d0c12c0beca69a36a4fb3f5c",
+    "run_id": "37085668203",
+    "run_attempt": "1",
+    "kernel": "6.17.0-1022-azure",
+    "architecture": "x86_64",
+    "host_python": "3.12.3",
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+    "helper_sha256": "523107c829567a6a26c8a246025719d0995475d83ccb6986bd9480bb5094f5a3",
+    "native_passed": true,
+    "publication_passed": true,
+    "ownership_passed": true
+  },
+  "native": {
+    "refusals": {
+      "truncated_index": 1,
+      "missing_blobs": 1,
+      "incompatible_key": 1
+    },
+    "helper_sha256": "523107c829567a6a26c8a246025719d0995475d83ccb6986bd9480bb5094f5a3",
+    "initrd_sha256": "8a9b9e383510dea8bb58b3aca72ac4a8d141f163f6a2fdc68af54197c5922e7e",
+    "seed": {
+      "commit_barrier": true,
+      "continuity": true,
+      "fresh_control": true,
+      "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+      "phase": "seed",
+      "post_snapshot_mutation": true,
+      "provider": "mxc-session-preview",
+      "snapshot_saved": true,
+      "stale_token_refused": true
+    },
+    "restore": {
+      "close_refused_execution": true,
+      "failed_capture_retired": true,
+      "guest_failure_retired": true,
+      "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+      "phase": "restore",
+      "provider": "mxc-session-preview",
+      "restored_state_verified": true,
+      "timeout_retired": true
+    },
+    "seed_killed_after_save": true,
+    "snapshot_unchanged_after_restore": true,
+    "snapshot_artifacts": {
+      "blobs/sha256/34dddab16b43e9c79fe397f8a41389b4a05d38d655e3b0b06a121d8315159e4c": {
+        "bytes": 567,
+        "sha256": "34dddab16b43e9c79fe397f8a41389b4a05d38d655e3b0b06a121d8315159e4c"
+      },
+      "blobs/sha256/d5809959668b320a21d282d251d5adaa33813db4e402f3369746d3c461d0a6c8": {
+        "bytes": 915771392,
+        "sha256": "d5809959668b320a21d282d251d5adaa33813db4e402f3369746d3c461d0a6c8"
+      },
+      "blobs/sha256/dfa4df05ac6929282b46ae894c428f8dba886d20f95eb17f288de5674886ec46": {
+        "bytes": 9854,
+        "sha256": "dfa4df05ac6929282b46ae894c428f8dba886d20f95eb17f288de5674886ec46"
+      },
+      "index.json": {
+        "bytes": 562,
+        "sha256": "743c5dfd5cae18bc6aae2a58ab7f8a1c35dbb67e9ab4829fe66fc01a92591ad8"
+      },
+      "oci-layout": {
+        "bytes": 30,
+        "sha256": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6"
+      }
+    },
+    "distinct_helper_processes": true
+  },
+  "publication": {
+    "helper_sha256": "523107c829567a6a26c8a246025719d0995475d83ccb6986bd9480bb5094f5a3",
+    "startup_index_sha256": "3796abe495fdf60f917d62bc980983c9e87917ff0da84d356831b40a221cbff4",
+    "sqlite_sha256": "918e64b1eceb543130b68d65c9c4fff8fbd82ca901c3f121d4b395cff462eed7",
+    "before_commit_keeps_previous_checkpoint": true,
+    "interrupted_call_refuses_replay": true,
+    "committed_result_redelivery_without_execution": {
+      "after_commit": true,
+      "before_ack": true
+    },
+    "csv_to_chart": true,
+    "artifact_redelivery_identical": true,
+    "seed_result_sha256": "64d897af346d1a9de1ab16b1c691a4bf158b04b2f4eafbee09e91725c8240ca6",
+    "chart_encoded_sha256": "2ac5a4e60ff089d8a256af355020344fec33485284bc853620691f4fa55d0b4c",
+    "scope": "local process crash; no power-loss or remote-recovery qualification"
+  },
+  "ownership": {
+    "helper_sha256": "523107c829567a6a26c8a246025719d0995475d83ccb6986bd9480bb5094f5a3",
+    "startup_index_sha256": "3796abe495fdf60f917d62bc980983c9e87917ff0da84d356831b40a221cbff4",
+    "controls": {
+      "owner_death": {
+        "exit_code": 74,
+        "stop_seconds": 0.008359687999984544
+      },
+      "cancel": {
+        "exit_code": 74,
+        "stop_seconds": 0.015326482000034503
+      },
+      "invalid_command": {
+        "exit_code": 75,
+        "stop_seconds": 0.015289132999953381
+      },
+      "missing_owner": {
+        "exit_code": 74
+      },
+      "invalid_header": {
+        "exit_code": 75
+      }
+    },
+    "scope": "Native process retirement through its private owner pipe; no descendant or distributed fencing qualification"
+  },
+  "git_source_sha256": {
+    "probe/main.rs": "d75e7a42dc5047144776060798060f880a2ad012c29be5808bcb89e8b004553d",
+    "probe/owner.rs": "2d84ff72b38e5403e52e7a8f9627d1bbcc5b884f1bea15c54d17f7e77e00a95c",
+    "owner_probe.py": "bff5a520a9171e0d8220ac40825486c985ec63bfb470daeb12d390c706dd2b3d",
+    "host_call.py": "2c4cc46155b336aece0b398c4dae620f5036d74456eb318efa744b66ec050cf4",
+    "host_store.py": "01287132c65267e5af3d28ce4be835f7ad0856dcf5d0f3c9b5e1843d6d587c11",
+    "host_probe.py": "c51c51d54dd5eaa3eb0184ce60835fd49e71b2717dd62d6c22aab3e52200f41a"
+  }
+}

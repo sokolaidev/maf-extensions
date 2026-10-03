@@ -18,7 +18,7 @@ Before native execution, the store records a pending call with its source hash. 
 | Same call identity with different source | Refused |
 | Missing metadata, changed profile, corrupt result or snapshot | Refused; no fallback to fresh state |
 
-The operating system releases the lock when the host process dies. An old native helper has no database access, but killing native descendants when their owner dies during execution is not yet qualified. The live fault stops occur after the helper has closed. Network access and host mounts are absent, so this test does not address externally visible guest side effects or distributed fencing.
+The operating system releases the lock when the host process dies. The native helper has no database access. The [owner-pipe continuation](OWNERSHIP.md) binds `call-owned` execution to host liveness; the publication fault stops described here occur after the helper has closed. Network access and host mounts are absent, so this test does not address externally visible guest side effects or distributed fencing.
 
 ## Native files and output findings
 
@@ -62,7 +62,7 @@ Native controls established fresh-state isolation, persistent Python objects and
 
 The first hosted run seeded and captured successfully but restore reported no available hypervisor. Replacing a one-time KVM ACL with persistent runner ownership through udev allowed the unchanged probes to pass. The [earlier local Linux attempt](linux-attempt.json) remains historical evidence of executable-format and filesystem I/O failures; it is not the current Linux result.
 
-The retained native and publication runs predate the chunk-replacement hardening. Four store regressions cover invalid compressed bytes and valid compressed data with the wrong hash in historical chunks, successful restoration after replacement, and rollback of chunk changes before publication. They do not extend the retained native runtime measurements.
+The [merged-main result](linux-main-result.json) records a successful [hosted rerun](https://github.com/sokolaidev/maf-extensions/actions/runs/37084553838) at `37187e9a92549c160e982584a2afe8c5f756786e`, including the chunk-replacement correction. It predates the owner-pipe continuation. The earlier Windows and Linux records remain tied to their original revisions. Four store regressions cover invalid compressed bytes and valid compressed data with the wrong hash in historical chunks, successful restoration after replacement, and rollback of chunk changes before publication. These corruption controls complement the merged-main runtime measurement.
 
 ## Limits and next gate
 

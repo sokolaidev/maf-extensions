@@ -67,13 +67,23 @@ def execute(helper: Path, startup: Path, work: Path, code: bytes) -> bytes:
     env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
     env.update({key: str(work) for key in ("HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR")})
     with subprocess.Popen(
-        [str(helper), "call", str(startup), str(work / "candidate"), str(request), str(report)],
+        [
+            str(helper),
+            "call-owned",
+            str(startup),
+            str(work / "candidate"),
+            str(request),
+            str(report),
+        ],
         env=env,
         cwd=work,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as child:
+        assert child.stdin is not None
+        child.stdin.write(b"MXCOWN1\n")
+        child.stdin.flush()
         outputs = [bytearray(), bytearray()]
         overflow = threading.Event()
 

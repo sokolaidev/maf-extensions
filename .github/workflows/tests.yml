@@ -292,6 +292,7 @@ jobs:
           git -C "$RUNNER_TEMP/mxc/source" checkout 86fb3d2abaf9c431556692037bff881830b543a5
           python3 scripts/experiments/mxc_session_patch/patch.py apply --source "$RUNNER_TEMP/mxc/source"
           python3 scripts/experiments/mxc_session_patch/patch.py configure --source "$RUNNER_TEMP/mxc/source" --build-dir "$RUNNER_TEMP/mxc/build"
+          cargo +1.98.0 test --locked --manifest-path "$RUNNER_TEMP/mxc/build/Cargo.toml"
           cargo +1.98.0 build --locked --manifest-path "$RUNNER_TEMP/mxc/build/Cargo.toml"
           "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --help
 
@@ -310,6 +311,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/experiments/mxc_session_patch/host_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/publication"
+
+      - name: Native owner death and cancellation
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: python3 scripts/experiments/mxc_session_patch/owner_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/ownership"
 
       - name: Verify both reports and record artifact identity
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
@@ -330,14 +335,16 @@ jobs:
           assert publication["interrupted_call_refuses_replay"]
           assert publication["committed_result_redelivery_without_execution"] == {"after_commit": True, "before_ack": True}
           assert publication["csv_to_chart"] and publication["artifact_redelivery_identical"]
-          assert native["helper_sha256"] == publication["helper_sha256"]
+          ownership = json.loads((root / "ownership/result.json").read_text())
+          assert {key: value["exit_code"] for key, value in ownership["controls"].items()} == {"owner_death": 74, "cancel": 74, "invalid_command": 75, "missing_owner": 74, "invalid_header": 75}
+          assert native["helper_sha256"] == publication["helper_sha256"] == ownership["helper_sha256"]
           record = {
               "source_commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "kernel": platform.release(),
               "architecture": platform.machine(), "host_python": platform.python_version(),
               "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
               "patch_sha256": hashlib.sha256(Path("scripts/experiments/mxc_session_patch/session-preview.patch").read_bytes()).hexdigest(),
-              "helper_sha256": native["helper_sha256"], "native_passed": True, "publication_passed": True,
+              "helper_sha256": native["helper_sha256"], "native_passed": True, "publication_passed": True, "ownership_passed": True,
           }
           (root / "identity.json").write_text(json.dumps(record, indent=2) + "\n")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
@@ -363,6 +370,9 @@ jobs:
             ${{ runner.temp }}/mxc/native/*.stderr
             ${{ runner.temp }}/mxc/publication/*.json
             ${{ runner.temp }}/mxc/publication/*.log
+            ${{ runner.temp }}/mxc/ownership/*.json
+            ${{ runner.temp }}/mxc/ownership/*.stdout
+            ${{ runner.temp }}/mxc/ownership/*.stderr
           if-no-files-found: error
           retention-days: 14
 

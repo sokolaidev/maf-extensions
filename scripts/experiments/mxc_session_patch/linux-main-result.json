@@ -1,0 +1,91 @@
+{
+  "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37084553838",
+  "identity": {
+    "source_commit": "37187e9a92549c160e982584a2afe8c5f756786e",
+    "run_id": "37084553838",
+    "run_attempt": "1",
+    "kernel": "6.17.0-1022-azure",
+    "architecture": "x86_64",
+    "host_python": "3.12.3",
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+    "helper_sha256": "e96a2356b8e9b44da66ad82d8e671596436a698163aaccdf6a5936d5c71a0699",
+    "native_passed": true,
+    "publication_passed": true
+  },
+  "native": {
+    "refusals": {
+      "truncated_index": 1,
+      "missing_blobs": 1,
+      "incompatible_key": 1
+    },
+    "helper_sha256": "e96a2356b8e9b44da66ad82d8e671596436a698163aaccdf6a5936d5c71a0699",
+    "initrd_sha256": "8a9b9e383510dea8bb58b3aca72ac4a8d141f163f6a2fdc68af54197c5922e7e",
+    "seed": {
+      "commit_barrier": true,
+      "continuity": true,
+      "fresh_control": true,
+      "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+      "phase": "seed",
+      "post_snapshot_mutation": true,
+      "provider": "mxc-session-preview",
+      "snapshot_saved": true,
+      "stale_token_refused": true
+    },
+    "restore": {
+      "close_refused_execution": true,
+      "failed_capture_retired": true,
+      "guest_failure_retired": true,
+      "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+      "phase": "restore",
+      "provider": "mxc-session-preview",
+      "restored_state_verified": true,
+      "timeout_retired": true
+    },
+    "seed_killed_after_save": true,
+    "snapshot_unchanged_after_restore": true,
+    "snapshot_artifacts": {
+      "blobs/sha256/55d89b61dd6970f3c7f9deff34eb3d98388d5687c1034d1607892ee008c0994b": {
+        "bytes": 9827,
+        "sha256": "55d89b61dd6970f3c7f9deff34eb3d98388d5687c1034d1607892ee008c0994b"
+      },
+      "blobs/sha256/6b9ccc8fc79058f9f803d74fec3e11413eef2f9584090444691c63134a28445f": {
+        "bytes": 916008960,
+        "sha256": "6b9ccc8fc79058f9f803d74fec3e11413eef2f9584090444691c63134a28445f"
+      },
+      "blobs/sha256/e69f15be6083e2a7fe7e8201921e562f30c33c7aafae6efc7511e5bbf43b49a8": {
+        "bytes": 567,
+        "sha256": "e69f15be6083e2a7fe7e8201921e562f30c33c7aafae6efc7511e5bbf43b49a8"
+      },
+      "index.json": {
+        "bytes": 562,
+        "sha256": "dcc69a994c3bed383472209623c6391beb9ded92b2b1ecbb0ec8fded8fb7f738"
+      },
+      "oci-layout": {
+        "bytes": 30,
+        "sha256": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6"
+      }
+    },
+    "distinct_helper_processes": true
+  },
+  "publication": {
+    "helper_sha256": "e96a2356b8e9b44da66ad82d8e671596436a698163aaccdf6a5936d5c71a0699",
+    "startup_index_sha256": "fe6cb74ca6b1b143d402b682fb88e63f46f2ce9fe06e2e54484f3e0202e970de",
+    "sqlite_sha256": "517e05c16d39e19ff1391d09af415bba1bcebf19935c66a08049f6e8613f86ac",
+    "before_commit_keeps_previous_checkpoint": true,
+    "interrupted_call_refuses_replay": true,
+    "committed_result_redelivery_without_execution": {
+      "after_commit": true,
+      "before_ack": true
+    },
+    "csv_to_chart": true,
+    "artifact_redelivery_identical": true,
+    "seed_result_sha256": "64d897af346d1a9de1ab16b1c691a4bf158b04b2f4eafbee09e91725c8240ca6",
+    "chart_encoded_sha256": "2ac5a4e60ff089d8a256af355020344fec33485284bc853620691f4fa55d0b4c",
+    "scope": "local process crash; no power-loss or remote-recovery qualification"
+  },
+  "scope": "Merged-main checkpoint/result publication including the chunk-reuse correction; owner-pipe continuation not present in this run",
+  "artifact_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37084553838/artifacts/11260582425",
+  "artifact_sha256": "7c51b63e301a2fbb36e6b139b3b8af05657158cabba831bb32c287884bb8c2fc",
+  "artifact_retention_days": 14
+}
