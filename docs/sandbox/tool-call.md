@@ -68,11 +68,11 @@ A call that requests no path has no directory to reclaim. A synchronous body can
 
 ## Unfamiliar instances
 
-The router does not trust an instance it has not previously served. Before using an unfamiliar conversation instance, it resets it if a snapshot is available. Otherwise it disposes it and acquires a fresh instance once.
+Before using an unfamiliar conversation instance, the router checks the optional `freshly_created` attribute on the acquired wrapper. Literal `True` promises that this acquire created the instance from a trusted pre-input baseline, so the router remembers it without adoption cleanup. Otherwise it resets the instance if a snapshot is available, or disposes it and acquires a fresh instance once.
 
 A failed reset falls back to disposal. Both operations are bounded by the cleanup timeout. First acquisitions for a key and kind are coordinated so concurrent callers do not each adopt the same instance.
 
-The protocol has no create-or-reuse result flag. A new conversation can therefore pay for an initial create, disposal and second create. The second acquire is trusted because disposal succeeded. Call-scoped instances skip this adoption step.
+ACAS reports freshness on a separate wrapper for each acquire; registry reuse reports `False`. Backend authors must also report `False` for restart discovery or clones containing prior input, and later acquires must not change earlier wrappers' values. `assert_fresh_acquire_conformance` checks the fresh-to-resumed transition directly through the backend. The attribute is optional, so existing backends keep adoption cleanup. Without the signal, conversation instances on a backend without snapshots pay for an initial create, disposal and second create on every call under `Cleanup.DISPOSE`, because disposal forgets the instance. The second acquire is trusted because disposal succeeded. Call-scoped instances skip this adoption step.
 
 ## Cleanup failures
 

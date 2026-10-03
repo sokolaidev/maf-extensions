@@ -35,6 +35,7 @@ from maf_sandbox import (
     SandboxSpec,
     ScopePurge,
 )
+from maf_sandbox.conformance import assert_fresh_acquire_conformance
 
 from maf_sandbox_acas import (
     BACKEND_NAME,
@@ -94,6 +95,69 @@ def test_acquire_creates_and_repairs_the_base_as_the_guest():
         await backend.acquire(key, spec)
         assert client.created_directories == []
         assert client.dir_creations == [(base, "/"), (base, "/")]
+
+    asyncio.run(scenario())
+
+
+def test_freshness_is_local_to_each_acquire_wrapper():
+    async def scenario():
+        client = _ListedGuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey("fresh", "thread", "agent")
+        spec = _spec_requiring(Capability.EXEC)
+        first = await backend.acquire(key, spec)
+        await assert_fresh_acquire_conformance(first, lambda: backend.acquire(key, spec))
+        assert client.create_calls == 1
+        assert not client.deleted
+        client.files[first.instance_id]["/tmp/residue"] = b"old input"
+        adopted = await SandboxRouter([backend]).acquire(key, spec)
+        assert adopted.instance_id != first.instance_id
+        assert getattr(adopted, "freshly_created") is True
+        assert client.deleted == [first.instance_id]
+        assert client.create_calls == 2
+
+    asyncio.run(scenario())
+
+
+def test_router_dispose_calls_create_and_delete_only_once_each():
+    async def scenario():
+        client = _ListedGuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        current = SandboxRouter([backend])
+        key = SandboxKey("fresh", "thread", "agent")
+        spec = _spec_requiring(Capability.EXEC)
+        for call in range(3):
+            sandbox = await current.acquire(key, spec)
+            assert getattr(sandbox, "freshly_created") is True
+            assert client.create_calls == call + 1
+            assert len(client.deleted) == call
+            assert await current.dispose_kind(
+                key, spec.kind, instance_id=sandbox.instance_id, timeout=10
+            )
+        assert len(client.deleted) == 3
+
+    asyncio.run(scenario())
+
+
+def test_replacement_after_failed_resume_reports_fresh(monkeypatch):
+    async def resume(client, timeout=None):
+        if client.sandbox_id == "sbx-1":
+            raise RuntimeError("instance no longer exists")
+
+    monkeypatch.setattr(_GuestSandboxClient, "ensure_running", resume)
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey("fresh", "thread", "agent")
+        spec = _spec_requiring(Capability.EXEC)
+        first = await backend.acquire(key, spec)
+        replacement = await SandboxRouter([backend]).acquire(key, spec)
+        assert replacement.instance_id != first.instance_id
+        assert getattr(replacement, "freshly_created") is True
+        assert client.create_calls == 2
+        assert not client.deleted
+        await assert_fresh_acquire_conformance(replacement, lambda: backend.acquire(key, spec))
 
     asyncio.run(scenario())
 
@@ -1114,6 +1178,30 @@ class _GuestGroupClient:
     def probes(self) -> list[tuple[str, str]]:
         """Every command every sandbox this client handed out was asked to run."""
         return [ran for client in self.clients for ran in client.execs]
+
+
+class _ListedGuestGroupClient(_GuestGroupClient):
+    def __init__(self, answer):
+        super().__init__(answer)
+        self.labels = {}
+
+    async def begin_create_sandbox(self, *, labels, egress_policy, **source):
+        poller = await super().begin_create_sandbox(
+            labels=labels, egress_policy=egress_policy, **source
+        )
+        created = await poller.result()
+        self.labels[created.sandbox_id] = labels
+        return poller
+
+    def list_sandboxes(self, *, labels=None):
+        return _FakePager(
+            [
+                SimpleNamespace(id=identity, labels=owned)
+                for identity, owned in self.labels.items()
+                if identity not in self.deleted
+                and all(owned.get(name) == value for name, value in (labels or {}).items())
+            ]
+        )
 
 
 def _guest_removing(allowed: bool) -> _GuestAnswer:
@@ -4408,6 +4496,8 @@ class TestConcurrentAcquire:
         assert client.peak_creates == 1
         assert first.sandbox_id == second.sandbox_id == "sbx-1"
         assert first.instance_id == second.instance_id == "sbx-1"
+        assert first.freshly_created is True
+        assert second.freshly_created is False
         assert backend._registry == {
             ("scope-a", "thread-1", "devops-engineer", "", "bicep"): _Held(
                 "sbx-1",

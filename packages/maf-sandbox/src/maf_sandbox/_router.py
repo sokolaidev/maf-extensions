@@ -2048,6 +2048,11 @@ class SandboxRouter:
         with self._seen_guard:
             if sandbox.instance_id in self._seen.get(at, set()):
                 return sandbox
+        if getattr(sandbox, "freshly_created", False) is True:
+            self._remember_instance(
+                key, spec.kind, backend, sandbox, execution_contract=spec.execution_contract
+            )
+            return sandbox
         bound = self._reclaim.timeout
         instance_id = sandbox.instance_id
         if snapshot:

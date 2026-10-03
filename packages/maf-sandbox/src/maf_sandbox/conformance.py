@@ -116,6 +116,7 @@ __all__ = [
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
+    "assert_fresh_acquire_conformance",
     "assert_instance_disposal_conformance",
     "assert_nothing_left_behind",
     "assert_reach_conformance",
@@ -232,6 +233,22 @@ async def assert_storage_base_conformance(
         await sandbox.reclaim(child, working_directory=".", timeout=60)
         if Capability.FILES_OUT in capabilities:
             assert await sandbox.stat_file(child, working_directory=".") is None
+
+
+async def assert_fresh_acquire_conformance(
+    sandbox: Sandbox, reacquire: Callable[[], Awaitable[Sandbox]]
+) -> None:
+    """Check a fresh wrapper and a subsequent acquire that must resume its live instance.
+
+    Supply a known newly created instance and reacquire it directly through the backend,
+    without router cleanup. The caller owns disposal, including when this probe fails.
+    """
+    identity = sandbox.instance_id
+    assert getattr(sandbox, "freshly_created", None) is True, "new instance did not report fresh"
+    resumed = await reacquire()
+    assert resumed.instance_id == identity, "reacquire did not resume the live instance"
+    assert getattr(resumed, "freshly_created", None) is False, "resumed instance reported fresh"
+    assert getattr(sandbox, "freshly_created", None) is True, "reacquire changed the first wrapper"
 
 
 async def assert_instance_disposal_conformance(

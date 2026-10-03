@@ -610,7 +610,9 @@ class _AcasSandbox:
         exec_output_limit: int = 1 << 20,
         pool: ClientPool | None = None,
         binding: AcasCredentialBinding | None = None,
+        freshly_created: bool = False,
     ) -> None:
+        self._freshly_created = freshly_created
         self._sandbox_id: str = sandbox_client.sandbox_id if pool is not None else ""
         self._direct_client: Any = sandbox_client if pool is None else None
         self._pool = pool
@@ -628,6 +630,11 @@ class _AcasSandbox:
     @property
     def instance_id(self) -> str:
         return self.sandbox_id
+
+    @property
+    def freshly_created(self) -> bool:
+        """Whether this acquire created the instance before any call input."""
+        return self._freshly_created
 
     @property
     def _sc(self) -> Any:
@@ -1651,6 +1658,7 @@ class AcasSandboxBackend:
             exec_output_limit=self._config.exec_output_limit_bytes,
             pool=self._client_pool,
             binding=binding,
+            freshly_created=True,
         )
         acquisition.enter_context(created.borrow_client(sc))
         try:
