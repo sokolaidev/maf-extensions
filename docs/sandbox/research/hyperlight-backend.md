@@ -2,7 +2,7 @@
 
 > Consolidated research record, 2026-08-16 through 2026-09-23. It combines the Hyperlight backend design, source exploration, filesystem prerequisite and cleanup audit, Azure Container Apps feasibility audit and live ACA probe, and the AKS upstream audit and measurements. The runtime backend is implemented for its validated family; flat output collection is now opt-in; writable inputs and native host tools remain separate follow-up work. The decided contract lives in the [Hyperlight backend guide](../backends/hyperlight.md).
 
-> The [2026-10-02 host-tool channel proposal](#host-tool-channel-design-2026-10-02) adds the source audit, agreed architectural choices and remaining prototype questions for #369. Its decided target contract lives in [Host responsibilities](../hosts.md#backend-owned-channels-and-automatic-selection); the channel interface and native implementation have not shipped.
+> The [2026-10-02 host-tool channel proposal](#host-tool-channel-design-2026-10-02) adds the source audit, agreed architectural choices and remaining prototype questions for #369. Its decided target contract lives in [Host responsibilities](../hosts.md#backend-owned-channels-and-automatic-selection); the core/exec interface is now implemented in [program channels](../program-channels.md); native integration remains pending.
 
 ## Decision and scope
 
@@ -505,3 +505,11 @@ sudo env MAF_HYPERLIGHT_HTTPS_LIVE=1 MAF_HYPERLIGHT_CLOUDFLARED="$CLOUDFLARED" p
 ```
 
 The Tests workflow exposes the same Linux run through its `hyperlight_https` dispatch input, disabled by default. Its download is pinned and verified, and the test prints `HTTPS_METHOD_EVIDENCE` with platform, dependency versions, matrix counts, body observations and completed cleanup. Both opt-ins are required for the HTTPS test; the existing offline and loopback HTTP suites retain their original behavior.
+
+## Core/exec migration and native publication check, 2026-10-02
+
+The first implementation, [#1664](https://github.com/sokolaidev/maf-extensions/pull/1664), defines `ProgramRequirements`, `ProgramChannel`, the live `HostToolPolicy` and explicit initial-acquisition `SandboxBackendUnavailable`. CodeAct delegates automatic execution to the retained backend channel; Docker, ACAS and Docker Sandboxes declare the exec host-tool channel, and WSLC declares its program-only variant. Program budgets are independent of shared files. `HostToolRun.call` requires trusted publication before confirmed delivery accounting. The [migration guide](../program-channels.md) describes the implemented interface and its limits.
+
+A local Docker `python:3.13-slim` conformance run verified the portable profile, two fresh policy runs on one guest, shared API values/refusals, confirmed response-file publication and revoked completed authority. This is Docker channel evidence, not qualification of ACAS, WSLC or Docker Sandboxes infrastructure.
+
+The pinned 0.7.0 Hyperlight stack was rerun locally on Windows/WHP for `shared-api`, `callback-timeout` and `handoff-failure`. All three matched the harness expectations and workers were reaped. Prepared native replies now remain reserved until teardown, which records `delivery_uncertain` and zero confirmed bytes because the SDK provides no post-serialization acceptance hook. This replaces the harness's earlier accounting assumption, not the historical boundary observations above. No production native channel or full native conformance is claimed. Native acceptance and oversized-request containment remain prerequisites for the second implementation PR and for closing #369.

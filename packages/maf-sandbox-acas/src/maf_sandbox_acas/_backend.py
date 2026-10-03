@@ -38,6 +38,7 @@ from maf_sandbox import (
     Egress,
     EgressRule,
     EntryKind,
+    ExecProgramChannel,
     ExecResult,
     IdentityScope,
     Isolation,
@@ -357,6 +358,7 @@ _EgressKey = tuple[Egress, frozenset[tuple[str, frozenset[str] | None]]]
 # read can follow a replaced final file or parent, stat a parent, and list either. The removal
 # probe is not a read-authority bound. Atomic confinement needs microsoft/azure-container-apps#1831.
 _DECLARATIONS = BackendDeclarations(
+    program_channels=(ExecProgramChannel(),),
     capabilities=frozenset(
         {
             Capability.EXEC,

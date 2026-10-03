@@ -42,7 +42,6 @@ from ._effective_state import (
     note_effective_state,
 )
 from ._error_detail import error_detail
-from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
     DisposalReport,
     EgressObserved,
@@ -77,8 +76,10 @@ from ._protocol import (
     Isolation,
     IsolationScope,
     OsFamily,
+    ProgramChannel,
     Sandbox,
     SandboxBackend,
+    SandboxBackendUnavailable,
     SandboxKey,
     SandboxLimits,
     SandboxSpec,
@@ -546,6 +547,9 @@ class CallAdmission:
     backend: SandboxBackend
     rung: Cleanup
     served: bool = False
+    channel: ProgramChannel | None = None
+    owner: str = ""
+    timeout: float = QUEUED_CALL_TIMEOUT
 
 
 @dataclasses.dataclass
@@ -553,6 +557,15 @@ class _Serving:
     """Which backend an in-flight acquire chose, for the record that covers every way out."""
 
     backend: SandboxBackend | None = None
+    channel: ProgramChannel | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _ProgramPin:
+    spec: SandboxSpec
+    backend: SandboxBackend
+    channel: ProgramChannel
+    instance_id: str
 
 
 def _recorded_name(backend: SandboxBackend) -> str:
@@ -778,11 +791,19 @@ class SandboxRouter:
         max_identity_scope: IdentityScope = IdentityScope.NONE,
         selected: str | None = None,
         selection: Selection = Selection.FIXED,
+        program_channel_preference: Sequence[str] = ("exec", "runtime"),
         denied_capabilities: Iterable[Capability] = (),
         denied_identities: Iterable[Identity] = (),
         reclaim: ReclaimConfig = DEFAULT_RECLAIM_CONFIG,
         observer: SandboxObserver | None = None,
     ) -> None:
+        self._channel_preference = tuple(program_channel_preference)
+        if (
+            set(self._channel_preference) != {"exec", "runtime"}
+            or len(self._channel_preference) != 2
+        ):
+            raise ValueError("program_channel_preference must order exec and runtime")
+        self._program_pins: dict[tuple[SandboxKey, str], list[_ProgramPin]] = {}
         self._backends = list(backends)
         self._observer = (
             None if observer is None else refuse_an_unusable_observer(observer, argument="observer")
@@ -1152,6 +1173,54 @@ class SandboxRouter:
             raise self._nothing_can_serve(spec, passed_over)
         return served
 
+    def _channel(self, backend: SandboxBackend, spec: SandboxSpec) -> ProgramChannel | None:
+        needs_host_tools = spec.host_tools is not None or Capability.HOST_TOOLS in spec.requires
+        if spec.program is None:
+            if needs_host_tools:
+                raise SandboxCapabilityNotSupported("host tools require a declared program channel")
+            return None
+        declarations = _declarations(backend)
+        ceiling = _declared_limits(backend, declarations)
+        first: ProgramChannel | None = None
+        for mode in self._channel_preference:
+            for channel in declarations.program_channels:
+                required = channel.required_capabilities(spec)
+                if (
+                    channel.mode == mode
+                    and spec.program.profile in channel.profiles
+                    and (not needs_host_tools or channel.host_tools)
+                    and required <= declarations.capabilities
+                    and not required.intersection(self._denied_capabilities)
+                ):
+                    first = first or channel
+                    try:
+                        transfers = channel.transfer_limits(spec)
+                    except SandboxTransferLimitsNotPermitted:
+                        continue
+                    if transfers.files_in.within(ceiling.files_in) and transfers.files_out.within(
+                        ceiling.files_out
+                    ):
+                        return channel
+        if first is not None:
+            return first
+        raise SandboxCapabilityNotSupported(
+            f"backend {backend.name!r} has no compatible {spec.program.profile!r} program channel"
+        )
+
+    def _program_candidates(self, spec: SandboxSpec) -> list[SandboxBackend]:
+        candidates = list(self._candidates)
+        if spec.program is not None:
+
+            def rank(backend: SandboxBackend) -> int:
+                try:
+                    channel = self._channel(backend, spec)
+                except SandboxCapabilityNotSupported:
+                    return len(self._channel_preference)
+                return self._channel_preference.index(channel.mode) if channel is not None else 0
+
+            candidates.sort(key=rank)
+        return candidates
+
     def _route(
         self, spec: SandboxSpec
     ) -> tuple[SandboxBackend | None, list[tuple[SandboxBackend, Exception]]]:
@@ -1161,7 +1230,7 @@ class SandboxRouter:
         An admitted call retains its chosen backend through cleanup.
         """
         passed_over: list[tuple[SandboxBackend, Exception]] = []
-        for backend in self._candidates:
+        for backend in self._program_candidates(spec):
             refusal = self._refusal_serving(backend, spec)
             if refusal is None:
                 return backend, passed_over
@@ -1239,7 +1308,11 @@ class SandboxRouter:
             )
 
     def _refuse_unless_this_backend_can_serve(
-        self, backend: SandboxBackend, spec: SandboxSpec
+        self,
+        backend: SandboxBackend,
+        spec: SandboxSpec,
+        *,
+        program_channel: ProgramChannel | None = None,
     ) -> None:
         """Raise unless ``backend`` may serve ``spec``: floor, capabilities, guest shape,
         limits, egress, scope, attached authority.
@@ -1341,15 +1414,29 @@ class SandboxRouter:
 
         limits = _declared_limits(backend, declarations)
         asked_in, asked_out = spec.files_in, spec.files_out
-        if spec.host_tools is not None:
-            # The transport moves its own files, bounded by the registry rather than by what the
-            # workload declared. Fold that worst case in transiently, so a backend that cannot
-            # serve it is refused here rather than overrun mid-run. The spec's stored caps stay
-            # untouched: the kind's runtime tally enforces against those, and folding the stored
-            # values would double-count the transport against the workload's own budget.
-            folded = fold_host_tool_call_transfer_limits(
-                spec.files_in, spec.files_out, spec.host_tools
+        channel = program_channel or self._channel(backend, spec)
+        if channel is not None:
+            if (
+                spec.program is None
+                or spec.program.profile not in channel.profiles
+                or (
+                    (spec.host_tools is not None or Capability.HOST_TOOLS in spec.requires)
+                    and not channel.host_tools
+                )
+                or not channel.required_capabilities(spec) <= capabilities
+                or channel.required_capabilities(spec) & self._denied_capabilities
+            ):
+                raise SandboxCapabilityNotSupported(
+                    "the pinned program channel cannot serve this workload"
+                )
+        if Capability.HOST_TOOLS in declarations.capabilities and not any(
+            one.host_tools for one in declarations.program_channels
+        ):
+            raise SandboxCapabilityNotSupported(
+                "HOST_TOOLS requires an explicit backend-owned channel"
             )
+        if channel is not None:
+            folded = channel.transfer_limits(spec)
             asked_in, asked_out = folded.files_in, folded.files_out
         for direction, asked, declared, ceiling in (
             (Capability.FILES_IN, asked_in, spec.files_in, limits.files_in),
@@ -1360,9 +1447,10 @@ class SandboxRouter:
                 # have been served. A workload already over the ceiling on its own must not be
                 # pointed at the transport, however much the fold also raised.
                 folded_note = (
-                    " (folded to include the wired host tools' call transport, so above the "
+                    " (folded to include the selected program channel's traffic, so above the "
                     "workload's own declaration)"
                     if declared.within(ceiling)
+                    or (channel is not None and direction not in spec.requires)
                     else ""
                 )
                 raise SandboxTransferLimitsNotPermitted(
@@ -1458,6 +1546,21 @@ class SandboxRouter:
         if spec.identities & self._denied_identities:
             return None
         return self._route(spec)[0]
+
+    def prospective_program_channel(
+        self, key: SandboxKey, spec: SandboxSpec
+    ) -> ProgramChannel | None:
+        """Preview the retained or initially selected channel without acquiring a sandbox.
+
+        Availability fallback or disposal may change the channel during acquisition.
+        """
+        if spec.program is None:
+            return None
+        pinned = self._program_pin(key, spec)
+        if pinned is not None:
+            return pinned.channel
+        backend = self.backend_for(spec)
+        return self._channel(backend, spec) if backend is not None else None
 
     def _record_disposal(
         self,
@@ -1685,6 +1788,7 @@ class SandboxRouter:
                 backend=(None if serving.backend is None else _recorded_name(serving.backend)),
                 isolation=isolation,
                 declarations=declarations,
+                program_channel=serving.channel.name if serving.channel is not None else None,
                 seconds=time.monotonic() - started,
                 refusal=refusal,
                 call=recorded_call(),
@@ -1708,6 +1812,26 @@ class SandboxRouter:
             return await self._acquire_and_adopt(key, spec, serving, admission)
         finally:
             self._adoptions.release(key, spec.kind, owner=owner)
+
+    def _program_pin(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        *,
+        backend: SandboxBackend | None = None,
+        instance_id: str | None = None,
+    ) -> _ProgramPin | None:
+        if spec.program is None:
+            return None
+        with self._seen_guard:
+            for pin in self._program_pins.get((key, spec.kind), ()):
+                if (
+                    pin.spec == spec
+                    if backend is None
+                    else pin.backend is backend and pin.instance_id == instance_id
+                ):
+                    return pin
+        return None
 
     async def _acquire_and_adopt(
         self,
@@ -1737,11 +1861,18 @@ class SandboxRouter:
                 code=reported.code if reported is not None else None,
             )
         if admission is None:
-            served = self._refuse_unless_backend_can_serve(spec)
+            pinned = self._program_pin(key, spec)
+            served = pinned.backend if pinned else self._refuse_unless_backend_can_serve(spec)
+            self._refuse_host_denials(spec)
+            self._refuse_unless_this_backend_can_serve(
+                served, spec, program_channel=pinned.channel if pinned else None
+            )
         else:
             served = admission.backend
             self._refuse_host_denials(spec)
-            self._refuse_unless_this_backend_can_serve(served, spec)
+            self._refuse_unless_this_backend_can_serve(
+                served, spec, program_channel=admission.channel
+            )
         serving.backend = served
         scope = self.effective_isolation_scope(spec)
         if scope is IsolationScope.CALL and not key.call_id:
@@ -1761,10 +1892,70 @@ class SandboxRouter:
                 "shared sandbox at the end of one call. Drop the call id, or raise the "
                 "workload's isolation_scope."
             )
+        pinned = self._program_pin(key, spec)
+        if pinned is not None and pinned.backend is not served:
+            raise ValueError("the sandbox is pinned to another program backend")
+        channel = (
+            pinned.channel
+            if pinned
+            else (admission.channel if admission else self._channel(served, spec))
+        )
+        serving.channel = channel
+        candidates = [served]
+        if spec.program is not None and pinned is None and not (admission and admission.served):
+            candidates += [
+                one
+                for one in self._program_candidates(spec)
+                if one is not served and self._refusal_serving(one, spec) is None
+            ]
+        for index, candidate in enumerate(candidates):
+            if index:
+                if admission is not None:
+                    with self._backend_admissions_guard:
+                        previous = self._backend_admissions.pop(
+                            (key, spec.kind, admission.owner), None
+                        )
+                    if previous is not None:
+                        await previous[0].__aexit__(None, None, None)
+                    if isinstance(candidate, BackendCallAdmission):
+                        hold = candidate.call_admission(
+                            key, spec, owner=admission.owner, timeout=admission.timeout
+                        )
+                        authority = await hold.__aenter__()
+                        with self._backend_admissions_guard:
+                            self._backend_admissions[key, spec.kind, admission.owner] = (
+                                hold,
+                                authority,
+                            )
+                    admission.backend = candidate
+                    admission.rung = self._cleanup_on(candidate, spec)
+                    admission.channel = self._channel(candidate, spec)
+                served = candidate
+                channel = self._channel(candidate, spec)
+                serving.backend = served
+                serving.channel = channel
+            snapshot = Capability.SNAPSHOT in _declarations(served).capabilities
+            if admission is not None:
+                admission.served = True
+            try:
+                backend_spec = (
+                    dataclasses.replace(
+                        spec, requires=spec.requires | channel.required_capabilities(spec)
+                    )
+                    if channel is not None
+                    else spec
+                )
+                sandbox = await served.acquire(key, backend_spec)
+                break
+            except SandboxBackendUnavailable:
+                if admission is not None:
+                    admission.served = False
+                if index + 1 == len(candidates):
+                    raise
+        else:
+            raise SandboxBackendUnavailable("no program backend is available")
         if admission is not None:
             admission.served = True
-        snapshot = Capability.SNAPSHOT in _declarations(served).capabilities
-        sandbox = await served.acquire(key, spec)
         if self._unclean_state(key)[0]:
             # Read again after the create: the check above is only as fresh as the moment
             # before the await, and a disposal that begins during it closes the key without
@@ -1787,11 +1978,44 @@ class SandboxRouter:
             raise
         self._check_execution_contract(key, spec, served, sandbox)
         if scope is not IsolationScope.CALL:
-            sandbox = await self._adopt(key, spec, served, sandbox, snapshot=snapshot)
+            sandbox = await self._adopt(key, backend_spec, served, sandbox, snapshot=snapshot)
         else:
             self._remember_instance(
                 key, spec.kind, served, sandbox, execution_contract=spec.execution_contract
             )
+        if spec.program is not None:
+            reused = self._program_pin(key, spec, backend=served, instance_id=sandbox.instance_id)
+            channel = reused.channel if reused is not None else self._channel(served, spec)
+            self._refuse_unless_this_backend_can_serve(served, spec, program_channel=channel)
+            serving.channel = channel
+            if admission is not None:
+                admission.channel = channel
+        if channel is not None and spec.program is not None:
+            try:
+                await channel.prepare(sandbox, spec.program)
+            except BaseException:
+                await self._dispose_the_kind(
+                    key,
+                    spec,
+                    served,
+                    "the execution profile could not be verified",
+                    self._reclaim.timeout,
+                    instance_id=sandbox.instance_id,
+                )
+                raise
+            if self._unclean_state(key)[0]:
+                raise SandboxUnclean("the sandbox was closed while verifying its execution profile")
+            with self._seen_guard:
+                retained = self._served.get((key, spec.kind, id(served)))
+                if retained is None or sandbox.instance_id not in retained[1]:
+                    raise SandboxUnclean("the sandbox was disposed during profile verification")
+                pins = self._program_pins.setdefault((key, spec.kind), [])
+                pins[:] = [pin for pin in pins if pin.spec != spec]
+                pins.append(
+                    _ProgramPin(
+                        _with_snapshotted_labels(spec), served, channel, sandbox.instance_id
+                    )
+                )
         return sandbox
 
     def _check_execution_contract(
@@ -1910,6 +2134,13 @@ class SandboxRouter:
             served = self._served.setdefault((key, kind, id(backend)), (backend, set()))[1]
             if previous is not None:
                 served.discard(previous)
+                pins = self._program_pins.get((key, kind), [])
+                pins[:] = [
+                    dataclasses.replace(pin, instance_id=sandbox.instance_id)
+                    if pin.backend is backend and pin.instance_id == previous
+                    else pin
+                    for pin in pins
+                ]
             served.add(sandbox.instance_id)
 
     def _forget_instances(
@@ -1953,6 +2184,17 @@ class SandboxRouter:
                             if not served[1]:
                                 self._served.pop(at, None)
 
+            for entry, pins in list(self._program_pins.items()):
+                retained = self._served.get((entry[0], entry[1], id(backend)))
+                pins[:] = [
+                    pin
+                    for pin in pins
+                    if pin.backend is not backend
+                    or (retained is not None and pin.instance_id in retained[1])
+                ]
+                if not pins:
+                    self._program_pins.pop(entry, None)
+
     async def enter_call(
         self,
         key: SandboxKey,
@@ -1970,13 +2212,15 @@ class SandboxRouter:
         whatever ``exclusive`` says, as is a backend requiring exclusive admission or
         implementing ``BackendCallAdmission``.
         ``timeout`` bounds the local wait per call ahead and is passed to backend admission."""
-        backend = self._refuse_unless_backend_can_serve(spec)
+        pinned = self._program_pin(key, spec)
+        backend = pinned.backend if pinned else self._refuse_unless_backend_can_serve(spec)
         await self._slots.take(
             key,
             spec.kind,
             owner=owner,
             exclusive=(
                 exclusive
+                or spec.program is not None
                 or spec.exclusive_admission
                 or _declarations(backend).requires_exclusive_admission
                 or isinstance(backend, BackendCallAdmission)
@@ -1984,14 +2228,27 @@ class SandboxRouter:
             timeout=timeout,
         )
         try:
+            pinned = self._program_pin(key, spec)
+            if pinned is not None:
+                backend = pinned.backend
+            elif spec.program is not None:
+                backend = self._refuse_unless_backend_can_serve(spec)
             self._refuse_host_denials(spec)
-            self._refuse_unless_this_backend_can_serve(backend, spec)
+            self._refuse_unless_this_backend_can_serve(
+                backend, spec, program_channel=pinned.channel if pinned else None
+            )
             if isinstance(backend, BackendCallAdmission):
                 scope = backend.call_admission(key, spec, owner=owner, timeout=timeout)
                 cleanup_authority = await scope.__aenter__()
                 with self._backend_admissions_guard:
                     self._backend_admissions[key, spec.kind, owner] = scope, cleanup_authority
-            return CallAdmission(backend, self._cleanup_on(backend, spec))
+            return CallAdmission(
+                backend,
+                self._cleanup_on(backend, spec),
+                channel=pinned.channel if pinned else self._channel(backend, spec),
+                owner=owner,
+                timeout=timeout,
+            )
         except BaseException:
             await self.release_call(key, spec.kind, owner=owner)
             raise
@@ -2390,9 +2647,9 @@ class SandboxRouter:
         call's own cleanup and the separation the workload asked for.
 
         Framework cleanup supplies the retained admission to reach the serving backend without
-        reading its declarations again. Direct callers route by ``spec``; without one, a
-        per-spec router asks only backends declaring CALL scope, since deleting through a
-        conversation-scoped backend could remove a sandbox this call never owned.
+        reading its declarations again. Direct callers use the retained program backend or
+        route by ``spec``; without one, a per-spec router asks only backends declaring CALL
+        scope, since a conversation-scoped backend could delete a sandbox this call never owned.
 
         Raises:
             ValueError: when ``key`` names no call, which is a conversation's key and not this
@@ -2409,7 +2666,7 @@ class SandboxRouter:
                 "dispose_unclean(key, timeout=...) when a call could not leave it clean."
             )
         if _admission is None:
-            serving, sweep = self._serving_for_call(spec)
+            serving, sweep = self._serving_for_call(key, spec)
         else:
             serving = _admission.backend
             sweep = [serving] if _admission.served else []
@@ -2446,13 +2703,16 @@ class SandboxRouter:
             return False
 
     def _serving_for_call(
-        self, spec: SandboxSpec | None
+        self, key: SandboxKey, spec: SandboxSpec | None
     ) -> tuple[SandboxBackend | None, list[SandboxBackend]]:
         """Resolve a call-scoped delete without an admission, including host denials.
 
         Without a spec, PER_SPEC selection reaches only backends declaring CALL scope:
         a conversation-scoped backend could otherwise delete a sandbox this call never owned.
         """
+        pinned = self._program_pin(key, spec) if spec is not None else None
+        if pinned is not None:
+            return pinned.backend, [pinned.backend]
         if self._selection is not Selection.PER_SPEC:
             return self._backend, ([] if self._backend is None else [self._backend])
         if spec is None:

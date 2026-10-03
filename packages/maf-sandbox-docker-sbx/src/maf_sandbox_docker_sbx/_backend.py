@@ -37,6 +37,7 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     EntryKind,
+    ExecProgramChannel,
     ExecResult,
     HttpMethod,
     Isolation,
@@ -589,6 +590,7 @@ class SbxSandboxBackend:
     def __init__(self, config: SbxSandboxConfig | None = None) -> None:
         self._config = config if config is not None else SbxSandboxConfig()
         self._declarations = BackendDeclarations(
+            program_channels=(ExecProgramChannel(),),
             capabilities=_CAPABILITIES,
             egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
             os_families=frozenset({OsFamily.POSIX}),

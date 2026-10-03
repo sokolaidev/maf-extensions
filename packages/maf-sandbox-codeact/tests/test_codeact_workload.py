@@ -54,6 +54,7 @@ from maf_sandbox import (
     NameNormalization,
     OutputsCollected,
     OutputSink,
+    ProgramRequirements,
     SandboxAcquired,
     SandboxCapabilityNotSupported,
     SandboxEntry,
@@ -1008,7 +1009,8 @@ class TestCodeactSandboxSpec:
         assert spec.egress_allow == ("*.data.mcr.microsoft.com",)
 
     def test_requires_exec_and_files_in(self):
-        assert codeact_sandbox_spec().requires == frozenset({Capability.EXEC, Capability.FILES_IN})
+        assert codeact_sandbox_spec().requires == frozenset()
+        assert codeact_sandbox_spec().program == ProgramRequirements()
 
     def test_it_does_not_raise_the_hosts_isolation_floor(self):
         """The host's floor governs: this kind runs only code the model itself wrote."""
@@ -1031,9 +1033,7 @@ class TestCodeactSandboxSpec:
         transport stats and reads the program's request files and its exit marker, so even a
         stdout-only program that can call a host function needs the pull surface."""
         spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
-        assert spec.requires == frozenset(
-            {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT, Capability.HOST_TOOLS}
-        )
+        assert spec.requires == frozenset({Capability.HOST_TOOLS})
 
     def test_a_registry_of_pure_computation_widens_it_just_the_same(self):
         """The capability follows from something being callable at all, never from what
@@ -1852,19 +1852,19 @@ _UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
-        as ``python3 program.py`` in a sandbox with **no network access**, so it can compute
+        with the ``python-portable-v1`` profile in a sandbox with **no network access**, so it can compute
         but cannot fetch.
 
         **Only what you print is read back as text.**  There is no REPL echo and the value of
         the last expression is not returned, so end the program with ``print(...)`` of
         everything you need to see.
 
-        Write a complete, self-contained program every time.  Each call gets a fresh working
-        directory: nothing you did not pass in to *this* call is in it.
+        Write a complete, self-contained program every time.  Do not rely on state from earlier calls.
+
+        Python 3.11 or newer is available with ``json``, ``math``, ``re``, ``sys`` and ``types``. Other standard-library modules and third-party packages are not promised.
 
         Args:
-            code: The Python source to run.  The standard library, plus
-                whatever the sandbox image ships.
+            code: The Python source to run using the profile described above.
 
         Returns:
             Content items for completion, an ``ok`` or ``failed`` verdict
@@ -2166,7 +2166,11 @@ class TestFilesIn:
     @pytest.mark.parametrize(
         ("name", "sentence", "wrong"),
         [
-            (_PROGRAM_FILENAME, "this tool writes a file of that name", "nothing can live inside"),
+            (
+                _PROGRAM_FILENAME,
+                "this name is reserved for program execution",
+                "nothing can live inside",
+            ),
             (f"{_PROGRAM_FILENAME}/data.csv", "nothing can live inside it", "a file of that name"),
         ],
         ids=["the reserved name", "a name beneath it"],
@@ -2223,8 +2227,7 @@ class TestFilesIn:
         )
 
         assert writes == (
-            f"Error: {_PROGRAM_FILENAME!r} cannot be shared — this tool writes a file of that "
-            f"name into every call's directory."
+            f"Error: {_PROGRAM_FILENAME!r} cannot be shared — this name is reserved for program execution."
         ), writes
         assert reads == (
             f"Error: {_MANIFEST_FILENAME!r} cannot be shared — this tool reads a file of that "
@@ -2293,7 +2296,7 @@ class TestTheInboundCapsAreEnforcedHere:
         tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=2))
 
         out = _run(tool, "print(1)", files=["a", "b", "c"])
-        assert "your program and 3 shared" in out
+        assert "3 shared" in out
         # Unqualified: with nothing callable that list is everything that would cross.
         assert "writes at most 2 per call" in out
         assert sandbox.written == {}
@@ -2347,23 +2350,19 @@ class TestTheInboundCapsAreEnforcedHere:
     def test_a_set_within_the_caps_is_shared(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"a.csv": "1", "b.csv": "2"})
-        # Three, not two: the program is one of the files written into the sandbox.
-        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=3))
+        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=2))
 
         _run(tool, "print(1)", files=["a.csv", "b.csv"])
         run_dir = _run_dirs(sandbox)[0]
         assert {f"{run_dir}/a.csv", f"{run_dir}/b.csv"} <= set(sandbox.written_files)
 
-    def test_the_program_itself_counts_against_the_file_count(self):
-        """The spec requires `FILES_IN` even with no store, because `program.py` crosses this
-        boundary too — so a tally that skipped it let `max_files=1` write two files."""
+    def test_the_program_has_a_separate_file_count(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"a.csv": "1"})
         tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1))
-
         out = _run(tool, "print(1)", files=["a.csv"])
-        assert "at most 1" in out
-        assert sandbox.written == {}
+        assert "Error:" not in out
+        assert len(sandbox.written) == 2
 
     def test_an_over_count_call_reads_nothing_from_the_store(self):
         """A count cap that answers only once every requested file is in memory has already
@@ -2399,17 +2398,15 @@ class TestTheInboundCapsAreEnforcedHere:
 
         out = _run(tool, "print(1)", files=["a.csv", "b.csv", "c.csv"])
         assert "at most 20 per call" in out
-        assert store.reads == ["a.csv", "b.csv"]
+        assert store.reads == ["a.csv", "b.csv", "c.csv"]
 
     def test_the_program_is_measured_before_the_store_is_touched(self):
         sandbox = _ScriptedSandbox()
         store = _CountingStore({"a.csv": "x"})
-        tool = self._tool(
-            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
-        )
+        tool = self._tool(sandbox, store, program=ProgramRequirements(max_program_bytes=10))
 
         out = _run(tool, "print('" + "x" * 100 + "')", files=["a.csv"])
-        assert "at most 10 bytes per file" in out
+        assert "program exceeds its declared byte limit" in out
         assert store.reads == []
 
     @pytest.mark.parametrize("where", ["code", "file"])
@@ -2439,15 +2436,13 @@ class TestTheInboundCapsAreEnforcedHere:
         assert "listed twice" in _run(tool, "print(1)", files=["a.csv", "a.csv"])
         assert store.reads == []
 
-    def test_the_program_itself_counts_against_the_byte_ceilings(self):
+    def test_the_program_has_its_own_byte_ceiling(self):
         """A large `code` cleared both ceilings while every shared file was measured."""
         sandbox = _ScriptedSandbox()
-        tool = _tool(
-            _backend(sandbox), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
-        )
+        tool = _tool(_backend(sandbox), program=ProgramRequirements(max_program_bytes=10))
 
         out = _run(tool, "print('" + "x" * 100 + "')")
-        assert "at most 10 bytes per file" in out
+        assert "program exceeds its declared byte limit" in out
         assert sandbox.written == {}
 
     def test_the_spec_carries_the_caps_the_host_chose(self):
@@ -2470,7 +2465,8 @@ class TestOutputsAreNeverEnumerated:
             assert Capability.FILES_LIST not in requires
 
     def test_the_stdout_only_spec_requires_neither(self):
-        assert codeact_sandbox_spec().requires == frozenset({Capability.EXEC, Capability.FILES_IN})
+        assert codeact_sandbox_spec().requires == frozenset()
+        assert codeact_sandbox_spec().program == ProgramRequirements()
 
     def test_only_a_collecting_spec_says_it_names_outputs_later(self):
         assert codeact_sandbox_spec().outputs_named_at_call_time is False
@@ -2553,7 +2549,7 @@ class TestDeclaredOutputs:
     @pytest.mark.parametrize(
         ("names", "sentence"),
         [
-            (["Program.py", "program.py"], "this tool writes a file of that name"),
+            (["Program.py", "program.py"], "this name is reserved for program execution"),
             (["Program.py/x.csv", "program.py/x.csv"], "nothing can live inside it"),
         ],
         ids=["the reserved name", "a name beneath it"],
@@ -2682,7 +2678,7 @@ class TestDeclaredOutputs:
 
         out = _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
         assert "cannot be saved" in out
-        assert "this tool writes a file of that name into every call's directory" in out, out
+        assert "this name is reserved for program execution" in out, out
 
     @pytest.mark.parametrize(
         "name",
@@ -3009,7 +3005,6 @@ class TestManifestOutputs:
     @pytest.mark.parametrize(
         ("mode", "kwargs", "match"),
         [
-            (CodeactOutputs.NONE, {"files_in": 0}, "no call could succeed"),
             (CodeactOutputs.DECLARED, {"files_out": 0}, "refuse every non-empty use"),
             (CodeactOutputs.MANIFEST, {"files_out": 1}, "at least 2"),
         ],
@@ -3294,23 +3289,24 @@ class TestAProgramThatCallsOut:
 
         (layout,) = sandbox.layouts
         assert sandbox.written_files[layout.shim] == host_tool_shim(
-            frozenset({"_round_half_up"}), call_timeout=97
+            frozenset({"_round_half_up"}), call_timeout=97.0
         )
 
-    def test_both_paths_run_the_program_under_this_kinds_own_interpreter(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """The transport carries a default of its own, so a host-tool-calling run that leaves it
-        out is running under a constant this kind does not own and cannot change."""
-        monkeypatch.setattr("maf_sandbox_codeact._tool._INTERPRETER", "pypy3")
+    def test_both_paths_use_the_backend_channels_interpreter(self, monkeypatch: pytest.MonkeyPatch):
+        from maf_sandbox.testing import InProcessProgramChannel
 
+        monkeypatch.setattr(_tool_module, "_INTERPRETER", "unused", raising=False)
+        channel = InProcessProgramChannel(interpreter="pypy3")
         plain = _ScriptedSandbox()
-        _run(_tool(_backend(plain)), "print(1)")
+        backend = _backend(plain)
+        backend._declarations = replace(backend.declarations, program_channels=(channel,))
+        _run(_tool(backend), "print(1)")
         assert plain.commands[0][0].startswith("pypy3 ")
 
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
-        _run(_calling_tool(sandbox, _round_half_up), "print(1)")
-
+        backend = _backend(sandbox, capabilities=_CALLS)
+        backend._declarations = replace(backend.declarations, program_channels=(channel,))
+        _run(_tool(backend, host_tools=_registry(_round_half_up)), "print(1)")
         (layout,) = sandbox.layouts
         assert "pypy3" in sandbox.written_files[layout.launcher]
         assert "python3" not in sandbox.written_files[layout.launcher]
@@ -4045,77 +4041,18 @@ class TestANeighbourOfTheProgramsNameIsNotTheProgram:
         assert "cannot be saved" not in out
 
 
-class TestTheShimIsAnInboundFileToo:
-    """It crosses on every call a registry is wired for, so it is counted like the program."""
-
-    def test_it_counts_against_the_inbound_file_count(self):
-        limits = replace(DEFAULT_TRANSFER_LIMITS, max_files=2)
-        store = InMemoryStore({"a.csv": "1"})
-
-        plain = _ScriptedSandbox()
-        _run(_tool(_backend(plain), file_store=store, files_in=limits), "print(1)", files=["a.csv"])
-        assert f"{_run_dirs(plain)[0]}/a.csv" in plain.written_files
-
-        sandbox = _ScriptedSandbox()
-        tool = _tool(
-            _backend(sandbox, capabilities=_CALLS),
-            host_tools=_registry(_round_half_up),
-            file_store=store,
-            files_in=limits,
+class TestProgramAndShimBudgets:
+    @pytest.mark.parametrize("cap", ["max_files", "max_bytes_per_file", "max_total_bytes"])
+    def test_shared_file_limits_do_not_charge_the_shim(self, cap: str):
+        _host_tool_calling_tool(
+            _registry(_round_half_up), files_in=replace(DEFAULT_TRANSFER_LIMITS, **{cap: 1})
         )
-        out = _run(tool, "print(1)", files=["a.csv"])
-        assert "3 files would be written" in out
-        assert "your program, the host-tool module beside it, and 1 shared" in out
-        # Qualified here and nowhere else: the launcher crosses too and is not in that list.
-        assert "writes at most 2 of those per call" in out
-        assert sandbox.written == {}
 
-    def test_it_counts_against_the_inbound_byte_ceilings(self):
-        """Kilobytes of generated source, against a total with room for the module alone and
-        not for the program beside it.  The kind's runtime tally enforces against the workload's
-        own files_in — the router's host-tool-call fold is transient and never reaches here
-        (#393)."""
-        module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
-        limits = replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=module + 5)
-
-        plain = _ScriptedSandbox()
-        _run(_tool(_backend(plain), files_in=limits), "print(1)")
-        assert plain.written_files, "the same program did not fit without a registry"
-
+    def test_zero_shared_files_still_allows_a_program(self):
         sandbox = _ScriptedSandbox()
-        tool = _tool(
-            _backend(sandbox, capabilities=_CALLS),
-            host_tools=_registry(_round_half_up),
-            files_in=limits,
-            exec_timeout_seconds=97,
-        )
-        assert f"at most {module + 5} per call" in _run(tool, "print(1)")
-        assert sandbox.written == {}
-
-    def test_room_for_one_inbound_file_is_refused_at_the_factory(self):
-        """Two files cross on every call, so a cap of one could never serve a single call — and
-        a tool the model can see and never use successfully is worse than one that never
-        attached."""
-        with pytest.raises(ValueError, match="host-tool module"):
-            _host_tool_calling_tool(
-                _registry(_round_half_up), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1)
-            )
-
-    @pytest.mark.parametrize("cap", ["max_bytes_per_file", "max_total_bytes"])
-    def test_a_byte_cap_below_the_module_is_refused_at_the_factory_too(self, cap: str):
-        """Its size is settled before anything attaches, so a ceiling under it is the same
-        never-usable tool the count check refuses — reached by the other leg."""
-        module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
-        with pytest.raises(ValueError, match="host-tool module is"):
-            _host_tool_calling_tool(
-                _registry(_round_half_up),
-                files_in=replace(DEFAULT_TRANSFER_LIMITS, **{cap: module - 1}),
-                exec_timeout_seconds=97,
-            )
-
-    def test_a_registry_holding_nothing_is_refused_nothing(self):
-        """Nothing callable is no shim, exactly as it is no capability in the spec."""
-        _host_tool_calling_tool(_registry(), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1))
+        tool = _tool(_backend(sandbox), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=0))
+        assert "Error:" not in _run(tool, "print(1)")
+        assert sandbox.written_files
 
 
 class TestWithoutARegistry:
@@ -4415,14 +4352,7 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "'dtaa.csv'" in out, out
 
     def test_the_post_run_report_asks_about_the_outputs_argument_too(self, monkeypatch):
-        """A declared name is checked twice, and the second check needs the record as much.
-
-        Without the argument named, the line reporting a file the program never wrote falls
-        back to the store inference even on a wired host — so an `outputs` entry the caller
-        spelled itself, equal to hidden content, comes back as a position. A caller watching
-        for that learns its guess was right a whole run after the upfront check closed the
-        same channel.
-        """
+        """Every name check and the post-run report need the argument's rewrite record."""
         asked: list[tuple[list[str], str | None]] = []
 
         def _record(values, **kwargs):
@@ -4439,7 +4369,8 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert [entry for entry in asked if entry[0] == ["report.csv"]] == [
             (["report.csv"], _OUTPUTS_ARGUMENT),
             (["report.csv"], _OUTPUTS_ARGUMENT),
-        ], "both the upfront check and the post-run report must name the argument"
+            (["report.csv"], _OUTPUTS_ARGUMENT),
+        ], "both pre-run checks and the post-run report must name the argument"
 
     def test_the_post_run_report_leaves_a_manifest_name_on_the_inference(self, monkeypatch):
         """A name a program wrote sits in no argument, so the record cannot speak for it.
@@ -4698,13 +4629,13 @@ class TestTheSpecCarriesItsHostToolSurface:
     def test_a_backend_that_cannot_serve_the_transport_is_refused_at_attach(self):
         """The workload's own declaration fits this backend; only the folded one does not."""
         spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
-        ceiling = replace(_CALL_LIMITS.files_in, max_files=spec.files_in.max_files)
+        ceiling = replace(_CALL_LIMITS.files_in, max_files=2)
         backend = _backend(capabilities=_CALLS, limits=replace(_CALL_LIMITS, files_in=ceiling))
         router = SandboxRouter([backend], min_isolation=backend.isolation)
         with pytest.raises(SandboxTransferLimitsNotPermitted) as refusal:
             router.ensure_can_serve(spec)
         # The note says the fold caused this, not the workload's own caps.
-        assert "folded to include the wired host tools" in str(refusal.value)
+        assert "folded to include the selected program channel" in str(refusal.value)
 
     def test_a_backend_that_can_serve_the_transport_attaches(self):
         spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
@@ -4940,3 +4871,145 @@ class TestTheGuidanceThisKindCommitsTo:
 
         assert folder is not None, emitted
         assert emitted == committed[0].format(call_id=folder.group(1))
+
+
+@pytest.mark.parametrize(
+    "names",
+    [["a.csv", "a.csv"], ["../escape.csv"], ["a.csv", "b.csv", "c.csv"], ["a" * 250]],
+    ids=["duplicate", "traversal", "count", "prefixed-length"],
+)
+def test_invalid_outputs_precede_input_reads_and_acquisition(names):
+    store = _CountingStore({"input.csv": "host content"})
+    sandbox = _ProducingSandbox()
+    backend = _backend(sandbox, capabilities=_PULLS)
+    tool = _tool(
+        backend,
+        file_store=store,
+        files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=2),
+        **_landing(CodeactOutputs.DECLARED),
+    )
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=names)
+    assert out.startswith("Error:")
+    assert (store.reads, backend.keys) == ([], [])
+    assert sandbox.raw_commands == [] and sandbox.written_files == {}
+
+
+def test_output_prefix_validation_uses_the_fallback_channel():
+    from maf_sandbox import SandboxBackendUnavailable, Selection
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/work"
+
+    first = _backend(capabilities=_PULLS, acquire_error=SandboxBackendUnavailable("offline"))
+    sandbox = _ProducingSandbox()
+    second = _backend(sandbox, capabilities=_PULLS)
+    second._declarations = replace(second.declarations, program_channels=(NestedChannel(),))
+    tool = make_codeact_tools(
+        SandboxRouter(
+            [first, second], min_isolation=second.isolation, selection=Selection.PER_SPEC
+        ),
+        "data-analyst",
+        _context(),
+        **_landing(CodeactOutputs.DECLARED),
+    )[0]
+    name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES)
+    out = _run(tool, "print('hi')", outputs=[name])
+    assert "over the 255-byte ceiling" in out
+    assert second.keys
+    assert sandbox.raw_commands == [] and sandbox.written_files == {}
+
+
+@pytest.mark.parametrize("layout", ["plain", "host-tools", "nested"])
+@pytest.mark.parametrize("overflow", [False, True])
+def test_output_prefix_length_precedes_reads_and_acquisition(layout, overflow):
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/nested/outputs"
+
+    store = _CountingStore({"input.csv": "host content"})
+    sandbox = _ProducingSandbox()
+    backend = _backend(sandbox, capabilities=_CALLS)
+    if layout == "nested":
+        backend._declarations = replace(backend.declarations, program_channels=(NestedChannel(),))
+    tool = _tool(
+        backend,
+        file_store=store,
+        host_tools=_registry(_round_half_up) if layout == "host-tools" else None,
+        **_landing(CodeactOutputs.DECLARED),
+    )
+    suffix = {"plain": "", "host-tools": "work/", "nested": "nested/outputs/"}[layout]
+    name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES - len(suffix) + int(overflow))
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=[name])
+    if overflow:
+        assert "over the 255-byte ceiling" in out
+        assert (store.reads, backend.keys) == ([], [])
+        assert sandbox.raw_commands == [] and sandbox.written_files == {}
+    else:
+        assert not out.startswith("Error:"), out
+        assert store.reads == ["input.csv"] and backend.keys
+        assert sandbox.raw_commands
+
+
+def test_output_prefix_validation_uses_the_retained_fallback_channel():
+    from maf_sandbox import SandboxBackendUnavailable, Selection
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/work"
+
+    store = _CountingStore({"input.csv": "host content"})
+    first = _backend(
+        capabilities=_PULLS | {Capability.SNAPSHOT},
+        acquire_error=SandboxBackendUnavailable("offline"),
+    )
+    sandbox = _ProducingSandbox()
+    second = _backend(sandbox, capabilities=_PULLS | {Capability.SNAPSHOT})
+    second._declarations = replace(second.declarations, program_channels=(NestedChannel(),))
+    tool = make_codeact_tools(
+        SandboxRouter(
+            [first, second],
+            min_isolation=second.isolation,
+            selection=Selection.PER_SPEC,
+            min_cleanup=Cleanup.RESET,
+        ),
+        "data-analyst",
+        _context(),
+        file_store=store,
+        **_landing(CodeactOutputs.DECLARED),
+    )[0]
+    _run(tool, "print('hi')", outputs=[])
+    acquired = len(second.keys)
+    assert acquired and not second.disposed
+    first.acquire_error = None
+    name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES)
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=[name])
+    assert "over the 255-byte ceiling" in out
+    assert store.reads == [] and first.keys == [] and len(second.keys) == acquired
+
+
+def test_nested_channel_runs_beside_shared_inputs_and_collected_outputs():
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/nested/outputs"
+
+    sandbox = _ProducingSandbox()
+    sandbox.produces = {"result.csv": b"result"}
+    store = _CountingStore({"input.csv": "shared"})
+    sink = _RecordingSink()
+    backend = _backend(sandbox, capabilities=_PULLS)
+    backend._declarations = replace(backend.declarations, program_channels=(NestedChannel(),))
+    tool = _tool(backend, file_store=store, **_landing(CodeactOutputs.DECLARED, sink))
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=["result.csv"])
+    assert not out.startswith("Error:"), out
+    assert sink.names == ["result.csv"]
+    [directory] = [cwd for command, cwd, _ in sandbox.commands if "program.py" in command]
+    assert directory.endswith("/nested/outputs")
+    assert sandbox.written_files[f"{directory}/input.csv"] == "shared"
+    assert sandbox.written_files[f"{directory}/program.py"] == "print('hi')"

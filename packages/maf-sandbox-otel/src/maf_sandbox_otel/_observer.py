@@ -423,6 +423,8 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             HOST_TOOL_DECLARED: event.declared,
             HOST_TOOL_OUTCOME: event.outcome,
             HOST_TOOL_RESPONSE_BYTES: event.response_bytes,
+            f"{NAMESPACE}.host_tool.host_started": event.host_started,
+            f"{NAMESPACE}.host_tool.host_completed": event.host_completed,
             HOST_TOOL_CALLS: event.calls,
             **without_none(
                 {

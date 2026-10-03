@@ -36,6 +36,10 @@ The router's default minimum is `MICROVM`. Docker and WSLC require an explicit h
 
 Docker and WSLC report attributable proxy decisions when a proxy image is configured. ACAS and Hyperlight make no egress observation claim. An absent event is not proof that nothing was attempted.
 
+## Program channels
+
+CodeAct's automatic path requires an explicit [program channel](../program-channels.md), including verified Python profile guarantees. Docker, ACAS and Docker Sandboxes supply the exec host-tool channel. WSLC supplies an exec channel without host tools. Hyperlight still uses the explicit CodeAct runtime path; production native host tools remain pending. Declaring `HOST_TOOLS` without a supporting channel fails attachment.
+
 ## File boundaries
 
 | Backend | Important limit |

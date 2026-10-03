@@ -9,7 +9,7 @@ See the [package README](../../../packages/maf-sandbox-codeact/README.md) for in
 | Setting | Behavior |
 |---|---|
 | Kind and tool | `codeact`; `execute_code` |
-| Execution | Exec by default; `CodeactRuntime` selects `run_code` explicitly |
+| Execution | Backend-owned portable Python channel, exec preferred; `CodeactRuntime` remains an explicit alternative |
 | Network | Closed unless the host supplies allowed destinations; unrestricted access is unavailable |
 | Isolation | The host's minimum; the kind does not raise it |
 | Concurrent calls | One call at a time for a conversation's sandbox |
@@ -23,15 +23,15 @@ Only enabled channels appear in the tool schema. `files` appears with a file sto
 
 | Configuration | Required capabilities | Guest requirements |
 |---|---|---|
-| Exec | `EXEC`, `FILES_IN` | `python3`; source is written as a file |
+| Automatic program channel | Channel declares its own execution capabilities | Verified `python-portable-v1`; exec prefers `python3` |
 | Python runtime | `RUN_CODE` | Host-verified Python profile |
 | Runtime with file input | Add `FILES_IN` | Verified runtime storage base |
 | `DECLARED` or `MANIFEST` outputs | Add `FILES_OUT` | Declared or manifest-selected relative paths |
-| Exec host tools | Add `HOST_TOOLS`, `FILES_OUT` | `sh` and `nohup` for the file transport |
+| Automatic host tools | Add `HOST_TOOLS`; channel adds physical capabilities | Shared guest API; exec transport needs `FILES_OUT`, `sh` and `nohup` |
 
-Output collection uses literal paths and never requires `FILES_LIST`. Host tools need `FILES_OUT` even without artifacts because their transport reads request files and completion markers.
+Output collection uses literal paths and never requires `FILES_LIST`. The exec host-tool channel needs `FILES_OUT` even without artifacts because it reads request files and completion markers.
 
-The spec declares no OS family. The host must verify the image's commands or the runtime profile. A missing capability causes an attachment error; there is no fallback between exec and `run_code`.
+The spec declares no OS family. The selected channel verifies the portable profile before execution; the host still supplies an image with the channel's launcher utilities. Selection and initial availability fallback follow [program-channel admission](../program-channels.md). Explicit `CodeactRuntime` remains host-selected and does not participate in that fallback.
 
 ## Files and artifacts
 
@@ -52,7 +52,7 @@ Both collection modes use `outputs_named_at_call_time`. They require an output s
 
 `program.py` is reserved only for exec without host tools. `outputs.json` is reserved in manifest mode. A runtime writes no program file and may use `program.py` as an ordinary file name.
 
-The program's byte limit is checked before reading the store. Input count is checked before listing, and each input's bytes are checked as it is read. Output collection applies the declared file and byte limits.
+The automatic path uses `ProgramRequirements.max_program_bytes` independently of shared-file budgets. The program's byte limit is checked before reading the store. Input count is checked before listing, and each input's bytes are checked as it is read. Output collection applies the declared file and byte limits.
 
 ## Network access
 
@@ -83,7 +83,7 @@ Registered functions run in the host process. Guest calls to them bypass the age
 | Any `Identity.USER` tool | Require approval for the whole call |
 | A sink, or an undeclared outward-flow role | Apply the host's outbound confidentiality cap |
 | Declared identities | Let the router reject denied identities |
-| Transport limits | Check the backend can serve the registry's file traffic |
+| Transport limits | Check the selected channel can serve the complete physical traffic |
 
 Trusted registered sources alone do not make CodeAct output trusted. Core can promote the workload claim when at least one file was read and every accepted read is trusted, or when no files were read and the framework establishes trusted conversation and argument labels. Both paths require closed egress and a registry with only trusted sources or no sources. Configured network access or any untrusted or unknown registered source keeps the claim untrusted. See [host tools](../hosts.md#host-tools-calling-outward) for registration and authority.
 
