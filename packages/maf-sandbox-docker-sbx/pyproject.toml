@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-docker-sbx"
-version = "0.4.2"
+version = "0.5.0"
 description = "Docker Sandboxes (sbx) microVMs as a local sandbox backend for Microsoft Agent Framework agents."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
