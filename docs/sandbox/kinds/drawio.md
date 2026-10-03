@@ -15,11 +15,14 @@ See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wir
 | Editable output | `diagram.drawio`, `application/xml` |
 | Optional image outputs | `diagram-PAGE.png` (`image/png`), `.jpg` (`image/jpeg`) and `.svg` (`image/svg+xml`), alongside the editable file; page numbers start at one |
 | Cleanup | Disposal by default; no call-directory confinement claim |
+| Export scope | A separate sandbox for each export-enabled call; the backend must support call isolation |
 | Result integrity | Trusted completion and verdict; sink display and converter diagnostics follow call integrity; no standing guidance |
 
 Build the [lightweight image](../../../images/drawio-sandbox/Dockerfile) for editable-only creation or provision the separate [export runtime](../../../images/drawio-export/README.md) for image exports. The export bundle pins Draw.io Desktop 31.7.0 and supplies Python, Pillow, Graphviz, Xvfb, xauth, Electron libraries, local stencils/icons and DejaVu fonts. It validates renderer, asset and font hashes. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment. An image-less backend must already provide the same runtime and file channels; the kind never installs dependencies during a call.
 
 The supplied export image targets Linux amd64. Electron's inner sandbox is disabled, so the outer backend must enforce closed egress, resource limits, file confinement and descendant cleanup. The host's isolation floor remains authoritative. Runtime packaging does not qualify every POSIX backend; qualification evidence and remaining backend work are tracked below.
+
+Both export-enabled creation and stored-file export request call isolation. Overlapping tools may therefore select different runtime images without reusing each other's sandbox. Editable-only creation keeps conversation scope and its existing cleanup policy. A backend without call isolation cannot serve image exports.
 
 ## Result
 
@@ -64,6 +67,8 @@ Input SVG CSS must not reference resources: data URIs and the `url()`, `image-se
 Embedded SVG text and font declarations are refused, including those in bundled assets, to prevent unverified font substitution. This covers presentation attributes, CSS font properties, `@font-face` and `local()` sources. CSS font tokens are refused conservatively, including in comments and selectors. Convert image text to paths before embedding it; ordinary diagram labels remain supported through the verified font set.
 
 Bundled assets are verified once per document and cached. Every repeated reference still counts toward the prepared-XML budget before expanded styles are retained or serialized. Unsupported content is refused rather than silently replaced with a different rendering.
+
+Stencil lookups during native painting must resolve, including auxiliary resource, product, group and background icons. Validation follows the renderer's own lookup, preserving shape-specific prefixes and primitive backgrounds rather than treating every selector as a main shape.
 
 ## XML and layout
 

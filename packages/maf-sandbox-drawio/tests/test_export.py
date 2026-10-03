@@ -10,6 +10,7 @@ from maf_sandbox import (
     Capability,
     ExecResult,
     Isolation,
+    IsolationScope,
     LandedArtifact,
     ListedFile,
     OsFamily,
@@ -21,7 +22,12 @@ from maf_sandbox.maf import make_caller_context
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 from test_tool import attach, completed, items, said, verdict
 
-from maf_sandbox_drawio import DrawioExport, drawio_sandbox_spec, make_drawio_export_tools
+from maf_sandbox_drawio import (
+    DrawioExport,
+    drawio_sandbox_spec,
+    make_drawio_export_tools,
+    make_drawio_tools,
+)
 from maf_sandbox_drawio._tool import _export_outputs
 
 
@@ -58,6 +64,8 @@ def test_spec_retains_closed_egress_and_expands_only_opt_in_limits():
     assert ordinary.files_out.max_files == 1
     assert exported.files_out.max_files == 25
     assert ordinary.requires == exported.requires
+    assert ordinary.isolation_scope is IsolationScope.CONVERSATION
+    assert exported.isolation_scope is IsolationScope.CALL
 
 
 def test_manifest_must_match_exact_requested_pages_and_formats():
@@ -92,7 +100,9 @@ def test_unlisted_reference_is_not_read_or_acquired(tmp_path):
             FAKE_BACKEND_DECLARATIONS,
             capabilities=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
             os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=frozenset(IsolationScope),
         ),
+        sandbox_per_key=True,
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     [tool] = make_drawio_export_tools(
@@ -240,7 +250,9 @@ def test_stored_export_reads_exact_reference_without_model_xml(tmp_path):
             FAKE_BACKEND_DECLARATIONS,
             capabilities=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
             os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=frozenset(IsolationScope),
         ),
+        sandbox_per_key=True,
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     [tool] = make_drawio_export_tools(
@@ -258,3 +270,103 @@ def test_stored_export_reads_exact_reference_without_model_xml(tmp_path):
     assert "--require-layout" in command
     assert sandbox.contents[f"{directory}/input.xml"] == source.encode()
     assert backend.disposed
+
+
+@pytest.mark.parametrize("first_export", [False, True])
+@pytest.mark.parametrize("stored", [False, True])
+def test_overlapping_runtime_profiles_get_their_requested_images(tmp_path, first_export, stored):
+    async def run():
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        config = DrawioExport(formats=("png", "jpg", "svg"))
+
+        class ProfileSandbox(ExportSandbox):
+            def __init__(self, image):
+                super().__init__()
+                self.image = image
+
+            async def exec(self, command, *, working_directory, timeout):
+                xml = await self.read_file(
+                    "input.xml", working_directory=working_directory, max_bytes=4096
+                )
+                second = b"export-b" in xml
+                expected = "export-b" if second else "export-a" if first_export else "light"
+                if second:
+                    second_started.set()
+                else:
+                    first_started.set()
+                    await asyncio.wait_for(second_started.wait(), timeout=5)
+                if self.image != expected:
+                    return ExecResult(stdout="", stderr="Wrong runtime image", exit_code=3)
+                if second or first_export:
+                    return await super().exec(
+                        command, working_directory=working_directory, timeout=timeout
+                    )
+                await InProcessSandbox.exec(
+                    self, command, working_directory=working_directory, timeout=timeout
+                )
+                directory = self._working_directory(working_directory)
+                self.contents[f"{directory}/diagram.drawio"] = b"<mxfile/>"
+                return ExecResult(stdout="", stderr="", exit_code=0)
+
+        class ProfileBackend(InProcessSandboxBackend):
+            def __init__(self):
+                super().__init__(
+                    declarations=dataclasses.replace(
+                        FAKE_BACKEND_DECLARATIONS,
+                        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities
+                        | {Capability.FILES_OUT},
+                        os_families=frozenset({OsFamily.POSIX}),
+                        isolation_scopes=frozenset(IsolationScope),
+                    )
+                )
+                self.profiles = {}
+
+            async def acquire(self, key, spec):
+                identity = (key, spec.kind)
+                if identity not in self.profiles:
+                    self.profiles[identity] = ProfileSandbox(spec.image)
+                self.sandbox = self.profiles[identity]
+                return await super().acquire(key, spec)
+
+        class Store:
+            async def read(self, name):
+                return '<mxfile name="export-b"/>'
+
+        async def listing(store):
+            return [ListedFile("saved.drawio", None)]
+
+        backend = ProfileBackend()
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        context = make_caller_context(listing, lambda: "scope", lambda: "thread")
+        [first] = make_drawio_tools(
+            router,
+            "test",
+            context,
+            make_file_system_sink(tmp_path / "first"),
+            image="export-a" if first_export else "light",
+            export=config if first_export else None,
+        )
+        args = (router, "test", context, make_file_system_sink(tmp_path / "second"))
+        [second] = (
+            make_drawio_export_tools(*args, Store(), image="export-b", export=config)
+            if stored
+            else make_drawio_tools(*args, image="export-b", export=config)
+        )
+        task = asyncio.create_task(first.func(xml='<mxfile name="first"/>'))
+        await asyncio.wait_for(first_started.wait(), timeout=5)
+        try:
+            answer = (
+                await second.func(file="saved.drawio")
+                if stored
+                else await second.func(xml='<mxfile name="export-b"/>')
+            )
+        finally:
+            second_started.set()
+        initial = await task
+        assert completed(initial) and verdict(initial) == "created"
+        assert completed(answer) and verdict(answer) == "created"
+        assert len(set(backend.keys)) == 2
+        assert set(backend.disposed) == set(backend.keys)
+
+    asyncio.run(run())

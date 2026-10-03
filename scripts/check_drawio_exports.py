@@ -80,6 +80,28 @@ def diagram() -> str:
             },
         )
         ET.SubElement(edge, "mxGeometry", {"as": "geometry", "relative": "1"})
+        for index, style in enumerate(
+            (
+                "shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;",
+                "shape=mxgraph.gcp2.hexIcon;prIcon=compute_engine;",
+                "shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc2;",
+                "shape=mxgraph.cisco_safe.compositeIcon;bgIcon=ellipse;",
+            )
+        ):
+            auxiliary = ET.SubElement(
+                root, "mxCell", {"id": f"aux-{index}", "parent": "1", "vertex": "1", "style": style}
+            )
+            ET.SubElement(
+                auxiliary,
+                "mxGeometry",
+                {
+                    "as": "geometry",
+                    "x": str(220 * page + 90 * index),
+                    "y": "140",
+                    "width": "70",
+                    "height": "70",
+                },
+            )
     return ET.tostring(document, encoding="unicode")
 
 
@@ -263,6 +285,13 @@ async def check(image: str, output: Path) -> None:
         for tag in ("object", "UserObject"):
             for indirect in (False, True):
                 cases[f"placeholder-{tag}-{indirect}"] = placeholder_label(tag, indirect)
+        for key, valid, missing in (
+            ("resIcon", "mxgraph.aws4.ec2", "rectangle"),
+            ("prIcon", "compute_engine", "missing"),
+            ("grIcon", "mxgraph.aws4.group_vpc2", "missing"),
+            ("bgIcon", "ellipse", "rectangle"),
+        ):
+            cases[f"missing-{key}"] = diagram().replace(f"{key}={valid}", f"{key}={missing}")
         stylesheet_svg = (
             b'<?xml-stylesheet href="https://example.invalid/style.css" type="text/css"?>'
             b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
@@ -322,6 +351,10 @@ async def check(image: str, output: Path) -> None:
                 assert "Processing instructions" in " ".join(text or "" for text in answer), answer
             if name.startswith("embedded-svg-font-"):
                 assert "text and fonts" in " ".join(text or "" for text in answer), answer
+            if name in {"missing-resIcon", "missing-prIcon", "missing-grIcon", "missing-bgIcon"}:
+                assert "Unsupported resource stencil" in " ".join(text or "" for text in answer), (
+                    answer
+                )
             assert not destination.exists() or not list(destination.iterdir())
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(

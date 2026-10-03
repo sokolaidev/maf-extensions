@@ -13,6 +13,8 @@ install.py repacks Desktop's ASAR with guard.js to refuse missing images, unknow
 
 Both image and indicatorImage styles require a manifest-listed asset or validated embedded image. Indicator shapes must belong to the native renderer's default-shape registry; stencil-only indicators are refused because Desktop does not construct them. Every variant of each selected font family is checked against the manifest before rendering PNG, JPG or SVG.
 
+Every nonempty stencil lookup made while painting must resolve. This covers auxiliary selectors such as resIcon, prIcon, grIcon and bgIcon using each native shape's prefixes and primitive-background rules. Main-shape probes outside painting retain the native default-shape fallback.
+
 XML resources, including embedded SVGs, must use UTF-8, optionally with its byte-order mark. NUL characters, DTD/entity declarations and processing instructions other than the XML declaration are refused before XML parsing.
 
 SVG CSS must not reference resources, including data URIs, image-set() and src(). Image attributes use the separate embedded-image validator; local SVG fragment references and resource-free CSS remain supported.
