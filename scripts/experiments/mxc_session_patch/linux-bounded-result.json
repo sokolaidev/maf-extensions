@@ -1,0 +1,111 @@
+{
+  "helper_sha256": "06d6a66de3b40b34ac9c8eb82ee6377f06e79aec6fce7140640fa008a1396394",
+  "startup_index_sha256": "27bedbae251c0f0ad3fad70f3e44c49174fc283d876b7a07ea0a623bfc2518d4",
+  "platform": "Linux",
+  "architecture": "x86_64",
+  "host_python": "3.12.3",
+  "measurements": {
+    "empty": {
+      "output": {
+        "limit_bytes": 1048576,
+        "omitted_bytes": 0,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 0,
+        "truncated": false
+      },
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "exact": {
+      "output": {
+        "limit_bytes": 1048576,
+        "omitted_bytes": 0,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 1048576,
+        "truncated": false
+      },
+      "sha256": "15d414601da8558309434ed89fe9bf86cef3d99f864a26b225c04b49f3653a7a"
+    },
+    "overflow": {
+      "output": {
+        "limit_bytes": 1048576,
+        "omitted_bytes": 1024,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 1048576,
+        "truncated": true
+      },
+      "sha256": "15d414601da8558309434ed89fe9bf86cef3d99f864a26b225c04b49f3653a7a"
+    },
+    "continued": {
+      "output": {
+        "limit_bytes": 1048576,
+        "omitted_bytes": 0,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 2,
+        "truncated": false
+      },
+      "sha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3"
+    },
+    "unicode": {
+      "output": {
+        "limit_bytes": 3,
+        "omitted_bytes": 4,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 1,
+        "truncated": true
+      },
+      "sha256": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+    },
+    "zero": {
+      "output": {
+        "limit_bytes": 0,
+        "omitted_bytes": 3,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 0,
+        "truncated": true
+      },
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "bypass": {
+      "output": {
+        "limit_bytes": 8,
+        "omitted_bytes": 56,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 8,
+        "truncated": true
+      },
+      "sha256": "2f858775d71cc4ece5f46f497c58c01167cd6fc301e56e935070f5e81bfe5890"
+    },
+    "recovered": {
+      "output": {
+        "limit_bytes": 1048576,
+        "omitted_bytes": 0,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 4,
+        "truncated": false
+      },
+      "sha256": "7a66eabf637f6a4c162d331966b5966e2656f4051ae52acbcb1af0a3ab2eff10"
+    },
+    "after-failure": {
+      "output": {
+        "limit_bytes": 1048576,
+        "omitted_bytes": 0,
+        "omitted_bytes_saturated": false,
+        "retained_bytes": 0,
+        "truncated": false
+      },
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "lost_ack_redelivery_identical": true,
+  "checkpoint_after_truncation": true,
+  "guest_failure_and_timeout_refuse_publication": true,
+  "scope": "bounded HostPrint text capture; no full stream or binary fidelity qualification",
+  "source_commit": "c279bbe0626b23ad44aebd033a977dca41e1cbbf",
+  "workflow_run": "https://github.com/sokolaidev/maf-extensions/actions/runs/37152285593",
+  "kernel": "6.17.0-1022-azure",
+  "artifact": {
+    "id": 11284817196,
+    "name": "mxc-linux-recovery-37152285593-1",
+    "sha256": "1b8cf1dc5fe42207f16f55a756ca7b8237cfa5618a64fd334a9f6cf5441bb5a0"
+  }
+}
