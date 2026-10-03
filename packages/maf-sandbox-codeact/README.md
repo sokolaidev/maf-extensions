@@ -80,6 +80,8 @@ tools = make_codeact_tools(
 
 Keep the output sink separate from the agent's writable input store. Otherwise guest code could overwrite files through a channel that bypasses the host's file-write approval. See the [files sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/08_docker_codeact_files).
 
+With `withhold_guest_output=True`, a sink can supply `locate=lambda name: f".tool-results/execute_code/{name}"` to report a fixed landing folder in the Saved and not-written lists. Have `deliver` write to the same location and return it in `LandedArtifact.name` or `handle`. The pure synchronous locator receives only validated declared names, normalized as the sink requests; it must never depend on guest content or delivery state. A mismatched receipt falls back to the declared name and logs a warning. The default locator preserves existing results, and `per_call` sinks retain their folder-only reporting. See the [withholding contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/codeact.md#withholding-guest-output) for the information this mode still reveals.
+
 ## Host functions and network access
 
 Register host functions before passing the registry to the factory. Reading its combined policy seals it against later registration.

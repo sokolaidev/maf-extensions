@@ -6152,11 +6152,14 @@ class TestMakeFileStoreSink:
 
     def test_it_lands_under_the_call_id_and_reads_back_by_that_path(self):
         store = self._store()
-        landed = asyncio.run(make_file_store_sink(store).deliver(self._artifact("s.md", b"# hi")))
+        sink = make_file_store_sink(store)
+        artifact = self._artifact("s.md", b"# hi")
+        landed = asyncio.run(sink.deliver(artifact))
 
         assert asyncio.run(store.read("c0ffee/s.md")) == "# hi"
         assert landed.name == "s.md"
         assert landed.handle == "c0ffee/s.md"
+        assert landed.handle == f"{artifact.call_id}/{sink.locate(artifact.name)}"
 
     def test_two_calls_declaring_one_name_land_in_two_folders(self):
         """The stale read-back this shape exists to close: without the folder, the second call

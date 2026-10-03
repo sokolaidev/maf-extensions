@@ -122,6 +122,10 @@ Completion and the presence of each declared file still reveal information. `fil
 
 With a `per_call` sink, guidance names the host-generated call folder instead of listing landed files. A host exposing that folder controls access through its own file-reading tools. The sink's `display` value is not used in withheld results because it may contain guest text.
 
+For a fixed landing folder, configure `OutputSink(locate=lambda name: f".tool-results/execute_code/{name}", deliver=deliver)` and have `deliver` write to that same location. `locate` is a pure synchronous function of the validated, sink-normalized declared name and host configuration; it must not read guest content or delivery state. CodeAct calculates the locations before delivery and reports them in the withheld Saved and not-written lists. A receipt whose `name` or `handle` matches confirms the location; a mismatch logs a warning and reports the original declared name. Receipt text is never rendered. Names substituted by the framework still appear only as `outputs[i]` positions.
+
+The default locator is the identity map, preserving existing results. A custom locator removes the description's promise to edit the original file in place: the edited copy lands at the configured location. For `per_call` sinks, locations are relative to the host-minted call folder and the folder-only result stays unchanged. The filesystem sink locates names relative to its root, never by an absolute host path; the file-store sink's destination is `<call_id>/<locate(name)>`.
+
 Names expanded from hidden references are reported by position. `NONE` is refused because it leaves no artifact route. `MANIFEST` is refused because the guest chooses its returned names.
 
 Timeout messages are rebuilt without captured guest output. Host-supplied `output_reason` and stderr explicitly marked `producer_owns_stderr` remain visible in the report. These explain missing or truncated output and are not guest stream text.
@@ -162,6 +166,7 @@ Provider details stay in host logs. A control-plane timeout is not reported as p
 | Contract | State | Details |
 |---|---|---|
 | Exec, file channels, output modes and exec host tools | Implemented | [Package README](../../../packages/maf-sandbox-codeact/README.md) |
+| Withheld output locations calculated from the sink | Implemented | [#1682](https://github.com/sokolaidev/maf-extensions/issues/1682) (closed) by [#1683](https://github.com/sokolaidev/maf-extensions/pull/1683) (merged) |
 | Explicit Python runtime | Implemented | [Hyperlight profiles](../backends/hyperlight.md) |
 | Native runtime host tools | Open; nonempty registries are refused | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Inherited deployment network defaults | Open; hosts supply explicit allowlists | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) |
