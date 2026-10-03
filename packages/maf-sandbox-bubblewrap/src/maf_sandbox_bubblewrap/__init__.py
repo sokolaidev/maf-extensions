@@ -5,7 +5,11 @@ import warnings as _warnings
 from ._backend import BubblewrapSandboxBackend
 from ._config import BubblewrapSandboxConfig
 
-__all__ = ["BubblewrapSandboxBackend", "BubblewrapSandboxConfig"]
+__all__ = [
+    "BubblewrapSandboxBackend",
+    "BubblewrapSandboxConfig",
+    "MafSandboxBubblewrapExperimentalWarning",
+]
 
 
 class MafSandboxBubblewrapExperimentalWarning(UserWarning):

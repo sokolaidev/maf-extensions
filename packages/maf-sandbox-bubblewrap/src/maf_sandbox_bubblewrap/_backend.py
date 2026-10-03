@@ -30,6 +30,7 @@ from maf_sandbox import (
     SandboxEntry,
     SandboxKey,
     SandboxSpec,
+    SandboxTransferCapExceeded,
     ScopePurge,
     fold_disposal_failures,
 )
@@ -193,6 +194,8 @@ class _Sandbox:
             if "error" in response:
                 error = response["error"]
                 detail = str(response.get("detail", "Guest operation refused"))[:1024]
+                if error == "TransferCapExceeded":
+                    raise SandboxTransferCapExceeded(detail)
                 if error == "FileNotFoundError":
                     raise FileNotFoundError(detail)
                 if error == "TimeoutError":
@@ -231,7 +234,7 @@ class _Sandbox:
         """Write a regular file through no-follow guest descriptors."""
         data = content.encode("utf-8") if isinstance(content, str) else content
         if len(data) > FILE_LIMIT:
-            raise ValueError("File exceeds transfer limit")
+            raise SandboxTransferCapExceeded("File exceeds transfer limit")
         await self._request(
             "write", path=path, directory=working_directory, data=base64.b64encode(data).decode()
         )
@@ -287,7 +290,7 @@ class _Sandbox:
         )
         data = base64.b64decode(result["data"], validate=True)
         if len(data) > limit:
-            raise ValueError("File exceeds transfer limit")
+            raise SandboxTransferCapExceeded("File exceeds transfer limit")
         return data
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
@@ -531,11 +534,14 @@ class BubblewrapSandboxBackend:
         async with self._serial:
             try:
                 for record in self.config.state_root.glob("*.json"):
-                    value = self._read_record(record)
-                    if value["identity"][:4] == _identity(key, "")[:4] and (
-                        kind is None or value["identity"][4] == kind
-                    ):
-                        await self._dispose_record(record, instance_id)
+                    try:
+                        value = self._read_record(record)
+                        if value["identity"][:4] == _identity(key, "")[:4] and (
+                            kind is None or value["identity"][4] == kind
+                        ):
+                            await self._dispose_record(record, instance_id)
+                    except Exception as error:
+                        failures.append(DisposalFailure("refused", str(error)))
             except Exception as error:
                 failures.append(DisposalFailure("refused", str(error)))
         return fold_disposal_failures(failures)

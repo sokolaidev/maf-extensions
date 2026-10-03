@@ -1,6 +1,7 @@
 """Portable admission checks and opt-in tests against actual Linux namespaces and cgroups."""
 
 import asyncio
+import base64
 import json
 import os
 import socket
@@ -11,10 +12,15 @@ from uuid import uuid4
 
 import pytest
 from maf_sandbox import (
+    DeclaredOutput,
     Egress,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    SandboxTransferCapExceeded,
+    TransferLimits,
+    collect_outputs,
+    make_file_system_sink,
 )
 from maf_sandbox.conformance import (
     PosixGuestSubject,
@@ -28,9 +34,14 @@ from maf_sandbox.conformance import (
 )
 
 from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
+from maf_sandbox_bubblewrap._backend import FILE_LIMIT
 
 live = pytest.mark.skipif(
-    sys.platform != "linux" or "MAF_BWRAP_RUNTIME" not in os.environ,
+    sys.platform != "linux"
+    or not all(
+        os.environ.get(name)
+        for name in ("MAF_BWRAP_RUNTIME", "MAF_BWRAP_STATE", "MAF_BWRAP_CGROUP")
+    ),
     reason="requires an explicitly provisioned Linux runtime and delegated cgroup v2 subtree",
 )
 
@@ -88,6 +99,45 @@ def test_live_protocol_conformance(suite: str) -> None:
                     await assert_reclaim_conformance(subject)
             else:
                 await assert_exec_conformance(subject)
+        finally:
+            assert await backend.dispose(identity) is None
+
+    asyncio.run(run())
+
+
+@live
+def test_live_transfer_caps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run() -> None:
+        backend = await BubblewrapSandboxBackend.create(config())
+        identity = key()
+        spec = SandboxSpec(
+            kind="transfer",
+            work_dir="/maf-sandbox/work",
+            declared_outputs=(DeclaredOutput(path="result"),),
+            files_out=TransferLimits(max_bytes_per_file=1, max_total_bytes=1, max_files=1),
+        )
+        sandbox = await backend.acquire(identity, spec)
+        try:
+            await sandbox.write_file("result", b"a", working_directory=".")
+            original_stat = sandbox.stat_file
+
+            async def grow_after_stat(path: str, *, working_directory: str):
+                entry = await original_stat(path, working_directory=working_directory)
+                await sandbox.write_file(path, b"grown", working_directory=working_directory)
+                return entry
+
+            monkeypatch.setattr(sandbox, "stat_file", grow_after_stat)
+            with pytest.raises(SandboxTransferCapExceeded):
+                await collect_outputs(sandbox, spec, sink=make_file_system_sink(tmp_path))
+            assert not list(tmp_path.iterdir())
+            with pytest.raises(SandboxTransferCapExceeded):
+                await sandbox._request(
+                    "write",
+                    path="result",
+                    directory=".",
+                    data=base64.b64encode(bytes(FILE_LIMIT + 1)).decode(),
+                )
+            assert await sandbox.read_file("result", working_directory=".", max_bytes=5) == b"grown"
         finally:
             assert await backend.dispose(identity) is None
 
