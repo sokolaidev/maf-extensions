@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -475,12 +477,20 @@ def main() -> int:
     parser.add_argument("--preserve-layout", choices=("true", "false"), required=True)
     parser.add_argument("--direction", choices=("TB", "LR"), required=True)
     parser.add_argument("--timeout", type=float, required=True)
+    parser.add_argument("--export-config")
+    parser.add_argument("--require-layout", action="store_true")
     args = parser.parse_args()
     try:
         with Path("input.xml").open("rb") as source:
             data = source.read(MAX_INPUT_BYTES + 1)
         if len(data) > MAX_INPUT_BYTES:
             raise DiagramError("XML exceeds the 1 MiB input limit")
+        deadline = time.monotonic() + args.timeout
+        if args.require_layout:
+            document = _parse(data.decode("utf-8"))
+            models = [document] if document.tag == "mxGraphModel" else _pages(document)
+            if any(not _has_layout(_cells(model)) for model in models):
+                raise DiagramError("Stored diagrams must have complete geometry for export")
         result = convert(
             data.decode("utf-8"),
             preserve_layout=args.preserve_layout == "true",
@@ -488,6 +498,13 @@ def main() -> int:
             timeout=args.timeout,
         )
         Path("diagram.drawio").write_text(result, encoding="utf-8", newline="\n")
+        if args.export_config:
+            runtime = runpy.run_path("/opt/maf-drawio/export.py")
+            options = json.loads(Path(args.export_config).read_text(encoding="utf-8"))
+            try:
+                runtime["export_document"](result, options, deadline)
+            except ValueError as exc:
+                raise DiagramError(str(exc)) from exc
     except (DiagramError, UnicodeError) as exc:
         print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
         return 2
@@ -495,7 +512,14 @@ def main() -> int:
         print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
         return 3
     except FileNotFoundError:
-        print("The draw.io sandbox needs Python 3 and Graphviz dot", file=sys.stderr)
+        print(
+            "The draw.io sandbox needs Python 3, Graphviz dot"
+            + (" and the configured export runtime" if args.export_config else ""),
+            file=sys.stderr,
+        )
+        return 3
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
         return 3
     except (OSError, ValueError, IndexError, KeyError):
         print("The draw.io converter could not complete the file", file=sys.stderr)
