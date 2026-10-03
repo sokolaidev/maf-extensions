@@ -1907,9 +1907,10 @@ async def _collect(
         for name in declared
     )
     locations: dict[str, str] = {}
+    delivered_names: list[str] | None = None
     try:
         if withhold and not sink.per_call and sink.locate is not OutputSink.locate:
-            sink, locations = _located_sink(sink, declared)
+            sink, locations, delivered_names = _located_sink(sink, declared)
         landed = await collect_outputs(
             sandbox,
             spec,
@@ -1944,10 +1945,13 @@ async def _collect(
         argument=None if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
         candidates=candidates,
         locations=locations,
+        delivered_names=delivered_names,
     )
 
 
-def _located_sink(sink: OutputSink, declared: Sequence[str]) -> tuple[OutputSink, dict[str, str]]:
+def _located_sink(
+    sink: OutputSink, declared: Sequence[str]
+) -> tuple[OutputSink, dict[str, str], list[str]]:
     """Calculate locations before reading guest bytes, then check each delivery receipt."""
     locations = {
         name: sink.locate(
@@ -1958,6 +1962,7 @@ def _located_sink(sink: OutputSink, declared: Sequence[str]) -> tuple[OutputSink
         for name in declared
     }
     originals = {unicodedata.normalize("NFC", name): name for name in declared}
+    delivered_names: list[str] = []
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
         accepted = await sink.deliver(artifact)
@@ -1967,10 +1972,10 @@ def _located_sink(sink: OutputSink, declared: Sequence[str]) -> tuple[OutputSink
                 "execute_code: output sink locate disagrees with delivery; using declared name"
             )
             locations[name] = name
-        # Presence belongs to the delivered declaration, not a sink-authored receipt name.
-        return replace(accepted, name=artifact.name)
+        delivered_names.append(artifact.name)
+        return accepted
 
-    return replace(sink, deliver=deliver), locations
+    return replace(sink, deliver=deliver), locations, delivered_names
 
 
 async def _read_manifest(
@@ -2060,6 +2065,7 @@ def _format_landed(
     argument: str | None = None,
     candidates: frozenset[str] | None = None,
     locations: Mapping[str, str] | None = None,
+    delivered_names: Sequence[str] | None = None,
 ) -> str:
     """What the model is told about the files: what landed, and what is absent.
 
@@ -2082,7 +2088,12 @@ def _format_landed(
     rendered to hold none. Locations are calculated from validated declarations before delivery;
     substituted declarations still render only as argument positions.
     """
-    delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
+    delivered = {
+        unicodedata.normalize("NFC", name)
+        for name in (
+            delivered_names if delivered_names is not None else [item.name for item in landed]
+        )
+    }
     locations = locations or {}
     lines: list[str] = []
     # Answered once, above the two renderings that need it: a name that landed is reported as

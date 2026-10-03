@@ -1456,6 +1456,43 @@ class TestLocatedWithheldOutputs:
         assert "locate disagrees with delivery" in caplog.text
         assert "GUEST-SECRET" not in caplog.text
 
+    @pytest.mark.parametrize("mismatch", [False, True])
+    @pytest.mark.parametrize("partial", [False, True])
+    def test_observer_keeps_sink_receipts_for_complete_and_partial_delivery(
+        self, mismatch, partial
+    ):
+        sink, _ = self._sink(receipt="name", mismatch=mismatch)
+        original_deliver = sink.sink.deliver
+
+        async def deliver(artifact):
+            if artifact.name == "second.txt":
+                raise SandboxOutputError("second delivery refused")
+            return await original_deliver(artifact)
+
+        sink.sink = replace(sink.sink, deliver=deliver)
+        recorder = _Recorder()
+        sandbox = _ProducingSandbox()
+        produced = {"answer.txt": b"GUEST-SECRET"}
+        if partial:
+            produced["second.txt"] = b"second"
+        out = _run_producing(
+            _withholding_tool(sandbox, sink, observer=recorder),
+            sandbox,
+            produced,
+            outputs=list(produced),
+        )
+        event = recorder.one(OutputsCollected)
+        expected = "other/GUEST-SECRET" if mismatch else ".tool-results/execute_code/answer.txt"
+        assert [(item.name, item.size_bytes) for item in event.landed] == [(expected, 12)]
+        assert event.refusal == ("SandboxOutputError" if partial else None)
+        assert "GUEST-SECRET" not in out
+        if partial:
+            assert "could not be saved" in out
+        else:
+            rendered = "answer.txt" if mismatch else expected
+            assert f"Saved:\n- {rendered}" in out
+            assert "Not written" not in out
+
     @pytest.mark.parametrize("normalization", list(NameNormalization))
     def test_locate_uses_the_sinks_normalized_name(self, normalization):
         sink, inputs = self._sink(normalization=normalization)
