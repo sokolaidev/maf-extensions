@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.3.4...maf-sandbox-drawio-v0.3.5) (2026-10-03)
+
+
+### Fixes
+
+* preserve trusted call integrity in drawio results ([#1653](https://github.com/sokolaidev/maf-extensions/issues/1653)) ([dae8c04](https://github.com/sokolaidev/maf-extensions/commit/dae8c0454dc02aa8627812f4981e18b07c613717))
+
 ## [0.3.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.3.3...maf-sandbox-drawio-v0.3.4) (2026-10-02)
 
 
