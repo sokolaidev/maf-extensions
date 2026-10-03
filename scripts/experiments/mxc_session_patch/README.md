@@ -32,7 +32,7 @@ python scripts/experiments/mxc_native_state_probe.py --helper <built-mxc-session
 cargo test --locked --manifest-path <mxc-checkout>/src/Cargo.toml -p hyperlight_common --features maf-session-preview -- --test-threads=1
 ```
 
-The Windows measurement used Rust 1.98.0 with `x86_64-pc-windows-gnu` and the portable GCC toolchain identified in [the native experiment](../mxc_hyperlight_probe.md#native-state-and-restart-experiment). Select that toolchain explicitly to reproduce it. Linux/KVM and MSVC builds have not been qualified. Checkpoint and diagnostic files stay outside Git; diagnostic output may contain host paths. The fixed-program supervisor is not production process-tree supervision or a bounded output transport.
+The Windows measurement used Rust 1.98.0 with `x86_64-pc-windows-gnu` and the portable GCC toolchain identified in [the native experiment](../mxc_hyperlight_probe.md#native-state-and-restart-experiment). Select that toolchain explicitly to reproduce it. The later [host publication continuation](HOST_PUBLICATION.md#linux-evidence) qualifies the fixed native and publication probes on Linux/KVM; MSVC remains unqualified. Checkpoint and diagnostic files stay outside Git; diagnostic output may contain host paths. The fixed-program supervisor is not production process-tree supervision or a bounded output transport.
 
 ## Measured evidence
 
@@ -51,7 +51,11 @@ The Windows measurement used Rust 1.98.0 with `x86_64-pc-windows-gnu` and the po
 | Explicit close | Further execution refused |
 | Truncated metadata, missing blobs, wrong compatibility key | Each refused without a success report |
 
-These controls establish native behavior on one tested host. They do not qualify power-loss durability, actual host reboot, another machine, Linux, mounted files, network enforcement, arbitrary threads/sockets, adversarial snapshot inputs, cancellation, resource quotas or stdout/stderr fidelity. Capturing after successful executions is exercised; atomic host-store commitment and acknowledgment recovery remain unimplemented. The pre-PR repository gate passed: 12,958 tests passed and 749 skipped, with lint, format, type and documentation checks also passing. Markdown-block and authenticated tracker checks passed separately. Hosted CI is a separate result.
+These Windows controls establish native behavior on one tested host. They do not qualify power-loss durability, actual host reboot, another machine, Linux, mounted files, network enforcement, arbitrary threads/sockets, adversarial snapshot inputs, cancellation, resource quotas or stdout/stderr fidelity. Capturing after successful executions is exercised; atomic host-store commitment and acknowledgment recovery were outside this initial native measurement and are exercised by the continuation below. The pre-PR repository gate passed: 12,958 tests passed and 749 skipped, with lint, format, type and documentation checks also passing. Markdown-block and authenticated tracker checks passed separately. Hosted CI is a separate result.
+
+## Host publication continuation
+
+The [local publication experiment](HOST_PUBLICATION.md) adds checkpoint/result transactions, interrupted-call refusal, saved-result redelivery, and a fixed CSV-to-chart workflow. Its independent Windows/WHP and hosted Linux/KVM evidence extends these measurements. General transport, file and recovery limits remain documented there.
 
 ## Remove or replace
 
