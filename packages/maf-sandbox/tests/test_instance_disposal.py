@@ -209,3 +209,83 @@ def test_keep_preserves_access_after_instance_delete_failure():
         assert await router.acquire(KEY, SPEC) is sandbox
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_sibling_program_specs_keep_separate_backend_pins(admitted):
+    from maf_sandbox import ProgramRequirements, SandboxBackendUnavailable
+
+    first = _Engine(
+        "first",
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        ),
+    )
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS,
+        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.FILES_OUT},
+    )
+    second = _Engine("second", declarations=declarations)
+    backup = _Engine("backup", declarations=declarations)
+    router = _router(first, second, backup, selection=Selection.PER_SPEC)
+    small = replace(SPEC, program=ProgramRequirements(), requires=frozenset())
+    other = replace(small, requires=frozenset({Capability.FILES_OUT}))
+
+    async def acquire(spec, owner):
+        admission = await router.enter_call(KEY, spec, owner=owner) if admitted else None
+        try:
+            return await router.acquire(KEY, spec, _admission=admission)
+        finally:
+            if admission is not None:
+                await router.release_call(KEY, spec.kind, owner=owner)
+
+    async def scenario():
+        a = await acquire(small, "first")
+        b = await acquire(other, "second")
+        assert a is not b
+        assert a in first.instances.values() and b in second.instances.values()
+        assert await acquire(small, "reuse-first") is a
+        assert await acquire(other, "reuse-second") is b
+        assert await router.dispose_kind(KEY, SPEC.kind, instance_id=a.instance_id, timeout=1)
+
+        async def unavailable(key, spec):
+            raise SandboxBackendUnavailable("offline")
+
+        second.acquire = unavailable
+        with pytest.raises(SandboxBackendUnavailable):
+            await acquire(other, "failed-reuse")
+        assert not backup.instances
+
+    asyncio.run(scenario())
+
+
+def test_disposing_one_program_instance_preserves_its_siblings_channel():
+    from maf_sandbox import ProgramRequirements
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    original = InProcessProgramChannel(name="original")
+    engine = _Engine(declarations=replace(FAKE_BACKEND_DECLARATIONS, program_channels=(original,)))
+    router = _router(engine)
+    one = replace(SPEC, image="one", program=ProgramRequirements())
+    two = replace(one, image="two")
+
+    async def scenario():
+        a = await router.acquire(KEY, one)
+        b = await router.acquire(KEY, two)
+        await router.dispose_kind(KEY, SPEC.kind, instance_id=a.instance_id, timeout=1)
+        changed = InProcessProgramChannel(name="changed")
+        engine._declarations = replace(engine.declarations, program_channels=(changed,))
+        admission = await router.enter_call(KEY, two, owner="two")
+        try:
+            assert admission.channel is original
+            assert await router.acquire(KEY, two, _admission=admission) is b
+        finally:
+            await router.release_call(KEY, two.kind, owner="two")
+        admission = await router.enter_call(KEY, one, owner="new-one")
+        try:
+            assert admission.channel is changed
+        finally:
+            await router.release_call(KEY, one.kind, owner="new-one")
+
+    asyncio.run(scenario())

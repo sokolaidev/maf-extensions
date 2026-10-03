@@ -189,6 +189,7 @@ def test_publication_failure_records_execution_without_claiming_delivery():
     assert event.outcome == "delivery_uncertain"
     assert event.response_bytes == 0
     assert run._delivered == run._delivered_bytes == 0
+    assert run._reserved == 1 and run._reserved_bytes == len('"value"')
     with pytest.raises(RuntimeError, match="closed"):
         asyncio.run(run.call("value", publish=_accept))
     assert effects == ["executed"]
@@ -239,6 +240,7 @@ def test_cancellation_during_publication_closes_the_run():
     asyncio.run(exercise())
     assert effects == ["executed"]
     assert observer.events[-1].outcome == "delivery_uncertain"
+    assert run._reserved == 1 and run._reserved_bytes == len('"value"')
 
 
 def test_close_during_identity_mint_prevents_host_execution():
@@ -433,8 +435,12 @@ def test_a_pinned_channel_cannot_switch_to_fit_a_later_program():
         await router.acquire(_KEY, small)
         with pytest.raises(SandboxTransferLimitsNotPermitted):
             await router.acquire(_KEY, larger)
-        with pytest.raises(SandboxTransferLimitsNotPermitted):
-            await router.enter_call(_KEY, larger, owner="later")
+        admission = await router.enter_call(_KEY, larger, owner="later")
+        try:
+            with pytest.raises(SandboxTransferLimitsNotPermitted):
+                await router.acquire(_KEY, larger, _admission=admission)
+        finally:
+            await router.release_call(_KEY, larger.kind, owner="later")
         await router.dispose(_KEY)
         admission = await router.enter_call(_KEY, larger, owner="fresh")
         assert admission.channel.mode == "runtime"
@@ -669,3 +675,39 @@ def test_channel_transfer_refusal_does_not_hide_compatible_choices(placement):
     else:
         result = asyncio.run(router.acquire(_KEY, _SPEC))
         assert result is (second.sandbox if placement == "backend" else first.sandbox)
+
+
+def test_serialization_timeout_refunds_only_the_unpublished_value(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from maf_sandbox import _host_tools as module
+    from maf_sandbox.testing import InProcessSandbox
+
+    clock = [100.0]
+    dumps = json.dumps
+
+    def serialize(*args, **kwargs):
+        encoded = dumps(*args, **kwargs)
+        clock[0] += 1
+        return encoded
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(json, "dumps", serialize)
+    run, observer, effects = _run(limit=1)
+    run._registry._response_limits = TransferLimits(10, 10, 1)
+    policy = module.BoundedHostToolPolicy(run, InProcessSandbox(), deadline=200, timeout=0.5)
+
+    async def exercise():
+        answer = await policy.call("value", publish=_accept, framing_bytes=3)
+        assert answer.refusal and "timed out" in answer.refusal
+        assert run._reserved == run._reserved_bytes == 0
+        assert run._delivered == run._delivered_bytes == 0
+        assert observer.events[-1].calls == 1 and observer.events[-1].host_completed
+        monkeypatch.setattr(json, "dumps", dumps)
+        assert (await policy.call("value", publish=_accept, framing_bytes=3)).ok
+        assert run._reserved == 1 and run._reserved_bytes == 10
+        assert observer.events[-1].calls == 2 and observer.events[-1].response_bytes == 10
+        assert effects == ["executed", "executed"]
+
+    asyncio.run(exercise())

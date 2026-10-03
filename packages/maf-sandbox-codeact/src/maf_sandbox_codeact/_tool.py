@@ -135,6 +135,8 @@ _MAY_HAVE_LANDED = "Some of them may already have been saved; do not assume none
 
 #: Eight artifacts is a generous single call and a cap that actually bounds something; the
 #: byte ceilings are the shared defaults, so only the count is this workload's own opinion.
+# Shared inputs leave room for the default program within a 32 MiB / 64-file backend.
+_DEFAULT_FILES_IN = replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=24 * 1024 * 1024, max_files=63)
 _DEFAULT_FILES_OUT = replace(DEFAULT_TRANSFER_LIMITS, max_files=8)
 
 #: Writing an expression and expecting a REPL to echo it is the commonest way a first CodeAct
@@ -196,7 +198,7 @@ def codeact_sandbox_spec(
     image_id: str | None = None,
     *,
     outputs: CodeactOutputs = CodeactOutputs.NONE,
-    files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
+    files_in: TransferLimits = _DEFAULT_FILES_IN,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     host_tools: HostToolRegistry | None = None,
     egress_allow: Sequence[str | EgressRule] = (),
@@ -285,7 +287,7 @@ def make_codeact_tools(
     image: str | None = None,
     image_id: str | None = None,
     exec_timeout_seconds: int = 120,
-    files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
+    files_in: TransferLimits = _DEFAULT_FILES_IN,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,

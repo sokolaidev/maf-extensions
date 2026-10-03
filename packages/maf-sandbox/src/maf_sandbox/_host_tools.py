@@ -809,6 +809,7 @@ class _Called:
     host_started: bool = False
     host_completed: bool = False
     publishing: bool = False
+    reserved_bytes: int = 0
 
 
 class HostToolRun:
@@ -1054,6 +1055,7 @@ class HostToolRun:
                 except asyncio.CancelledError:
                     if bound is None or not bound.expired or time.monotonic() >= bound.deadline:
                         raise
+                    self._refund_prepared_value(called)
                     result = bound.refusal = HostToolCallResult(
                         refusal="Error: the host tool timed out; effects may have occurred"
                     )
@@ -1077,6 +1079,7 @@ class HostToolRun:
                 self.close()
                 outcome = "delivery_uncertain"
             else:
+                self._refund_prepared_value(called)
                 outcome = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
             raise
         finally:
@@ -1102,6 +1105,12 @@ class HostToolRun:
                     ),
                     self._logger,
                 )
+
+    def _refund_prepared_value(self, called: _Called) -> None:
+        if called.reserved_bytes:
+            self._reserved -= 1
+            self._reserved_bytes -= called.reserved_bytes
+            called.reserved_bytes = 0
 
     async def _run_host_tool_call(
         self,
@@ -1343,6 +1352,8 @@ class HostToolRun:
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
         self._reserved_bytes += crossing
+        if called is not None:
+            called.reserved_bytes = crossing
         return HostToolCallResult(value_json=encoded)
 
 
