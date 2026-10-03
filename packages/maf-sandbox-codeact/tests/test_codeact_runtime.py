@@ -25,6 +25,7 @@ from maf_sandbox import (
     HostToolRegistry,
     LandedArtifact,
     OutputSink,
+    ProgramRequirements,
     SandboxCapabilityDenied,
     SandboxCapabilityNotSupported,
     SandboxKey,
@@ -590,6 +591,24 @@ def test_unconfigured_hosts_still_receive_no_tools():
         )
         == []
     )
+
+
+@pytest.mark.parametrize("router", [None, SandboxRouter([])], ids=["no-router", "no-backend"])
+def test_unconfigured_hosts_ignore_unsupported_program_profiles(router):
+    assert (
+        make_codeact_tools(
+            router, "analyst", _context(), program=ProgramRequirements(profile="other-python")
+        )
+        == []
+    )
+
+
+def test_configured_hosts_reject_unsupported_program_profiles():
+    program = ProgramRequirements(profile="other-python")
+    with pytest.raises(ValueError, match="python-portable-v1"):
+        _make(runtime=None, program=program)
+    with pytest.raises(ValueError, match="python-portable-v1"):
+        codeact_sandbox_spec(program=program)
 
 
 @pytest.mark.parametrize(
