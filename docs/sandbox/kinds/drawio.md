@@ -59,6 +59,8 @@ Image export renders the validated document with Draw.io Desktop rather than rec
 
 Formatting-only HTML labels are supported. DejaVu Sans, Serif and Sans Mono replace the documented Arial/Helvetica, Times and Courier aliases; every selected font variant is verified before rendering any format. SVG embeds image and font data, but rich labels use `foreignObject` and need a compatible viewer. This profile does not promise exhaustive glyph coverage or identical typography to arbitrary editor installations.
 
+Input SVG CSS must not reference resources: data URIs and the `url()`, `image-set()` and `src()` functions are refused, except for supported local fragment attributes such as `fill="url(#paint)"`. Image attributes pass through the embedded-image validator separately. The exporter injects verified font data after validating the native SVG output.
+
 Bundled assets are verified once per document and cached. Every repeated reference still counts toward the prepared-XML budget before expanded styles are retained or serialized. Unsupported content is refused rather than silently replaced with a different rendering.
 
 ## XML and layout

@@ -271,6 +271,18 @@ async def check(image: str, output: Path) -> None:
             "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
             "indicatorImage=data:image/svg+xml," + base64.b64encode(stylesheet_svg).decode(),
         )
+        css = 'background-image:image-set("data:image/png;base64,'
+        css += base64.b64encode(oversized).decode() + '" 1x)'
+        for location in ("attribute", "stylesheet"):
+            svg = ET.Element("svg", {"xmlns": "http://www.w3.org/2000/svg"})
+            if location == "attribute":
+                svg.set("style", css)
+            else:
+                ET.SubElement(svg, "style").text = "rect {" + css + "}"
+            cases[f"embedded-svg-css-{location}"] = diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=data:image/svg+xml," + base64.b64encode(ET.tostring(svg)).decode(),
+            )
         for encoding in ("utf-16", "utf-32"):
             resource = (
                 '<!DOCTYPE svg [<!ENTITY text "expanded">]>'

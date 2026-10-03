@@ -42,7 +42,10 @@ FONT_ALIASES = {
     "Courier New": "DejaVu Sans Mono",
     "monospace": "DejaVu Sans Mono",
 }
-UNSAFE = re.compile(r"(?:https?:|file:|ftp:|javascript:|@import|url\s*\(|expression\s*\(|\\)", re.I)
+UNSAFE = re.compile(
+    r"(?:https?:|file:|ftp:|javascript:|data:|@import|(?:url|src|image-set|expression)\s*\(|\\)",
+    re.I,
+)
 
 
 class Label(HTMLParser):
@@ -271,7 +274,7 @@ def prepare_document(xml: str, manifest: dict) -> str:
                         setting = FONT_ALIASES.get(setting, setting)
                         if setting not in manifest["fonts"]:
                             raise ValueError("Font is not in the offline font set")
-                    elif UNSAFE.search(part) or "data:" in part.lower():
+                    elif UNSAFE.search(part):
                         raise ValueError("Style has an external or unsupported resource")
                     budget.add(attribute_size(key) + len(sep) + attribute_size(setting) + 1)
                     normalized.append(key + sep + setting)
@@ -285,7 +288,7 @@ def prepare_document(xml: str, manifest: dict) -> str:
                 label = Label(convert_charrefs=True)
                 label.feed(value)
                 label.close()
-            elif UNSAFE.search(value) or "data:" in value.lower():
+            elif UNSAFE.search(value):
                 raise ValueError("Diagram metadata has an external or unsupported resource")
         if element.tag == "mxCell" and "style" not in element.attrib:
             budget.add(len(' style="fontFamily=DejaVu Sans;"'))
