@@ -210,6 +210,7 @@ class TestArtifactShapes:
             "deliver",
             "normalization",
             "per_call",
+            "locate",
         }
 
     def test_an_artifact_carries_no_call_id_unless_it_was_collected_under_one(self):
@@ -1336,6 +1337,7 @@ class TestMakeFileSystemSink:
         assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
         assert landed.name == "a.txt"
         assert landed.handle == str((tmp_path / "out" / "a.txt").resolve())
+        assert sink.locate("a.txt") == landed.name
 
     def test_it_creates_the_parents_a_nested_name_needs(self, tmp_path):
         """A landing name may carry separators, and nothing upstream creates the directories."""

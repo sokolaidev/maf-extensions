@@ -255,6 +255,10 @@ class NameNormalization(StrEnum):
     NONE = "none"
 
 
+def _identity_location(name: str) -> str:
+    return name
+
+
 @dataclass(frozen=True)
 class OutputSink:
     """Where a host lands artifacts, and how it wants their names spelled.
@@ -268,6 +272,12 @@ class OutputSink:
     :attr:`LandedArtifact.display` — a string the sink composed from the guest's own bytes.  A
     sink that ignores ``call_id`` leaves this false and no kind says anything about a folder.
 
+    ``locate`` is a pure synchronous map from a validated landing name to its model-readable
+    path, relative to the call folder for a ``per_call`` sink. It defaults to the name itself.
+    It must depend only on that name and host configuration, never on guest bytes or delivery
+    state. A withholding kind may render this value after checking it against the receipt's
+    ``name`` or ``handle``; neither receipt field is itself safe to render.
+
     There is deliberately **no confidentiality cap here**.  That value is an opaque
     host-vocabulary string with no ordering, so nothing in a library can rank two of them:
     there is one value from one source — the host's outbound cap, supplied once where the
@@ -277,6 +287,7 @@ class OutputSink:
     deliver: Callable[[Artifact], Awaitable[LandedArtifact]]
     normalization: NameNormalization = NameNormalization.NFC
     per_call: bool = False
+    locate: Callable[[str], str] = _identity_location
 
 
 def _already_there(name: str) -> str:

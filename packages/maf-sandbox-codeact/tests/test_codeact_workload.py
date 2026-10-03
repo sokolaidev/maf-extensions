@@ -1375,6 +1375,148 @@ class TestWithholdingStillLandsFiles:
         assert sink.names == []
 
 
+class TestLocatedWithheldOutputs:
+    def test_reported_path_reads_back_the_delivered_bytes(self):
+        from agent_framework import InMemoryAgentFileStore
+
+        sink = _RecordingSink()
+        store = InMemoryAgentFileStore()
+
+        def locate(name):
+            return f".tool-results/execute_code/{name}"
+
+        async def deliver(artifact):
+            destination = locate(artifact.name)
+            await store.write(destination, artifact.content.decode())
+            return LandedArtifact(name=artifact.name, display="unused", handle=destination)
+
+        sink.sink = replace(sink.sink, locate=locate, deliver=deliver)
+        sandbox = _ProducingSandbox()
+        out = _run_producing(
+            _withholding_tool(sandbox, sink),
+            sandbox,
+            {"answer.txt": b"computed answer"},
+            outputs=["answer.txt"],
+        )
+        destination = out.split("Saved:\n- ", 1)[1].splitlines()[0]
+        assert asyncio.run(store.read(destination)) == "computed answer"
+
+    def _sink(self, *, receipt="handle", mismatch=False, normalization=NameNormalization.NFC):
+        sink = _RecordingSink(normalization)
+        inputs = []
+
+        def locate(name):
+            assert not sink.delivered, "locations must be computed before any delivery"
+            inputs.append(name)
+            return f".tool-results/execute_code/{name}"
+
+        async def deliver(artifact):
+            sink.delivered.append(artifact)
+            destination = f".tool-results/execute_code/{artifact.name}"
+            if mismatch:
+                destination = "other/" + artifact.content.decode()
+            return LandedArtifact(
+                name=destination if receipt == "name" else artifact.name,
+                handle=destination if receipt == "handle" else "private-handle",
+                display=artifact.content.decode(),
+            )
+
+        sink.sink = replace(sink.sink, locate=locate, deliver=deliver)
+        return sink, inputs
+
+    @pytest.mark.parametrize("receipt", ["handle", "name"])
+    def test_saved_and_missing_locations_are_computed_only_from_declarations(self, receipt):
+        sink, inputs = self._sink(receipt=receipt)
+        sandbox = _ProducingSandbox()
+        tool = _withholding_tool(sandbox, sink)
+        out = _run_producing(
+            tool, sandbox, {"answer.txt": b"GUEST-SECRET"}, outputs=["answer.txt", "missing.txt"]
+        )
+        assert inputs == ["answer.txt", "missing.txt"]
+        assert "Saved:\n- .tool-results/execute_code/answer.txt" in out
+        assert (
+            "Not written by the program, so not saved: '.tool-results/execute_code/missing.txt'"
+            in out
+        )
+        assert "GUEST-SECRET" not in out
+
+    @pytest.mark.parametrize("receipt", ["handle", "name"])
+    def test_a_mismatched_receipt_falls_back_without_rendering_it(self, receipt, caplog):
+        sink, _ = self._sink(receipt=receipt, mismatch=True)
+        sandbox = _ProducingSandbox()
+        out = _run_producing(
+            _withholding_tool(sandbox, sink),
+            sandbox,
+            {"answer.txt": b"GUEST-SECRET"},
+            outputs=["answer.txt"],
+        )
+        assert "Saved:\n- answer.txt" in out
+        assert ".tool-results" not in out
+        assert "GUEST-SECRET" not in out
+        assert "locate disagrees with delivery" in caplog.text
+        assert "GUEST-SECRET" not in caplog.text
+
+    @pytest.mark.parametrize("normalization", list(NameNormalization))
+    def test_locate_uses_the_sinks_normalized_name(self, normalization):
+        sink, inputs = self._sink(normalization=normalization)
+        sandbox = _ProducingSandbox()
+        name = "cafe\u0301.txt"
+        out = _run_producing(
+            _withholding_tool(sandbox, sink), sandbox, {name: b"ok"}, outputs=[name]
+        )
+        expected = "caf\u00e9.txt" if normalization is NameNormalization.NFC else name
+        assert inputs == [expected]
+        assert f"Saved:\n- .tool-results/execute_code/{expected}" in out
+        assert "Not written" not in out
+
+    @pytest.mark.parametrize("landed", [True, False])
+    def test_substituted_names_still_render_as_positions(self, landed):
+        name = TestALandedNameIsNotEchoedEither.SUBSTITUTED
+        out = _format_landed(
+            [LandedArtifact(name=name, display="GUEST-SECRET")] if landed else [],
+            [name],
+            withhold=True,
+            candidates=frozenset({name}),
+            locations={name: f".tool-results/{name}"},
+        )
+        assert "outputs[0]" in out
+        assert name not in out
+        assert ".tool-results" not in out
+        assert "GUEST-SECRET" not in out
+
+    def test_a_custom_locator_removes_the_in_place_promise(self):
+        sink, inputs = self._sink()
+        tool = _withholding_tool(_ProducingSandbox(), sink, file_store=_CountingStore({}))
+        assert "edit one in place" not in tool.description
+        assert "saved copy goes to the sink's configured location" in tool.description
+        assert "not where it landed" not in tool.description
+        assert inputs == []
+
+    def test_invalid_declarations_never_reach_locate(self):
+        sink, inputs = self._sink()
+        tool = _withholding_tool(_ProducingSandbox(), sink)
+        assert "cannot be saved" in _run(tool, "pass", outputs=["../escape.txt"])
+        assert inputs == []
+        assert sink.delivered == []
+
+    def test_default_and_explicit_identity_results_are_byte_identical(self):
+        results = []
+        for explicit in (False, True):
+            sink = _RecordingSink()
+            if explicit:
+                sink.sink = replace(sink.sink, locate=lambda name: name)
+            sandbox = _ProducingSandbox()
+            results.append(
+                _run_producing(
+                    _withholding_tool(sandbox, sink),
+                    sandbox,
+                    {"a.txt": b"ok"},
+                    outputs=["a.txt", "missing.txt"],
+                )
+            )
+        assert results[0] == results[1]
+
+
 class TestAWithheldStreamIsNeverRead:
     """Nothing in the withheld rendering reads the stream text — not to render it and not to
     measure it — so a `str` a plain encode refuses, which a backend's JSON can carry through,

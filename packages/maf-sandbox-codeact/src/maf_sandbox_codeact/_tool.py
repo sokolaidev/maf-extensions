@@ -81,6 +81,7 @@ if TYPE_CHECKING:
 
     from agent_framework import AgentFileStore
     from maf_sandbox import (
+        Artifact,
         FileStoreProvenance,
         HostToolAggregate,
         HostToolRegistry,
@@ -323,7 +324,7 @@ def make_codeact_tools(
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
-            with whether it exited cleanly and the model's own declared names instead. No
+            with whether it exited cleanly and the declared names or their sink locations. No
             guest-authored text survives into the result — but the values that replace it were
             still chosen by a program the model wrote. The workload therefore claims
             ``SourceIntegrity.UNTRUSTED`` for its derived report in both modes. The result
@@ -358,8 +359,9 @@ def make_codeact_tools(
             ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
-            and the artifact names are the model's own — but what fills them is the program's
-            to choose, and it is a channel rather than a leak-free boundary. Whether the program
+            and artifact locations depend only on declared names and host configuration — but
+            what fills them is the program's to choose, and it is a channel rather than a
+            leak-free boundary. Whether the program
             exited cleanly is one bit and whether it finished in time is another; **each
             declared output is one further bit**, since the program decides whether to write it
             and the result says of every declared name whether it landed — up to
@@ -935,6 +937,19 @@ _DESCRIPTION_IN_PLACE_WITHHELD = """Naming a file in both ``files`` and ``output
 
 _DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A call that saved files also names each one."""
 
+_DESCRIPTION_DECLARED_WITHHELD_LOCATED = """**To produce files, name them in ``outputs`` and
+        write them into the working directory.** They are saved to host storage after the
+        program exits. The result names their host-configured landing paths when delivery
+        confirms them, otherwise their declared names. A name you declare and do not write
+        is reported at its configured landing path. A file you write without declaring is
+        not saved. **A program that fails still saves what it wrote.** Saved files have not
+        been read back; do not claim to know their contents from this result."""
+
+_DESCRIPTION_IN_PLACE_WITHHELD_LOCATED = """Naming a file in both ``files`` and ``outputs``
+        edits the supplied copy; the saved copy goes to the sink's configured location.
+        The supplied copy is already present, so it cannot be reported as not written.
+        A failed program still saves whatever it had written by then."""
+
 #: The withholding pair again, for a host whose sink lands each call under a folder of its own.
 #: Two promises above stop being true: nothing names which files landed, so nothing reports a
 #: name declared and not written either. It names the folder without promising a reader for it,
@@ -966,6 +981,7 @@ def _tool_description(
     egress_allow: Sequence[str | EgressRule] = (),
     withhold: bool,
     lands_per_call: bool = False,
+    locates_outputs: bool = False,
     runtime: CodeactRuntime | None = None,
 ) -> str:
     """The description the model reads, for the channels this host actually wired.
@@ -1027,8 +1043,18 @@ def _tool_description(
             body.append(_DESCRIPTION_DECLARED_WITHHELD_PER_CALL)
             in_place = _DESCRIPTION_IN_PLACE_WITHHELD_PER_CALL
         else:
-            body.append(_DESCRIPTION_DECLARED_WITHHELD)
-            in_place = _DESCRIPTION_IN_PLACE_WITHHELD
+            body.append(
+                _DESCRIPTION_DECLARED_WITHHELD_LOCATED
+                if locates_outputs
+                else _DESCRIPTION_DECLARED_WITHHELD
+            )
+            in_place = (
+                _DESCRIPTION_IN_PLACE_WITHHELD_LOCATED
+                if locates_outputs
+                else _DESCRIPTION_IN_PLACE_WITHHELD
+            )
+        if withhold and lands_per_call and locates_outputs:
+            in_place = _DESCRIPTION_IN_PLACE_WITHHELD_LOCATED
         if takes_files:
             body.append(in_place)
         arguments.append(_DESCRIPTION_ARG_OUTPUTS)
@@ -1167,6 +1193,9 @@ def _execute_code_tool(
         egress_allow=session.spec.egress_allow,
         withhold=withhold,
         lands_per_call=lands_per_call,
+        locates_outputs=(
+            session.output_sink is not None and session.output_sink.locate is not OutputSink.locate
+        ),
         runtime=runtime,
     )
     return body
@@ -1877,7 +1906,10 @@ async def _collect(
         DeclaredOutput(path=posixpath.join(guest_prefix, name), name=name, required=False)
         for name in declared
     )
+    locations: dict[str, str] = {}
     try:
+        if withhold and not sink.per_call and sink.locate is not OutputSink.locate:
+            sink, locations = _located_sink(sink, declared)
         landed = await collect_outputs(
             sandbox,
             spec,
@@ -1911,7 +1943,34 @@ async def _collect(
         named_by=_MANIFEST_FILENAME if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
         argument=None if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
         candidates=candidates,
+        locations=locations,
     )
+
+
+def _located_sink(sink: OutputSink, declared: Sequence[str]) -> tuple[OutputSink, dict[str, str]]:
+    """Calculate locations before reading guest bytes, then check each delivery receipt."""
+    locations = {
+        name: sink.locate(
+            unicodedata.normalize("NFC", name)
+            if sink.normalization is NameNormalization.NFC
+            else name
+        )
+        for name in declared
+    }
+    originals = {unicodedata.normalize("NFC", name): name for name in declared}
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        accepted = await sink.deliver(artifact)
+        name = originals[unicodedata.normalize("NFC", artifact.name)]
+        if locations[name] not in (accepted.name, accepted.handle):
+            logger.warning(
+                "execute_code: output sink locate disagrees with delivery; using declared name"
+            )
+            locations[name] = name
+        # Presence belongs to the delivered declaration, not a sink-authored receipt name.
+        return replace(accepted, name=artifact.name)
+
+    return replace(sink, deliver=deliver), locations
 
 
 async def _read_manifest(
@@ -2000,6 +2059,7 @@ def _format_landed(
     named_by: str = _OUTPUTS_ARGUMENT,
     argument: str | None = None,
     candidates: frozenset[str] | None = None,
+    locations: Mapping[str, str] | None = None,
 ) -> str:
     """What the model is told about the files: what landed, and what is absent.
 
@@ -2015,14 +2075,15 @@ def _format_landed(
     before it: without it a declared name equal to hidden content renders as a position, and a
     caller watching which way its own spelling comes back learns that the guess was right.
 
-    ``withhold`` drops ``display`` in favour of the name the model itself declared. The sink
+    ``withhold`` drops ``display`` in favour of the declared name or its checked location. The sink
     composes ``display`` from an :class:`~maf_sandbox.Artifact` whose ``content`` is the guest's
     bytes, and nothing in the protocol requires the two to be independent — so a sink that puts
     any of that content in the string would be putting guest-authored text back into a result
-    rendered to hold none. Naming the declared spelling costs the sink's own detail and needs no
-    promise from the host to stay honest.
+    rendered to hold none. Locations are calculated from validated declarations before delivery;
+    substituted declarations still render only as argument positions.
     """
     delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
+    locations = locations or {}
     lines: list[str] = []
     # Answered once, above the two renderings that need it: a name that landed is reported as
     # surely as one that did not, and a name the framework substituted must not be repeated
@@ -2039,10 +2100,11 @@ def _format_landed(
         if withhold:
             for position, name in enumerate(declared):
                 if unicodedata.normalize("NFC", name) in delivered:
-                    # The name itself unless the framework put it there: this is a list of
-                    # files, not a refusal, so a name of the model's own is what it wants back.
+                    # Only model-authored declarations may reveal their location.
                     lines.append(
-                        f"- {named_by}[{position}]" if position in rewritten else f"- {name}"
+                        f"- {named_by}[{position}]"
+                        if position in rewritten
+                        else f"- {locations.get(name, name)}"
                     )
         else:
             for item in landed:
@@ -2058,7 +2120,11 @@ def _format_landed(
     # spelling where it is the caller's, and the position where the framework put something
     # else there. It is the one line here that names a file which does not exist.
     missing = [
-        echoed_name(name, at=f"{named_by}[{position}]", hidden=position in rewritten)
+        echoed_name(
+            locations.get(name, name),
+            at=f"{named_by}[{position}]",
+            hidden=position in rewritten,
+        )
         for position, name in enumerate(declared)
         if unicodedata.normalize("NFC", name) not in delivered
     ]
