@@ -4352,14 +4352,7 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "'dtaa.csv'" in out, out
 
     def test_the_post_run_report_asks_about_the_outputs_argument_too(self, monkeypatch):
-        """A declared name is checked twice, and the second check needs the record as much.
-
-        Without the argument named, the line reporting a file the program never wrote falls
-        back to the store inference even on a wired host — so an `outputs` entry the caller
-        spelled itself, equal to hidden content, comes back as a position. A caller watching
-        for that learns its guess was right a whole run after the upfront check closed the
-        same channel.
-        """
+        """Every name check and the post-run report need the argument's rewrite record."""
         asked: list[tuple[list[str], str | None]] = []
 
         def _record(values, **kwargs):
@@ -4376,7 +4369,8 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert [entry for entry in asked if entry[0] == ["report.csv"]] == [
             (["report.csv"], _OUTPUTS_ARGUMENT),
             (["report.csv"], _OUTPUTS_ARGUMENT),
-        ], "both the upfront check and the post-run report must name the argument"
+            (["report.csv"], _OUTPUTS_ARGUMENT),
+        ], "both pre-run checks and the post-run report must name the argument"
 
     def test_the_post_run_report_leaves_a_manifest_name_on_the_inference(self, monkeypatch):
         """A name a program wrote sits in no argument, so the record cannot speak for it.
@@ -4877,3 +4871,51 @@ class TestTheGuidanceThisKindCommitsTo:
 
         assert folder is not None, emitted
         assert emitted == committed[0].format(call_id=folder.group(1))
+
+
+@pytest.mark.parametrize(
+    "names",
+    [["a.csv", "a.csv"], ["../escape.csv"], ["a.csv", "b.csv", "c.csv"]],
+    ids=["duplicate", "traversal", "count"],
+)
+def test_invalid_outputs_precede_input_reads_and_acquisition(names):
+    store = _CountingStore({"input.csv": "host content"})
+    sandbox = _ProducingSandbox()
+    backend = _backend(sandbox, capabilities=_PULLS)
+    tool = _tool(
+        backend,
+        file_store=store,
+        files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=2),
+        **_landing(CodeactOutputs.DECLARED),
+    )
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=names)
+    assert out.startswith("Error:")
+    assert (store.reads, backend.keys) == ([], [])
+    assert sandbox.raw_commands == [] and sandbox.written_files == {}
+
+
+def test_output_prefix_validation_uses_the_fallback_channel():
+    from maf_sandbox import SandboxBackendUnavailable, Selection
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/work"
+
+    first = _backend(capabilities=_PULLS, acquire_error=SandboxBackendUnavailable("offline"))
+    sandbox = _ProducingSandbox()
+    second = _backend(sandbox, capabilities=_PULLS)
+    second._declarations = replace(second.declarations, program_channels=(NestedChannel(),))
+    tool = make_codeact_tools(
+        SandboxRouter(
+            [first, second], min_isolation=second.isolation, selection=Selection.PER_SPEC
+        ),
+        "data-analyst",
+        _context(),
+        **_landing(CodeactOutputs.DECLARED),
+    )[0]
+    name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES)
+    out = _run(tool, "print('hi')", outputs=[name])
+    assert "over the 255-byte ceiling" in out
+    assert second.keys
+    assert sandbox.raw_commands == [] and sandbox.written_files == {}
