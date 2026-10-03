@@ -467,6 +467,38 @@ def test_get_stream_limit_and_shutdown_retirement():
     asyncio.run(scenario())
 
 
+def test_shutdown_drains_sessions_already_retiring(monkeypatch):
+    async def scenario():
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
+            first = await initialize(client)
+            second = await initialize(client)
+            first_started = asyncio.Event()
+            second_finished = asyncio.Event()
+            retire = app._retire
+
+            async def ordered_retirement(sid, record):
+                if sid == first:
+                    first_started.set()
+                    await second_finished.wait()
+                else:
+                    await first_started.wait()
+                await retire(sid, record)
+                if sid == second:
+                    second_finished.set()
+
+            monkeypatch.setattr(app, "_retire", ordered_retirement)
+            deleted = await client.delete("/mcp", headers={"mcp-session-id": second})
+            assert deleted.status_code == 200
+            assert second in app.sessions and app.sessions[second].closing
+            server.should_exit = True
+        assert second_finished.is_set()
+        assert not app.sessions and not app.service.ready
+        assert h.closes == 1
+
+    asyncio.run(scenario())
+
+
 def test_actual_chunked_body_header_and_slow_body_limits():
     async def scenario():
         async with running(Harness().service()) as (app, client, server):

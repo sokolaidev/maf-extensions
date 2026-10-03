@@ -473,8 +473,8 @@ class WorkloadServer(uvicorn.Server):
         self.workload_app.service.ready = False
         for listener in self.servers:
             listener.close()
-        for sid in list(self.workload_app.sessions):
-            closing = self.workload_app.retire(sid)
+        tasks = [self.workload_app.retire(sid) for sid in list(self.workload_app.sessions)]
+        for closing in tasks:
             await drain(closing)
             closing.result()
         await super().shutdown(sockets)
