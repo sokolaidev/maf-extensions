@@ -373,6 +373,8 @@ class WorkloadHTTP:
             consumed = False
             response_status = 500
             response_start: Message | None = None
+            initializing = message.method == "notifications/initialized"
+            initialization_response: list[Message] = []
             request_scope = dict(scope)
             request_scope["workload_request_id"] = request_id
             request_scope["headers"] = [
@@ -414,14 +416,19 @@ class WorkloadHTTP:
                             ]
                             + [(b"content-length", str(len(encoded)).encode("ascii"))],
                         }
-                await send(response_start)
-                await send(message)
+                if initializing:
+                    initialization_response.extend((response_start, message))
+                else:
+                    await send(response_start)
+                    await send(message)
 
             async def dispatch():
                 try:
                     await record.transport.handle_request(request_scope, replay, capture)
-                    if message.method == "notifications/initialized" and response_status == 202:
+                    if initializing and response_status == 202:
                         record.initialized = True
+                    for event in initialization_response:
+                        await send(event)
                 finally:
                     active = self.service.active
                     if (

@@ -644,6 +644,57 @@ def test_shutdown_waits_for_transport_startup_settlement(monkeypatch, startup):
     asyncio.run(scenario())
 
 
+def test_initialized_ack_waits_for_sdk_dispatch(monkeypatch):
+    async def scenario():
+        produced = asyncio.Event()
+        release = asyncio.Event()
+        handle_request = http.StreamableHTTPServerTransport.handle_request
+
+        async def delayed_dispatch(transport, scope, receive, send):
+            status = 0
+
+            async def intercept(event):
+                nonlocal status
+                if event["type"] == "http.response.start":
+                    status = event["status"]
+                await send(event)
+                if event["type"] == "http.response.body" and status == 202:
+                    produced.set()
+                    await release.wait()
+
+            await handle_request(transport, scope, receive, intercept)
+
+        monkeypatch.setattr(http.StreamableHTTPServerTransport, "handle_request", delayed_dispatch)
+        async with running(Harness().service()) as (app, client, server):
+            initializing = asyncio.create_task(initialize(client))
+            try:
+                await produced.wait()
+                sid = next(iter(app.sessions))
+                early = await client.post(
+                    "/mcp",
+                    headers={"mcp-session-id": sid},
+                    json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                )
+                assert early.status_code == 400
+                assert not initializing.done()
+            finally:
+                release.set()
+                sid = await initializing
+            ready = await client.post(
+                "/mcp",
+                headers={"mcp-session-id": sid},
+                json={"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+            )
+            assert ready.status_code == 200
+            assert {tool["name"] for tool in ready.json()["result"]["tools"]} == {
+                "echo",
+                "increment",
+            }
+            assert not (await call(client, sid)).json()["result"]["isError"]
+
+    asyncio.run(scenario())
+
+
 def test_actual_chunked_body_header_and_slow_body_limits():
     async def scenario():
         async with running(Harness().service()) as (app, client, server):
