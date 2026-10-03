@@ -17,7 +17,7 @@ XML resources, including embedded SVGs, must use UTF-8, optionally with its byte
 
 SVG CSS must not reference resources, including data URIs, image-set() and src(). Image attributes use the separate embedded-image validator; local SVG fragment references and resource-free CSS remain supported.
 
-Embedded SVGs, including bundled assets, must contain no text elements or font declarations in presentation attributes, inline styles or stylesheets. This includes shorthand font properties, @font-face and local() font sources. Convert image text to paths before embedding it. Native diagram labels continue to use the verified DejaVu font set.
+Embedded SVGs, including bundled assets, must contain no text elements or font declarations in presentation attributes, inline styles or stylesheets. This includes shorthand font properties, @font-face and local() font sources. CSS font tokens are refused conservatively, including in comments and selectors. Convert image text to paths before embedding it. Native diagram labels continue to use the verified DejaVu font set.
 
 Enabled label placeholders are refused before rendering, including object/UserObject wrappers and indirect labels, because substitution occurs after HTML validation. Literal labels with placeholders disabled remain supported. Invalid UTF-8 or JSON in the installed runtime manifest is an incomplete runtime failure, not a content refusal.
 

@@ -223,6 +223,18 @@ def test_native_svg_text_remains_supported():
     assert RUNTIME["check_svg"](data, exported=True)[0].text == "Label"
 
 
+def test_svg_font_policy_is_bounded_for_repeated_comment_delimiters():
+    runtime = Path(__file__).parents[1] / "images/drawio-export/export.py"
+    program = (
+        f"import runpy; runtime = runpy.run_path({str(runtime)!r}); "
+        "assert runtime['SVG_FONT'].search('font/*' + '*//*' * 35 + 'x')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=5, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_safe_embedded_svg_and_formatting_survive():
     svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>'
     uri = "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
