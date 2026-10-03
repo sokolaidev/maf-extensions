@@ -499,6 +499,53 @@ def test_shutdown_drains_sessions_already_retiring(monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("failure_stage", ["cancel", "transport"])
+def test_retirement_failure_retains_ownership_until_retry_settles(
+    monkeypatch, caplog, failure_stage
+):
+    async def scenario():
+        h = Harness()
+        allow_cleanup = asyncio.Event()
+        failed = asyncio.Event()
+        attempts = 0
+        async with running(h.service()) as (app, client, server):
+            sid = await initialize(client)
+            record = app.sessions[sid]
+            target = app.service if failure_stage == "cancel" else record.transport
+            method = "cancel_session" if failure_stage == "cancel" else "terminate"
+            original = getattr(target, method)
+
+            async def fail_until_released(*args):
+                nonlocal attempts
+                attempts += 1
+                if not allow_cleanup.is_set():
+                    failed.set()
+                    raise OSError("private-retirement-detail")
+                await original(*args)
+
+            monkeypatch.setattr(target, method, fail_until_released)
+            try:
+                response = await client.delete("/mcp", headers={"mcp-session-id": sid})
+                assert response.status_code == 200
+                await failed.wait()
+                assert record.retiring is not None and not record.retiring.done()
+                assert app.service.poisoned
+                assert (await client.get("/ready")).status_code == 503
+                server.should_exit = True
+                await until(lambda: not app.service.ready)
+                await until(lambda: attempts >= 2)
+                assert sid in app.sessions and not record.retiring.done()
+                assert h.closes == 0
+            finally:
+                allow_cleanup.set()
+        assert attempts >= 2
+        assert not app.sessions and h.closes == 1 and app.service.poisoned
+        assert caplog.text.count("retaining ownership and retrying") == 1
+        assert "private-retirement-detail" not in caplog.text
+
+    asyncio.run(scenario())
+
+
 def test_actual_chunked_body_header_and_slow_body_limits():
     async def scenario():
         async with running(Harness().service()) as (app, client, server):

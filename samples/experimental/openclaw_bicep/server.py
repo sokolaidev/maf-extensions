@@ -358,7 +358,7 @@ class Validator:
             answer["status"] = "ok" if completed else "incomplete"
         except Exception:
             LOG.error("Validation failed")
-            answer.update(status="error", diagnostics="Validation failed; consult operator logs.")
+            answer.update(status="error", diagnostics="Validation failed.")
         finally:
             # Sweep only after the workload's Python task has settled.
             cleanup = asyncio.create_task(self.recover())

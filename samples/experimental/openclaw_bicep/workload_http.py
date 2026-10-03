@@ -34,6 +34,7 @@ CONNECTIONS = 32
 BODY_READERS = 16
 SESSION_LIMIT = 8
 IDLE_SECONDS = 15 * 60
+LOG = logging.getLogger(__name__)
 
 
 def _finite_float(value: str) -> float:
@@ -138,18 +139,24 @@ class WorkloadHTTP:
         return record.retiring
 
     async def _retire(self, sid: str, record: Session) -> None:
-        try:
-            await self.service.cancel_session(sid)
-            await record.transport.terminate()
-            if record.task:
-                await drain(record.task)
-                record.task.result()
-            while record.requests:
-                await asyncio.sleep(0.01)
-            self.sessions.pop(sid, None)
-        except Exception:
-            self.service.poisoned = True
-            # Failed retirement keeps its capacity reservation and stops new workload admission.
+        reported = False
+        while True:
+            try:
+                await self.service.cancel_session(sid)
+                await record.transport.terminate()
+                if record.task:
+                    await drain(record.task)
+                    record.task.result()
+                while record.requests:
+                    await asyncio.sleep(0.01)
+                self.sessions.pop(sid, None)
+                return
+            except Exception:
+                self.service.poisoned = True
+                if not reported:
+                    LOG.error("Session retirement failed; retaining ownership and retrying.")
+                    reported = True
+                await asyncio.sleep(1)
 
     async def _start(self, sid: str, record: Session) -> None:
         try:
