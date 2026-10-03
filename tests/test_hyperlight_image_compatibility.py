@@ -61,6 +61,30 @@ def test_adoption_resumes_image_only_when_both_ranges_admit_core(metadata):
     assert compatibility.pending_adoptions(metadata(requirements=ranges)) == []
 
 
+@pytest.mark.parametrize("core", ["0.43.0", "0.43.2"])
+@pytest.mark.parametrize("ceiling", ["0.45", "0.45.0", "0.45.0.0"])
+def test_prepared_next_core_defers_image_until_versions_admit_it(metadata, core, ceiling):
+    ranges = {
+        "maf-sandbox-hyperlight": ["maf-sandbox>=0.43.0,<0.44"],
+        "maf-sandbox-codeact": [f"maf-sandbox>=0.44.0,<{ceiling}"],
+    }
+    pending = compatibility.pending_adoptions(metadata(core, ranges))
+    assert len(pending) == 1
+    assert "maf-sandbox-codeact requires prepared core" in pending[0]
+    ranges["maf-sandbox-hyperlight"] = ["maf-sandbox>=0.44.0,<0.45"]
+    assert compatibility.pending_adoptions(metadata("0.44.0", ranges)) == []
+
+
+def test_prepared_core_reports_no_image_evidence(metadata, monkeypatch, capsys):
+    ranges = {name: ["maf-sandbox>=0.44.0,<0.45"] for name in compatibility.DEPENDENTS}
+    monkeypatch.setattr(compatibility, "ROOT", metadata(requirements=ranges))
+    compatibility.main()
+    captured = capsys.readouterr()
+    assert captured.out == "build=false\n"
+    assert "No image was built or verified" in captured.err
+    assert "Linux worker and KVM checks remain enabled" in captured.err
+
+
 @pytest.mark.parametrize("ceiling", ["0.43", "0.43.0", "0.43.0.0"])
 def test_equivalent_ceiling_spellings_defer_the_same_release(metadata, ceiling):
     ranges = {name: [f"maf-sandbox>=0.42.0,<{ceiling}"] for name in compatibility.DEPENDENTS}
@@ -74,7 +98,9 @@ def test_equivalent_ceiling_spellings_defer_the_same_release(metadata, ceiling):
         [],
         ["maf-sandbox>=0.43.0,<0.43"],
         ["maf-sandbox>=0.44.0,<0.43"],
-        ["maf-sandbox>=0.44.0,<0.45"],
+        ["maf-sandbox>=0.45.0,<0.46"],
+        ["maf-sandbox>=0.44.1,<0.45"],
+        ["maf-sandbox>=0.44.0,<0.46"],
         ["maf-sandbox>=0.41.0,<0.42"],
         ["maf-sandbox>=0.42"],
         ["maf-sandbox>=0.42.0,<0.43; python_version < '3.13'"],
