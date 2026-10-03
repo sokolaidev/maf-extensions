@@ -572,7 +572,9 @@ def test_font_mentions_outside_font_style_do_not_change_preflight(
 @pytest.mark.skipif(
     shutil.which("node") is None, reason="requires Node.js for the native export guard"
 )
-@pytest.mark.parametrize("key", ["shape", "resIcon", "indicatorShape"])
+@pytest.mark.parametrize(
+    "key", ["shape", "resIcon", "prIcon", "grIcon", "bgIcon", "indicatorShape"]
+)
 @pytest.mark.parametrize("shape", ["missing", "rectangle", "registered"])
 def test_native_shape_guard_checks_each_registry(key, shape):
     node = shutil.which("node")
@@ -584,17 +586,26 @@ var mxStencilRegistry = {getStencil: name => name === 'registered'};
 function mxGraph() {}
 mxGraph.prototype.getIndicatorImage = state => state.style.indicatorImage;
 function mxCellRenderer() {}
-mxCellRenderer.prototype.createShape = () => ({});
+mxCellRenderer.prototype.createShape = state => ({paint() {
+    if (state.style.fail) throw Error('Paint failed');
+    for (const key of ['resIcon', 'prIcon', 'grIcon', 'bgIcon']) {
+        if (state.style[key]) mxStencilRegistry.getStencil(state.style[key]);
+    }
+}});
 mxCellRenderer.defaultShapes = {rectangle: true};
 var sent = [];
 var electron = {sendMessage: (channel, value) => sent.push([channel, value])};
 eval(fs.readFileSync(process.argv[1], 'utf8'));
+try { new mxCellRenderer().createShape({style: {fail: true}}).paint(); } catch (_) {}
+if (mafPainting !== 0) throw Error('Leaked paint context');
+mxStencilRegistry.getStencil('missing');
+if (mafFailure !== null) throw Error('Probing outside paint must allow shape fallbacks');
 for (const media of ['png', 'jpeg', 'svg+xml']) {
     const uri = 'data:image/' + media + ',AAAA';
     const restored = new mxGraph().getIndicatorImage({style: {indicatorImage: uri}});
     if (restored !== uri.replace(',', ';base64,')) throw Error('Invalid indicator data URI');
 }
-new mxCellRenderer().createShape({style: {[process.argv[2]]: process.argv[3]}});
+new mxCellRenderer().createShape({style: {[process.argv[2]]: process.argv[3]}}).paint();
 mafSend('render-finished', {bounds: JSON.stringify({x: 0, y: 0, width: 10, height: 10})});
 console.log(JSON.stringify(sent));
 """
@@ -613,7 +624,11 @@ console.log(JSON.stringify(sent));
         timeout=10,
     )
     [(channel, value)] = json.loads(result.stdout)
-    refused = shape == "missing" or (key == "indicatorShape" and shape == "registered")
+    refused = (
+        shape == "missing"
+        or (key == "indicatorShape" and shape == "registered")
+        or (key in {"resIcon", "prIcon", "grIcon", "bgIcon"} and shape == "rectangle")
+    )
     assert channel == ("export-error" if refused else "render-finished")
     if refused:
         assert value.startswith("MAF_REFUSED:")

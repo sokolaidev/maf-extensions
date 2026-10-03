@@ -66,6 +66,8 @@ To export an existing file, attach `make_drawio_export_tools(router, agent_id, c
 
 Pass the host's `file_store_provenance` and optional `requires_file_integrity` to apply the core's recorded-read and admission policy. Resource validation does not promote source integrity.
 
+Both export-enabled creation and stored-file export require a backend that supports call isolation. Each call receives its own sandbox, so overlapping editable/export tools can use different runtime images. Editable-only creation retains its existing conversation scope and cleanup policy.
+
 The offline profile accepts bundled cloud icons (including `img/lib/azure2/...`), validated embedded PNG/JPEG/SVG images and formatting-only HTML labels. Known `https://app.diagrams.net/img/lib/...` references map to bundled assets without a request. External resources, missing assets, unsupported shapes/fonts, math, enabled label placeholders, links and background resources are refused. Fonts are DejaVu Sans, Serif and Sans Mono; common Arial/Helvetica, Times New Roman and Courier New requests map to those families. Other languages may require a future expanded font profile.
 
 SVG embeds images and font data. Rich labels use `foreignObject`, so use a compatible browser viewer; arbitrary SVG consumers may display them differently. Raster and SVG export use the same native document renderer. Every requested output is checked before sink delivery, but the sink is not transactional: a later delivery failure can leave earlier files saved and returns an incomplete result.

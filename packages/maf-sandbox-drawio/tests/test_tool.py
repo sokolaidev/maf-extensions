@@ -19,6 +19,7 @@ from maf_sandbox import (
     Capability,
     ExecResult,
     Isolation,
+    IsolationScope,
     LandedArtifact,
     OsFamily,
     OutputsCollected,
@@ -96,7 +97,13 @@ def attach(
             FAKE_BACKEND_DECLARATIONS,
             capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
             os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=(
+                frozenset(IsolationScope)
+                if kwargs.get("export") is not None
+                else FAKE_BACKEND_DECLARATIONS.isolation_scopes
+            ),
         ),
+        sandbox_per_key=kwargs.get("export") is not None,
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=observer)
     context = make_caller_context(list_no_files, lambda: "tests", lambda: "drawio")

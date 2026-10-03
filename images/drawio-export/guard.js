@@ -1,5 +1,14 @@
 // Completion must establish that every requested resource rendered within the pixel budget.
 var mafFailure = null;
+var mafPainting = 0;
+var mafGetStencil = mxStencilRegistry.getStencil;
+mxStencilRegistry.getStencil = function(name) {
+    var stencil = mafGetStencil.apply(this, arguments);
+    if (mafPainting > 0 && name && !stencil) {
+        mafFailure = 'Unsupported resource stencil';
+    }
+    return stencil;
+};
 var mafIndicatorImage = mxGraph.prototype.getIndicatorImage;
 mxGraph.prototype.getIndicatorImage = function(state) {
     var image = mafIndicatorImage.apply(this, arguments);
@@ -12,16 +21,24 @@ mxCellRenderer.prototype.createShape = function(state) {
     if (shape && !mxStencilRegistry.getStencil(shape) && !mxCellRenderer.defaultShapes[shape]) {
         mafFailure = 'Unsupported shape';
     }
-    var icon = state.style.resIcon;
-    if (icon && !mxStencilRegistry.getStencil(icon) && !mxCellRenderer.defaultShapes[icon]) {
-        mafFailure = 'Unsupported resource icon';
-    }
     var indicator = state.style[mxConstants.STYLE_INDICATOR_SHAPE];
     // Indicator construction uses defaultShapes only, unlike the main shape.
     if (indicator && !mxCellRenderer.defaultShapes[indicator]) {
         mafFailure = 'Unsupported indicator shape';
     }
-    return mafCreateShape.apply(this, arguments);
+    var created = mafCreateShape.apply(this, arguments);
+    if (created != null) {
+        var paint = created.paint;
+        created.paint = function() {
+            mafPainting++;
+            try {
+                return paint.apply(this, arguments);
+            } finally {
+                mafPainting--;
+            }
+        };
+    }
+    return created;
 };
 function mafSend(channel, value) {
     if (channel === 'render-finished' && value != null) {

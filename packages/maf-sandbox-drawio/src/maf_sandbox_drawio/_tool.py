@@ -15,6 +15,7 @@ from maf_sandbox import (
     Capability,
     DeclaredOutput,
     FileStoreProvenance,
+    IsolationScope,
     OsFamily,
     OutputSink,
     SandboxRouter,
@@ -55,6 +56,7 @@ def drawio_sandbox_spec(
     """
     return SandboxSpec(
         kind=DRAWIO_KIND,
+        isolation_scope=IsolationScope.CALL if export is not None else IsolationScope.CONVERSATION,
         image=image,
         work_dir="/maf-sandbox/work",
         egress_allow=(),
