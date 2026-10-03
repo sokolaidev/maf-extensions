@@ -62,6 +62,20 @@ def _lock(path: Path) -> int:
         raise
 
 
+def _write_record(path: Path, value: dict[str, Any]) -> None:
+    """Publish complete ownership under the caller's exclusive record lock."""
+    pending = path.with_suffix(".pending")
+    fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(value, file)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(pending, path)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 async def _finish(task: asyncio.Task[None]) -> None:
     """Drain cleanup even if the owning task receives repeated cancellation."""
     cancelled = False
@@ -249,13 +263,14 @@ class _Sandbox:
         """Execute within the configured deadline and cap combined stdout/stderr bytes."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be finite and positive")
-        deadline = min(timeout, self.backend.config.max_timeout)
+        if timeout > self.backend.config.max_timeout:
+            raise ValueError("timeout exceeds configured max_timeout")
         result = await self._request(
             "exec",
             command=command if isinstance(command, str) else list(command),
             directory=working_directory,
-            timeout=deadline,
-            transport_timeout=deadline,
+            timeout=timeout,
+            transport_timeout=timeout,
             output_limit=self.backend.config.output_bytes,
         )
         stdout = base64.b64decode(result["stdout"], validate=True)
@@ -355,7 +370,9 @@ class BubblewrapSandboxBackend:
         key = SandboxKey("probe-" + uuid4().hex, "probe", "probe")
         sandbox = await backend.acquire(key, SandboxSpec(kind="probe", requires=_CAPABILITIES))
         try:
-            result = await sandbox.exec(["/bin/true"], working_directory=".", timeout=10)
+            result = await sandbox.exec(
+                ["/bin/true"], working_directory=".", timeout=min(10, config.max_timeout)
+            )
             if result.exit_code != 0:
                 raise RuntimeError("Namespace probe failed")
         finally:
@@ -420,6 +437,14 @@ class BubblewrapSandboxBackend:
                         raise ValueError("Sandbox record identity mismatch")
                     await self.kill_group(previous["instance"])
                     record.unlink()
+                _write_record(
+                    record,
+                    {
+                        "identity": identity,
+                        "instance": instance,
+                        "cgroup_root": str(self.config.cgroup_root),
+                    },
+                )
                 group.mkdir(mode=0o700)
                 for name, value in (
                     ("memory.max", str(self.config.memory_bytes)),
@@ -432,15 +457,6 @@ class BubblewrapSandboxBackend:
                         limit_file.write(value)
                 if not (group / "cgroup.kill").exists():
                     raise RuntimeError("cgroup v2 kill support is required")
-                with record.open("x", encoding="utf-8") as file:
-                    json.dump(
-                        {
-                            "identity": identity,
-                            "instance": instance,
-                            "cgroup_root": str(self.config.cgroup_root),
-                        },
-                        file,
-                    )
                 process = await asyncio.create_subprocess_exec(
                     sys.executable,
                     "-I",

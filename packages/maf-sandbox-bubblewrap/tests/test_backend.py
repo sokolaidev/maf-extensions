@@ -414,3 +414,113 @@ def test_live_missing_prerequisites_refuse(tmp_path: Path) -> None:
         assert not list(config().state_root.glob("*.json"))
 
     asyncio.run(run())
+
+
+@live
+@pytest.mark.parametrize(
+    "stage", ["record-write", "record-published", "group-created", "limits-written"]
+)
+@pytest.mark.parametrize("failure", ["exit", "raise"])
+def test_live_startup_record_recovery(tmp_path: Path, stage: str, failure: str) -> None:
+    async def run() -> None:
+        settings = replace(config(), state_root=tmp_path / "state")
+        backend = await BubblewrapSandboxBackend.create(settings)
+        identity = key()
+        before = set(settings.cgroup_root.glob("maf-*"))
+        program = """
+import asyncio, json, os, sys
+from pathlib import Path
+from maf_sandbox import SandboxKey, SandboxSpec
+from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
+runtime, state, group, scope, stage, failure = sys.argv[1:]
+backend = BubblewrapSandboxBackend(BubblewrapSandboxConfig(Path(runtime), Path(state), Path(group)))
+def interrupt():
+    if failure == 'exit':
+        os._exit(73)
+    raise RuntimeError('injected startup failure')
+original_mkdir = Path.mkdir
+def mkdir(path, *args, **kwargs):
+    if path.parent == Path(group) and stage == 'record-published':
+        interrupt()
+    result = original_mkdir(path, *args, **kwargs)
+    if path.parent == Path(group) and stage == 'group-created':
+        interrupt()
+    return result
+Path.mkdir = mkdir
+if stage == 'record-write':
+    def dump(value, file, *args, **kwargs):
+        file.write('{')
+        file.flush()
+        interrupt()
+    json.dump = dump
+if stage == 'limits-written':
+    async def launch(*args, **kwargs):
+        interrupt()
+    asyncio.create_subprocess_exec = launch
+async def run():
+    try:
+        await backend.acquire(SandboxKey(scope, 'thread', 'agent'), SandboxSpec(kind='startup'))
+    except RuntimeError as error:
+        assert str(error) == 'injected startup failure'
+        sys.exit(73)
+asyncio.run(run())
+"""
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            program,
+            str(settings.runtime_root),
+            str(settings.state_root),
+            str(settings.cgroup_root),
+            identity.scope,
+            stage,
+            failure,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
+            assert process.returncode == 73, (stdout, stderr)
+            groups = set(settings.cgroup_root.glob("maf-*")) - before
+            records = [backend._read_record(path) for path in settings.state_root.glob("*.json")]
+            if failure == "raise" or stage == "record-write":
+                assert not records and not groups
+            else:
+                assert len(records) == 1
+                assert records[0]["identity"] == [identity.scope, "thread", "agent", "", "startup"]
+                assert groups <= {backend._group(records[0]["instance"])}
+            sandbox = await backend.acquire(identity, SandboxSpec(kind="startup"))
+            assert (await sandbox.exec(["true"], working_directory=".", timeout=5)).exit_code == 0
+            assert not list(settings.state_root.glob("*.pending"))
+            assert await backend.dispose(identity) is None
+            assert not list(settings.state_root.glob("*.json"))
+            assert set(settings.cgroup_root.glob("maf-*")) == before
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            await backend.dispose(identity)
+            for group in set(settings.cgroup_root.glob("maf-*")) - before:
+                await backend.kill_group(group.name.removeprefix("maf-"))
+
+    asyncio.run(run())
+
+
+@live
+def test_live_exec_timeout_admission() -> None:
+    async def run() -> None:
+        backend = await BubblewrapSandboxBackend.create(replace(config(), max_timeout=0.5))
+        identity = key()
+        sandbox = await backend.acquire(identity, SandboxSpec(kind="timeout"))
+        try:
+            with pytest.raises(ValueError, match="timeout"):
+                await sandbox.exec(["touch", "marker"], working_directory=".", timeout=1)
+            assert await sandbox.stat_file("marker", working_directory=".") is None
+            assert (await sandbox.exec(["true"], working_directory=".", timeout=0.5)).exit_code == 0
+            with pytest.raises(TimeoutError):
+                await sandbox.exec(["sleep", "5"], working_directory=".", timeout=0.1)
+            assert not backend._group(sandbox.instance_id).exists()
+        finally:
+            assert await backend.dispose(identity) is None
+
+    asyncio.run(run())
