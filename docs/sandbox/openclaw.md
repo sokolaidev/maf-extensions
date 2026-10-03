@@ -60,7 +60,7 @@ Acceptance uses a deterministic provider and host-observed results, transport me
 | Decision | State | Tracking |
 |---|---|---|
 | First Bicep operation | Supervised stdio prototype merged; one-session Gateway evidence | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1651](https://github.com/sokolaidev/maf-extensions/pull/1651) (merged) |
-| Shared service lifecycle | Selected design; HTTP mode is not implemented | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (open) |
+| Shared service lifecycle | Selected design; HTTP mode is not implemented | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged) |
 | Shared HTTP implementation | Pending bounded transport, ownership and MAF tests | [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (open) |
 | Two-session Gateway qualification | Pending implementation and the acceptance matrix above | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
 | Independent crash recovery and other host platforms | Deferred; no hard maximum lifetime or host-crash guarantee | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |

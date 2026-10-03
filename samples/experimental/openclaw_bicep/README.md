@@ -72,4 +72,4 @@ The implementation is still an experimental source sample. Only compiler-phase c
 | Work | State | Tracking |
 |---|---|---|
 | Bounded Bicep integration | Supervised prototype; one-session Gateway path qualified with a deterministic provider, complete crash qualification remains | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
-| OpenClaw session ownership | Shared HTTP lifecycle selected; this prototype remains limited to one session | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (open); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (open); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| OpenClaw session ownership | Shared HTTP lifecycle selected; this prototype remains limited to one session | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (open); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
