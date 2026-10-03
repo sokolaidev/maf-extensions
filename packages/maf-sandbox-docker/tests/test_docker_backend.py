@@ -1248,11 +1248,14 @@ class TestRouterFloor:
         is. This is the exact `requires` `codeact_sandbox_spec` builds for a non-empty
         registry, so it fails if either side of that pair drifts.
         """
+        from maf_sandbox import ProgramRequirements
+
         router = SandboxRouter(
             [DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER
         )
         spec = SandboxSpec(
             kind="codeact",
+            program=ProgramRequirements(max_program_bytes=1024),
             requires=frozenset(
                 {
                     Capability.EXEC,

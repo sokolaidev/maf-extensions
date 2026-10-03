@@ -62,7 +62,7 @@ def _attach(build, *, source="trusted", guidance=(), spec=_SPEC, contract=False,
         ),
         agent_id="agent",
         spec=replace(spec, program=ProgramRequirements(max_program_bytes=1024))
-        if spec.host_tools is not None
+        if spec.host_tools is not None or Capability.HOST_TOOLS in spec.requires
         else spec,
         result_contract=contract,
         name="probe",

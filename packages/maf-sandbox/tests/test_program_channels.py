@@ -823,3 +823,95 @@ def test_invalid_publisher_is_rejected_before_host_execution(bounded, publish):
         assert effects == ["executed"] and len(observer.events) == 1
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("entry", ["attach", "admit", "acquire"])
+def test_host_tool_capability_requires_a_program_before_admission(entry):
+    backend = _backend("host")
+    backend._declarations = replace(
+        backend.declarations,
+        capabilities=backend.declarations.capabilities | {Capability.HOST_TOOLS},
+    )
+    router = _router(backend)
+    spec = replace(_SPEC, program=None, requires=frozenset({Capability.HOST_TOOLS}))
+    with pytest.raises(SandboxCapabilityNotSupported, match="program channel"):
+        if entry == "attach":
+            router.ensure_can_serve(spec)
+        elif entry == "admit":
+            asyncio.run(router.enter_call(_KEY, spec, owner="call"))
+        else:
+            asyncio.run(router.acquire(_KEY, spec))
+    assert backend.keys == []
+
+
+def test_explicit_host_tool_capability_selects_a_host_tool_channel():
+    plain = InProcessProgramChannel(name="plain", host_tools=False)
+    host = InProcessProgramChannel(name="host", host_tools=True)
+    backend = _backend("backend")
+    backend._declarations = replace(
+        backend.declarations,
+        capabilities=backend.declarations.capabilities | {Capability.HOST_TOOLS},
+        program_channels=(plain, host),
+    )
+    router = _router(backend)
+    spec = replace(_SPEC, requires=frozenset({Capability.HOST_TOOLS}))
+
+    async def exercise():
+        admission = await router.enter_call(_KEY, spec, owner="call")
+        try:
+            assert admission.channel is host
+        finally:
+            await router.release_call(_KEY, spec.kind, owner="call")
+
+    asyncio.run(exercise())
+
+
+def test_explicit_host_tool_capability_cannot_replace_a_pinned_plain_channel():
+    plain = InProcessProgramChannel(name="plain", host_tools=False)
+    host = InProcessProgramChannel(name="host", host_tools=True)
+    backend = _backend("backend")
+    backend._declarations = replace(
+        backend.declarations,
+        capabilities=backend.declarations.capabilities | {Capability.HOST_TOOLS},
+        program_channels=(plain, host),
+    )
+    router = _router(backend)
+
+    async def exercise():
+        await router.acquire(_KEY, _SPEC)
+        spec = replace(_SPEC, requires=frozenset({Capability.HOST_TOOLS}))
+        with pytest.raises(SandboxCapabilityNotSupported, match="pinned program channel"):
+            await router.acquire(_KEY, spec)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("dispose", [False, True])
+def test_queued_program_admission_rechecks_disposed_fallback(dispose):
+    first = _backend("first", error=SandboxBackendUnavailable("offline"))
+    second = _backend("second")
+    router = _router(first, second)
+
+    async def exercise():
+        holding = await router.enter_call(_KEY, _SPEC, owner="holding")
+        sandbox = await router.acquire(_KEY, _SPEC, _admission=holding)
+        assert sandbox is second.sandbox
+        first.acquire_error = None
+        queued = asyncio.create_task(router.enter_call(_KEY, _SPEC, owner="queued"))
+        await asyncio.sleep(0)
+        assert not queued.done()
+        if dispose:
+            assert await router.dispose_kind(
+                _KEY, _SPEC.kind, instance_id=sandbox.instance_id, timeout=1
+            )
+        await router.release_call(_KEY, _SPEC.kind, owner="holding")
+        admission = await queued
+        try:
+            expected = first if dispose else second
+            assert admission.backend is expected
+            assert admission.channel is expected.declarations.program_channels[0]
+            assert await router.acquire(_KEY, _SPEC, _admission=admission) is expected.sandbox
+        finally:
+            await router.release_call(_KEY, _SPEC.kind, owner="queued")
+
+    asyncio.run(exercise())
