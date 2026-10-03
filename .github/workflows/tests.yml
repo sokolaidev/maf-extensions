@@ -316,6 +316,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
         run: python3 scripts/experiments/mxc_session_patch/owner_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/ownership"
 
+      - name: Descriptor output alternatives and console truncation
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: python3 scripts/experiments/mxc_session_patch/descriptor_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/descriptors"
+
       - name: Verify both reports and record artifact identity
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
         run: |
@@ -338,13 +342,16 @@ jobs:
           ownership = json.loads((root / "ownership/result.json").read_text())
           assert {key: value["exit_code"] for key, value in ownership["controls"].items()} == {"owner_death": 74, "cancel": 74, "invalid_command": 75, "missing_owner": 74, "invalid_header": 75}
           assert native["helper_sha256"] == publication["helper_sha256"] == ownership["helper_sha256"]
+          descriptors = json.loads((root / "descriptors/result.json").read_text())
+          assert descriptors["helper_sha256"] == native["helper_sha256"]
+          assert descriptors["assessment"]["satisfies_host_enforced_output_contract"] is False
           record = {
               "source_commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "kernel": platform.release(),
               "architecture": platform.machine(), "host_python": platform.python_version(),
               "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
               "patch_sha256": hashlib.sha256(Path("scripts/experiments/mxc_session_patch/session-preview.patch").read_bytes()).hexdigest(),
-              "helper_sha256": native["helper_sha256"], "native_passed": True, "publication_passed": True, "ownership_passed": True,
+              "helper_sha256": native["helper_sha256"], "native_passed": True, "publication_passed": True, "ownership_passed": True, "descriptor_experiment_completed": True,
           }
           (root / "identity.json").write_text(json.dumps(record, indent=2) + "\n")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
@@ -373,6 +380,9 @@ jobs:
             ${{ runner.temp }}/mxc/ownership/*.json
             ${{ runner.temp }}/mxc/ownership/*.stdout
             ${{ runner.temp }}/mxc/ownership/*.stderr
+            ${{ runner.temp }}/mxc/descriptors/*.json
+            ${{ runner.temp }}/mxc/descriptors/*.stdout
+            ${{ runner.temp }}/mxc/descriptors/*.stderr
           if-no-files-found: error
           retention-days: 14
 
