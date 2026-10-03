@@ -827,10 +827,13 @@ def test_initialization_reservations_are_atomic_and_count_toward_cap(monkeypatch
                 },
             }
             tasks = [asyncio.create_task(client.post("/mcp", json=body)) for _ in range(9)]
-            await until(lambda: len(app.sessions) == 8 and any(t.done() for t in tasks))
-            assert sum(t.done() for t in tasks) == 1
-            assert next(t.result().status_code for t in tasks if t.done()) == 503
-            release.set()
+            try:
+                await until(lambda: len(app.sessions) == 8 and any(t.done() for t in tasks))
+                assert sum(t.done() for t in tasks) == 1
+                assert next(t.result().status_code for t in tasks if t.done()) == 503
+                assert all(record.requests == 1 for record in app.sessions.values())
+            finally:
+                release.set()
             responses = await asyncio.gather(*tasks)
             assert sum(r.status_code == 200 for r in responses) == 8
             assert len(app.sessions) == 8
@@ -893,5 +896,234 @@ def test_delete_can_retire_session_before_initialized_notification():
             sid = response.headers["mcp-session-id"]
             assert (await client.delete("/mcp", headers={"mcp-session-id": sid})).status_code == 200
             await until(lambda: not app.sessions)
+
+    asyncio.run(scenario())
+
+
+def test_bicep_cleanup_retry_preserves_global_poison(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent_framework import Content
+    from maf_sandbox import Isolation, ScopePurge
+    from maf_sandbox.testing import InProcessSandboxBackend
+
+    prototype = load("http_bicep_poison_prototype", "server")
+    backend = InProcessSandboxBackend(isolation=Isolation.CONTAINER)
+    purges = []
+    executions = []
+
+    async def purge(scope, thread):
+        purges.append((scope, thread))
+        if len(purges) == 2:
+            raise RuntimeError("First call cleanup failed")
+        return ScopePurge()
+
+    async def create(config):
+        return backend
+
+    async def execute(**kwargs):
+        executions.append(kwargs)
+        return [Content.from_text(prototype.COMPLETED_TEXT), Content.from_text("Result: valid")]
+
+    monkeypatch.setattr(backend, "dispose_scope", purge)
+    monkeypatch.setattr(prototype.DockerSandboxBackend, "create", create)
+    monkeypatch.setattr(
+        prototype, "make_bicep_tools", lambda *a, **k: [SimpleNamespace(func=execute)]
+    )
+
+    async def scenario():
+        composition = await prototype.http_application(
+            "sha256:" + "a" * 64, "{}", "owner", TOKEN, 8765
+        )
+        async with running(composition.service) as (app, client, server):
+            sid = await initialize(client)
+            args = {"files": [{"path": "main.bicep", "content": "output x int = 1"}]}
+            first = await call(client, sid, "bicep_validate", args)
+            assert first.json()["result"]["structuredContent"]["status"] == "cleanup_failed"
+            assert len(purges) == 3
+            assert app.service.poisoned
+            ready = await client.get("/ready")
+            assert ready.status_code == 503
+            second = await call(client, sid, "bicep_validate", args)
+            assert second.json()["result"]["isError"]
+            assert len(executions) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("retirement", ["delete", "shutdown", "idle"])
+def test_pending_post_retains_session_reservation(retirement):
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            sid = await initialize(client)
+            record = app.sessions[sid]
+            release = asyncio.Event()
+            body = json.dumps({"jsonrpc": "2.0", "id": 77, "method": "ping"}).encode()
+
+            async def chunks():
+                yield body[:1]
+                await release.wait()
+                yield body[1:]
+
+            pending = asyncio.create_task(
+                client.post(
+                    "/mcp",
+                    headers={"mcp-session-id": sid, "content-type": "application/json"},
+                    content=chunks(),
+                )
+            )
+            try:
+                await until(lambda: app.readers == 1)
+                if retirement == "delete":
+                    deleted = await client.delete("/mcp", headers={"mcp-session-id": sid})
+                    assert deleted.status_code == 200
+                elif retirement == "shutdown":
+                    server.should_exit = True
+                    await until(lambda: not app.service.ready)
+                else:
+                    app.idle_seconds = 0.02
+                    await asyncio.sleep(0.08)
+                if retirement != "idle":
+                    await until(lambda: record.task.done())
+                assert sid in app.sessions
+                assert record.requests == 1
+                if retirement == "idle":
+                    assert not record.closing
+            finally:
+                release.set()
+                response = await pending
+            assert response.status_code == (200 if retirement == "idle" else 404)
+            await until(lambda: sid not in app.sessions)
+            assert record.requests == 0 and app.readers == 0
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["malformed", "timeout", "oversize", "cancel"])
+def test_pending_post_releases_reservation_on_body_failure(failure):
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            sid = await initialize(client)
+            record = app.sessions[sid]
+            reading, release = asyncio.Event(), asyncio.Event()
+            statuses = []
+
+            async def receive():
+                reading.set()
+                await release.wait()
+                if failure == "timeout":
+                    raise TimeoutError
+                if failure == "oversize":
+                    raise OverflowError
+                return {"type": "http.request", "body": b"invalid", "more_body": False}
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    statuses.append(message["status"])
+
+            scope = {
+                "type": "http",
+                "path": "/mcp",
+                "method": "POST",
+                "headers": [
+                    (b"authorization", f"Bearer {TOKEN}".encode()),
+                    (b"host", app.host),
+                    (b"mcp-session-id", sid.encode()),
+                ],
+            }
+            task = asyncio.create_task(app(scope, receive, send))
+            try:
+                await reading.wait()
+                assert record.requests == 1
+            finally:
+                if failure == "cancel":
+                    task.cancel()
+                release.set()
+                if failure == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                else:
+                    await task
+            assert record.requests == 0 and app.readers == 0
+            assert statuses == (
+                []
+                if failure == "cancel"
+                else [{"malformed": 400, "timeout": 408, "oversize": 413}[failure]]
+            )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1e400", "-1e400"])
+@pytest.mark.parametrize("fresh", [False, True])
+def test_nonfinite_json_is_rejected_before_dispatch(token, fresh):
+    async def scenario():
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
+            sid = None if fresh else await initialize(client)
+            if fresh:
+                body = {
+                    "jsonrpc": "2.0",
+                    "id": 91,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "numeric", "version": "1"},
+                        "_meta": {"number": "NUMBER"},
+                    },
+                }
+            else:
+                body = {
+                    "jsonrpc": "2.0",
+                    "id": 91,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "increment",
+                        "arguments": {"number": "NUMBER"},
+                    },
+                }
+            encoded = json.dumps(body).replace('"NUMBER"', token)
+            response = await client.post(
+                "/mcp",
+                content=encoded,
+                headers={
+                    "content-type": "application/json",
+                    **({"mcp-session-id": sid} if sid else {}),
+                },
+            )
+            assert response.status_code == 400
+            assert len(app.sessions) == (0 if fresh else 1)
+            assert not h.calls
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_values_refused_at_shared_binding_boundary(value):
+    async def scenario():
+        h = Harness()
+        service = h.service()
+        tool = service.bindings["increment"].tool.model_copy(deep=True)
+        tool.inputSchema["properties"]["number"] = {"type": "number", "minimum": 0, "maximum": 10}
+        tool.outputSchema["properties"]["total"] = {"type": "number"}
+
+        async def execute(args, context):
+            h.calls.append(context)
+            return result({"total": value})
+
+        service.bindings["increment"] = replace(
+            service.bindings["increment"], tool=tool, execute=execute
+        )
+        service.session_open = lambda _: True
+        async with service.lifespan():
+            bad_input = await service.invoke(
+                "increment", {"number": value}, core.CallContext("a", "1")
+            )
+            assert bad_input.isError and not h.calls
+            bad_output = await service.invoke(
+                "increment", {"number": 1}, core.CallContext("a", "2")
+            )
+            assert bad_output.isError and len(h.calls) == 1
 
     asyncio.run(scenario())

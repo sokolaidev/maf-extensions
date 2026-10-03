@@ -6,11 +6,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import re
 import secrets
 import socket
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from importlib.metadata import version
 
@@ -33,6 +34,14 @@ CONNECTIONS = 32
 BODY_READERS = 16
 SESSION_LIMIT = 8
 IDLE_SECONDS = 15 * 60
+
+
+def _finite_float(value: str) -> float:
+    """Parse JSON numbers without non-finite constants or overflow."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("Non-finite JSON number.")
+    return parsed
 
 
 @dataclass
@@ -109,6 +118,7 @@ class WorkloadHTTP:
                 if (
                     not record.closing
                     and not record.ids
+                    and record.requests == int(record.get_active)
                     and not (active and active[0].session_id == sid)
                     and time.monotonic() - record.touched >= self.idle_seconds
                 ):
@@ -149,6 +159,18 @@ class WorkloadHTTP:
             record.started.set()
             if not record.closing:
                 self.retire(sid)
+
+    @contextlib.contextmanager
+    def _request(self, record: Session | None) -> Iterator[None]:
+        """Retain a session through the complete lifetime of an HTTP handler."""
+        if record is not None:
+            record.requests += 1
+            record.touched = time.monotonic()
+        try:
+            yield
+        finally:
+            if record is not None:
+                record.requests -= 1
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -202,7 +224,8 @@ class WorkloadHTTP:
             await Response(status_code=404)(scope, receive, send)
             return
         if scope["method"] == "POST":
-            await self._post(scope, receive, send, sid, grouped)
+            with self._request(self.sessions.get(sid)):
+                await self._post(scope, receive, send, sid, grouped)
             return
         if not sid:
             await Response(status_code=400)(scope, receive, send)
@@ -261,7 +284,7 @@ class WorkloadHTTP:
             await Response(status_code=404)(scope, receive, send)
             return
         try:
-            raw = json.loads(body)
+            raw = json.loads(body, parse_constant=_finite_float, parse_float=_finite_float)
             message = types.JSONRPCMessage.model_validate(raw).root
             if isinstance(message, types.JSONRPCRequest):
                 types.ClientRequest.model_validate(raw)
@@ -307,56 +330,59 @@ class WorkloadHTTP:
             )
             self.sessions[sid] = record
             record.task = asyncio.create_task(self._start(sid, record))
-            await record.started.wait()
         else:
             record = self.sessions[sid]
-        if record.closing:
-            await Response(status_code=404)(scope, receive, send)
-            return
-        request_id = str(message.id) if isinstance(message, types.JSONRPCRequest) else None
-        if request_id is not None and request_id in record.ids:
-            await Response(status_code=409)(scope, receive, send)
-            return
-        if request_id is not None:
-            record.ids.add(request_id)
-        record.touched = time.monotonic()
-        record.requests += 1
-        consumed = False
-        response_status = 500
+        with self._request(record if fresh else None):
+            if fresh:
+                await record.started.wait()
+            if record.closing:
+                await Response(status_code=404)(scope, receive, send)
+                return
+            request_id = str(message.id) if isinstance(message, types.JSONRPCRequest) else None
+            if request_id is not None and request_id in record.ids:
+                await Response(status_code=409)(scope, receive, send)
+                return
+            if request_id is not None:
+                record.ids.add(request_id)
+            consumed = False
+            response_status = 500
 
-        async def replay():
-            nonlocal consumed
-            if not consumed:
-                consumed = True
-                return {"type": "http.request", "body": body, "more_body": False}
-            return await receive()
+            async def replay():
+                nonlocal consumed
+                if not consumed:
+                    consumed = True
+                    return {"type": "http.request", "body": body, "more_body": False}
+                return await receive()
 
-        async def capture(message):
-            nonlocal response_status
-            if message["type"] == "http.response.start":
-                response_status = message["status"]
-            await send(message)
+            async def capture(message):
+                nonlocal response_status
+                if message["type"] == "http.response.start":
+                    response_status = message["status"]
+                await send(message)
 
-        async def dispatch():
-            try:
-                await record.transport.handle_request(scope, replay, capture)
-                if message.method == "notifications/initialized" and response_status == 202:
-                    record.initialized = True
-            finally:
-                active = self.service.active
-                if active and active[0].session_id == sid and active[0].request_id == request_id:
-                    await drain(active[1])
-                record.requests -= 1
-                if request_id is not None:
-                    record.ids.discard(request_id)
-                if fresh and response_status != 200:
-                    self.retire(sid)
+            async def dispatch():
+                try:
+                    await record.transport.handle_request(scope, replay, capture)
+                    if message.method == "notifications/initialized" and response_status == 202:
+                        record.initialized = True
+                finally:
+                    active = self.service.active
+                    if (
+                        active
+                        and active[0].session_id == sid
+                        and active[0].request_id == request_id
+                    ):
+                        await drain(active[1])
+                    if request_id is not None:
+                        record.ids.discard(request_id)
+                    if fresh and response_status != 200:
+                        self.retire(sid)
 
-        handling = asyncio.create_task(dispatch())
-        interrupted = await drain(handling)
-        handling.result()
-        if interrupted:
-            raise asyncio.CancelledError
+            handling = asyncio.create_task(dispatch())
+            interrupted = await drain(handling)
+            handling.result()
+            if interrupted:
+                raise asyncio.CancelledError
 
 
 class BoundedH11Protocol(H11Protocol):

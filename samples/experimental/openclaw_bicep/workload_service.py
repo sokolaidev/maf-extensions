@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -139,6 +140,7 @@ class WorkloadService(FastMCP[None]):
 
     @staticmethod
     def _bounded(binding: Binding, result: types.CallToolResult) -> types.CallToolResult:
+        json.dumps(result.structuredContent, allow_nan=False)
         if len(result.model_dump_json().encode("utf-8")) > binding.max_output_bytes:
             return error("Workload result exceeds its response budget.")
         if not result.isError:
@@ -172,9 +174,10 @@ class WorkloadService(FastMCP[None]):
         if b is None:
             return error("Unknown tool.")
         try:
-            import json
-
-            if len(json.dumps(arguments, ensure_ascii=False).encode("utf-8")) > b.max_input_bytes:
+            if (
+                len(json.dumps(arguments, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+                > b.max_input_bytes
+            ):
                 return error("Tool input exceeds its byte budget.")
             jsonschema.Draft202012Validator(b.tool.inputSchema).validate(arguments)
         except Exception:

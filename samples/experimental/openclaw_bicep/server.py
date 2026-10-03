@@ -502,7 +502,11 @@ async def http_application(image: str, config: str, scope: str, token: str, port
         holder["validator"] = Validator(backend, scope, image, config)
 
     async def cleanup() -> bool:
-        return await holder["validator"].recover() if holder else True
+        if not holder:
+            return True
+        validator = holder["validator"]
+        clean = await validator.recover()
+        return clean and not validator.poisoned
 
     async def close() -> None:
         holder.clear()
