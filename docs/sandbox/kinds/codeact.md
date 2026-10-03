@@ -166,6 +166,7 @@ Provider details stay in host logs. A control-plane timeout is not reported as p
 | Contract | State | Details |
 |---|---|---|
 | Exec, file channels, output modes and exec host tools | Implemented | [Package README](../../../packages/maf-sandbox-codeact/README.md) |
+| Withheld output locations calculated from the sink | Implemented | [#1682](https://github.com/sokolaidev/maf-extensions/issues/1682) (closed) by [#1683](https://github.com/sokolaidev/maf-extensions/pull/1683) (merged) |
 | Explicit Python runtime | Implemented | [Hyperlight profiles](../backends/hyperlight.md) |
 | Native runtime host tools | Open; nonempty registries are refused | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | Inherited deployment network defaults | Open; hosts supply explicit allowlists | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) |
