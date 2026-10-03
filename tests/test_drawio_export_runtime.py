@@ -17,6 +17,33 @@ RUNTIME = runpy.run_path(str(Path(__file__).parents[1] / "images/drawio-export/e
 
 
 @pytest.mark.parametrize(
+    "encoding",
+    ["utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_encoded_xml_declarations_are_refused_before_parsing(monkeypatch, encoding, embedded):
+    xml = '<!DOCTYPE svg [<!ENTITY text "expanded">]><svg xmlns="http://www.w3.org/2000/svg"><text>&text;</text></svg>'
+
+    def parse(*args, **kwargs):
+        pytest.fail("DTD/entity content must not reach the XML parser")
+
+    monkeypatch.setattr(RUNTIME["ET"], "fromstring", parse)
+    with pytest.raises(ValueError):
+        if embedded:
+            uri = "data:image/svg+xml;base64," + base64.b64encode(xml.encode(encoding)).decode()
+            RUNTIME["image_data"](uri)
+        else:
+            RUNTIME["xml_document"](xml.encode(encoding))
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_utf8_xml_preserves_unicode(encoding):
+    xml = '<svg xmlns="http://www.w3.org/2000/svg"><text>Résumé Ω</text></svg>'
+    root = RUNTIME["xml_document"](xml.encode(encoding))
+    assert root[0].text == "Résumé Ω"
+
+
+@pytest.mark.parametrize(
     "svg",
     [
         '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
@@ -154,10 +181,8 @@ def test_oversized_png_header_is_a_resource_refusal():
         RUNTIME["image_data"]("data:image/png;base64," + base64.b64encode(data).decode())
 
 
-@pytest.mark.parametrize("format", ["png", "jpg", "svg"])
-@pytest.mark.parametrize("variant", range(4))
-@pytest.mark.parametrize("damage", ["missing", "modified"])
-def test_all_formats_preflight_every_font_variant(tmp_path, monkeypatch, format, variant, damage):
+@pytest.fixture
+def font_runtime(tmp_path, monkeypatch):
     monkeypatch.setitem(RUNTIME["export_document"].__globals__, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     original_read = Path.read_bytes
@@ -180,11 +205,6 @@ def test_all_formats_preflight_every_font_variant(tmp_path, monkeypatch, format,
                 "sha256": hashlib.sha256(b"font").hexdigest(),
             }
         )
-    damaged = Path(variants[variant]["path"])
-    if damage == "missing":
-        damaged.unlink()
-    else:
-        damaged.write_bytes(b"changed")
     (tmp_path / "manifest.json").write_text(
         json.dumps(
             {
@@ -197,6 +217,20 @@ def test_all_formats_preflight_every_font_variant(tmp_path, monkeypatch, format,
             }
         )
     )
+    return variants
+
+
+@pytest.mark.parametrize("format", ["png", "jpg", "svg"])
+@pytest.mark.parametrize("variant", range(4))
+@pytest.mark.parametrize("damage", ["missing", "modified"])
+def test_all_formats_preflight_every_font_variant(
+    tmp_path, monkeypatch, font_runtime, format, variant, damage
+):
+    damaged = Path(font_runtime[variant]["path"])
+    if damage == "missing":
+        damaged.unlink()
+    else:
+        damaged.write_bytes(b"changed")
 
     def render(*args):
         pytest.fail("Renderer must not start with a missing or modified font")
@@ -215,6 +249,41 @@ def test_all_formats_preflight_every_font_variant(tmp_path, monkeypatch, format,
             time.monotonic() + 10,
         )
     assert not (tmp_path / "exports.json").exists()
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        'value="fontFamily=Missing;"',
+        'label="fontFamily=Missing;"',
+        'custom="fontFamily=Missing;"',
+        'style="custom=fontFamily=Missing;"',
+        'value="fontFamily=Missing"',
+    ],
+)
+@pytest.mark.parametrize("format", ["png", "jpg", "svg"])
+def test_font_mentions_outside_font_style_do_not_change_preflight(
+    monkeypatch, font_runtime, attribute, format
+):
+    class RendererReached(Exception):
+        pass
+
+    def render(*args):
+        raise RendererReached
+
+    monkeypatch.setitem(RUNTIME["export_document"].__globals__, "run_renderer", render)
+    with pytest.raises(RendererReached):
+        RUNTIME["export_document"](
+            f"<mxfile><diagram><mxCell {attribute}/></diagram></mxfile>",
+            {
+                "formats": [format],
+                "pages": None,
+                "scale": 1,
+                "transparent": False,
+                "jpeg_quality": 90,
+            },
+            time.monotonic() + 10,
+        )
 
 
 @pytest.mark.skipif(

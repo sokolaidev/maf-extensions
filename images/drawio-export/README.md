@@ -13,6 +13,8 @@ install.py repacks Desktop's ASAR with guard.js to refuse missing images, unknow
 
 Both image and indicatorImage styles require a manifest-listed asset or validated embedded image. Indicator shapes must belong to the native renderer's default-shape registry; stencil-only indicators are refused because Desktop does not construct them. Every variant of each selected font family is checked against the manifest before rendering PNG, JPG or SVG.
 
+XML resources, including embedded SVGs, must use UTF-8, optionally with its byte-order mark. NUL characters and DTD/entity declarations are refused before XML parsing.
+
 The renderer runs as an unprivileged user with Electron's inner sandbox disabled. A qualified outer sandbox must enforce closed networking, CPU/memory/process limits, file confinement and process-tree disposal. Do not expose host credentials, directories or display sockets. The verification script explicitly selects container isolation; the library does not lower the host's isolation floor.
 
 For a future container-free POSIX backend, install the same runtime paths in a read-only sandbox root and run install.py during provisioning. The installer must receive the pinned, unmodified Desktop archive. Do not run it twice against an already patched archive. Runtime files require Python 3, Pillow, Graphviz, Xvfb, xauth, DejaVu fonts and the Electron shared libraries listed by the Dockerfile. This describes the bundle layout; it does not qualify Bubblewrap, Seatbelt, Windows or Hyperlight. See the [decision record](../../docs/sandbox/research/drawio-export.md).
