@@ -149,7 +149,6 @@ class WorkloadService(FastMCP[None]):
         return result
 
     async def _execute(self, b: Binding, args: dict[str, Any], ctx: CallContext):
-        answer = error("Workload failed.")
         try:
             answer = self._bounded(b, await b.execute(args, ctx))
         except Exception:
