@@ -2,6 +2,24 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.47.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.46.0...maf-sandbox-v0.47.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664))
+
+### Features
+
+* locate withheld CodeAct outputs through their sink ([#1683](https://github.com/sokolaidev/maf-extensions/issues/1683)) ([62606e8](https://github.com/sokolaidev/maf-extensions/commit/62606e862be2a551f368163b1281a90554abd2e1))
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664)) ([5d09f66](https://github.com/sokolaidev/maf-extensions/commit/5d09f6670aeddc8569ad5ce79d8c2e7f2c17b7d5))
+* support host tools in Docker Sandboxes with per-run activity guards ([#1635](https://github.com/sokolaidev/maf-extensions/issues/1635)) ([2344c81](https://github.com/sokolaidev/maf-extensions/commit/2344c8115977fe3b429241055a6a48b4c0a440c4))
+
+
+### Fixes
+
+* preserve trusted call integrity in drawio results ([#1653](https://github.com/sokolaidev/maf-extensions/issues/1653)) ([dae8c04](https://github.com/sokolaidev/maf-extensions/commit/dae8c0454dc02aa8627812f4981e18b07c613717))
+
 ## [0.46.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.45.2...maf-sandbox-v0.46.0) (2026-10-01)
 
 
