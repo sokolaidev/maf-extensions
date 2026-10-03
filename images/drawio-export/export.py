@@ -99,10 +99,16 @@ class Label(HTMLParser):
 
 
 def xml_document(data: bytes) -> ET.Element:
-    """Parse bounded XML without declarations that can expand entities."""
-    if len(data) > MAX_FILE or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+    """Parse bounded UTF-8 XML without DTD or entity declarations."""
+    if len(data) > MAX_FILE:
         raise ValueError("Unsupported or oversized XML resource")
-    return ET.fromstring(data)
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("XML resources must use UTF-8") from exc
+    if "\x00" in text or "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        raise ValueError("Unsupported XML resource")
+    return ET.fromstring(text)
 
 
 def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
@@ -295,7 +301,13 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
     ):
         raise RuntimeError("Renderer integrity check failed")
     prepared = prepare_document(xml, manifest)
-    families = set(re.findall(r"fontFamily=([^;]+)", prepared))
+    document = xml_document(prepared.encode())
+    families = set()
+    for element in document.iter():
+        for declaration in element.get("style", "").split(";"):
+            key, separator, value = declaration.partition("=")
+            if key == "fontFamily" and separator:
+                families.add(value)
     css = []
     for family in sorted(families):
         for font in manifest["font_variants"][family]:
@@ -307,7 +319,7 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
                 f"font-weight:{font['weight']};font-style:{font['style']};"
                 "src:url(data:font/ttf;base64," + base64.b64encode(data).decode() + ")}"
             )
-    pages = len(xml_document(xml.encode()))
+    pages = len(document)
     selected = options["pages"] or list(range(1, pages + 1))
     if any(page > pages for page in selected):
         raise ValueError("Requested page is absent")

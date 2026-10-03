@@ -34,7 +34,7 @@ def diagram() -> str:
                 "id": "a",
                 "parent": "1",
                 "vertex": "1",
-                "value": f"<b>Page {page}</b><br>Résumé Ω",
+                "value": f"<b>Page {page}</b><br>Résumé Ω<br>fontFamily=Missing;",
                 "style": "shape=label;rounded=1;html=1;indicatorWidth=30;indicatorHeight=30;"
                 + (
                     "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg;"
@@ -98,6 +98,7 @@ def verify_output(output: Path) -> dict[str, object]:
         root = ET.fromstring(svg)
         assert root.tag == "{http://www.w3.org/2000/svg}svg"
         assert f"Page {page}" in svg and "Résumé" in svg
+        assert "fontFamily=Missing;" in svg
         assert "data:image/" in svg and "data:font/ttf;base64," in svg
         if page == 1:
             assert any(
@@ -202,6 +203,15 @@ async def check(image: str, output: Path) -> None:
             ),
             "huge-canvas": diagram().replace('width="200"', 'width="100000"'),
         }
+        for encoding in ("utf-16", "utf-32"):
+            resource = (
+                '<!DOCTYPE svg [<!ENTITY text "expanded">]>'
+                '<svg xmlns="http://www.w3.org/2000/svg"><text>&text;</text></svg>'
+            ).encode(encoding)
+            cases[encoding + "-embedded-xml"] = diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=data:image/svg+xml," + base64.b64encode(resource).decode(),
+            )
         for name, xml in cases.items():
             destination = output / name
             [refusal] = make_drawio_tools(
