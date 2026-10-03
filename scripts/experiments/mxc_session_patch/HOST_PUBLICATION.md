@@ -4,7 +4,7 @@ This continuation of [spike #1649](https://github.com/sokolaidev/maf-extensions/
 
 ## Publication and recovery
 
-[host_store.py](host_store.py) stores compressed, hashed snapshot chunks and a bounded result in one local SQLite database. SQLite uses rollback journaling and `synchronous=FULL`; committing the transaction publishes both the current checkpoint reference and the saved result. Snapshot bytes are inside that transaction, so there is no separately renamed directory whose durability the database assumes. Result JSON includes the fixed experiment's chart artifact bytes.
+[host_store.py](host_store.py) stores compressed, hashed snapshot chunks and a bounded result in one local SQLite database. SQLite uses rollback journaling and `synchronous=FULL`; committing the transaction publishes both the current checkpoint reference and the saved result. Snapshot bytes are inside that transaction, so there is no separately renamed directory whose durability the database assumes. Each referenced chunk is stored from the freshly captured bytes; a differing stored payload under the same hash is replaced inside that transaction. Result JSON includes the fixed experiment's chart artifact bytes.
 
 A local operating-system file lock covers the entire owner lifetime. Acquisition increments a generation; stale-generation operations refuse. This is single-machine ownership on a private local filesystem, not a distributed lease or permission to recover on another machine. The profile binds the host-supplied session identity, helper hash, startup-index hash, platform, machine and closed/no-mount policy. An incompatible profile refuses; startup-index identity is not independent verification of every runtime blob or production policy admission.
 
@@ -61,6 +61,8 @@ The [retained hosted result](linux-hosted-result.json) records a successful [Git
 Native controls established fresh-state isolation, persistent Python objects and open guest-file position, commit barriers, recovery in a different helper process, unchanged saved checkpoint bytes, session retirement after errors/timeouts, and refusal of truncated, missing or incompatible checkpoint metadata. Publication controls established previous-state recovery after a pre-commit host crash, interrupted-call refusal, saved-result redelivery after commit and before acknowledgment, and byte-identical chart redelivery after later calls. These independently qualify the fixed workload on Linux/KVM; they do not establish Windows-to-Linux checkpoint portability.
 
 The first hosted run seeded and captured successfully but restore reported no available hypervisor. Replacing a one-time KVM ACL with persistent runner ownership through udev allowed the unchanged probes to pass. The [earlier local Linux attempt](linux-attempt.json) remains historical evidence of executable-format and filesystem I/O failures; it is not the current Linux result.
+
+The retained native and publication runs predate the chunk-replacement hardening. Four store regressions cover invalid compressed bytes and valid compressed data with the wrong hash in historical chunks, successful restoration after replacement, and rollback of chunk changes before publication. They do not extend the retained native runtime measurements.
 
 ## Limits and next gate
 

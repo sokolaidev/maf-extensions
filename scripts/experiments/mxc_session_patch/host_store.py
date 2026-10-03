@@ -204,7 +204,9 @@ class Store:
                         digest.update(data)
                         chunk_hash = hashlib.sha256(data).hexdigest()
                         self.db.execute(
-                            "INSERT OR IGNORE INTO chunks VALUES(?, ?)",
+                            "INSERT INTO chunks VALUES(?, ?) "
+                            "ON CONFLICT(hash) DO UPDATE SET data=excluded.data "
+                            "WHERE chunks.data != excluded.data",
                             (chunk_hash, zlib.compress(data, level=1)),
                         )
                         hashes.append(chunk_hash)

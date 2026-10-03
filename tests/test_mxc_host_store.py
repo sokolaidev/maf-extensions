@@ -186,3 +186,57 @@ def test_chart_chunks_detect_loss_and_duplicates(monkeypatch):
     ]:
         with pytest.raises(host_call.Refused):
             host_call.chart_data(bad)
+
+
+@pytest.mark.parametrize("corrupt", [b"invalid-zlib", store.zlib.compress(b"wrong-state")])
+def test_publication_replaces_corrupt_historical_chunk(tmp_path, corrupt):
+    root = tmp_path / "db"
+    old = b"old-state"
+    chunk_hash = store.hashlib.sha256(old).hexdigest()
+    with store.Store(root, PROFILE) as db:
+        db.begin("old", b"old")
+        db.commit("old", candidate(tmp_path / "old", old), b"old-result")
+        db.begin("current", b"current")
+        db.commit("current", candidate(tmp_path / "current", b"current-state"), b"current-result")
+        db.db.execute("UPDATE chunks SET data=? WHERE hash=?", (corrupt, chunk_hash))
+        db.db.commit()
+        assert db.restore(tmp_path / "before") == "current"
+        db.begin("new", b"new")
+        db.commit("new", candidate(tmp_path / "new", old), b"new-result")
+    with store.Store(root, PROFILE) as db:
+        assert db.begin("new", b"new") == b"new-result"
+        assert db.restore(tmp_path / "restored") == "new"
+        assert (tmp_path / "restored/index.json").read_bytes() == old
+        assert db.db.execute("SELECT count(*) FROM chunks").fetchone() == (2,)
+        assert db.begin("old", b"old") == b"old-result"
+
+
+@pytest.mark.parametrize("fault", ["checkpoint_stored", "before_commit"])
+def test_chunk_replacement_rolls_back_with_failed_publication(tmp_path, fault):
+    root = tmp_path / "db"
+    old = b"old-state"
+    chunk_hash = store.hashlib.sha256(old).hexdigest()
+    with store.Store(root, PROFILE) as db:
+        db.begin("old", b"old")
+        db.commit("old", candidate(tmp_path / "old", old), b"old-result")
+        db.begin("current", b"current")
+        db.commit("current", candidate(tmp_path / "current", b"current-state"), b"current-result")
+        db.db.execute("UPDATE chunks SET data=? WHERE hash=?", (b"corrupt", chunk_hash))
+        db.db.commit()
+        db.begin("new", b"new")
+
+        def fail(point):
+            if point == fault:
+                raise RuntimeError("publication interrupted")
+
+        with pytest.raises(RuntimeError, match="publication interrupted"):
+            db.commit("new", candidate(tmp_path / "new", old), b"new-result", fail)
+    with store.Store(root, PROFILE) as db:
+        assert db.restore(tmp_path / "restored") == "current"
+        assert (tmp_path / "restored/index.json").read_bytes() == b"current-state"
+        assert db.db.execute("SELECT data FROM chunks WHERE hash=?", (chunk_hash,)).fetchone() == (
+            b"corrupt",
+        )
+        with pytest.raises(store.Refused, match="explicit recovery"):
+            db.begin("new", b"new")
+        assert db.begin("current", b"current") == b"current-result"
