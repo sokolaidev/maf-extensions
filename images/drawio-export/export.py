@@ -220,6 +220,8 @@ def prepare_document(xml: str, manifest: dict) -> str:
     budget = DocumentBudget(root)
     verified_assets: dict[str, str] = {}
     for element in root.iter():
+        if element.get("placeholders") == "1":
+            raise ValueError("Placeholder labels are not supported by this export profile")
         if element.get("math") == "1":
             raise ValueError("Math labels are not supported by this export profile")
         for name, value in list(element.attrib.items()):
@@ -332,7 +334,10 @@ def run_renderer(argv: list[str], deadline: float, profile: Path) -> None:
 
 def export_document(xml: str, options: dict, deadline: float) -> None:
     """Render every requested page before publishing the output manifest."""
-    manifest = json.loads((ROOT / "manifest.json").read_text("utf-8"))
+    try:
+        manifest = json.loads((ROOT / "manifest.json").read_text("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Invalid offline renderer manifest") from exc
     if manifest["version"] != 1 or manifest["desktop"] != "31.7.0":
         raise RuntimeError("Unsupported offline renderer manifest")
     if (

@@ -7,13 +7,52 @@ import runpy
 import shutil
 import struct
 import subprocess
+import sys
 import time
+import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 
 import pytest
+from maf_sandbox_drawio import _renderer as renderer
 
 RUNTIME = runpy.run_path(str(Path(__file__).parents[1] / "images/drawio-export/export.py"))
+
+
+def placeholder_document(tag="object", indirect=False, payload='<img src="/etc/passwd">'):
+    document = ET.fromstring(
+        '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/>'
+        '<mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>'
+    )
+    wrapper = ET.SubElement(
+        document[0][0][0], tag, {"id": "2", "label": "%name%", "placeholders": "1", "name": payload}
+    )
+    if indirect:
+        wrapper.set("placeholder", "name")
+    vertex = ET.SubElement(wrapper, "mxCell", {"parent": "1", "vertex": "1", "style": "html=1;"})
+    ET.SubElement(vertex, "mxGeometry", {"as": "geometry", "width": "120", "height": "80"})
+    return ET.tostring(document, encoding="unicode")
+
+
+@pytest.mark.parametrize("tag", ["object", "UserObject"])
+@pytest.mark.parametrize("indirect", [False, True])
+@pytest.mark.parametrize("payload", ['<img src="/etc/passwd">', "<iframe>content</iframe>"])
+def test_placeholder_labels_are_refused(tag, indirect, payload):
+    with pytest.raises(ValueError, match="Placeholder"):
+        RUNTIME["prepare_document"](
+            placeholder_document(tag, indirect, payload),
+            {"assets": {}, "fonts": {"DejaVu Sans": "unused"}},
+        )
+
+
+@pytest.mark.parametrize("tag", ["object", "UserObject"])
+def test_disabled_placeholders_preserve_literal_labels(tag):
+    result = RUNTIME["prepare_document"](
+        placeholder_document(tag).replace('placeholders="1"', 'placeholders="0"'),
+        {"assets": {}, "fonts": {"DejaVu Sans": "unused"}},
+    )
+    wrapper = ET.fromstring(result).find(f".//{tag}")
+    assert wrapper is not None and wrapper.get("label") == "%name%"
 
 
 @pytest.mark.parametrize(
@@ -297,6 +336,56 @@ def font_runtime(tmp_path, monkeypatch):
         )
     )
     return variants
+
+
+@pytest.mark.parametrize("format", ["png", "jpg", "svg"])
+@pytest.mark.parametrize("failure", [b"\xff", b'{"version":', "placeholders"])
+def test_export_cli_distinguishes_manifest_damage_from_content_refusal(
+    tmp_path, monkeypatch, font_runtime, capsys, format, failure
+):
+    source = placeholder_document()
+    if isinstance(failure, bytes):
+        (tmp_path / "manifest.json").write_bytes(failure)
+        source = source.replace('placeholders="1"', 'placeholders="0"')
+    (tmp_path / "input.xml").write_text(source, encoding="utf-8")
+    (tmp_path / "export.json").write_text(
+        json.dumps(
+            {
+                "formats": [format],
+                "pages": None,
+                "scale": 1,
+                "transparent": False,
+                "jpeg_quality": 90,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "renderer.py",
+            "--preserve-layout",
+            "true",
+            "--direction",
+            "TB",
+            "--timeout",
+            "5",
+            "--export-config",
+            "export.json",
+        ],
+    )
+    monkeypatch.setattr(runpy, "run_path", lambda path: RUNTIME)
+
+    def render(*args):
+        pytest.fail("The native renderer must not start after preflight fails")
+
+    monkeypatch.setitem(RUNTIME["export_document"].__globals__, "run_renderer", render)
+    assert renderer.main() == (3 if isinstance(failure, bytes) else 2)
+    diagnostic = capsys.readouterr().err
+    assert ("manifest" if isinstance(failure, bytes) else "Placeholder") in diagnostic
+    assert not (tmp_path / "exports.json").exists()
+    assert not list(tmp_path.glob("diagram-*.*"))
 
 
 @pytest.mark.parametrize("format", ["png", "jpg", "svg"])
