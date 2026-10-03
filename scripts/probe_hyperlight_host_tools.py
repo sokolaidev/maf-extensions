@@ -394,6 +394,7 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
         cap=options.get("cap", 16),
         response_bytes=options.get("response_bytes", APPLICATION_LIMIT),
     )
+    policies = [policy]
     policy.raw_response = options.get("raw_response")
     policy.fail_before_return = options.get("fail_before_return", False)
     policy.reject_generation = options.get("reject_generation", False)
@@ -422,10 +423,11 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
             report["cancelled"] = True
         if options.get("reuse"):
             second = Policy(name + "-next")
+            policies.append(second)
+            report["reuse_events"] = second.events
             report["reuse"] = await worker.exchange(
                 {"op": "run", "run": second.run_id, "code": code}, second.service, 5
             )
-            report["reuse_events"] = second.events
             report["unbound"] = await worker.exchange({"op": "unbound"}, second.service, 5)
             report["late_registration"] = await worker.exchange(
                 {"op": "late_registration"}, second.service, 5
@@ -437,7 +439,8 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
         report["worker_exit_before_cleanup"] = worker.process.poll()
         worker.close()
         report["worker_stderr"] = worker._stderr.decode("utf-8", errors="replace")
-        await policy.cleanup()
+        for active in policies:
+            await active.cleanup()
         report["reaped"] = worker.process.poll() is not None and not worker._drainer.is_alive()
         report["events"] = policy.events
         report["seconds"] = round(time.monotonic() - started, 3)
