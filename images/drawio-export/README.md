@@ -15,6 +15,8 @@ Both image and indicatorImage styles require a manifest-listed asset or validate
 
 XML resources, including embedded SVGs, must use UTF-8, optionally with its byte-order mark. NUL characters and DTD/entity declarations are refused before XML parsing.
 
+Enabled label placeholders are refused before rendering, including object/UserObject wrappers and indirect labels, because substitution occurs after HTML validation. Literal labels with placeholders disabled remain supported. Invalid UTF-8 or JSON in the installed runtime manifest is an incomplete runtime failure, not a content refusal.
+
 Prepared XML is limited to 8 MiB across all pages, including embedded assets, XML escaping and normalized font styles. Expansion is charged before replacement styles are retained or serialized. Each bundled asset is read and verified once per document; repeated references still consume the document budget.
 
 The renderer runs as an unprivileged user with Electron's inner sandbox disabled. A qualified outer sandbox must enforce closed networking, CPU/memory/process limits, file confinement and process-tree disposal. Do not expose host credentials, directories or display sockets. The verification script explicitly selects container isolation; the library does not lower the host's isolation floor.

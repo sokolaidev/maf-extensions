@@ -116,6 +116,29 @@ def repeated_assets() -> str:
     return ET.tostring(document, encoding="unicode")
 
 
+def placeholder_label(tag: str, indirect: bool) -> str:
+    """Exercise native object labels whose HTML is supplied by metadata substitution."""
+    document = ET.fromstring(diagram())
+    root = document[0][0][0]
+    vertex = root[2]
+    wrapper = ET.Element(
+        tag,
+        {
+            "id": vertex.attrib.pop("id"),
+            "label": "%name%",
+            "placeholders": "1",
+            "name": '<img src="/etc/passwd">',
+        },
+    )
+    if indirect:
+        wrapper.set("placeholder", "name")
+    del vertex.attrib["value"]
+    root.remove(vertex)
+    wrapper.append(vertex)
+    root.append(wrapper)
+    return ET.tostring(document, encoding="unicode")
+
+
 def verify_output(output: Path) -> dict[str, object]:
     """Decode raster artifacts and check distinct pages and embedded SVG assets/fonts."""
     sizes = []
@@ -237,6 +260,9 @@ async def check(image: str, output: Path) -> None:
             ),
             "huge-canvas": diagram().replace('width="200"', 'width="100000"'),
         }
+        for tag in ("object", "UserObject"):
+            for indirect in (False, True):
+                cases[f"placeholder-{tag}-{indirect}"] = placeholder_label(tag, indirect)
         for encoding in ("utf-16", "utf-32"):
             resource = (
                 '<!DOCTYPE svg [<!ENTITY text "expanded">]>'
@@ -261,6 +287,8 @@ async def check(image: str, output: Path) -> None:
             assert answer[:2] == [COMPLETED_TEXT, "Result: refused"], (name, answer)
             if name == "repeated-bundled-asset":
                 assert "Prepared document" in " ".join(text or "" for text in answer), answer
+            if name.startswith("placeholder-"):
+                assert "Placeholder labels" in " ".join(text or "" for text in answer), answer
             assert not destination.exists() or not list(destination.iterdir())
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(
