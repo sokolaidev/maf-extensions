@@ -2,11 +2,11 @@
 
 [descriptor_probe.py](descriptor_probe.py) tests whether guest descriptor redirection can satisfy [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) without changing the embedded kernel. It uses the existing pinned MXC session patch; `execute-owned` executes once under the private owner pipe without exporting a checkpoint. `call-owned` still tests checkpoint export. No shipped package or upstream runtime API changes.
 
-## Preliminary result
+## Result
 
-Windows/WHP establishes **no-go for guest descriptor redirection alone as a host-enforced output boundary**. [windows-descriptor-result.json](windows-descriptor-result.json) records individual outcomes and executable identity. Linux/KVM qualification is pending the explicitly dispatched workflow; an ordinary PR check does not execute this probe.
+Independent Windows/WHP and Linux/KVM measurements establish **no-go for guest descriptor redirection alone as a host-enforced output boundary**. [Windows evidence](windows-descriptor-result.json) and [Linux evidence](linux-descriptor-result.json) record individual outcomes and executable identities. [GitHub run 37136213341](https://github.com/sokolaidev/maf-extensions/actions/runs/37136213341) passed the complete workflow at source `5b2436f57c672889f50277d30a2083a69735b0c3`, including the existing native recovery, atomic publication and owner-liveness controls. Both output measurements use that source; later evidence/documentation edits do not change the tested programs. An ordinary PR check does not execute the opt-in runtime probe.
 
-| Control | Windows observation |
+| Control | Windows/WHP and Linux/KVM observation |
 |---|---|
 | Console writes of 4095 / 4096 / 4097 bytes | 4095 / 4096 / 4096 bytes arrive, while all three writes and native executions report success |
 | Separate pipes with binary and Unicode, concurrent writers, duplicated descriptors, writev and native C write | Exact expected hashes; 20,314 bytes in each stream |
@@ -17,9 +17,11 @@ Windows/WHP establishes **no-go for guest descriptor redirection alone as a host
 | Native deadline / explicit owner cancellation while writing to pipes | Exit 1 with TimedOut / exit 74; neither produces native success |
 | Open redirected file / buffered pipe across process restart | Both preserve the expected before/after binary bytes and descriptor state |
 
-The pipe measurements are observations from fixed cooperative guest programs. Their hashes and counters do not create host authority, enforce a native memory quota, or prevent hostile guest code from replacing a reader or bypassing it. The supervisor independently bounds its retained process output and wall time. Its fallback kill is an inconclusive runtime measurement, never a passing deadline result. The evidence validator requires native completion, expected byte hashes and all counterexamples; tests reject missing controls, corrupted hashes and supervisor fallback.
+The pipe measurements are observations from fixed cooperative guest programs. The collector deliberately reports its overflow flag rather than raising; this demonstrates that the existing native path does not enforce that flag. A cooperative wrapper could raise, but guest code can bypass or replace that wrapper. Their hashes and counters do not create host authority, enforce a native memory quota, or prevent hostile guest code from replacing a reader or bypassing it. The supervisor independently bounds its retained process output and wall time. Its fallback kill is an inconclusive runtime measurement, never a passing deadline result. The evidence validator requires native completion, expected byte hashes and all counterexamples; tests reject missing controls, corrupted hashes and supervisor fallback.
 
-The checkpoint test preserves open file and buffered pipe descriptors, not actively draining reader threads or arbitrary descendants. No general host file-export mechanism or safe artifact collection is established. The filesystem alternative would also require a quota outside guest control; catching the unsupported resource limit cannot provide one. #1668 remains open.
+The checkpoint test preserves open file and buffered pipe descriptors, not actively draining reader threads or arbitrary descendants. No general host file-export mechanism or safe artifact collection is established. The filesystem alternative would also require a quota outside guest control. The experiment fails while querying the file-size limit, before setting it or writing the test file; the pinned kernel's `uk_sys_prlimit64` resource switch also excludes `RLIMIT_FSIZE` for setting and querying. Catching that refusal cannot provide a quota. #1668 remains open.
+
+Local verification passed 13,196 tests with 751 skipped, repository lint/format and package/root type checks, documentation checks, two Rust tests, Clippy with warnings denied, and real helper help/invalid-argument controls. The eight evidence-validator regressions are included in that count. These checks do not establish arbitrary descendant capture, reader-thread snapshot safety, native output quotas or a production backend.
 
 ## Reproduce
 

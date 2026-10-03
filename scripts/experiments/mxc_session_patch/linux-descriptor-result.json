@@ -1,8 +1,8 @@
 {
-  "platform": "Windows",
-  "architecture": "AMD64",
-  "helper_sha256": "70beb343f47b5adba5478f3d7deb7a91b08e43f736fda1aa48ac266ea67581b5",
-  "startup_index_sha256": "d3743f7ffbc3c141826ca0c3a409a7879a863801ded78552575e401bf866286a",
+  "platform": "Linux",
+  "architecture": "x86_64",
+  "helper_sha256": "24087aea2acb0e1ce9ac5fa1adb6f4392afe0b47e5b6171da2615d52d1dcc1d3",
+  "startup_index_sha256": "1a18f097eeb8d6815cdd5e5bea7473b40830651613a9fea12cf296e57b314469",
   "guest_sha256": "9b217c843b620b69361b6f346e6fc021663509f07eb8955b443816b32e3ec357",
   "results": {
     "console_4095": {
@@ -167,7 +167,7 @@
       "supervisor_overflow": false,
       "cancel_sent": false,
       "stdout_bytes": 284,
-      "stdout_sha256": "f167671e3efba9a1acea2cc25de9d26830c32ec35381a2f6c5d87a3ad65c52aa",
+      "stdout_sha256": "195ed4dc6ca6a65e8bb7b2d060c127e23bf34427690825007d25082c0e0e1397",
       "stderr_bytes": 40,
       "stderr_sha256": "27047a31337c65d6539988d25f429bc491dbe684927792b59f9bd518affb72c3"
     },
@@ -258,5 +258,24 @@
     "timeout_and_cancellation_retire_native": true,
     "satisfies_host_enforced_output_contract": false
   },
-  "source_commit": "5b2436f57c672889f50277d30a2083a69735b0c3"
+  "identity": {
+    "source_commit": "5b2436f57c672889f50277d30a2083a69735b0c3",
+    "run_id": "37136213341",
+    "run_attempt": "1",
+    "kernel": "6.17.0-1022-azure",
+    "architecture": "x86_64",
+    "host_python": "3.12.3",
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+    "helper_sha256": "24087aea2acb0e1ce9ac5fa1adb6f4392afe0b47e5b6171da2615d52d1dcc1d3",
+    "native_passed": true,
+    "publication_passed": true,
+    "ownership_passed": true,
+    "descriptor_experiment_completed": true
+  },
+  "artifact": {
+    "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37136213341",
+    "id": 11279030257,
+    "sha256": "6634a724cc05c3977f4f1241b522b26e444c2d12951ba8d76fae009576ab9b56"
+  }
 }

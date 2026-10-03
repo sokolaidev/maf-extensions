@@ -57,6 +57,10 @@ These Windows controls establish native behavior on one tested host. They do not
 
 The [local publication experiment](HOST_PUBLICATION.md) adds checkpoint/result transactions, interrupted-call refusal, saved-result redelivery, and a fixed CSV-to-chart workflow. Its independent Windows/WHP and hosted Linux/KVM evidence extends these measurements. General transport, file and recovery limits remain documented there.
 
+## Output transport continuation
+
+The [descriptor experiment](OUTPUT.md) compares separate guest pipes and files with the existing console. It retains a minimal truncation reproducer and distinguishes cooperative byte fidelity from host-enforced output bounds.
+
 ## Remove or replace
 
 Stop sessions using the patched binary before switching providers. Removing source edits does not revoke an already-built binary or migrate saved state.
