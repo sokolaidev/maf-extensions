@@ -1174,8 +1174,9 @@ class SandboxRouter:
         return served
 
     def _channel(self, backend: SandboxBackend, spec: SandboxSpec) -> ProgramChannel | None:
+        needs_host_tools = spec.host_tools is not None or Capability.HOST_TOOLS in spec.requires
         if spec.program is None:
-            if spec.host_tools is not None:
+            if needs_host_tools:
                 raise SandboxCapabilityNotSupported("host tools require a declared program channel")
             return None
         declarations = _declarations(backend)
@@ -1187,7 +1188,7 @@ class SandboxRouter:
                 if (
                     channel.mode == mode
                     and spec.program.profile in channel.profiles
-                    and (spec.host_tools is None or channel.host_tools)
+                    and (not needs_host_tools or channel.host_tools)
                     and required <= declarations.capabilities
                     and not required.intersection(self._denied_capabilities)
                 ):
@@ -1418,7 +1419,10 @@ class SandboxRouter:
             if (
                 spec.program is None
                 or spec.program.profile not in channel.profiles
-                or (spec.host_tools is not None and not channel.host_tools)
+                or (
+                    (spec.host_tools is not None or Capability.HOST_TOOLS in spec.requires)
+                    and not channel.host_tools
+                )
                 or not channel.required_capabilities(spec) <= capabilities
                 or channel.required_capabilities(spec) & self._denied_capabilities
             ):
@@ -2203,7 +2207,10 @@ class SandboxRouter:
         )
         try:
             pinned = self._program_pin(key, spec)
-            backend = pinned.backend if pinned else backend
+            if pinned is not None:
+                backend = pinned.backend
+            elif spec.program is not None:
+                backend = self._refuse_unless_backend_can_serve(spec)
             self._refuse_host_denials(spec)
             self._refuse_unless_this_backend_can_serve(
                 backend, spec, program_channel=pinned.channel if pinned else None
