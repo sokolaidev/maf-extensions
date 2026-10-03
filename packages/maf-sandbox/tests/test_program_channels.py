@@ -928,3 +928,35 @@ def test_queued_program_admission_rechecks_disposed_fallback(dispose):
             await router.release_call(_KEY, _SPEC.kind, owner="queued")
 
     asyncio.run(exercise())
+
+
+def test_host_tool_channel_uses_its_declared_working_directory(monkeypatch):
+    import maf_sandbox._program as program_module
+    from maf_sandbox import ExecResult
+    from maf_sandbox.testing import InProcessSandbox
+
+    class NestedChannel(ExecProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/nested/outputs"
+
+    async def transport(sandbox, policy, layout, **kwargs):
+        assert layout.work == "run/nested/outputs"
+        assert layout.program == "run/host_tools/program.py"
+        assert layout.shim == "run/host_tools/maf_host_tools.py"
+        return ExecResult(stdout="nested")
+
+    monkeypatch.setattr(program_module, "host_tool_calls_over_exec", transport)
+    run, _, _ = _run()
+    result = asyncio.run(
+        NestedChannel().run(
+            InProcessSandbox(),
+            "pass",
+            requirements=ProgramRequirements(),
+            guest_call_path="run",
+            timeout=5,
+            policy=run,
+        )
+    )
+    assert result.stdout == "nested"
+    with pytest.raises(RuntimeError, match="closed"):
+        asyncio.run(run.call("value", publish=_accept))

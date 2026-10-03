@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import posixpath
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from ._host_tools import BoundedHostToolPolicy
@@ -114,16 +114,20 @@ class ExecProgramChannel:
             if len(code.encode("utf-8")) > requirements.max_program_bytes:
                 raise ValueError("the program exceeds its declared byte limit")
             if policy is None:
-                await sandbox.write_file("program.py", code, working_directory=guest_call_path)
+                working_directory = self.guest_working_directory(guest_call_path, host_tools=False)
+                await sandbox.write_file("program.py", code, working_directory=working_directory)
                 return await sandbox.exec(
                     [self.interpreter, "program.py"],
-                    working_directory=guest_call_path,
+                    working_directory=working_directory,
                     timeout=timeout,
                 )
             shim = host_tool_shim(policy.surface.names, call_timeout=float(timeout))
             if len(shim.encode("utf-8")) > _SHIM_LIMIT:
                 raise ValueError("the host-tool shim exceeds its channel limit")
-            layout = guest_run_layout(guest_call_path, program="program.py")
+            layout = replace(
+                guest_run_layout(guest_call_path, program="program.py"),
+                work=self.guest_working_directory(guest_call_path, host_tools=True),
+            )
             await sandbox.write_file(
                 posixpath.relpath(layout.program, layout.directory),
                 code,
