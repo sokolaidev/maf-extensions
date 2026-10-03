@@ -37,6 +37,7 @@ import time
 import uuid
 import warnings
 from collections.abc import Awaitable, Callable, Generator, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
@@ -962,6 +963,7 @@ class HostToolRun:
                     return None
                 if self._closed:
                     raise RuntimeError("the host-tool run closed during identity minting")
+                _refuse_expired_call()
                 self._minted_user_identity = answered
                 return answered
         except asyncio.CancelledError:
@@ -1043,9 +1045,18 @@ class HostToolRun:
         refusal: str | None = None
         try:
             with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
-                result = await self._run_host_tool_call(
-                    name, arguments, framing_bytes=framing_bytes, called=called
-                )
+                bound = _CALL_BOUND.get()
+                try:
+                    result = await self._run_host_tool_call(
+                        name, arguments, framing_bytes=framing_bytes, called=called
+                    )
+                    _refuse_expired_call()
+                except asyncio.CancelledError:
+                    if bound is None or not bound.expired or time.monotonic() >= bound.deadline:
+                        raise
+                    result = bound.refusal = HostToolCallResult(
+                        refusal="Error: the host tool timed out; effects may have occurred"
+                    )
                 refusal = result.refusal
                 # A close during a host await must not publish through stale authority.
                 if self._closed:
@@ -1278,6 +1289,7 @@ class HostToolRun:
             provided[_USER_IDENTITY_PARAMETER] = minted
         if self._closed:
             raise RuntimeError("the host-tool run closed before host execution")
+        _refuse_expired_call()
         if called is not None:
             called.host_started = True
         try:
@@ -1299,6 +1311,7 @@ class HostToolRun:
             return _refused(f"Error: host tool {name!r} failed — the reason is in the host's log")
         if called is not None:
             called.host_completed = True
+        _refuse_expired_call()
         try:
             # `allow_nan=False` because Python's default emits bare NaN/Infinity, which no
             # strict JSON parser on the guest side accepts — a payload delivered as success
@@ -1333,6 +1346,24 @@ class HostToolRun:
         return HostToolCallResult(value_json=encoded)
 
 
+@dataclass
+class _CallBound:
+    deadline: float
+    expires_at: float
+    expired: bool = False
+    refusal: HostToolCallResult | None = None
+
+
+_CALL_BOUND: ContextVar[_CallBound | None] = ContextVar("host_tool_call_bound", default=None)
+
+
+def _refuse_expired_call() -> None:
+    bound = _CALL_BOUND.get()
+    if bound is not None and (bound.expired or time.monotonic() >= bound.expires_at):
+        bound.expired = True
+        raise asyncio.CancelledError
+
+
 class BoundedHostToolPolicy:
     """Bound cooperative host calls and revoke authority before abandoning an unfinished one."""
 
@@ -1362,23 +1393,26 @@ class BoundedHostToolPolicy:
         remaining = min(self.timeout, self.deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError("the program deadline expired before the host-tool call")
-        publishing = expired = detached = False
+        detached = False
+        bound = _CallBound(self.deadline, time.monotonic() + remaining)
 
         async def accepted(result: HostToolCallResult) -> None:
-            nonlocal publishing
-            if expired or time.monotonic() >= self.deadline:
+            if (bound.expired and result is not bound.refusal) or time.monotonic() >= self.deadline:
                 raise TimeoutError("the program deadline expired before publication")
-            publishing = True
             await publish(result)
 
-        task = asyncio.create_task(
-            self.policy.call(name, arguments, publish=accepted, framing_bytes=framing_bytes)
-        )
+        token = _CALL_BOUND.set(bound)
+        try:
+            task = asyncio.create_task(
+                self.policy.call(name, arguments, publish=accepted, framing_bytes=framing_bytes)
+            )
+        finally:
+            _CALL_BOUND.reset(token)
         try:
             done, _ = await asyncio.wait({task}, timeout=remaining)
             if done:
                 return task.result()
-            expired = True
+            bound.expired = True
             task.cancel()
             done, _ = await asyncio.wait({task}, timeout=1.0)
             if not done:
@@ -1389,18 +1423,10 @@ class BoundedHostToolPolicy:
                 detached = True
                 _retain_host_task(task)
                 raise TimeoutError("the host-tool call did not stop within its cleanup budget")
-            if not task.cancelled():
-                _consume_host_task(task)
-                self.close()
-                raise TimeoutError("the host-tool call continued after cancellation")
-            if publishing or time.monotonic() >= self.deadline:
-                self.close()
-                raise TimeoutError("the host-tool deadline expired during the run")
-            refusal = HostToolCallResult(
-                refusal="Error: the host tool timed out; effects may have occurred"
-            )
-            await publish(refusal)
-            return refusal
+            if bound.refusal is not None:
+                return task.result()
+            _consume_host_task(task)
+            raise TimeoutError("the host-tool deadline expired during the run")
         except BaseException:
             self.close()
             if not task.done() and not detached:

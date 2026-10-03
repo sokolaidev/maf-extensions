@@ -1184,7 +1184,10 @@ class SandboxRouter:
                     and not required.intersection(self._denied_capabilities)
                 ):
                     first = first or channel
-                    transfers = channel.transfer_limits(spec)
+                    try:
+                        transfers = channel.transfer_limits(spec)
+                    except SandboxTransferLimitsNotPermitted:
+                        continue
                     if transfers.files_in.within(ceiling.files_in) and transfers.files_out.within(
                         ceiling.files_out
                     ):

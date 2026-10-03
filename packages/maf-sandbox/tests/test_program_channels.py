@@ -485,3 +485,187 @@ def test_acquisition_observation_names_the_channel_that_actually_served():
     state = EffectiveState.of(events[-1])
     assert state.program_channel == "second"
     assert state.execution_profile == "python-portable-v1"
+
+
+@pytest.mark.parametrize("publication", ["accepted", "failed", "cancelled"])
+def test_timeout_refusal_has_one_complete_observation(publication):
+    import time
+
+    from maf_sandbox._host_tools import BoundedHostToolPolicy
+    from maf_sandbox.testing import InProcessSandbox
+
+    async def exercise():
+        observer = _Observer()
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        async def wait():
+            await asyncio.Event().wait()
+
+        registry = HostToolRegistry(observer=observer)
+        registry.register(wait)
+        run = HostToolRun(registry)
+        policy = BoundedHostToolPolicy(
+            run, InProcessSandbox(), deadline=time.monotonic() + 10, timeout=0.01
+        )
+
+        async def publish(result):
+            assert result.refusal and "timed out" in result.refusal
+            assert observer.events == []
+            if publication == "failed":
+                raise OSError("publication failed")
+            if publication == "cancelled":
+                raise asyncio.CancelledError
+
+        if publication == "accepted":
+            assert not (await policy.call("wait", publish=publish)).ok
+        else:
+            with pytest.raises(OSError if publication == "failed" else asyncio.CancelledError):
+                await policy.call("wait", publish=publish)
+        (event,) = observer.events
+        assert event.outcome == ("refused" if publication == "accepted" else "delivery_uncertain")
+        assert event.calls == 1 and event.response_bytes == 0
+        assert event.host_started and not event.host_completed
+        assert event.refusal and "timed out" in event.refusal
+
+    asyncio.run(exercise())
+
+
+def test_timed_out_minter_cannot_start_host_function_or_cache_identity():
+    import time
+
+    from maf_sandbox import Identity
+    from maf_sandbox._host_tools import BoundedHostToolPolicy
+    from maf_sandbox.testing import InProcessSandbox
+
+    async def exercise():
+        effects = []
+
+        async def mint(run_id):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return "expired-identity"
+
+        @sandbox_tool(source=None, sink=None, identity=Identity.USER)
+        def value(*, user_identity):
+            effects.append(user_identity)
+            return 1
+
+        registry = HostToolRegistry(
+            mint_user_identity=mint, allowed_identities=frozenset({Identity.USER})
+        )
+        registry.register(value)
+        run = HostToolRun(registry)
+        policy = BoundedHostToolPolicy(
+            run, InProcessSandbox(), deadline=time.monotonic() + 10, timeout=0.01
+        )
+        try:
+            await policy.call("value", publish=_accept)
+        except TimeoutError:
+            pass
+        assert effects == []
+        assert run._minted_user_identity is None
+
+    asyncio.run(exercise())
+
+
+def test_sandbox_spec_preserves_positional_execution_contract():
+    from dataclasses import fields
+
+    original = SandboxSpec(kind="legacy", execution_contract="legacy-contract")
+    args = [getattr(original, field.name) for field in fields(original) if field.name != "program"]
+    restored = SandboxSpec(*args)
+    assert restored.execution_contract == "legacy-contract"
+    assert restored.program is None
+
+
+@pytest.mark.parametrize(
+    "override",
+    ["sys.version_info = (3, 10)", "sys.implementation = types.SimpleNamespace(name='pypy')"],
+)
+def test_profile_probe_rejects_unsupported_python_under_optimization(override):
+    import subprocess
+    import sys
+
+    from maf_sandbox._program import _PROFILE_PROBE
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "import sys,json,math,re,types; " + override + "; " + _PROFILE_PROBE,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "maf-python-portable-v1" not in result.stdout
+
+
+def _oversized_registry():
+    registry = HostToolRegistry()
+    registry.register(
+        sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="tool_" + "x" * 50000
+    )
+    return registry
+
+
+def test_oversized_shim_refused_during_admission():
+    from maf_sandbox import SandboxTransferLimitsNotPermitted
+
+    registry = _oversized_registry()
+    with pytest.raises(SandboxTransferLimitsNotPermitted, match="shim"):
+        ExecProgramChannel().transfer_limits(
+            replace(
+                _SPEC, host_tools=registry.aggregate(), requires=frozenset({Capability.HOST_TOOLS})
+            )
+        )
+
+
+def test_oversized_shim_rejected_before_any_staging():
+    from maf_sandbox.testing import InProcessSandbox
+
+    class NoWrites(InProcessSandbox):
+        async def write_file(self, *args, **kwargs):
+            pytest.fail("no file may be staged before shim validation")
+
+    with pytest.raises(ValueError, match="shim"):
+        asyncio.run(
+            ExecProgramChannel().run(
+                NoWrites(),
+                "pass",
+                requirements=ProgramRequirements(),
+                guest_call_path="run",
+                timeout=5,
+                policy=HostToolRun(_oversized_registry()),
+            )
+        )
+
+
+@pytest.mark.parametrize("placement", ["sibling", "backend", "none", "configuration"])
+def test_channel_transfer_refusal_does_not_hide_compatible_choices(placement):
+    from maf_sandbox import SandboxTransferLimitsNotPermitted
+
+    class Refusing(InProcessProgramChannel):
+        def transfer_limits(self, spec):
+            if placement == "configuration":
+                raise ValueError("invalid configuration")
+            raise SandboxTransferLimitsNotPermitted("first channel refused")
+
+    first, second = _backend("first"), _backend("second")
+    channels = (Refusing(name="refused"),)
+    if placement == "sibling":
+        channels += (InProcessProgramChannel(name="compatible"),)
+    first._declarations = replace(first.declarations, program_channels=channels)
+    router = _router(first, second) if placement in {"backend", "configuration"} else _router(first)
+    if placement in {"none", "configuration"}:
+        with pytest.raises(
+            SandboxTransferLimitsNotPermitted if placement == "none" else ValueError,
+            match="first channel refused|invalid configuration",
+        ):
+            router.ensure_can_serve(_SPEC)
+        assert not first.keys and not second.keys
+    else:
+        result = asyncio.run(router.acquire(_KEY, _SPEC))
+        assert result is (second.sandbox if placement == "backend" else first.sandbox)

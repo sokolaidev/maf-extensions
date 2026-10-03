@@ -1206,8 +1206,8 @@ class SandboxSpec:
     max_identity_retention_seconds: int | None = None
     #: Opaque workload execution configuration. A router refuses to reuse a known instance
     #: under a different value; dispose it before changing contracts. None is a contract too.
-    program: ProgramRequirements | None = None
     execution_contract: str | None = None
+    program: ProgramRequirements | None = None
 
     @property
     def required_capabilities(self) -> frozenset[Capability]:

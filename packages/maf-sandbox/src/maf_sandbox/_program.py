@@ -23,12 +23,13 @@ from ._protocol import (
     SandboxSpec,
     TransferLimits,
 )
+from ._router import SandboxTransferLimitsNotPermitted
 from ._shim import host_tool_shim
 
 _SHIM_LIMIT = 128 * 1024
 _PROFILE_PROBE = (
-    "import sys,json,math,re,types; assert sys.version_info >= (3,11); "
-    "assert sys.implementation.name == 'cpython'; "
+    "import sys,json,math,re,types; "
+    "sys.exit(1) if sys.version_info < (3,11) or sys.implementation.name != 'cpython' else None; "
     "print('maf-python-portable-v1')"
 )
 
@@ -50,6 +51,15 @@ class ExecProgramChannel:
     def transfer_limits(self, spec: SandboxSpec) -> SandboxLimits:
         if spec.program is None:
             raise ValueError("a program channel requires program requirements")
+        if spec.host_tools is not None:
+            # A finite float needs at most 24 characters; reserve that rendering at admission.
+            shim_bytes = len(
+                host_tool_shim(spec.host_tools.names, call_timeout=1.0).encode("utf-8")
+            )
+            if shim_bytes + 21 > _SHIM_LIMIT:
+                raise SandboxTransferLimitsNotPermitted(
+                    "the host-tool shim exceeds its channel limit"
+                )
         files_in = (
             spec.files_in if Capability.FILES_IN in spec.requires else TransferLimits(0, 0, 0)
         )
@@ -110,15 +120,15 @@ class ExecProgramChannel:
                     working_directory=guest_call_path,
                     timeout=timeout,
                 )
+            shim = host_tool_shim(policy.surface.names, call_timeout=float(timeout))
+            if len(shim.encode("utf-8")) > _SHIM_LIMIT:
+                raise ValueError("the host-tool shim exceeds its channel limit")
             layout = guest_run_layout(guest_call_path, program="program.py")
             await sandbox.write_file(
                 posixpath.relpath(layout.program, layout.directory),
                 code,
                 working_directory=layout.directory,
             )
-            shim = host_tool_shim(policy.surface.names, call_timeout=timeout)
-            if len(shim.encode("utf-8")) > _SHIM_LIMIT:
-                raise ValueError("the host-tool shim exceeds its channel limit")
             await sandbox.write_file(
                 posixpath.relpath(layout.shim, layout.directory),
                 shim,
