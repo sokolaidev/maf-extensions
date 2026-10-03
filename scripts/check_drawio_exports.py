@@ -1,4 +1,4 @@
-"""Verify native offline exports and refusal cases through the real Docker backend."""
+"""Verify native offline exports and refusal cases through a real Linux backend."""
 
 from __future__ import annotations
 
@@ -12,9 +12,8 @@ import zlib
 from pathlib import Path
 from uuid import uuid4
 
-from maf_sandbox import Isolation, ListedFile, SandboxRouter, make_file_system_sink
+from maf_sandbox import Isolation, ListedFile, SandboxBackend, SandboxRouter, make_file_system_sink
 from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_drawio import DrawioExport, make_drawio_export_tools, make_drawio_tools
 from PIL import Image
 
@@ -113,10 +112,13 @@ def verify_output(output: Path) -> dict[str, object]:
     return {"decoded_raster_sizes": sizes, "pages": 2, "formats": ["png", "jpg", "svg"]}
 
 
-async def check(image: str, output: Path) -> None:
+async def check(image: str, output: Path, backend: SandboxBackend | None = None) -> None:
     """Exercise the closed-egress kind and verify no artifact lands on resource refusal."""
     scope = "drawio-exports-" + uuid4().hex
-    backend = await DockerSandboxBackend.create(DockerSandboxConfig(memory="1g", cpus=2))
+    if backend is None:
+        from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+        backend = await DockerSandboxBackend.create(DockerSandboxConfig(memory="1g", cpus=2))
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     context = make_caller_context(list_no_files, lambda: scope, lambda: "exports")
     report: dict[str, object] = {}

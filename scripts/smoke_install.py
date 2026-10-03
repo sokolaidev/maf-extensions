@@ -40,6 +40,7 @@ _PACKAGES = {
     "maf-sandbox-terraform": "maf_sandbox_terraform",
     "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
+    "maf-sandbox-bubblewrap": "maf_sandbox_bubblewrap",
 }
 
 _SARIF = json.dumps(
@@ -557,6 +558,23 @@ def _smoke_maf_sandbox_deepagents() -> str:
     return "adapter constructs, carries a timeout, and a backend lacking FILES_OUT is refused"
 
 
+def _smoke_maf_sandbox_bubblewrap() -> str:
+    from pathlib import Path
+
+    from maf_sandbox import Egress, Isolation
+    from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
+
+    settings = BubblewrapSandboxConfig(Path.cwd(), Path.cwd(), Path.cwd())
+    assert settings.memory_bytes == 1024 * 1024 * 1024
+    assert BubblewrapSandboxBackend.isolation == Isolation.CONTAINER
+    assert BubblewrapSandboxBackend.declarations.egress_modes == frozenset({Egress.CLOSED})
+    import maf_sandbox_bubblewrap
+
+    module = Path(maf_sandbox_bubblewrap.__file__).parent
+    assert (module / "_guest.py").is_file() and (module / "_launch.py").is_file()
+    return "native runtime configuration, closed-egress declaration and packaged helpers verified"
+
+
 def _smoke_maf_sandbox_docker() -> str:
     from maf_sandbox import Capability, Egress, Isolation
     from maf_sandbox_docker import (
@@ -839,6 +857,7 @@ _SMOKES = {
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
     "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
+    "maf-sandbox-bubblewrap": _smoke_maf_sandbox_bubblewrap,
 }
 
 

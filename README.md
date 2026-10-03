@@ -25,6 +25,7 @@ See the [sandbox documentation](docs/sandbox/README.md) for concepts, setup and 
 | [`maf-sandbox-terraform`](packages/maf-sandbox-terraform/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-terraform)](https://pypi.org/project/maf-sandbox-terraform/) | Offline Terraform and OpenTofu validation and formatting | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-tui`](packages/maf-sandbox-tui/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-tui)](https://pypi.org/project/maf-sandbox-tui/) | Terminal console to inspect and dispose application sandboxes | `maf-sandbox`, `textual` |
 | [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | Local container backend using WSL's container CLI | `maf-sandbox` |
+| [`maf-sandbox-bubblewrap`](packages/maf-sandbox-bubblewrap/) | not yet released | Linux namespace and cgroup backend without a container engine | `maf-sandbox` |
 
 ```
 app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  ->  the sandbox

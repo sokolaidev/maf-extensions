@@ -70,6 +70,7 @@ The suite connects sandbox implementations; it does not provide isolation by its
 | [ACAS](backends/acas.md) | Azure Container Apps Sandboxes, with a POSIX guest |
 | [Docker](backends/docker.md) | Container engine, with backend-enforced file and network rules |
 | [WSLC](backends/wslc.md) | WSL container engine, with a narrower supported surface |
+| [Bubblewrap](backends/bubblewrap.md) | Linux namespaces and cgroups over a native runtime directory, without a container engine |
 | [Hyperlight](backends/hyperlight.md) | Packaged Python runtime behind a local micro-VM boundary |
 | [In-process fake](backends/in-process.md) | Offline tests, without real containment |
 

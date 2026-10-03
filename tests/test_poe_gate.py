@@ -85,6 +85,7 @@ class TestTheGate:
             "maf-sandbox",
             "maf-sandbox-acas",
             "maf-sandbox-bicep",
+            "maf-sandbox-bubblewrap",
             "maf-sandbox-codeact",
             "maf-sandbox-deepagents",
             "maf-sandbox-docker",
