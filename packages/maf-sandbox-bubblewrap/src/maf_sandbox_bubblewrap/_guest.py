@@ -21,6 +21,10 @@ FRAME_LIMIT = 12 * 1024 * 1024
 BASE = "/maf-sandbox/work"
 
 
+class TransferCapExceeded(ValueError):
+    """Identify file transfer overflow separately from path confinement refusals."""
+
+
 def parts(path: str, directory: str) -> tuple[str, ...]:
     """Normalize within two confinement boundaries, without following filesystem links."""
 
@@ -177,7 +181,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
             if operation == "write":
                 data = base64.b64decode(request["data"], validate=True)
                 if len(data) > FILE_LIMIT:
-                    raise ValueError("File exceeds transfer limit")
+                    raise TransferCapExceeded("File exceeds transfer limit")
                 file.truncate(0)
                 file.write(data)
                 return {}
@@ -186,7 +190,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
             limit = min(request["max_bytes"], FILE_LIMIT)
             data = file.read(limit + 1)
             if len(data) > limit:
-                raise ValueError("File exceeds transfer limit")
+                raise TransferCapExceeded("File exceeds transfer limit")
             return {"data": base64.b64encode(data).decode()}
     except OSError as error:
         if error.errno == errno.ELOOP and operation == "write":
