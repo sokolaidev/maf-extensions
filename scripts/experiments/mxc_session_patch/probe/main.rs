@@ -1,4 +1,5 @@
 mod backend;
+mod owner;
 use backend::BackendSession;
 use std::{env, error::Error, fs, path::Path, process, thread, time::Duration};
 
@@ -38,7 +39,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args().collect();
     if args.len() == 2 && args[1] == "--help" {
         println!(
-            "mxc-session-state-probe seed <initrd> <new-checkpoint> <report> [hold]\nmxc-session-state-probe restore <checkpoint> <report>\nmxc-session-state-probe call <restore> <checkpoint> <code-file> <report>"
+            "mxc-session-state-probe seed <initrd> <new-checkpoint> <report> [hold]\nmxc-session-state-probe restore <checkpoint> <report>\nmxc-session-state-probe call <restore> <checkpoint> <code-file> <report>\nmxc-session-state-probe call-owned <restore> <checkpoint> <code-file> <report>"
         );
         return Ok(());
     }
@@ -81,7 +82,10 @@ fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        Some("call") if args.len() == 6 => {
+        Some(mode @ ("call" | "call-owned")) if args.len() == 6 => {
+            if mode == "call-owned" {
+                owner::watch();
+            }
             if fs::metadata(&args[4])?.len() > 65536 {
                 return Err("code exceeds probe limit".into());
             }

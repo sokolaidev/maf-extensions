@@ -171,6 +171,8 @@ def test_mxc_recovery_requires_explicit_dispatch_and_retains_reports_only():
     assert "cargo +1.98.0 build --locked" in commands
     assert "mxc_native_state_probe.py --helper" in commands
     assert "mxc_session_patch/host_probe.py --helper" in commands
+    assert "mxc_session_patch/owner_probe.py --helper" in commands
+    assert "cargo +1.98.0 test --locked" in commands
     upload = job["steps"][-1]
     assert "always()" in upload["if"]
     assert upload["with"]["if-no-files-found"] == "error"
