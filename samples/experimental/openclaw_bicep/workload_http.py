@@ -143,6 +143,7 @@ class WorkloadHTTP:
         while True:
             try:
                 await self.service.cancel_session(sid)
+                await record.started.wait()
                 await record.transport.terminate()
                 if record.task:
                     await drain(record.task)

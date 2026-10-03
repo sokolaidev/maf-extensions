@@ -587,6 +587,63 @@ def test_slow_initialize_cannot_allocate_after_shutdown_closes_admission():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("startup", ["connected", "failed"])
+def test_shutdown_waits_for_transport_startup_settlement(monkeypatch, startup):
+    async def scenario():
+        h = Harness()
+        release = asyncio.Event()
+        connect = http.StreamableHTTPServerTransport.connect
+
+        @asynccontextmanager
+        async def delayed_connect(transport):
+            await release.wait()
+            if startup == "failed":
+                raise OSError("startup unavailable")
+            async with connect(transport) as streams:
+                yield streams
+
+        monkeypatch.setattr(http.StreamableHTTPServerTransport, "connect", delayed_connect)
+        async with running(h.service()) as (app, client, server):
+            pending = asyncio.create_task(
+                client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-11-25",
+                            "capabilities": {},
+                            "clientInfo": {"name": "delayed", "version": "1"},
+                        },
+                    },
+                )
+            )
+            await until(lambda: len(app.sessions) == 1)
+            record = next(iter(app.sessions.values()))
+            terminated_early = False
+            try:
+                server.should_exit = True
+                await until(lambda: record.retiring is not None)
+                await asyncio.sleep(0.03)
+                assert not record.started.is_set()
+                terminated_early = record.transport._terminated
+                assert not terminated_early
+                assert h.closes == 0 and record.requests == 1
+            finally:
+                release.set()
+                await until(record.started.is_set)
+                # A failed assertion must not leave the injected pre-termination race hanging.
+                if terminated_early:
+                    await record.transport.terminate()
+                response = await pending
+            assert response.status_code == 404
+        assert not app.sessions and h.closes == 1
+        assert app.service.poisoned == (startup == "failed")
+
+    asyncio.run(scenario())
+
+
 def test_actual_chunked_body_header_and_slow_body_limits():
     async def scenario():
         async with running(Harness().service()) as (app, client, server):
