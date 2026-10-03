@@ -46,9 +46,7 @@ UNSAFE = re.compile(
     r"(?:https?:|file:|ftp:|javascript:|data:|@import|(?:url|src|image-set|expression)\s*\(|\\)",
     re.I,
 )
-SVG_FONT = re.compile(
-    r"(?:\bfont(?:-[\w-]+)?\s*(?:/\*.*?\*/\s*)*:|@font-face|local\s*\()", re.I | re.S
-)
+SVG_FONT = re.compile(r"\bfont\b|local\s*\(", re.I)
 
 
 class Label(HTMLParser):

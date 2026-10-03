@@ -61,7 +61,7 @@ Formatting-only HTML labels are supported. DejaVu Sans, Serif and Sans Mono repl
 
 Input SVG CSS must not reference resources: data URIs and the `url()`, `image-set()` and `src()` functions are refused, except for supported local fragment attributes such as `fill="url(#paint)"`. Image attributes pass through the embedded-image validator separately. The exporter injects verified font data after validating the native SVG output.
 
-Embedded SVG text and font declarations are refused, including those in bundled assets, to prevent unverified font substitution. This covers presentation attributes, CSS font properties, `@font-face` and `local()` sources. Convert image text to paths before embedding it; ordinary diagram labels remain supported through the verified font set.
+Embedded SVG text and font declarations are refused, including those in bundled assets, to prevent unverified font substitution. This covers presentation attributes, CSS font properties, `@font-face` and `local()` sources. CSS font tokens are refused conservatively, including in comments and selectors. Convert image text to paths before embedding it; ordinary diagram labels remain supported through the verified font set.
 
 Bundled assets are verified once per document and cached. Every repeated reference still counts toward the prepared-XML budget before expanded styles are retained or serialized. Unsupported content is refused rather than silently replaced with a different rendering.
 
