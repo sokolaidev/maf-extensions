@@ -247,7 +247,11 @@ def _create_tool(
             )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("create_drawio: output delivery failed: %s", error_detail(exc))
-            return _stopped("Error: delivery of diagram.drawio failed")
+            return _stopped(
+                "Error: collection or delivery of draw.io exports failed"
+                if export is not None
+                else "Error: delivery of diagram.drawio failed"
+            )
         if not landed:
             return _stopped("Error: the converter produced no diagram.drawio file")
         return SandboxResult(

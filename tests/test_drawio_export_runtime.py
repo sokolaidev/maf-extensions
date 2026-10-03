@@ -1,7 +1,14 @@
 """Offline resource policy is checked before starting the native renderer."""
 
 import base64
+import hashlib
+import json
 import runpy
+import shutil
+import struct
+import subprocess
+import time
+import zlib
 from pathlib import Path
 
 import pytest
@@ -87,3 +94,174 @@ def test_native_svg_declarations_and_warning_become_offline_content():
     )
     root = RUNTIME["check_svg"](data, exported=True)
     assert not list(root.iter("{http://www.w3.org/2000/svg}a"))
+
+
+@pytest.mark.parametrize("key", ["image", "indicatorImage"])
+@pytest.mark.parametrize(
+    "resource",
+    [
+        "/etc/passwd",
+        "../../secret.png",
+        "relative.png",
+        "file:///etc/passwd",
+        "https://example.invalid/icon.png",
+    ],
+)
+def test_image_styles_refuse_unlisted_resources(key, resource):
+    with pytest.raises(ValueError):
+        RUNTIME["prepare_document"](
+            f'<mxfile><mxCell style="{key}={resource};"/></mxfile>',
+            {"assets": {}, "fonts": {"DejaVu Sans": "unused"}},
+        )
+
+
+@pytest.mark.parametrize("key", ["image", "indicatorImage"])
+@pytest.mark.parametrize(
+    "reference", ["img/lib/icon.svg", "https://app.diagrams.net/img/lib/icon.svg", "data"]
+)
+def test_image_styles_embed_verified_assets(tmp_path, monkeypatch, key, reference):
+    data = b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>'
+    asset = tmp_path / "assets/img/lib/icon.svg"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(data)
+    monkeypatch.setitem(RUNTIME["prepare_document"].__globals__, "ROOT", tmp_path)
+    encoded = base64.b64encode(data).decode()
+    if reference == "data":
+        reference = "data:image/svg+xml;base64," + encoded
+    prepared = RUNTIME["prepare_document"](
+        f'<mxfile><mxCell style="{key}={reference};"/></mxfile>',
+        {
+            "assets": {"img/lib/icon.svg": hashlib.sha256(data).hexdigest()},
+            "fonts": {"DejaVu Sans": "unused"},
+        },
+    )
+    assert f"{key}=data:image/svg+xml,{encoded};" in prepared
+
+
+def test_oversized_png_header_is_a_resource_refusal():
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    data = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 6000, 6000, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\0"))
+        + chunk(b"IEND", b"")
+    )
+    with pytest.raises(ValueError, match="Invalid embedded image"):
+        RUNTIME["image_data"]("data:image/png;base64," + base64.b64encode(data).decode())
+
+
+@pytest.mark.parametrize("format", ["png", "jpg", "svg"])
+@pytest.mark.parametrize("variant", range(4))
+@pytest.mark.parametrize("damage", ["missing", "modified"])
+def test_all_formats_preflight_every_font_variant(tmp_path, monkeypatch, format, variant, damage):
+    monkeypatch.setitem(RUNTIME["export_document"].__globals__, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    original_read = Path.read_bytes
+
+    def read(path):
+        return (
+            b"asar" if path.as_posix() == "/opt/drawio/resources/app.asar" else original_read(path)
+        )
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    variants = []
+    for index in range(4):
+        path = tmp_path / f"font-{index}.ttf"
+        path.write_bytes(b"font")
+        variants.append(
+            {
+                "path": str(path),
+                "weight": 400 if index < 2 else 700,
+                "style": "normal" if index % 2 == 0 else "italic",
+                "sha256": hashlib.sha256(b"font").hexdigest(),
+            }
+        )
+    damaged = Path(variants[variant]["path"])
+    if damage == "missing":
+        damaged.unlink()
+    else:
+        damaged.write_bytes(b"changed")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "desktop": "31.7.0",
+                "asar_sha256": hashlib.sha256(b"asar").hexdigest(),
+                "assets": {},
+                "fonts": {"DejaVu Sans": variants[0]["path"]},
+                "font_variants": {"DejaVu Sans": variants},
+            }
+        )
+    )
+
+    def render(*args):
+        pytest.fail("Renderer must not start with a missing or modified font")
+
+    monkeypatch.setitem(RUNTIME["export_document"].__globals__, "run_renderer", render)
+    with pytest.raises((FileNotFoundError, RuntimeError)):
+        RUNTIME["export_document"](
+            '<mxfile><diagram><mxCell style="fontFamily=Arial;"/></diagram></mxfile>',
+            {
+                "formats": [format],
+                "pages": None,
+                "scale": 1,
+                "transparent": False,
+                "jpeg_quality": 90,
+            },
+            time.monotonic() + 10,
+        )
+    assert not (tmp_path / "exports.json").exists()
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None, reason="requires Node.js for the native export guard"
+)
+@pytest.mark.parametrize("key", ["shape", "resIcon", "indicatorShape"])
+@pytest.mark.parametrize("shape", ["missing", "rectangle", "registered"])
+def test_native_shape_guard_checks_each_registry(key, shape):
+    node = shutil.which("node")
+    assert node is not None
+    script = """
+const fs = require('fs');
+var mxConstants = {STYLE_SHAPE: 'shape', STYLE_INDICATOR_SHAPE: 'indicatorShape'};
+var mxStencilRegistry = {getStencil: name => name === 'registered'};
+function mxGraph() {}
+mxGraph.prototype.getIndicatorImage = state => state.style.indicatorImage;
+function mxCellRenderer() {}
+mxCellRenderer.prototype.createShape = () => ({});
+mxCellRenderer.defaultShapes = {rectangle: true};
+var sent = [];
+var electron = {sendMessage: (channel, value) => sent.push([channel, value])};
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+for (const media of ['png', 'jpeg', 'svg+xml']) {
+    const uri = 'data:image/' + media + ',AAAA';
+    const restored = new mxGraph().getIndicatorImage({style: {indicatorImage: uri}});
+    if (restored !== uri.replace(',', ';base64,')) throw Error('Invalid indicator data URI');
+}
+new mxCellRenderer().createShape({style: {[process.argv[2]]: process.argv[3]}});
+mafSend('render-finished', {bounds: JSON.stringify({x: 0, y: 0, width: 10, height: 10})});
+console.log(JSON.stringify(sent));
+"""
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            script,
+            str(Path(__file__).parents[1] / "images/drawio-export/guard.js"),
+            key,
+            shape,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    [(channel, value)] = json.loads(result.stdout)
+    refused = shape == "missing" or (key == "indicatorShape" and shape == "registered")
+    assert channel == ("export-error" if refused else "render-finished")
+    if refused:
+        assert value.startswith("MAF_REFUSED:")
