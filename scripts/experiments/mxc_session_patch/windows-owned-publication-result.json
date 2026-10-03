@@ -1,0 +1,24 @@
+{
+  "helper_sha256": "4e80692f3eaa9b5d198e84b0d3a353036cc6ae31e98c4be87ab2974059d90831",
+  "startup_index_sha256": "d3743f7ffbc3c141826ca0c3a409a7879a863801ded78552575e401bf866286a",
+  "sqlite_sha256": "90cec887b3db36b15b37d1ecdd3e4523fea0e83befdf72dc67d3cc7e5774f37a",
+  "before_commit_keeps_previous_checkpoint": true,
+  "interrupted_call_refuses_replay": true,
+  "committed_result_redelivery_without_execution": {
+    "after_commit": true,
+    "before_ack": true
+  },
+  "csv_to_chart": true,
+  "artifact_redelivery_identical": true,
+  "seed_result_sha256": "64d897af346d1a9de1ab16b1c691a4bf158b04b2f4eafbee09e91725c8240ca6",
+  "chart_encoded_sha256": "2ac5a4e60ff089d8a256af355020344fec33485284bc853620691f4fa55d0b4c",
+  "scope": "local process crash; no power-loss or remote-recovery qualification",
+  "source_commit": "ea9d782e5c843b92dcfeb8040f0d6cc60a829a71",
+  "git_source_sha256": {
+    "host_store.py": "01287132c65267e5af3d28ce4be835f7ad0856dcf5d0f3c9b5e1843d6d587c11",
+    "host_call.py": "2c4cc46155b336aece0b398c4dae620f5036d74456eb318efa744b66ec050cf4",
+    "host_probe.py": "c51c51d54dd5eaa3eb0184ce60835fd49e71b2717dd62d6c22aab3e52200f41a",
+    "probe/main.rs": "d75e7a42dc5047144776060798060f880a2ad012c29be5808bcb89e8b004553d",
+    "probe/owner.rs": "2d84ff72b38e5403e52e7a8f9627d1bbcc5b884f1bea15c54d17f7e77e00a95c"
+  }
+}

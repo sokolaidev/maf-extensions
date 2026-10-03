@@ -16,3 +16,5 @@ python scripts/experiments/mxc_session_patch/owner_probe.py --helper <built-help
 The opt-in `mxc_recovery` workflow input runs these controls on the GitHub Linux/KVM runner after native recovery and host publication. Windows/WHP is independently qualified with the same fixed probe. Runtime reports are retained with the exact executable hash; only reports and diagnostics are uploaded, never checkpoints. Track completion in [#1669](https://github.com/sokolaidev/maf-extensions/issues/1669).
 
 The [Windows owner report](windows-owner-result.json) records all five controls passing. Owner death, cancellation and an invalid command stopped the live helper within 0.18 seconds in this measurement; five seconds is the probe deadline, not a real-time production guarantee.
+
+The [Windows publication report](windows-owned-publication-result.json) also passes the full publication/crash/redelivery probe using `call-owned` and the same helper hash. This covers normal completion and lost acknowledgments alongside the independent live interruption controls.
