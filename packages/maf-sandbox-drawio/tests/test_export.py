@@ -19,7 +19,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.maf import make_caller_context
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
-from test_tool import attach, completed, items, verdict
+from test_tool import attach, completed, items, said, verdict
 
 from maf_sandbox_drawio import DrawioExport, drawio_sandbox_spec, make_drawio_export_tools
 from maf_sandbox_drawio._tool import _export_outputs
@@ -168,7 +168,9 @@ def test_missing_export_prevents_all_sink_delivery(tmp_path):
     tool, backend = attach(
         sandbox, tmp_path / "outputs", export=DrawioExport(formats=("png", "jpg", "svg"))
     )
-    assert not completed(items(tool))
+    answer = items(tool)
+    assert not completed(answer)
+    assert "collection or delivery of draw.io exports failed" in said(answer)
     assert not (tmp_path / "outputs").exists()
     assert backend.disposed
 
@@ -188,8 +190,34 @@ def test_partial_sink_failure_is_incomplete(tmp_path):
         sink=OutputSink(deliver),
         export=DrawioExport(formats=("png", "jpg", "svg")),
     )
-    assert not completed(items(tool))
+    answer = items(tool)
+    assert not completed(answer)
+    assert "collection or delivery of draw.io exports failed" in said(answer)
     assert delivered == ["diagram.drawio"]
+    assert backend.disposed
+
+
+@pytest.mark.parametrize("manifest", [None, b"not json", b'{"pages":1,"files":[]}'])
+def test_bad_export_manifest_reports_export_collection_failure(tmp_path, manifest):
+    class BadManifest(ExportSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            path = f"{self._working_directory(working_directory)}/exports.json"
+            if manifest is None:
+                del self.contents[path]
+            else:
+                self.contents[path] = manifest
+            return result
+
+    tool, backend = attach(
+        BadManifest(), tmp_path / "outputs", export=DrawioExport(formats=("png", "jpg", "svg"))
+    )
+    answer = items(tool)
+    assert not completed(answer)
+    assert "collection or delivery of draw.io exports failed" in said(answer)
+    assert not (tmp_path / "outputs").exists()
     assert backend.disposed
 
 

@@ -555,3 +555,22 @@ def test_cli_operational_failure_is_not_source_rejection(tmp_path, monkeypatch, 
     monkeypatch.setattr(renderer, "_dot", fail)
     assert renderer.main() == 3
     assert not (tmp_path / "diagram.drawio").exists()
+
+
+@pytest.mark.parametrize("export", [False, True])
+def test_missing_runtime_diagnostic_matches_requested_mode(tmp_path, monkeypatch, capsys, export):
+    monkeypatch.chdir(tmp_path)
+    argv = ["renderer.py", "--preserve-layout", "true", "--direction", "TB", "--timeout", "5"]
+    if export:
+        argv += ["--export-config", "export.json"]
+    monkeypatch.setattr(sys, "argv", argv)
+    (tmp_path / "input.xml").write_text(xml(model()), encoding="utf-8")
+
+    def missing(source, deadline):
+        raise FileNotFoundError("dot")
+
+    monkeypatch.setattr(renderer, "_dot", missing)
+    assert renderer.main() == 3
+    diagnostic = capsys.readouterr().err
+    assert "Python 3, Graphviz dot" in diagnostic
+    assert ("export runtime" in diagnostic) is export
