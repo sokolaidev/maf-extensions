@@ -83,6 +83,39 @@ def diagram() -> str:
     return ET.tostring(document, encoding="unicode")
 
 
+def repeated_assets() -> str:
+    """A small source expands past the prepared-XML limit using an otherwise accepted icon."""
+    document = ET.Element("mxfile")
+    for page in range(8):
+        model = ET.SubElement(ET.SubElement(document, "diagram", id=str(page)), "mxGraphModel")
+        root = ET.SubElement(model, "root")
+        ET.SubElement(root, "mxCell", id="0")
+        ET.SubElement(root, "mxCell", {"id": "1", "parent": "0"})
+        for cell in range(32):
+            vertex = ET.SubElement(
+                root,
+                "mxCell",
+                {
+                    "id": f"n{cell}",
+                    "parent": "1",
+                    "vertex": "1",
+                    "style": "shape=image;image=img/lib/ibm/miscellaneous/cognitive_services.svg;",
+                },
+            )
+            ET.SubElement(
+                vertex,
+                "mxGeometry",
+                {
+                    "as": "geometry",
+                    "x": str(cell % 8 * 60),
+                    "y": str(cell // 8 * 60),
+                    "width": "40",
+                    "height": "40",
+                },
+            )
+    return ET.tostring(document, encoding="unicode")
+
+
 def verify_output(output: Path) -> dict[str, object]:
     """Decode raster artifacts and check distinct pages and embedded SVG assets/fonts."""
     sizes = []
@@ -180,6 +213,7 @@ async def check(image: str, output: Path) -> None:
         )
         oversized += b"\x00\x00\x00\x00IDAT\x35\xaf\x06\x1e"
         cases = {
+            "repeated-bundled-asset": repeated_assets(),
             "remote-image": diagram().replace(
                 "img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
                 "https://example.invalid/icon.svg",
@@ -225,6 +259,8 @@ async def check(image: str, output: Path) -> None:
             )
             answer = [item.text for item in await refusal.func(xml=xml)]
             assert answer[:2] == [COMPLETED_TEXT, "Result: refused"], (name, answer)
+            if name == "repeated-bundled-asset":
+                assert "Prepared document" in " ".join(text or "" for text in answer), answer
             assert not destination.exists() or not list(destination.iterdir())
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(

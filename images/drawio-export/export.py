@@ -22,6 +22,7 @@ from PIL import Image
 
 ROOT = Path("/opt/maf-drawio")
 MAX_FILE = 8 * 1024 * 1024
+MAX_PREPARED = 8 * 1024 * 1024
 MAX_TOTAL = 32 * 1024 * 1024
 MAX_PIXELS = 16_000_000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -189,9 +190,35 @@ def dimensions(width: int, height: int) -> None:
         raise ValueError("Export exceeds the dimension or pixel limit")
 
 
+def attribute_size(value: str) -> int:
+    """Count UTF-8 bytes after ElementTree attribute escaping."""
+    size = len(value.encode("utf-8"))
+    for char, extra in (("&", 4), ("<", 3), (">", 3), ('"', 5), ("\r", 4), ("\n", 4), ("\t", 4)):
+        size += value.count(char) * extra
+    return size
+
+
+class DocumentBudget:
+    """Account for expanded XML before retaining replacement styles."""
+
+    def __init__(self, root: ET.Element) -> None:
+        self.size = 0
+        ET.ElementTree(root).write(self, encoding="utf-8")
+
+    def write(self, data: bytes) -> None:
+        self.add(len(data))
+
+    def add(self, size: int) -> None:
+        self.size += size
+        if self.size > MAX_PREPARED:
+            raise ValueError("Prepared document exceeds the XML size limit")
+
+
 def prepare_document(xml: str, manifest: dict) -> str:
     """Resolve images locally and normalize fonts without changing geometry."""
     root = xml_document(xml.encode())
+    budget = DocumentBudget(root)
+    verified_assets: dict[str, str] = {}
     for element in root.iter():
         if element.get("math") == "1":
             raise ValueError("Math labels are not supported by this export profile")
@@ -199,6 +226,7 @@ def prepare_document(xml: str, manifest: dict) -> str:
             if name in {"backgroundImage", "extFonts", "fontCss", "link", "image"}:
                 raise ValueError("External/background resources and links are not supported")
             if name == "style":
+                budget.add(-attribute_size(value))
                 parts = re.split(r";(?=[A-Za-z_][\w.-]*=)", value.rstrip(";"))
                 normalized: list[str] = []
                 for part in parts:
@@ -206,9 +234,15 @@ def prepare_document(xml: str, manifest: dict) -> str:
                     if key in {"image", "indicatorImage"}:
                         if setting.startswith("https://app.diagrams.net/img/lib/"):
                             setting = setting.removeprefix("https://app.diagrams.net/")
-                        if setting in manifest["assets"]:
-                            data = (ROOT / "assets" / setting).read_bytes()
-                            if hashlib.sha256(data).hexdigest() != manifest["assets"][setting]:
+                        asset = setting if setting in manifest["assets"] else None
+                        if asset is not None and asset in verified_assets:
+                            setting = verified_assets[asset]
+                        elif asset is not None:
+                            with (ROOT / "assets" / asset).open("rb") as file:
+                                data = file.read(MAX_FILE + 1)
+                            if len(data) > MAX_FILE:
+                                raise ValueError("Runtime asset exceeds the image size limit")
+                            if hashlib.sha256(data).hexdigest() != manifest["assets"][asset]:
                                 raise RuntimeError("Runtime asset integrity check failed")
                             media = (
                                 "svg+xml"
@@ -220,22 +254,27 @@ def prepare_document(xml: str, manifest: dict) -> str:
                             setting = (
                                 "data:image/" + media + ";base64," + base64.b64encode(data).decode()
                             )
-                        if setting.startswith("data:image/") and ";base64," not in setting:
-                            prefix, separator, payload = setting.partition(",")
-                            if separator and re.fullmatch(r"[A-Za-z0-9+/=]+", payload):
-                                setting = prefix + ";base64," + payload
-                        # mxGraph styles reserve semicolons; its image getter restores this marker.
-                        setting = image_data(setting).replace(";base64,", ",", 1)
+                        if asset is None or asset not in verified_assets:
+                            if setting.startswith("data:image/") and ";base64," not in setting:
+                                prefix, separator, payload = setting.partition(",")
+                                if separator and re.fullmatch(r"[A-Za-z0-9+/=]+", payload):
+                                    setting = prefix + ";base64," + payload
+                            # The image getter restores mxGraph's reserved semicolon.
+                            setting = image_data(setting).replace(";base64,", ",", 1)
+                            if asset is not None:
+                                verified_assets[asset] = setting
                     elif key == "fontFamily":
                         setting = FONT_ALIASES.get(setting, setting)
                         if setting not in manifest["fonts"]:
                             raise ValueError("Font is not in the offline font set")
                     elif UNSAFE.search(part) or "data:" in part.lower():
                         raise ValueError("Style has an external or unsupported resource")
+                    budget.add(attribute_size(key) + len(sep) + attribute_size(setting) + 1)
                     normalized.append(key + sep + setting)
                 if element.tag == "mxCell" and not any(
                     p.startswith("fontFamily=") for p in normalized
                 ):
+                    budget.add(len("fontFamily=DejaVu Sans;"))
                     normalized.append("fontFamily=DejaVu Sans")
                 element.set(name, ";".join(normalized) + ";")
             elif name in {"value", "label"}:
@@ -245,6 +284,7 @@ def prepare_document(xml: str, manifest: dict) -> str:
             elif UNSAFE.search(value) or "data:" in value.lower():
                 raise ValueError("Diagram metadata has an external or unsupported resource")
         if element.tag == "mxCell" and "style" not in element.attrib:
+            budget.add(len(' style="fontFamily=DejaVu Sans;"'))
             element.set("style", "fontFamily=DejaVu Sans;")
     return ET.tostring(root, encoding="unicode")
 

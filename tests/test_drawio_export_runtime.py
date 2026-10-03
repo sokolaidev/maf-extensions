@@ -165,6 +165,85 @@ def test_image_styles_embed_verified_assets(tmp_path, monkeypatch, key, referenc
     assert f"{key}=data:image/svg+xml,{encoded};" in prepared
 
 
+@pytest.fixture
+def repeated_asset(tmp_path, monkeypatch):
+    data = b'<svg xmlns="http://www.w3.org/2000/svg"><!--' + b"x" * 500 + b"--></svg>"
+    asset = tmp_path / "assets/img/lib/icon.svg"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(data)
+    monkeypatch.setitem(RUNTIME["prepare_document"].__globals__, "ROOT", tmp_path)
+    return asset, {"assets": {"img/lib/icon.svg": hashlib.sha256(data).hexdigest()}, "fonts": {}}
+
+
+@pytest.mark.parametrize("value", ["Résumé Ω", "&", "<", ">", '"', "\r", "\n", "\t"])
+def test_attribute_budget_matches_elementtree(value):
+    element = RUNTIME["ET"].Element("x", {"v": value})
+    serialized = RUNTIME["ET"].tostring(element, encoding="utf-8")
+    assert RUNTIME["attribute_size"](value) == len(serialized) - len(b'<x v="" />')
+
+
+def test_repeated_assets_are_read_and_validated_once(repeated_asset, monkeypatch):
+    asset, manifest = repeated_asset
+    reads = []
+    validations = []
+    original_open = Path.open
+    original_image_data = RUNTIME["image_data"]
+
+    def open_asset(path, *args, **kwargs):
+        if path == asset:
+            reads.append(path)
+        return original_open(path, *args, **kwargs)
+
+    def validate(value):
+        validations.append(value)
+        return original_image_data(value)
+
+    monkeypatch.setattr(Path, "open", open_asset)
+    monkeypatch.setitem(RUNTIME["prepare_document"].__globals__, "image_data", validate)
+    cell = '<mxCell style="image=img/lib/icon.svg;indicatorImage=https://app.diagrams.net/img/lib/icon.svg;"/>'
+    xml = "<mxfile>" + ("<diagram>" + cell * 2 + "</diagram>") * 8 + "</mxfile>"
+    prepared = RUNTIME["prepare_document"](xml, manifest)
+    assert prepared.count("data:image/svg+xml,") == 32
+    assert reads == [asset]
+    assert len(validations) == 1
+
+
+@pytest.mark.parametrize("layout", ["pages", "single-style"])
+def test_expansion_budget_refuses_before_serialization(repeated_asset, monkeypatch, layout):
+    _, manifest = repeated_asset
+    globals_ = RUNTIME["prepare_document"].__globals__
+    monkeypatch.setitem(globals_, "MAX_PREPARED", 4096)
+    style = "image=img/lib/icon.svg;indicatorImage=img/lib/icon.svg;"
+    xml = (
+        "<mxfile>" + f'<diagram><mxCell style="{style}"/></diagram>' * 8 + "</mxfile>"
+        if layout == "pages"
+        else f'<mxfile><mxCell style="{style * 8}"/></mxfile>'
+    )
+
+    def serialize(*args, **kwargs):
+        pytest.fail("Over-budget XML must be refused before final serialization")
+
+    monkeypatch.setattr(RUNTIME["ET"], "tostring", serialize)
+    with pytest.raises(ValueError, match="Prepared document"):
+        RUNTIME["prepare_document"](xml, manifest)
+
+
+@pytest.mark.parametrize(
+    "style",
+    ["", ' style="note=Résumé &amp; &lt; &gt; &quot; &#10; &#13; &#9;;fontFamily=Arial;;;"'],
+)
+def test_prepared_budget_counts_serialized_utf8_and_font_normalization(monkeypatch, style):
+    xml = f'<mxfile><mxCell value="Résumé Ω"{style}/></mxfile>'
+    manifest = {"assets": {}, "fonts": {"DejaVu Sans": "unused"}}
+    expected = RUNTIME["prepare_document"](xml, manifest)
+    limit = len(expected.encode("utf-8"))
+    monkeypatch.setitem(RUNTIME["prepare_document"].__globals__, "MAX_PREPARED", limit)
+    assert RUNTIME["prepare_document"](xml, manifest) == expected
+    monkeypatch.setitem(RUNTIME["prepare_document"].__globals__, "MAX_PREPARED", limit - 1)
+    with pytest.raises(ValueError, match="Prepared document"):
+        RUNTIME["prepare_document"](xml, manifest)
+
+
 def test_oversized_png_header_is_a_resource_refusal():
     def chunk(kind, data):
         return (
