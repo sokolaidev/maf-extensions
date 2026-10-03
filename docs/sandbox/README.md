@@ -170,7 +170,7 @@ Host death needs a platform lifecycle policy or an independent operator sweep. N
 | [Execution output](exec-output.md) | Returned bytes, display text, caps and diagnostics |
 | [Observability](observability.md) | Observer events, session state and observation limits |
 | [Operations](operations.md) | Conversation purge and operator-owned retention |
-| [OpenClaw workload service](openclaw.md) | Bicep prototype boundary, selected multi-session lifecycle and pending acceptance |
+| [Shared MCP workload service](openclaw.md) | Reusable service and workload bindings, Bicep first, selected multi-session lifecycle and pending acceptance |
 | [Kinds](kinds/README.md) and [writing a kind](kinds/writing-a-kind.md) | Workload contracts and implementation |
 | [Backends](backends/README.md) and [writing a backend](backends/writing-a-backend.md) | Provider contracts and conformance |
 | [Samples](../../samples/) | Complete application wiring |

@@ -159,7 +159,7 @@ FastMCP qualification covers generated schemas, rejection of extra fields and st
 
 ## Multi-session lifecycle decision
 
-The follow-up on 2026-10-03 selected a separately supervised stateful Streamable HTTP service for the next implementation. The [owning design](../openclaw.md) specifies its lifecycle and acceptance; this comparison records why it was selected. One trusted operator still supplies uniform policy, but each OpenClaw session can retain its own MCP connection without launching another cleanup owner.
+The follow-up on 2026-10-03 selected a separately supervised stateful Streamable HTTP service for the next implementation. The [owning design](../openclaw.md) specifies its lifecycle and acceptance; this comparison records why it was selected. One trusted operator still supplies uniform policy, but each OpenClaw session can retain its own MCP connection without launching another cleanup owner. The selected scope separates a reusable MCP service from explicitly registered workload bindings: transport, admission and resource supervision must not depend on Bicep. Bicep remains the first real binding; two synthetic bindings will test the extension boundary. Additional kinds still require their own authority, input/output and lifecycle qualification, especially artifact delivery and persistent conversation state.
 
 | Option | Benefit | Cost and decision |
 |---|---|---|
