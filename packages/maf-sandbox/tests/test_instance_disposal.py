@@ -325,3 +325,63 @@ def test_direct_call_disposal_reaches_the_fallback_program_backend(failure):
         assert not router._program_pins
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("dispose_sibling", [False, True])
+@pytest.mark.parametrize("alias", [False, True])
+def test_reset_remaps_all_program_pins_before_reuse_or_sibling_disposal(dispose_sibling, alias):
+    from maf_sandbox import ProgramRequirements, SandboxBackendUnavailable
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    original = InProcessProgramChannel(name="original")
+    declarations = replace(
+        FAKE_BACKEND_DECLARATIONS,
+        capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+        program_channels=(original,),
+    )
+    preferred = _Engine("preferred", declarations=declarations)
+    fallback = _Engine("fallback", declarations=declarations)
+    available = preferred.acquire
+
+    async def unavailable(key, spec):
+        raise SandboxBackendUnavailable("offline")
+
+    preferred.acquire = unavailable
+    router = _router(preferred, fallback, selection=Selection.PER_SPEC, min_cleanup=Cleanup.RESET)
+    one = replace(SPEC, image="one", program=ProgramRequirements())
+    same = replace(one, program=ProgramRequirements(max_program_bytes=1024))
+    two = replace(one, image="two")
+
+    async def scenario():
+        sandbox = await router.acquire(KEY, one)
+        assert await router.acquire(KEY, same) is sandbox
+        sibling = await router.acquire(KEY, two)
+        before = sandbox.instance_id
+        admission = await router.enter_call(KEY, one, owner="reset")
+        assert admission.rung is Cleanup.RESET
+        assert (
+            await router.finish_call(KEY, one, admission=admission, sandbox=sandbox, owner="reset")
+            is None
+        )
+        assert sandbox.instance_id != before
+        assert router.prospective_program_channel(KEY, two) is original
+        preferred.acquire = available
+        fallback._declarations = replace(
+            declarations, program_channels=(InProcessProgramChannel(name="changed"),)
+        )
+        if dispose_sibling:
+            assert await router.dispose_kind(
+                KEY, two.kind, instance_id=sibling.instance_id, timeout=1
+            )
+        spec = same if alias else one
+        admission = await router.enter_call(KEY, spec, owner="reuse")
+        try:
+            assert admission.backend is fallback
+            assert admission.channel is original
+            assert await router.acquire(KEY, spec, _admission=admission) is sandbox
+            assert admission.channel is original
+        finally:
+            await router.release_call(KEY, spec.kind, owner="reuse")
+        assert not preferred.instances
+
+    asyncio.run(scenario())
