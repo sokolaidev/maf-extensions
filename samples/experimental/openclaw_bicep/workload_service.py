@@ -44,7 +44,7 @@ class CallContext:
     """Identity minted by transport supervision, never supplied by tool arguments."""
 
     session_id: str
-    request_id: str
+    request_id: int | str
     call_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
@@ -115,7 +115,10 @@ class WorkloadService(FastMCP[None]):
         ctx = self.get_context().request_context
         request = ctx.request
         session_id = request.headers.get("mcp-session-id", "") if request else ""
-        return await self.invoke(name, arguments, CallContext(session_id, str(ctx.request_id)))
+        request_id = (
+            request.scope.get("workload_request_id", ctx.request_id) if request else ctx.request_id
+        )
+        return await self.invoke(name, arguments, CallContext(session_id, request_id))
 
     async def cleanup(self, names: tuple[str, ...]) -> bool:
         """Fail global admission closed when any resource cannot confirm cleanup."""

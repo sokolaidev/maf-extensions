@@ -184,7 +184,7 @@ async def initialize(client):
     return sid
 
 
-async def call(client, sid, name="echo", args=None, request_id=42):
+async def call(client, sid, name="echo", args=None, request_id: int | str = 42):
     return await client.post(
         "/mcp",
         headers={"mcp-session-id": sid},
@@ -197,7 +197,7 @@ async def call(client, sid, name="echo", args=None, request_id=42):
     )
 
 
-async def cancel(client, sid, request_id=42):
+async def cancel(client, sid, request_id: int | str = 42):
     response = await client.post(
         "/mcp",
         headers={"mcp-session-id": sid},
@@ -1125,5 +1125,79 @@ def test_nonfinite_values_refused_at_shared_binding_boundary(value):
                 "increment", {"number": 1}, core.CallContext("a", "2")
             )
             assert bad_output.isError and len(h.calls) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("first_id,second_id", [(42, "42"), ("42", 42)])
+def test_typed_request_ids_keep_responses_and_cancellation_independent(first_id, second_id):
+    async def scenario():
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
+            sid = await initialize(client)
+            active = asyncio.create_task(
+                call(client, sid, args={"hold": True}, request_id=first_id)
+            )
+            try:
+                await h.entered.wait()
+                duplicate = await call(client, sid, request_id=first_id)
+                assert duplicate.status_code == 409
+                ping = await client.post(
+                    "/mcp",
+                    headers={"mcp-session-id": sid},
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": second_id,
+                        "method": "ping",
+                    },
+                )
+                assert ping.status_code == 200
+                assert ping.json()["id"] == second_id
+                assert type(ping.json()["id"]) is type(second_id)
+                assert h.calls[0].request_id == first_id
+                assert type(h.calls[0].request_id) is type(first_id)
+                await cancel(client, sid, second_id)
+                unscoped = await client.post(
+                    "/mcp",
+                    headers={"mcp-session-id": sid},
+                    json={"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}},
+                )
+                assert unscoped.status_code == 202
+                await asyncio.sleep(0.03)
+                assert not h.cancelled.is_set() and not active.done()
+                await cancel(client, sid, first_id)
+                await h.cancelled.wait()
+            finally:
+                h.hold.set()
+                response = await active
+            assert response.json()["id"] == first_id
+            assert type(response.json()["id"]) is type(first_id)
+            await until(lambda: app.service.active is None)
+            next_call = await call(client, sid, request_id=second_id)
+            assert not next_call.json()["result"]["isError"]
+            assert next_call.json()["id"] == second_id
+            assert type(next_call.json()["id"]) is type(second_id)
+
+    asyncio.run(scenario())
+
+
+def test_client_request_ids_cannot_replace_sdk_get_stream():
+    from mcp.server.streamable_http import GET_STREAM_KEY
+
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            sid = await initialize(client)
+            async with client.stream("GET", "/mcp", headers={"mcp-session-id": sid}) as events:
+                assert events.status_code == 200
+                transport = app.sessions[sid].transport
+                get_stream = transport._request_streams[GET_STREAM_KEY]
+                for request_id in (GET_STREAM_KEY, "", "rpc:42", '"quoted"', "\u96ea", 0, "0"):
+                    response = await call(client, sid, request_id=request_id)
+                    assert response.status_code == 200
+                    assert response.json()["id"] == request_id
+                    assert type(response.json()["id"]) is type(request_id)
+                    assert transport._request_streams[GET_STREAM_KEY] is get_stream
+                await client.delete("/mcp", headers={"mcp-session-id": sid})
+                await until(lambda: not app.sessions)
 
     asyncio.run(scenario())

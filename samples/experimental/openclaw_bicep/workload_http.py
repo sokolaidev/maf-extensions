@@ -23,7 +23,7 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.responses import Response
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 from uvicorn.protocols.http.h11_impl import H11Protocol
 from workload_service import WorkloadService, drain
 
@@ -44,6 +44,11 @@ def _finite_float(value: str) -> float:
     return parsed
 
 
+def _sdk_request_id(value: int | str) -> str:
+    """Separate typed client IDs from the SDK's string-keyed transport streams."""
+    return "rpc:" + json.dumps(value, ensure_ascii=False)
+
+
 @dataclass
 class Session:
     """A capacity reservation retained until SDK and workload tasks have settled."""
@@ -53,7 +58,7 @@ class Session:
     started: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
     retiring: asyncio.Task[None] | None = None
-    ids: set[str] = field(default_factory=set)
+    ids: set[int | str] = field(default_factory=set)
     initialized: bool = False
     closing: bool = False
     get_active: bool = False
@@ -310,6 +315,17 @@ class WorkloadHTTP:
                     raise ValueError
             elif not isinstance(message, types.JSONRPCRequest) or message.method != "initialize":
                 raise ValueError
+            request_id = message.id if isinstance(message, types.JSONRPCRequest) else None
+            sdk_id = _sdk_request_id(request_id) if request_id is not None else None
+            if sdk_id is not None:
+                raw["id"] = sdk_id
+            elif message.method == "notifications/cancelled":
+                notification = types.CancelledNotification.model_validate(raw)
+                if notification.params.requestId is not None:
+                    raw["params"]["requestId"] = _sdk_request_id(notification.params.requestId)
+            body = json.dumps(
+                raw, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ).encode("utf-8")
         except (ValueError, TypeError, ValidationError, RecursionError):
             await Response(status_code=400)(scope, receive, send)
             return
@@ -338,7 +354,6 @@ class WorkloadHTTP:
             if record.closing:
                 await Response(status_code=404)(scope, receive, send)
                 return
-            request_id = str(message.id) if isinstance(message, types.JSONRPCRequest) else None
             if request_id is not None and request_id in record.ids:
                 await Response(status_code=409)(scope, receive, send)
                 return
@@ -346,6 +361,14 @@ class WorkloadHTTP:
                 record.ids.add(request_id)
             consumed = False
             response_status = 500
+            response_start: Message | None = None
+            request_scope = dict(scope)
+            request_scope["workload_request_id"] = request_id
+            request_scope["headers"] = [
+                (name, value)
+                for name, value in scope["headers"]
+                if name.lower() not in {b"content-length", b"transfer-encoding"}
+            ] + [(b"content-length", str(len(body)).encode("ascii"))]
 
             async def replay():
                 nonlocal consumed
@@ -354,15 +377,38 @@ class WorkloadHTTP:
                     return {"type": "http.request", "body": body, "more_body": False}
                 return await receive()
 
-            async def capture(message):
-                nonlocal response_status
+            async def capture(message: Message):
+                nonlocal response_status, response_start
                 if message["type"] == "http.response.start":
                     response_status = message["status"]
+                    response_start = message
+                    return
+                if message.get("more_body", False):
+                    raise RuntimeError("The pinned SDK must emit one JSON response body.")
+                assert response_start is not None
+                if sdk_id is not None and response_status == 200 and message.get("body"):
+                    payload = json.loads(message["body"])
+                    if payload.get("id") == sdk_id:
+                        payload["id"] = request_id
+                        encoded = json.dumps(
+                            payload, ensure_ascii=False, separators=(",", ":")
+                        ).encode("utf-8")
+                        message = {**message, "body": encoded}
+                        response_start = {
+                            **response_start,
+                            "headers": [
+                                (name, value)
+                                for name, value in response_start["headers"]
+                                if name.lower() != b"content-length"
+                            ]
+                            + [(b"content-length", str(len(encoded)).encode("ascii"))],
+                        }
+                await send(response_start)
                 await send(message)
 
             async def dispatch():
                 try:
-                    await record.transport.handle_request(scope, replay, capture)
+                    await record.transport.handle_request(request_scope, replay, capture)
                     if message.method == "notifications/initialized" and response_status == 202:
                         record.initialized = True
                 finally:
