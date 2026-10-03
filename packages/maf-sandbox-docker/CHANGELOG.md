@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.4...maf-sandbox-docker-v0.24.5) (2026-10-03)
+
+
+### Fixes
+
+* report credential-expired proxy streams as interrupted ([#1631](https://github.com/sokolaidev/maf-extensions/issues/1631)) ([63c0e97](https://github.com/sokolaidev/maf-extensions/commit/63c0e97dbf39a0d976b07ffb9437317170f1a26d))
+
 ## [0.24.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.3...maf-sandbox-docker-v0.24.4) (2026-10-02)
 
 
