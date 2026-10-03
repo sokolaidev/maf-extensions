@@ -1,12 +1,7 @@
 # MXC native output boundary
 
-> Proposal for [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668): preserve bounded stdout/stderr bytes and keep native completion independent of guest output. The temporary Rust-only collector follows the accepted decisions below; its implementation and candidate qualification are tracked in the [output experiment](../../../scripts/experiments/mxc_session_patch/OUTPUT.md#bounded-native-capture-overlay). The larger embedded-kernel extension remains a proposal.
-
-## Accepted overflow decision
-
-The host maintainer selected **truncate and continue** for temporary bounded capture. Retain a bounded prefix, discard subsequent output and report truncation through host-owned result metadata, separate from program output. Reaching the limit does not fail execution or retire the session. A call that otherwise succeeds may proceed through the existing checkpoint/result publication barrier; truncation metadata must be saved with the result for consistent redelivery. Guest errors, timeouts, cancellation and owner loss retain their existing failure behavior.
-
-The recommended first implementation is a separately pinned, removable Rust collector patch that checks the budget before buffering and disables automatic mirroring to process stdout. It does not establish separate streams, binary fidelity or correction of the kernel's silent 4096-byte truncation. Truncation metadata describes bytes omitted by this collector, not bytes lost before reaching it. The accepted default is **1 MiB (1,048,576 bytes) of combined console output per call**, configurable by the host. Startup/resume uses a separate bounded capture interval; the call starts with a fresh budget. The current console has one combined stream. This decision was recorded before implementation and does not approve the larger kernel proposal below.
+> Proposal for [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668): preserve bounded stdout/stderr bytes and keep native completion independent of guest output. Extending the removable bundle into the runtime and embedded kernel is pending a host-maintainer decision. No implementation or runtime qualification is claimed here.
+> The later accepted bounded-console policy is recorded in the [MXC design](../backends/mxc.md#bounded-console-capture).
 
 ## Source findings
 
@@ -24,7 +19,7 @@ Keep the public suite integration beneath MXC. Add separately pinned, reversible
 
 Give the guest distinct stdout and stderr file objects so writes, duplicated descriptors and `/dev/stdout` or `/dev/stderr` preserve the destination selected by the program. Intentional program redirection still takes effect. Send bounded raw-byte chunks through a dedicated native callback with explicit stream identity. Keep kernel diagnostics separate. Validate the chunk length and stream value on the host; reject malformed input without using guest bytes as host completion records.
 
-Bound captured bytes in the Rust callback before appending. Do not print captured guest data through a blocking host stdout path during execution. The accepted truncate-and-continue decision supersedes the earlier fail-on-overflow proposal. Latch host-owned truncation metadata when output is omitted, retain the bounded prefix and allow execution to continue. Exact-limit output without omission is not truncated. Successful execution still requires normal native completion and checkpoint/result publication. The earlier one-MiB-per-stream experiment proposal is not an accepted default. Timeouts, cancellation and owner loss remain independent termination paths.
+Bound captured bytes in the Rust callback before appending. Do not print captured guest data through a blocking host stdout path during execution. The proposed initial experiment limit is one MiB per stream. On overflow, latch a native failure, stop execution, retire the session and refuse checkpoint publication. Exact-limit output succeeds only if execution also completes normally. An overflow outcome must survive a guest that catches a write error. Timeouts, cancellation and owner loss remain independent termination paths.
 
 Export stdout and stderr as bytes into host-owned bounded result files. Publish a small native control record separately, only after execution and capture succeed. Parse that record with a strict schema and size limit. The host must not infer success from markers, JSON, filenames or other content printed by the guest. No total ordering between concurrent stdout and stderr is promised; byte order within each stream is preserved.
 
@@ -40,7 +35,7 @@ Keep temporary runtime access behind the existing `probe/backend.rs` wrapper. Re
 
 Exercise zero-length output; 4095, 4096 and 4097-byte writes; the exact stream limit and one byte beyond; embedded NUL and all byte values; Unicode spanning chunk boundaries; mixed `write` and `writev`; repeated and concurrent writes; descriptor duplication/redirection; and guest text resembling native completion. Verify independent stdout/stderr byte hashes and no silent truncation.
 
-For collector overflow, verify bounded retained output, explicit truncation metadata and continued execution; otherwise successful calls must publish the checkpoint and truncated result together and redeliver the same metadata after recovery. For malformed native control, guest failure, timeout, cancellation and owner death, verify no successful publication, bounded retained output, native termination and refusal to reuse the failed session. Repeat recovery and lost-acknowledgment tests with the new runtime identity. Retain candidate-specific evidence and leave #1668 open until both platform qualifications pass.
+For overflow, malformed native control, guest failure, timeout, cancellation and owner death, verify no successful publication, bounded retained output, native termination and refusal to reuse the failed session. Repeat recovery and lost-acknowledgment tests with the new runtime identity. Retain candidate-specific evidence and leave #1668 open until both platform qualifications pass.
 
 ## Why upstream has this shape
 
@@ -67,4 +62,4 @@ Do not treat the three-layer patch as the only possible solution. Preserve the e
 3. Compare a dedicated guest output device against driver-level descriptor redirection into separate pipes or files. Redirection may avoid changing the kernel, but must qualify native-extension writes, descendants, concurrency, bounded storage/draining, and persistent descriptor state; replacing only Python's `sys.stdout` is insufficient. The open upstream [x86_64 Bash pipe failure](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/124) is a reason to test that alternative, not assume it works.
 4. Evaluate the newer structured result API independently for result transport. It can reduce custom transport work but cannot replace stdout/stderr fidelity or the host's checkpoint publication protocol.
 
-A kernel patch remains a candidate after those comparisons, with new snapshots and both-platform qualification required. The host-configurable capture request is now reported in [hyperlight-unikraft #140](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/140), with a contribution offer. No upstream PR has been submitted. The accepted overflow policy above does not approve the kernel extension.
+A kernel patch remains a candidate after those comparisons, with new snapshots and both-platform qualification required. No upstream issue/comment/PR was sent during this investigation, and the pending extension decision has not been treated as approved.

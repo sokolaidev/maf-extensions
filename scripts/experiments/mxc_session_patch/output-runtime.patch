@@ -121,7 +121,7 @@
          self.config.drain_output()
 --- /dev/null
 +++ b/src/output_capture.rs
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,140 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Host-owned console retention; the guest cannot reset the byte budget.
 +
@@ -168,9 +168,16 @@
 +            let (total, overflow) = self.result.omitted_bytes.overflowing_add(omitted);
 +            self.result.omitted_bytes = if overflow { u64::MAX } else { total };
 +            self.result.omitted_bytes_saturated |= overflow;
++            let needed = self.result.text.len() + retained;
++            let capacity = self.result.text.capacity();
++            if needed > capacity {
++                // Amortize small writes without reserving beyond the host budget.
++                let target = needed.max(capacity.saturating_mul(2)).min(limit);
++                self.result
++                    .text
++                    .reserve_exact(target - self.result.text.len());
++            }
 +        }
-+        // Exact reservation avoids geometric growth beyond the configured capacity.
-+        self.result.text.reserve_exact(retained);
 +        self.result.text.push_str(&message[..retained]);
 +    }
 +    pub(crate) fn take(&mut self) -> CapturedOutput {
@@ -231,5 +238,27 @@
 +        capture.push("abc");
 +        assert!(capture.mirrored());
 +        assert_eq!(capture.take().text, "abc");
++    }
++
++    fn small_message_growth(mut capture: Capture) -> usize {
++        let mut changes = 0;
++        for _ in 0..1025 {
++            let before = capture.result.text.capacity();
++            capture.push("x");
++            changes += usize::from(capture.result.text.capacity() != before);
++            if let Some(limit) = capture.limit {
++                assert!(capture.result.text.capacity() <= limit);
++            }
++        }
++        assert_eq!(capture.result.text, "x".repeat(1025));
++        changes
++    }
++    #[test]
++    fn bounded_small_messages_use_capped_amortized_growth() {
++        assert!(small_message_growth(Capture::bounded(1025)) <= 16);
++    }
++    #[test]
++    fn legacy_small_messages_keep_amortized_growth() {
++        assert!(small_message_growth(Capture::default()) <= 16);
 +    }
 +}
