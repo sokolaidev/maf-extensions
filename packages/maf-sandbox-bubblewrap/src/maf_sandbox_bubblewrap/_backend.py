@@ -182,18 +182,31 @@ class _Sandbox:
         op: str,
         *,
         transport_timeout: float = 10,
+        deadline: float | None = None,
         **fields: Any,
     ) -> dict[str, Any]:
-        async with self._serial:
+        loop = asyncio.get_running_loop()
+        if deadline is None:
+            deadline = loop.time() + transport_timeout
+        async with asyncio.timeout_at(deadline):
+            await self._serial.acquire()
+        try:
             if self.dead or self.process.returncode is not None:
                 raise RuntimeError("Sandbox is no longer running")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError("Request deadline expired before dispatch")
+            if op == "exec":
+                fields["timeout"] = min(fields["timeout"], remaining)
             self._sequence += 1
             payload = json.dumps({"id": self._sequence, "op": op, **fields}).encode() + b"\n"
             if len(payload) > FRAME_LIMIT:
                 raise ValueError("Request exceeds transfer frame limit")
             assert self.process.stdin is not None and self.process.stdout is not None
+            if loop.time() >= deadline:
+                raise TimeoutError("Request deadline expired before dispatch")
             try:
-                async with asyncio.timeout(transport_timeout):
+                async with asyncio.timeout_at(deadline):
                     self.process.stdin.write(payload)
                     await self.process.stdin.drain()
                     frame = await self.process.stdout.readline()
@@ -234,6 +247,8 @@ class _Sandbox:
                 await _finish(asyncio.create_task(self.stop()))
                 raise RuntimeError("Invalid guest result")
             return cast(dict[str, Any], result)
+        finally:
+            self._serial.release()
 
     async def stop(self) -> None:
         """Terminate the whole resource group before releasing ownership."""
@@ -261,16 +276,18 @@ class _Sandbox:
         timeout: float,
     ) -> ExecResult:
         """Execute within the configured deadline and cap combined stdout/stderr bytes."""
-        if not math.isfinite(timeout) or timeout <= 0:
+        if type(timeout) not in (int, float) or not 0 < timeout < math.inf:
             raise ValueError("timeout must be finite and positive")
         if timeout > self.backend.config.max_timeout:
             raise ValueError("timeout exceeds configured max_timeout")
+        deadline = asyncio.get_running_loop().time() + timeout
         result = await self._request(
             "exec",
             command=command if isinstance(command, str) else list(command),
             directory=working_directory,
             timeout=timeout,
             transport_timeout=timeout,
+            deadline=deadline,
             output_limit=self.backend.config.output_bytes,
         )
         stdout = base64.b64decode(result["stdout"], validate=True)

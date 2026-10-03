@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -110,6 +111,107 @@ def test_invalid_exec_timeout_refuses_before_transport(tmp_path: Path, timeout: 
             sandbox._request.assert_not_called()
             assert not sandbox.dead
         finally:
+            await diagnostics
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("timeout", [True, False, "1", None, [], object()])
+@pytest.mark.parametrize("target", ["configuration", "execution"])
+def test_timeout_types_are_rejected(tmp_path: Path, timeout: object, target: str) -> None:
+    settings = BubblewrapSandboxConfig(tmp_path, tmp_path, tmp_path)
+    if target == "configuration":
+        with pytest.raises(ValueError, match="max_timeout"):
+            replace(settings, max_timeout=timeout)
+        return
+
+    async def run() -> None:
+        diagnostics = asyncio.create_task(asyncio.sleep(0, result=""))
+        sandbox = _Sandbox(
+            Mock(config=settings),
+            "instance",
+            Mock(),
+            -1,
+            tmp_path,
+            SandboxSpec(kind="exec"),
+            diagnostics,
+        )
+        sandbox._request = AsyncMock()
+        try:
+            with pytest.raises(ValueError, match="timeout"):
+                await sandbox.exec(["true"], working_directory=".", timeout=timeout)  # type: ignore[arg-type]
+            sandbox._request.assert_not_called()
+        finally:
+            await diagnostics
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_queued_exec_does_not_dispatch_or_stop_owner(tmp_path: Path, cancel: bool) -> None:
+    async def run() -> None:
+        process = Mock(returncode=None)
+        diagnostics = asyncio.create_task(asyncio.sleep(0, result=""))
+        sandbox = _Sandbox(
+            Mock(config=Mock(max_timeout=5, output_bytes=1024)),
+            "instance",
+            process,
+            -1,
+            tmp_path,
+            SandboxSpec(kind="exec"),
+            diagnostics,
+        )
+        sandbox.stop = AsyncMock()
+        await sandbox._serial.acquire()
+        queued = asyncio.create_task(sandbox.exec(["true"], working_directory=".", timeout=0.02))
+        try:
+            await asyncio.sleep(0)
+            if cancel:
+                queued.cancel()
+            done, _ = await asyncio.wait({queued}, timeout=0.3)
+            assert queued in done
+            with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+                await queued
+            process.stdin.write.assert_not_called()
+            sandbox.stop.assert_not_called()
+            assert sandbox._serial.locked()
+        finally:
+            queued.cancel()
+            await asyncio.gather(queued, return_exceptions=True)
+            sandbox._serial.release()
+            await diagnostics
+
+    asyncio.run(run())
+
+
+def test_queued_exec_passes_only_remaining_budget(tmp_path: Path) -> None:
+    async def run() -> None:
+        process = Mock(returncode=None)
+        process.stdin.drain = AsyncMock()
+        process.stdout = asyncio.StreamReader()
+        process.stdout.feed_data(b'{"id":1,"result":{"stdout":"","stderr":"","exit_code":0}}\n')
+        diagnostics = asyncio.create_task(asyncio.sleep(0, result=""))
+        sandbox = _Sandbox(
+            Mock(config=Mock(max_timeout=5, output_bytes=1024)),
+            "instance",
+            process,
+            -1,
+            tmp_path,
+            SandboxSpec(kind="exec"),
+            diagnostics,
+        )
+        await sandbox._serial.acquire()
+        queued = asyncio.create_task(sandbox.exec(["true"], working_directory=".", timeout=1))
+        try:
+            await asyncio.sleep(0.05)
+            sandbox._serial.release()
+            assert (await queued).exit_code == 0
+            frame = json.loads(process.stdin.write.call_args.args[0])
+            assert 0 < frame["timeout"] < 0.98
+            assert not sandbox._serial.locked()
+        finally:
+            queued.cancel()
+            await asyncio.gather(queued, return_exceptions=True)
             await diagnostics
 
     asyncio.run(run())

@@ -13,7 +13,7 @@
 | Storage | Private bounded tmpfs, base `/maf-sandbox/work` |
 | Resource limits | Aggregate memory, swap disabled, PID count, CPU quota and tmpfs size |
 | Transfers | 8 MiB per file; default router collection ceilings |
-| Cleanup | Disposal; command descendants reaped before reply; timeout/cancellation destroys the sandbox |
+| Cleanup | Disposal; command descendants reaped before reply; timeout/cancellation after dispatch destroys the sandbox; queued requests are refused without stopping the active request |
 | Ownership | Full key including call and kind, private persisted records, exclusive host file lock |
 
 The runtime is read-only and the environment is cleared. The private PID 1 broker holds no-follow descriptors during file operations, at guest filesystem authority. It reports guest metadata rather than a host filesystem attestation. Nested user namespaces are disabled. The boundary shares the host kernel; no seccomp filter or microVM protection is claimed. Other platform policies are not silently substituted when Linux prerequisites fail.

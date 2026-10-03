@@ -507,6 +507,44 @@ asyncio.run(run())
 
 
 @live
+@pytest.mark.parametrize("cancel", [False, True])
+def test_live_queued_exec_preserves_active_command(cancel: bool) -> None:
+    async def run() -> None:
+        backend = await BubblewrapSandboxBackend.create(config())
+        identity = key()
+        sandbox = await backend.acquire(identity, SandboxSpec(kind="queued"))
+        active = asyncio.create_task(
+            sandbox.exec(["sleep", "0.5"], working_directory=".", timeout=5)
+        )
+        queued = None
+        try:
+            async with asyncio.timeout(5):
+                while not sandbox._serial.locked():
+                    await asyncio.sleep(0)
+            queued = asyncio.create_task(
+                sandbox.exec(["touch", "queued-marker"], working_directory=".", timeout=0.02)
+            )
+            if cancel:
+                await asyncio.sleep(0)
+                queued.cancel()
+            with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+                await queued
+            assert not active.done()
+            assert (await active).exit_code == 0
+            assert await sandbox.stat_file("queued-marker", working_directory=".") is None
+            assert (await sandbox.exec(["true"], working_directory=".", timeout=5)).exit_code == 0
+        finally:
+            if queued is not None:
+                queued.cancel()
+                await asyncio.gather(queued, return_exceptions=True)
+            active.cancel()
+            await asyncio.gather(active, return_exceptions=True)
+            assert await backend.dispose(identity) is None
+
+    asyncio.run(run())
+
+
+@live
 def test_live_exec_timeout_admission() -> None:
     async def run() -> None:
         backend = await BubblewrapSandboxBackend.create(replace(config(), max_timeout=0.5))

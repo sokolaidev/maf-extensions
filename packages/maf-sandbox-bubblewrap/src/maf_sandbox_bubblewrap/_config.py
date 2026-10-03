@@ -35,7 +35,7 @@ class BubblewrapSandboxConfig:
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if not 0 < self.max_timeout <= 3600:
+        if type(self.max_timeout) not in (int, float) or not 0 < self.max_timeout <= 3600:
             raise ValueError("max_timeout must be positive and at most 3600 seconds")
         if not self.runtime_id or "\x00" in self.runtime_id:
             raise ValueError("runtime_id must be nonempty")

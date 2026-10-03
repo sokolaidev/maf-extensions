@@ -3,6 +3,7 @@
 set -euo pipefail
 test "$(id -u)" = 0 || { echo 'Run provisioning as root.' >&2; exit 1; }
 test "$#" = 1 || { echo 'Usage: build-runtime.sh ABSOLUTE_NEW_DIRECTORY' >&2; exit 1; }
+case "$1" in /*) ;; *) echo 'Destination must be absolute.' >&2; exit 1;; esac
 target=$(realpath -m -- "$1")
 case "$target" in /|/usr|/opt|/var|/home|/tmp) echo 'Choose a new dedicated directory.' >&2; exit 1;; esac
 test ! -e "$target" || { echo 'Destination must not exist.' >&2; exit 1; }
