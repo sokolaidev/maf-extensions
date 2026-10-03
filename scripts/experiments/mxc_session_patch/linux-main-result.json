@@ -84,5 +84,8 @@
     "chart_encoded_sha256": "2ac5a4e60ff089d8a256af355020344fec33485284bc853620691f4fa55d0b4c",
     "scope": "local process crash; no power-loss or remote-recovery qualification"
   },
-  "scope": "Merged-main checkpoint/result publication including the chunk-reuse correction; owner-pipe continuation not present in this run"
+  "scope": "Merged-main checkpoint/result publication including the chunk-reuse correction; owner-pipe continuation not present in this run",
+  "artifact_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37084553838/artifacts/11260582425",
+  "artifact_sha256": "7c51b63e301a2fbb36e6b139b3b8af05657158cabba831bb32c287884bb8c2fc",
+  "artifact_retention_days": 14
 }

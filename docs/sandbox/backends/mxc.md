@@ -104,7 +104,7 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 | Decision | State | Tracking |
 |---|---|---|
 | Extend MXC for persistent Hyperlight sessions | Selected; removable experimental patch available, supported output/control transport pending | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (open) |
-| Interpreter continuity and checkpoint feasibility | Conditional go for experimental integration; production acceptance remains separate | [#1649](https://github.com/sokolaidev/maf-extensions/issues/1649) (open); [conclusion](../../../scripts/experiments/mxc_session_patch/CONCLUSION.md) |
+| Interpreter continuity and checkpoint feasibility | Conditional go for experimental integration; production acceptance remains separate | [#1649](https://github.com/sokolaidev/maf-extensions/issues/1649) (closed) by [#1674](https://github.com/sokolaidev/maf-extensions/pull/1674) (merged); [conclusion](../../../scripts/experiments/mxc_session_patch/CONCLUSION.md) |
 | Rich Python through MXC Hyperlight and CodeAct | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Code/text execution plus bounded file inputs and artifacts | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Windows WHP and Linux KVM in the first version | Selected; fixed native recovery and local checkpoint/result publication probes passed independently on Windows/WHP and hosted Linux/KVM; production adapter unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open); [probe evidence and limits](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md) |
