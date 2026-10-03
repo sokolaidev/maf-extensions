@@ -1,6 +1,6 @@
 # OpenClaw Gateway qualification of the Bicep prototype
 
-> Supervised qualification recorded on 2026-10-03. One Gateway session passed host-path checks with a deterministic provider; multi-session ownership and unattended recovery remain design work. The sample README carries the operator contract, and the integration research links the remaining decisions.
+> Supervised qualification recorded on 2026-10-03. One Gateway session passed host-path checks with a deterministic provider. The later [shared service design](../openclaw.md) selects the multi-session lifecycle; HTTP implementation, Gateway acceptance and unattended recovery remain outstanding. The sample README carries the current operator contract.
 
 This records supervised execution on 2026-10-03 in Europe/Amsterdam (UTC+02:00) through the real OpenClaw Gateway and its embedded agent runtime. The combined-candidate acceptance report was written at `2026-10-03T00:40:22+02:00`, equivalent to `2026-10-02T22:40:22Z`. A deterministic local provider selected tools and captured the results sent back to the provider; it was not an LLM and establishes no evidence about model reasoning or prompt-injection resistance. The service used the published dependency pins in the [prototype](../../../samples/experimental/openclaw_bicep/README.md), launched with `uv run --script`. The broader [integration research](openclaw-integration.md) owns the design direction.
 
@@ -131,4 +131,4 @@ Official references: [MCP configuration](https://docs.openclaw.ai/tools/mcp), [G
 | Work | State | Tracking |
 |---|---|---|
 | Bicep host qualification | One-session Gateway agent path qualified with a deterministic provider; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
-| Multiple Gateway sessions | Design required; shared owner directory rejects a second retained stdio worker | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (open) |
+| Multiple Gateway sessions | Shared HTTP lifecycle selected; this record qualifies only stdio and one session | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (open); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (open); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
