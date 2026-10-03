@@ -1932,6 +1932,10 @@ class SandboxToolSession:
                 )
         return sandbox
 
+    def prospective_program_channel(self, key: SandboxKey) -> ProgramChannel | None:
+        """Preview a channel for input validation; recheck it after acquisition."""
+        return self._router.prospective_program_channel(key, self._spec)
+
     def program_channel(self, key: SandboxKey, sandbox: Sandbox) -> ProgramChannel:
         """The channel retained by this open call's acquisition."""
         call = _this_call(self)

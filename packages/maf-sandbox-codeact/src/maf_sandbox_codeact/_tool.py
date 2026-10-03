@@ -1234,11 +1234,20 @@ async def _execute(
 
     names: list[str] = []
     if outputs is CodeactOutputs.DECLARED:
+        if runtime is None:
+            prospective = session.prospective_program_channel(key)
+            if prospective is not None:
+                guest_prefix = _channel_output_prefix(
+                    call_directory,
+                    prospective.guest_working_directory(
+                        call_directory, host_tools=host_tool_call is not None
+                    ),
+                )
         checked = _validated_output_names(
             declared,
             max_files=session.spec.files_out.max_files,
             reserved=reserved,
-            guest_prefix=guest_prefix if runtime is not None else "",
+            guest_prefix=guest_prefix,
             normalization=_normalization(session),
             named_by=_OUTPUTS_ARGUMENT,
             argument=_OUTPUTS_ARGUMENT,
@@ -1295,9 +1304,7 @@ async def _execute(
         else call_directory
     )
     if channel is not None:
-        guest_prefix = posixpath.normpath(
-            f"{call_id}/{posixpath.relpath(shared_dir, call_directory)}"
-        )
+        guest_prefix = _channel_output_prefix(call_directory, shared_dir)
     if runtime is None and outputs is CodeactOutputs.DECLARED:
         checked = _validated_output_names(
             declared,
@@ -1696,6 +1703,13 @@ async def _write_shared(
 
 
 # --- Files out -----------------------------------------------------------------------------
+
+
+def _channel_output_prefix(guest_call_path: str, guest_working_directory: str) -> str:
+    call_id = guest_call_path.rsplit("/", 1)[-1]
+    return posixpath.normpath(
+        f"{call_id}/{posixpath.relpath(guest_working_directory, guest_call_path)}"
+    )
 
 
 def _normalization(session: SandboxToolSession) -> NameNormalization:
