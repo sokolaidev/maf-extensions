@@ -4,15 +4,15 @@
   "prerequisite_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
   "patches": {
     "runtime": {
-      "sha256": "3321980b17ad065c943047a0cd31b82833a26be1c6fae3b0c38a4fc04e9a2285",
+      "sha256": "753de3f9ad9675172531172aea51a27ad141ff270ed36e51e8a0269ebe07a562",
       "files": {
         "src/lib.rs": {
           "before": "901df513006986007f9809876bc782b4d1d8d745d0f68658b2759e9abca1479d",
-          "after": "149c1d5d3b7a6749368e263ae34d384b1b435ab7bcc2728075822c108b9ddfcc"
+          "after": "928c36065f7afb9bcd5a328476933a2c18cf789cadef344dfa0378877b958b71"
         },
         "src/output_capture.rs": {
           "before": null,
-          "after": "22f1c37ff0e53b1c2846a39d1b3901feea9a8675774e230bd1a601d65f04f898"
+          "after": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40"
         }
       }
     },

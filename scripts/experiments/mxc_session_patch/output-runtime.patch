@@ -37,23 +37,21 @@
      }
  
      /// Register host functions on any [`Registerable`] target.
-@@ -662,9 +665,12 @@
+@@ -662,9 +665,10 @@
              move |msg: String| -> hyperlight_host::Result<i32> {
                  use std::io::Write;
                  let len = msg.len() as i32;
 -                print!("{msg}");
 -                let _ = std::io::stdout().flush();
 -                output.lock().unwrap().push_str(&msg);
-+                let mut output = output.lock().unwrap();
-+                if output.mirrored() {
++                output_capture::capture_message(&output, &msg, |msg| {
 +                    print!("{msg}");
 +                    let _ = std::io::stdout().flush();
-+                }
-+                output.push(&msg);
++                });
                  Ok(len)
              },
          )?;
-@@ -1202,9 +1208,17 @@
+@@ -1202,9 +1206,17 @@
      listen_ports: Option<ListenPorts>,
      env_vars: Vec<(String, String)>,
      resolv_conf: Option<String>,
@@ -71,7 +69,7 @@
      /// A builder with no source and every setting at its default.
      fn empty() -> Self {
          Self {
-@@ -1218,6 +1232,7 @@
+@@ -1218,6 +1230,7 @@
              listen_ports: None,
              env_vars: Vec::new(),
              resolv_conf: None,
@@ -79,7 +77,7 @@
          }
      }
  
-@@ -1356,6 +1371,7 @@
+@@ -1356,6 +1369,7 @@
              listen_ports,
              env_vars,
              resolv_conf,
@@ -87,7 +85,7 @@
          } = self;
  
          let restored = snapshot.is_some();
-@@ -1376,6 +1392,9 @@
+@@ -1376,6 +1390,9 @@
          let (sandbox, cfg) = match snapshot {
              Some(snapshot) => {
                  let (sandbox, cfg) = restore_snapshot(snapshot, mounts, network, listen_ports)?;
@@ -97,7 +95,7 @@
                  cfg.set_env_vars(&env_refs);
                  // Read by the resume entry below, which rewrites the file.
                  if let Some(rc) = &resolv_conf {
-@@ -1396,6 +1415,9 @@
+@@ -1396,6 +1413,9 @@
                  // Before the boot: the kernel fetches the environment once
                  // on its way to main(), so an entry-point program starts
                  // with these; a driver refreshes them on every call anyway.
@@ -107,7 +105,7 @@
                  cfg.set_env_vars(&env_refs);
                  // Likewise fetched once the rootfs is mounted, before main().
                  if let Some(rc) = &resolv_conf {
-@@ -1815,6 +1837,11 @@
+@@ -1815,6 +1835,11 @@
          self.config.has_driver()
      }
  
@@ -121,7 +119,7 @@
          self.config.drain_output()
 --- /dev/null
 +++ b/src/output_capture.rs
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,181 @@
 +// SPDX-License-Identifier: Apache-2.0
 +//! Host-owned console retention; the guest cannot reset the byte budget.
 +
@@ -183,6 +181,18 @@
 +    pub(crate) fn take(&mut self) -> CapturedOutput {
 +        std::mem::take(&mut self.result)
 +    }
++}
++
++pub(crate) fn capture_message(
++    output: &std::sync::Mutex<Capture>,
++    message: &str,
++    mirror: impl FnOnce(&str),
++) {
++    let mirrored = output.lock().unwrap().mirrored();
++    if mirrored {
++        mirror(message);
++    }
++    output.lock().unwrap().push(message);
 +}
 +
 +#[cfg(test)]
@@ -260,5 +270,34 @@
 +    #[test]
 +    fn legacy_small_messages_keep_amortized_growth() {
 +        assert!(small_message_growth(Capture::default()) <= 16);
++    }
++
++    #[test]
++    fn mirroring_runs_without_holding_capture_lock() {
++        let output = std::sync::Mutex::new(Capture::default());
++        capture_message(&output, "abc", |message| {
++            assert_eq!(message, "abc");
++            assert!(output.try_lock().is_ok());
++        });
++        assert_eq!(output.lock().unwrap().take().text, "abc");
++    }
++    #[test]
++    fn mirror_panic_does_not_poison_capture() {
++        let output = std::sync::Mutex::new(Capture::default());
++        let result = std::panic::catch_unwind(|| {
++            capture_message(&output, "lost", |_| panic!("stdout failed"));
++        });
++        assert!(result.is_err());
++        assert!(!output.is_poisoned());
++        capture_message(&output, "next", |_| {});
++        assert_eq!(output.lock().unwrap().take().text, "next");
++    }
++    #[test]
++    fn bounded_capture_does_not_mirror() {
++        let output = std::sync::Mutex::new(Capture::bounded(2));
++        capture_message(&output, "abcd", |_| panic!("unexpected mirroring"));
++        let captured = output.lock().unwrap().take();
++        assert_eq!(captured.text, "ab");
++        assert_eq!(captured.omitted_bytes, 2);
 +    }
 +}
