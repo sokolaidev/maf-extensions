@@ -1,0 +1,110 @@
+{
+  "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37071950296",
+  "artifact_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37071950296/artifacts/11256240578",
+  "artifact_sha256": "febcc1f346215816da5e4d714edf311160367027c494f26f400756170b43bc00",
+  "artifact_retention_days": 14,
+  "identity": {
+    "source_commit": "eca6246c85eff10e2814042ca8864649898673a7",
+    "run_id": "37071950296",
+    "run_attempt": "1",
+    "kernel": "6.17.0-1022-azure",
+    "architecture": "x86_64",
+    "host_python": "3.12.3",
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+    "helper_sha256": "67fddfe043140464625b2ab9bbfbb473db45225f9585c0439e879ebd70c0d5b0",
+    "native_passed": true,
+    "publication_passed": true
+  },
+  "native": {
+    "refusals": {
+      "truncated_index": 1,
+      "missing_blobs": 1,
+      "incompatible_key": 1
+    },
+    "helper_sha256": "67fddfe043140464625b2ab9bbfbb473db45225f9585c0439e879ebd70c0d5b0",
+    "initrd_sha256": "8a9b9e383510dea8bb58b3aca72ac4a8d141f163f6a2fdc68af54197c5922e7e",
+    "seed": {
+      "commit_barrier": true,
+      "continuity": true,
+      "fresh_control": true,
+      "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+      "phase": "seed",
+      "post_snapshot_mutation": true,
+      "provider": "mxc-session-preview",
+      "snapshot_saved": true,
+      "stale_token_refused": true
+    },
+    "restore": {
+      "close_refused_execution": true,
+      "failed_capture_retired": true,
+      "guest_failure_retired": true,
+      "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+      "phase": "restore",
+      "provider": "mxc-session-preview",
+      "restored_state_verified": true,
+      "timeout_retired": true
+    },
+    "seed_killed_after_save": true,
+    "snapshot_unchanged_after_restore": true,
+    "snapshot_artifacts": {
+      "blobs/sha256/0893ccdcd4d58a883c61f263ec107de11d5cd330f2d672f20e4b8ed3d801cdd4": {
+        "bytes": 9828,
+        "sha256": "0893ccdcd4d58a883c61f263ec107de11d5cd330f2d672f20e4b8ed3d801cdd4"
+      },
+      "blobs/sha256/560d5cc74060c66fdb4bb033a44da14c6d898a2a565064611b25ddf368f05ef0": {
+        "bytes": 567,
+        "sha256": "560d5cc74060c66fdb4bb033a44da14c6d898a2a565064611b25ddf368f05ef0"
+      },
+      "blobs/sha256/faee72e983319e89d8dbe5eb96328905f99e905cfeb238b6bdc446ba1fe0b69c": {
+        "bytes": 915869696,
+        "sha256": "faee72e983319e89d8dbe5eb96328905f99e905cfeb238b6bdc446ba1fe0b69c"
+      },
+      "index.json": {
+        "bytes": 562,
+        "sha256": "0a011407f56f64dea977cbf3eac8adcf7ed2cab6d15936fac4f703b9ce905bcc"
+      },
+      "oci-layout": {
+        "bytes": 30,
+        "sha256": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6"
+      }
+    },
+    "distinct_helper_processes": true
+  },
+  "publication": {
+    "helper_sha256": "67fddfe043140464625b2ab9bbfbb473db45225f9585c0439e879ebd70c0d5b0",
+    "startup_index_sha256": "63208ba37f947fba71b72d85533caacf40e36ed0f8955742290226e4e55b065c",
+    "sqlite_sha256": "fb7c108c479c66c8954b5bad387cc8de9776643f99868bdeb0add3131721d64e",
+    "before_commit_keeps_previous_checkpoint": true,
+    "interrupted_call_refuses_replay": true,
+    "committed_result_redelivery_without_execution": {
+      "after_commit": true,
+      "before_ack": true
+    },
+    "csv_to_chart": true,
+    "artifact_redelivery_identical": true,
+    "seed_result_sha256": "64d897af346d1a9de1ab16b1c691a4bf158b04b2f4eafbee09e91725c8240ca6",
+    "chart_encoded_sha256": "2ac5a4e60ff089d8a256af355020344fec33485284bc853620691f4fa55d0b4c",
+    "scope": "local process crash; no power-loss or remote-recovery qualification"
+  },
+  "git_source_sha256": {
+    "scripts/experiments/mxc_native_state_probe.py": "9306d70113899bd4f41719bac1c0ac7b211db9d8987bad90881d2040ea8c5247",
+    "scripts/experiments/mxc_session_patch/host_store.py": "b19b996ec7eb800ff5525630630252abd31d0cd9d79b3542d1e812b86fff64ce",
+    "scripts/experiments/mxc_session_patch/host_call.py": "36acf316ec3260a473f7548446b15d03da37d47e27cb0ad1973c501e83d08e18",
+    "scripts/experiments/mxc_session_patch/host_probe.py": "c51c51d54dd5eaa3eb0184ce60835fd49e71b2717dd62d6c22aab3e52200f41a",
+    "scripts/experiments/mxc_session_patch/probe/main.rs": "0cabe798c91f031c5d0f77b1ccc67b3d30c5a098b6b4d184737ac15f16163831",
+    "scripts/experiments/mxc_session_patch/probe/backend.rs": "d109e8ef690e089f14c514a93dc2eee353e38f5d05659963061b03d2f0144bd0",
+    "scripts/experiments/mxc_session_patch/Cargo.toml.template": "bc82b9d520e23648024c7fad5b96701077a38855cb1bc2446a19cd1d02bd3a99",
+    "scripts/experiments/mxc_session_patch/Cargo.lock": "2ac0aad1bc37c9c7e4a1670a438b870f2528128ab14bba6379c56bf4ad01120c",
+    "scripts/experiments/mxc_session_patch/session-preview.patch": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b"
+  },
+  "prior_hosted_attempt": {
+    "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37071185055",
+    "source_commit": "021c18054c9ca93385ef19f488bf370a47b36b94",
+    "native_seed_passed": true,
+    "restore_error": "no hypervisor available to load snapshot",
+    "publication_run": false,
+    "runner_change": "Persist KVM device ownership with a udev rule instead of a one-time ACL; unchanged native and host probes passed on retry."
+  },
+  "scope": "Independent Linux/KVM process-crash qualification for fixed workloads; no host reboot, power loss, cross-machine or cross-hypervisor restore qualification."
+}

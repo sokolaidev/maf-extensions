@@ -155,3 +155,25 @@ def test_public_https_relay_requires_explicit_dispatch_opt_in():
     assert "sha256sum --check" in relay_steps[0]["run"]
     assert "MAF_HYPERLIGHT_HTTPS_LIVE=1" in relay_steps[1]["run"]
     assert "check_hyperlight_linux.py --live" in relay_steps[1]["run"]
+
+
+def test_mxc_recovery_requires_explicit_dispatch_and_retains_reports_only():
+    job = JOBS["mxc-recovery"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    condition = "github.event_name == 'workflow_dispatch' && inputs.mxc_recovery"
+    for step in job["steps"]:
+        assert condition in step["if"]
+        assert not step.get("continue-on-error", False)
+    assert not job.get("continue-on-error", False)
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "test -c /dev/kvm" in commands
+    assert "86fb3d2abaf9c431556692037bff881830b543a5" in commands
+    assert "cargo +1.98.0 build --locked" in commands
+    assert "mxc_native_state_probe.py --helper" in commands
+    assert "mxc_session_patch/host_probe.py --helper" in commands
+    upload = job["steps"][-1]
+    assert "always()" in upload["if"]
+    assert upload["with"]["if-no-files-found"] == "error"
+    paths = upload["with"]["path"].splitlines()
+    assert all("**" not in path for path in paths)
+    assert all(path.endswith((".json", ".stdout", ".stderr", ".log")) for path in paths)

@@ -119,7 +119,7 @@ Every page is checked before and after layout. Invalid IDs, parent cycles, broke
 | Execution | One deadline for all pages: 60 seconds by default, at most 300 |
 | Diagnostics | At most 2,048 characters |
 
-A failure on any page prevents delivery of the entire artifact. `create_drawio` returns separate content items: trusted completion and verdict, any fixed explanation, and untrusted sink display text or converter diagnostics. The verdict is `created` after delivery and `refused` for rejected XML or unsupported layout requests. Invalid tool arguments, execution failures, missing output and delivery failures remain incomplete with no verdict. The host sets confidentiality and destination policy.
+A failure on any page prevents delivery of the entire artifact. `create_drawio` returns separate content items: trusted completion and verdict, any fixed explanation, and separately labelled sink display text or converter diagnostics. With maf-sandbox 0.46.1 or later, a call with trusted FIDES conversation and argument labels returns trusted display text and diagnostics. Expanded untrusted arguments, an untrusted conversation or absent call evidence retain the untrusted workload claim. The verdict is `created` after delivery and `refused` for rejected XML or unsupported layout requests. Invalid tool arguments, execution failures, missing output and delivery failures remain incomplete with no verdict. The host sets confidentiality and destination policy.
 
 Verify all four layout-policy cases against Docker from a repository checkout:
 

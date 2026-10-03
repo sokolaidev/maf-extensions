@@ -85,7 +85,7 @@ Registered functions run in the host process. Guest calls to them bypass the age
 | Declared identities | Let the router reject denied identities |
 | Transport limits | Check the backend can serve the registry's file traffic |
 
-Trusted registered sources alone do not make CodeAct output trusted. Core can promote the workload claim after at least one accepted file read only when every read is trusted, egress is closed and the registry has only trusted sources or no sources. Configured network access or any untrusted or unknown registered source keeps the claim untrusted. See [host tools](../hosts.md#host-tools-calling-outward) for registration and authority.
+Trusted registered sources alone do not make CodeAct output trusted. Core can promote the workload claim when at least one file was read and every accepted read is trusted, or when no files were read and the framework establishes trusted conversation and argument labels. Both paths require closed egress and a registry with only trusted sources or no sources. Configured network access or any untrusted or unknown registered source keeps the claim untrusted. See [host tools](../hosts.md#host-tools-calling-outward) for registration and authority.
 
 The Python source never becomes a shell command. Exec without a registry uses fixed argv. The host-tool launcher uses only fixed or host-generated, quoted paths.
 
@@ -95,11 +95,11 @@ The guest program can print data from any enabled source. CodeAct therefore clai
 
 The kind uses the [result contract](../information-flow.md#the-result-contract) in **both** modes. `verdict` is `ok` or `failed`, from the program's exit status as one bit — eight bits are what a program chooses, and one is what a model can act on without the text. `completed` is false where no exit status was obtained: a refusal, a file that could not be staged, a timeout, or a transport failure. A call without an exit status carries no verdict.
 
-A call that stopped early puts a host-authored explanation in `trusted_output`, so a model can read why the call stopped. Variable diagnostics remain in `output`, whose label follows the file-read and source-channel checks, including file-store names, byte counts, provider errors and partial guest stdout. Withholding mode still omits guest stdout from timeout diagnostics.
+A call that stopped early puts a host-authored explanation in `trusted_output`, so a model can read why the call stopped. Variable diagnostics remain in `output`, whose label follows the file-read, call-evidence and source-channel checks, including file-store names, byte counts, provider errors and partial guest stdout. Withholding mode still omits guest stdout from timeout diagnostics.
 
 Both modes are raised to `trusted` at the framework, not just the withholding one. The completion line and the verdict have to stay readable, and on `agent-framework-core` 1.19 only the tool's own declaration can keep an item there.
 
-![CodeAct declares trusted framework integrity in both modes so completion, verdict and host-authored reasons stay readable. Program text and variable diagnostics follow the file-read and source-channel checks; no reads retain the untrusted workload claim. Withholding mode adds trusted route guidance and omits guest stdout and stderr. Content keeps host-controlled confidentiality. FIDES shows text or hidden references to the model. The next model-called tool is checked against its integrity opt-in and confidentiality limit. Guest host-tool calls and artifact delivery belong to execute_code itself.](../assets/codeact-information-flow.svg)
+![CodeAct declares trusted framework integrity in both modes so completion, verdict and host-authored reasons stay readable. Program text and variable diagnostics follow file-read, call-evidence and source-channel checks. With no reads, trusted framework conversation and argument labels permit promotion under the same source-channel checks; otherwise the untrusted workload claim remains. Withholding mode adds trusted route guidance and omits guest stdout and stderr. Content keeps host-controlled confidentiality. FIDES shows text or hidden references to the model. The next model-called tool is checked against its integrity opt-in and confidentiality limit. Guest host-tool calls and artifact delivery belong to execute_code itself.](../assets/codeact-information-flow.svg)
 
 The host supplies result confidentiality. Hiding applies only while the conversation is trusted, automatic hiding is enabled and the tool is not `inspect_variable`. Hidden output still affects confidentiality. See [information flow](../information-flow.md).
 
@@ -116,7 +116,7 @@ Network access, artifact delivery and guest host-tool calls happen during `execu
 | Collects artifacts on successful execution | Also collects artifacts after a failed program |
 | No standing guidance | Adds fixed guidance explaining where to retrieve output |
 
-The wrapper labels the report using the same file-read and source-channel checks, and labels the guidance trusted. Withholding prevents captured guest text from entering the result even when automatic hiding is off. Withholding alone does not make the remaining facts trusted.
+The wrapper labels the report using the same file-read, call-evidence and source-channel checks, and labels the guidance trusted. Withholding prevents captured guest text from entering the result even when automatic hiding is off. Withholding alone does not make the remaining facts trusted.
 
 Completion and the presence of each declared file still reveal information. `files_out.max_files` bounds the number of file-presence signals per call. Repeated calls can reveal more.
 

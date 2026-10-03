@@ -214,10 +214,7 @@ def _create_tool(
                 completed=refused,
                 verdict="refused" if refused else None,
                 trusted_output=(
-                    (
-                        "The converter rejected the diagram. Its own diagnostic is in the "
-                        "hidden half of this result."
-                    )
+                    "The converter rejected the diagram. Its diagnostic follows."
                     if refused
                     else "The converter could not complete the diagram.",
                 ),
