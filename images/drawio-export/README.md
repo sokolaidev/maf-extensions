@@ -21,6 +21,8 @@ SVG CSS must not reference resources, including data URIs, image-set() and src()
 
 Embedded SVGs, including bundled assets, must contain no text elements or font declarations in presentation attributes, inline styles or stylesheets. This includes shorthand font properties, @font-face and local() font sources. CSS font tokens are refused conservatively, including in comments and selectors. Convert image text to paths before embedding it. Native diagram labels continue to use the verified DejaVu font set.
 
+SVG content must be static. SVG animation elements, motion paths, timed discard, CSS animation/keyframe/transition tokens and event handlers are refused in embedded resources and native SVG output. CSS animation tokens are refused conservatively even in comments and selectors. Embedded SVGs must not contain image, feImage or use elements.
+
 Enabled label placeholders are refused before rendering, including object/UserObject wrappers and indirect labels, because substitution occurs after HTML validation. Literal labels with placeholders disabled remain supported. Invalid UTF-8 or JSON in the installed runtime manifest is an incomplete runtime failure, not a content refusal.
 
 Prepared XML is limited to 8 MiB across all pages, including embedded assets, XML escaping and normalized font styles. Expansion is charged before replacement styles are retained or serialized. Each bundled asset is read and verified once per document; repeated references still consume the document budget.

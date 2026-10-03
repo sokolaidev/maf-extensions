@@ -330,6 +330,27 @@ async def check(image: str, output: Path) -> None:
                 "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
                 "indicatorImage=data:image/svg+xml," + base64.b64encode(svg).decode(),
             )
+        nested = base64.b64encode(b'<svg xmlns="http://www.w3.org/2000/svg"/>').decode()
+        for name, content in {
+            "motion": (
+                '<rect width="10" height="10"><animateMotion dur="1s" '
+                'path="M0 0L10 10" repeatCount="indefinite"/></rect>'
+            ),
+            "transform": (
+                '<rect width="10" height="10"><animateTransform '
+                'attributeName="transform" type="rotate" dur="1s" to="360"/></rect>'
+            ),
+            "css": (
+                "<style>@keyframes spin {to {opacity:0}} rect {animation:spin 1s infinite}</style>"
+                '<rect width="10" height="10"/>'
+            ),
+            "filter-image": f'<filter><feImage href="data:image/svg+xml;base64,{nested}"/></filter>',
+        }.items():
+            svg = f'<svg xmlns="http://www.w3.org/2000/svg">{content}</svg>'.encode()
+            cases[f"embedded-svg-{name}"] = diagram().replace(
+                "indicatorImage=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
+                "indicatorImage=data:image/svg+xml," + base64.b64encode(svg).decode(),
+            )
         for name, xml in cases.items():
             destination = output / name
             [refusal] = make_drawio_tools(
@@ -355,6 +376,10 @@ async def check(image: str, output: Path) -> None:
                 assert "Unsupported resource stencil" in " ".join(text or "" for text in answer), (
                     answer
                 )
+            if name in {"embedded-svg-motion", "embedded-svg-transform", "embedded-svg-css"}:
+                assert "Active SVG" in " ".join(text or "" for text in answer), answer
+            if name == "embedded-svg-filter-image":
+                assert "nested images" in " ".join(text or "" for text in answer), answer
             assert not destination.exists() or not list(destination.iterdir())
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(
