@@ -256,7 +256,7 @@ jobs:
     name: MXC checkpoint and publication (Linux KVM)
     needs: changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
@@ -320,6 +320,23 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
         run: python3 scripts/experiments/mxc_session_patch/descriptor_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/descriptors"
 
+      - name: Apply bounded-output overlay and qualify truncation recovery
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
+        run: |
+          set -euo pipefail
+          git clone --no-checkout https://github.com/hyperlight-dev/hyperlight-unikraft.git "$RUNNER_TEMP/mxc/runtime"
+          git -C "$RUNNER_TEMP/mxc/runtime" checkout 2b4790d1626e2645dd1f00469311424be8cb2f94
+          python3 scripts/experiments/mxc_session_patch/output_patch.py apply --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime"
+          python3 scripts/experiments/mxc_session_patch/output_patch.py configure --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime" --build-dir "$RUNNER_TEMP/mxc/bounded-build"
+          rustc +1.98.0 --edition 2024 --test "$RUNNER_TEMP/mxc/runtime/src/output_capture.rs" -o "$RUNNER_TEMP/mxc/capture-tests"
+          "$RUNNER_TEMP/mxc/capture-tests"
+          cargo +1.98.0 test --locked --manifest-path "$RUNNER_TEMP/mxc/bounded-build/Cargo.toml"
+          cargo +1.98.0 build --locked --manifest-path "$RUNNER_TEMP/mxc/bounded-build/Cargo.toml"
+          python3 scripts/experiments/mxc_session_patch/bounded_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/bounded"
+          python3 scripts/experiments/mxc_session_patch/output_patch.py remove --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime"
+          python3 scripts/experiments/mxc_session_patch/output_patch.py check --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime"
+          python3 scripts/experiments/mxc_session_patch/patch.py check --source "$RUNNER_TEMP/mxc/source"
+
       - name: Verify both reports and record artifact identity
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_recovery
         run: |
@@ -345,12 +362,17 @@ jobs:
           descriptors = json.loads((root / "descriptors/result.json").read_text())
           assert descriptors["helper_sha256"] == native["helper_sha256"]
           assert descriptors["assessment"]["satisfies_host_enforced_output_contract"] is False
+          bounded = json.loads((root / "bounded/result.json").read_text())
+          assert bounded["lost_ack_redelivery_identical"] and bounded["checkpoint_after_truncation"]
+          assert bounded["guest_failure_and_timeout_refuse_publication"]
           record = {
               "source_commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "kernel": platform.release(),
               "architecture": platform.machine(), "host_python": platform.python_version(),
               "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
               "patch_sha256": hashlib.sha256(Path("scripts/experiments/mxc_session_patch/session-preview.patch").read_bytes()).hexdigest(),
+              "bounded_helper_sha256": bounded["helper_sha256"], "bounded_output_passed": True,
+              "output_overlay_sha256": hashlib.sha256(Path("scripts/experiments/mxc_session_patch/output-patch.json").read_bytes()).hexdigest(),
               "helper_sha256": native["helper_sha256"], "native_passed": True, "publication_passed": True, "ownership_passed": True, "descriptor_experiment_completed": True,
           }
           (root / "identity.json").write_text(json.dumps(record, indent=2) + "\n")
@@ -383,6 +405,8 @@ jobs:
             ${{ runner.temp }}/mxc/descriptors/*.json
             ${{ runner.temp }}/mxc/descriptors/*.stdout
             ${{ runner.temp }}/mxc/descriptors/*.stderr
+            ${{ runner.temp }}/mxc/bounded/*.json
+            ${{ runner.temp }}/mxc/bounded/*.log
           if-no-files-found: error
           retention-days: 14
 

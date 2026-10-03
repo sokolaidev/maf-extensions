@@ -1,0 +1,33 @@
+{
+  "runtime_base": "2b4790d1626e2645dd1f00469311424be8cb2f94",
+  "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+  "prerequisite_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+  "patches": {
+    "runtime": {
+      "sha256": "1a35dc74214e72b50bb569dbd7ad679b6fca6c4a96de31b17104ac151706970e",
+      "files": {
+        "src/lib.rs": {
+          "before": "901df513006986007f9809876bc782b4d1d8d745d0f68658b2759e9abca1479d",
+          "after": "149c1d5d3b7a6749368e263ae34d384b1b435ab7bcc2728075822c108b9ddfcc"
+        },
+        "src/output_capture.rs": {
+          "before": null,
+          "after": "cae178ce317dc030d60beb3faa58e05a24d0f9d1d8bb22fbc72e52bccaed818e"
+        }
+      }
+    },
+    "session": {
+      "sha256": "7e149a47394b583679eec470b1f588c3e6efda47dde830c22d9087d17b99517c",
+      "files": {
+        "src/backends/hyperlight/common/Cargo.toml": {
+          "before": "e188d95c6c636085ab949d352b0a3d76addf6ffd2e6f58d81b8f127db8b9e04c",
+          "after": "851bdc43a420d6af2897139ea606a36cd07d40a1898349fdd9797ca89f6c758f"
+        },
+        "src/backends/hyperlight/common/src/session_preview.rs": {
+          "before": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466",
+          "after": "f014bf5de86616681fae6ed26c3932e64637e83d8734bee07c36846ad6d46117"
+        }
+      }
+    }
+  }
+}
