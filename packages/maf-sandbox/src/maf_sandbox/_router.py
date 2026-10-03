@@ -2134,6 +2134,13 @@ class SandboxRouter:
             served = self._served.setdefault((key, kind, id(backend)), (backend, set()))[1]
             if previous is not None:
                 served.discard(previous)
+                pins = self._program_pins.get((key, kind), [])
+                pins[:] = [
+                    dataclasses.replace(pin, instance_id=sandbox.instance_id)
+                    if pin.backend is backend and pin.instance_id == previous
+                    else pin
+                    for pin in pins
+                ]
             served.add(sandbox.instance_id)
 
     def _forget_instances(
