@@ -191,7 +191,8 @@ def test_reuse_policies_are_closed_and_drained_after_worker_retirement(monkeypat
         def close(self):
             self.retired = True
 
-        async def exchange(self, message, service, timeout):
+        async def exchange(self, message, policy, timeout):
+            service = policy.service
             if message["op"] == "init":
                 return {"op": "ready"}
             if message["op"] == "run":
