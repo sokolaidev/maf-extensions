@@ -1,4 +1,4 @@
-"""Supervised, single-owner stdio MCP prototype for closed-network Bicep validation."""
+"""Supervised, single-owner MCP prototype for closed-network Bicep validation."""
 
 # /// script
 # requires-python = ">=3.12"
@@ -10,6 +10,9 @@
 #     "maf-sandbox-docker==0.24.4",
 #     "mcp==1.26.0",
 #     "pydantic>=2.11,<3",
+#     "jsonschema>=4.26,<5",
+#     "starlette==1.7.0",
+#     "uvicorn==0.54.0",
 # ]
 # ///
 
@@ -272,7 +275,7 @@ class Validator:
             if report.undisposed is None:
                 return True
         except Exception:
-            LOG.exception("Owned-resource cleanup failed")
+            LOG.error("Owned-resource cleanup failed")
         self.poisoned = True
         LOG.error("Cleanup unconfirmed; further calls refused until restart and recovery")
         return False
@@ -354,7 +357,7 @@ class Validator:
             answer.update(completed=completed, verdict=verdict, diagnostics=diagnostics)
             answer["status"] = "ok" if completed else "incomplete"
         except Exception:
-            LOG.exception("Validation failed")
+            LOG.error("Validation failed")
             answer.update(status="error", diagnostics="Validation failed; consult operator logs.")
         finally:
             # Sweep only after the workload's Python task has settled.
@@ -467,6 +470,82 @@ async def serve(image: str, config: str, state_dir: Path) -> None:
             await validator.close()
 
 
+def mcp_result(result: dict[str, Any]) -> types.CallToolResult:
+    """Preserve the structured result and SDK-style text mirror for both transports."""
+    return types.CallToolResult(
+        content=[
+            types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))
+        ],
+        structuredContent=result,
+        isError=result["status"] in ("error", "timeout", "cleanup_failed"),
+    )
+
+
+async def http_application(image: str, config: str, scope: str, token: str, port: int):
+    """Compose the Bicep binding and its single Docker resource for shared HTTP."""
+    from workload_http import WorkloadHTTP
+    from workload_service import Binding, CallContext, Resource, WorkloadService
+
+    holder: dict[str, Validator] = {}
+
+    async def start() -> None:
+        backend = await DockerSandboxBackend.create(
+            DockerSandboxConfig(
+                command_timeout_seconds=10,
+                image_pull_timeout_seconds=30,
+                memory="1g",
+                cpus=1,
+                pids_limit=128,
+                cap_drop_all=True,
+            )
+        )
+        holder["validator"] = Validator(backend, scope, image, config)
+
+    async def cleanup() -> bool:
+        return await holder["validator"].recover() if holder else True
+
+    async def close() -> None:
+        holder.clear()
+
+    async def execute(arguments: dict[str, Any], context: CallContext) -> types.CallToolResult:
+        return mcp_result(await holder["validator"]._execute(snapshot(arguments)))
+
+    def failure(status: str, arguments: dict[str, Any]) -> types.CallToolResult:
+        validator = holder["validator"]
+        answer = validator._answer(snapshot(arguments))
+        answer.update(status=status, diagnostics="Validation did not complete.")
+        answer["cleanup"] = "failed" if validator.poisoned else "confirmed"
+        return mcp_result(answer)
+
+    # Use the existing FastMCP signature to preserve the advertised Bicep input schema.
+    schema_server = make_server(cast(Validator, None))
+    tool = (await schema_server.list_tools())[0]
+    resource = Resource("bicep-docker", start, cleanup, close, frozenset({"closed-container"}))
+    binding = Binding(
+        tool,
+        execute,
+        (resource.name,),
+        frozenset({"closed-container"}),
+        MAX_FRAME_BYTES,
+        MAX_FRAME_BYTES,
+        REQUEST_SECONDS,
+        failure,
+    )
+    return WorkloadHTTP(WorkloadService([binding], [resource]), token, port)
+
+
+async def serve_http(image: str, config: str, state_dir: Path, token: str, port: int) -> None:
+    """Retain deployment ownership until HTTP work and resource cleanup settle."""
+    from workload_http import server
+
+    with ownership(state_dir) as scope:
+        app = await http_application(image, config, scope, token, port)
+        host = server(app)
+        await host.serve()
+        if not host.started or app.service.poisoned:
+            raise RuntimeError("HTTP service stopped without confirmed readiness or cleanup.")
+
+
 def main() -> None:
     """Read operator policy once; model arguments cannot select runtime configuration."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -479,6 +558,11 @@ def main() -> None:
     parser.add_argument(
         "--state-dir", type=Path, required=True, help="Dedicated local owner-state directory"
     )
+    parser.add_argument("--transport", choices=("stdio", "http"), default="stdio")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--token-file", type=Path, help="Trusted file containing a random 256-bit hex token"
+    )
     args = parser.parse_args()
     if not _IMAGE.fullmatch(args.image):
         parser.error("--image must be an immutable sha256 image ID or digest reference")
@@ -487,7 +571,17 @@ def main() -> None:
     if len(data) > MAX_FILE_BYTES:
         parser.error("--config exceeds 64 KiB")
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-    asyncio.run(serve(args.image, data.decode("utf-8"), args.state_dir))
+    if args.transport == "http":
+        if args.token_file is None:
+            parser.error("HTTP requires --token-file")
+        with args.token_file.open("rb") as token_file:
+            token_bytes = token_file.read(67)
+        if len(token_bytes) > 66:
+            parser.error("--token-file exceeds the credential size limit")
+        token = token_bytes.decode("ascii").strip()
+        asyncio.run(serve_http(args.image, data.decode("utf-8"), args.state_dir, token, args.port))
+    else:
+        asyncio.run(serve(args.image, data.decode("utf-8"), args.state_dir))
 
 
 if __name__ == "__main__":
