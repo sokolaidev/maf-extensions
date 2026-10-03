@@ -4990,3 +4990,26 @@ def test_output_prefix_validation_uses_the_retained_fallback_channel():
     out = _run(tool, "print('hi')", files=["input.csv"], outputs=[name])
     assert "over the 255-byte ceiling" in out
     assert store.reads == [] and first.keys == [] and len(second.keys) == acquired
+
+
+def test_nested_channel_runs_beside_shared_inputs_and_collected_outputs():
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/nested/outputs"
+
+    sandbox = _ProducingSandbox()
+    sandbox.produces = {"result.csv": b"result"}
+    store = _CountingStore({"input.csv": "shared"})
+    sink = _RecordingSink()
+    backend = _backend(sandbox, capabilities=_PULLS)
+    backend._declarations = replace(backend.declarations, program_channels=(NestedChannel(),))
+    tool = _tool(backend, file_store=store, **_landing(CodeactOutputs.DECLARED, sink))
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=["result.csv"])
+    assert not out.startswith("Error:"), out
+    assert sink.names == ["result.csv"]
+    [directory] = [cwd for command, cwd, _ in sandbox.commands if "program.py" in command]
+    assert directory.endswith("/nested/outputs")
+    assert sandbox.written_files[f"{directory}/input.csv"] == "shared"
+    assert sandbox.written_files[f"{directory}/program.py"] == "print('hi')"
