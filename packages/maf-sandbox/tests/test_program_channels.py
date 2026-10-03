@@ -68,10 +68,23 @@ def test_availability_fallback_is_pinned_until_disposal():
     router = _router(first, second)
 
     async def exercise():
+        assert (
+            router.prospective_program_channel(_KEY, _SPEC)
+            is first.declarations.program_channels[0]
+        )
+        assert first.keys == second.keys == []
         assert await router.acquire(_KEY, _SPEC) is second.sandbox
         first.acquire_error = None
+        assert (
+            router.prospective_program_channel(_KEY, _SPEC)
+            is second.declarations.program_channels[0]
+        )
         assert await router.acquire(_KEY, _SPEC) is second.sandbox
         await router.dispose(_KEY)
+        assert (
+            router.prospective_program_channel(_KEY, _SPEC)
+            is first.declarations.program_channels[0]
+        )
         assert await router.acquire(_KEY, _SPEC) is first.sandbox
 
     asyncio.run(exercise())

@@ -1547,6 +1547,21 @@ class SandboxRouter:
             return None
         return self._route(spec)[0]
 
+    def prospective_program_channel(
+        self, key: SandboxKey, spec: SandboxSpec
+    ) -> ProgramChannel | None:
+        """Preview the retained or initially selected channel without acquiring a sandbox.
+
+        Availability fallback or disposal may change the channel during acquisition.
+        """
+        if spec.program is None:
+            return None
+        pinned = self._program_pin(key, spec)
+        if pinned is not None:
+            return pinned.channel
+        backend = self.backend_for(spec)
+        return self._channel(backend, spec) if backend is not None else None
+
     def _record_disposal(
         self,
         key: SandboxKey,

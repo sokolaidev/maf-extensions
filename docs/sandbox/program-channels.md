@@ -1,6 +1,6 @@
 # Backend-owned program channels
 
-A kind declares `SandboxSpec.program=ProgramRequirements()` and supplies source to the channel retained by `SandboxToolSession.program_channel(key, sandbox)`. The backend owns execution, guest API installation, transport framing and publication. A kind does not choose an interpreter or construct the host-tool transport.
+A kind declares `SandboxSpec.program=ProgramRequirements()` and supplies source to the channel retained by `SandboxToolSession.program_channel(key, sandbox)`. The backend owns execution, guest API installation, transport framing and publication. A kind does not choose an interpreter or construct the host-tool transport. `SandboxToolSession.prospective_program_channel(key)` previews the retained or initially selected channel without acquisition, so a kind can validate channel-dependent inputs before reading host files. Recheck against `program_channel(key, sandbox)` after acquisition because availability fallback or disposal can change the channel.
 
 ## Selection and lifetime
 

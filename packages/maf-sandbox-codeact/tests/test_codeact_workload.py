@@ -4875,8 +4875,8 @@ class TestTheGuidanceThisKindCommitsTo:
 
 @pytest.mark.parametrize(
     "names",
-    [["a.csv", "a.csv"], ["../escape.csv"], ["a.csv", "b.csv", "c.csv"]],
-    ids=["duplicate", "traversal", "count"],
+    [["a.csv", "a.csv"], ["../escape.csv"], ["a.csv", "b.csv", "c.csv"], ["a" * 250]],
+    ids=["duplicate", "traversal", "count", "prefixed-length"],
 )
 def test_invalid_outputs_precede_input_reads_and_acquisition(names):
     store = _CountingStore({"input.csv": "host content"})
@@ -4919,3 +4919,74 @@ def test_output_prefix_validation_uses_the_fallback_channel():
     assert "over the 255-byte ceiling" in out
     assert second.keys
     assert sandbox.raw_commands == [] and sandbox.written_files == {}
+
+
+@pytest.mark.parametrize("layout", ["plain", "host-tools", "nested"])
+@pytest.mark.parametrize("overflow", [False, True])
+def test_output_prefix_length_precedes_reads_and_acquisition(layout, overflow):
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/nested/outputs"
+
+    store = _CountingStore({"input.csv": "host content"})
+    sandbox = _ProducingSandbox()
+    backend = _backend(sandbox, capabilities=_CALLS)
+    if layout == "nested":
+        backend._declarations = replace(backend.declarations, program_channels=(NestedChannel(),))
+    tool = _tool(
+        backend,
+        file_store=store,
+        host_tools=_registry(_round_half_up) if layout == "host-tools" else None,
+        **_landing(CodeactOutputs.DECLARED),
+    )
+    suffix = {"plain": "", "host-tools": "work/", "nested": "nested/outputs/"}[layout]
+    name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES - len(suffix) + int(overflow))
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=[name])
+    if overflow:
+        assert "over the 255-byte ceiling" in out
+        assert (store.reads, backend.keys) == ([], [])
+        assert sandbox.raw_commands == [] and sandbox.written_files == {}
+    else:
+        assert not out.startswith("Error:"), out
+        assert store.reads == ["input.csv"] and backend.keys
+        assert sandbox.raw_commands
+
+
+def test_output_prefix_validation_uses_the_retained_fallback_channel():
+    from maf_sandbox import SandboxBackendUnavailable, Selection
+    from maf_sandbox.testing import InProcessProgramChannel
+
+    class NestedChannel(InProcessProgramChannel):
+        def guest_working_directory(self, guest_call_path, *, host_tools=False):
+            return f"{guest_call_path}/work"
+
+    store = _CountingStore({"input.csv": "host content"})
+    first = _backend(
+        capabilities=_PULLS | {Capability.SNAPSHOT},
+        acquire_error=SandboxBackendUnavailable("offline"),
+    )
+    sandbox = _ProducingSandbox()
+    second = _backend(sandbox, capabilities=_PULLS | {Capability.SNAPSHOT})
+    second._declarations = replace(second.declarations, program_channels=(NestedChannel(),))
+    tool = make_codeact_tools(
+        SandboxRouter(
+            [first, second],
+            min_isolation=second.isolation,
+            selection=Selection.PER_SPEC,
+            min_cleanup=Cleanup.RESET,
+        ),
+        "data-analyst",
+        _context(),
+        file_store=store,
+        **_landing(CodeactOutputs.DECLARED),
+    )[0]
+    _run(tool, "print('hi')", outputs=[])
+    acquired = len(second.keys)
+    assert acquired and not second.disposed
+    first.acquire_error = None
+    name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES)
+    out = _run(tool, "print('hi')", files=["input.csv"], outputs=[name])
+    assert "over the 255-byte ceiling" in out
+    assert store.reads == [] and first.keys == [] and len(second.keys) == acquired
