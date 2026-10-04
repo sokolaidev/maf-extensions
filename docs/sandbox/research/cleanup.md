@@ -2,6 +2,8 @@
 
 > Consolidated research record for sandbox cleanup after calls, owner-process failure and deployment shutdown. It combines the process cleanup/reuse and orphan-cleanup ownership investigations. The decided operating contract lives in [`../tool-call.md`](../tool-call.md) and [`../operations.md`](../operations.md); this record keeps the evidence, ownership boundary and unresolved guarantees.
 
+> Fresh-acquire follow-up: [#1679](https://github.com/sokolaidev/maf-extensions/issues/1679) identified that adoption's extra create/dispose recurs on every conversation-scoped call under `Cleanup.DISPOSE` when the backend lacks snapshots and a create-or-reuse signal. The optional freshness contract and ACAS behavior are documented in [`../tool-call.md`](../tool-call.md#unfamiliar-instances).
+
 ## Decision at a glance
 
 The extension does not start a daemon, lease service or fleet controller. The router and backends provide bounded cleanup operations, resource identity and safe retry behavior. The deployment owns the scheduler, target engine or sandbox group, credentials, retention policy, failure alerts and response to missed cleanup.

@@ -1940,6 +1940,13 @@ class SandboxBackend(Protocol):
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
+        The returned wrapper may expose an optional ``freshly_created: bool``. Literal
+        ``True`` promises this acquire created the instance from a trusted pre-input
+        baseline; the router then skips unfamiliar-instance cleanup. Reused instances,
+        including restart discovery and clones carrying prior input, must report ``False``.
+        Keep the value local to this acquire's wrapper, unchanged by later acquires.
+        Omission retains cleanup; this is not a required member of :class:`Sandbox`.
+
         Bind the returned sandbox to a backend-allocated storage base, using ``spec.work_dir``
         exactly when an override is supplied. Preserve the allocation across warm reuse and
         recover it on restart. A filesystem-backed EXEC or FILES_* implementation ensures

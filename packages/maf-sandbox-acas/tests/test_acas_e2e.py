@@ -283,11 +283,16 @@ class TestALiveSandbox:
     """Acquire, run, reuse, and leave nothing behind — read back from the service."""
 
     def test_write_exec_reuse_and_dispose_round_trip(self, loop):
+        from maf_sandbox.conformance import assert_fresh_acquire_conformance
+
         scope = f"e2e-{uuid.uuid4()}"
         backend = AcasSandboxBackend(_config())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
+            await assert_fresh_acquire_conformance(
+                sandbox, lambda: backend.acquire(_key(scope), _spec())
+            )
 
             await sandbox.write_file(
                 f"{_WORK}/nested/deep/main.txt", "param naïve string\n", working_directory=_WORK

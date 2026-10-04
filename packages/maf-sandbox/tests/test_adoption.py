@@ -1,6 +1,7 @@
 """Unfamiliar engine instances are cleaned before a router serves them."""
 
 import asyncio
+import copy
 import dataclasses
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -52,6 +53,81 @@ def router(subject, *, keep=False):
             failed_reclaim_policy=FailedReclaimPolicy.KEEP if keep else FailedReclaimPolicy.DISPOSE,
         ),
     )
+
+
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_fresh_acquires_skip_adoption_after_every_dispose(snapshot, monkeypatch):
+    subject = backend(snapshot=snapshot)
+    acquire = subject.acquire
+
+    async def fresh(key, spec):
+        sandbox = await acquire(key, spec)
+        monkeypatch.setattr(sandbox, "freshly_created", True, raising=False)
+        return sandbox
+
+    monkeypatch.setattr(subject, "acquire", fresh)
+
+    async def scenario():
+        current = SandboxRouter([subject], min_isolation=Isolation.NONE)
+        for call in range(3):
+            sandbox = await current.acquire(KEY, SPEC)
+            assert isinstance(sandbox, InProcessSandbox)
+            assert len(subject.keys) == call + 1
+            assert len(subject.disposed) == call
+            assert not sandbox.resets
+            await current.dispose_kind(KEY, SPEC.kind, instance_id=sandbox.instance_id, timeout=10)
+        assert len(subject.disposed) == 3
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("signal", [False, None, 1, "true"])
+def test_only_literal_true_skips_adoption(signal, monkeypatch):
+    subject = backend()
+    acquire = subject.acquire
+
+    async def reported(key, spec):
+        sandbox = await acquire(key, spec)
+        monkeypatch.setattr(sandbox, "freshly_created", signal, raising=False)
+        return sandbox
+
+    monkeypatch.setattr(subject, "acquire", reported)
+    asyncio.run(router(subject).acquire(KEY, SPEC))
+    assert len(subject.keys) == 2
+    assert len(subject.disposed) == 1
+
+
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_resumed_wrapper_is_cleaned_by_a_new_router(snapshot, monkeypatch):
+    subject = backend(snapshot=snapshot)
+    acquire = subject.acquire
+
+    async def reported(key, spec):
+        fresh = (key, spec.kind) not in subject.sandboxes
+        sandbox = copy.copy(await acquire(key, spec))
+        monkeypatch.setattr(sandbox, "freshly_created", fresh, raising=False)
+        return sandbox
+
+    monkeypatch.setattr(subject, "acquire", reported)
+
+    async def scenario():
+        first = await router(subject).acquire(KEY, SPEC)
+        assert isinstance(first, InProcessSandbox)
+        first.contents["/tmp/residue"] = b"old input"
+        first.running.add("survivor")
+        resumed = await subject.acquire(KEY, SPEC)
+        assert resumed.instance_id == first.instance_id
+        assert getattr(resumed, "freshly_created") is False
+        assert getattr(first, "freshly_created") is True
+        old_id = first.instance_id
+        adopted = await router(subject).acquire(KEY, SPEC)
+        assert isinstance(adopted, InProcessSandbox)
+        assert adopted.instance_id != old_id
+        assert not adopted.contents and not adopted.running
+        assert len(subject.disposed) == (0 if snapshot else 1)
+        assert len(adopted.resets) == (1 if snapshot else 0)
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("snapshot", [False, True])
