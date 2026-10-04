@@ -1,0 +1,44 @@
+{
+  "evidence_date_utc": "2026-10-04",
+  "recorded_at_utc": "2026-10-04T21:12:18Z",
+  "execution": "local; not a GitHub Actions result",
+  "source_commit": "80bfb7325cac14ad17caf56edd9836f29db332a4",
+  "attestation_verification": {
+    "tool": "pypi-attestations",
+    "version": "0.0.30",
+    "expected_repository": "https://github.com/sokolaidev/maf-extensions",
+    "predicate_type": "https://docs.pypi.org/attestations/publish/v1",
+    "artifacts": [
+      {
+        "filename": "maf_sandbox-0.47.0-py3-none-any.whl",
+        "sha256": "b7afc6ee3a3fa635c816d7f956b3e84585ba3d257110f28d55f18e437cfdd111",
+        "exit_code": 0,
+        "output": "OK: maf_sandbox-0.47.0-py3-none-any.whl"
+      },
+      {
+        "filename": "maf_sandbox-0.47.0.tar.gz",
+        "sha256": "e614d110d7d38036be7d628dc9d4bb19dc3595da4bfaf3d9f9efe5c8ad3604f3",
+        "exit_code": 0,
+        "output": "OK: maf_sandbox-0.47.0.tar.gz"
+      }
+    ]
+  },
+  "dependency_audit": {
+    "resolver": "uv 0.12.5",
+    "index": "https://pypi.org/simple",
+    "python_version": "3.12",
+    "python_platform": "x86_64-manylinux_2_28",
+    "only_binary": true,
+    "extras": [],
+    "tool": "pip-audit",
+    "version": "2.10.1",
+    "vulnerability_service": "pypi",
+    "database_version": null,
+    "exit_code": 0,
+    "distribution_count": 11,
+    "known_vulnerability_count": 0,
+    "skipped_distribution_count": 0,
+    "ignored_vulnerability_ids": [],
+    "output": "No known vulnerabilities found"
+  }
+}

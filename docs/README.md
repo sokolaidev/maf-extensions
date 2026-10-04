@@ -6,6 +6,8 @@ One directory per extension family, plus the repo-wide notes that belong to no f
 
 [`maintainers.md`](maintainers.md) — repo-wide release plumbing: trusted publishing, the release train, and the order the packages go out in.
 
+[`security.md`](security.md) — release-specific security evidence, artifact verification, scan coverage and remaining gaps.
+
 [`release-compatibility.md`](release-compatibility.md) — what proves a core and its dependents still work together across a release, which pairings each gate covers, and the two windows that remain open.
 
 [`AUTHORING.md`](AUTHORING.md) — how these documents are written, for maintainers and contributors adding or editing one.

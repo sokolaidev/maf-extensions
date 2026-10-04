@@ -1,0 +1,68 @@
+[
+  {
+    "id": 111317516841,
+    "name": "Build + verify",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111317516841"
+  },
+  {
+    "id": 111318929336,
+    "name": "Run the dependents' suites against this core",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111318929336"
+  },
+  {
+    "id": 111318929339,
+    "name": "Run its suite against the published cores it admits",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111318929339"
+  },
+  {
+    "id": 111318929348,
+    "name": "Install + use the built wheel",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111318929348"
+  },
+  {
+    "id": 111319433282,
+    "name": "Publish maf-sandbox 0.47.0 to pypi",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111319433282"
+  },
+  {
+    "id": 111320195812,
+    "name": "Record the release",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111320195812"
+  },
+  {
+    "id": 111320195873,
+    "name": "Decide the live-check dispatch",
+    "conclusion": "success",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111320195873"
+  },
+  {
+    "id": 111320293745,
+    "name": "Wait for the index to show the new version",
+    "conclusion": "skipped",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111320293745"
+  },
+  {
+    "id": 111320293814,
+    "name": "Explain a live check that did not run",
+    "conclusion": "skipped",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111320293814"
+  },
+  {
+    "id": 111320293989,
+    "name": "Say whether the release train has drained",
+    "conclusion": "skipped",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111320293989"
+  },
+  {
+    "id": 111320294105,
+    "name": "Verify against a live sandbox",
+    "conclusion": "skipped",
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111320294105"
+  }
+]
