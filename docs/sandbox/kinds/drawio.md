@@ -20,6 +20,8 @@ See the [package README](../../../packages/maf-sandbox-drawio/README.md) for wir
 
 Build the [lightweight image](../../../images/drawio-sandbox/Dockerfile) for editable-only creation or provision the separate [export runtime](../../../images/drawio-export/README.md) for image exports. The export bundle pins Draw.io Desktop 31.7.0 and supplies Python, Pillow, Graphviz, Xvfb, xauth, Electron libraries, local stencils/icons and DejaVu fonts. It validates renderer, asset and font hashes. Docker hosts use `await DockerSandboxBackend.create(config)` to discover the guest family before attachment. An image-less backend must already provide the same runtime and file channels; the kind never installs dependencies during a call.
 
+The export image's file-handling process runs as root to support ACAS's root-owned file-plane directories. Xvfb and Electron run as uid/gid 10001 with no supplementary groups; the coordinator validates their scratch outputs and publishes the artifacts into the call directory. Native unprivileged runtimes preserve their existing user. The outer sandbox still supplies confinement and closed egress.
+
 The supplied export image targets Linux amd64. Electron's inner sandbox is disabled, so the outer backend must enforce closed egress, resource limits, file confinement and descendant cleanup. The host's isolation floor remains authoritative. Runtime packaging does not qualify every POSIX backend; qualification evidence and remaining backend work are tracked below.
 
 Both export-enabled creation and stored-file export request call isolation. Overlapping tools may therefore select different runtime images without reusing each other's sandbox. Editable-only creation keeps conversation scope and its existing cleanup policy. A backend without call isolation cannot serve image exports.
@@ -134,6 +136,7 @@ Every page and requested format must succeed before collection. Export validates
 |---|---|---|
 | Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
 | Offline PNG, JPG and SVG export | Implementation and runtime qualification tracked | [#1654](https://github.com/sokolaidev/maf-extensions/issues/1654) (open); [decision record](../research/drawio-export.md) |
+| Root export image with an unprivileged renderer | Implemented; live ACAS qualification remains in #1654 | [#1710](https://github.com/sokolaidev/maf-extensions/issues/1710) (closed) by [#1712](https://github.com/sokolaidev/maf-extensions/pull/1712) (merged) |
 | Container-free native rendering | Implemented and qualified on Linux Bubblewrap | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (closed) by [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [backend guide](../backends/bubblewrap.md) |
 | Specialized automatic layouts | Outside the supported contract | untracked |
 | Four-field result contract | Implemented for draw.io, sample 18 and its checks | [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |

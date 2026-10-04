@@ -9,6 +9,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -21,6 +22,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path("/opt/maf-drawio")
+RENDERER_ID = 10001
 MAX_FILE = 8 * 1024 * 1024
 MAX_PREPARED = 8 * 1024 * 1024
 MAX_TOTAL = 32 * 1024 * 1024
@@ -330,14 +332,21 @@ def prepare_document(xml: str, manifest: dict) -> str:
 
 def run_renderer(argv: list[str], deadline: float, profile: Path) -> None:
     """Bound diagnostics and retire the entire renderer group even after its leader exits."""
-    environment = dict(os.environ, DRAWIO_DISABLE_UPDATE="true", HOME=str(profile))
+    environment = dict(
+        os.environ, DRAWIO_DISABLE_UPDATE="true", HOME=str(profile), TMPDIR=str(profile)
+    )
+    identity = (
+        {"user": RENDERER_ID, "group": RENDERER_ID, "extra_groups": []} if os.geteuid() == 0 else {}
+    )
     diagnostic = bytearray()
     with subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         env=environment,
+        cwd=profile,
         start_new_session=True,
+        **identity,
     ) as process:
 
         def drain() -> None:
@@ -367,6 +376,26 @@ def run_renderer(argv: list[str], deadline: float, profile: Path) -> None:
             if "MAF_REFUSED:" in text:
                 raise ValueError(text[text.index("MAF_REFUSED:") :][:256])
             raise RuntimeError("Native renderer failed: " + text[-1024:])
+
+
+def renderer_directory(path: Path) -> None:
+    """Give only renderer scratch directories to the unprivileged child."""
+    path.mkdir(mode=0o700)
+    if os.geteuid() == 0:
+        os.chown(path, RENDERER_ID, RENDERER_ID)
+
+
+def read_export(path: Path) -> bytes:
+    """Read a bounded regular output without following renderer-created links."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as file:
+        metadata = os.fstat(file.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= MAX_FILE:
+            raise RuntimeError("Missing or oversized native export")
+        data = file.read(MAX_FILE + 1)
+    if not 0 < len(data) <= MAX_FILE:
+        raise RuntimeError("Missing or oversized native export")
+    return data
 
 
 def export_document(xml: str, options: dict, deadline: float) -> None:
@@ -407,16 +436,20 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
         raise ValueError("Requested page is absent")
     names: list[str] = []
     total = len(xml.encode())
-    with tempfile.TemporaryDirectory(prefix="drawio-") as directory:
+    with tempfile.TemporaryDirectory(prefix="drawio-", dir="/tmp") as directory:
         temporary = Path(directory)
+        temporary.chmod(0o711)
         source = temporary / "input.drawio"
         source.write_text(prepared, "utf-8")
+        source.chmod(0o644)
         for page in selected:
             for format in options["formats"]:
                 name = f"diagram-{page}.{format}"
-                destination = Path(name).absolute()
+                output = temporary / f"output-{page}-{format}"
+                renderer_directory(output)
+                destination = output / name
                 profile = temporary / f"profile-{page}-{format}"
-                profile.mkdir()
+                renderer_directory(profile)
                 argv = [
                     "xvfb-run",
                     "-a",
@@ -446,24 +479,22 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
                 if options["transparent"] and format != "jpg":
                     argv.insert(-1, "--transparent")
                 run_renderer(argv, deadline, profile)
-                if not destination.is_file() or not 0 < destination.stat().st_size <= MAX_FILE:
-                    raise RuntimeError("Missing or oversized native export")
+                data = read_export(destination)
                 if format == "svg":
-                    root = check_svg(destination.read_bytes(), exported=True)
+                    root = check_svg(data, exported=True)
                     definitions = ET.SubElement(root, f"{{{SVG}}}defs")
                     ET.SubElement(definitions, f"{{{SVG}}}style").text = "\n".join(css)
-                    destination.write_bytes(
-                        ET.tostring(root, encoding="utf-8", xml_declaration=True)
-                    )
+                    data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
                 else:
-                    with Image.open(destination) as image:
+                    with Image.open(io.BytesIO(data)) as image:
                         if image.format != {"png": "PNG", "jpg": "JPEG"}[format]:
                             raise RuntimeError("Native output has the wrong image format")
                         dimensions(image.width, image.height)
                         image.load()
-                size = destination.stat().st_size
+                size = len(data)
                 total += size
                 if size > MAX_FILE or total > MAX_TOTAL:
                     raise ValueError("Exports exceed the output byte limits")
+                Path(name).write_bytes(data)
                 names.append(name)
     Path("exports.json").write_text(json.dumps({"pages": pages, "files": names}), "utf-8")

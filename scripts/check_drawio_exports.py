@@ -12,7 +12,15 @@ import zlib
 from pathlib import Path
 from uuid import uuid4
 
-from maf_sandbox import Isolation, ListedFile, SandboxBackend, SandboxRouter, make_file_system_sink
+from maf_sandbox import (
+    Isolation,
+    ListedFile,
+    SandboxBackend,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+    make_file_system_sink,
+)
 from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
 from maf_sandbox_drawio import DrawioExport, make_drawio_export_tools, make_drawio_tools
 from PIL import Image
@@ -193,6 +201,7 @@ def verify_output(output: Path) -> dict[str, object]:
 async def check(image: str, output: Path, backend: SandboxBackend | None = None) -> None:
     """Exercise the closed-egress kind and verify no artifact lands on resource refusal."""
     scope = "drawio-exports-" + uuid4().hex
+    docker_image = backend is None
     if backend is None:
         from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
@@ -201,6 +210,25 @@ async def check(image: str, output: Path, backend: SandboxBackend | None = None)
     context = make_caller_context(list_no_files, lambda: scope, lambda: "exports")
     report: dict[str, object] = {}
     try:
+        key = SandboxKey(scope, "exports", "renderer-identity")
+        try:
+            sandbox = await backend.acquire(key, SandboxSpec(kind="renderer-identity", image=image))
+            identity = await sandbox.exec(
+                [
+                    "python3",
+                    "-c",
+                    Path(__file__).with_name("check_drawio_renderer.py").read_text("utf-8"),
+                ],
+                working_directory=".",
+                timeout=90,
+            )
+            assert identity.exit_code == 0, (identity.stdout, identity.stderr)
+            report["renderer_identity"] = json.loads(identity.stdout)
+            if docker_image:
+                assert report["renderer_identity"]["caller_uid"] == 0
+        finally:
+            failure = await backend.dispose(key, kind="renderer-identity")
+            assert failure is None, failure
         [tool] = make_drawio_tools(
             router,
             "export-check",
