@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.47.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.47.0...maf-sandbox-v0.47.1) (2026-10-04)
+
+
+### Fixes
+
+* skip adoption cleanup for newly created ACAS sandboxes ([#1698](https://github.com/sokolaidev/maf-extensions/issues/1698)) ([485266f](https://github.com/sokolaidev/maf-extensions/commit/485266f5177e95670c3d26a2bb90822f1a20c5c3))
+
 ## [0.47.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.46.0...maf-sandbox-v0.47.0) (2026-10-03)
 
 
