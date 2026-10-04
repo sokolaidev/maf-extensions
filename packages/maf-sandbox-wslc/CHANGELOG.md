@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.2...maf-sandbox-wslc-v0.27.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664))
+
+### Features
+
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664)) ([5d09f66](https://github.com/sokolaidev/maf-extensions/commit/5d09f6670aeddc8569ad5ce79d8c2e7f2c17b7d5))
+
+
+### Fixes
+
+* report credential-expired proxy streams as interrupted ([#1631](https://github.com/sokolaidev/maf-extensions/issues/1631)) ([63c0e97](https://github.com/sokolaidev/maf-extensions/commit/63c0e97dbf39a0d976b07ffb9437317170f1a26d))
+
 ## [0.26.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.1...maf-sandbox-wslc-v0.26.2) (2026-10-02)
 
 
