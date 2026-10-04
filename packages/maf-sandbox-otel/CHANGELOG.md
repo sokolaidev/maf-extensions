@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.7.5...maf-sandbox-otel-v0.8.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664))
+
+### Features
+
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664)) ([5d09f66](https://github.com/sokolaidev/maf-extensions/commit/5d09f6670aeddc8569ad5ce79d8c2e7f2c17b7d5))
+
 ## [0.7.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.7.4...maf-sandbox-otel-v0.7.5) (2026-10-02)
 
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.21.4...maf-sandbox-codeact-v0.22.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664))
+
+### Features
+
+* locate withheld CodeAct outputs through their sink ([#1683](https://github.com/sokolaidev/maf-extensions/issues/1683)) ([62606e8](https://github.com/sokolaidev/maf-extensions/commit/62606e862be2a551f368163b1281a90554abd2e1))
+* select backend-owned program channels and confirm host-tool delivery ([#1664](https://github.com/sokolaidev/maf-extensions/issues/1664)) ([5d09f66](https://github.com/sokolaidev/maf-extensions/commit/5d09f6670aeddc8569ad5ce79d8c2e7f2c17b7d5))
+
 ## [0.21.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.21.3...maf-sandbox-codeact-v0.21.4) (2026-10-01)
 
 
