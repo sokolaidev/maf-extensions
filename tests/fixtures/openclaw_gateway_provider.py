@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -13,12 +14,14 @@ SOURCES = {
     "valid": "output greeting string = 'hello'",
     "invalid": "output greeting int = 'wrong'",
     "incomplete": "module absent 'br/public:avm/res/storage/storage-account:0.0.0' = { name: 'test' }",
-    "cancel": "output greeting string = 'hello'",
+    "cancel": "\n".join(f"var v{i} = range(0, 1000)" for i in range(1500)),
 }
 
 
 def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
     """Record tool results and names without retaining the host's system prompt."""
+
+    lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
@@ -37,8 +40,10 @@ def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
                 self.send_error(400, "Expected a qualification scenario")
                 return
             case = match[1]
+            turn = re.search(r"qualification-turn=([0-9a-f]{32})(?![0-9a-f])", str(user["content"]))
             record: dict[str, Any] = {
                 "scenario": case,
+                "turn": turn[1] if turn else None,
                 "advertised_tools": [tool["function"]["name"] for tool in body.get("tools", [])],
             }
             if messages[-1]["role"] == "tool":
@@ -66,14 +71,14 @@ def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
                     "tool_calls": [
                         {
                             "index": 0,
-                            "id": "call_qualification",
+                            "id": "call_" + (turn[1] if turn else "qualification"),
                             "type": "function",
                             "function": {"name": "tool_call", "arguments": json.dumps(arguments)},
                         }
                     ],
                 }
                 finish = "tool_calls"
-            with evidence.open("a", encoding="utf-8") as output:
+            with lock, evidence.open("a", encoding="utf-8") as output:
                 output.write(json.dumps(record) + "\n")
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
