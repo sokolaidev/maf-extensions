@@ -36,7 +36,7 @@ machine instead, through `maf_sandbox_docker_sbx`.  That backend clears the rout
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
 #     "maf-sandbox-docker-sbx>=0.2.0",
-#     "maf-sandbox>=0.46",
+#     "maf-sandbox>=0.47",
 # ]
 # ///
 
