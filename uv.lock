@@ -1362,7 +1362,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bubblewrap"
-version = "0.0.0"
+version = "0.1.0"
 source = { editable = "packages/maf-sandbox-bubblewrap" }
 dependencies = [
     { name = "maf-sandbox" },
