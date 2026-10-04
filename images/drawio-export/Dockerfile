@@ -17,10 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-ex
 
 COPY install.py export.py guard.js /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \
-    && useradd --create-home --uid 10001 renderer \
+    && groupadd --gid 10001 renderer \
+    && useradd --create-home --uid 10001 --gid 10001 renderer \
     && mkdir -p /maf-sandbox/work \
     && chown renderer:renderer /maf-sandbox/work
 ENV DRAWIO_DISABLE_UPDATE=true
-USER renderer
+USER root
 WORKDIR /maf-sandbox/work
 CMD ["sleep", "infinity"]

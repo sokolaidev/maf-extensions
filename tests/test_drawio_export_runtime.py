@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import os
 import runpy
 import shutil
 import struct
@@ -452,6 +453,13 @@ def test_oversized_png_header_is_a_resource_refusal():
 def font_runtime(tmp_path, monkeypatch):
     monkeypatch.setitem(RUNTIME["export_document"].__globals__, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+    temporary_directory = RUNTIME["tempfile"].TemporaryDirectory
+    monkeypatch.setattr(
+        RUNTIME["tempfile"],
+        "TemporaryDirectory",
+        lambda **kwargs: temporary_directory(prefix=kwargs["prefix"], dir=tmp_path),
+    )
     original_read = Path.read_bytes
 
     def read(path):

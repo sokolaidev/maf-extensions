@@ -27,7 +27,11 @@ Enabled label placeholders are refused before rendering, including object/UserOb
 
 Prepared XML is limited to 8 MiB across all pages, including embedded assets, XML escaping and normalized font styles. Expansion is charged before replacement styles are retained or serialized. Each bundled asset is read and verified once per document; repeated references still consume the document budget.
 
-The renderer runs as an unprivileged user with Electron's inner sandbox disabled. A qualified outer sandbox must enforce closed networking, CPU/memory/process limits, file confinement and process-tree disposal. Do not expose host credentials, directories or display sockets. The verification script explicitly selects container isolation; the library does not lower the host's isolation floor.
+The image runs as root so ACAS's root-owned file-plane directories remain writable. The export coordinator keeps that identity, but starts Xvfb and Electron as uid/gid 10001 with no supplementary groups. It gives the child separate scratch, profile and output directories, validates bounded regular output files without following links, then writes the artifacts into the call directory as root. Editable creation and Graphviz retain the image's root identity. An already unprivileged coordinator, including a native Bubblewrap guest, preserves its existing identity.
+
+The root coordinator needs permission to change ownership, set uid/gid, read the renderer's private output directory and terminate its process group. Docker's default capability set supports this; DockerSandboxConfig(cap_drop_all=True) does not. A failed privilege drop stops the export.
+
+Electron's inner sandbox remains disabled. A qualified outer sandbox must enforce closed networking, CPU/memory/process limits, file confinement and process-tree disposal. Do not expose host credentials, directories or display sockets. The verification script explicitly selects container isolation; the library does not lower the host's isolation floor. Before exercising the tools, it observes the live Electron and renderer processes through /proc, requires uid/gid 10001 and empty supplementary groups when the coordinator is root, and verifies output publication into a private call directory. Rebuild and import the resulting image before using it on ACAS; changing the host's image reference alone does not update an existing imported image.
 
 ## Without a container engine
 
