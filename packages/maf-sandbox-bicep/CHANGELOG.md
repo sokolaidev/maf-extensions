@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.22.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.22.0...maf-sandbox-bicep-v0.22.1) (2026-10-04)
+
+
+### Fixes
+
+* require maf-sandbox 0.47.0 in the dependents, and admit the 0.47 line ([#1694](https://github.com/sokolaidev/maf-extensions/issues/1694)) ([232537f](https://github.com/sokolaidev/maf-extensions/commit/232537f579281e88ce50d0ff9a3915e8df085907))
+
 ## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.21.4...maf-sandbox-bicep-v0.22.0) (2026-10-01)
 
 
