@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.3.4...maf-sandbox-drawio-v0.4.0) (2026-10-04)
+
+
+### Features
+
+* **drawio:** export PNG, JPG and SVG with bundled offline assets ([#1666](https://github.com/sokolaidev/maf-extensions/issues/1666)) ([385953b](https://github.com/sokolaidev/maf-extensions/commit/385953bcb24b24294569e7c586fcb177466cf978))
+
+
+### Fixes
+
+* preserve trusted call integrity in drawio results ([#1653](https://github.com/sokolaidev/maf-extensions/issues/1653)) ([dae8c04](https://github.com/sokolaidev/maf-extensions/commit/dae8c0454dc02aa8627812f4981e18b07c613717))
+* require maf-sandbox 0.47.0 in the dependents, and admit the 0.47 line ([#1694](https://github.com/sokolaidev/maf-extensions/issues/1694)) ([232537f](https://github.com/sokolaidev/maf-extensions/commit/232537f579281e88ce50d0ff9a3915e8df085907))
+
 ## [0.3.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.3.3...maf-sandbox-drawio-v0.3.4) (2026-10-02)
 
 
