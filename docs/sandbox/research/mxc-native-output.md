@@ -1,6 +1,7 @@
 # MXC native output boundary
 
 > Proposal for [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668): preserve bounded stdout/stderr bytes and keep native completion independent of guest output. Extending the removable bundle into the runtime and embedded kernel is pending a host-maintainer decision. No implementation or runtime qualification is claimed here.
+> The later accepted bounded-console policy is recorded in the [MXC design](../backends/mxc.md#bounded-console-capture).
 
 ## Source findings
 

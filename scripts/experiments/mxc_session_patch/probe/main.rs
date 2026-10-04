@@ -41,6 +41,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         println!(
             "mxc-session-state-probe seed <initrd> <new-checkpoint> <report> [hold]\nmxc-session-state-probe restore <checkpoint> <report>\nmxc-session-state-probe call <restore> <checkpoint> <code-file> <report>\nmxc-session-state-probe call-owned <restore> <checkpoint> <code-file> <report>\nmxc-session-state-probe execute-owned <restore> <unused-candidate> <code-file> <report>"
         );
+        #[cfg(feature = "bounded-output")]
+        println!("mxc-session-state-probe call-bounded <restore> <checkpoint> <code-file> <report> [output-limit-bytes]");
         return Ok(());
     }
     match args.get(1).map(String::as_str) {
@@ -102,6 +104,37 @@ fn run() -> Result<(), Box<dyn Error>> {
                 sandbox.close();
                 write_report(&args[5], serde_json::json!({"captured": true}))?;
             }
+        }
+        #[cfg(feature = "bounded-output")]
+        Some("call-bounded") if args.len() == 6 || args.len() == 7 => {
+            owner::watch();
+            let limit = args
+                .get(6)
+                .map(|value| value.parse::<usize>())
+                .transpose()?
+                .unwrap_or(1024 * 1024);
+            if fs::metadata(&args[4])?.len() > 65536 {
+                return Err("code exceeds probe limit".into());
+            }
+            let code = fs::read_to_string(&args[4])?;
+            let mut sandbox = BackendSession::restore_bounded(Path::new(&args[2]), limit)?;
+            sandbox.execute(&code)?;
+            assert!(sandbox.refuses_execution());
+            let (output, omitted, saturated) = sandbox.take_output()?;
+            let _candidate = sandbox.capture(Path::new(&args[3]))?;
+            assert!(sandbox.refuses_execution());
+            sandbox.close();
+            let destination = Path::new(&args[5]).with_extension("output");
+            fs::write(&destination, output.as_bytes())?;
+            write_report(
+                &args[5],
+                serde_json::json!({
+                    "captured": true,
+                    "output": {"limit_bytes": limit, "retained_bytes": output.len(),
+                        "omitted_bytes": omitted, "omitted_bytes_saturated": saturated,
+                        "truncated": omitted != 0}
+                }),
+            )?;
         }
         Some("restore") if args.len() == 4 => {
             let mut sandbox = BackendSession::restore(Path::new(&args[2]))?;

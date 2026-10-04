@@ -26,6 +26,16 @@ The application supplies selected input files and receives bounded artifacts thr
 
 Acceptance includes both a NumPy/pandas calculation returning text and a workflow that reads a supplied CSV, analyzes it with pandas and returns a matplotlib chart. Both workflows pass on Windows and Linux. No speed, memory or cost advantage is assumed.
 
+## Bounded console capture
+
+The temporary native collector uses **truncate and continue** with a host-configurable default of **1 MiB (1,048,576 bytes) of combined console output per call**. It retains a valid UTF-8 prefix, discards subsequent text and reports omitted bytes with an explicit counter-saturation flag. Reaching the limit without omitting bytes is not truncation. Startup/resume has a separate bounded interval; each call starts with a fresh budget.
+
+Truncation does not fail execution or retire the session. A call that otherwise succeeds publishes its checkpoint, retained output and host-owned truncation metadata together before acknowledgment, and recovery redelivers the same result. Guest errors, timeouts, cancellation and owner loss keep their existing failure behavior and cannot publish success.
+
+The collector checks the budget before buffering and disables automatic mirroring to process stdout. Its separately pinned runtime/session overlays are removable through the [experiment tooling](../../../scripts/experiments/mxc_session_patch/OUTPUT.md#apply-and-remove-the-overlay). The combined text channel does not provide separate streams, arbitrary binary fidelity, correction of the kernel's silent 4096-byte truncation, or a process-wide memory limit. Omission counters describe only bytes received by HostPrint. The existing two-MiB serialized-result limit still applies independently of the configured console budget.
+
+Qualification covers exact and exceeded budgets, continued execution, UTF-8 boundaries, durable publication and lost acknowledgments. Failed execution and malformed control refuse success. Replacing the overlay requires equivalent behavior and renewed qualification on both platforms. The [upstream capture request](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/140) includes a contribution offer; this accepted collector policy does not authorize the separate kernel proposal in the [historical research record](../research/mxc-native-output.md).
+
 ## State and ownership
 
 Fresh mode creates call-scoped state and disposes it after result delivery. Persistent mode retains Python variables and dataframes across calls within the same trusted conversation, while separating scope, agent and kind. Access to a persistent session is serialized through execution, artifact handling and checkpoint commitment.
@@ -113,7 +123,7 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 | Checkpoint after every successful persistent call, before acknowledgment | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Host-configured recovery on another compatible machine | Selected; storage, compatibility and ownership unverified | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Closed networking and conditional enforced allowlisting | Selected; live qualification unrun | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
-| Bounded native output and control transport | Unimplemented; Windows/WHP and Linux/KVM descriptor experiments preserve cooperative bytes but demonstrate a console bypass; [evidence](../../../scripts/experiments/mxc_session_patch/OUTPUT.md) | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (open) |
+| Bounded native output and control transport | Partial experimental Rust-only bounded console capture with explicit truncation; Windows/WHP and Linux/KVM qualified for this scope. Separate streams and faithful binary output remain unimplemented; [evidence](../../../scripts/experiments/mxc_session_patch/OUTPUT.md) | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (open) |
 | Native owner-death cleanup | Experimental private-pipe controls passed independently on Windows/WHP and Linux/KVM; arbitrary descendants and distributed fencing remain outside this result | [#1669](https://github.com/sokolaidev/maf-extensions/issues/1669) (closed) by [#1674](https://github.com/sokolaidev/maf-extensions/pull/1674) (merged); [evidence and limits](../../../scripts/experiments/mxc_session_patch/OWNERSHIP.md) |
 | General bounded file input and artifact collection | Unimplemented beyond the fixed CSV/chart probe | [#1670](https://github.com/sokolaidev/maf-extensions/issues/1670) (open) |
 | Compatible-machine recovery and fencing | Unimplemented | [#1671](https://github.com/sokolaidev/maf-extensions/issues/1671) (open) |

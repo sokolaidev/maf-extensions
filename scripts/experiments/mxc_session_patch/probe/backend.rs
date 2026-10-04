@@ -20,6 +20,24 @@ impl BackendSession {
     pub fn restore(path: &Path) -> Result<Self, Failure> {
         Session::restore(path).map(Self).map_err(failure)
     }
+    #[cfg(feature = "bounded-output")]
+    pub fn restore_bounded(path: &Path, limit: usize) -> Result<Self, Failure> {
+        Session::restore_bounded(path, limit)
+            .map(Self)
+            .map_err(failure)
+    }
+    #[cfg(feature = "bounded-output")]
+    pub fn take_output(&mut self) -> Result<(String, u64, bool), Failure> {
+        let output = self
+            .0
+            .take_output()
+            .ok_or_else(|| Failure("missing capture".into()))?;
+        Ok((
+            output.text,
+            output.omitted_bytes,
+            output.omitted_bytes_saturated,
+        ))
+    }
     pub fn execute(&mut self, code: &str) -> Result<(), Failure> {
         self.0
             .execute(code, Duration::from_secs(30))

@@ -12,3 +12,6 @@ path = @MAIN@
 hyperlight_common = { path = @COMMON@, features = ["maf-session-preview"] }
 wxc_common = { path = @WXC@ }
 serde_json = "1"
+
+[features]
+bounded-output = []
