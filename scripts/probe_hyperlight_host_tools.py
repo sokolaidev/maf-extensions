@@ -9,6 +9,7 @@ import contextvars
 import hashlib
 import importlib
 import json
+import math
 import os
 import platform
 import subprocess
@@ -85,10 +86,33 @@ def decode(raw: bytes) -> dict[str, Any]:
     """Require a complete bounded JSON object."""
     if len(raw) > WIRE_LIMIT or not raw.endswith(b"\n"):
         raise ValueError("incomplete or oversized IPC envelope")
-    value = json.loads(raw, parse_constant=reject_constant)
+    value = json.loads(
+        raw,
+        parse_constant=reject_constant,
+        parse_float=finite_float,
+        object_pairs_hook=unique_object,
+    )
     if not isinstance(value, dict):
         raise ValueError("IPC envelope must be an object")
     return value
+
+
+def unique_object(items: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Refuse ambiguous protocol objects before selecting any field."""
+    result: dict[str, Any] = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def finite_float(value: str) -> float:
+    """Reject JSON numbers that overflow the finite float range."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("JSON number must be finite")
+    return number
 
 
 def reject_constant(value: str) -> Any:
@@ -164,6 +188,8 @@ def worker_main() -> None:
             send(
                 {
                     "op": "result",
+                    "run": message.get("run"),
+                    "seq": sequence if operation == "run" else 0,
                     "stdout": result.stdout,
                     "stderr": result.stderr,
                     "exit_code": result.exit_code,
@@ -179,41 +205,120 @@ class ProbeWorker(Worker):
         return [sys.executable, "-I", "-u", str(Path(__file__).resolve()), "--worker"]
 
     async def exchange(
-        self, message: dict[str, Any], service: Any, timeout: float
+        self, message: dict[str, Any], policy: Policy, timeout: float
     ) -> dict[str, Any]:
-        """Bridge synchronous worker I/O to the active event loop within one deadline."""
+        """Serialize exchanges and revoke run authority before retiring failed workers."""
+        if getattr(self, "_exchange_failed", False):
+            raise RuntimeError("failed worker cannot be reused")
+        if getattr(self, "_exchange_active", False):
+            raise RuntimeError("worker exchange already active")
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("exchange timeout must be finite and positive")
+        operation = message.get("op")
+        if not isinstance(operation, str) or operation not in {
+            "init",
+            "run",
+            "unbound",
+            "late_registration",
+        }:
+            raise ValueError("unknown worker operation")
+        if operation == "run" and (message.get("run") != policy.run_id or policy.closed):
+            raise ValueError("run does not match the live policy")
+        self._exchange_active = True
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + timeout
 
+        def remaining() -> float:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError("worker exchange deadline expired")
+            return budget
+
         def transfer() -> dict[str, Any]:
+            remaining()
             self._input.write(encode(message))
             self._input.flush()
             while True:
                 raw = self._output.readline(WIRE_LIMIT + 1)
+                remaining()
                 if not raw:
                     raise EOFError("worker closed callback pipe")
                 received = decode(raw)
+                if not isinstance(received.get("op"), str):
+                    raise ValueError("invalid worker operation")
                 if received["op"] not in {"callback", "prepared"}:
+                    validate_terminal(message, received)
+                    if operation == "run" and received["seq"] != policy.sequence:
+                        raise ValueError("stale result sequence")
+                    if operation == "run" and policy.awaiting_prepared is not None:
+                        raise ValueError("result arrived before the prepared marker")
                     return received
-                future = asyncio.run_coroutine_threadsafe(service(received), loop)
+                if operation != "run":
+                    raise ValueError("callback outside a live run")
+                remaining()
+                future = asyncio.run_coroutine_threadsafe(policy.service(received), loop)
                 try:
-                    reply = future.result(timeout=max(0.001, deadline - time.monotonic()))
+                    reply = future.result(timeout=remaining())
                 except BaseException:
                     future.cancel()
                     raise
+                remaining()
                 if reply is not None:
                     self._input.write(encode(reply))
                     self._input.flush()
 
         task = asyncio.create_task(asyncio.to_thread(transfer))
+        self._transfer_task = task
         try:
             async with asyncio.timeout(timeout):
                 return await asyncio.shield(task)
         except BaseException:
-            self.close()
-            with contextlib.suppress(Exception):
-                await task
+            self._exchange_failed = True
+            policy.revoke()
+
+            await retire_worker(self, [policy])
             raise
+        finally:
+            if operation == "run":
+                policy.revoke()
+            self._exchange_active = False
+            if task.done():
+                self._transfer_task = None
+
+
+def validate_terminal(request: dict[str, Any], message: dict[str, Any]) -> None:
+    """Accept only the response shape belonging to the outstanding operation."""
+    op = message.get("op")
+    operation = request["op"]
+    if operation == "init":
+        valid = (
+            op == "ready"
+            and set(message) == {"op", "versions"}
+            and message["versions"] == {package: "0.7.0" for package in PACKAGES}
+        ) or (
+            op == "failed_init"
+            and set(message) == {"op", "stderr"}
+            and isinstance(message["stderr"], str)
+        )
+    elif operation == "late_registration":
+        valid = (
+            op == "late_registration"
+            and set(message) == {"op", "error"}
+            and (message["error"] is None or isinstance(message["error"], str))
+        )
+    else:
+        valid = (
+            op == "result"
+            and set(message) == {"op", "run", "seq", "stdout", "stderr", "exit_code"}
+            and message["run"] == request.get("run")
+            and type(message["seq"]) is int
+            and (message["seq"] >= 0 if operation == "run" else message["seq"] == 0)
+            and isinstance(message["stdout"], str)
+            and isinstance(message["stderr"], str)
+            and type(message["exit_code"]) is int
+        )
+    if not valid:
+        raise ValueError("invalid worker terminal response")
 
 
 class Policy:
@@ -227,6 +332,9 @@ class Policy:
         self.release = asyncio.Event()
         self.pending: set[asyncio.Task[Any]] = set()
         self.sequence = 0
+        self.awaiting_prepared: int | None = None
+        self.response_prepared = False
+        self.closed = False
         self.run_id = run_id
         self.timeout = 0.25
         self.raw_response: str | None = None
@@ -292,29 +400,74 @@ class Policy:
         self.registry = registry
         self.run = HostToolRun(registry, run_id=run_id, key=SandboxKey("probe", "thread", "agent"))
 
+    def revoke(self) -> None:
+        """Prevent further dispatch without asserting response publication."""
+        self.closed = True
+        self.run.close()
+
     async def service(self, message: dict[str, Any]) -> dict[str, Any] | None:
-        """Refuse stale messages before policy dispatch and bound cooperative cancellation."""
-        if message["op"] == "prepared":
-            if message["run"] != self.run_id or message["seq"] != self.sequence:
-                raise ValueError("stale prepared response")
+        """Validate one ordered callback exchange before spending live policy authority."""
+        if self.closed:
+            raise RuntimeError("probe policy is closed")
+        op = message.get("op")
+        fields = {"op", "run", "seq"}
+        if op == "callback":
+            fields.add("payload")
+        if (
+            not isinstance(op, str)
+            or op not in {"callback", "prepared"}
+            or set(message) != fields
+            or type(message.get("seq")) is not int
+            or message["seq"] <= 0
+        ):
+            raise ValueError("invalid callback message")
+        if op == "prepared":
+            if (
+                message["run"] != self.run_id
+                or message["seq"] != self.awaiting_prepared
+                or not self.response_prepared
+            ):
+                raise ValueError("stale or duplicate prepared response")
+            self.awaiting_prepared = None
+            self.response_prepared = False
             self.events.append({"stage": "worker_prepared", "seq": message["seq"]})
             return None
         if (
             self.reject_generation
             or message["run"] != self.run_id
             or message["seq"] != self.sequence + 1
+            or self.awaiting_prepared is not None
         ):
             raise ValueError("stale or duplicate callback")
+        payload = message["payload"]
+        if not isinstance(payload, str):
+            raise ValueError("callback payload must be a string")
+        size = len(payload.encode("utf-8"))
+        request: dict[str, Any] = {}
+        if size <= self.request_limit:
+            request = json.loads(
+                payload,
+                parse_constant=reject_constant,
+                parse_float=finite_float,
+                object_pairs_hook=unique_object,
+            )
+            if (
+                not isinstance(request, dict)
+                or set(request) != {"name", "arguments"}
+                or not isinstance(request["name"], str)
+                or not isinstance(request["arguments"], dict)
+            ):
+                raise ValueError("invalid callback payload")
         self.sequence += 1
-        size = len(message["payload"].encode("utf-8"))
+        self.awaiting_prepared = self.sequence
         self.events.append({"stage": "request_bytes", "utf8": size})
         if size > self.request_limit:
+            self.response_prepared = True
             return {
                 "run": message["run"],
                 "seq": message["seq"],
                 "response": '{"refusal":"Error: request exceeds transport limit"}',
             }
-        request = json.loads(message["payload"], parse_constant=reject_constant)
         token = CONTEXT.set(self.run_id)
         prepared: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
@@ -370,18 +523,64 @@ class Policy:
                     "ipc_bytes": len(encode(reply)),
                 }
             )
+            self.response_prepared = True
             return reply
         finally:
             CONTEXT.reset(token)
 
     async def cleanup(self) -> None:
-        """Release synthetic stubborn tasks only after the worker is retired."""
-        self.run.close()
+        """Revoke authority and drain synthetic callback tasks."""
+        self.revoke()
         self.release.set()
         for task in self.pending:
             task.cancel()
         await asyncio.gather(*self.pending, return_exceptions=True)
         self.pending.clear()
+
+
+async def retire_worker(worker: ProbeWorker, policies: list[Policy]) -> None:
+    """Drain every policy despite retirement errors and repeated caller cancellation."""
+    for policy in policies:
+        policy.revoke()
+
+    async def retire() -> None:
+        errors: list[Exception] = []
+        closed = False
+        try:
+            await asyncio.to_thread(worker.close)
+            closed = True
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+        finally:
+            for policy in policies:
+                try:
+                    await policy.cleanup()
+                except Exception as error:  # noqa: BLE001
+                    errors.append(error)
+        transfer = getattr(worker, "_transfer_task", None)
+        if transfer is not None:
+            if closed or transfer.done():
+                await asyncio.gather(transfer, return_exceptions=True)
+            else:
+                # A failed close cannot promise EOF; retain the reader for a later cleanup attempt.
+                transfer.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("worker retirement and policy cleanup failed", errors)
+
+    retirement = asyncio.create_task(retire())
+    cancelled = False
+    while not retirement.done():
+        try:
+            await asyncio.shield(retirement)
+        except asyncio.CancelledError:
+            cancelled = True
+    retirement.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
@@ -405,13 +604,13 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
     }
     started = time.monotonic()
     try:
-        ready = await worker.exchange({"op": "init"}, policy.service, 30)
+        ready = await worker.exchange({"op": "init"}, policy, 30)
         if ready["op"] != "ready":
             raise RuntimeError(f"native initialization failed: {ready}")
         report["initialized"] = True
         running = asyncio.create_task(
             worker.exchange(
-                {"op": "run", "run": name, "code": code}, policy.service, options.get("timeout", 5)
+                {"op": "run", "run": name, "code": code}, policy, options.get("timeout", 5)
             )
         )
         if options.get("cancel"):
@@ -426,21 +625,19 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
             policies.append(second)
             report["reuse_events"] = second.events
             report["reuse"] = await worker.exchange(
-                {"op": "run", "run": second.run_id, "code": code}, second.service, 5
+                {"op": "run", "run": second.run_id, "code": code}, second, 5
             )
-            report["unbound"] = await worker.exchange({"op": "unbound"}, second.service, 5)
+            report["unbound"] = await worker.exchange({"op": "unbound"}, second, 5)
             report["late_registration"] = await worker.exchange(
-                {"op": "late_registration"}, second.service, 5
+                {"op": "late_registration"}, second, 5
             )
     except Exception as error:  # noqa: BLE001
         report["error"] = type(error).__name__
         report["error_detail"] = str(error)[:500]
     finally:
         report["worker_exit_before_cleanup"] = worker.process.poll()
-        worker.close()
+        await retire_worker(worker, policies)
         report["worker_stderr"] = worker._stderr.decode("utf-8", errors="replace")
-        for active in policies:
-            await active.cleanup()
         report["reaped"] = worker.process.poll() is not None and not worker._drainer.is_alive()
         report["events"] = policy.events
         report["seconds"] = round(time.monotonic() - started, 3)
