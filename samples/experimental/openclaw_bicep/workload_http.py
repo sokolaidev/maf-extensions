@@ -1,4 +1,4 @@
-"""Bounded stateful HTTP transport for the experimental workload service (MCP 1.26.0)."""
+"""Bounded stateful HTTP transport for the experimental workload service (MCP 1.28.1)."""
 
 from __future__ import annotations
 
@@ -70,8 +70,8 @@ class WorkloadHTTP:
     """Authenticated ASGI endpoint owning the actual bounded SDK session registry."""
 
     def __init__(self, service: WorkloadService, token: str, port: int) -> None:
-        if version("mcp") != "1.26.0":
-            raise RuntimeError("This adapter requires mcp==1.26.0.")
+        if version("mcp") != "1.28.1":
+            raise RuntimeError("This adapter requires mcp==1.28.1.")
         if not re.fullmatch(r"[0-9a-f]{64}", token) or not 1 <= port <= 65535:
             raise ValueError("Expected a 256-bit hex credential and a valid loopback port.")
         self.service = service

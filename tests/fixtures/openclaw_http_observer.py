@@ -8,7 +8,7 @@
 #     "maf-sandbox==0.46.0",
 #     "maf-sandbox-bicep==0.22.0",
 #     "maf-sandbox-docker==0.24.4",
-#     "mcp==1.26.0",
+#     "mcp==1.28.1",
 #     "pydantic>=2.11,<3",
 #     "jsonschema>=4.26,<5",
 #     "starlette==1.7.0",

@@ -122,7 +122,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         "maf-sandbox": "0.46.0",
         "maf-sandbox-bicep": "0.22.0",
         "maf-sandbox-docker": "0.24.4",
-        "mcp": "1.26.0",
+        "mcp": "1.28.1",
         "agent-framework-core": "1.19.0",
         "uvicorn": "0.54.0",
     }
