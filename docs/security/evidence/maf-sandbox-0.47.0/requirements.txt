@@ -1,0 +1,11 @@
+agent-framework-core==1.19.0
+annotated-types==0.8.0
+maf-sandbox==0.47.0
+msgspec==0.21.1
+opentelemetry-api==1.45.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+python-dotenv==1.2.4
+pyyaml==6.0.3
+typing-extensions==4.16.0
+typing-inspection==0.4.4

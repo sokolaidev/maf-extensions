@@ -1,0 +1,46 @@
+{
+  "observed_at_utc": "2026-10-04T21:23:05.1402432Z",
+  "scope": "Repository default-branch dependency graph; not pinned to the maf-sandbox 0.47.0 release",
+  "source": "https://github.com/sokolaidev/maf-extensions/security/dependabot",
+  "state": "open",
+  "alert_count": 23,
+  "severity_counts": [
+    {
+      "severity": "critical",
+      "count": 1
+    },
+    {
+      "severity": "high",
+      "count": 13
+    },
+    {
+      "severity": "medium",
+      "count": 9
+    }
+  ],
+  "manifest_counts": [
+    {
+      "manifest": "uv.lock",
+      "count": 23
+    }
+  ],
+  "package_counts": [
+    {
+      "package": "mcp",
+      "count": 3
+    },
+    {
+      "package": "pyjwt",
+      "count": 13
+    },
+    {
+      "package": "urllib3",
+      "count": 3
+    },
+    {
+      "package": "virtualenv",
+      "count": 4
+    }
+  ],
+  "triage": "No findings dismissed or accepted by this evidence record"
+}

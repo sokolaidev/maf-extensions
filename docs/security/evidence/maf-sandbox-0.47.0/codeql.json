@@ -1,0 +1,70 @@
+[
+  {
+    "id": 1887216041,
+    "commit_sha": "80bfb7325cac14ad17caf56edd9836f29db332a4",
+    "ref": "refs/heads/main",
+    "created_at": "2026-10-03T23:35:26Z",
+    "category": "/language:rust",
+    "tool": {
+      "name": "CodeQL",
+      "guid": null,
+      "version": "2.27.1"
+    },
+    "results_count": 0,
+    "rules_count": 28,
+    "error": "",
+    "warning": "",
+    "url": "https://api.github.com/repos/sokolaidev/maf-extensions/code-scanning/analyses/1887216041"
+  },
+  {
+    "id": 1887212302,
+    "commit_sha": "80bfb7325cac14ad17caf56edd9836f29db332a4",
+    "ref": "refs/heads/main",
+    "created_at": "2026-10-03T23:33:40Z",
+    "category": "/language:python",
+    "tool": {
+      "name": "CodeQL",
+      "guid": null,
+      "version": "2.27.1"
+    },
+    "results_count": 1,
+    "rules_count": 50,
+    "error": "",
+    "warning": "",
+    "url": "https://api.github.com/repos/sokolaidev/maf-extensions/code-scanning/analyses/1887212302"
+  },
+  {
+    "id": 1887209088,
+    "commit_sha": "80bfb7325cac14ad17caf56edd9836f29db332a4",
+    "ref": "refs/heads/main",
+    "created_at": "2026-10-03T23:32:09Z",
+    "category": "/language:javascript-typescript",
+    "tool": {
+      "name": "CodeQL",
+      "guid": null,
+      "version": "2.27.1"
+    },
+    "results_count": 0,
+    "rules_count": 103,
+    "error": "",
+    "warning": "",
+    "url": "https://api.github.com/repos/sokolaidev/maf-extensions/code-scanning/analyses/1887209088"
+  },
+  {
+    "id": 1887208666,
+    "commit_sha": "80bfb7325cac14ad17caf56edd9836f29db332a4",
+    "ref": "refs/heads/main",
+    "created_at": "2026-10-03T23:31:56Z",
+    "category": "/language:actions",
+    "tool": {
+      "name": "CodeQL",
+      "guid": null,
+      "version": "2.27.1"
+    },
+    "results_count": 0,
+    "rules_count": 23,
+    "error": "",
+    "warning": "",
+    "url": "https://api.github.com/repos/sokolaidev/maf-extensions/code-scanning/analyses/1887208666"
+  }
+]

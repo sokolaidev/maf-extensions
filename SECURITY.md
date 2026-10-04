@@ -1,5 +1,7 @@
 # Security policy
 
+For release-specific scan results, artifact verification and remaining gaps, see [Security evidence](docs/security.md). Those records describe assessed artifacts and configurations; they do not replace this reporting and support policy.
+
 ## Reporting a vulnerability
 
 Report it privately, through [a draft security advisory](https://github.com/sokolaidev/maf-extensions/security/advisories/new) on this repository (**Security** → **Report a vulnerability**). Please do not open a public issue, discussion or pull request for it.

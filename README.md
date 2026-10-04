@@ -4,6 +4,8 @@
 
 Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramework), maintained by [SOKOLAI BV](https://www.sokol.ai). **Not affiliated with or endorsed by Microsoft.** Everything here is experimental (0.x): each package warns on import, and every release before 1.0.0 may include breaking changes.
 
+See [Security evidence](docs/security.md) for release-specific scan results, artifact verification, tested configurations and remaining gaps, and the [security policy](SECURITY.md) for private reporting and supported versions.
+
 ## maf-sandbox
 
 Sandboxed tool execution for MAF agents: validate infrastructure, create diagrams, process files or run generated code. These packages separate what a tool does from where its work runs. Tool calls still pass through the framework's middleware for approvals, information-flow policy and budgets. The suite is the reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568).
