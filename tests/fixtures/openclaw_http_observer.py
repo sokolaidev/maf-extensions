@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ class ObserveHTTP:
         headers = dict(scope.get("headers", []))
         session = headers.get(b"mcp-session-id")
         sid = digest(session.hex()) if session else None
+        exchange = uuid.uuid4().hex
         body = bytearray()
         observed = False
         method = scope["method"]
@@ -77,7 +79,12 @@ class ObserveHTTP:
                             "tools/call",
                             "notifications/cancelled",
                         }:
-                            fields = {"event": "request", "method": rpc, "session": sid}
+                            fields = {
+                                "event": "request",
+                                "method": rpc,
+                                "session": sid,
+                                "exchange": exchange,
+                            }
                             if "id" in value:
                                 fields["request"] = digest(value["id"])
                             if rpc == "notifications/cancelled":
@@ -96,6 +103,7 @@ class ObserveHTTP:
                 response_session = dict(message.get("headers", [])).get(b"mcp-session-id")
                 self.record(
                     event="response",
+                    exchange=exchange,
                     method=method,
                     status=message["status"],
                     session=digest(response_session.hex()) if response_session else sid,
@@ -107,6 +115,7 @@ class ObserveHTTP:
         finally:
             self.record(
                 event="settled",
+                exchange=exchange,
                 method=method,
                 session=sid,
                 sessions=len(self.app.sessions),

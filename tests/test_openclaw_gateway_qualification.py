@@ -107,16 +107,38 @@ def test_cancel_requires_later_message_for_exact_session_and_typed_request():
         "method": "notifications/cancelled",
         "session": call["session"],
         "target": call["request"],
+        "exchange": "cancel-exchange",
         "time_ns": 11,
     }
-    assert checker.matching_cancel([cancel], call)
+    response = {
+        "event": "response",
+        "exchange": cancel["exchange"],
+        "session": call["session"],
+        "status": 202,
+        "time_ns": 12,
+    }
+    assert checker.matching_cancel([cancel, response], call)
+    assert not checker.matching_cancel([cancel], call)
+    assert checker.matching_cancel([cancel, response], call, after_ns=10)
+    assert not checker.matching_cancel([cancel, response], call, after_ns=11)
+    for changes in [
+        {"status": 400},
+        {"status": 401},
+        {"status": 404},
+        {"status": 200},
+        {"exchange": "other-exchange"},
+        {"session": observer.digest("B")},
+        {"event": "settled"},
+        {"time_ns": 10},
+    ]:
+        assert not checker.matching_cancel([cancel, {**response, **changes}], call)
     for changes in [
         {"session": observer.digest("B")},
         {"target": observer.digest("7")},
         {"time_ns": 9},
         {"method": "disconnect"},
     ]:
-        assert not checker.matching_cancel([{**cancel, **changes}], call)
+        assert not checker.matching_cancel([{**cancel, **changes}, response], call)
 
 
 @pytest.mark.parametrize(
@@ -189,6 +211,8 @@ def test_observer_preserves_chunked_messages_and_redacts(tmp_path, payload):
         assert secret not in text
     assert emitted[-1]["body"] == b"untouched response"
     evidence = checker.records(path)
+    assert len({record["exchange"] for record in evidence}) == 1
+    assert evidence[0]["exchange"]
     assert evidence[-1]["sessions"] == 1 and evidence[-1]["active"] is False
     if payload.get("method") == "tools/call":
         assert evidence[0]["request"] == observer.digest(7)
@@ -306,3 +330,52 @@ def test_pinned_gateway_busy_projection():
     assert not checker.matching_cancel(
         [{"event": "request", "method": "notifications/cancelled", "time_ns": 2}], {"time_ns": 1}
     )
+
+
+def test_observer_correlates_interleaved_cancellation_responses(tmp_path):
+    class App:
+        sessions = {"private-session": None}
+        service = SimpleNamespace(active=None)
+
+        async def __call__(self, scope, receive, send):
+            message = await receive()
+            target = json.loads(message["body"])["params"]["requestId"]
+            await asyncio.sleep(0)
+            await send({"type": "http.response.start", "status": 400 if target == 7 else 202})
+            await send({"type": "http.response.body", "body": b""})
+
+    path = tmp_path / "audit.jsonl"
+    app = observer.ObserveHTTP(App(), path)
+
+    async def exchange(target):
+        async def receive():
+            return {
+                "type": "http.request",
+                "body": json.dumps(
+                    {"method": "notifications/cancelled", "params": {"requestId": target}}
+                ).encode(),
+            }
+
+        async def send(message):
+            pass
+
+        await app(
+            {
+                "type": "http",
+                "method": "POST",
+                "headers": [(b"mcp-session-id", b"private-session")],
+            },
+            receive,
+            send,
+        )
+
+    async def run():
+        await asyncio.gather(exchange(7), exchange(8))
+
+    asyncio.run(run())
+    evidence = checker.records(path)
+    assert [record["event"] for record in evidence[:2]] == ["request", "request"]
+    assert len({record["exchange"] for record in evidence}) == 2
+    call = {"session": observer.digest(b"private-session".hex()), "time_ns": 1}
+    assert not checker.matching_cancel(evidence, {**call, "request": observer.digest(7)})
+    assert checker.matching_cancel(evidence, {**call, "request": observer.digest(8)})

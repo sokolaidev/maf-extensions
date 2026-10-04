@@ -82,7 +82,9 @@ def verify_busy(projected: dict[str, Any]) -> None:
     )
 
 
-def matching_cancel(evidence: list[dict[str, Any]], call: dict[str, Any]) -> bool:
+def matching_cancel(
+    evidence: list[dict[str, Any]], call: dict[str, Any], *, after_ns: int = 0
+) -> bool:
     if not call.get("session") or not call.get("request"):
         return False
     return any(
@@ -90,7 +92,16 @@ def matching_cancel(evidence: list[dict[str, Any]], call: dict[str, Any]) -> boo
         and record.get("method") == "notifications/cancelled"
         and record.get("session") == call.get("session")
         and record.get("target") == call.get("request")
-        and record.get("time_ns", 0) > call.get("time_ns", 0)
+        and record.get("time_ns", 0) > max(call.get("time_ns", 0), after_ns)
+        and bool(record.get("exchange"))
+        and any(
+            response.get("event") == "response"
+            and response.get("exchange") == record["exchange"]
+            and response.get("session") == record["session"]
+            and response.get("status") == 202
+            and response.get("time_ns", 0) > record["time_ns"]
+            for response in evidence
+        )
         for record in evidence
     )
 
@@ -279,13 +290,8 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(
                 "Gateway abort did not establish MCP cancellation and exact-container removal"
             )
-        cancellations = [
-            r
-            for r in evidence
-            if r.get("method") == "notifications/cancelled" and r.get("time_ns", 0) >= abort_time
-        ]
         require(
-            matching_cancel(cancellations, active_call),
+            matching_cancel(evidence, active_call, after_ns=abort_time),
             "Cancellation was not observed after Gateway abort",
         )
         require(docker("ps", "-q", "--filter", f"id={other}"), "Unrelated owner was removed")
