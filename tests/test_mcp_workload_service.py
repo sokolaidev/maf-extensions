@@ -336,8 +336,8 @@ def test_registry_saturation_churn_and_idle_expiry():
                 await client.delete("/mcp", headers={"mcp-session-id": sid})
                 await until(lambda: not app.sessions)
             assert app.service._session_manager is None
-            app.idle_seconds = 0.04
-            await initialize(client)
+            sid = await initialize(client)
+            app.sessions[sid].touched -= app.idle_seconds
             await until(lambda: not app.sessions)
 
     asyncio.run(scenario())
@@ -1073,12 +1073,15 @@ def test_idle_expiry_does_not_evict_active_call_and_restart_rejects_old_id():
     async def scenario():
         h = Harness()
         async with running(h.service()) as (app, client, server):
-            app.idle_seconds = 0.03
             sid = await initialize(client)
+            idle_sid = await initialize(client)
             active = asyncio.create_task(call(client, sid, args={"hold": True}))
             await h.entered.wait()
-            await asyncio.sleep(0.1)
+            app.sessions[sid].touched -= app.idle_seconds
+            app.sessions[idle_sid].touched -= app.idle_seconds
+            await until(lambda: idle_sid not in app.sessions)
             assert sid in app.sessions and not h.cancelled.is_set()
+            assert not app.sessions[sid].closing
             h.hold.set()
             assert (await active).status_code == 200
         async with running(h.service()) as (app, client, server):
