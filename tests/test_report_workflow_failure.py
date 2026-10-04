@@ -56,6 +56,8 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
     condition = " || ".join(f"needs.{source}.result == 'failure'" for source in sources)
     if len(sources) > 1:
         condition = f"({condition})"
+    if name == "image-security.yml":
+        condition += " && github.event_name != 'pull_request'"
     assert reporter["if"] == f"always() && {condition}"
     assert reporter["permissions"] == {"contents": "read", "issues": "write"}
     assert all(
@@ -183,6 +185,14 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
             "sbx-live.yml": {"maf-sandbox", "maf-sandbox-docker-sbx"},
             "lock-drift.yml": {"maf-sandbox-bicep", "maf-sandbox-codeact"},
             "terraform-live.yml": {"maf-sandbox", "maf-sandbox-docker", "maf-sandbox-terraform"},
+            "image-security.yml": {
+                "maf-sandbox",
+                "maf-sandbox-docker",
+                "maf-sandbox-bicep",
+                "maf-sandbox-terraform",
+                "maf-sandbox-drawio",
+                "maf-sandbox-hyperlight",
+            },
         }[name]
         for metadata in (ROOT / "packages").glob("*/pyproject.toml"):
             project = tomllib.loads(metadata.read_text(encoding="utf-8"))["project"]
