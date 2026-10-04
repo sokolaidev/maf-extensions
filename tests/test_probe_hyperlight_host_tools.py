@@ -169,7 +169,9 @@ def test_timeout_refusal_requires_confirmed_host_stop() -> None:
     assert probe.validate_reports([report]) == ["callback-timeout"]
 
 
-@pytest.mark.parametrize("failure", [None, "reuse", "late_registration"])
+@pytest.mark.parametrize(
+    "failure", [None, "reuse", "late_registration", "retirement", "policy_cleanup", "both_cleanup"]
+)
 def test_reuse_policies_are_closed_and_drained_after_worker_retirement(monkeypatch, failure):
     policies = []
     workers = []
@@ -190,6 +192,8 @@ def test_reuse_policies_are_closed_and_drained_after_worker_retirement(monkeypat
 
         def close(self):
             self.retired = True
+            if failure in {"retirement", "both_cleanup"}:
+                raise OSError("worker retirement failed")
 
         async def exchange(self, message, policy, timeout):
             service = policy.service
@@ -218,6 +222,8 @@ def test_reuse_policies_are_closed_and_drained_after_worker_retirement(monkeypat
         async def cleanup(self):
             assert workers[0].retired
             await super().cleanup()
+            if failure in {"policy_cleanup", "both_cleanup"} and self is policies[0]:
+                raise ValueError("policy cleanup failed")
 
     monkeypatch.setattr(probe, "ProbeWorker", Worker)
     monkeypatch.setattr(probe, "Policy", Policy)
@@ -226,6 +232,22 @@ def test_reuse_policies_are_closed_and_drained_after_worker_retirement(monkeypat
         pytest.fail("closed probe policy must not publish")
 
     async def exercise():
+        if failure in {"retirement", "policy_cleanup", "both_cleanup"}:
+            expected = {
+                "retirement": OSError,
+                "policy_cleanup": ValueError,
+                "both_cleanup": ExceptionGroup,
+            }[failure]
+            with pytest.raises(expected) as error:
+                await probe.probe_case("reuse-check", "pass", reuse=True)
+            if failure == "both_cleanup":
+                assert [type(e) for e in error.value.exceptions] == [OSError, ValueError]
+            assert len(policies) == 2 and workers[0].retired
+            for policy in policies:
+                assert policy.closed and not policy.pending
+                with pytest.raises(RuntimeError, match="closed"):
+                    await policy.run.call("echo", {"value": 1}, publish=publish)
+            return
         report = await probe.probe_case("reuse-check", "pass", reuse=True)
         assert report["reaped"] and len(policies) == 2
         assert all(not policy.pending for policy in policies)

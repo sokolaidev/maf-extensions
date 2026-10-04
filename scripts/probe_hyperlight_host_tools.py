@@ -86,7 +86,12 @@ def decode(raw: bytes) -> dict[str, Any]:
     """Require a complete bounded JSON object."""
     if len(raw) > WIRE_LIMIT or not raw.endswith(b"\n"):
         raise ValueError("incomplete or oversized IPC envelope")
-    value = json.loads(raw, parse_constant=reject_constant, object_pairs_hook=unique_object)
+    value = json.loads(
+        raw,
+        parse_constant=reject_constant,
+        parse_float=finite_float,
+        object_pairs_hook=unique_object,
+    )
     if not isinstance(value, dict):
         raise ValueError("IPC envelope must be an object")
     return value
@@ -100,6 +105,14 @@ def unique_object(items: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError("duplicate JSON field")
         result[key] = value
     return result
+
+
+def finite_float(value: str) -> float:
+    """Reject JSON numbers that overflow the finite float range."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("JSON number must be finite")
+    return number
 
 
 def reject_constant(value: str) -> Any:
@@ -263,19 +276,7 @@ class ProbeWorker(Worker):
             self._exchange_failed = True
             policy.revoke()
 
-            async def retire() -> None:
-                await asyncio.to_thread(self.close)
-                with contextlib.suppress(Exception):
-                    await task
-                await policy.cleanup()
-
-            retirement = asyncio.create_task(retire())
-            while not retirement.done():
-                try:
-                    await asyncio.shield(retirement)
-                except asyncio.CancelledError:
-                    continue
-            retirement.result()
+            await retire_worker(self, [policy])
             raise
         finally:
             if operation == "run":
@@ -445,7 +446,10 @@ class Policy:
         request: dict[str, Any] = {}
         if size <= self.request_limit:
             request = json.loads(
-                payload, parse_constant=reject_constant, object_pairs_hook=unique_object
+                payload,
+                parse_constant=reject_constant,
+                parse_float=finite_float,
+                object_pairs_hook=unique_object,
             )
             if (
                 not isinstance(request, dict)
@@ -525,13 +529,58 @@ class Policy:
             CONTEXT.reset(token)
 
     async def cleanup(self) -> None:
-        """Release synthetic stubborn tasks only after the worker is retired."""
+        """Revoke authority and drain synthetic callback tasks."""
         self.revoke()
         self.release.set()
         for task in self.pending:
             task.cancel()
         await asyncio.gather(*self.pending, return_exceptions=True)
         self.pending.clear()
+
+
+async def retire_worker(worker: ProbeWorker, policies: list[Policy]) -> None:
+    """Drain every policy despite retirement errors and repeated caller cancellation."""
+    for policy in policies:
+        policy.revoke()
+
+    async def retire() -> None:
+        errors: list[Exception] = []
+        closed = False
+        try:
+            await asyncio.to_thread(worker.close)
+            closed = True
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+        finally:
+            for policy in policies:
+                try:
+                    await policy.cleanup()
+                except Exception as error:  # noqa: BLE001
+                    errors.append(error)
+        transfer = getattr(worker, "_transfer_task", None)
+        if transfer is not None:
+            if closed or transfer.done():
+                await asyncio.gather(transfer, return_exceptions=True)
+            else:
+                # A failed close cannot promise EOF; retain the reader for a later cleanup attempt.
+                transfer.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("worker retirement and policy cleanup failed", errors)
+
+    retirement = asyncio.create_task(retire())
+    cancelled = False
+    while not retirement.done():
+        try:
+            await asyncio.shield(retirement)
+        except asyncio.CancelledError:
+            cancelled = True
+    retirement.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
@@ -587,10 +636,8 @@ async def probe_case(name: str, code: str, **options: Any) -> dict[str, Any]:
         report["error_detail"] = str(error)[:500]
     finally:
         report["worker_exit_before_cleanup"] = worker.process.poll()
-        worker.close()
+        await retire_worker(worker, policies)
         report["worker_stderr"] = worker._stderr.decode("utf-8", errors="replace")
-        for active in policies:
-            await active.cleanup()
         report["reaped"] = worker.process.poll() is not None and not worker._drainer.is_alive()
         report["events"] = policy.events
         report["seconds"] = round(time.monotonic() - started, 3)

@@ -405,3 +405,123 @@ def test_reused_worker_only_accepts_the_new_run(stale):
 def test_duplicate_wire_fields_are_refused():
     with pytest.raises(ValueError, match="duplicate"):
         probe.decode(b'{"op":"result","op":"callback"}\n')
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999"])
+def test_exponent_overflow_is_rejected_in_wire_data(number):
+    with pytest.raises(ValueError, match="finite"):
+        probe.decode(('{"value":' + number + "}\n").encode())
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999"])
+def test_exponent_overflow_is_rejected_before_callback_dispatch(number):
+    async def exercise():
+        policy = Policy("current")
+        message = callback()
+        message["payload"] = '{"name":"echo","arguments":{"value":[' + number + "]}}"
+        try:
+            with pytest.raises(ValueError, match="finite"):
+                await policy.service(message)
+            assert not policy.events and not policy.pending
+            assert policy.sequence == 0
+        finally:
+            await policy.cleanup()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("number", ["1.25", "1e308"])
+def test_finite_json_floats_still_reach_the_callback(number):
+    async def exercise():
+        policy = Policy("current")
+        message = callback()
+        message["payload"] = '{"name":"echo","arguments":{"value":' + number + "}}"
+        try:
+            assert probe.decode(('{"value":' + number + "}\n").encode()) == {"value": float(number)}
+            response = await policy.service(message)
+            assert json.loads(response["response"]) == {"value": float(number)}
+        finally:
+            await policy.cleanup()
+
+    asyncio.run(exercise())
+
+
+def test_close_failure_drains_policy_and_retains_the_unfinished_reader():
+    async def exercise():
+        policy = Policy("current")
+        await policy.service(callback())
+        failure = OSError("worker retirement failed")
+
+        class BrokenCloseWorker(Worker):
+            def close(self):
+                self.close_started.set()
+                raise failure
+
+        worker = BrokenCloseWorker([])
+        try:
+            with pytest.raises(OSError) as error:
+                await worker.exchange({"op": "run", "run": "current", "code": "pass"}, policy, 0.1)
+            assert error.value is failure
+            await assert_revoked(policy)
+            assert not policy.pending
+            assert worker._transfer_task is not None and not worker._transfer_task.done()
+            assert not worker.closed
+            with pytest.raises(RuntimeError, match="cannot be reused"):
+                await worker.exchange({"op": "run", "run": "current", "code": "pass"}, policy, 1)
+            assert [e for e in policy.events if e["stage"] == "core_observation"] == [
+                {"stage": "core_observation", "outcome": "delivery_uncertain", "bytes": 0}
+            ]
+        finally:
+            Worker.close(worker)
+            if worker._transfer_task is not None:
+                await asyncio.gather(worker._transfer_task, return_exceptions=True)
+            await policy.cleanup()
+
+    asyncio.run(exercise())
+
+
+def test_retirement_waits_for_transfer_completion_after_close():
+    async def exercise():
+        policy = Policy("current")
+        worker = Worker([])
+        reader_release = threading.Event()
+        at_eof = threading.Event()
+        retirement_returned = asyncio.Event()
+
+        class HeldReader(Reader):
+            def readline(self, limit):
+                value = super().readline(limit)
+                if not value:
+                    at_eof.set()
+                    assert reader_release.wait(5)
+                return value
+
+        worker._output = HeldReader([])
+
+        async def exchange():
+            try:
+                return await worker.exchange(
+                    {"op": "run", "run": "current", "code": "pass"}, policy, 2
+                )
+            finally:
+                retirement_returned.set()
+
+        task = asyncio.create_task(exchange())
+        try:
+            assert await asyncio.to_thread(worker._output.reading.wait, 2)
+            task.cancel()
+            assert await asyncio.to_thread(at_eof.wait, 2)
+            assert worker.closed
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(retirement_returned.wait(), 0.05)
+            reader_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert worker._transfer_task is None
+        finally:
+            reader_release.set()
+            worker.close()
+            await asyncio.gather(task, return_exceptions=True)
+            await policy.cleanup()
+
+    asyncio.run(exercise())
