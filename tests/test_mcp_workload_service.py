@@ -134,6 +134,13 @@ class Harness:
         return core.WorkloadService([a, b], [resource])
 
 
+@pytest.mark.parametrize("sdk_version", ["1.26.0", "1.28.0", "2.0.0"])
+def test_http_adapter_rejects_unqualified_sdk_versions(monkeypatch, sdk_version):
+    monkeypatch.setattr(http, "version", lambda _: sdk_version)
+    with pytest.raises(RuntimeError, match=r"requires mcp==1\.28\.1"):
+        http.WorkloadHTTP(Harness().service(), TOKEN, 8765)
+
+
 @asynccontextmanager
 async def running(service, shutdown_seconds=5):
     sock = socket.socket()
@@ -1029,7 +1036,7 @@ asyncio.run(main())
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert report["passed"]
     assert report["versions"]["maf-sandbox"] == "0.46.0"
-    assert report["versions"]["mcp"] == "1.26.0"
+    assert report["versions"]["mcp"] == "1.28.1"
     print(json.dumps(report))
 
 

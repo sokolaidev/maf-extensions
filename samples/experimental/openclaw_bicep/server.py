@@ -8,7 +8,7 @@
 #     "maf-sandbox==0.46.0",
 #     "maf-sandbox-bicep==0.22.0",
 #     "maf-sandbox-docker==0.24.4",
-#     "mcp==1.26.0",
+#     "mcp==1.28.1",
 #     "pydantic>=2.11,<3",
 #     "jsonschema>=4.26,<5",
 #     "starlette==1.7.0",
@@ -414,7 +414,7 @@ class BoundedFastMCP(FastMCP[None]):
         """Serve only bounded frames through the pinned SDK's FastMCP transport."""
         bounded = cast(IO[str], BoundedInput(sys.stdin.buffer))
         async with stdio_server(stdin=anyio.wrap_file(bounded)) as streams:
-            # SDK 1.26.0 exposes custom stdio only through its underlying server.
+            # Custom stdio requires access to the SDK's underlying server.
             await self._mcp_server.run(*streams, self._mcp_server.create_initialization_options())
 
 
