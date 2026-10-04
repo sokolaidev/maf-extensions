@@ -15,7 +15,45 @@
     "id": 111318929339,
     "name": "Run its suite against the published cores it admits",
     "conclusion": "success",
-    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111318929339"
+    "html_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37162111482/job/111318929339",
+    "steps": [
+      {
+        "name": "Set up job",
+        "conclusion": "success"
+      },
+      {
+        "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "Install uv",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "Run actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "Build the sibling wheels",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "Run the suite against every published core the wheel admits",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "The release's own packages install together",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "The candidate beside the published suite",
+        "conclusion": "skipped"
+      },
+      {
+        "name": "Complete job",
+        "conclusion": "success"
+      }
+    ]
   },
   {
     "id": 111318929348,
