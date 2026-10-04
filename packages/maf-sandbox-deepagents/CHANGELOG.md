@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-deepagents-v0.4.5...maf-sandbox-deepagents-v0.4.6) (2026-10-04)
+
+
+### Fixes
+
+* require maf-sandbox 0.47.0 in the dependents, and admit the 0.47 line ([#1694](https://github.com/sokolaidev/maf-extensions/issues/1694)) ([232537f](https://github.com/sokolaidev/maf-extensions/commit/232537f579281e88ce50d0ff9a3915e8df085907))
+
 ## [0.4.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-deepagents-v0.4.4...maf-sandbox-deepagents-v0.4.5) (2026-10-01)
 
 
