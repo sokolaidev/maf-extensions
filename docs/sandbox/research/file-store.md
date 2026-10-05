@@ -87,3 +87,67 @@ A future host may also choose to keep the current coarse policy: mark every file
 - The measurements do not establish a live-model attack rate, sandbox behavior, persistence safety, cross-process filesystem integrity or distributed host performance.
 
 The measured laundering chain is the reason the current contract remains conservative; the measured seams explain where a future precise provenance channel could be added without pretending that the file store itself carries FIDES metadata.
+
+
+## Scoped-store composition request
+
+The historical label-gap measurements above are separate from this namespace-composition question. On 2026-10-05, a probe against upstream commit `b9d24c8fb484c8330abe8bb9e7500ca3c3bbf46c` on CPython 3.13.12 created one `InMemoryAgentFileStore` and a `FileAccessProvider(session_scoped=True)`. Calling the provider's public `before_run` hook for two sessions and invoking its write/read tools let both sessions use `notes.txt` independently: they read `AAA` and `BBB`, respectively. The supplied store's `read("notes.txt")` returned `None`. The provider creates the confined paths internally; it does not turn the supplied store into the same relative-name view for other consumers. This demonstrates the composition gap, not a failure of provider isolation.
+
+### Prepared upstream feature request
+
+**Title:** `[Feature]: Expose the session-scoped file-store view for custom tools and sinks`
+
+**Description**
+
+`FileAccessProvider(session_scoped=True)` confines its tools to a derived workspace. Custom tools, listings, artifact sinks and provenance observers also need that same workspace with relative names. Passing them the original `AgentFileStore` gives them the unscoped root; reproducing the provider's private path derivation couples them to its internals and can make provenance refer to a different file than the one actually read.
+
+Please expose a reusable confined `AgentFileStore` view, resolved from a host-authorized session or explicit scope. The provider and custom consumers should share that view rather than independently rebuilding prefixes. Resolve scope at the request boundary, refuse an absent required scope, and ensure a view retained by one request cannot follow a later request into another namespace. Do not take scope identity from model arguments.
+
+This is distinct from shared-store update serialization in #8909 and #8912. A view must preserve any version tokens, conditional updates or locking capabilities the underlying store supports; a namespace wrapper alone must not promise atomic read-modify-write or cross-process serialization. Until this exists, hosts can continue supplying their own scoped stores with provider session scoping disabled, so paths are not prefixed twice.
+
+**Code Sample**
+
+Current public-API example, using no model or backend:
+
+```python
+import asyncio
+from agent_framework import (
+    AgentSession, FileAccessProvider, InMemoryAgentFileStore, SessionContext,
+)
+
+async def main():
+    store = InMemoryAgentFileStore()
+    provider = FileAccessProvider(store=store, session_scoped=True)
+    for session_id, payload in (("session-a", "AAA"), ("session-b", "BBB")):
+        context = SessionContext(session_id=session_id, input_messages=[])
+        await provider.before_run(
+            agent=None, session=AgentSession(session_id=session_id),
+            context=context, state={},
+        )
+        tools = {tool.name: tool for tool in context.tools}
+        await tools["file_access_write"].invoke(
+            arguments={"file_name": "notes.txt", "content": payload}
+        )
+        result = await tools["file_access_read"].invoke(
+            arguments={"file_name": "notes.txt"}
+        )
+        assert result[0].text == payload
+    assert await store.read("notes.txt") is None
+
+asyncio.run(main())
+```
+
+Desired composition: the provider, custom reader, listing, sink and provenance observer all receive one host-resolved view. Each sees `notes.txt`; their underlying storage and provenance identity includes the same scope. API naming remains an upstream design choice.
+
+**Acceptance criteria**
+
+- Two simultaneous sessions write the same relative name without observing each other's contents, listings, grep results or provenance records.
+- Read, write, delete, directory operations, listings, search, replace and replace-lines all share one confinement rule; reject absolute paths, parent traversal and filesystem symlink escapes where applicable.
+- Preserve relative display names and canonical scoped identity; normalize equivalent spellings consistently without confusing distinct scopes.
+- Refuse missing scope and accidental double scoping; document explicit-scope precedence and view lifetime under a shared provider.
+- Route every mutation and sink write through the same provenance boundary; a model-written path cannot regain a trusted floor after delete, refusal, overwrite or namespace mismatch.
+- Preserve supported concurrency capabilities and propagate conditional-write conflicts. No new atomicity guarantee is implied for stores that lack one.
+
+**Language/SDK:** Python
+
+Draft only, not filed. Existing concurrency requests remain [#8909](https://github.com/microsoft/agent-framework/issues/8909) and [#8912](https://github.com/microsoft/agent-framework/issues/8912); neither is replaced by this namespace proposal. This proposes a contract and acceptance checks, not a new suite store implementation or completed live qualification.
