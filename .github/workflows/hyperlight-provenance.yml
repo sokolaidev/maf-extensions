@@ -43,7 +43,9 @@ jobs:
           docker build --platform linux/amd64 \
             --build-arg HYPERLIGHT_RUNTIME=hyperlight-provenance:runtime \
             --tag hyperlight-provenance:application "$sample"
-          docker tag hyperlight-provenance:application hyperlight-provenance:runtime
+          probe_command=$(docker image inspect --format '{{json .Config.Cmd}}' hyperlight-provenance:runtime)
+          printf 'FROM hyperlight-provenance:application\nCMD %s\n' "$probe_command" \
+            | docker build --tag hyperlight-provenance:runtime -
       - name: Publish isolated test candidates
         id: publish
         run: |
