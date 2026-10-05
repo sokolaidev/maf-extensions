@@ -6,6 +6,8 @@ import argparse
 import base64
 import json
 import platform
+import subprocess
+import sys
 from pathlib import Path
 
 from .host_call import digest, execute
@@ -26,9 +28,11 @@ def main() -> int:
     parser.add_argument("--helper", type=Path, required=True)
     parser.add_argument("--startup", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--seed-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     helper, startup, state = args.helper.resolve(), args.startup.resolve(), args.state_dir.resolve()
-    state.mkdir(parents=True, exist_ok=False)
+    if not args.seed_only:
+        state.mkdir(parents=True, exist_ok=False)
     profile = {
         "helper": digest(helper),
         "startup_index": digest(startup / "index.json"),
@@ -43,9 +47,31 @@ def main() -> int:
     )
     first = b"mxc_stored_counter = 1; print(mxc_stored_counter)"
     measurements = {}
-    with SharedStore(state / "store", "one", profile, limits) as db:
-        saved = call(db, "seed", first, helper, startup, scratch, CHUNK)
-        assert console(saved).strip() == b"1"
+    if args.seed_only:
+        with SharedStore(state / "store", "one", profile, limits) as db:
+            saved = call(db, "seed", first, helper, startup, scratch, CHUNK)
+            assert console(saved).strip() == b"1"
+            (state / "seed-result.json").write_bytes(saved)
+        return 0
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.experiments.mxc_session_patch.storage_probe",
+            "--helper",
+            str(helper),
+            "--startup",
+            str(startup),
+            "--state-dir",
+            str(state),
+            "--seed-only",
+        ],
+        check=True,
+        timeout=180,
+    )
+    with (state / "seed-result.json").open("rb") as stream:
+        saved = stream.read(MAX_RESULT + 1)
+    assert len(saved) <= MAX_RESULT and console(saved).strip() == b"1"
     with SharedStore(state / "store", "one", profile, limits) as db:
         assert (
             call(db, "seed", first, state / "missing", state / "missing", scratch, CHUNK) == saved
