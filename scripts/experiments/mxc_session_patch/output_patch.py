@@ -37,6 +37,41 @@ def state(source: Path, files: dict[str, dict[str, str | None]]) -> str:
     return matches[0]
 
 
+def configure(sources: dict[str, Path], build_dir: Path) -> None:
+    """Write a new isolated build using the pinned output overlay and lockfile."""
+    build_dir.mkdir(parents=True, exist_ok=False)
+    template = (ROOT / "Cargo.toml.template").read_text(encoding="utf-8")
+    for key, path in {
+        "@MAIN@": ROOT / "probe/main.rs",
+        "@COMMON@": sources["session"] / "src/backends/hyperlight/common",
+        "@WXC@": sources["session"] / "src/core/wxc_common",
+    }.items():
+        template = template.replace(key, json.dumps(path.as_posix()))
+    (build_dir / "Cargo.toml").write_text(template, encoding="utf-8")
+    shutil.copyfile(ROOT / "Cargo.lock", build_dir / "Cargo.lock")
+    manifest = build_dir / "Cargo.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "\n[features]\nbounded-output = []\nbounded-storage = []\n", ""
+        )
+        + '\n[features]\ndefault = ["bounded-output"]\nbounded-storage = []\nbounded-output = ["hyperlight_common/maf-output-preview"]\n'
+        "\n[patch.crates-io]\nhyperlight-unikraft = { path = "
+        + json.dumps(sources["runtime"].as_posix())
+        + " }\n",
+        encoding="utf-8",
+    )
+    lock = build_dir / "Cargo.lock"
+    blocks = lock.read_text(encoding="utf-8").split("[[package]]")
+    for index, block in enumerate(blocks):
+        if '\nname = "hyperlight-unikraft"\n' in block:
+            blocks[index] = "\n".join(
+                line
+                for line in block.split("\n")
+                if not line.startswith(("source =", "checksum ="))
+            )
+    lock.write_text("[[package]]".join(blocks), encoding="utf-8")
+
+
 def main() -> int:
     """Validate both overlays before mutation and configure an isolated locked build."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -88,35 +123,7 @@ def main() -> int:
     else:
         if current != "after" or args.build_dir is None:
             parser.error("configure requires applied overlays and a new --build-dir")
-        args.build_dir.mkdir(parents=True, exist_ok=False)
-        template = (ROOT / "Cargo.toml.template").read_text(encoding="utf-8")
-        for key, path in {
-            "@MAIN@": ROOT / "probe/main.rs",
-            "@COMMON@": sources["session"] / "src/backends/hyperlight/common",
-            "@WXC@": sources["session"] / "src/core/wxc_common",
-        }.items():
-            template = template.replace(key, json.dumps(path.as_posix()))
-        (args.build_dir / "Cargo.toml").write_text(template, encoding="utf-8")
-        shutil.copyfile(ROOT / "Cargo.lock", args.build_dir / "Cargo.lock")
-        manifest = args.build_dir / "Cargo.toml"
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8").replace("\n[features]\nbounded-output = []\n", "")
-            + '\n[features]\ndefault = ["bounded-output"]\nbounded-output = ["hyperlight_common/maf-output-preview"]\n'
-            "\n[patch.crates-io]\nhyperlight-unikraft = { path = "
-            + json.dumps(sources["runtime"].as_posix())
-            + " }\n",
-            encoding="utf-8",
-        )
-        lock = args.build_dir / "Cargo.lock"
-        blocks = lock.read_text(encoding="utf-8").split("[[package]]")
-        for index, block in enumerate(blocks):
-            if '\nname = "hyperlight-unikraft"\n' in block:
-                blocks[index] = "\n".join(
-                    line
-                    for line in block.split("\n")
-                    if not line.startswith(("source =", "checksum ="))
-                )
-        lock.write_text("[[package]]".join(blocks), encoding="utf-8")
+        configure(sources, args.build_dir)
     return 0
 
 

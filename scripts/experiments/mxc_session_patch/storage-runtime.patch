@@ -1,0 +1,18 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1804,6 +1804,15 @@
+         Ok(snapshot)
+     }
+
++    /// Capture and export into a new directory under an aggregate byte and file budget.
++    pub fn snapshot_to_bounded(
++        &mut self, dir: impl AsRef<Path>, bytes: u64, files: u64,
++    ) -> Result<Arc<Snapshot>> {
++        let snapshot = self.snapshot()?;
++        snapshot.save_bounded(dir, &snapshot_tag(), bytes, files)?;
++        Ok(snapshot)
++    }
++
+     /// Restore a snapshot into this sandbox in place and put the restored
+     /// guest right for this host with a `resume` entry, as
+     /// [`SandboxBuilder::boot`] does, with this sandbox's mounts.

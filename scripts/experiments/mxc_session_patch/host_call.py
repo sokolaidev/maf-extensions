@@ -11,9 +11,13 @@ import platform
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
-from host_store import CHUNK, Refused, Store
+if __package__:
+    from .host_store import CHUNK, Refused, Store
+else:
+    from host_store import CHUNK, Refused, Store
 
 
 def digest(path: Path) -> str:
@@ -102,9 +106,20 @@ def bounded_result(report: Path, limit: int) -> dict[str, object]:
 
 
 def execute(
-    helper: Path, startup: Path, work: Path, code: bytes, output_limit: int | None = None
+    helper: Path,
+    startup: Path,
+    work: Path,
+    code: bytes,
+    output_limit: int | None = None,
+    before_start: Callable[[subprocess.Popen[bytes]], None] = lambda _: None,
+    checkpoint_limits: tuple[int, int] | None = None,
 ) -> bytes:
     """Supervise one helper; opt-in capture keeps payload separate from native control."""
+    if checkpoint_limits is not None and (
+        output_limit is None
+        or any(type(value) is not int or value <= 0 for value in checkpoint_limits)
+    ):
+        raise Refused("invalid bounded checkpoint configuration")
     request = work / "code.py"
     request.write_bytes(code)
     report = work / "native.json"
@@ -113,12 +128,17 @@ def execute(
     with subprocess.Popen(
         [
             str(helper),
-            "call-bounded" if output_limit is not None else "call-owned",
+            "call-stored"
+            if checkpoint_limits is not None
+            else "call-bounded"
+            if output_limit is not None
+            else "call-owned",
             str(startup),
             str(work / "candidate"),
             str(request),
             str(report),
             *([str(output_limit)] if output_limit is not None else []),
+            *([str(value) for value in checkpoint_limits] if checkpoint_limits is not None else []),
         ],
         env=env,
         cwd=work,
@@ -127,8 +147,14 @@ def execute(
         stderr=subprocess.PIPE,
     ) as child:
         assert child.stdin is not None
-        child.stdin.write(b"MXCOWN1\n")
-        child.stdin.flush()
+        try:
+            before_start(child)
+            child.stdin.write(b"MXCOWN1\n")
+            child.stdin.flush()
+        except BaseException:
+            child.kill()
+            child.wait(timeout=15)
+            raise
         outputs = [bytearray(), bytearray()]
         overflow = threading.Event()
 

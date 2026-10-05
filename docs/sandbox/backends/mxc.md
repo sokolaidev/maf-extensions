@@ -56,6 +56,122 @@ Checkpoint metadata binds trusted ownership, physical generation, runtime and gu
 
 The existing `SNAPSHOT` capability promises reset to a pre-input baseline. It is not, by itself, a durable session-checkpoint API. Capturing and restoring a modified interpreter, including the supported treatment of Python objects, open files, threads and sockets, requires separate qualification. Preserving files alone does not fulfill interpreter recovery.
 
+## Session lifetime
+
+Persistent sessions have no automatic idle expiry by default. The host can delete a session explicitly or configure an idle timeout. Storage quotas still apply while a session is retained; disabling idle expiry does not authorize unbounded storage. Session idle expiry cannot shorten an already committed result-retention promise.
+
+### Session deletion
+
+Deleting a session retires its identity, refuses new execution and stops active execution before reclaiming the checkpoint. Retirement is durable: the same session identity cannot later create fresh state. Cleanup remains incomplete while execution termination or safe reclamation is unresolved, and outstanding reservations remain charged until their data are accounted for or reclaimed.
+
+Completed results and delivery artifacts remain available for matching retries through their promised expiry, including any applicable clock-forgiveness allowance. Checkpoint reclamation removes only data no longer referenced by retained deliveries or active readers. Retained results and identity records remain charged to the retired session and the shared store; deletion cannot bypass either quota or make a completed call eligible for execution again.
+
+## Result retention
+
+Completed call results and their delivery artifacts remain available for retry for 24 hours from durable commit by default. The host configures the retention window; each committed call records its expiry so later configuration changes cannot shorten an existing promise. Reading or retrying a result does not extend its expiry.
+
+Within the retention window, a matching retry receives the identical committed result and artifacts without executing the program again. After expiry, a retry receives an explicit `result_expired` outcome. The store retains enough durable call identity to distinguish an expired call from a new one; removing a result cannot make its call eligible for execution again.
+
+Storage pressure refuses new work rather than evicting results or artifacts before their promised expiry. Result retention is separate from checkpoint retention: the latest committed checkpoint remains available while the session is recoverable. Superseded checkpoints and chunks can be collected only when no live state, pending publication or retained result/artifact references them. A 24-hour result window does not require retaining 24 hours of complete VM checkpoints.
+
+### Clock forgiveness
+
+Each completed result has a grace budget of five minutes by default for clock uncertainty, configurable by the host. The budget caps the extra retention granted because the host clock is uncertain. While expiry is deferred within that budget, matching retries continue to receive the saved result and artifacts. Once the budget is exhausted, expiry proceeds using the host clock; uncertainty does not indefinitely suspend expiry cleanup.
+
+The configured allowance and consumed budget are durably associated with the result. Retries, restarts and repeated clock anomalies do not replenish it. The base expiry remains fixed, and the latest checkpoint's recoverability remains independent of result expiry. The local implementation uses the accounting procedure below; its crash behavior requires qualification before use.
+
+The retry window is evaluated under this bounded clock-forgiveness policy. A sufficiently incorrect host clock can shorten the actual elapsed retry window; the policy does not guarantee 24 hours of real elapsed retention under arbitrary clock failure. Storage pressure still cannot shorten the policy's retention period, and expired call identity remains protected against re-execution.
+
+### Durable clock-budget accounting
+
+A delivery record persists its base UTC expiry, original grace allowance, remaining grace and terminal delivery state. The outer grace deadline is the base expiry plus the original allowance; it is never calculated from the time of a retry. Both the allowance and base expiry are fixed at publication, so later configuration changes cannot replenish the budget or change an existing record's deadlines. The first implementation stores integer time values and takes UTC and monotonic observations through an injectable clock.
+
+During ownership, the clock observer compares UTC progress with elapsed monotonic time. A backwards UTC step or a discrepancy greater than one second, after allowing for the sampling interval, marks affected retained results uncertain. The discrepancy is measured against the owner's initial paired observation so successive small differences cannot silently reset the comparison. Existing results are conservatively uncertain after ownership recovery because process-local observations cannot establish clock continuity through downtime. Uncertainty stays attached to an affected result until expiry; a later plausible clock sample does not reset its budget. The one-second detection tolerance is an implementation parameter distinct from the host's five-minute grace allowance.
+
+Expiry and retry use the same decision under session ownership:
+
+| Condition | Decision |
+|---|---|
+| Delivery already marked expired | Return `result_expired`, even if UTC later moves backwards |
+| UTC is before the base expiry | Retain and permit matching replay; no forgiveness grant is needed |
+| UTC has reached the base expiry, without observed uncertainty | Mark delivery expired |
+| UTC has reached the outer grace deadline | Mark delivery expired; unused forgiveness cannot start a later window |
+| UTC is between the two deadlines, with uncertainty and remaining grace or a valid grant | Permit matching replay under a prepaid grace grant |
+| No grace remains and no valid grant exists | Use host UTC and mark delivery expired when it has reached the base expiry |
+
+A grant covers at most one second, shortened to the remaining budget and the time left before the outer deadline. Before granting it, a transaction deducts its full duration from the persisted budget and records the owner generation. Its local monotonic deadline is calculated before that transaction, so a slow commit cannot extend the grant. The grant becomes usable only after confirmed commit, is shared by retries within that interval, and is never refunded. A crash or ownership change forfeits its unused part; the next owner can spend only the persisted remainder. Thus each crash can lose at most one outstanding one-second grant per result, while repeated crashes cannot recreate grace. No grant can override the UTC outer deadline or an expired delivery state. Python's [monotonic clock contract](https://docs.python.org/3/library/time.html#time.monotonic) supplies elapsed-time measurement, not a portable timestamp to restore after reboot.
+
+Failure to persist a grant or expiry returns an explicit storage failure; it cannot authorize execution of the call or deletion of its delivery bytes. Marking delivery expired and removing its retention references occur atomically, with physical collection handled separately. Expiry is evaluated on access and collection: retained bytes awaiting a cleanup pass do not authorize late replay. A clock stuck before the base expiry can still delay expiry under the selected host-clock fallback; the grace budget limits additional forgiveness, not real elapsed retention under arbitrary clock failure.
+
+## Storage quotas
+
+Durable session storage has both a per-session quota and an aggregate quota across the shared store. Both limits apply: a single session cannot consume the entire store allowance, and individually compliant sessions cannot collectively exceed the store allowance. Exhausting either quota refuses new work without shortening existing result-retention promises.
+
+Enabling persistence requires the host to configure both quota values explicitly. There are no built-in quota defaults and no implicit unlimited mode. Missing or invalid quota configuration refuses persistent-session admission; it does not silently fall back to fresh state.
+
+Both quotas measure logical storage usage: uncompressed retained checkpoint, result and artifact bytes, bounded metadata charges, and outstanding reservations. Compression and deduplication reduce physical storage without increasing admission capacity. Each retained object is charged in full to its owning session; artifact bytes embedded in a result are counted there once. Expired-call identity records remain charged after their payloads are collected.
+
+Physical disk usage has separate safeguards covering restore copies, candidate exports, database pages and journals, compression overhead, diagnostics and cleanup. Temporary storage and concurrency are bounded independently; logical quota availability is not a promise of available filesystem space. Disk exhaustion refuses durable success and preserves the previous committed recovery point. Logical collection does not by itself establish physical disk reclamation.
+
+Before executing a new persistent call, the store atomically reserves capacity against both quotas for the maximum permitted checkpoint and result, including retained delivery artifacts. The previous committed checkpoint, unexpired results and existing reservations remain charged during admission. If either quota cannot accommodate the reservation, the call is refused before guest execution; replaying an existing committed result does not require a new execution reservation.
+
+The reservation remains in force through checkpoint preparation and atomic publication. Publication converts reserved capacity into retained usage and releases the unused remainder; a failed or interrupted call releases capacity only after its stored and temporary data are accounted for or reclaimed. This prevents quota exhaustion caused by competing admissions, but does not guarantee filesystem capacity or eliminate storage failures. Failed publication preserves the previous committed recovery point and cannot acknowledge durable success.
+
+The [storage retention proposal](../research/mxc-backend.md#storage-retention-follow-up-proposal) records the current store gaps, proposed transaction boundary and qualification sequence. Logical-byte accounting, the local SQLite transaction boundary and bounded clock forgiveness are selected. The local accounting and recovery procedures below specify the next experimental increment; the separate [shared-store core](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#shared-store-accounting-increment) implements logical reservations and expiry, while native integration and full qualification remain pending.
+
+## Local storage implementation
+
+The first storage implementation uses one local SQLite database per configured shared-store root, containing all admitted sessions. Session identity, call outcomes, checkpoint/result content and references, quota accounting and reservations share that transaction boundary. Admission checks both quotas and records the reservation atomically; publication commits the new checkpoint, saved delivery record and reservation conversion together.
+
+Each session retains exclusive operating-system ownership through a session-specific lock, acquired before database transactions. Guest execution runs outside a database write transaction. Database writes serialize; checkpoint publication latency and contention require qualification before claiming throughput across sessions.
+
+This implementation uses a private local filesystem and supports same-machine recovery. SQLite is the current implementation choice, not a requirement on a future remote storage provider. Network filesystems, machine replacement and distributed fencing remain separate qualification work; selecting SQLite does not reduce the agreed host-configured cross-machine recovery scope.
+
+### Reservation accounting and launch
+
+Each reservation binds the store, session, call, request digest, owner generation and a host-generated scratch token. Its logical charge is the maximum new checkpoint bytes plus maximum serialized result bytes, separately retained artifact bytes and bounded metadata for the new records and manifests. Artifact bytes embedded in the result are not added again. Existing retained state remains charged throughout admission. Versioned metadata accounting includes bounded names, inventories, reference lists and expired/retired identity records; a metadata field with no established bound cannot enter the format. Compression, deduplication and expected later collection are not admission credits.
+
+The shared store also records separate temporary-space allowances for restore copies, candidate export, request/control/output files and cleanup, including their file-count bounds. Publication does not release these allowances while scratch remains. Filesystem capacity checks additionally cover database allocation and transaction headroom; those checks cannot promise space against unrelated writers. The native exporter must enforce candidate bounds while writing, or use a qualified bounded storage mechanism. Rejecting an oversized completed export alone does not bound temporary storage.
+
+Under the session lock, admission starts a write transaction, checks an existing call before considering new work, validates active session ownership, and compares retained usage plus reservations plus the new charge with each quota. It persists the pending call, logical reservation and temporary-space allowance together before making scratch or starting a helper. A matching committed retry needs no new execution reservation, including for a retired session. New work on a retired session refuses. Counter updates and row changes share the transaction, with overflow and negative balances rejected. SQLite's [transaction rules](https://www.sqlite.org/lang_transaction.html) determine contention handling; a busy or failed commit never authorizes execution.
+
+Scratch lives under the store's managed scratch root at the recorded token, using confined access and no links. The host creates it only after reservation commit. A launched helper remains blocked on its private startup header while the supervisor persists its OS process identity, including creation identity and machine boot identity where required to disambiguate PID reuse. Only confirmed persistence permits the header that enables guest restore and execution. Loss of the host before that point leaves a helper without execution authority. The existing [owner gate](../../../scripts/experiments/mxc_session_patch/OWNERSHIP.md) provides the native ordering; the optional journaled supervisor now records process identity before releasing it, with native qualification pending.
+
+Publication requires verified successful helper termination and a bounded, validated candidate. One transaction checks ownership, publishes checkpoint and delivery content, advances the current checkpoint and converts the logical reservation to actual retained usage. It releases unused logical capacity while retaining the separate allowance for remaining scratch. Previous checkpoint references remain charged until safe collection removes them. A commit whose outcome is unknown is resolved by reopening the store and inspecting the durable call record, never by rerunning the program.
+
+### Reservation recovery
+
+A replacement owner acquires the session lock and advances only that session's generation before authorizing new work. It reconciles durable call records with outstanding reservations and recorded scratch. Acquiring the host lock alone does not prove that the native helper has exited: recovery checks the recorded process identity and establishes termination before reclaiming its files or admitting replacement execution. A reused PID never authorizes killing the unrelated process. An uninspectable process, unknown writer or corrupt inventory leaves cleanup incomplete and its allowance charged; reservation age is not a reclamation signal.
+
+| Durable state after interruption | Recovery action |
+|---|---|
+| No committed admission | No authorized execution exists; unexpected managed scratch is quarantined for reconciliation, not treated as free capacity |
+| Reserved, with no execution-enabled helper | Reclaim known private scratch and release unused allowances after cleanup; retain interrupted call identity |
+| Reserved, with execution-enabled helper | Establish native termination, mark the call interrupted, preserve the previous checkpoint and reconcile scratch |
+| Checkpoint/result publication rolled back | Preserve the previous checkpoint and pending reservation until interruption and cleanup are recorded |
+| Call committed, acknowledgment missing | Preserve saved delivery and new checkpoint; redeliver according to expiry policy; reconcile only residual scratch |
+| Cleanup partly complete | Recheck the same recorded token and finish idempotently; never decrement an allowance twice |
+| Unknown or corrupt call/reservation/reference state | Refuse affected recovery and reclamation; do not infer a fresh call from missing payload |
+
+Cleanup first records its intent while retaining the allowance, then removes only known private files after excluding writers. A final transaction releases the allowance once reclamation is established under the filesystem's durability contract. A crash after deletion but before release leaves conservative over-accounting that recovery can repair; reversing that order could admit work against files still consuming space. Missing files alone do not prove safe cleanup while their writer can still recreate them. Unknown scratch blocks further scratch admission until its ownership and physical charge are reconciled. Collectors acquire one session lock at a time before write transactions, and never wait for another session's lock while holding a database transaction.
+
+Interrupted call IDs remain non-executable and require explicit recovery. Retired sessions stay retired through every recovery branch; completing cleanup does not reactivate them. New-format admission validates schema/accounting version before mutation. Existing experimental databases lack the required expiry and reservation records and refuse without an explicit migration; opening them cannot fabricate historic timestamps or erase their identities.
+
+### Qualification of accounting and recovery
+
+The first increment changes [the experimental store](../../../scripts/experiments/mxc_session_patch/host_store.py) and its focused tests, then [the supervisor](../../../scripts/experiments/mxc_session_patch/host_call.py) and process-death probes. It keeps the production adapter and cross-machine recovery separate. Clock tests use injected time rather than long sleeps; crash tests kill child processes at persisted boundaries. Native qualification runs on GitHub runners with the required hypervisor, separately for Windows/WHP and Linux/KVM. An unavailable platform remains unverified.
+
+| Area | Required controls |
+|---|---|
+| Fixed expiry | Exact base and outer deadlines; first retry long after expiry; zero grace; later configuration changes; expired state cannot become available again |
+| Clock forgiveness | Forward/backward jumps, cumulative drift, recovery with no clock continuity, concurrent retries sharing one grant, and a clock stuck before base expiry |
+| Grace durability | Death before and after grant commit; one-second maximum forfeiture per outstanding grant; repeated restarts exhaust rather than reset the budget; failed/ambiguous commit never grants time |
+| Shared quotas | Two sessions race for the last capacity; exact boundaries; metadata growth; both counters update atomically; full-store replay starts no helper |
+| Launch recovery | Death before scratch creation, after helper creation, after identity persistence and after startup header; PID reuse and unavailable termination evidence |
+| Publication recovery | Death during chunk storage, before commit, after commit and before acknowledgment; committed retry never re-executes |
+| Cleanup and retirement | Death before/after unlink and allowance release; cleanup is idempotent; retained results survive session deletion; corrupt references refuse collection |
+| Physical bounds | Native export refuses before exceeding its allowance; residual scratch remains charged; disk-full/journal failures preserve the previous recovery point |
+
 ## Recovery on another machine
 
 Same-machine recovery is the default. The host can explicitly enable recovery on another compatible machine. This option requires checkpoint storage independent of the original machine and exclusive, fenced ownership of the session.
@@ -127,6 +243,14 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 | Native owner-death cleanup | Experimental private-pipe controls passed independently on Windows/WHP and Linux/KVM; arbitrary descendants and distributed fencing remain outside this result | [#1669](https://github.com/sokolaidev/maf-extensions/issues/1669) (closed) by [#1674](https://github.com/sokolaidev/maf-extensions/pull/1674) (merged); [evidence and limits](../../../scripts/experiments/mxc_session_patch/OWNERSHIP.md) |
 | General bounded file input and artifact collection | Unimplemented beyond the fixed CSV/chart probe | [#1670](https://github.com/sokolaidev/maf-extensions/issues/1670) (open) |
 | Compatible-machine recovery and fencing | Unimplemented | [#1671](https://github.com/sokolaidev/maf-extensions/issues/1671) (open) |
-| Total session storage and retention | Unimplemented | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Completed-result retry window | Partial: shared-store core persists the selected retry policy and preserves expired identity; store and lightweight supervisor tests only, native qualification pending | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Clock uncertainty during result expiry | Partial: shared-store core implements the host-configurable five-minute default, fixed outer deadline and prepaid grants; injected-clock and process-death tests only | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Persistent-session idle expiry | Selected: no automatic expiry by default, optional host-configured idle timeout and explicit deletion; unimplemented | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Session deletion | Partial: store retirement blocks admission/publication, preserves retries and permits unreserved checkpoint collection; journaled scratch cleanup after verified helper exit implemented; active native termination pending | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Capacity reservation before persistent execution | Partial: optional supervisor reserves logical and scratch capacity atomically and retains unresolved reservations; bounded OCI export overlay implemented; native compilation and live qualification pending | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Checkpoint collection | Partial: manifest/content validation and transactional reference-based collection preserve retry results and shared chunks; local process tests only, large-store performance unmeasured | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Interrupted reservation reconciliation | Partial: journal records helper creation identity before startup; explicit reconciliation checks termination and reclaims bounded private scratch; unidentified launches remain charged, native qualification pending | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Local durable storage transaction boundary | Partial: separate shared-store core with per-session ownership and atomic quota/publication records; local store and lightweight supervisor tests only, native qualification pending | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
+| Total session storage and retention | Selected: explicit host-configured per-session and aggregate shared-store quotas required for persistence, no built-in quota defaults; logical accounting and checkpoint collection implemented in shared-store core; physical safeguards and native qualification pending | [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672) (open) |
 | Runtime egress qualification | Unrun | [#1673](https://github.com/sokolaidev/maf-extensions/issues/1673) (open) |
 | Configuration API and runtime distribution | Open engineering design | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |

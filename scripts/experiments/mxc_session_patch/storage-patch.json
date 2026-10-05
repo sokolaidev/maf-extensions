@@ -1,0 +1,51 @@
+{
+  "host_base": "388ea8ebd88639a062f7a87f477db2930605a307",
+  "runtime_base": "2b4790d1626e2645dd1f00469311424be8cb2f94",
+  "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+  "prerequisite_sha256": "657f885494a141517076bc3fb98be86b03cace8641e9fba46c86c28ff85a79ef",
+  "patches": {
+    "host": {
+      "sha256": "5a3c065fc604015557101005f94010c6c27d3422057bc9cc400231b4a8ab3428",
+      "files": {
+        "src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs": {
+          "before": null,
+          "after": "832148dbdc096b86b04929aeae920ab5eab6c44d8e712bfc4703206956a786d0"
+        },
+        "src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs": {
+          "before": "1bdbf4d53bea8b401846131b77af4223db87d006ba888de2e92fa452bc410b9f",
+          "after": "cd692f6a08d0ebd7f079f5c285dbde93682632a00a48e4753ecad3bf7ebb7dea"
+        },
+        "src/hyperlight_host/src/sandbox/snapshot/file/mod.rs": {
+          "before": "39f4518444d126ae49b108f0bd2608532adf2e51fc51899624e266721aefc261",
+          "after": "12179bfe468716067177f25f84716f1e4e98adbd23635a8922d4e4bd68bb4761"
+        }
+      }
+    },
+    "runtime": {
+      "sha256": "ffd23ce77006507f6d2fab60c4905bbcbc7b6373cc0371062201facfc30be289",
+      "files": {
+        "src/lib.rs": {
+          "before": "dd0d9c3d372432f47d61ba24d74a1ae6eedf715965560bd41eea2a887c14b4a6",
+          "after": "10d55708d0c81f4598551362d14a3787f5be260dc12dadf5561131ccd60f677f"
+        },
+        "src/output_capture.rs": {
+          "before": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40",
+          "after": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40"
+        }
+      }
+    },
+    "session": {
+      "sha256": "7cb9145cdcd18e988c312554e2da5ff1aab9fe00096368c85960b4a5f44daff4",
+      "files": {
+        "src/backends/hyperlight/common/src/session_preview.rs": {
+          "before": "f014bf5de86616681fae6ed26c3932e64637e83d8734bee07c36846ad6d46117",
+          "after": "b3999252ce171f00de4319ff9c34fcf90c760f8fea8880d83e6069ee09042887"
+        },
+        "src/backends/hyperlight/common/Cargo.toml": {
+          "before": "851bdc43a420d6af2897139ea606a36cd07d40a1898349fdd9797ca89f6c758f",
+          "after": "851bdc43a420d6af2897139ea606a36cd07d40a1898349fdd9797ca89f6c758f"
+        }
+      }
+    }
+  }
+}

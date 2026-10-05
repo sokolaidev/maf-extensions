@@ -59,7 +59,7 @@ The [local publication experiment](HOST_PUBLICATION.md) adds checkpoint/result t
 
 ## Output transport continuation
 
-The [descriptor experiment](OUTPUT.md) compares separate guest pipes and files with the existing console. It retains a minimal truncation reproducer and distinguishes cooperative byte fidelity from host-enforced output bounds. The [bounded capture overlay](OUTPUT.md#bounded-native-capture-overlay) adds a separately removable Rust-only collector with the accepted truncate-and-continue policy. Remove that overlay first if it is installed.
+The [descriptor experiment](OUTPUT.md) compares separate guest pipes and files with the existing console. It retains a minimal truncation reproducer and distinguishes cooperative byte fidelity from host-enforced output bounds. The [bounded capture overlay](OUTPUT.md#bounded-native-capture-overlay) adds a separately removable Rust-only collector with the accepted truncate-and-continue policy. The separate [bounded storage overlay](HOST_PUBLICATION.md#bounded-checkpoint-export-overlay) adds checkpoint write limits above it. Remove storage first when installed, then output, then the original session patch.
 
 ## Remove or replace
 
