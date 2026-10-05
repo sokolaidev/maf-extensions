@@ -19,7 +19,18 @@ from typing import Any
 from urllib.parse import urlparse
 
 from openclaw_gateway_check import docker
-from openclaw_gateway_http_check import check, projected_result, records, require, verify_outcome
+from openclaw_gateway_http_check import (
+    BASELINE_DISPATCHES,
+    check,
+    projected_result,
+    records,
+    require,
+    verify_dispatch_count,
+    verify_outcome,
+)
+from openclaw_http_observer import resolve_image
+
+LIFECYCLE_DISPATCHES = 18
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -66,7 +77,7 @@ def verify_loss(evidence: list[dict[str, Any]], projected: dict[str, Any]) -> di
     return {"completed_result_withheld": True, "dispatches": 1, "transport_error": True}
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def qualify(args: argparse.Namespace) -> dict[str, Any]:
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[2]
@@ -115,10 +126,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     stop_file = root / "stop-service"
     drop_file = root / "drop-result"
     owner_file = root / "owner" / "owner"
-    image = args.image
+    image = resolve_image(args.image)
     digest = hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
     processes: list[subprocess.Popen] = []
-    report: dict[str, Any] = {"complete_matrix": False}
+    report: dict[str, Any] = {"complete_matrix": False, "image": image}
     with ExitStack() as stack:
 
         def start(name: str, command: list[str], environment=None):
@@ -279,7 +290,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 image=image,
             )
             report["two_session_baseline"] = check(baseline_args)
-            expected_calls = len(requests(records(transport)))
+            verify_dispatch_count(records(transport), BASELINE_DISPATCHES)
+            expected_calls = BASELINE_DISPATCHES
             sentinel = docker(
                 "run",
                 "-d",
@@ -432,7 +444,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             }
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
             report["other_owner_preserved"] = True
-            report["total_dispatches"] = expected_calls
+            report["total_dispatches"] = verify_dispatch_count(
+                records(transport), LIFECYCLE_DISPATCHES
+            )
             report["remaining"] = [
                 "active Gateway runtime disposal",
                 "service crash and cleanup-failure recovery",
@@ -461,10 +475,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "Final service shutdown was not clean",
         )
-        require(
-            len(requests(records(transport))) == expected_calls,
-            "Unexpected tool replay before final shutdown",
-        )
+        verify_dispatch_count(records(transport), LIFECYCLE_DISPATCHES)
         for port in ports:
             with socket.socket() as probe:
                 require(
@@ -495,7 +506,7 @@ def main():
     for name in ("root", "config", "bicep-config", "openclaw"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
-    print(json.dumps(run(parser.parse_args()), indent=2))
+    print(json.dumps(qualify(parser.parse_args()), indent=2))
 
 
 if __name__ == "__main__":

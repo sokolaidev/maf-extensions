@@ -506,3 +506,125 @@ def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_trans
     asyncio.run(app(scope, receive, send))
     assert b"".join(m.get("body", b"") for m in emitted) == payload
     assert len([r for r in checker.records(app.evidence) if r["event"] == "result_withheld"]) == 1
+
+
+@pytest.mark.parametrize("reference", ["prepared:latest", "sha256:" + "a" * 64])
+def test_image_resolution_uses_docker_identity(reference, monkeypatch):
+    calls = []
+    image = "sha256:" + "b" * 64
+
+    def inspect(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == 15
+        return image + "\n"
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+    assert observer.resolve_image(reference) == image
+    assert calls == [["docker", "image", "inspect", "--format", "{{.Id}}", reference]]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "prepared:latest",
+        "sha256:abc",
+        "sha256:" + "A" * 64,
+        "sha256:" + "a" * 64 + "\nsha256:" + "b" * 64,
+    ],
+)
+def test_image_resolution_rejects_invalid_docker_identity(output, monkeypatch):
+    monkeypatch.setattr(observer.subprocess, "check_output", lambda *args, **kwargs: output)
+    with pytest.raises(RuntimeError, match="immutable image ID"):
+        observer.resolve_image("prepared:latest")
+
+
+@pytest.mark.parametrize(
+    "expected", [0, checker.BASELINE_DISPATCHES, lifecycle.LIFECYCLE_DISPATCHES]
+)
+@pytest.mark.parametrize("extra", [-1, 0, 1])
+def test_dispatch_count_is_fixed_independently_of_observed_evidence(expected, extra):
+    count = max(0, expected + extra)
+    evidence = [{"event": "request", "method": "tools/call"}] * count
+    evidence += [
+        {"event": "request", "method": "tools/list"},
+        {"event": "response", "method": "POST"},
+    ]
+    if count == expected:
+        assert checker.verify_dispatch_count(evidence, expected) == count
+    else:
+        with pytest.raises(RuntimeError, match=f"Expected {expected} MCP dispatches"):
+            checker.verify_dispatch_count(evidence, expected)
+
+
+def test_qualification_launches_service_with_resolved_image(tmp_path, monkeypatch):
+    image = "sha256:" + "b" * 64
+    template = tmp_path / "template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "gateway": {"bind": "loopback", "port": 19761, "auth": {}},
+                "tools": {"allow": ["bicep__bicep_validate"]},
+                "mcp": {
+                    "servers": {
+                        "bicep": {
+                            "transport": "streamable-http",
+                            "url": "http://127.0.0.1:19763/mcp",
+                            "headers": {},
+                        }
+                    }
+                },
+                "models": {
+                    "providers": {"qualification": {"baseUrl": "http://127.0.0.1:19762/v1"}}
+                },
+                "agents": {"defaults": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    policy = tmp_path / "policy.json"
+    policy.write_text("{}", encoding="utf-8")
+    launched = []
+
+    class Probe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def connect_ex(self, address):
+            return 1
+
+    class Child:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, **kwargs):
+            return 0
+
+    def start(command, **kwargs):
+        launched.append(command)
+        if len(launched) == 2:
+            raise InterruptedError("captured service launch")
+        return Child()
+
+    monkeypatch.setattr(observer.subprocess, "check_output", lambda *args, **kwargs: image)
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", start)
+    monkeypatch.setattr(lifecycle.socket, "socket", Probe)
+    with pytest.raises(InterruptedError, match="captured service launch"):
+        lifecycle.qualify(
+            SimpleNamespace(
+                root=tmp_path / "fresh",
+                config=template,
+                bicep_config=policy,
+                image="prepared:latest",
+                openclaw=tmp_path / "openclaw",
+            )
+        )
+    service = launched[1]
+    assert service[service.index("--image") + 1] == image
+    assert "prepared:latest" not in service

@@ -20,10 +20,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import subprocess
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+
+def resolve_image(reference: str) -> str:
+    """Resolve a local image reference before a service can execute it."""
+    image = subprocess.check_output(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", reference],
+        text=True,
+        encoding="utf-8",
+        stderr=subprocess.PIPE,
+        timeout=15,
+    ).strip()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
+        raise RuntimeError("Docker did not return an immutable image ID")
+    return image
 
 
 def digest(value: Any) -> str:
@@ -176,6 +192,7 @@ if __name__ == "__main__":
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
     args = parser.parse_args()
+    args.image = resolve_image(args.image)
     sys.path.insert(0, str(args.prototype.resolve().parent))
     prototype = importlib.import_module("server")
     transport = importlib.import_module("workload_http")
