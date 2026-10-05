@@ -279,8 +279,8 @@ jobs:
 
   report-failure:
     name: Report Docker live failure
-    needs: docker-e2e
-    if: always() && needs.docker-e2e.result == 'failure'
+    needs: [docker-e2e, capability-policy]
+    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -300,4 +300,4 @@ jobs:
           --title 'Docker live checks failed'
           --reproduce 'Re-run the linked attempt, or dispatch docker-live.yml against the failing commit. Inspect the first failed step for setup, registry, daemon, or test failures.'
           --expected 'All Docker live checks pass.'
-          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents maf-sandbox-drawio
