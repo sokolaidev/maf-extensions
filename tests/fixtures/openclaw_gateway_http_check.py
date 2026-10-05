@@ -16,6 +16,8 @@ from typing import Any
 from openclaw_gateway_check import docker
 from openclaw_gateway_provider import SOURCES
 
+BASELINE_DISPATCHES = 9
+
 
 def require(condition: Any, message: str) -> None:
     if not condition:
@@ -29,6 +31,12 @@ def records(path: Path) -> list[dict[str, Any]]:
     require(len(data) <= 16 * 1024 * 1024, "Evidence exceeds 16 MiB; rotate before a new check")
     # A concurrent writer may not have finished the last line yet.
     return [json.loads(line) for line in data.split(b"\n")[:-1] if line]
+
+
+def verify_dispatch_count(evidence: list[dict[str, Any]], expected: int) -> int:
+    count = sum(r.get("event") == "request" and r.get("method") == "tools/call" for r in evidence)
+    require(count == expected, f"Expected {expected} MCP dispatches, observed {count}")
+    return count
 
 
 def projected_result(evidence: list[dict[str, Any]], turn: str, case: str) -> dict[str, Any]:
@@ -139,6 +147,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         startup[-1].get("source_hashes") == expected_sources,
         "Observer is running different source files",
     )
+    baseline_start = len(records(args.transport_evidence))
     owner = "openclaw-bicep-" + (args.owner / "owner").read_text().strip()
     sessions = ["http-qualification-" + uuid.uuid4().hex for _ in range(2)]
     config_digest = hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
@@ -209,7 +218,9 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
             for r in records(args.transport_evidence)[before:]
             if r.get("event") == "request" and r.get("method") == "tools/call"
         ]
-        if case not in ("denied", "helper"):
+        if case in ("denied", "helper"):
+            verify_dispatch_count(calls, 0)
+        else:
             require(
                 len(calls) == 1 and calls[0].get("session"), "Expected one observed MCP tool call"
             )
@@ -307,6 +318,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         docker("rm", "-f", other)
     outcome("valid", 1)
     report["post_abort_call"] = "valid"
+    verify_dispatch_count(records(args.transport_evidence)[baseline_start:], BASELINE_DISPATCHES)
     report["remaining"] = [
         "restart/reload and no replay",
         "active/idle Gateway runtime disposal",

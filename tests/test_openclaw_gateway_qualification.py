@@ -379,3 +379,307 @@ def test_observer_correlates_interleaved_cancellation_responses(tmp_path):
     call = {"session": observer.digest(b"private-session".hex()), "time_ns": 1}
     assert not checker.matching_cancel(evidence, {**call, "request": observer.digest(7)})
     assert checker.matching_cancel(evidence, {**call, "request": observer.digest(8)})
+
+
+lifecycle = load("openclaw_gateway_lifecycle_check")
+
+
+def loss_evidence():
+    return [
+        {
+            "event": "request",
+            "method": "tools/call",
+            "exchange": "call",
+            "boot": "boot",
+            "session": "A",
+            "time_ns": 10,
+        },
+        {
+            "event": "result_withheld",
+            "exchange": "call",
+            "boot": "boot",
+            "session": "A",
+            "time_ns": 20,
+            "completed": True,
+            "cleanup": "confirmed",
+            "status": 200,
+        },
+    ]
+
+
+def test_lost_result_requires_completed_work_and_a_transport_error():
+    result = lifecycle.verify_loss(
+        loss_evidence(),
+        {"status": "error", "error": "Streamable HTTP error: Internal Server Error"},
+    )
+    assert result["dispatches"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_call",
+        "duplicate_result",
+        "wrong_exchange",
+        "missing_exchange",
+        "wrong_boot",
+        "wrong_session",
+        "stale",
+        "incomplete",
+        "cleanup_failed",
+        "bad_status",
+        "missing",
+    ],
+)
+def test_lost_result_rejects_replay_or_uncorrelated_evidence(mutation):
+    evidence = loss_evidence()
+    if mutation == "duplicate_call":
+        evidence.insert(0, evidence[0].copy())
+    elif mutation == "duplicate_result":
+        evidence.append(evidence[-1].copy())
+    elif mutation == "missing":
+        evidence.pop()
+    else:
+        field, value = {
+            "wrong_exchange": ("exchange", "other"),
+            "missing_exchange": ("exchange", None),
+            "wrong_boot": ("boot", "other"),
+            "wrong_session": ("session", "B"),
+            "stale": ("time_ns", 5),
+            "incomplete": ("completed", False),
+            "cleanup_failed": ("cleanup", "failed"),
+            "bad_status": ("status", 503),
+        }[mutation]
+        evidence[-1][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_loss(
+            evidence, {"status": "error", "error": "Streamable HTTP error: Internal Server Error"}
+        )
+
+
+@pytest.mark.parametrize(
+    "result", [{"error": "unrelated"}, projected(), {"error": "500", "structuredContent": {}}]
+)
+def test_lost_result_refuses_fabricated_or_unrelated_projection(result):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_loss(loss_evidence(), result)
+
+
+def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_transparent(tmp_path):
+    emitted = []
+    fault = tmp_path / "drop"
+    fault.touch()
+    payload = json.dumps(
+        {"result": {"structuredContent": {"completed": True, "cleanup": "confirmed"}}}
+    ).encode()
+
+    class App:
+        sessions = {"private-session": None}
+        service = SimpleNamespace(active=None)
+
+        async def __call__(self, scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": payload[:12], "more_body": True})
+            await send({"type": "http.response.body", "body": payload[12:]})
+
+    async def receive():
+        return {"type": "http.request", "body": b'{"method":"tools/call","id":7}'}
+
+    async def send(message):
+        emitted.append(message)
+
+    app = observer.ObserveHTTP(App(), tmp_path / "audit.jsonl", fault)
+    scope = {"type": "http", "method": "POST", "headers": [(b"mcp-session-id", b"private-session")]}
+    with pytest.raises(RuntimeError, match="intentionally withheld"):
+        asyncio.run(app(scope, receive, send))
+    assert not emitted and not fault.exists()
+    first = checker.records(app.evidence)
+    assert (
+        lifecycle.verify_loss(
+            first, {"status": "error", "error": "Streamable HTTP error: Internal Server Error"}
+        )["dispatches"]
+        == 1
+    )
+    assert not [r for r in first if r["event"] == "response"]
+    assert len({r["boot"] for r in first}) == 1
+    asyncio.run(app(scope, receive, send))
+    assert b"".join(m.get("body", b"") for m in emitted) == payload
+    assert len([r for r in checker.records(app.evidence) if r["event"] == "result_withheld"]) == 1
+
+
+@pytest.mark.parametrize("reference", ["prepared:latest", "sha256:" + "a" * 64])
+def test_image_resolution_uses_docker_identity(reference, monkeypatch):
+    calls = []
+    image = "sha256:" + "b" * 64
+
+    def inspect(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == 15
+        return image + "\n"
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+    assert observer.resolve_image(reference) == image
+    assert calls == [["docker", "image", "inspect", "--format", "{{.Id}}", reference]]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "prepared:latest",
+        "sha256:abc",
+        "sha256:" + "A" * 64,
+        "sha256:" + "a" * 64 + "\nsha256:" + "b" * 64,
+    ],
+)
+def test_image_resolution_rejects_invalid_docker_identity(output, monkeypatch):
+    monkeypatch.setattr(observer.subprocess, "check_output", lambda *args, **kwargs: output)
+    with pytest.raises(RuntimeError, match="immutable image ID"):
+        observer.resolve_image("prepared:latest")
+
+
+@pytest.mark.parametrize(
+    "expected", [0, checker.BASELINE_DISPATCHES, lifecycle.LIFECYCLE_DISPATCHES]
+)
+@pytest.mark.parametrize("extra", [-1, 0, 1])
+def test_dispatch_count_is_fixed_independently_of_observed_evidence(expected, extra):
+    count = max(0, expected + extra)
+    evidence = [{"event": "request", "method": "tools/call"}] * count
+    evidence += [
+        {"event": "request", "method": "tools/list"},
+        {"event": "response", "method": "POST"},
+    ]
+    if count == expected:
+        assert checker.verify_dispatch_count(evidence, expected) == count
+    else:
+        with pytest.raises(RuntimeError, match=f"Expected {expected} MCP dispatches"):
+            checker.verify_dispatch_count(evidence, expected)
+
+
+def test_qualification_launches_service_with_resolved_image(tmp_path, monkeypatch):
+    image = "sha256:" + "b" * 64
+    template = tmp_path / "template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "gateway": {"bind": "loopback", "port": 19761, "auth": {}},
+                "tools": {"allow": ["bicep__bicep_validate"]},
+                "mcp": {
+                    "servers": {
+                        "bicep": {
+                            "transport": "streamable-http",
+                            "url": "http://127.0.0.1:19763/mcp",
+                            "headers": {},
+                        }
+                    }
+                },
+                "models": {
+                    "providers": {"qualification": {"baseUrl": "http://127.0.0.1:19762/v1"}}
+                },
+                "agents": {"defaults": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    policy = tmp_path / "policy.json"
+    policy.write_text("{}", encoding="utf-8")
+    launched = []
+
+    class Probe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def connect_ex(self, address):
+            return 1
+
+    class Child:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, **kwargs):
+            return 0
+
+    def start(command, **kwargs):
+        launched.append(command)
+        if len(launched) == 2:
+            raise InterruptedError("captured service launch")
+        return Child()
+
+    monkeypatch.setattr(observer.subprocess, "check_output", lambda *args, **kwargs: image)
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", start)
+    monkeypatch.setattr(lifecycle.socket, "socket", Probe)
+    with pytest.raises(InterruptedError, match="captured service launch"):
+        lifecycle.qualify(
+            SimpleNamespace(
+                root=tmp_path / "fresh",
+                config=template,
+                bicep_config=policy,
+                image="prepared:latest",
+                openclaw=tmp_path / "openclaw",
+            )
+        )
+    service = launched[1]
+    assert service[service.index("--image") + 1] == image
+    assert "prepared:latest" not in service
+
+
+def test_lost_result_allows_schema_names_in_error_text():
+    result = {
+        "status": "error",
+        "error": "Streamable HTTP error: Internal Server Error mentions structuredContent",
+    }
+    assert lifecycle.verify_loss(loss_evidence(), result)["dispatches"] == 1
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [("result", {}), ("result", {"details": {"structuredContent": {}}}), ("structuredContent", {})],
+)
+def test_lost_result_rejects_workload_fields_on_error_projection(key, value):
+    result = {
+        "status": "error",
+        "error": "Streamable HTTP error: Internal Server Error",
+        key: value,
+    }
+    with pytest.raises(RuntimeError, match="projected as an outcome"):
+        lifecycle.verify_loss(loss_evidence(), result)
+
+
+def test_image_inspection_failure_preserves_bounded_diagnostic(monkeypatch):
+    def inspect(*args, **kwargs):
+        raise observer.subprocess.CalledProcessError(
+            1, ["docker", "image", "inspect"], stderr="missing local image " + "x" * 5000
+        )
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+    with pytest.raises(
+        RuntimeError, match="Docker image inspection failed: missing local image"
+    ) as caught:
+        observer.resolve_image("sha256:" + "a" * 64)
+    assert len(str(caught.value)) <= 4096 + len("Docker image inspection failed: ")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"private invalid source",
+        b"\xff",
+        b"null",
+        b"[]",
+        b"{}",
+        b'{"result":[]}',
+        b'{"result":{"structuredContent":[]}}',
+    ],
+)
+def test_withheld_decode_refuses_malformed_body_without_exposing_it(body):
+    with pytest.raises(RuntimeError, match="Withheld response") as caught:
+        observer.decode_withheld(body)
+    assert hashlib.sha256(body).hexdigest() in str(caught.value)
+    assert "private invalid source" not in str(caught.value)
