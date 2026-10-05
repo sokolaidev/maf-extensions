@@ -47,4 +47,8 @@ The local image ID identifies the image configuration and its content-addressed 
 
 ## Planned distribution
 
-The agreed registry is GitHub Container Registry, under `ghcr.io/sokolaidev/maf-extensions/`, with packages linked to this repository. Public publication is not enabled by the scanning workflow: image names, release versioning, supported profiles and the update policy still need a release contract. Published candidates will need their own registry manifest digests, retained reports and signed provenance; this workflow grants no package-publishing or signing permissions.
+The agreed registry is GitHub Container Registry, under `ghcr.io/sokolaidev/maf-extensions/`, with packages linked to this repository. The [accepted image release contract](container-image-releases.md) defines names and independent versions for all twelve Linux/amd64 profiles, maintainer-approved publication of the exact assessed bytes, signed provenance and SBOMs, and daily monitoring of released digests. It requires a release scan no more than 24 hours old, stale status after 48 hours, and 90 days of continued monitoring after a release is superseded.
+
+Interrupted publications are registered before the registry write. Incomplete or abandoned candidates remain visibly blocked and monitored for as long as they remain public, even if no release completes. Consumers require an authenticated completed catalogue record for the selected profile, version and digest, even when image attestations pass. Abandonment permanently retires the version; it does not delete the image automatically or start the completed-release 90-day window.
+
+Implementation of that contract is pending. Public publication is not enabled by the scanning workflow: it grants no package-publishing or signing permissions. Published candidates will need their own registry manifest digests, retained reports and signed provenance.

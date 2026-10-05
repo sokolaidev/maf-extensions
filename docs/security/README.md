@@ -23,6 +23,7 @@ When adding or correcting a release record, follow the [evidence maintenance rul
 |---|---|
 | [Release security evidence](../security.md) | Release records, artifact verification and evidence maintenance |
 | [Container image security](container-images.md) | Covered image profiles, scan policy and retained reports |
+| [Container image release contract](container-image-releases.md) | Accepted publication, verification and monitoring policy; implementation status |
 | [Sandbox policy and isolation](../sandbox/policy-isolation.md) | Backend admission and the host's isolation floor |
 | [Sandbox host boundary](../sandbox/hosts.md) | Host tools, artifact sinks and file integrity |
 | [Security policy](../../SECURITY.md) | Private reporting, disclosure and supported versions |
