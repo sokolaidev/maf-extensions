@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -71,10 +72,17 @@ def digest(value: Any) -> str:
 class ObserveHTTP:
     """Observe allowlisted transport fields; optionally withhold one result for qualification."""
 
-    def __init__(self, app: Any, evidence: Path, drop_result: Path | None = None) -> None:
+    def __init__(
+        self,
+        app: Any,
+        evidence: Path,
+        drop_result: Path | None = None,
+        owned_scope: str | None = None,
+    ) -> None:
         self.app = app
         self.evidence = evidence
         self.drop_result = drop_result
+        self.owned_scope = owned_scope
         self.boot = uuid.uuid4().hex
 
     def record(self, **fields: Any) -> None:
@@ -85,7 +93,26 @@ class ObserveHTTP:
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
+
+            async def lifetime(message):
+                if message["type"] == "lifespan.startup.complete" and self.owned_scope is not None:
+                    owned = subprocess.check_output(
+                        [
+                            "docker",
+                            "ps",
+                            "-aq",
+                            "--filter",
+                            f"label=maf-sandbox.scope={self.owned_scope}",
+                        ],
+                        text=True,
+                        encoding="utf-8",
+                        stderr=subprocess.PIPE,
+                        timeout=15,
+                    ).split()
+                    self.record(event="startup_ready", owner_empty=not owned)
+                await send(message)
+
+            await self.app(scope, receive, lifetime)
             return
         headers = dict(scope.get("headers", []))
         session = headers.get(b"mcp-session-id")
@@ -196,6 +223,19 @@ class ObserveHTTP:
             )
 
 
+def crash_active_service(observer: ObserveHTTP) -> None:
+    """Exit without cleanup only while this fixture supervises an unfinished call."""
+    active = observer.app.service.active
+    if active is None or active[1].done():
+        raise RuntimeError("Crash fault requires unfinished active work")
+    observer.record(
+        event="abrupt_exit",
+        session=digest(active[0].session_id.encode().hex()),
+        active=True,
+    )
+    os._exit(86)
+
+
 if __name__ == "__main__":
     import argparse
     import asyncio
@@ -207,6 +247,7 @@ if __name__ == "__main__":
     for name in ("prototype", "config", "state-dir", "token-file", "evidence"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--stop-file", type=Path)
+    parser.add_argument("--crash-file", type=Path)
     parser.add_argument("--drop-result-file", type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
@@ -221,7 +262,7 @@ if __name__ == "__main__":
         config = args.config.read_text(encoding="utf-8")
         with prototype.ownership(args.state_dir) as owner:
             app = await prototype.http_application(args.image, config, owner, token, args.port)
-            observer = ObserveHTTP(app, args.evidence, args.drop_result_file)
+            observer = ObserveHTTP(app, args.evidence, args.drop_result_file, owner)
             observer.record(
                 event="startup",
                 source_hashes={
@@ -248,6 +289,9 @@ if __name__ == "__main__":
 
             async def stop_requested():
                 while args.stop_file is not None and not args.stop_file.exists():
+                    if args.crash_file is not None and args.crash_file.exists():
+                        args.crash_file.unlink()
+                        crash_active_service(observer)
                     await asyncio.sleep(0.1)
                 if args.stop_file is not None:
                     host.should_exit = True

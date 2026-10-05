@@ -683,3 +683,194 @@ def test_withheld_decode_refuses_malformed_body_without_exposing_it(body):
         observer.decode_withheld(body)
     assert hashlib.sha256(body).hexdigest() in str(caught.value)
     assert "private invalid source" not in str(caught.value)
+
+
+def crash_evidence():
+    call = loss_evidence()[0]
+    return [
+        call,
+        {
+            "event": "abrupt_exit",
+            "boot": call["boot"],
+            "session": call["session"],
+            "active": True,
+            "time_ns": 20,
+        },
+    ]
+
+
+def test_crash_requires_unfinished_correlated_call_and_unknown_outcome():
+    assert lifecycle.verify_crash(
+        crash_evidence(), {"status": "error", "error": "fetch failed"}
+    ) == {
+        "dispatches": 1,
+        "unknown_outcome": True,
+        "ungraceful_exit": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_call",
+        "replayed_call",
+        "missing_exit",
+        "repeated_exit",
+        "wrong_boot",
+        "wrong_session",
+        "inactive",
+        "stale_exit",
+        "missing_identity",
+        "response",
+        "settled",
+        "result_withheld",
+        "shutdown",
+    ],
+)
+def test_crash_refuses_missing_stale_replayed_or_completed_evidence(mutation):
+    evidence = crash_evidence()
+    if mutation == "missing_call":
+        evidence.pop(0)
+    elif mutation == "replayed_call":
+        evidence.append(evidence[0].copy())
+    elif mutation == "missing_exit":
+        evidence.pop()
+    elif mutation == "repeated_exit":
+        evidence.append(evidence[-1].copy())
+    elif mutation == "missing_identity":
+        evidence[0]["exchange"] = None
+    elif mutation in {"response", "settled", "result_withheld", "shutdown"}:
+        evidence.append({"event": mutation, "boot": "boot", "exchange": "call"})
+    else:
+        field, value = {
+            "wrong_boot": ("boot", "other"),
+            "wrong_session": ("session", "B"),
+            "inactive": ("active", False),
+            "stale_exit": ("time_ns", 5),
+        }[mutation]
+        evidence[-1][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_crash(evidence, {"status": "error", "error": "fetch failed"})
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        {},
+        {"status": "error", "error": ""},
+        projected(),
+        {"status": "error", "error": "fetch failed", "result": {}},
+        {"status": "error", "error": "fetch failed", "structuredContent": {}},
+    ],
+)
+def test_crash_refuses_fabricated_workload_projection(projection):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_crash(crash_evidence(), projection)
+
+
+def recovery_evidence():
+    return [
+        {
+            "event": "recovery_observed",
+            "boot": "new",
+            "container": "orphan",
+            "absent": True,
+            "owner_empty": True,
+            "time_ns": 10,
+        },
+        {"event": "ready_observed", "boot": "new", "status": 200, "time_ns": 20},
+        {"event": "startup_ready", "boot": "new", "owner_empty": True, "time_ns": 5},
+    ]
+
+
+def test_recovery_requires_exact_resource_absence_before_readiness():
+    lifecycle.verify_recovery(recovery_evidence(), "new", "orphan")
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "boot", "old"),
+        (1, "boot", "old"),
+        (0, "container", "another"),
+        (0, "absent", False),
+        (0, "owner_empty", False),
+        (1, "status", 503),
+        (0, "time_ns", 21),
+        (1, "time_ns", 10),
+        (2, "owner_empty", False),
+        (2, "boot", "old"),
+        (2, "time_ns", 11),
+    ],
+)
+def test_recovery_refuses_wrong_identity_survivors_or_early_readiness(index, field, value):
+    evidence = recovery_evidence()
+    evidence[index][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_recovery(evidence, "new", "orphan")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_recovery_refuses_missing_or_duplicate_observations(mutation):
+    evidence = recovery_evidence()
+    if mutation == "missing":
+        evidence.pop()
+    else:
+        evidence.append(evidence[0].copy())
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_recovery(evidence, "new", "orphan")
+
+
+@pytest.mark.parametrize("finished", [None, True, False])
+def test_service_crash_hook_only_exits_with_unfinished_work(tmp_path, monkeypatch, finished):
+    calls = []
+    active = (
+        None
+        if finished is None
+        else (SimpleNamespace(session_id="private-session"), SimpleNamespace(done=lambda: finished))
+    )
+    app = observer.ObserveHTTP(
+        SimpleNamespace(service=SimpleNamespace(active=active)), tmp_path / "audit"
+    )
+
+    def terminate(code):
+        calls.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(observer.os, "_exit", terminate)
+    if finished is False:
+        with pytest.raises(SystemExit) as caught:
+            observer.crash_active_service(app)
+        assert caught.value.code == 86 and calls == [86]
+        records = checker.records(app.evidence)
+        assert len(records) == 1 and records[0]["event"] == "abrupt_exit"
+        assert records[0]["session"] == observer.digest(b"private-session".hex())
+        assert "private-session" not in app.evidence.read_text()
+    else:
+        with pytest.raises(RuntimeError, match="unfinished active work"):
+            observer.crash_active_service(app)
+        assert not calls and not app.evidence.exists()
+
+
+@pytest.mark.parametrize("containers", ["", "orphan\n"])
+def test_observer_records_owner_state_before_startup_completion(tmp_path, monkeypatch, containers):
+    class App:
+        async def __call__(self, scope, receive, send):
+            await send({"type": "lifespan.startup.complete"})
+
+    def inspect(command, **kwargs):
+        assert command[-1] == "label=maf-sandbox.scope=owned"
+        return containers
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+    app = observer.ObserveHTTP(App(), tmp_path / "audit", owned_scope="owned")
+
+    async def receive():
+        return {}
+
+    async def send(message):
+        evidence = checker.records(app.evidence)
+        assert evidence[0]["event"] == "startup_ready"
+        assert evidence[0]["owner_empty"] is (not bool(containers))
+
+    asyncio.run(app({"type": "lifespan"}, receive, send))

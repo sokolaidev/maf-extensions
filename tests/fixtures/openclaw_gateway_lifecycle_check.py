@@ -30,7 +30,7 @@ from openclaw_gateway_http_check import (
 )
 from openclaw_http_observer import resolve_image
 
-LIFECYCLE_DISPATCHES = 18
+LIFECYCLE_DISPATCHES = 21
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -77,6 +77,75 @@ def verify_loss(evidence: list[dict[str, Any]], projected: dict[str, Any]) -> di
         "Missing transport error",
     )
     return {"completed_result_withheld": True, "dispatches": 1, "transport_error": True}
+
+
+def verify_crash(evidence: list[dict[str, Any]], projected: dict[str, Any]) -> dict[str, Any]:
+    """Require correlated process death with an unknown outcome and no repeated dispatch."""
+    calls = requests(evidence)
+    faults = [r for r in evidence if r.get("event") == "abrupt_exit"]
+    require(
+        len(calls) == len(faults) == 1, "Crash work or process-exit evidence missing or repeated"
+    )
+    call, fault = calls[0], faults[0]
+    require(
+        bool(call.get("boot"))
+        and bool(call.get("session"))
+        and bool(call.get("exchange"))
+        and fault.get("boot") == call["boot"]
+        and fault.get("session") == call["session"]
+        and fault.get("active") is True
+        and fault.get("time_ns", 0) > call.get("time_ns", 0),
+        "Process exit does not match the active call",
+    )
+    require(
+        not any(
+            r.get("boot") == call["boot"]
+            and (
+                r.get("event") == "shutdown"
+                or (
+                    r.get("exchange") == call["exchange"]
+                    and r.get("event") in {"response", "settled", "result_withheld"}
+                )
+            )
+            for r in evidence
+        ),
+        "Crashed call completed or service shut down gracefully",
+    )
+    require(
+        projected.get("status") == "error"
+        and isinstance(projected.get("error"), str)
+        and bool(projected["error"])
+        and "result" not in projected
+        and "structuredContent" not in projected,
+        "Crash was projected as a workload outcome",
+    )
+    return {"dispatches": 1, "unknown_outcome": True, "ungraceful_exit": True}
+
+
+def verify_recovery(evidence: list[dict[str, Any]], boot: str, container: str) -> None:
+    """Accept removal only when it precedes the replacement service's first ready response."""
+    started = [r for r in evidence if r.get("event") == "startup_ready"]
+    removed = [r for r in evidence if r.get("event") == "recovery_observed"]
+    ready = [r for r in evidence if r.get("event") == "ready_observed"]
+    require(
+        len(started) == len(removed) == len(ready) == 1,
+        "Missing unique recovery/readiness observations",
+    )
+    require(
+        started[0].get("boot") == removed[0].get("boot") == ready[0].get("boot") == boot
+        and started[0].get("owner_empty") is True
+        and bool(boot)
+        and removed[0].get("container") == container
+        and bool(container)
+        and removed[0].get("absent") is True
+        and removed[0].get("owner_empty") is True
+        and ready[0].get("status") == 200
+        and 0
+        < started[0].get("time_ns", 0)
+        <= removed[0].get("time_ns", 0)
+        < ready[0].get("time_ns", 0),
+        "Startup cleanup was not established before readiness",
+    )
 
 
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
@@ -126,6 +195,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     transport = root / "transport.jsonl"
     provider = root / "provider.jsonl"
     stop_file = root / "stop-service"
+    crash_file = root / "crash-service"
     drop_file = root / "drop-result"
     owner_file = root / "owner" / "owner"
     image = resolve_image(args.image)
@@ -154,6 +224,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
 
         def service():
             stop_file.unlink(missing_ok=True)
+            crash_file.unlink(missing_ok=True)
             return start(
                 "service",
                 [
@@ -179,6 +250,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     str(stop_file),
                     "--drop-result-file",
                     str(drop_file),
+                    "--crash-file",
+                    str(crash_file),
                 ],
             )
 
@@ -213,9 +286,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         names = ["lifecycle-" + uuid.uuid4().hex for _ in range(2)]
         expected_calls = 0
 
-        def turn(index: int, *, loss=False):
-            nonlocal expected_calls
-            before = len(records(transport))
+        def begin_turn(index: int, case: str):
             turn_id = uuid.uuid4().hex
             connection = http.client.HTTPConnection("127.0.0.1", ports[0], timeout=180)
             try:
@@ -229,7 +300,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                             "messages": [
                                 {
                                     "role": "user",
-                                    "content": f"qualification valid qualification-turn={turn_id}",
+                                    "content": f"qualification {case} qualification-turn={turn_id}",
                                 }
                             ],
                         }
@@ -239,6 +310,16 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         "Authorization": "Bearer " + config["gateway"]["auth"]["token"],
                     },
                 )
+            except BaseException:
+                connection.close()
+                raise
+            return connection, turn_id
+
+        def turn(index: int, *, loss=False):
+            nonlocal expected_calls
+            before = len(records(transport))
+            connection, turn_id = begin_turn(index, "valid")
+            try:
                 response = connection.getresponse()
                 response.read()
                 require(response.status == 200, "Gateway turn failed")
@@ -444,6 +525,134 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 "clean_shutdown": True,
                 "fresh_sessions": 2,
             }
+            before_crash = len(records(transport))
+            crash_boot = startups[-1]["boot"]
+            connection, crash_turn = begin_turn(0, "cancel")
+            crashed_container = None
+            try:
+
+                def active_compiler():
+                    candidates = owned()
+                    if len(candidates) == 1 and "bicep" in docker(
+                        "top", candidates[0], "-eo", "pid,comm"
+                    ):
+                        return candidates[0]
+                    return None
+
+                crashed_container = wait_for(active_compiler, "No active compiler before crash", 60)
+                crash_file.touch()
+                require(service_process.wait(timeout=30) == 86, "Service did not exit abruptly")
+                require(
+                    owned() == [crashed_container]
+                    and "bicep" in docker("top", crashed_container, "-eo", "pid,comm"),
+                    "Compiler container did not survive service death",
+                )
+                survivor_observed = time.time_ns()
+                # Freeze the orphan so natural completion cannot masquerade as recovery.
+                docker("pause", crashed_container)
+                response = connection.getresponse()
+                response.read()
+                require(response.status == 200, "Gateway did not settle the crashed turn")
+                projected = projected_result(records(provider), crash_turn, "cancel")
+                crash_evidence = records(transport)[before_crash:]
+                report["active_service_crash"] = verify_crash(crash_evidence, projected)
+                expected_calls += 1
+                verify_dispatch_count(records(transport), expected_calls)
+                require(
+                    requests(crash_evidence)[0]["session"] == after_restart[0]
+                    and requests(crash_evidence)[0]["boot"] == crash_boot,
+                    "Crash affected another session or service process",
+                )
+                require(owner_file.read_bytes() == owner_before, "Crash changed retained ownership")
+                require(
+                    docker("ps", "-q", "--filter", f"id={sentinel}"),
+                    "Crash removed the unrelated owner",
+                )
+                require(
+                    docker("inspect", "--format", "{{.State.Paused}}", crashed_container) == "true"
+                    and owned() == [crashed_container],
+                    "Orphan did not remain frozen until replacement startup",
+                )
+                service_process = service()
+                recovery_evidence = []
+
+                def recovered():
+                    require(service_process.poll() is None, "Replacement service exited")
+                    started = [
+                        r
+                        for r in records(transport)[before_crash:]
+                        if r.get("event") == "startup_ready"
+                    ]
+                    if not started:
+                        return False
+                    require(
+                        len(started) == 1 and started[0].get("owner_empty") is True,
+                        "Replacement advertised readiness before owned cleanup",
+                    )
+                    require(
+                        not docker("ps", "-aq", "--filter", f"id={crashed_container}")
+                        and not owned(),
+                        "Owned resource survived replacement startup",
+                    )
+                    recovery_evidence.extend(started)
+                    recovery_evidence.append(
+                        {
+                            "event": "recovery_observed",
+                            "container": crashed_container,
+                            "absent": True,
+                            "owner_empty": True,
+                            "time_ns": time.time_ns(),
+                        }
+                    )
+                    return True
+
+                wait_for(recovered, "Replacement did not reconcile retained resources")
+                service_ready(service_process)
+                startup = [r for r in records(transport) if r.get("event") == "startup"][-1]
+                require(
+                    startup["boot"] != crash_boot
+                    and startup["source_hashes"] == startups[-1]["source_hashes"]
+                    and startup["versions"] == startups[-1]["versions"],
+                    "Crash recovery changed service code or dependency identity",
+                )
+                recovery_evidence[1]["boot"] = startup["boot"]
+                recovery_evidence.append(
+                    {
+                        "event": "ready_observed",
+                        "boot": startup["boot"],
+                        "status": 200,
+                        "time_ns": time.time_ns(),
+                    }
+                )
+                verify_recovery(recovery_evidence, startup["boot"], crashed_container)
+                require(
+                    owner_file.read_bytes() == owner_before, "Recovery changed retained ownership"
+                )
+                recovered_sessions = [turn(index)[0] for index in range(2)]
+                require(
+                    len(set(recovered_sessions)) == 2
+                    and not set(recovered_sessions) & set(after_restart + restarted + fresh + old),
+                    "Crash recovery reused previous MCP sessions",
+                )
+                report["active_service_crash"].update(
+                    compiler_survived=True,
+                    survivor_paused_before_recovery=True,
+                    retained_owner=True,
+                    startup_cleanup=True,
+                    cleanup_before_readiness=True,
+                    fresh_sessions=2,
+                    recovery_seconds=(recovery_evidence[1]["time_ns"] - survivor_observed) / 1e9,
+                )
+                (root / "recovery.json").write_text(json.dumps(recovery_evidence), encoding="utf-8")
+                print(
+                    "Active-service crash left a compiler; retained-owner startup removed it",
+                    flush=True,
+                )
+            finally:
+                connection.close()
+                # Failed qualification must not leave its deliberately orphaned compiler behind.
+                if crashed_container and docker("ps", "-aq", "--filter", f"id={crashed_container}"):
+                    docker("rm", "-f", crashed_container)
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
             report["other_owner_preserved"] = True
             report["total_dispatches"] = verify_dispatch_count(
@@ -451,7 +660,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             )
             report["remaining"] = [
                 "active Gateway runtime disposal",
-                "service crash and cleanup-failure recovery",
+                "cleanup-failure recovery and remaining interruption cases",
                 "full real-host transport/MAF matrix",
             ]
         finally:
