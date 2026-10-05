@@ -32,6 +32,18 @@ jobs:
         run: |
           uv run --locked python scripts/build_hyperlight_aks_image.py \
             --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag hyperlight-provenance:runtime
+      - name: Build the AKS CodeAct application on the verified runtime
+        run: |
+          set -euo pipefail
+          sample=samples/experimental/hyperlight_aks_codeact
+          uv export --locked --no-emit-workspace --no-hashes --output-file "$RUNNER_TEMP/model-constraints.txt"
+          uv pip compile --python-version 3.13 --python-platform x86_64-unknown-linux-gnu \
+            --constraint "$RUNNER_TEMP/model-constraints.txt" --generate-hashes --no-header \
+            "$sample/requirements.in" --output-file "$sample/requirements.txt"
+          docker build --platform linux/amd64 \
+            --build-arg HYPERLIGHT_RUNTIME=hyperlight-provenance:runtime \
+            --tag hyperlight-provenance:application "$sample"
+          docker tag hyperlight-provenance:application hyperlight-provenance:runtime
       - name: Publish isolated test candidates
         id: publish
         run: |
