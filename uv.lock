@@ -1318,7 +1318,7 @@ wheels = [
 
 [[package]]
 name = "maf-sandbox"
-version = "0.47.1"
+version = "0.47.2"
 source = { editable = "packages/maf-sandbox" }
 dependencies = [
     { name = "agent-framework-core" },

@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.47.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.47.1...maf-sandbox-v0.47.2) (2026-10-05)
+
+
+### Fixes
+
+* require MAF 1.20 for session-bound tool approvals ([#1718](https://github.com/sokolaidev/maf-extensions/issues/1718)) ([c18ecbc](https://github.com/sokolaidev/maf-extensions/commit/c18ecbcc94fc3236729ffef74b4590707daa26a8))
+
 ## [0.47.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.47.0...maf-sandbox-v0.47.1) (2026-10-04)
 
 
