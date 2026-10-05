@@ -30,16 +30,36 @@ from typing import Any
 
 def resolve_image(reference: str) -> str:
     """Resolve a local image reference before a service can execute it."""
-    image = subprocess.check_output(
-        ["docker", "image", "inspect", "--format", "{{.Id}}", reference],
-        text=True,
-        encoding="utf-8",
-        stderr=subprocess.PIPE,
-        timeout=15,
-    ).strip()
+    try:
+        image = subprocess.check_output(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", reference],
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.PIPE,
+            timeout=15,
+        ).strip()
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or str(error)).strip()[:4096]
+        raise RuntimeError(f"Docker image inspection failed: {detail}") from error
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
         raise RuntimeError("Docker did not return an immutable image ID")
     return image
+
+
+def decode_withheld(body: bytes | bytearray) -> dict[str, Any]:
+    """Reject malformed workload responses without exposing their contents."""
+    identity = hashlib.sha256(body).hexdigest()
+    try:
+        value = json.loads(body)
+    except (ValueError, UnicodeError):
+        raise RuntimeError(f"Withheld response is not valid JSON (sha256:{identity})") from None
+    result = value.get("result") if isinstance(value, dict) else None
+    structured = result.get("structuredContent") if isinstance(result, dict) else None
+    if not isinstance(structured, dict):
+        raise RuntimeError(
+            f"Withheld response lacks a structured workload result (sha256:{identity})"
+        )
+    return structured
 
 
 def digest(value: Any) -> str:
@@ -147,8 +167,7 @@ class ObserveHTTP:
                     if len(withheld) > 2 * 1024 * 1024:
                         raise RuntimeError("Qualification response exceeds fault buffer")
                     if not message.get("more_body", False):
-                        value = json.loads(withheld)
-                        result = value.get("result", {}).get("structuredContent", {})
+                        result = decode_withheld(withheld)
                         self.record(
                             event="result_withheld",
                             exchange=exchange,

@@ -66,8 +66,10 @@ def verify_loss(evidence: list[dict[str, Any]], projected: dict[str, Any]) -> di
         and result.get("status") == 200,
         "Withheld result does not prove completed work with confirmed cleanup",
     )
-    serialized = json.dumps(projected)
-    require("structuredContent" not in serialized, "Lost result was projected as an outcome")
+    require(
+        "result" not in projected and "structuredContent" not in projected,
+        "Lost result was projected as an outcome",
+    )
     require(
         projected.get("status") == "error"
         and "Streamable HTTP error:" in projected.get("error", "")

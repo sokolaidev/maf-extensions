@@ -628,3 +628,58 @@ def test_qualification_launches_service_with_resolved_image(tmp_path, monkeypatc
     service = launched[1]
     assert service[service.index("--image") + 1] == image
     assert "prepared:latest" not in service
+
+
+def test_lost_result_allows_schema_names_in_error_text():
+    result = {
+        "status": "error",
+        "error": "Streamable HTTP error: Internal Server Error mentions structuredContent",
+    }
+    assert lifecycle.verify_loss(loss_evidence(), result)["dispatches"] == 1
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [("result", {}), ("result", {"details": {"structuredContent": {}}}), ("structuredContent", {})],
+)
+def test_lost_result_rejects_workload_fields_on_error_projection(key, value):
+    result = {
+        "status": "error",
+        "error": "Streamable HTTP error: Internal Server Error",
+        key: value,
+    }
+    with pytest.raises(RuntimeError, match="projected as an outcome"):
+        lifecycle.verify_loss(loss_evidence(), result)
+
+
+def test_image_inspection_failure_preserves_bounded_diagnostic(monkeypatch):
+    def inspect(*args, **kwargs):
+        raise observer.subprocess.CalledProcessError(
+            1, ["docker", "image", "inspect"], stderr="missing local image " + "x" * 5000
+        )
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+    with pytest.raises(
+        RuntimeError, match="Docker image inspection failed: missing local image"
+    ) as caught:
+        observer.resolve_image("sha256:" + "a" * 64)
+    assert len(str(caught.value)) <= 4096 + len("Docker image inspection failed: ")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"private invalid source",
+        b"\xff",
+        b"null",
+        b"[]",
+        b"{}",
+        b'{"result":[]}',
+        b'{"result":{"structuredContent":[]}}',
+    ],
+)
+def test_withheld_decode_refuses_malformed_body_without_exposing_it(body):
+    with pytest.raises(RuntimeError, match="Withheld response") as caught:
+        observer.decode_withheld(body)
+    assert hashlib.sha256(body).hexdigest() in str(caught.value)
+    assert "private invalid source" not in str(caught.value)
