@@ -19,8 +19,7 @@ COPY install.py export.py guard.js /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \
     && groupadd --gid 10001 renderer \
     && useradd --create-home --uid 10001 --gid 10001 renderer \
-    && mkdir -p /maf-sandbox/work \
-    && chown renderer:renderer /maf-sandbox/work
+    && mkdir -p /maf-sandbox/work
 ENV DRAWIO_DISABLE_UPDATE=true
 USER root
 WORKDIR /maf-sandbox/work
