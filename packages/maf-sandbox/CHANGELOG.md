@@ -4,6 +4,8 @@ All notable changes to `maf-sandbox` are documented here. The format follows [Ke
 
 ## [0.47.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.47.1...maf-sandbox-v0.47.2) (2026-10-05)
 
+> **Correction, added after the release.** This version was tagged but never reached PyPI: the [publish run](https://github.com/sokolaidev/maf-extensions/actions/runs/37352698275/job/111907244207) refused its dependency conflict with published Bicep, CodeAct, Draw.io and Terraform versions. Those versions admit core `>=0.47.0,<0.48` and require `agent-framework-core>=1.19.0,<1.20`, while this core requires `>=1.20.0,<1.21`. The framework change is intended for core **0.48.0**, outside their ceilings; dependent releases must adopt that core line before using it. The existing release and tag remain unchanged.
+
 
 ### Fixes
 
