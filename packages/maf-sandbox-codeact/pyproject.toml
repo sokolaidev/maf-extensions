@@ -36,9 +36,8 @@ dependencies = [
     # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
     # release the floor is for, never which release that is.
     "maf-sandbox>=0.47.2,<0.48",
-    # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
-    # application. Both ends of the range are measured: 1.19 made an item's embedded label
-    # restrict-only, which the result wrapper now works with rather than against.
+    # MAF 1.20 binds approvals to the issuing session; older minors are excluded.
+    # The ceiling admits only the minor covered by the framework-contract tests.
     "agent-framework-core>=1.20.0,<1.21",
 ]
 
