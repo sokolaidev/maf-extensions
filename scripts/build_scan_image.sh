@@ -15,12 +15,27 @@ case "$1" in
     ;;
   diagram)
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/diagram-sandbox
+    docker run --rm --network none maf-image-scan:target sh -ec 'printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
   drawio-sandbox)
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-sandbox
+    docker run --rm --network none maf-image-scan:target sh -ec 'python3 --version; printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
   drawio-export)
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-export
+    docker run --rm -i --network none --entrypoint python3 maf-image-scan:target - <<'PY'
+import json
+import runpy
+import time
+from pathlib import Path
+
+export = runpy.run_path('/opt/maf-drawio/export.py')['export_document']
+xml = '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" parent="1" vertex="1" value="Smoke" style="fontFamily=DejaVu Sans;"><mxGeometry x="10" y="10" width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>'
+export(xml, {'pages': [], 'formats': ['png', 'svg', 'jpg'], 'scale': 1, 'jpeg_quality': 90, 'transparent': False}, time.monotonic() + 120)
+assert json.loads(Path('exports.json').read_text())['files'] == ['diagram-1.png', 'diagram-1.svg', 'diagram-1.jpg']
+assert Path('diagram-1.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+print('Offline PNG, SVG and JPEG exports passed')
+PY
     ;;
   terraform-random)
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile random --tag maf-image-scan:target

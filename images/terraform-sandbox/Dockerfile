@@ -1,6 +1,7 @@
 # The initial supported guest platform is Linux amd64. Build each engine separately.
 ARG BASE_IMAGE=scratch
 FROM ${BASE_IMAGE}
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 ARG TARGETARCH
 ARG ENGINE=terraform
 ARG PROFILE=builtin

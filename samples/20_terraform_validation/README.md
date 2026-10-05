@@ -13,8 +13,8 @@ Docker needs a Linux amd64 Docker engine and the selected `random` image. From t
 ```bash
 python images/terraform-sandbox/build_image.py --engine terraform --profile random
 python images/terraform-sandbox/build_image.py --engine opentofu --profile random
-export TERRAFORM_SANDBOX_IMAGE=maf-terraform:1.16.2-random
-export OPENTOFU_SANDBOX_IMAGE=maf-opentofu:1.12.6-random
+export TERRAFORM_SANDBOX_IMAGE=maf-terraform:1.16.5-random
+export OPENTOFU_SANDBOX_IMAGE=maf-opentofu:1.13.1-random
 ```
 
 ACAS additionally needs `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and `ACAS_SANDBOX_REGISTRY`. Push and import the selected image into that group before running. [Maintainer setup](../../docs/maintainers.md#terraform-and-opentofu-images) gives the build, push and import commands. Image variables contain bare `repository:tag` references; the registry setting qualifies them. Use a fresh tag and import when rebuilding a snapshot.
@@ -29,10 +29,10 @@ From the repository root, with the selected image variable and model configurati
 set -euo pipefail
 export SAMPLE_BACKEND=docker SAMPLE_ENGINE=terraform
 uv run --no-project samples/20_terraform_validation/agent.py 2>&1 | tee terraform.log
-python scripts/check_live_terraform_sample.py terraform.log --backend docker --engine terraform --version 1.16.2
+python scripts/check_live_terraform_sample.py terraform.log --backend docker --engine terraform --version 1.16.5
 ```
 
-For OpenTofu, set `SAMPLE_ENGINE=opentofu` and check with `--engine opentofu --version 1.12.6`. For ACAS, set `SAMPLE_BACKEND=acas` and check with `--backend acas`.
+For OpenTofu, set `SAMPLE_ENGINE=opentofu` and check with `--engine opentofu --version 1.13.1`. For ACAS, set `SAMPLE_BACKEND=acas` and check with `--backend acas`.
 
 The checker reads only the tool report inside the block closed by `[measured] validation results`. It requires the selected engine and pinned version, a failed validation naming the missing `length` argument, and a passing formatting check. Model prose cannot supply this evidence. The sample prints core's per-call timing and disposal records; the checker requires each validation call to have matching successful disposal and a completed final scope purge. `Disposed 0` is expected when per-call disposal already removed everything. Disposal evidence records the backend's report, not an independent service inventory.
 

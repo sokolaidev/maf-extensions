@@ -2647,7 +2647,7 @@ jobs:
       TERRAFORM_SANDBOX_IMAGE: maf-terraform:live-random
       SAMPLE_BACKEND: docker
       SAMPLE_ENGINE: terraform
-      ENGINE_VERSION: "1.16.2"
+      ENGINE_VERSION: "1.16.5"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2734,7 +2734,7 @@ jobs:
       OPENTOFU_SANDBOX_IMAGE: maf-opentofu:live-random
       SAMPLE_BACKEND: docker
       SAMPLE_ENGINE: opentofu
-      ENGINE_VERSION: "1.12.6"
+      ENGINE_VERSION: "1.13.1"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2827,7 +2827,7 @@ jobs:
       TERRAFORM_SANDBOX_IMAGE: ${{ vars.TERRAFORM_SANDBOX_IMAGE }}
       SAMPLE_BACKEND: acas
       SAMPLE_ENGINE: terraform
-      ENGINE_VERSION: "1.16.2"
+      ENGINE_VERSION: "1.16.5"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2920,7 +2920,7 @@ jobs:
       OPENTOFU_SANDBOX_IMAGE: ${{ vars.OPENTOFU_SANDBOX_IMAGE }}
       SAMPLE_BACKEND: acas
       SAMPLE_ENGINE: opentofu
-      ENGINE_VERSION: "1.12.6"
+      ENGINE_VERSION: "1.13.1"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

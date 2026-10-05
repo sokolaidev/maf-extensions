@@ -12,7 +12,7 @@ Both image and profile manifests require an integer schema identifier of `1` and
 
 The image carries Docker/OCI labels `org.opencontainers.image.version`, `ai.sokol.maf.engine` and `ai.sokol.maf.engine.version`, including the actual verified binary version. `/opt/maf-terraform/engine.json` also records the engine, executable, version, platform, archive digest, binary digest and profile; it remains the launcher's runtime identity record. A missing/mismatched version build argument or a binary reporting another version fails the build. Derived prepared images inherit these labels from their base and rewrite `engine.json` to profile `prepared` with the prepared receipt's `manifest_sha256` and `policy_sha256`. A prepared mirror holds the providers unpacked: the engine links each provider into the call instead of copying its bytes, and the launcher refuses a call that was served by copying. The one regular file it allows below the call's providers directory is the empty file OpenTofu locks beside a link it made, named for that link.
 
-The base is Python 3.13.15 slim pinned by digest in `image.json`. The installer checks every downloaded archive before extracting it, preserves engine license notices, and leaves provider licenses inside their mirror archives (in a prepared image they are unpacked beside the providers). [runner.py](runner.py) verifies the recorded binary identity and version before executing a request. Deploy the resulting image by immutable digest; a deployment owns its trusted image and provider selection.
+The base is Python 3.13.16 slim on Debian Trixie pinned by digest in `image.json`. The installer checks every downloaded archive before extracting it, preserves engine license notices, and leaves provider licenses inside their mirror archives (in a prepared image they are unpacked beside the providers). [runner.py](runner.py) verifies the recorded binary identity and version before executing a request. Deploy the resulting image by immutable digest; a deployment owns its trusted image and provider selection.
 
 The launcher also accepts the fixed `format` mode used by the kind's opt-in `terraform_format` and `opentofu_format` tools. It runs only `version -json` and `fmt -recursive -no-color`, returning complete changed files within the 128 KiB output bound; no providers, modules, or initialization are needed. Rebuild the base images and every derived prepared image to adopt this launcher. The prepared receipt pins its digest as `reader_sha256`; an old receipt cannot be reused with a replaced launcher.
 
@@ -20,10 +20,10 @@ The launcher also accepts the fixed `format` mode used by the kind's opt-in `ter
 
 | Component | Version | Source | Archive SHA-256 |
 |---|---|---|---|
-| Terraform | 1.16.2 | [HashiCorp releases](https://releases.hashicorp.com/terraform/1.16.2/) | `0d17011f0c4664539b164b044903d04e296c86c13cb9f28040076c65cfb3985a` |
-| OpenTofu | 1.12.6 | [OpenTofu release](https://github.com/opentofu/opentofu/releases/tag/v1.12.6) | `5dc43da4f750f33873dc25e94587128709e819e544b7be9016b255316153c3a8` |
-| Terraform random provider | 3.7.2 | [HashiCorp releases](https://releases.hashicorp.com/terraform-provider-random/3.7.2/) | `7b8434212eef0f8c83f5a90c6d76feaf850f6502b61b53c329e85b3b281cba34` |
-| OpenTofu random provider | 3.7.2 | [OpenTofu registry release](https://github.com/opentofu/terraform-provider-random/releases/tag/v3.7.2) | `9b0ac4c1d8e36a86b59ced94fa517ae9b015b1d044b3455465cc6f0eab70915d` |
+| Terraform | 1.16.5 | [HashiCorp releases](https://releases.hashicorp.com/terraform/1.16.5/) | `2bc2fcfff033265c9e02ca0351f01794eb122f62a9b2a49a3294b9e49eaab5e4` |
+| OpenTofu | 1.13.1 | [OpenTofu release](https://github.com/opentofu/opentofu/releases/tag/v1.13.1) | `8ccbc6f8ee21d2827715f3c6e08a9b3e0209b1e62057c05067ef117e047c1a80` |
+| Terraform random provider | 3.9.1 | [HashiCorp releases](https://releases.hashicorp.com/terraform-provider-random/3.9.1/) | `60b4f8a8ef18f52bf8e19215229dae408bee732825964092db7c989fd2de4097` |
+| OpenTofu random provider | 3.9.1 | [OpenTofu registry release](https://github.com/opentofu/terraform-provider-random/releases/tag/v3.9.1) | `624fb6ed552abc34a5aaac41e76a373da65ac08e524b09b672f29c60e6ac896a` |
 
 The provider archives differ. Terraform uses `registry.terraform.io`; OpenTofu uses `registry.opentofu.org`. A lock containing another registry identity or incompatible checksums is refused during read-only initialization. The launcher never repairs it or falls back to direct downloads. For other providers, build an explicitly pinned mirror profile and qualify that provider separately; the included profiles make no general provider compatibility claim.
 

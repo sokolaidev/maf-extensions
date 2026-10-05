@@ -1,10 +1,11 @@
-FROM debian:bookworm-slim
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
 ARG DRAWIO_VERSION=31.7.0
 ARG DRAWIO_SHA256=eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pil \
-       graphviz xvfb xauth fonts-dejavu-core libgbm1 libasound2 \
+       graphviz xvfb xauth fonts-dejavu-core libgbm1 libasound2t64 \
     && curl --fail --location --retry 3 \
        "https://github.com/jgraph/drawio-desktop/releases/download/v${DRAWIO_VERSION}/drawio-amd64-${DRAWIO_VERSION}.deb" \
        --output /tmp/drawio.deb \

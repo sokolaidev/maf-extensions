@@ -8,7 +8,7 @@ One layer on Debian: Graphviz, and nothing else. That is the whole image. It car
 
 | | Why |
 |---|---|
-| `debian:bookworm-slim` | A small, stock Debian with `apt`. Nothing in the tool depends on the distribution — it runs `dot` and reads a PNG back |
+| `debian:trixie-slim` | A small, stock Debian with `apt`. Nothing in the tool depends on the distribution — it runs `dot` and reads a PNG back |
 | `graphviz` (`--no-install-recommends`) | Provides `dot`, the only program the sandbox runs. `--no-install-recommends` keeps the layer to the renderer and its libraries; the apt lists are dropped afterwards so nothing but the package survives |
 
 There is no working-directory `COPY` and no fixed config: the tool writes its DOT source into `/maf-sandbox/work` at run time (the `SandboxSpec`'s `work_dir`), which the backend creates as it writes the first file. `render_diagram` names the output format on the `dot` command line, so the image holds no state of its own between the source going in and the image coming out.
@@ -33,4 +33,4 @@ Nothing. `render_diagram`'s spec sets `egress_allow=()`, so the docker backend r
 
 ## Reproducibility
 
-`debian:bookworm-slim` is a moving tag: it advances as Debian is patched, and `apt-get install graphviz` resolves to whatever version the mirror serves that day (Graphviz 2.43.0, at the time of writing). Two builds a month apart are not byte-identical, and a diagram's exact pixels can shift with a Graphviz release. Pin the base by digest and the package by version if you need them to be — this image is sample-grade, chosen so the sample is legible, not so its output is bit-reproducible. A production deployment replaces it with a hardened image you build and own: minimal base, digest-pinned, scanned, rebuilt on your patch cadence, supplied through the same `image`/`image_id` spec fields — nothing else in the sample's wiring changes.
+The Debian Trixie base is pinned by digest. The build applies available OS updates, and `apt-get install graphviz` resolves to the version the mirror serves that day. Two builds a month apart are not byte-identical, and a diagram's exact pixels can shift with a Graphviz release. Pin the package versions and repository snapshot as well if you need them to be — this image is sample-grade, chosen so the sample is legible, not so its output is bit-reproducible. A production deployment replaces it with a hardened image you build and own: minimal base, digest-pinned, scanned, rebuilt on your patch cadence, supplied through the same `image`/`image_id` spec fields — nothing else in the sample's wiring changes.
