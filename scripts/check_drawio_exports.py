@@ -205,7 +205,6 @@ async def check(
     output: Path,
     backend: SandboxBackend | None = None,
     *,
-    cap_drop_all: bool = True,
     cap_add: tuple[str, ...] = ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"),
 ) -> None:
     """Exercise the closed-egress kind and verify no artifact lands on resource refusal."""
@@ -215,7 +214,7 @@ async def check(
         from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
         backend = await DockerSandboxBackend.create(
-            DockerSandboxConfig(memory="1g", cpus=2, cap_drop_all=cap_drop_all, cap_add=cap_add)
+            DockerSandboxConfig(memory="1g", cpus=2, cap_add=cap_add)
         )
     calls: list[ToolCallEnded] = []
 
@@ -457,14 +456,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--cap-drop-all", action="store_true", default=True)
     parser.add_argument("--cap-add", action="append")
     args = parser.parse_args()
     asyncio.run(
         check(
             args.image,
             args.output,
-            cap_drop_all=args.cap_drop_all,
             cap_add=tuple(args.cap_add)
             if args.cap_add is not None
             else ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"),

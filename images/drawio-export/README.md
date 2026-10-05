@@ -34,8 +34,8 @@ The root coordinator needs permission to change ownership, set uid/gid, read the
 Verify the two profiles against the rebuilt image:
 
 ```bash
-uv run python scripts/check_drawio_docker.py --image maf-drawio-export:local --output out/drawio-editable --cap-drop-all
-uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports --cap-drop-all --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL
+uv run python scripts/check_drawio_docker.py --image maf-drawio-export:local --output out/drawio-editable
+uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL
 ```
 
 Both checks require clean tool-call reclamation as well as final disposal. The export check observes the renderer's process capability sets.
