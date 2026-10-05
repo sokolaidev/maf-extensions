@@ -150,8 +150,10 @@ def test_capability_file_network_and_call_boundaries(grants):
                 [
                     "python3",
                     "-c",
-                    "import socket; assert not open('/proc/net/route').read().splitlines()[1:]; "
-                    "s=socket.socket(); s.settimeout(1); assert s.connect_ex(('1.1.1.1',443)) != 0",
+                    (
+                        "import socket; assert not open('/proc/net/route').read().splitlines()[1:]; "
+                        "s=socket.socket(); s.settimeout(1); assert s.connect_ex(('1.1.1.1',443)) != 0"
+                    ),
                 ],
                 working_directory=_WORK,
                 timeout=10,
@@ -232,9 +234,11 @@ def test_capability_disposal_on_every_exit(grants, observer):
                     [
                         "python3",
                         "-c",
-                        "import subprocess; subprocess.Popen(['sleep','300'], "
-                        "start_new_session=True, stdin=subprocess.DEVNULL, "
-                        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+                        (
+                            "import subprocess; subprocess.Popen(['sleep','300'], "
+                            "start_new_session=True, stdin=subprocess.DEVNULL, "
+                            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+                        ),
                     ],
                     working_directory=_WORK,
                     timeout=10,
