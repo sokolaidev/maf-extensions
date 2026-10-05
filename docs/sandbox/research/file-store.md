@@ -1,6 +1,6 @@
 # File-store provenance research
 
-> Consolidated research record for the agent file-store label gap and the measured laundering path. It combines the seam investigation and end-to-end information-flow measurement. The current operational contract is described in [`../hosts.md`](../hosts.md) and [`../information-flow.md`](../information-flow.md); this record keeps the evidence and unresolved design boundary without duplicating those guides.
+> Consolidated research record for the agent file-store label gap, the measured laundering path and the scoped-store namespace-composition proposal. It combines the seam investigation, end-to-end information-flow measurement and the scoped-provider/raw-store probe with its proposed shared-view contract. The current operational contract is described in [`../hosts.md`](../hosts.md) and [`../information-flow.md`](../information-flow.md); this record keeps the evidence and unresolved design boundary without duplicating those guides.
 
 ## Conclusion
 

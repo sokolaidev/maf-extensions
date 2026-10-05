@@ -1,6 +1,6 @@
 # A standing-guidance channel a tool may declare
 
-> The upstream request behind [#1306](https://github.com/sokolaidev/maf-extensions/issues/1306), drafted against `agent-framework-core` 1.19.0. Filed on 2026-09-25 as [microsoft/agent-framework#8757](https://github.com/microsoft/agent-framework/issues/8757) (closed by [#8784](https://github.com/microsoft/agent-framework/pull/8784)). What it asks for is one slot a tool declares at attach time, which the framework itself appends to that tool's results labelled trusted. The original argument below was measured on 2026-09-18 against 1.19.0 and, where the two are compared, against the 1.18.0 it replaced. The later follow-up section records the merged implementation and remaining requests. The interim this repository ships in the meantime is in [`information-flow.md`](../information-flow.md).
+> The upstream request behind [#1306](https://github.com/sokolaidev/maf-extensions/issues/1306), drafted against `agent-framework-core` 1.19.0. Filed on 2026-09-25 as [microsoft/agent-framework#8757](https://github.com/microsoft/agent-framework/issues/8757) (open). What it asks for is one slot a tool declares at attach time, which the framework itself appends to that tool's results labelled trusted. Everything below was measured on 2026-09-18 against 1.19.0 and, where the two are compared, against the 1.18.0 it replaced; nothing argues from a core older than the range this suite admits. The interim this repository ships in the meantime is in [`information-flow.md`](../information-flow.md). Current upstream delivery and suite adoption are tracked in [release compatibility](../../release-compatibility.md#native-guidance-adoption-boundary).
 
 ## Why a request rather than a workaround
 
@@ -165,86 +165,3 @@ hidden
 hidden
 hidden
 ```
-
-
-## Follow-up after upstream #8784
-
-Checked on 2026-10-05 against upstream commit `b9d24c8fb484c8330abe8bb9e7500ca3c3bbf46c`, using CPython 3.13.12. The source package still reports 1.20.0, but includes unreleased changes after the published 1.20.0 artifact. Upstream [#8784](https://github.com/microsoft/agent-framework/pull/8784) implements fixed standing guidance; the historical request above is fulfilled upstream. Suite adoption still waits for a published version and the [qualification sequence](../../release-compatibility.md#maf-adoption-sequence).
-
-A direct probe through `LabelTrackingFunctionMiddleware.process` and `FunctionTool.invoke` confirmed that changing a declaration before its first middleware use changes the appended sentence; changing it after that first use does not. A sentence containing `{call_id}` retains those literal braces. Each middleware-processed return contained one diagnostic item and one guidance item; invoking the same tool directly without the middleware returned only diagnostics. Source inspection also confirms malformed entries are warned about and dropped, rather than rejected at attachment. These are integration boundaries, not a claim that the upstream implementation violates its documented behavior.
-
-| Suite result component | Current use | Adoption consequence |
-| --- | --- | --- |
-| Fixed sentences | Bicep validation; Terraform validation and formatting | Candidate for native guidance after exactly-once FIDES/non-FIDES qualification |
-| Fixed sentence with a host-created route | CodeAct withholding mode renders `{call_id}` from the sandbox call directory | Keep wrapper rendering until a scoped substitution contract exists |
-| Finite completion/verdict | Structured results, including draw.io and the validation kinds | Fixed guidance does not replace runtime selection |
-| Trusted host explanation | Structured `trusted_output`, including bounded validation summaries and failure reasons | Remains outside both fixed guidance and finite-selector requests |
-| Ordinary workload output | Diagnostics, reports and sink display text | Keep derived labels and existing result validation |
-
-The migration must retain the suite's attach-time validation, snapshot declarations before execution, preserve confidentiality/principals, and append guidance exactly once with and without FIDES. Do not lower the framework-facing declaration on a tool that still needs trusted structured fields. The two requests below are separate feature proposals; neither authorizes arbitrary runtime strings as trusted content.
-
-### Request 1: framework-rendered finite result fields
-
-**Title:** `[Feature]: Support declared finite result fields without trusting the whole tool result`
-
-**Description**
-
-Fixed standing guidance from #8784 applies on every return. A validator also needs a bounded runtime answer: whether execution completed, and which declared verdict it reached. Returning those fields beside untrusted diagnostics currently requires either weakening them with the tool's untrusted declaration or raising that declaration and carefully restricting every diagnostic item. Please provide an explicit host-authorized mechanism in which the tool definition declares the entire vocabulary and the framework renders the selected text.
-
-A finite vocabulary bounds output syntax; it does not establish the truth of a verdict. The host must explicitly authorize the selector's producer, and the framework must preserve confidentiality and principal restrictions from every source influencing selection. This request does not ask the framework to trust a guest's verdict or declassify information merely because a string came from a finite set. Arbitrary host explanation text remains a separate contract.
-
-**Code Sample**
-
-Illustrative contract, not an implemented API:
-
-```text
-Definition: completed = {yes: "Validation completed.", no: "Validation did not complete."}
-Definition: verdict = {valid: "Valid.", invalid: "Invalid."}
-Authorized host adapter: completed=yes, verdict=invalid
-Guest diagnostics: arbitrary untrusted text
-Framework result: declared completion + declared verdict + restricted diagnostics
-```
-
-**Acceptance criteria**
-
-- Freeze and validate the vocabulary before execution; reject unknown fields, unknown selectors and runtime vocabulary replacement.
-- The authorized host adapter selects values; model arguments and guest strings cannot supply a trusted result item or acquire selector authority by shape alone.
-- Preserve the most restrictive applicable confidentiality and principal set, including information conveyed by the choice of selector.
-- Reject invalid combinations such as an incomplete execution with a final validation verdict, or provide an explicit schema constraint that the host can enforce before rendering.
-- Keep diagnostics untrusted even if they repeat a declared sentence, supply forged label metadata or are malformed; verify simultaneous calls cannot exchange selections.
-- State whether rendering works without FIDES, so wrappers can preserve exactly-once results in both configurations.
-
-**Language/SDK:** Python
-
-### Request 2: safe per-call guidance substitutions
-
-**Title:** `[Feature]: Define host-owned per-call substitutions for fixed tool guidance`
-
-**Description**
-
-The fixed guidance introduced by #8784 can explain unread diagnostics, but an artifact-producing tool also needs to say where this call's outputs were saved. Our host creates that directory identifier independently of the framework tool-call identifier. Repeating a literal template does not name the directory, and accepting arbitrary formatting arguments would introduce runtime text into the trusted channel.
-
-Please define a narrow, opt-in authority boundary for typed host-owned substitutions in an otherwise frozen template. The registration must happen in host configuration; values must be bound to the active call outside model arguments and guest output. An ordinary callback returning an arbitrary string is insufficient without constraints on its authority and accepted value domain. Keeping route rendering in our wrapper is the current alternative.
-
-**Code Sample**
-
-Illustrative contract, not an implemented API:
-
-```text
-Frozen template: "Anything this call saved is under `{artifact_directory_id}/`."
-Allowed slot: artifact_directory_id, supplied by the trusted sandbox host
-Binding: actual sink directory for this execution attempt
-Rejected sources: model kwargs, guest stdout, tool-returned formatting dictionaries
-```
-
-**Acceptance criteria**
-
-- Reject undeclared slots, invalid identifier values, traversal syntax and model/guest attempts to override the host binding.
-- Render from the actual sink directory; do not equate a framework tool-call ID with that directory or infer it from a guest path.
-- Bind substitutions to a call and execution attempt; test concurrent calls, approval resume, retries and cancellation without stale route reuse.
-- Preserve applicable confidentiality and principals for the identifier; directory names can themselves carry information.
-- Freeze the template before execution, retain attach-time validation, and document exactly-once behavior with and without FIDES.
-
-**Language/SDK:** Python
-
-Both drafts were checked against the merged fixed-guidance implementation and targeted upstream issue searches. They are not filed. The finite-field request changes selector authority; the substitution request changes identifier binding. Neither duplicates the fixed-string channel already delivered by #8784.
