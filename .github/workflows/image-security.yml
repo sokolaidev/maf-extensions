@@ -57,11 +57,23 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Check Hyperlight image dependency compatibility
+        id: hyperlight-image
+        if: matrix.profile == 'hyperlight'
+        run: python3 scripts/check_hyperlight_image_compatibility.py >> "$GITHUB_OUTPUT"
+      - name: Report deferred Hyperlight scan
+        if: matrix.profile == 'hyperlight' && steps.hyperlight-image.outputs.build == 'false'
+        run: |
+          echo "::notice::Hyperlight image build and security scan deferred until core release ranges align."
+          printf '\nHyperlight security scan deferred: no image, inventory, vulnerability scan or security evidence artifact was produced. Other image profiles remain enabled.\n' >> "$GITHUB_STEP_SUMMARY"
       - name: Build the selected image
+        id: build
+        if: matrix.profile != 'hyperlight' || steps.hyperlight-image.outputs.build == 'true'
         env:
           PROFILE: ${{ matrix.profile }}
         run: bash scripts/build_scan_image.sh "$PROFILE"
       - name: Record the immutable local image identity
+        if: steps.build.outcome == 'success'
         id: identity
         shell: bash
         env:
@@ -73,6 +85,7 @@ jobs:
           python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security"
           printf '{}\n' > "$RUNNER_TEMP/image-security/grype.yaml"
       - name: Inventory the exact built image
+        if: steps.build.outcome == 'success'
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: docker:${{ steps.identity.outputs.image_id }}
@@ -83,8 +96,10 @@ jobs:
           upload-release-assets: false
           dependency-snapshot: false
       - name: Verify inventory identity and component presence
+        if: steps.build.outcome == 'success'
         run: python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security" --verify-inventory
       - name: Scan the retained inventory
+        if: steps.build.outcome == 'success'
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           sbom: ${{ runner.temp }}/image-security/sbom.syft.json

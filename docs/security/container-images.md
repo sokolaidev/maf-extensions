@@ -1,10 +1,14 @@
 # Container image security checks
 
-The [Image security workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) builds the twelve profiles below on Linux/amd64, inventories each built image with Syft, and scans that retained inventory with Grype. It runs on relevant pull requests and main-branch changes, daily at 06:35 UTC, and by manual dispatch. Daily builds refresh moving base tags and package-manager inputs; they are new candidates, not rescans of an earlier release's exact bytes.
+The [Image security workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) builds the eligible profiles from the twelve below on Linux/amd64, inventories each built image with Syft, and scans that retained inventory with Grype. It runs on relevant pull requests and main-branch changes, daily at 06:35 UTC, and by manual dispatch. Daily builds refresh moving base tags and package-manager inputs; they are new candidates, not rescans of an earlier release's exact bytes.
 
 Failures outside pull requests open or update the workflow's tracking issue through the repository's existing reporter. The scanner jobs have read-only repository permissions; a separate reporter has issue-write permission and never runs on pull requests.
 
-The README badge shows the workflow status on `main`. Passing means every listed profile built, its inventory and scan completed, and Grype reported no High or Critical findings in that inventory. The inventory must contain components and identify the exact built image. Lower-severity findings remain in the reports. High/Critical findings fail even when no fix is available. Build failures, scanner failures and evidence-upload failures also fail the workflow. The policy accepts no vulnerability exclusions. A passing result does not establish the absence of malware, backdoors, uncatalogued software or unknown vulnerabilities.
+The README badge shows the workflow status on `main`. Passing means every eligible profile built, its inventory and scan completed, and Grype reported no High or Critical findings in that inventory.
+
+During an adjacent core release transition, the Hyperlight profile is deferred when the checkout core cannot satisfy its dependent ranges; the job summary records that no image or security evidence was produced. The other eleven profiles still run. A green badge during this transition does not establish Hyperlight image coverage. Invalid or non-adjacent dependency ranges still fail the preflight.
+
+The inventory must contain components and identify the exact built image. Lower-severity findings remain in the reports. High/Critical findings fail even when no fix is available. Build failures, scanner failures and evidence-upload failures also fail the workflow. The policy accepts no vulnerability exclusions. A passing result does not establish the absence of malware, backdoors, uncatalogued software or unknown vulnerabilities.
 
 ## Covered profiles
 
@@ -29,7 +33,7 @@ The Diagram, Draw.io, Terraform/OpenTofu and Hyperlight profiles use digest-pinn
 
 ## Reading the evidence
 
-Each matrix job retains an `image-security-<profile>` Actions artifact for 30 days, including when vulnerability findings fail the scan:
+Each matrix job that reaches image identity recording retains an `image-security-<profile>` Actions artifact for 30 days, including when vulnerability findings fail the scan:
 
 - `build.json`: source commit, profile, platform, observation time, run URL and immutable local image ID.
 - `image-inspect.json`: Docker's metadata for that exact built image.
