@@ -136,6 +136,7 @@ Every page and requested format must succeed before collection. Export validates
 |---|---|---|
 | Editable output, XML checks and configured layout | Implemented | [Package README](../../../packages/maf-sandbox-drawio/README.md) |
 | Offline PNG, JPG and SVG export | Implementation and runtime qualification tracked | [#1654](https://github.com/sokolaidev/maf-extensions/issues/1654) (open); [decision record](../research/drawio-export.md) |
+| Local SVG resource references in bundled Azure icons | Implemented; 703 icons accepted, Private Endpoint retains its font-policy refusal | [#1743](https://github.com/sokolaidev/maf-extensions/issues/1743) (closed) by [#1745](https://github.com/sokolaidev/maf-extensions/pull/1745) (merged) |
 | Root export image with an unprivileged renderer | Implemented; live ACAS qualification remains in #1654 | [#1710](https://github.com/sokolaidev/maf-extensions/issues/1710) (closed) by [#1712](https://github.com/sokolaidev/maf-extensions/pull/1712) (merged) |
 | Container-free native rendering | Implemented and qualified on Linux Bubblewrap | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (closed) by [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [backend guide](../backends/bubblewrap.md) |
 | Specialized automatic layouts | Outside the supported contract | untracked |
