@@ -133,4 +133,4 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
 | Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (closed) by [#1717](https://github.com/sokolaidev/maf-extensions/pull/1717) (merged) |
 | Supported capability combinations and call-only grants | Implemented; live qualification recorded in delivering PR | [#1730](https://github.com/sokolaidev/maf-extensions/issues/1730) (closed) by [#1737](https://github.com/sokolaidev/maf-extensions/pull/1737) (merged) |
-| Confined deletion and reclamation | Withheld for every configuration; use disposal | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (open) |
+| Confined deletion and reclamation | Withheld for every configuration; use disposal | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (closed) by [#1746](https://github.com/sokolaidev/maf-extensions/pull/1746) (merged) |
