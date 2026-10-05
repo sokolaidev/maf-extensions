@@ -9,7 +9,8 @@ RUN python3 /recipe/build_opentofu.py
 
 FROM ${BASE_IMAGE} AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache python-3.13 ca-certificates-bundle \
-    && mkdir -p /usr/local/bin
+    && mkdir -p /usr/local/bin \
+    && ln -s /usr/bin/python3 /usr/local/bin/python3
 ARG TARGETARCH
 ARG ENGINE=terraform
 ARG PROFILE=builtin

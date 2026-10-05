@@ -59,3 +59,9 @@ PY
     ;;
   *) echo "Unknown image scan profile: $1" >&2; exit 2 ;;
 esac
+
+case "$1" in
+  terraform-*|opentofu-*)
+    docker run --rm -i --network none --read-only --tmpfs /tmp:rw,exec,size=256m maf-image-scan:target /usr/local/bin/python3 - < images/terraform-sandbox/test_runner.py
+    ;;
+esac

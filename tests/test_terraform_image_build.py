@@ -1,9 +1,11 @@
 """Manifest-driven engine installation and image version metadata."""
 
+import ast
 import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +42,32 @@ def test_profiles_reuse_approved_provider_manifests(engine):
     approved = json.loads((IMAGE_SOURCE / f"dependencies.{engine}.json").read_text())
     mirrored = install.load_plan(engine, "random")
     assert mirrored["providers"] == approved["providers"]
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "packages/maf-sandbox-terraform/tests/test_terraform_docker.py",
+        "images/terraform-sandbox/test_runner.py",
+    ],
+)
+def test_live_random_fixtures_match_the_image_mirrors(engine, fixture):
+    providers = install.load_plan(engine, "random")["providers"]
+    versions = {p["version"] for p in providers if p["source"].endswith("/hashicorp/random")}
+    tree = ast.parse((IMAGE_SOURCE.parents[1] / fixture).read_text(encoding="utf-8"))
+    configurations = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and 'source = "hashicorp/random"' in node.value
+    ]
+    assert configurations
+    for configuration in configurations:
+        match = re.search(r'version\s*=\s*"([^"]+)"', configuration)
+        assert match is not None
+        assert match[1] in versions
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
@@ -205,7 +233,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
                 "--network",
                 "none",
                 tag,
-                "python3",
+                "/usr/local/bin/python3",
                 "-I",
                 "-c",
                 inspection_script,
@@ -363,7 +391,18 @@ def test_live_image_labels_match_installed_binary_and_runtime_metadata(engine):
         "assert json.loads(r.stdout)['terraform_version']==m['version']; print(json.dumps(m))"
     )
     checked = subprocess.run(
-        ["docker", "run", "--rm", "--network", "none", image, "python3", "-I", "-c", script],
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            image,
+            "/usr/local/bin/python3",
+            "-I",
+            "-c",
+            script,
+        ],
         capture_output=True,
         text=True,
         check=True,
