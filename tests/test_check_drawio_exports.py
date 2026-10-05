@@ -69,8 +69,10 @@ def test_export_checker_requires_clean_timeout_event(timeout_event, tmp_path, mo
                     texts = [
                         COMPLETED_TEXT,
                         "Result: refused",
-                        "Prepared document; Placeholder labels; Processing instructions; "
-                        "text and fonts; Unsupported resource stencil; Active SVG; nested images",
+                        (
+                            "Prepared document; Placeholder labels; Processing instructions; "
+                            "text and fonts; Unsupported resource stencil; Active SVG; nested images"
+                        ),
                     ]
             return [Content.from_text(text) for text in texts]
 
