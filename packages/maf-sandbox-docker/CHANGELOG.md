@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.25.0...maf-sandbox-docker-v0.26.0) (2026-10-05)
+
+
+### Features
+
+* **docker:** grant explicit Linux capabilities with drop-all ([#1717](https://github.com/sokolaidev/maf-extensions/issues/1717)) ([53e0417](https://github.com/sokolaidev/maf-extensions/commit/53e04179b04b9ecd7a5a028aad822569e107d556))
+
+
+### Fixes
+
+* update sandbox image dependencies and enforce vulnerability scans ([#1713](https://github.com/sokolaidev/maf-extensions/issues/1713)) ([453f3da](https://github.com/sokolaidev/maf-extensions/commit/453f3da694fe2088245ac820bf68091ec5b6af29))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.24.4...maf-sandbox-docker-v0.25.0) (2026-10-04)
 
 
