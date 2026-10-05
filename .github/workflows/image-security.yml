@@ -1,0 +1,130 @@
+name: Image security
+
+on:
+  pull_request:
+    paths:
+      - images/**
+      - packages/**
+      - scripts/**
+      - uv.lock
+      - pyproject.toml
+      - .github/workflows/image-security.yml
+      - tests/test_image_security_workflow.py
+  push:
+    branches: [main]
+    paths:
+      - images/**
+      - packages/**
+      - scripts/**
+      - uv.lock
+      - pyproject.toml
+      - .github/workflows/image-security.yml
+  schedule:
+    - cron: "35 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Image security (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - profile: bicep
+          - profile: bicep-prepared
+          - profile: sbx-bicep
+          - profile: diagram
+          - profile: drawio-sandbox
+          - profile: drawio-export
+          - profile: terraform-random
+          - profile: opentofu-random
+          - profile: terraform-prepared
+          - profile: opentofu-prepared
+          - profile: hyperlight
+          - profile: egress-proxy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Build the selected image
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: bash scripts/build_scan_image.sh "$PROFILE"
+      - name: Record the immutable local image identity
+        id: identity
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/image-security"
+          docker image inspect maf-image-scan:target > "$RUNNER_TEMP/image-security/image-inspect.json"
+          python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security"
+          printf '{}\n' > "$RUNNER_TEMP/image-security/grype.yaml"
+      - name: Inventory the exact built image
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: docker:${{ steps.identity.outputs.image_id }}
+          syft-version: v1.54.0
+          format: syft-json
+          output-file: ${{ runner.temp }}/image-security/sbom.syft.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+      - name: Verify inventory identity and component presence
+        run: python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security" --verify-inventory
+      - name: Scan the retained inventory
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: ${{ runner.temp }}/image-security/sbom.syft.json
+          grype-version: v0.120.0
+          output-format: json
+          output-file: ${{ runner.temp }}/image-security/grype.json
+          severity-cutoff: high
+          fail-build: true
+          only-fixed: false
+          config: ${{ runner.temp }}/image-security/grype.yaml
+          cache-db: false
+      - name: Retain evidence even when the scan fails
+        if: always() && steps.identity.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-security-${{ matrix.profile }}
+          path: ${{ runner.temp }}/image-security/
+          if-no-files-found: error
+          retention-days: 30
+
+  report-failure:
+    name: Report image security failure
+    needs: scan
+    if: always() && needs.scan.result == 'failure' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open or notify the image security tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- image-security-failure-tracker -->'
+          --title 'Container image security checks failed'
+          --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'
+          --expected 'All twelve documented Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings.'
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-drawio maf-sandbox-hyperlight

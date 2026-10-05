@@ -108,6 +108,7 @@ def main(
     engine: str,
     profile: str,
     expected_version: str,
+    source_build: str | None = None,
     *,
     config_path: Path | None = None,
     destination: Path = Path("/opt/maf-terraform"),
@@ -120,21 +121,37 @@ def main(
         raise ValueError("image version metadata must match image.json")
     url, digest = plan["url"], plan["sha256"]
     destination.mkdir(parents=True, exist_ok=True)
-    archive = download(url, digest)
-    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        binary = bundle.read(executable)
-        path = bin_directory / executable
-        path.write_bytes(binary)
-        path.chmod(0o755)
-        notices = destination / "licenses"
-        notices.mkdir(exist_ok=True)
-        for entry in bundle.namelist():
-            if (
-                "LICENSE" in entry.upper()
-                or "NOTICE" in entry.upper()
-                or "COPYING" in entry.upper()
-            ):
-                (notices / Path(entry).name).write_bytes(bundle.read(entry))
+    notices = destination / "licenses"
+    notices.mkdir(exist_ok=True)
+    provenance: dict[str, Any]
+    if source_build is not None:
+        if engine != "opentofu" or "source_build" not in plan:
+            raise ValueError("source build is not declared for this engine")
+        built = Path(source_build)
+        record = json.loads((built / "build.json").read_text())
+        if record["source"] != plan["source_build"]:
+            raise ValueError("source build does not match image.json")
+        if set(record["files"]) != {"tofu", "go.mod", "go.sum", "LICENSE"}:
+            raise ValueError("source build inventory is incomplete")
+        for name, expected in record["files"].items():
+            if hashlib.sha256((built / name).read_bytes()).hexdigest() != expected:
+                raise ValueError("source build file checksum mismatch")
+        binary = (built / executable).read_bytes()
+        (notices / "LICENSE").write_bytes((built / "LICENSE").read_bytes())
+        provenance = {"source_build": record}
+    else:
+        if "source_build" in plan:
+            raise ValueError("declared source build is required")
+        archive = download(url, digest)
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            binary = bundle.read(executable)
+            for entry in bundle.namelist():
+                if any(word in entry.upper() for word in ("LICENSE", "NOTICE", "COPYING")):
+                    (notices / Path(entry).name).write_bytes(bundle.read(entry))
+        provenance = {"archive_sha256": digest}
+    path = bin_directory / executable
+    path.write_bytes(binary)
+    path.chmod(0o755)
     reported = subprocess.run(
         [str(path), "version", "-json"],
         env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "CHECKPOINT_DISABLE": "1"},
@@ -151,7 +168,7 @@ def main(
                 "version": version,
                 "executable": executable,
                 "platform": plan["platform"],
-                "archive_sha256": digest,
+                **provenance,
                 "binary_sha256": hashlib.sha256(binary).hexdigest(),
                 "profile": profile,
             }

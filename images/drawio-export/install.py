@@ -73,10 +73,13 @@ def prepare() -> None:
     padded = raw + b"\0" * (-len(raw) % 4)
     new_header = struct.pack("<II", len(padded) + 4, len(raw)) + padded
     ASAR.write_bytes(struct.pack("<II", 4, len(new_header)) + new_header + payload)
+    font_root = Path("/usr/share/fonts/truetype/dejavu")
+    if not font_root.is_dir():
+        font_root = Path("/usr/share/fonts/ttf-dejavu")
     fonts = {
-        "DejaVu Sans": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "DejaVu Serif": "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-        "DejaVu Sans Mono": "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "DejaVu Sans": str(font_root / "DejaVuSans.ttf"),
+        "DejaVu Serif": str(font_root / "DejaVuSerif.ttf"),
+        "DejaVu Sans Mono": str(font_root / "DejaVuSansMono.ttf"),
     }
     variants = {}
     for family, regular in fonts.items():

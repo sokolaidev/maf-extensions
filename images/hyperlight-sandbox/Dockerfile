@@ -1,4 +1,9 @@
-FROM python:3.13.12-slim-bookworm@sha256:3121f8b0804aa3698ab750d9a39ea4a42657a385c9b133722b915e55c51551a6
+FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03
+
+RUN apk upgrade --no-cache \
+    && apk add --no-cache python-3.13 py3.13-pip libstdc++ openssl \
+    && python3.13 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt /opt/requirements.txt
 COPY wheels/ /opt/wheels/
