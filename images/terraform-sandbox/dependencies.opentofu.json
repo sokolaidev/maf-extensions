@@ -4,13 +4,13 @@
   "providers": [
     {
       "source": "registry.opentofu.org/hashicorp/random",
-      "version": "3.7.2",
+      "version": "3.9.1",
       "platform": "linux_amd64",
       "artifact": {
-        "url": "https://github.com/opentofu/terraform-provider-random/releases/download/v3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
+        "url": "https://github.com/opentofu/terraform-provider-random/releases/download/v3.9.1/terraform-provider-random_3.9.1_linux_amd64.zip",
         "github_repository_id": "691499456",
-        "sha256": "9b0ac4c1d8e36a86b59ced94fa517ae9b015b1d044b3455465cc6f0eab70915d",
-        "provenance": "OpenTofu random 3.7.2 release SHA256SUMS - existing image pin"
+        "sha256": "624fb6ed552abc34a5aaac41e76a373da65ac08e524b09b672f29c60e6ac896a",
+        "provenance": "OpenTofu random 3.9.1 release SHA256SUMS - verified 2026-10-05"
       }
     }
   ],

@@ -1,6 +1,6 @@
 # `diagram-sandbox` — the image `render_diagram` runs in
 
-One layer on Debian: Graphviz, and nothing else. That is the whole image. It carries no agent code, no Python, and nothing of the host application — the sandbox runs a renderer and nothing else, and *what* to render arrives at run time as a DOT file the tool writes in. The PNG is read back out the same way, through `FILES_OUT`.
+Graphviz and its runtime libraries on a digest-pinned Wolfi base. That is the whole image. It carries no agent code, no Python, and nothing of the host application — the sandbox runs a renderer and nothing else, and *what* to render arrives at run time as a DOT file the tool writes in. The PNG is read back out the same way, through `FILES_OUT`.
 
 [`samples/07_docker_diagram`](../../samples/07_docker_diagram/) is the one sample that runs it, and it builds this image with `docker build`. Unlike [`images/bicep-sandbox`](../bicep-sandbox/), there is nothing to push or import: the docker backend runs what is already on the machine.
 
@@ -8,8 +8,8 @@ One layer on Debian: Graphviz, and nothing else. That is the whole image. It car
 
 | | Why |
 |---|---|
-| `debian:bookworm-slim` | A small, stock Debian with `apt`. Nothing in the tool depends on the distribution — it runs `dot` and reads a PNG back |
-| `graphviz` (`--no-install-recommends`) | Provides `dot`, the only program the sandbox runs. `--no-install-recommends` keeps the layer to the renderer and its libraries; the apt lists are dropped afterwards so nothing but the package survives |
+| `cgr.dev/chainguard/wolfi-base` | A glibc-based container distribution with signed APK packages and a vulnerability feed supported by Grype |
+| `graphviz` and `ttf-dejavu` | Provide `dot`, its rendering libraries and a consistent font family |
 
 There is no working-directory `COPY` and no fixed config: the tool writes its DOT source into `/maf-sandbox/work` at run time (the `SandboxSpec`'s `work_dir`), which the backend creates as it writes the first file. `render_diagram` names the output format on the `dot` command line, so the image holds no state of its own between the source going in and the image coming out.
 
@@ -29,8 +29,8 @@ That the image is built rather than pulled from a registry is deliberate for a s
 
 ## What it may reach at run time
 
-Nothing. `render_diagram`'s spec sets `egress_allow=()`, so the docker backend runs the container on `--network none`: Graphviz reads the source it was given and writes an image, and reaches no network at all. Build time is a different question and a different machine — `apt-get` fetches from Debian's mirrors then — but the running sandbox has no egress to fall short of.
+Nothing. `render_diagram`'s spec sets `egress_allow=()`, so the docker backend runs the container on `--network none`: Graphviz reads the source it was given and writes an image, and reaches no network at all. Build time is a different question and a different machine — `apk` fetches signed Wolfi packages then — but the running sandbox has no egress to fall short of.
 
 ## Reproducibility
 
-`debian:bookworm-slim` is a moving tag: it advances as Debian is patched, and `apt-get install graphviz` resolves to whatever version the mirror serves that day (Graphviz 2.43.0, at the time of writing). Two builds a month apart are not byte-identical, and a diagram's exact pixels can shift with a Graphviz release. Pin the base by digest and the package by version if you need them to be — this image is sample-grade, chosen so the sample is legible, not so its output is bit-reproducible. A production deployment replaces it with a hardened image you build and own: minimal base, digest-pinned, scanned, rebuilt on your patch cadence, supplied through the same `image`/`image_id` spec fields — nothing else in the sample's wiring changes.
+The Wolfi base is pinned by digest. Wolfi is a rolling distribution: the build applies available OS updates, and `apk add graphviz` resolves to the version the repository serves that day. Two builds a month apart are not byte-identical, and a diagram's exact pixels can shift with a Graphviz release. Pin the package versions and repository snapshot as well if you need them to be — this image is sample-grade, chosen so the sample is legible, not so its output is bit-reproducible. A production deployment replaces it with a hardened image you build and own: minimal base, digest-pinned, scanned, rebuilt on your patch cadence, supplied through the same `image`/`image_id` spec fields — nothing else in the sample's wiring changes.

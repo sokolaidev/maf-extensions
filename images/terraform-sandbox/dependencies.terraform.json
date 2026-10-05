@@ -4,12 +4,12 @@
   "providers": [
     {
       "source": "registry.terraform.io/hashicorp/random",
-      "version": "3.7.2",
+      "version": "3.9.1",
       "platform": "linux_amd64",
       "artifact": {
-        "url": "https://releases.hashicorp.com/terraform-provider-random/3.7.2/terraform-provider-random_3.7.2_linux_amd64.zip",
-        "sha256": "7b8434212eef0f8c83f5a90c6d76feaf850f6502b61b53c329e85b3b281cba34",
-        "provenance": "HashiCorp random 3.7.2 release SHA256SUMS - existing image pin"
+        "url": "https://releases.hashicorp.com/terraform-provider-random/3.9.1/terraform-provider-random_3.9.1_linux_amd64.zip",
+        "sha256": "60b4f8a8ef18f52bf8e19215229dae408bee732825964092db7c989fd2de4097",
+        "provenance": "HashiCorp random 3.9.1 release SHA256SUMS - verified 2026-10-05"
       }
     }
   ],

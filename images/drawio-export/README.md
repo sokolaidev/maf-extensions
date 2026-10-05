@@ -7,7 +7,7 @@ docker build -t maf-drawio-export:local images/drawio-export
 uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports
 ```
 
-The build verifies the Draw.io Desktop 31.7.0 Debian distribution's SHA-256, installs native dependencies and a fixed DejaVu font set, and prepares /opt/maf-drawio/manifest.json. Network access is needed at build time. Deployment should pin the resulting approved image digest; Debian package updates are not a reproducible-build guarantee.
+The container uses a digest-pinned Wolfi base and signed APK runtime packages. The build verifies the Draw.io Desktop 31.7.0 Debian archive's SHA-256, extracts its application payload, installs native dependencies and a fixed DejaVu font set, and prepares /opt/maf-drawio/manifest.json. Network access is needed at build time. Deployment should pin the resulting approved image digest; Wolfi package updates are not a reproducible-build guarantee.
 
 install.py repacks Desktop's ASAR with guard.js to refuse missing images, unknown shapes and excessive dimensions. export.py resolves local assets, validates embedded images and HTML, runs the native exporter and validates artifacts before publishing its manifest. The host never imports or executes this runtime directly. Preserve the upstream Desktop, Electron, Draw.io and font notices shipped in the image when redistributing it; the modified export behavior is defined by these source files.
 

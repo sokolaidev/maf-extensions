@@ -86,7 +86,7 @@ Set the first table under *Environment secrets* and the second under *Environmen
    | `AZURE_OPENAI_CHAT_MODEL` | the deployment name (Azure 5). A public model name — as a secret it would redact itself out of every sample's own output |
    | `DRAWIO_SANDBOX_IMAGE` | Reference of the imported [draw.io image](../images/drawio-sandbox/Dockerfile), with Python and Graphviz preinstalled. Sample 18 uses closed guest egress. |
    | `BICEP_SANDBOX_IMAGE` | `repository:tag` of the imported Bicep image (Azure 3) |
-   | `TERRAFORM_SANDBOX_IMAGE`, `OPENTOFU_SANDBOX_IMAGE` | Imported random-profile images for sample 20: `maf-terraform:1.16.2-random` and `maf-opentofu:1.12.6-random`. |
+   | `TERRAFORM_SANDBOX_IMAGE`, `OPENTOFU_SANDBOX_IMAGE` | Imported random-profile images for sample 20: `maf-terraform:1.16.5-random` and `maf-opentofu:1.13.1-random`. |
    | `ACAS_SANDBOX_NONROOT_IMAGE` | **optional.** `repository:tag` of an imported image whose `USER` is not root. Nothing else in the live suites needs one, and unset is a supported state: the leg that measures the acquire-time non-root gate skips and names itself in the `-ra` summary. Set it and that leg costs two more billable sandboxes per run — the class fixture's, and one the cold-refusal test creates and deletes to prove a refused acquire leaks nothing |
 
 Each pair shares one assertion script, which is what keeps the two sides comparable. **None of them reads the model's prose for anything the run is being gated on**. Samples 01–06 and 09 each print a fenced block of what their tool returned — the framework records that beside the call, so the model does not write it — closed by a line the sample tagged `[measured]`. The samples pass every reply through `quoted` in `_scaffold.py` first, which turns any line of it beginning with that tag into a quotation, so a model can write the heading and cannot close the block.
@@ -111,7 +111,7 @@ Build and push both Linux amd64 images, then import them into the same live-veri
 set -euo pipefail
 python images/terraform-sandbox/build_image.py --engine terraform --profile random
 python images/terraform-sandbox/build_image.py --engine opentofu --profile random
-for image in maf-terraform:1.16.2-random maf-opentofu:1.12.6-random; do
+for image in maf-terraform:1.16.5-random maf-opentofu:1.13.1-random; do
   docker tag "$image" "$ACAS_SANDBOX_REGISTRY/$image"
   docker push "$ACAS_SANDBOX_REGISTRY/$image"
   uv run python packages/maf-sandbox-acas/scripts/import_disk_image.py \
@@ -124,8 +124,8 @@ done
 For a private registry, supply the importer's `--identity` or `--username` with `--token-stdin` as described in the [ACAS scripts guide](../packages/maf-sandbox-acas/scripts/README.md). Set the two live-verify variables only after import succeeds:
 
 ```bash
-gh variable set TERRAFORM_SANDBOX_IMAGE --repo sokolaidev/maf-extensions --env live-verify --body maf-terraform:1.16.2-random
-gh variable set OPENTOFU_SANDBOX_IMAGE --repo sokolaidev/maf-extensions --env live-verify --body maf-opentofu:1.12.6-random
+gh variable set TERRAFORM_SANDBOX_IMAGE --repo sokolaidev/maf-extensions --env live-verify --body maf-terraform:1.16.5-random
+gh variable set OPENTOFU_SANDBOX_IMAGE --repo sokolaidev/maf-extensions --env live-verify --body maf-opentofu:1.13.1-random
 ```
 
 The shared preflight requires both images for Terraform-kind, core, ACAS and all-sample runs, but only when the source under test contains sample 20. The daily conformance preflight checks them too. Docker jobs build the selected image on the runner and remain independent of ACAS. Rebuilds require a new registry tag and a new import; changing a tag cannot refresh an imported snapshot.

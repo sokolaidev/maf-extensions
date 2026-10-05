@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 )
 _RANDOM = """terraform {
   required_providers {
-    random = { source = "hashicorp/random", version = "3.7.2" }
+    random = { source = "hashicorp/random", version = "3.9.1" }
   }
 }
 resource "random_integer" "value" {
@@ -106,7 +106,7 @@ def test_real_calls_dispose_without_mutating_store(engine, case, monkeypatch):
         elif case == "missing-dependency":
             data = {"main.tf": 'module "child" { source = "./absent" }\n'}
         elif case == "provider-missing":
-            data = {"main.tf": _RANDOM.replace('"3.7.2"', '"99.0.0"')}
+            data = {"main.tf": _RANDOM.replace('"3.9.1"', '"99.0.0"')}
         elif case in {"provider", "provider-invalid", "cancelled", "timeout"}:
             data = {
                 "main.tf": _RANDOM.replace("min = 1", 'min = "wrong"')
@@ -249,7 +249,7 @@ def test_launcher_supervision_in_linux(engine):
             "/tmp:rw,exec,size=256m",
             "-i",
             IMAGES[engine],
-            "python3",
+            "/usr/local/bin/python3",
             "-",
         ],
         input=source.read_bytes(),

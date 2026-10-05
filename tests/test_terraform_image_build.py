@@ -1,9 +1,11 @@
 """Manifest-driven engine installation and image version metadata."""
 
+import ast
 import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +28,10 @@ import terraform_dependencies as prep  # noqa: E402
 def config_path(tmp_path):
     for name in ("image.json", "dependencies.terraform.json", "dependencies.opentofu.json"):
         (tmp_path / name).write_bytes((IMAGE_SOURCE / name).read_bytes())
+    config = tmp_path / "image.json"
+    document = json.loads(config.read_text())
+    document["engines"]["opentofu"].pop("source_build", None)
+    config.write_text(json.dumps(document))
     return tmp_path / "image.json"
 
 
@@ -36,6 +42,32 @@ def test_profiles_reuse_approved_provider_manifests(engine):
     approved = json.loads((IMAGE_SOURCE / f"dependencies.{engine}.json").read_text())
     mirrored = install.load_plan(engine, "random")
     assert mirrored["providers"] == approved["providers"]
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "packages/maf-sandbox-terraform/tests/test_terraform_docker.py",
+        "images/terraform-sandbox/test_runner.py",
+    ],
+)
+def test_live_random_fixtures_match_the_image_mirrors(engine, fixture):
+    providers = install.load_plan(engine, "random")["providers"]
+    versions = {p["version"] for p in providers if p["source"].endswith("/hashicorp/random")}
+    tree = ast.parse((IMAGE_SOURCE.parents[1] / fixture).read_text(encoding="utf-8"))
+    configurations = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and 'source = "hashicorp/random"' in node.value
+    ]
+    assert configurations
+    for configuration in configurations:
+        match = re.search(r'version\s*=\s*"([^"]+)"', configuration)
+        assert match is not None
+        assert match[1] in versions
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
@@ -155,7 +187,14 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
         pytest.skip("needs explicit Docker image build opt-in")
     context = tmp_path / "context"
     context.mkdir()
-    for name in ("Dockerfile", "build_image.py", "install.py", "runner.py", "image.json"):
+    for name in (
+        "Dockerfile",
+        "build_image.py",
+        "build_opentofu.py",
+        "install.py",
+        "runner.py",
+        "image.json",
+    ):
         shutil.copyfile(IMAGE_SOURCE / name, context / name)
     manifest_name = "approved.custom.json"
     shutil.copyfile(IMAGE_SOURCE / f"dependencies.{engine}.json", context / manifest_name)
@@ -194,7 +233,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
                 "--network",
                 "none",
                 tag,
-                "python3",
+                "/usr/local/bin/python3",
                 "-I",
                 "-c",
                 inspection_script,
@@ -352,7 +391,18 @@ def test_live_image_labels_match_installed_binary_and_runtime_metadata(engine):
         "assert json.loads(r.stdout)['terraform_version']==m['version']; print(json.dumps(m))"
     )
     checked = subprocess.run(
-        ["docker", "run", "--rm", "--network", "none", image, "python3", "-I", "-c", script],
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            image,
+            "/usr/local/bin/python3",
+            "-I",
+            "-c",
+            script,
+        ],
         capture_output=True,
         text=True,
         check=True,
