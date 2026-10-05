@@ -126,3 +126,37 @@ def test_every_scan_profile_is_named_in_the_documented_scope():
     scope = (ROOT / "docs/security/container-images.md").read_text()
     for profile in names:
         assert f"| `{profile}` |" in scope
+
+
+def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
+    steps = workflow["jobs"]["scan"]["steps"]
+    preflight = next(step for step in steps if step.get("id") == "hyperlight-image")
+    build = next(step for step in steps if step.get("id") == "build")
+    assert preflight["if"] == "matrix.profile == 'hyperlight'"
+    assert preflight["run"] == (
+        'python3 scripts/check_hyperlight_image_compatibility.py >> "$GITHUB_OUTPUT"'
+    )
+    assert build["if"] == (
+        "matrix.profile != 'hyperlight' || steps.hyperlight-image.outputs.build == 'true'"
+    )
+    assert steps.index(preflight) < steps.index(build)
+    deferred = next(step for step in steps if step.get("name") == "Report deferred Hyperlight scan")
+    assert deferred["if"] == (
+        "matrix.profile == 'hyperlight' && steps.hyperlight-image.outputs.build == 'false'"
+    )
+    assert (
+        "no image, inventory, vulnerability scan or security evidence artifact" in deferred["run"]
+    )
+    assert '"$GITHUB_STEP_SUMMARY"' in deferred["run"]
+    evidence_steps = steps[steps.index(build) + 1 : -1]
+    assert {step["name"] for step in evidence_steps} == {
+        "Record the immutable local image identity",
+        "Inventory the exact built image",
+        "Verify inventory identity and component presence",
+        "Scan the retained inventory",
+    }
+    assert all(step["if"] == "steps.build.outcome == 'success'" for step in evidence_steps)
+    assert steps[-1]["if"] == "always() && steps.identity.outcome == 'success'"
+    scope = (ROOT / "docs/security/container-images.md").read_text()
+    assert "does not establish Hyperlight image coverage" in scope
