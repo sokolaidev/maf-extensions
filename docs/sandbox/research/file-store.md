@@ -137,7 +137,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Desired composition: the provider, custom reader, listing, sink and provenance observer all receive one host-resolved view. Each sees `notes.txt`; their underlying storage and provenance identity includes the same scope. API naming remains an upstream design choice.
+Desired composition: the provider, custom reader, listing, sink and provenance observer all receive one host-resolved view. Each sees `notes.txt`; both the underlying storage identity and the provenance identity include the same scope. API naming remains an upstream design choice.
 
 **Acceptance criteria**
 
