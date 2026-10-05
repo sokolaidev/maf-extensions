@@ -68,7 +68,7 @@ def diagram() -> str:
                 "parent": "1",
                 "vertex": "1",
                 "value": "Azure",
-                "style": "shape=image;image=img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg;",
+                "style": "shape=image;image=img/lib/azure2/security/Key_Vaults.svg;",
             },
         )
         ET.SubElement(
@@ -189,8 +189,10 @@ def verify_output(output: Path) -> dict[str, object]:
         assert "data:image/" in svg and "data:font/ttf;base64," in svg
         if page == 1:
             assert any(
-                item.get("width") == "30" and item.get("height") == "30"
-                for item in root.iter("{http://www.w3.org/2000/svg}use")
+                item.tag in {"{http://www.w3.org/2000/svg}use", "{http://www.w3.org/2000/svg}image"}
+                and item.get("width") == "30"
+                and item.get("height") == "30"
+                for item in root.iter()
             ), "Indicator image was omitted"
         else:
             assert "#00ff00" in svg.lower(), "Indicator shape was omitted"

@@ -18,8 +18,9 @@ RUN apk upgrade --no-cache \
     && apk del --no-cache .unpack \
     && dot -c
 
-COPY install.py export.py guard.js /opt/maf-drawio/
+COPY install.py export.py guard.js check-assets.py /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \
+    && python3 /opt/maf-drawio/check-assets.py \
     && addgroup -g 10001 renderer \
     && adduser -D -u 10001 -G renderer renderer \
     && mkdir -p /maf-sandbox/work /tmp/.X11-unix \
