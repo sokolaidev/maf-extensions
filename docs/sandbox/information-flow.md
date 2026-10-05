@@ -2,7 +2,7 @@
 
 Information-flow labels control which tool results the model can read and where data can go. A sandbox limits what a program can do. Labels control how the agent uses its answer.
 
-This design uses MAF's information-flow module, FIDES, from `agent-framework-core>=1.19.0,<1.20`. A **kind** is a sandbox workload exposed as a tool, such as a compiler or code runner.
+This design uses MAF's information-flow module, FIDES, from `agent-framework-core>=1.20.0,<1.21`. A **kind** is a sandbox workload exposed as a tool, such as a compiler or code runner.
 
 ## Tools, content and the model
 

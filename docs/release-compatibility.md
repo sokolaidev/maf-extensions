@@ -6,9 +6,9 @@ The suite's design question is not "does the code work together" — the ordinar
 
 ## The framework range
 
-The compatibility gates below vary `maf-sandbox`, not `agent-framework-core`. The framework's own range is a separate promise. Its floor is `>=1.19.0`, matching the locked core exercised by the offline suite; 1.18 consumers must upgrade the framework or keep an older suite release. The earlier measurements on 1.18 remain evidence about that source revision, not continuing coverage of an admitted floor. Revisit the floor whenever the framework lock moves: retaining an older floor needs an explicit run on that version, and retaining another minor needs assertions and CI coverage for both contracts.
+The compatibility gates below vary `maf-sandbox`, not `agent-framework-core`. The framework's own range is a separate promise. Its floor is `>=1.20.0`, matching the locked core exercised by the offline suite; 1.19 consumers must upgrade the framework or keep an older suite release. The earlier measurements on 1.18 remain evidence about that source revision, not continuing coverage of an admitted floor. Revisit the floor whenever the framework lock moves: retaining an older floor needs an explicit run on that version, and retaining another minor needs assertions and CI coverage for both contracts.
 
-**Retain `<1.20`.** This is the ceiling decision from [#1343](https://github.com/sokolaidev/maf-extensions/issues/1343), separate from raising the floor. Framework 1.19 changed per-item label precedence: committed guidance became hidden until the wrapper expressed its labels as restrictions ([#1316](https://github.com/sokolaidev/maf-extensions/pull/1316)). A resolution refusal before adoption is preferable to a consumer silently losing the guidance its tool promised. The ceiling holds the next minor out until that boundary has been measured.
+**Retain `<1.21`.** The measured-minor policy from [#1343](https://github.com/sokolaidev/maf-extensions/issues/1343) remains in force after adopting 1.20.0. Framework 1.19 changed per-item label precedence: committed guidance became hidden until the wrapper expressed its labels as restrictions ([#1316](https://github.com/sokolaidev/maf-extensions/pull/1316)). A resolution refusal before adoption is preferable to a consumer silently losing the guidance its tool promised. The ceiling holds the next minor out until that boundary has been measured.
 
 [#1321](https://github.com/sokolaidev/maf-extensions/pull/1321) removes the discovery gap: [`check_framework_ceiling.py`](../scripts/check_framework_ceiling.py), run by [`lock-drift.yml`](../.github/workflows/lock-drift.yml), announces a published release above the ceiling even while the lock refresh stays inside it. That announcement proves availability, not compatibility. Removing the ceiling would let consumers install the new minor before either the scheduled announcement or an adoption measurement; the ordinary locked suite would still exercise the old core.
 
@@ -19,7 +19,7 @@ The cost is deliberate: each adoption changes five direct framework declarations
 - The complete offline-suite result on the candidate, adaptations and regression coverage for changed behavior, the chosen floor, and any retained floor's separate measurement. Record skipped and unverified paths explicitly.
 - A lockfile update and consistent declarations in every package naming the framework, followed by the ordinary wheel and release gates.
 
-A scheduled drift failure starts that work; it does not justify widening on its own. This policy does not prove every future 1.19 patch compatible: the range still admits patches newer than the lock, and the within-range drift check reports those separately. Reconsider the ceiling if the label and provenance contracts become stable public APIs, with evidence that automatic admission preserves them. Until then, the release cost buys a measured adoption boundary.
+A scheduled drift failure starts that work; it does not justify widening on its own. This policy does not prove every future 1.20 patch compatible: the range still admits patches newer than the lock, and the within-range drift check reports those separately. Reconsider the ceiling if the label and provenance contracts become stable public APIs, with evidence that automatic admission preserves them. Until then, the release cost buys a measured adoption boundary.
 
 ## The four pairings
 
@@ -109,3 +109,41 @@ The first window is still open, and is named in [#628](https://github.com/sokola
 ## Where the rules live
 
 [`RELEASING.md`](../RELEASING.md) is the procedure — the order a core minor goes out in, what the gates refuse, and what to do when a release goes wrong. [`maintainers.md`](maintainers.md) is the plumbing: the environments, the approvals, and what a red gate means in practice. This document is the *why* behind both, and the record of what is proved versus what is merely believed.
+
+
+## MAF 1.20 qualification
+
+The candidate uses `agent-framework-core` 1.20.0 and `agent-framework-openai` 1.15.0 on CPython 3.13.12 on Windows. Installed distribution metadata was checked for both the candidate and the 1.19.0 / 1.14.4 baseline. The lock changes no other distribution version.
+
+The existing core label/provenance tests and four kind suites passed on both pairs: 2,395 passed and 94 skipped per run. Six additional approval-contract cases exercise the real framework execution pipeline with a `sandboxed_tool`: issuing-session approval, denial, wrong-session and missing-session refusal, and completed-history replay without re-execution. All six pass on 1.20.0. Against 1.19.0, the approved missing-session case fails because the body executes; the other five pass. Hosts must retain the issuing `AgentSession` when resuming a local approval.
+
+All 14 wheels and source distributions passed metadata checks. Each wheel passed `smoke_install.py` in its own clean environment with the candidate core wheel, and all 14 candidate wheels resolved together. These installations resolve transitive dependencies from the index; the focused behavioral comparison uses the workspace lock. Documentation code blocks and all 218 checked tracker references passed. The full offline suite passed with 13,801 passed and 800 skipped. The complete `poe gate` passed: lint, formatting, all 14 strict package type checks, repository type checking (zero errors, 356 warnings), documentation references and implicit-concatenation checks. Hosted CI remains pending.
+
+No live model, Docker/WSLC/ACAS/Hyperlight backend qualification, generated MCP header-approval flow, or Foundry deployment was run for this adoption. Published-core compatibility and the hosted CI matrix remain separate checks. The pinned OpenClaw qualification fixture continues to describe its existing published 1.19 environment; it is not evidence for this candidate. Release the updated core before its framework-dependent packages so the index can satisfy their shared framework requirement.
+
+## MAF adoption sequence
+
+The 2026-10-05 adoption plan separates the released Python 1.20.0 qualification from the public argument-provenance and standing-guidance APIs merged afterwards in upstream [#8506](https://github.com/microsoft/agent-framework/pull/8506) and [#8784](https://github.com/microsoft/agent-framework/pull/8784). Those APIs are not part of 1.20.0. Upstream merge, publication, and adoption by this suite are separate milestones.
+
+| Stage | Implementation and acceptance criteria | State |
+| --- | --- | --- |
+| Qualify 1.20.0 | Compare the locked 1.19.0 baseline with released core 1.20.0 and OpenAI 1.15.0. Exercise result labels, approval refusal/resume, provenance, cancellation and cleanup; run the repository gate and clean-wheel smoke checks. Move all framework-dependent package ranges together only after qualification. | Local qualification complete; hosted CI pending |
+| Public argument provenance | Keep `positions_holding_hidden_content` as the public interface; use upstream `rewritten_arguments` for named arguments. Preserve scalar translation, unavailable-context handling, completed-call guards and generated-value fallbacks. Test validators, aliases, synchronous tools, concurrent calls and child tasks before removing private inspection. | Pending a published upstream API and qualification |
+| Native fixed guidance | Inventory fixed sentences, finite verdicts, trusted host explanations and per-call routes. Adopt upstream fixed guidance where it preserves exactly-once delivery with and without FIDES. Keep attach-time validation and the structured-result path until an upstream contract covers its trusted fields. | Pending a published upstream API and qualification |
+| Scoped file access | Use one namespace across file tools, listings, kind reads, output sinks and provenance. Test simultaneous sessions using identical relative names, traversal refusal, every mutation and trusted-floor behavior. Retain host-scoped stores until the composition is qualified. | Pending a shared scoped-store design |
+| Host composition | Update affected approval/session and MCP runtime-context examples; qualify dynamic tool labels and stream rejection/cleanup. Foundry factory adoption is conditional on an actual hosting integration. | Pending the relevant integration changes |
+
+The first stage retains the existing raised declarations, result contract and argument-provenance safeguards. Passing a framework compatibility check does not establish live backend isolation, network enforcement, delivery acknowledgement or guest termination. Live and hosted CI evidence must be reported separately from local offline checks.
+
+### Additional upstream requests
+
+These are proposed requests, not filed issues. Prepare a minimal example and acceptance tests before submission; preserve local safeguards while the corresponding upstream contract is unavailable.
+
+| Request | Required behavior | Downstream dependency |
+| --- | --- | --- |
+| Framework-rendered finite result fields | A tool declares the complete completion/verdict vocabulary before execution. Runtime selectors choose framework-owned text; unknown selectors fail closed, guest text cannot enter the field, and confidentiality/principals remain restrictive. Selection still carries information and cannot declassify it. | Removing raised declarations for finite result fields; arbitrary trusted runtime text remains outside this request |
+| Safe per-call guidance substitutions | Publish a narrow authority contract for framework/host-owned identifiers. Reject model/guest-controlled interpolation and preserve correlation under concurrency and retry. A framework tool-call identifier must not be assumed to equal a sandbox artifact-directory identifier. | Replacing wrapper-rendered `{call_id}` artifact routes |
+| Reusable scoped file-store view | Expose the confined view used by file tools to custom consumers, with relative names, consistent scope resolution, and preservation of the underlying store's concurrency capabilities. | Aligning provider writes with listings, kind reads, sinks and provenance |
+| Expiry of implicit argument provenance | First reproduce a child task retaining a completed call's context. If confirmed, request explicit expiry semantics without losing active threaded calls or concurrent-call isolation. | Removing the local completed-call guard |
+
+Clarify whether the public provenance API distinguishes unavailable tracking from a tracked call with no rewrites, and whether guidance is immutable from attachment or first use. These are qualification questions until a supported-contract violation is reproduced. Do not duplicate the existing shared-provider lost-update report [#8909](https://github.com/microsoft/agent-framework/issues/8909) or store-concurrency proposal [#8912](https://github.com/microsoft/agent-framework/issues/8912); namespace isolation and update serialization are distinct requirements.
