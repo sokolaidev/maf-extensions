@@ -28,6 +28,7 @@ _DEFAULT_OUTBOUND_NETWORK = "bridge"
 _DEFAULT_COMMAND_TIMEOUT_S = 60.0
 _DEFAULT_IMAGE_PULL_TIMEOUT_S = 600.0
 _DEFAULT_PIDS_LIMIT = 512
+_SUPPORTED_CAPABILITIES = frozenset({"CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"})
 
 _LINUX_CAPABILITIES = frozenset(
     "AUDIT_CONTROL AUDIT_READ AUDIT_WRITE BLOCK_SUSPEND BPF CHECKPOINT_RESTORE CHOWN "
@@ -52,7 +53,10 @@ def capability_name(value: object) -> str:
 def _capability_names(values: object) -> tuple[str, ...]:
     if not isinstance(values, tuple):
         raise ValueError("cap_add must be a tuple of Linux capability names")
-    return tuple(sorted({capability_name(n) for n in cast("tuple[object, ...]", values)}))
+    names = frozenset(capability_name(n) for n in cast("tuple[object, ...]", values))
+    if unsupported := names - _SUPPORTED_CAPABILITIES:
+        raise ValueError(f"Unsupported Docker capability combination: {sorted(unsupported)}")
+    return tuple(sorted(names))
 
 
 @dataclass(frozen=True)
@@ -101,14 +105,14 @@ class DockerSandboxConfig:
     on Podman. A Podman socket reached through the Docker CLI is best effort and is not
     officially supported.
 
-    ``pids_limit``, ``memory``, ``cpus`` and ``cap_drop_all`` are hardening applied on the
+    ``pids_limit``, ``memory`` and ``cpus`` are hardening applied on the
     create command line, where their effect is verifiable.  ``memory`` and ``cpus`` are unset
     by default because a sensible ceiling is a property of the workload and the machine, not of
-    this package; ``cap_drop_all`` is off by default until real workloads have been measured
-    under it (maintainer ruling — see the design document).  The egress proxy gets the same
-    ``pids_limit``, ``memory`` and ``cpus``, because the guest drives its load, and always runs
-    with every capability dropped. ``cap_add`` grants named Linux capabilities only to
-    workloads, after ``cap_drop_all``; it accepts optional ``CAP_`` prefixes, but not ``ALL``.
+    this package. The egress proxy gets the same limits, because the guest drives its load.
+    ``cap_drop_all`` must be True. ``cap_add`` accepts only subsets of CHOWN, DAC_OVERRIDE,
+    SETUID, SETGID and KILL, with optional ``CAP_`` prefixes. Nonempty grants require call
+    isolation and disposal, and withhold FILES_DELETE and RECLAIM. The proxy always has no
+    capabilities, regardless of workload grants.
     Existing containers with a different capability policy must be disposed before reuse.
     The proxy needs about 16 PIDs; below that, allowlisted acquires fail.
     """
@@ -121,10 +125,12 @@ class DockerSandboxConfig:
     pids_limit: int = _DEFAULT_PIDS_LIMIT
     memory: str | None = None
     cpus: float | None = None
-    cap_drop_all: bool = False
+    cap_drop_all: bool = True
     allow_private_http: bool = False
     credential_gateway: CredentialGateway | None = None
     cap_add: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.cap_drop_all is not True:
+            raise ValueError("cap_drop_all must be True; request supported grants through cap_add")
         object.__setattr__(self, "cap_add", _capability_names(self.cap_add))

@@ -71,6 +71,7 @@ from maf_sandbox import (
     OsFamily,
     Sandbox,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -933,8 +934,10 @@ class _DockerSandbox:
         *,
         instance_id: str,
         freeze: _GuestFreeze,
+        deletion_allowed: bool = True,
     ) -> None:
         self._run = run
+        self._deletion_allowed = deletion_allowed
         self._freeze = freeze
         self._name = name
         self._command_timeout = command_timeout
@@ -1302,6 +1305,8 @@ class _DockerSandbox:
         guest, so this could not run under one, and the reach rule bounds what a won swap
         reaches instead.
         """
+        if not self._deletion_allowed:
+            raise NotImplementedError("FILES_DELETE is unavailable with nonempty cap_add")
         # Ahead of the root probe below, so a path resolving outside is refused without
         # spending a subprocess on it. The bundle checks it again, which is string work.
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
@@ -1347,6 +1352,8 @@ class _DockerSandbox:
         Not frozen, for the reason :meth:`remove` is not: this is an ``exec``, and the daemon
         refuses one on a frozen guest.
         """
+        if not self._deletion_allowed:
+            raise NotImplementedError("RECLAIM is unavailable with nonempty cap_add")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         if not posixpath.isabs(directory):
             directory = confine_resolve_guest_path(directory, working_directory)
@@ -1503,11 +1510,7 @@ class DockerSandboxBackend:
         self._context_args: tuple[str, ...] = ()
         self._endpoint: str | None = None
         self._binding_lock = threading.Lock()
-        # Built once: every input is fixed here, and the router reads the object on each
-        # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
-        # with a proxy image this backend can allowlist named hosts or deny all, and without
-        # one it can only run `--network none`. Never UNRESTRICTED: a container backend always
-        # cuts or proxies, so it cannot offer a workload that asked to run open.
+        # Configuration is immutable; admission must see the same restrictions as acquisition.
         #
         # `os_families` is left at its default here and filled only by `create`, which asks the
         # daemon: it is the one field no input to this constructor could answer. Empty is the
@@ -1519,6 +1522,8 @@ class DockerSandboxBackend:
         # one there is no allowlist to decide anything, and claiming to watch an enforcement
         # that never runs would put a truthful-looking `True` on every closed sandbox.
         capabilities: frozenset[Capability] = _CAPABILITIES
+        if config.cap_add:
+            capabilities -= {Capability.FILES_DELETE, Capability.RECLAIM}
         if config.egress_proxy_image:
             capabilities |= frozenset({Capability.EGRESS_METHODS, Capability.EGRESS_PATHS})
         if config.credential_gateway is not None:
@@ -1535,7 +1540,9 @@ class DockerSandboxBackend:
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
-            isolation_scopes=_ISOLATION_SCOPES,
+            isolation_scopes=frozenset({IsolationScope.CALL})
+            if config.cap_add
+            else _ISOLATION_SCOPES,
             observes_egress=bool(config.egress_proxy_image),
             egress_method_tokens=None if config.egress_proxy_image else frozenset(),
         )
@@ -1869,6 +1876,13 @@ class DockerSandboxBackend:
                 holds no host address — the engine will not build one, or one that is already
                 there could not be removed.
         """
+        if self._config.cap_add:
+            if not key.call_id:
+                raise ValueError("Nonempty cap_add requires CALL isolation and a unique call_id")
+            if spec.required_capabilities & {Capability.FILES_DELETE, Capability.RECLAIM}:
+                raise SandboxCapabilityNotSupported(
+                    "FILES_DELETE and RECLAIM are unavailable with nonempty cap_add"
+                )
         lease = GatewayLease.start(self._config.credential_gateway, key, spec)
         egress_id = self._egress_id(spec)
         # A cryptographic generation is part of the name on every credential acquisition.
@@ -2026,6 +2040,7 @@ class DockerSandboxBackend:
                 facts.guest_gid,
                 instance_id=instance_id,
                 freeze=self._freeze(name),
+                deletion_allowed=not self._config.cap_add,
             )
             try:
                 await sandbox.prepare_work_dir(spec)

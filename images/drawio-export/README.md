@@ -29,13 +29,13 @@ Prepared XML is limited to 8 MiB across all pages, including embedded assets, XM
 
 The image runs as root so ACAS's root-owned file-plane directories remain writable. The export coordinator keeps that identity, but starts Xvfb and Electron as uid/gid 10001 with no supplementary groups. It gives the child separate scratch, profile and output directories, validates bounded regular output files without following links, then writes the artifacts into the call directory as root. Editable creation and Graphviz retain the image's root identity. An already unprivileged coordinator, including a native Bubblewrap guest, preserves its existing identity.
 
-The root coordinator needs permission to change ownership, set uid/gid, read the renderer's private output directory and terminate its process group. Docker's default capability set supports this. A host can instead set `DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"))`. The shared `/maf-sandbox/work` stays root-owned, so editable-only creation, including Graphviz layout, works with drop-all and no additions. A failed privilege drop stops the export. These grants cover the coordinator; Electron and its renderer run without effective, permitted, inheritable or ambient capabilities. The capability policy applies to every workload on that backend, so use a dedicated backend/router configuration when other workloads require zero capabilities.
+The root coordinator needs permission to change ownership, set uid/gid, read the renderer's private output directory and terminate its process group. Set `DockerSandboxConfig(cap_add=("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"))`; drop-all is mandatory. Nonempty grants require call isolation and disposal, which the export spec already requests, and withhold backend deletion and reclamation. The shared `/maf-sandbox/work` stays root-owned, so editable-only creation, including Graphviz layout, works with no additions. A failed privilege drop stops the export. These grants cover the coordinator; Electron and its renderer run without effective, permitted, inheritable or ambient capabilities. The capability policy applies to every workload on that backend, so use a dedicated backend/router configuration when other workloads require zero capabilities.
 
 Verify the two profiles against the rebuilt image:
 
 ```bash
-uv run python scripts/check_drawio_docker.py --image maf-drawio-export:local --output out/drawio-editable --cap-drop-all
-uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports --cap-drop-all --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL
+uv run python scripts/check_drawio_docker.py --image maf-drawio-export:local --output out/drawio-editable
+uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add SETUID --cap-add SETGID --cap-add KILL
 ```
 
 Both checks require clean tool-call reclamation as well as final disposal. The export check observes the renderer's process capability sets.
