@@ -111,7 +111,8 @@ class DockerSandboxConfig:
     this package. The egress proxy gets the same limits, because the guest drives its load.
     ``cap_drop_all`` must be True. ``cap_add`` accepts only subsets of CHOWN, DAC_OVERRIDE,
     SETUID, SETGID and KILL, with optional ``CAP_`` prefixes. Nonempty grants require call
-    isolation and disposal, and withhold FILES_DELETE and RECLAIM. The proxy always has no
+    isolation and disposal. FILES_DELETE and RECLAIM are unavailable with every grant set.
+    The proxy always has no
     capabilities, regardless of workload grants.
     Existing containers with a different capability policy must be disposed before reuse.
     The proxy needs about 16 PIDs; below that, allowlisted acquires fail.

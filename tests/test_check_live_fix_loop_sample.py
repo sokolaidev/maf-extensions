@@ -1378,3 +1378,19 @@ class TestTheStaleContainerHint:
             assert any(_answers(handler) for handler in covering), (
                 f"{failure.__name__} is caught and not answered"
             )
+
+
+_DISPOSAL_ONLY = "  [measured] Cleanup mode: dispose\n" + _HEALTHY.replace(
+    "1 (a1b2c3d4e5f6)", "0 (none)"
+).replace("Disposed 1 sandbox", "Disposed 0 sandbox")
+
+
+def test_disposal_mode_requires_real_calls_and_no_surviving_containers():
+    assert check.assess(_DISPOSAL_ONLY) == []
+    for original, replacement in (
+        ("0 (none)", "1 (a1b2c3d4e5f6)"),
+        ("Disposed 0 sandbox", "Disposed 1 sandbox"),
+        ("Cleanup mode: dispose", "Cleanup mode: unknown"),
+    ):
+        assert check.assess(_DISPOSAL_ONLY.replace(original, replacement))
+    assert check.assess(_DISPOSAL_ONLY + "  [measured] Cleanup mode: dispose\n")

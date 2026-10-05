@@ -594,9 +594,7 @@ def _smoke_maf_sandbox_docker() -> str:
             Capability.EXEC,
             Capability.FILES_IN,
             Capability.FILES_OUT,
-            Capability.FILES_DELETE,
             Capability.HOST_TOOLS,
-            Capability.RECLAIM,
         }
     ):
         raise SystemExit(
@@ -614,7 +612,7 @@ def _smoke_maf_sandbox_docker() -> str:
     if not dockerfile.is_file():
         raise SystemExit(f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})")
     return (
-        "backend constructs, declares FILES_OUT, HOST_TOOLS, RECLAIM and its egress, and ships the "
+        "backend constructs, declares FILES_OUT, HOST_TOOLS and its egress, and ships the "
         "proxy recipe"
     )
 

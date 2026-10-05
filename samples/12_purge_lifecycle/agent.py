@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from _scaffold import MEASURED, installed_versions
 from cleanup_probe import PROGRAM_RAN, cleanup_probe_spec, make_cleanup_probe_tools
 from maf_sandbox import (
+    Capability,
     Cleanup,
     FailedReclaimPolicy,
     Isolation,
@@ -492,7 +493,7 @@ async def act_eight_a_handler_that_raises(telemetry: Telemetry) -> str:
 
 
 async def main() -> int:
-    """Eight acts against Docker, counted with `docker ps` throughout."""
+    """Measure disposal and, where declared, reclamation against Docker."""
     backend = DockerSandboxBackend(DockerSandboxConfig())
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     # One provider for both halves: the package's observer records what the library did, and the
@@ -501,15 +502,29 @@ async def main() -> int:
     # scope, its thread ids, a container it created. A deployment decides that for itself, and
     # with it off the reason and the path below are withheld while the rest still comes out.
     telemetry = build_telemetry(record_sensitive_data=True)
+    supports_reclaim = Capability.RECLAIM in backend.declarations.capabilities
+    kept_unclean = 0
+    refusal = contained = "not-exercised"
     try:
         await act_one_reuse_within_a_turn(router)
         await act_two_between_turns(router)
         await act_three_purge_at_end_of_turn(router)
         tidy_found, unscoped_found = await act_four_thread_delete(router)
-        await act_five_a_cleanup_that_could_not_run(telemetry)
-        kept_unclean = await act_six_the_one_policy_that_loosens_it(telemetry)
-        refusal = await act_seven_a_disposal_nobody_could_prove(telemetry)
-        contained = await act_eight_a_handler_that_raises(telemetry)
+        if supports_reclaim:
+            await act_five_a_cleanup_that_could_not_run(telemetry)
+            kept_unclean = await act_six_the_one_policy_that_loosens_it(telemetry)
+            refusal = await act_seven_a_disposal_nobody_could_prove(telemetry)
+            contained = await act_eight_a_handler_that_raises(telemetry)
+        else:
+            print(f"{MEASURED}Cleanup mode: disposal-only")
+            probe_router = _hardened_router(telemetry, FailedReclaimPolicy.DISPOSE)
+            print(
+                f"{MEASURED}Cleanup rung for this call: "
+                f"{probe_router.effective_cleanup(cleanup_probe_spec(IMAGE))}"
+            )
+            answer = await _one_locked_call(probe_router, _LOCKED_THREAD)
+            print(f"{MEASURED}Disposal probe body completed: {answer == PROGRAM_RAN}")
+            print(f"{MEASURED}Containers after disposal-only call: {containers(_LOCKED_THREAD)}")
     finally:
         # Whatever any act left behind, however it ended. The sample is about not leaking, so
         # it does not get to leak while saying so — act 6 above all, which ends holding a
@@ -521,6 +536,13 @@ async def main() -> int:
     # Counted off the exporter rather than kept in a variable, so this is what a collector
     # received and not what the handler believes it sent.
     reported = len(exported(telemetry.exporter, RECLAIM_FAILURE_SPAN))
+    if not supports_reclaim:
+        print(
+            f"Completed 5 of 5 disposal-only acts. Purger found {tidy_found} on a purged "
+            f"thread and {unscoped_found} on an unscoped one. Reclaim failures recorded: "
+            f"{reported}. Containers left behind: {leftover}."
+        )
+        return 0
     print(
         f"Completed 8 of 8 acts. Purger found {tidy_found} on a purged thread and "
         f"{unscoped_found} on an unscoped one. Kept after a failed reclaim: {kept_unclean}. "

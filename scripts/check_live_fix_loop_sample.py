@@ -4,7 +4,7 @@
     python scripts/check_live_fix_loop_sample.py out.txt   # or: ... | python …
 
 Turn 1 must author a file with a real fault, both turns must validate, and the compiler must
-agree with the reported repair. The same sandbox must survive every checkpoint until disposal.
+agree with the reported repair. Cleanup checkpoints prove disposal, or warm reuse on older source tags.
 
 Every *number* comes off a line the sample tagged `[measured]`, never from the model's replies
 around it. The one thing read out of a reply is turn 1's prose, which has to name the rules the
@@ -312,7 +312,7 @@ def _assess_first_turn(output: str, authored: set[str]) -> list[str]:
 
 
 def _assess_calls_and_cleanup(output: str) -> list[str]:
-    """Both turns validate and reuse the same container through all four checkpoints."""
+    """Both turns validate and each checkpoint satisfies the selected cleanup mode."""
     failures: list[str] = []
 
     for turn, pattern in _TOOL_CALLS:
@@ -327,6 +327,10 @@ def _assess_calls_and_cleanup(output: str) -> list[str]:
                 f"{turn} reached the sandbox no times — both turns must validate their file"
             )
 
+    modes = re.findall(_M + r"Cleanup mode: (\S+)\s*$", output, _F)
+    if modes and modes != ["dispose"]:
+        failures.append("cleanup mode is unknown or reported more than once")
+    disposal_only = modes == ["dispose"]
     first_id: str | None = None
     for where, pattern in _COUNTS:
         matches = list(pattern.finditer(output))
@@ -338,6 +342,10 @@ def _assess_calls_and_cleanup(output: str) -> list[str]:
             continue
         match = matches[0]
         count, ids = int(match.group(1)), match.group(2).strip()
+        if disposal_only:
+            if count != 0 or ids != "none":
+                failures.append(f"container survived disposal {where}: {count}, {ids}")
+            continue
         if count != 1:
             failures.append(f"{count} container(s) {where}, expected 1 for warm reuse")
         elif re.fullmatch(r"(?:[0-9a-f]{12}|[0-9a-f]{64})", ids) is None:
@@ -592,8 +600,11 @@ def _assess_footer(output: str) -> list[str]:
     failures: list[str] = []
     if _NOT_DISPOSED.search(output):
         failures.append("the scope purge could not account for every sandbox — data may remain")
-    if disposed != 1:
-        failures.append(f"the router reported disposing {disposed}, expected 1 after warm reuse")
+    expected = 0 if re.search(_M + r"Cleanup mode: dispose\s*$", output, _F) else 1
+    if disposed != expected:
+        failures.append(
+            f"the router reported disposing {disposed}, expected {expected} after cleanup"
+        )
     if leftover != 0:
         failures.append(
             f"{leftover} container(s) left behind — this count is `docker ps -a`, so a container "
@@ -616,7 +627,7 @@ def main(argv: list[str]) -> int:
     failures = assess(output)
     if failures:
         print(
-            "FAIL: the fix-loop sample did not repair the file with warm sandbox reuse:",
+            "FAIL: the fix-loop sample did not repair the file with verified cleanup:",
             file=sys.stderr,
         )
         for reason in failures:
@@ -635,7 +646,7 @@ def main(argv: list[str]) -> int:
     # "agrees with the repair reported", not "the file is fixed": a run that repaired one of two
     # faults and said so passes, and the compiler still reports an error on it.
     print(
-        "OK  the model wrote main.bicep and repaired it with warm sandbox reuse, "
+        "OK  the model wrote main.bicep and repaired it with verified cleanup, "
         "and the compiler agrees with the repair the run reported"
     )
     return 0

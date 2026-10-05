@@ -241,9 +241,34 @@ def assess(output: str) -> list[str]:
             "thread before computing it"
         )
 
+    if "[measured] Cleanup mode: disposal-only" in output:
+        failures.extend(_assess_disposal_only(output))
+        failures.extend(_assess_each_line_appears_once(output))
+        return failures
     failures.extend(_assess_the_cleanup_that_failed(output))
     failures.extend(_assess_each_line_appears_once(output))
     failures.extend(_assess_footer(output))
+    return failures
+
+
+def _assess_disposal_only(output: str) -> list[str]:
+    """Require completed work and independent disposal counts when reclaim is unsupported."""
+    failures = []
+    expected = (
+        r"\[measured\] Cleanup mode: disposal-only",
+        r"\[measured\] Cleanup rung for this call: dispose",
+        r"\[measured\] Disposal probe body completed: True",
+        r"\[measured\] Containers after disposal-only call: 0",
+        (
+            r"Completed 5 of 5 disposal-only acts\. Purger found 0 on a purged thread and "
+            r"1 on an unscoped one\. Reclaim failures recorded: 0\. Containers left behind: 0\."
+        ),
+    )
+    for pattern in expected:
+        if len(re.findall(r"^\s*" + pattern + r"\s*$", output, re.MULTILINE)) != 1:
+            failures.append(f"missing or ambiguous disposal-only evidence: {pattern}")
+    if _RECORDED_DISPOSAL.search(output) or _FOOTER.search(output):
+        failures.append("disposal-only mode must not claim reclamation failure evidence")
     return failures
 
 
@@ -454,7 +479,7 @@ def main(argv: list[str]) -> int:
         return 1
     print(
         "OK  reuse within a turn, disposal at its end, the delete path catching the rest, and "
-        "a reclaim that failed reported to the host under every policy it has"
+        "the selected cleanup mode completed with its required evidence"
     )
     return 0
 

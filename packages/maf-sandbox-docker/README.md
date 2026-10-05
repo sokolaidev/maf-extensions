@@ -41,12 +41,12 @@ The backend captures the client environment and binds its context, endpoint and 
 | Setting | Behavior |
 |---|---|
 | Isolation | `CONTAINER` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `HOST_TOOLS`; `FILES_DELETE` and `RECLAIM` only with empty `cap_add` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `HOST_TOOLS`; no `FILES_DELETE` or `RECLAIM` |
 | Network | `CLOSED`; `ALLOWLIST` with a configured proxy |
 | Lifetime | Conversation or separate sandbox per call; nonempty `cap_add` requires call scope |
 | Transfer ceiling | 64 MiB per file, 256 MiB total, 256 files in each direction |
 | Command output | 8 MiB of stdout and stderr together; more refuses the call and discards the container |
-| Cleanup | Disposal by default; reclaim requires explicit host opt-in |
+| Cleanup | Whole-container disposal; file deletion and reclaim are unsupported |
 
 Directory listing, runtime `run_code`, snapshots and core attached identity are unavailable. Method and path network rules require the configured proxy.
 
@@ -56,13 +56,13 @@ The backend adds no host bind mount or Docker socket. Every container uses `no-n
 
 `DockerSandboxConfig(cap_add=("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"))` grants only the listed capabilities to workload containers. Any subset of these five is supported; all other grants, including `ALL`, are refused. Names are case-insensitive and accept an optional `CAP_` prefix. Grants apply to every workload using this backend, never to its egress proxy. Use separate backend/router configurations for different workload policies.
 
-Nonempty grants require effective `IsolationScope.CALL`, selected by the workload or the host's `min_isolation_scope`. Each call has a unique call ID and its own container, disposed after the call. Conversation scope is refused. `FILES_DELETE` and `RECLAIM` are withheld, and direct `remove`/`reclaim` calls raise `NotImplementedError` before deletion. This does not restrict a guest command's own filesystem authority. Safe re-enablement is tracked in [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732).
+Nonempty grants require effective `IsolationScope.CALL`, selected by the workload or the host's `min_isolation_scope`. Each call has a unique call ID and its own container, disposed after the call. Conversation scope is refused. `FILES_DELETE` and `RECLAIM` are withheld for every configuration, including empty grants and non-root images. Direct `remove`/`reclaim` calls raise `NotImplementedError` before I/O. This does not restrict a guest command's own filesystem authority.
 
 ### Migration from implicit Docker grants
 
 `cap_drop_all` now defaults to `True` and rejects every other value. Empty `cap_add` means no grants; the backend no longer inherits Docker's default capability set. Replace reliance on defaults with an explicit supported subset and call isolation, or adapt the image to work without grants. Draw.io editable creation needs no grants with an image containing the root-owned work-directory fix; native export needs all five. Existing containers whose inspected policy differs, including containers created with Docker defaults, are refused before reuse or restart. Dispose them before acquiring under the new configuration; the backend does not silently replace their policy.
 
-For non-root images using reclaim, make the work directory guest-owned while keeping its ancestors root-owned and not writable by the guest. Without `DAC_OVERRIDE`, root cannot traverse guest-private directories, and the guest cannot remove a call directory from a root-owned, non-writable work directory. That layout can make reclaim raise `OSError`; cleanup must escalate to container disposal. Existing directory ownership is preserved, so fix the image rather than expecting acquisition to change it. Adding a capability does not restore reclaim: every nonempty grant withholds it.
+Docker has no trusted deletion primitive that stays confined while the guest can replace path components or guest commands. Root ownership is not an immutable boundary against a root guest, even with all capabilities dropped. Use whole-container disposal; a host opting into `Cleanup.RECLAIM` still resolves to disposal on Docker. Workloads requiring `FILES_DELETE` must select another backend. See [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732).
 
 ## File transfer
 
@@ -107,7 +107,7 @@ Proxy decisions can be reported through the router's observer after confirmed pr
 
 ## Cleanup and retention
 
-Acquisition reuses a matching running container, restarts a stopped one or creates a missing one. Router-managed tools dispose after each call unless the host explicitly permits reclaim. Reclaim can leave state outside the call directory; a kind's confinement declaration is advisory.
+Acquisition reuses a matching running container, restarts a stopped one or creates a missing one. Router-managed tools dispose after each call, including when the host permits reclaim. Direct backend acquisition retains its existing scope and reuse rules; hosts using it directly own disposal.
 
 `dispose(key, kind=...)` removes a selected kind. `dispose_scope(scope, thread_id)` finds conversation resources through engine labels, including resources created by another host process.
 

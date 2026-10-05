@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 from maf_sandbox import (
     Capability,
+    Cleanup,
     Isolation,
     IsolationScope,
     SandboxCapabilityNotSupported,
@@ -55,8 +56,8 @@ def test_each_combination_refuses_an_unqualified_existing_container(grants, stat
 def test_complete_combinations_enforce_scope_and_deletion(grants):
     backend, fake = _backend_with(_machine(), DockerSandboxConfig(cap_add=grants))
     declarations = backend.declarations
-    assert (Capability.FILES_DELETE in declarations.capabilities) is (not grants)
-    assert (Capability.RECLAIM in declarations.capabilities) is (not grants)
+    assert Capability.FILES_DELETE not in declarations.capabilities
+    assert Capability.RECLAIM not in declarations.capabilities
     assert declarations.isolation_scopes == (
         frozenset({IsolationScope.CALL})
         if grants
@@ -79,23 +80,21 @@ def test_complete_combinations_enforce_scope_and_deletion(grants):
     call_spec = replace(_SPEC, isolation_scope=IsolationScope.CALL)
     router.ensure_can_serve(call_spec)
     delete_spec = replace(call_spec, requires=frozenset({Capability.FILES_DELETE}))
-    if grants:
-        with pytest.raises(SandboxCapabilityNotSupported):
-            router.ensure_can_serve(delete_spec)
-        with pytest.raises(SandboxCapabilityNotSupported):
-            asyncio.run(backend.acquire(_CALL_A, delete_spec))
-        assert not fake.calls
+    with pytest.raises(SandboxCapabilityNotSupported):
+        router.ensure_can_serve(delete_spec)
+    with pytest.raises(SandboxCapabilityNotSupported):
+        asyncio.run(backend.acquire(_CALL_A, delete_spec))
+    assert not fake.calls
 
     async def scenario():
         sandbox = await host_call_router.acquire(_CALL_A, _SPEC)
         fake.mark()
-        if grants:
-            with pytest.raises(NotImplementedError, match="FILES_DELETE"):
-                await sandbox.remove("child", working_directory=_WORK, recursive=True)
-            with pytest.raises(NotImplementedError, match="RECLAIM"):
-                await sandbox.reclaim("child", working_directory=_WORK, timeout=1)
-            assert not fake.matching("exec")
-            assert not fake.cp_since_mark()
+        with pytest.raises(NotImplementedError, match="FILES_DELETE"):
+            await sandbox.remove("child", working_directory=_WORK, recursive=True)
+        with pytest.raises(NotImplementedError, match="RECLAIM"):
+            await sandbox.reclaim("child", working_directory=_WORK, timeout=1)
+        assert not fake.matching("exec")
+        assert not fake.cp_since_mark()
         assert await host_call_router.dispose(_CALL_A) is None
 
     asyncio.run(scenario())
@@ -117,3 +116,18 @@ def test_unsupported_grants_are_not_an_escape_hatch(grant):
     for grants in [(grant,), (*GRANTS, grant)]:
         with pytest.raises(ValueError, match="Unsupported Docker capability combination"):
             DockerSandboxConfig(cap_add=grants)
+
+
+@pytest.mark.parametrize("grants", COMBINATIONS)
+def test_reclaim_opt_in_resolves_to_disposal(grants):
+    backend, _ = _backend_with(_machine(), DockerSandboxConfig(cap_add=grants))
+    router = SandboxRouter(
+        [backend],
+        min_isolation=Isolation.CONTAINER,
+        min_cleanup=Cleanup.RECLAIM,
+        min_isolation_scope=IsolationScope.CALL,
+    )
+    assert (
+        router.effective_cleanup(replace(_SPEC, confined_to_guest_call_path=True))
+        == Cleanup.DISPOSE
+    )

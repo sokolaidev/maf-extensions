@@ -24,6 +24,11 @@ def test_capability_qualification_cannot_pass_by_skipping_or_losing_pipeline_fai
     assert "test_docker_capability_e2e.py" in matrix
     assert "len(cases) == 96" in matrix
     assert 'case.find("skipped") is None' in matrix
+    deletion = steps["Qualify deletion refusal against hostile guest state"]["run"]
+    assert "set -euo pipefail" in deletion
+    assert "test_docker_deletion_e2e.py" in deletion
+    assert "len(cases) == 4" in deletion
+    assert 'case.find("skipped") is None' in deletion
     drawio = steps["Qualify editable creation and native export"]["run"]
     assert "set -euo pipefail" in drawio
     assert "check_drawio_docker.py" in drawio and "check_drawio_exports.py" in drawio

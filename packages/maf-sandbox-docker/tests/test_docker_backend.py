@@ -993,9 +993,7 @@ class TestBackendIdentity:
                 Capability.EXEC,
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
-                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
-                Capability.RECLAIM,
             }
         )
 
@@ -1666,129 +1664,6 @@ class TestRunCode:
             asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
 
 
-class TestRemove:
-    """`rm -rf` is irreversible, so the command this builds is pinned rather than trusted."""
-
-    def _sandbox(self):
-        # The walk stats every ancestor, so the fake has to answer for them; anything else
-        # under the work directory is simply not there, which a removal treats as success.
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
-
-    def test_a_recursive_removal_is_rm_rf_behind_a_double_dash(self):
-        """`--` is what keeps a path opening with a dash from being read as a flag.
-
-        The path is guest-shaped and a run directory is named by the caller, so the guard is
-        cheap insurance against the one argv position where a name becomes an option.
-        """
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.remove("run-1", working_directory=_WORK, recursive=True))
-        assert fake.only("exec").args == (
-            "exec",
-            "--user",
-            "0",
-            "-w",
-            _WORK,
-            _NAME,
-            "rm",
-            "-rf",
-            "--",
-            f"{_WORK}/run-1",
-        )
-
-    def test_without_recursive_the_flag_is_f_alone(self):
-        """`-f` makes a missing path succeed and leaves `rm` to refuse a directory.
-
-        Sending `-rf` here would silently widen every single-file delete into a tree delete —
-        the one mistake in this method that no test above would notice.
-        """
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        args = fake.only("exec").args
-        assert args[6:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
-
-    def test_the_working_directory_itself_is_refused_before_any_command_runs(self):
-        sandbox, fake = self._sandbox()
-        with pytest.raises(ValueError):
-            asyncio.run(sandbox.remove(".", working_directory=_WORK, recursive=True))
-        assert fake.matching("exec") == []
-
-    def test_a_path_outside_the_working_directory_is_refused(self):
-        sandbox, fake = self._sandbox()
-        with pytest.raises(ValueError):
-            asyncio.run(sandbox.remove("../../etc", working_directory=_WORK, recursive=True))
-        assert fake.matching("exec") == []
-
-
-class TestReclaim:
-    """`reclaim` is `remove`'s mechanism without its confinement duty: no walk, straight to `rm`."""
-
-    def _sandbox(self, overrides=None):
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
-
-    def test_a_directory_is_removed_via_rm_rf_behind_a_double_dash(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert fake.only("exec").args == (
-            "exec",
-            "--user",
-            "0",
-            "-w",
-            "/",
-            _NAME,
-            "rm",
-            "-rf",
-            "--",
-            f"{_WORK}/call-a1b2c3",
-        )
-
-    def test_a_missing_directory_is_success(self):
-        """`rm -rf` already exits 0 on a path that is not there; this pins that no raise follows."""
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/never-there", working_directory=_WORK, timeout=30))
-
-    def test_a_nonzero_exit_raises_with_the_exit_code_and_what_the_guest_said(self):
-        """The message is the whole diagnosis a host gets: core turns it into
-        `ReclaimFailure.reason` and hands that to `on_reclaim_failure`. A read-only
-        filesystem, a full disk and a permission denial are told apart only by these two.
-        """
-        overrides = {
-            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: permission denied"),
-            ("exec", "-w", "/", _NAME, "rm"): _DockerResult(1, b"", "rm: permission denied"),
-        }
-        sandbox, fake = self._sandbox(overrides)
-        with pytest.raises(OSError, match=r"rm exited 1.*rm: permission denied"):
-            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
-
-    def test_the_timeout_reaches_the_transport(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=42))
-        assert fake.only("exec").timeout == 42
-
-    def test_the_removal_runs_from_root_not_the_uncreated_working_directory(self):
-        """Reclaim must tolerate a caller's child directory that was never created."""
-        sandbox, fake = self._sandbox()
-        asyncio.run(
-            sandbox.reclaim(
-                f"{_WORK}/never-created/call-a1b2c3",
-                working_directory=f"{_WORK}/never-created",
-                timeout=30,
-            )
-        )
-        assert fake.only("exec").args[:5] == ("exec", "--user", "0", "-w", "/")
-
-    def test_a_name_a_shell_would_read_stays_one_argument(self):
-        """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
-        name one argument. A `work_dir` is host-supplied, so a name holding a space or a `;`
-        is reachable, and one that split would have `rm -rf` delete something else.
-        """
-        hostile = f"{_WORK}/a b; touch pwned"
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK, timeout=30))
-        assert fake.only("exec").args[-1] == hostile
-
-
 class TestWhichPrincipalACommandCarries:
     """The file plane is the host's; `exec` and `run_code` are the guest program's."""
 
@@ -1811,322 +1686,13 @@ class TestWhichPrincipalACommandCarries:
         asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
         assert fake.only("exec").args == ("exec", "-w", _WORK, _NAME, "whoami")
 
-    def test_a_refused_removal_is_retried_when_capabilities_were_dropped(self):
-        """`--user 0` is a uid, not a capability set: without `CAP_DAC_OVERRIDE` root empties
-        only what it owns.
-        """
-        refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
-        sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert [call.args[:3] for call in fake.matching("exec")] == [
-            ("exec", "--user", "0"),
-            ("exec", "-w", "/"),
-        ]
-
-    def test_a_removal_root_could_make_is_not_retried(self):
-        sandbox, fake = self._sandbox(capabilities_dropped=True)
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert len(fake.matching("exec")) == 1
-
-    def test_a_removal_neither_can_make_raises_with_what_the_guest_said(self):
-        """The fallback must not swallow a failure that is nothing to do with ownership."""
-        both = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
-        sandbox, fake = self._sandbox(both, capabilities_dropped=True)
-        with pytest.raises(OSError, match="read-only file system"):
-            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
-        assert len(fake.matching("exec")) == 2
-
-    def test_the_retry_gets_what_is_left_of_the_one_deadline(self, monkeypatch: pytest.MonkeyPatch):
-        """Both removal attempts share one deadline."""
-        from types import SimpleNamespace
-
-        import maf_sandbox_docker._backend as docker_backend
-
-        now = 1000.0
-        spent = 0.25
-        base = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **_CAPS_DROPPED})
-
-        def refuse_as_root(args):
-            nonlocal now
-            if args[:3] == ("exec", "--user", "0"):
-                now += spent
-                return _DockerResult(1, b"", "rm: Permission denied")
-            return base(args)
-
-        backend, fake = _backend_with(refuse_as_root, DockerSandboxConfig(cap_drop_all=True))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        monkeypatch.setattr(docker_backend, "time", SimpleNamespace(monotonic=lambda: now))
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-
-        first, second = fake.matching("exec")
-        assert first.timeout == 30
-        assert second.timeout == 30 - spent
-
-    def test_both_attempts_messages_reach_the_caller(self):
-        """A failure that was nothing to do with ownership is retried too, so the second
-        attempt must not be the only thing the caller hears about.
-        """
-        differ = {
-            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: read-only file system"),
-            ("exec", "-w"): _DockerResult(1, b"", "rm: Permission denied"),
-        }
-        sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
-        with pytest.raises(OSError, match=r"Permission denied.*as root: rm: read-only file"):
-            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
-
-    def test_failed_removal_preserves_both_attempts_diagnostic_bytes(self):
-        root = b"root: \xff\xe2\x82\n"
-        guest = b"guest: \xfe\x00\n"
-        differ = {
-            ("exec", "--user", "0"): _DockerResult(1, b"", root.decode("utf-8", "replace"), root),
-            ("exec", "-w"): _DockerResult(2, b"", guest.decode("utf-8", "replace"), guest),
-        }
-        sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
-        result = asyncio.run(
-            sandbox._removal(
-                ["rm", "-rf", "--", f"{_WORK}/x"],
-                working_directory="/",
-                timeout=30,
-                raise_authority=True,
-            )
-        )
-        assert result.exit_code == 2
-        assert result.stderr_bytes == guest.strip() + b" (as root: " + root.strip() + b")"
-        assert result.stderr == result.stderr_bytes.decode("utf-8", "replace")
-
-    def test_a_refused_remove_is_retried_the_same_way(self):
-        refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
-        sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        assert [call.args[:3] for call in fake.matching("exec")] == [
-            ("exec", "--user", "0"),
-            ("exec", "-w", _WORK),
-        ]
-
-
-class TestTheReachRuleChoosesThePrincipal:
-    """The reach rule: root is for paths with no component the guest could have swapped."""
-
-    def _sandbox(self, work_dir_entry: bytes):
-        overrides = {
-            _cp("/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o755), ""),
-            _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
-            _cp(_WORK): _DockerResult(0, work_dir_entry, ""),
-        }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
-
-    def test_a_path_the_guest_could_not_have_touched_is_removed_as_root(self):
-        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o755))
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
-
-    def test_an_unreadable_root_keeps_the_removal_at_the_guest_s_and_running(self):
-        """The per-remove probe for `/` owes the removal an answer it cannot give when the
-        daemon will not describe it: the removal still runs, so a broken engine breaks no
-        delete, and stays at the guest's authority because nothing was verified."""
-
-        def refuses(args):
-            if args[:2] == ("cp", f"{_NAME}:/"):
-                raise RuntimeError("the daemon said no")
-            return _machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY)(args)
-
-        backend, fake = _backend_with(refuses)
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        exec_args = fake.only("exec").args
-        assert "--user" not in exec_args
-        assert exec_args[-4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
-
-    def test_a_writable_root_withholds_root_from_the_removal_itself(self):
-        """The twin of the acquire-side probe: a root the guest could have written is the
-        swap the walk's own components cannot witness, so the removal borrows no root
-        however clean the directories below it are."""
-
-        writable = {
-            **_WORK_IS_A_DIRECTORY,
-            ("cp", f"{_NAME}:/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o777), ""),
-        }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=writable))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        exec_args = fake.only("exec").args
-        assert "--user" not in exec_args
-        assert exec_args[-4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
-
-    def test_a_component_the_guest_owns_keeps_the_removal_at_the_guest_authority(self):
-        """The guest can swap what it owns, so root here would delete what it could not."""
-        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        assert "--user" not in fake.only("exec").args
-
-    def test_a_root_owned_component_anyone_may_write_is_the_guests_too(self):
-        """Ownership alone is not the question — `0777` under root is writable by the guest."""
-        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o777))
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        assert "--user" not in fake.only("exec").args
-
-    def test_reclaim_raises_authority_without_a_walk(self):
-        """`reclaim` owes no walk, so the argument stands in for one."""
-        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
-
-
-class TestTheAncestorsAboveTheWorkDirAreChecked:
-    """The half of `reclaim`'s argument that is read rather than asserted, once per container."""
-
-    def _backend(self, parent: bytes | None, image: str = _METHOD_SPEC.image):
-        overrides = {
-            ("cp", f"{_NAME}:/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
-        }
-        if parent is not None:
-            overrides[_cp("/maf-sandbox")] = _DockerResult(0, parent, "")
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return backend, fake, SandboxSpec(requires=frozenset(), kind=_METHOD_SPEC.kind, image=image)
-
-    def _reclaimed_as(self, backend, fake, spec) -> tuple[str, ...]:
-        sandbox = asyncio.run(backend.acquire(_KEY, spec))
-        fake.mark()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        return fake.only("exec").args[:3]
-
-    def test_a_host_owned_chain_lets_reclaim_remove_as_root(self):
-        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
-        assert self._reclaimed_as(backend, fake, spec) == ("exec", "--user", "0")
-
-    def test_an_ancestor_the_guest_may_write_keeps_reclaim_at_the_guest_authority(self):
-        """A swapped parent is followed rather than unlinked, so root there would delete what
-        the guest could not.
-        """
-        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o777))
-        assert "--user" not in self._reclaimed_as(backend, fake, spec)
-
-    def test_an_ancestor_owned_by_someone_else_does_the_same(self):
-        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 10001, 0o755))
-        assert "--user" not in self._reclaimed_as(backend, fake, spec)
-
-    def test_an_unreadable_ancestor_fails_closed(self):
-        """An engine that will not answer leaves the removal at the guest's authority."""
-
-        def refuses(args):
-            if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
-                raise RuntimeError("the daemon said no")
-            return _machine(running=[_NAME])(args)
-
-        backend, fake = _backend_with(refuses)
-        assert "--user" not in self._reclaimed_as(backend, fake, _METHOD_SPEC)
-
-    def test_an_unreadable_root_does_the_same(self):
-        """Nothing verified, nothing licensed: the root is the swap the directories below it
-        cannot witness, so a walk that cannot read it licenses no removal at all."""
-
-        def refuseless(args):
-            if args[:2] == ("cp", f"{_NAME}:/"):
-                raise RuntimeError("the daemon said no")
-            return _machine(running=[_NAME])(args)
-
-        backend, fake = _backend_with(refuseless)
-        assert "--user" not in self._reclaimed_as(backend, fake, _METHOD_SPEC)
-
-    def test_a_writable_root_is_what_closes_licensing(self):
-        """A root the guest could have written is the swap the chain above the work dir cannot
-        see — its header, read by the same walk, is what the rule rests on."""
-
-        def writable(args):
-            if args[:2] == ("cp", f"{_NAME}:/"):
-                return _DockerResult(0, _owned_directory_tar(".", 0, 0o777), "")
-            return _machine(running=[_NAME])(args)
-
-        backend, fake = _backend_with(writable)
-        assert "--user" not in self._reclaimed_as(backend, fake, _METHOD_SPEC)
-
-    def test_a_work_dir_straight_under_the_root_is_answered_by_the_root_alone(self):
-        """`/work` has no ancestors above it, so the walk is just ``/`` — the component the
-        chain never reached, and the one every other component's replacement relies on."""
-
-        def root_only(args):
-            if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
-                raise RuntimeError("the daemon said no")
-            if args[:2] == ("cp", f"{_NAME}:/"):
-                return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
-            return _machine(running=[_NAME], work_dir="/work")(args)
-
-        backend, fake = _backend_with(root_only)
-        spec = SandboxSpec(
-            requires=frozenset(), kind=_METHOD_SPEC.kind, image=_METHOD_SPEC.image, work_dir="/work"
-        )
-        asyncio.run(backend.acquire(_KEY, spec))
-        assert [f.host_owned_ancestors for f in backend._facts.values()] == [True]
-        assert fake.matching("cp", f"{_NAME}:/maf-sandbox") == []
-
-    def test_the_answer_is_read_once_per_container(self):
-        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
-        asyncio.run(backend.acquire(_KEY, spec))
-        fake.mark()
-        asyncio.run(backend.acquire(_KEY, spec))
-        assert fake.cp_since_mark() == []
-
-    def test_the_answer_is_re_read_when_the_image_changes(self):
-        """A container name never carries the image, so one can come back with a different one."""
-        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
-        asyncio.run(backend.acquire(_KEY, spec))
-        fake.mark()
-        asyncio.run(
-            backend.acquire(
-                _KEY, SandboxSpec(requires=frozenset(), kind=_METHOD_SPEC.kind, image="other:local")
-            )
-        )
-        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
-
-    def test_a_changed_image_id_re_reads_even_where_the_image_name_holds_still(self):
-        """`image_id` is what `_create_workload` runs when a spec carries one, so it is what
-        the key has to follow.
-        """
-        backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
-        pinned = SandboxSpec(
-            requires=frozenset(), kind=_METHOD_SPEC.kind, image="same:local", image_id="sha256:aaa"
-        )
-        asyncio.run(backend.acquire(_KEY, pinned))
-        fake.mark()
-        asyncio.run(
-            backend.acquire(
-                _KEY,
-                SandboxSpec(
-                    requires=frozenset(),
-                    kind=_METHOD_SPEC.kind,
-                    image="same:local",
-                    image_id="sha256:bbb",
-                ),
-            )
-        )
-        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
-
-    def test_the_same_image_id_is_still_read_once(self):
-        backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
-        pinned = SandboxSpec(
-            requires=frozenset(), kind=_METHOD_SPEC.kind, image="same:local", image_id="sha256:aaa"
-        )
-        asyncio.run(backend.acquire(_KEY, pinned))
-        fake.mark()
-        asyncio.run(backend.acquire(_KEY, pinned))
-        assert fake.cp_since_mark() == []
-
-    def test_removing_the_container_forgets_the_answer(self):
-        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
-        asyncio.run(backend.acquire(_KEY, spec))
-        asyncio.run(backend.dispose(_KEY))
-        fake.mark()
-        asyncio.run(backend.acquire(_KEY, spec))
-        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
-
 
 class TestTheHardeningIsReadFromTheContainer:
     """`acquire` reuses a container by a name that carries no hardening, so the config is not
     evidence about the container it got.
     """
 
-    def _reclaim_calls(self, config, container_says_dropped: bool) -> list[tuple[str, ...]]:
+    def _acquire(self, config, container_says_dropped: bool):
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
@@ -2136,16 +1702,13 @@ class TestTheHardeningIsReadFromTheContainer:
                 else {next(iter(_CAPS_DROPPED)): _DockerResult(0, b"[[],[],false]", "")}
             ),
         }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides), config)
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        fake.mark()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        return [call.args[:3] for call in fake.matching("exec")]
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides), config)
+        return asyncio.run(backend.acquire(_KEY, _SPEC))
 
     @pytest.mark.parametrize("requested,actual", [(True, False)])
     def test_reuse_refuses_a_different_capability_policy(self, requested, actual):
         with pytest.raises(ValueError, match="different capability policy"):
-            self._reclaim_calls(DockerSandboxConfig(cap_drop_all=requested), actual)
+            self._acquire(DockerSandboxConfig(cap_drop_all=requested), actual)
 
     def test_a_container_that_will_not_say_is_refused(self):
         overrides = {
@@ -2205,44 +1768,6 @@ class TestAContainerThatVanishedBehindThisBackend:
             asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         assert not fake.matching("exec")
 
-    def test_the_ancestors_of_the_replacement_are_read_again(self):
-        present, hardening = {_NAME}, [b'[["ALL"], [], false]\n']
-        backend, fake = self._backend(present, hardening)
-        asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-
-        present.discard(_NAME)
-        fake.mark()
-        asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
-
-
-class TestReclaimKeepsAFloorUnderRoot:
-    """Reclamation checks child placement and root distance before running a command."""
-
-    def _sandbox(self):
-        backend, fake = _backend_with(_machine(running=[_NAME]))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
-
-    @pytest.mark.parametrize("directory", ["/", "/etc", "/maf-sandbox/", "//tmp", "/a/.."])
-    def test_a_path_within_two_components_of_the_root_runs_no_command(self, directory):
-        sandbox, fake = self._sandbox()
-        with pytest.raises(ValueError, match="close to the root"):
-            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
-        assert fake.matching("exec") == []
-
-    @pytest.mark.parametrize("directory", [".", "../outside", "../../etc/ssh"])
-    def test_a_relative_reclaim_must_stay_below_the_base(self, directory):
-        sandbox, fake = self._sandbox()
-        with pytest.raises(ValueError):
-            asyncio.run(sandbox.reclaim(directory, working_directory=".", timeout=30))
-        assert fake.matching("exec") == []
-
-    def test_a_call_directory_two_components_deep_is_allowed(self):
-        """The floor is a floor: what core dispatches has to go through it unchanged."""
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim("/srv/run-a1b2c3", working_directory="/srv", timeout=30))
-        assert fake.only("exec").args[-1] == "/srv/run-a1b2c3"
-
 
 class TestExecDiscardsATimedOutSandbox:
     def test_a_timed_out_exec_removes_the_container(self):
@@ -2287,7 +1812,6 @@ class TestExecDiscardsATimedOutSandbox:
         with pytest.raises(TimeoutError):
             asyncio.run(backend.acquire(_KEY, _SPEC))
         assert fake.matching("rm", "-f", _NAME) == []
-        assert [f.host_owned_ancestors for f in backend._facts.values()] == [False]
 
     def test_a_timeout_reading_config_user_falls_back_instead(self, caplog):
         """The third read, and the same rule: `inspect` is host-side, so a timeout there
@@ -2320,8 +1844,6 @@ class TestExecDiscardsATimedOutSandbox:
 
         def responder(args):
             if args[:1] == ("exec",):
-                # Every exec times out — ancestors_are_the_hosts swallows its failures, but
-                # the identity probe must not.
                 raise TimeoutError
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
@@ -2943,17 +2465,6 @@ class TestAFailureBorrowingTheAbsenceWords:
         absent = _not_in_the_container(f"{_WORK}/{name}")
         sandbox, _ = self._sandbox(f"{_WORK}/{name}", absent.stderr)
         assert asyncio.run(sandbox.stat_file(name, working_directory=_WORK)) is None
-
-    def test_a_removal_against_a_container_that_went_is_a_failure_not_a_missing_file(self):
-        """`remove`'s own check reaches the engine, so a gone container fails the removal.
-
-        It wraps the root stat and not the check below it, which is the reachable difference:
-        `rm -f` would otherwise be sent to a container that is not there and its failure
-        reported as the path's.
-        """
-        sandbox, _ = self._sandbox("/maf-sandbox", self._NO_CONTAINER)
-        with pytest.raises(RuntimeError, match="could not stat"):
-            asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
 
 
 class TestASymlinkedAncestorOfTheWorkingDirectory:
@@ -6660,15 +6171,11 @@ def test_unreadable_capability_policy_refuses_reuse(payload):
 
 
 @pytest.mark.parametrize("added", [(), ("CHOWN",), ("DAC_OVERRIDE",)])
-def test_reclaim_is_withheld_with_any_capability_addition(added):
+def test_reclaim_is_withheld_with_every_capability_policy(added):
     backend, fake = _backend_with(_machine(), DockerSandboxConfig(cap_add=added))
     sandbox = asyncio.run(backend.acquire(_CALL_A, _SPEC))
     fake.mark()
     action = sandbox.reclaim(f"{_WORK}/call", working_directory=_WORK, timeout=30)
-    if added:
-        with pytest.raises(NotImplementedError, match="RECLAIM"):
-            asyncio.run(action)
-        assert not fake.matching("exec")
-    else:
+    with pytest.raises(NotImplementedError, match="RECLAIM"):
         asyncio.run(action)
-        assert len(fake.matching("exec")) == 1
+    assert not fake.matching("exec")

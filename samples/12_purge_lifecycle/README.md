@@ -1,5 +1,7 @@
 # 12 — when a sandbox goes away: within a turn, at its end, on thread delete, and when it cannot
 
+With Docker versions that withhold `RECLAIM`, the sample runs acts 1–4 and a fifth disposal-only check: a real tool call leaves a locked directory, the router selects disposal despite the reclaim floor, and Docker must report zero containers afterwards. The footer reports five completed acts and zero reclaim-failure events. The eight-act reclamation demonstration below applies only to older versions that declare that capability; it is not evidence for the current backend.
+
 Every other sample creates a sandbox and drops it on the way out, because every other sample is one program that runs once. A real host is not that. It serves many conversations, for a long time, and a sandbox is keyed by the caller's scope, thread and agent directory — so it **outlives the turn that made it**, on purpose.
 
 That leaves a host three moments where a sandbox can go away, and choosing between them is a cost decision rather than a style one.

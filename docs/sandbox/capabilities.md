@@ -14,9 +14,9 @@ Capabilities describe operations. [Isolation](policy-isolation.md), [network pol
 | `FILES_IN` | Write files into the sandbox | ACAS, Docker, WSLC |
 | `FILES_OUT` | Inspect and read declared output files | ACAS, Docker; Hyperlight with flat outputs enabled |
 | `FILES_LIST` | Discover directory entries | ACAS; Hyperlight with output files enabled, flat base only |
-| `FILES_DELETE` | Remove workload-selected paths | ACAS, Docker |
+| `FILES_DELETE` | Remove workload-selected paths | ACAS, Docker Sandboxes |
 | `SNAPSHOT` | Reset to a baseline taken before input | Hyperlight |
-| `RECLAIM` | Safely remove the framework's call directory | Docker |
+| `RECLAIM` | Safely remove the framework's call directory | Docker Sandboxes |
 | `ATTACHED_IDENTITY` | Enforce the core attached-authority contract | None |
 | `EGRESS_METHODS` | Enforce HTTP method restrictions | Docker and WSLC with iron-proxy configured; [Docker Sandboxes](backends/docker-sbx.md#network) for the nine `HttpMethod` tokens; Hyperlight for seven standard methods; ACAS for its [qualified HTTPS token set](backends/acas.md#network-policy) |
 | `EGRESS_PATHS` | Enforce HTTP path restrictions | Docker and WSLC with iron-proxy configured; [Docker Sandboxes](backends/docker-sbx.md#network) through its built-in proxy |

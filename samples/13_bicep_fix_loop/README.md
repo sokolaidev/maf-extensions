@@ -1,17 +1,15 @@
-# 13 — author, validate, fix: two turns with warm sandbox reuse
+# 13 — author, validate, fix: two turns with per-call disposal
 
-The file store starts **empty**. Turn 1 writes `main.bicep` from a brief and validates it; turn 2 repairs the compiler's diagnostics. The host file store and agent session preserve the work across calls. This host explicitly selects `Cleanup.RECLAIM` to keep one sandbox warm while each call's guest directory, module cache and temporary profile are reclaimed. Bicep attempts to confine its changes to that directory; the host accepts that reclamation cannot prove complete cleanup.
+The file store starts **empty**. Turn 1 writes `main.bicep` from a brief and validates it; turn 2 repairs the compiler's diagnostics. The host file store and agent session preserve the work across calls. The host selects `Cleanup.DISPOSE`, so each validation runs in a container that is disposed when the call finishes.
 
 | | What happens | Validations reaching the sandbox | Containers afterwards |
 |---|---|---|---|
-| Turn 1 | the model writes `main.bicep` from a brief, then validates what it wrote | ≥1 | 1, same id |
-| The baseline | the program compiles what turn 1 left, with no model involved | 1 | 1, same id |
-| Turn 2 | it repairs what the compiler reported, and validates again | ≥1 | 1, same id |
-| The check | the program compiles the result, again with no model involved | 1 | 1, same id |
+| Turn 1 | The model writes and validates `main.bicep` | At least 1 | 0 |
+| The baseline | The host compiles what turn 1 left | 1 | 0 |
+| Turn 2 | The model repairs and validates again | At least 1 | 0 |
+| The final check | The host compiles the repaired file | 1 | 0 |
 
-At least four validations reach a sandbox. A model may validate more than once in either turn; the checker requires at least one successful validation per turn. The counts come from returned tool results carrying both compiler phases, because a rejected request may never acquire a sandbox. A surviving container alone cannot prove any work happened.
-
-Every checkpoint must report exactly one container with the same Docker id. A replacement fails even when the count stays at one. The final scope purge must report `Disposed 1` and no containers left; an explicit `[measured] Not fully disposed` report also fails. These checkpoints demonstrate reuse between phases; the Bicep package's confinement suite separately verifies that individual calls leave no changed paths or surviving processes.
+Every checkpoint must report zero containers, and the final scope purge must have nothing left to dispose. The checker also requires real compiler results from both turns; an empty container count alone is not evidence that validation happened. For older source tags, the checker retains the previous warm-reuse checks when no disposal-mode marker is present.
 
 ## The session is the mechanism
 
@@ -115,7 +113,7 @@ This sample asks more of a model than any other here: turn 1 has to write valid 
 
 ## One retry, announced
 
-The fix turn is a live model doing open-ended work, so it often does not converge. Over the 27 runs that have reached this step, a job passed 59% of the time on the two attempts [#421](https://github.com/sokolaidev/maf-extensions/issues/421) allowed — which puts a single attempt near 36%, and made a reddened release the outcome two times in five. So the live job runs the two-turn loop **six times at most**, and only when the check exits 3: every failure belonged to the **model's half** and every deterministic measurement passed. Six is where that arithmetic puts the job near 93%, and it buys a rate rather than a fix — no budget makes a model converge, and the number is one line in `verify-live.yml` to move again. Either turn counts — a first turn that wrote a clean file or left a diagnostic out of its reply is the same model doing the same open-ended work as the repair. A missing, extra or replaced container at a reuse checkpoint, a turn that never reached the sandbox, a file that was never written or never changed, a suppressed rule, a sandbox left behind — those exit 1 and fail on the first attempt, because a second live model cannot mend any of them and re-confirming a broken sandbox costs a container to learn nothing.
+The fix turn is a live model doing open-ended work, so it often does not converge. Over the 27 runs that have reached this step, a job passed 59% of the time on the two attempts [#421](https://github.com/sokolaidev/maf-extensions/issues/421) allowed — which puts a single attempt near 36%, and made a reddened release the outcome two times in five. So the live job runs the two-turn loop **six times at most**, and only when the check exits 3: every failure belonged to the **model's half** and every deterministic measurement passed. Six is where that arithmetic puts the job near 93%, and it buys a rate rather than a fix — no budget makes a model converge, and the number is one line in `verify-live.yml` to move again. Either turn counts — a first turn that wrote a clean file or left a diagnostic out of its reply is the same model doing the same open-ended work as the repair. A missing cleanup checkpoint or a container surviving disposal, a turn that never reached the sandbox, a file that was never written or never changed, a suppressed rule, a sandbox left behind — those exit 1 and fail on the first attempt, because a second live model cannot mend any of them and re-confirming a broken sandbox costs a container to learn nothing.
 
 A sample that dies before the check is not the model's half either: nothing was measured, so it fails on the first attempt and the run says the sample never reached the check.
 

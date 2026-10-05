@@ -95,7 +95,7 @@ _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE")
 #: root cannot empty once the container's capabilities are dropped.
 _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE")
 #: The same again, but with the directory *above* `work_dir` given to that user — which is
-#: what `reclaim` checks at acquire, because it owes no walk of its own.
+#: used to verify that refusal remains safe after a guest swaps an ancestor.
 _LOOSE_PARENT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE")
 #: An image whose `USER` is a *name* rather than a numeric pair, so uid and gid come from the
 #: container's own `/etc/passwd`. Its gid is not its uid, which is what lets a gid that was read
@@ -105,7 +105,7 @@ _NAMED_USER_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE")
 #: where `write_file` has to send `work_dir` itself as an entry rather than let docker make it.
 _ABSENT_WORK_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_ABSENT_WORK_IMAGE")
 _COMMAND_PROBE_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_COMMAND_PROBE_IMAGE")
-#: What the images above put in `work_dir` at build time: the control for a reclaim.
+#: What the images above put in `work_dir` at build time: a file-plane control.
 _CARRIED = "carried.json"
 
 pytestmark = pytest.mark.skipif(
@@ -171,9 +171,7 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(image):
 
 @pytest.mark.skipif(not _COMMAND_PROBE_IMAGE, reason="needs the missing-commands fixture image")
 class TestCommandProbes:
-    @pytest.mark.parametrize(
-        "capability", [Capability.EXEC, Capability.FILES_DELETE, Capability.HOST_TOOLS]
-    )
+    @pytest.mark.parametrize("capability", [Capability.EXEC, Capability.HOST_TOOLS])
     def test_missing_commands_are_refused_at_acquire(self, capability):
         backend = DockerSandboxBackend(DockerSandboxConfig())
         router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
@@ -270,8 +268,8 @@ class TestAGuestThatIsNotRoot:
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
 
-    def test_reclaim_reports_permission_failure_under_a_root_owned_work_dir(self):
-        """Without DAC_OVERRIDE neither principal can remove this whole tree."""
+    def test_reclaim_is_refused_for_nonroot_guests(self):
+        """A non-root guest does not qualify the deletion mechanism."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -282,7 +280,7 @@ class TestAGuestThatIsNotRoot:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            with pytest.raises(OSError, match="Permission denied"):
+            with pytest.raises(NotImplementedError, match="RECLAIM"):
                 await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
             assert await sandbox.stat_file(call_directory, working_directory=_WORK) is not None
             assert await sandbox.stat_file(_CARRIED, working_directory=_WORK) is not None
@@ -293,42 +291,8 @@ class TestAGuestThatIsNotRoot:
             assert not asyncio.run(backend.dispose_scope(scope, "thread-1")).undisposed
         assert not _names_on_the_machine(_container_name(_key(scope), self._spec().kind))
 
-    @pytest.mark.skipif(not _GUEST_OWNED_IMAGE, reason="needs the guest-owned work-dir image")
-    def test_reclaim_removes_shared_inputs_and_guest_outputs(self):
-        """A guest-owned work directory permits reclamation without capability grants."""
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec(_GUEST_OWNED_IMAGE))
-            call_directory = f"{_WORK}/abc123def456"
-            await sandbox.write_file(
-                f"{call_directory}/program.py", "print(1)\n", working_directory=_WORK
-            )
-            wrote = await sandbox.exec(
-                [
-                    "sh",
-                    "-c",
-                    f"mkdir -p {call_directory}/work && echo mine > {call_directory}/work/output.txt",
-                ],
-                working_directory="/",
-                timeout=60,
-            )
-            assert wrote.exit_code == 0, wrote.stderr
-
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
-
-            left = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
-            assert left.exit_code == 0, left.stderr
-            assert left.stdout.split() == [_CARRIED]
-
-        try:
-            asyncio.run(scenario())
-        finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
-
-    def test_remove_deletes_a_file_the_host_wrote(self):
-        """What the `FILES_DELETE` probes ask for, against a guest that owns none of it."""
+    def test_remove_is_refused_for_nonroot_guests(self):
+        """Refusal preserves the selected file."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -336,9 +300,10 @@ class TestAGuestThatIsNotRoot:
             sandbox = await backend.acquire(_key(scope), self._spec())
             await sandbox.write_file(f"{_WORK}/doomed.txt", "x", working_directory=_WORK)
 
-            await sandbox.remove("doomed.txt", working_directory=_WORK)
+            with pytest.raises(NotImplementedError, match="FILES_DELETE"):
+                await sandbox.remove("doomed.txt", working_directory=_WORK)
 
-            assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is None
+            assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is not None
 
         try:
             asyncio.run(scenario())
@@ -604,21 +569,13 @@ class TestAnImageThatDoesNotCarryItsWorkDir:
     reason="needs MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE naming a non-root image owning work_dir",
 )
 class TestAWorkDirTheImageGaveItsOwnUser:
-    """``work_dir`` owned by the image's own user: the retry's case, and the walk's."""
+    """File-plane confinement with a guest-owned working directory."""
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nocaps", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
 
     def test_it_answers_the_reach_probes(self):
-        """`maf_sandbox.conformance`'s REACH suite, on the one image whose write probe bites.
-
-        A guest that is neither root nor locked out of `work_dir`: the other two images stop the
-        write probe, one for having no second authority and one for leaving the guest nothing to
-        swap. The removal probe stops here too, because its protected directory has to be one
-        the file plane created and the guest cannot reopen, and this plane hands the guest
-        everything it makes under `work_dir`. What either probe's pass is worth is in
-        `maf_sandbox.conformance`.
-        """
+        """The write-reach probe runs; deletion is skipped through its declaration gate."""
         if assert_reach_conformance is None:
             pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")
         scope = f"e2e-{uuid.uuid4()}"
@@ -635,11 +592,9 @@ class TestAWorkDirTheImageGaveItsOwnUser:
                     capabilities=backend.declarations.capabilities,
                 )
             )
-            # `skipped` reports the capability gate and nothing else — a probe that stopped on
-            # its own calibration passes and is counted here as a pass — so the two checks below
-            # are what establish that the *write* probe reached its assertion on this image. The
-            # removal probe stops whatever they say, for the reason the docstring gives.
-            assert not [r for r in results if r.skipped]
+            assert [r.probe.name for r in results if r.skipped] == [
+                "a-removal-takes-nothing-beyond-the-guest"
+            ]
             identity = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
             assert identity.stdout.strip() != "0"
             owner = await sandbox.exec(
@@ -654,69 +609,6 @@ class TestAWorkDirTheImageGaveItsOwnUser:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_reclaim_falls_back_to_the_image_user_when_root_is_refused(self):
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec())
-            call_directory = f"{_WORK}/abc123def456"
-            await sandbox.write_file(
-                f"{call_directory}/note", "left behind\n", working_directory=_WORK
-            )
-
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
-
-            left = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
-            assert left.exit_code == 0, left.stderr
-            assert left.stdout.split() == [_CARRIED]
-
-        try:
-            asyncio.run(scenario())
-        finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
-
-    def test_remove_runs_at_the_guest_authority_and_still_deletes(self):
-        """`work_dir` is the guest's, so the reach rule keeps the removal there — and root is
-        never asked, so no fallback is involved.
-        """
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec())
-            await sandbox.write_file(f"{_WORK}/doomed.txt", "x", working_directory=_WORK)
-
-            await sandbox.remove("doomed.txt", working_directory=_WORK)
-
-            assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is None
-
-        try:
-            asyncio.run(scenario())
-        finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
-
-    def test_remove_of_a_host_written_subdirectory_runs_at_the_guest_and_succeeds(self):
-        """The walk finds a component of the path the guest could have swapped, so the
-        removal stays at the guest's authority — and it succeeds, because the parent it
-        empties is one `write_file` made guest-owned.
-        """
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec())
-            await sandbox.write_file(f"{_WORK}/sub/doomed.txt", "x", working_directory=_WORK)
-
-            await sandbox.remove("sub/doomed.txt", working_directory=_WORK)
-
-            assert await sandbox.stat_file("sub/doomed.txt", working_directory=_WORK) is None
-
-        try:
-            asyncio.run(scenario())
-        finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
-
 
 @pytest.mark.skipif(
     not _LOOSE_PARENT_IMAGE,
@@ -724,44 +616,13 @@ class TestAWorkDirTheImageGaveItsOwnUser:
     "directory above work_dir",
 )
 class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
-    """An image that lets the guest swap `work_dir` itself, which is what the acquire-time
-    check is for.
-    """
+    """Deletion refusal holds even where the guest can replace its working directory."""
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-loose", image=_LOOSE_PARENT_IMAGE, work_dir=_WORK)
 
-    def test_reclaim_drops_to_the_guest_authority_and_succeeds(self):
-        """The chain above `work_dir` is the guest's, so root is never asked over this path
-        — that is the boundary the acquire-time check exists to hold (pinned by the swap
-        test below).  The guest's `rm` still empties the call directory, because
-        `write_file` made it and its parents guest-owned.
-        """
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec())
-            call_directory = f"{_WORK}/abc123def456"
-            await sandbox.write_file(
-                f"{call_directory}/note", "left behind\n", working_directory=_WORK
-            )
-
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
-
-            left = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
-            assert left.exit_code == 0, left.stderr
-            assert left.stdout.split() == [_CARRIED]
-
-        try:
-            asyncio.run(scenario())
-        finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
-
-    def test_a_swapped_work_dir_takes_the_removal_nowhere_it_could_not_reach(self):
-        """The attack the check exists for, run for real: the guest swaps `work_dir` for a link
-        to a directory it does not own, and the redirected `rm` reaches nothing new.
-        """
+    def test_a_swapped_work_dir_cannot_redirect_reclamation(self):
+        """Refusing reclamation preserves an outside sentinel after parent replacement."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -796,7 +657,7 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
             )
             assert swapped.exit_code == 0, swapped.stderr
 
-            with contextlib.suppress(OSError):
+            with pytest.raises(NotImplementedError, match="RECLAIM"):
                 await sandbox.reclaim(f"{_WORK}/abc123def456", working_directory=_WORK, timeout=60)
 
             survived = subprocess.run(
@@ -1407,28 +1268,22 @@ class TestExecAgainstARealEngine:
 
 
 class TestFilesDeleteAgainstARealEngine:
-    """`maf_sandbox.conformance`'s FILES_DELETE suite — the removal rules, held to `rm` itself."""
+    """The deletion conformance runner refuses Docker's absent declaration."""
 
-    def test_it_answers_the_files_delete_probes(self):
-        """`maf_sandbox.conformance`'s FILES_DELETE suite, against a real engine.
-
-        This backend is the one that declared the capability, so the removal rules — a link
-        removed never followed, a directory needing `recursive`, the working directory refused
-        — are held to `rm`'s real behaviour rather than to this package's reading of it.
-        """
+    def test_it_refuses_the_files_delete_probes(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            results = await assert_files_delete_conformance(
-                PosixGuestSubject(
-                    sandbox=sandbox,
-                    working_directory=_WORK,
-                    capabilities=backend.declarations.capabilities,
+            with pytest.raises(ValueError, match="FILES_DELETE"):
+                await assert_files_delete_conformance(
+                    PosixGuestSubject(
+                        sandbox=sandbox,
+                        working_directory=_WORK,
+                        capabilities=backend.declarations.capabilities,
+                    )
                 )
-            )
-            assert not [r for r in results if r.skipped]
 
         try:
             asyncio.run(scenario())
@@ -1437,15 +1292,7 @@ class TestFilesDeleteAgainstARealEngine:
 
 
 class TestReachAgainstARealEngine:
-    """`maf_sandbox.conformance`'s REACH suite — that neither file method outruns the guest.
-
-    Against the root image, where the guest program's authority and the host's are the same
-    one, so both probes pass having distinguished nothing. That is worth running: it holds the
-    suite to answering *cleanly* on the image every other suite here uses, and a probe that
-    started failing on a root guest would be a probe reading something other than authority.
-    `TestAWorkDirTheImageGaveItsOwnUser` is where the same suite has something to find:
-    a guest that is neither root nor locked out of `work_dir`.
-    """
+    """The write-reach probe runs while the deletion declaration gates its probe."""
 
     def test_it_answers_the_reach_probes(self):
         if assert_reach_conformance is None:
@@ -1464,7 +1311,9 @@ class TestReachAgainstARealEngine:
                     capabilities=backend.declarations.capabilities,
                 )
             )
-            assert not [r for r in results if r.skipped]
+            assert [r.probe.name for r in results if r.skipped] == [
+                "a-removal-takes-nothing-beyond-the-guest"
+            ]
 
         try:
             asyncio.run(scenario())

@@ -9,7 +9,7 @@ import shutil
 import uuid
 
 import pytest
-from maf_sandbox import CallerContext, Cleanup, Egress, SandboxKey, SandboxRouter
+from maf_sandbox import CallerContext, Capability, Cleanup, Egress, SandboxKey, SandboxRouter
 from maf_sandbox.conformance import assert_nothing_left_behind
 from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import InMemoryStore
@@ -80,6 +80,8 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
         tool = make_bicep_tools(router, store, key.agent_id, context, image=_IMAGE, egress=egress)[
             0
         ]
+        if Capability.RECLAIM not in backend.declarations.capabilities:
+            pytest.skip("Docker withholds RECLAIM; disposal is qualified separately")
         try:
             assert router.effective_cleanup(spec) is Cleanup.RECLAIM
             # Adopt before measuring so the callback and the subject use the same instance.
@@ -179,22 +181,18 @@ async def _workload_containers(scope: str) -> frozenset[str]:
 
 
 @pytest.mark.parametrize("case", ["local", "diagnostics", "modules", "cancelled"])
-def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypatch):
-    """Measure ``Cleanup.DISPOSE``, the rung a host that names no floor gets, against the engine.
-
-    Each round acquires before it calls, so the instance looked for afterwards is one the
-    daemon has already confirmed. ``cancelled`` is the raising call, and the case that carries
-    the risk: a cancelled body's cleanup runs under a two-second grace rather than the reclaim
-    timeout.
-    """
+@pytest.mark.parametrize("cleanup_floor", [Cleanup.DISPOSE, Cleanup.RECLAIM])
+def test_disposal_deletes_the_sandbox_each_call(case: str, cleanup_floor, monkeypatch):
+    """Both cleanup floors must dispose the confirmed instance, including after cancellation."""
     if case == "modules" and not _PROXY:
         pytest.skip("module restore needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
 
     async def scenario():
         egress = Egress.ALLOWLIST if case == "modules" else Egress.CLOSED
         backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=_PROXY))
-        # No `min_cleanup`: the floor a deployment gets when it names none.
-        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        router = SandboxRouter(
+            [backend], min_isolation=backend.isolation, min_cleanup=cleanup_floor
+        )
         spec = bicep_sandbox_spec(image=_IMAGE, egress=egress)
         key = SandboxKey(
             scope="bicep-disposal-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
@@ -220,7 +218,14 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
             if case == "cancelled":
                 started.clear()
                 pending = asyncio.create_task(tool.func(files=files))
-                await started.wait()
+                try:
+                    await asyncio.wait_for(started.wait(), 60)
+                except TimeoutError:
+                    if pending.done():
+                        pytest.fail(f"Tool completed before exec: {pending.result()!r}")
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    raise
                 for _ in range(2):
                     pending.cancel()
                     await asyncio.sleep(0)

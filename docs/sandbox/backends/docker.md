@@ -2,7 +2,7 @@
 
 With `credential_gateway=CredentialGateway(provider, max_lifetime_seconds=300)` and a rebuilt packaged proxy image, Docker supports [credentials for guest HTTP](../hosts.md#credentials-for-guest-http-requests). Each acquisition gets a fresh container and gateway bound to the trusted user scope, agent, call and runtime generation. The gateway holds the bearer tokens and enforces exact HTTPS origins, method/path rules and independent expiry. This requires the attached-authority opt-ins and a call-scoped workload; credential-bearing containers are never reused.
 
-Docker runs image-based workloads through the Docker CLI and Engine. It supports command execution, file upload and collection, host tools, and optional directory reclamation.
+Docker runs image-based workloads through the Docker CLI and Engine. It supports command execution, file upload and collection, host tools, and whole-container disposal.
 
 Use the [package README](../../../packages/maf-sandbox-docker/README.md) for installation and configuration. Docker Desktop and Docker Engine are supported. Other compatible engines are best effort; this adapter does not invoke the Podman CLI.
 
@@ -11,12 +11,12 @@ Use the [package README](../../../packages/maf-sandbox-docker/README.md) for ins
 | Setting | Value |
 |---|---|
 | Isolation | `CONTAINER`; the host must set `min_isolation=Isolation.CONTAINER` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `HOST_TOOLS`; `FILES_DELETE` and `RECLAIM` only with empty `cap_add` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `HOST_TOOLS`; no `FILES_DELETE` or `RECLAIM` |
 | Network | `CLOSED`; `ALLOWLIST` and egress observation with a configured proxy image |
 | Guest OS | Async factory declares POSIX for a Linux daemon; plain constructor declares none |
 | Sharing | `CONVERSATION`, `CALL`; nonempty `cap_add` permits only `CALL` |
 | Transfers | 64 MiB per file, 256 MiB total, 256 files in each direction |
-| Cleanup | Disposal by default; reclaim requires explicit host opt-in |
+| Cleanup | Whole-container disposal; deletion and reclaim unsupported |
 
 Docker's shared kernel is a container boundary, including when Docker Desktop runs the daemon in a VM. Workload containers receive no host bind mounts or Docker socket.
 
@@ -68,7 +68,7 @@ Docker's directory archive walks the whole subtree and transfers file bodies. It
 
 `DockerSandboxConfig.cap_drop_all` defaults to `True` and refuses any other value. `cap_add` accepts only subsets of `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID` and `KILL`, normalized without the optional `CAP_` prefix. Empty means zero grants; Docker defaults cannot supplement the list. Additions apply only to workload containers. The egress proxy continues to drop every capability.
 
-Every nonempty grant requires effective `CALL` scope, a unique call ID and mandatory disposal. Backend declarations omit `CONVERSATION`, `FILES_DELETE` and `RECLAIM`, and acquisition independently refuses a missing call ID or a workload requiring deletion. Direct `remove` and `reclaim` refuse before executing guest commands. Call isolation prevents sharing; it does not establish deletion confinement. Re-enablement requires the separate investigation in [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732). Empty grants retain existing scope rules without asserting that reuse is safe.
+Every nonempty grant requires effective `CALL` scope, a unique call ID and mandatory disposal. Backend declarations omit `CONVERSATION`, `FILES_DELETE` and `RECLAIM`, and acquisition independently refuses a missing call ID or a workload requiring deletion. Direct `remove` and `reclaim` refuse before executing guest commands. Call isolation prevents sharing; it does not establish deletion confinement. All configurations withhold deletion and reclamation, as described below. Empty grants retain existing scope rules without asserting that reuse is safe.
 
 Migrate callers that depended on Docker's implicit grants to explicit supported additions and call isolation, or adapt their images for zero grants. Rebuild older Draw.io export images whose shared working directory belongs to the renderer before zero-grant editable creation. Dispose existing containers with a different policy before reacquiring them.
 
@@ -82,13 +82,11 @@ Missing directories at or below the working directory receive guest ownership. E
 
 The backend resolves `Config.User` from numeric IDs, account files or a bounded guest `id` check. Empty user means root. An unresolved identity refuses `FILES_OUT` and `HOST_TOOLS`; other workloads may receive root-owned inputs with a warning. Unresolved facts are retried.
 
-`remove` uses guest execution with `rm -f` or `rm -rf`. It rejects the working directory itself and requires `recursive=True` for directories. Missing paths succeed. A final link is unlinked. This operation is not part of the paused archive sequence.
+`FILES_DELETE` and `RECLAIM` are unavailable for every Docker configuration. `remove` and `reclaim` raise `NotImplementedError` before I/O, and a workload requiring deletion is refused at admission and direct acquisition. The router resolves even an explicit `Cleanup.RECLAIM` floor to whole-container disposal. Direct backend callers must dispose their containers.
 
-Root removal is allowed only when engine metadata establishes that every relevant ancestor, including `/`, is root-owned and not writable by others. Otherwise removal runs as the image's user. A root refusal is retried as that user only when the actual container lacks `CAP_DAC_OVERRIDE` or its presence is unknown.
+The backend has no trusted deletion primitive that remains confined while a guest can mutate path ancestry and guest commands. Root ownership and an empty capability set do not make a root guest's files immutable. Running deletion as a non-root guest also does not prove that it stays within the selected directory. Guest `EXEC` retains that guest's own filesystem authority; refusing these APIs is a statement about the backend contract.
 
-`reclaim` uses the acquisition-time ownership check and rejects unsafe placement, including shallow targets. Relative targets must be children of the working directory. Resolved facts are cached by container, image and working directory. Unknown ownership cannot authorize a raised recursive delete.
-
-With zero grants, root cannot bypass a guest-private directory's permissions. For reclaim on non-root images, make the work directory guest-owned and keep its ancestors root-owned and not guest-writable. A guest-private call directory under a root-owned, non-writable work directory can leave neither principal able to remove the whole tree; reclaim raises `OSError` and cleanup must escalate to disposal. Acquisition preserves existing directory ownership, so this migration belongs in the image. A nonempty grant cannot restore reclaim because the capability policy withholds it.
+Re-enabling either operation requires an independently confined mechanism and adversarial qualification. A successful directory removal alone cannot establish complete state cleanup or authorize reuse. The evidence and retained restriction are recorded in [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732).
 
 ## Network policy
 
@@ -130,9 +128,9 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Paused archive operations | Implemented; prevents concurrent guest path replacement | [File confinement](../capabilities.md) |
 | Root-filesystem scope | Supported; guest mounts remain outside the transfer view | [Archive evidence](../research/docker-backend.md) |
 | Directory listing | Withheld because directory archives transfer the subtree | [Archive evidence](../research/docker-backend.md) |
-| Reclamation | Declared; router use requires host opt-in and a compatible cleanup floor | [Cleanup policy](../tool-call.md) |
+| Cleanup | Whole-container disposal, including an explicit reclaim floor | [Cleanup policy](../tool-call.md) |
 | Proxy enforcement and observation | Implemented with the limits above | [Network policy](../network.md), [observability](../observability.md) |
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
 | Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (closed) by [#1717](https://github.com/sokolaidev/maf-extensions/pull/1717) (merged) |
 | Supported capability combinations and call-only grants | Implemented; live qualification recorded in delivering PR | [#1730](https://github.com/sokolaidev/maf-extensions/issues/1730) (closed) by [#1737](https://github.com/sokolaidev/maf-extensions/pull/1737) (merged) |
-| Confined deletion with nonempty grants | Withheld pending investigation | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (open) |
+| Confined deletion and reclamation | Withheld for every configuration; use disposal | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (open) |

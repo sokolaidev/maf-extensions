@@ -1,10 +1,10 @@
-"""Author, validate, fix — two turns reusing a confined Bicep sandbox.
+"""Author, validate, fix — two turns with per-call sandbox disposal.
 
 Every other sample runs one turn against a file that was already there. Here the store starts
 **empty**: turn 1 writes `main.bicep` from a written brief and validates what it wrote, turn 2
 repairs what the compiler reported, and the program compiles the file itself at both ends.
-The session and host file store carry the work between calls. The host explicitly accepts best-effort
-reuse with `Cleanup.RECLAIM`, informed by Bicep's advisory confinement claim; each call directory is reclaimed and the final scope purge disposes it.
+The session and host file store carry the work between calls. Each validation ends with
+whole-container disposal.
 
 The brief is what makes the diagnostics predictable without scripting them. It asks for a
 parameter that a later change will use, and for no `sku` yet because the tier is undecided —
@@ -288,8 +288,9 @@ async def run() -> int:
 
     backend = DockerSandboxBackend(DockerSandboxConfig())
     router = SandboxRouter(
-        [backend], min_isolation=Isolation.CONTAINER, min_cleanup=Cleanup.RECLAIM
+        [backend], min_isolation=Isolation.CONTAINER, min_cleanup=Cleanup.DISPOSE
     )
+    print(f"{MEASURED}Cleanup mode: dispose")
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
     # egress=CLOSED: the Docker backend here has no proxy, so it runs --network none and the
     # workload runs closed. The fix loop's template uses no modules, so nothing is restored.

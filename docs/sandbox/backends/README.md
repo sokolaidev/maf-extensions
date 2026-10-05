@@ -18,7 +18,7 @@ See [information flow](../information-flow.md) for the source-tool, content-item
 |---|---|---|---|---|
 | [ACAS](acas.md) | `MICROVM` | Commands; host-tool transport | Upload, read, list, delete; image checks apply | Dispose |
 | [Docker Sandboxes](docker-sbx.md) | `MICROVM` | Commands | Upload, read, list and delete in a host-owned workspace; removals run in the guest | Dispose or reclaim |
-| [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload, read, delete in the container root filesystem | Dispose by default; optional reclaim |
+| [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload and read in the container root filesystem | Whole-container disposal |
 | [WSLC](wslc.md) | `CONTAINER` | Commands | Upload | Dispose |
 | [Bubblewrap](bubblewrap.md) | `CONTAINER` | Commands without a container engine | Upload and read through no-follow guest descriptors | Dispose |
 | [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output reads and listing | Reset; dispose on failure |

@@ -63,6 +63,18 @@ jobs:
           assert len(cases) == 96, len(cases)
           assert all(case.find("skipped") is None for case in cases)
           PY
+      - name: Qualify deletion refusal against hostile guest state
+        run: |
+          set -euo pipefail
+          uv run pytest -q -ra --junitxml=out/capability-policy/deletion.xml \
+            packages/maf-sandbox-docker/tests/test_docker_deletion_e2e.py \
+            | tee out/capability-policy/deletion.log
+          python3 - <<'PYTEST'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse("out/capability-policy/deletion.xml").findall(".//testcase")
+          assert len(cases) == 4, len(cases)
+          assert all(case.find("skipped") is None for case in cases)
+          PYTEST
       - name: Qualify editable creation and native export
         run: |
           set -euo pipefail
@@ -91,8 +103,8 @@ jobs:
       # Five non-root guests, built below, varying along two axes. **Who owns what around
       # `work_dir`**: the image's build (as `images/bicep-sandbox/Dockerfile` leaves it), the
       # image's user (as the hardening advice that produces a non-root `USER` also asks for),
-      # or that user all the way up to `/maf-sandbox` — which is the shape `reclaim` checks
-      # for, since a guest that can write *above* `work_dir` can swap it. **How `USER` is
+      # or that user all the way up to `/maf-sandbox` — which exercises ancestor confinement
+      # because a guest that can write *above* `work_dir` can swap it. **How `USER` is
       # spelled**: a numeric pair is taken from `Config.User` as-is, while a name has to be
       # resolved against the container's own account files. The last carries no `work_dir` at
       # all, so the write has to send it. Their own column because every other image this
@@ -141,8 +153,7 @@ jobs:
           # rows directly, since this base carries no `useradd`, and its gid is not its uid, so
           # a gid that was read cannot pass for one guessed from the uid. **What the image
           # carries under `/maf-sandbox`**: the first three carry `work_dir` and a file in it —
-          # the shape a kind's image has, so a reclaim can be shown to remove its own directory
-          # and nothing beside it — and differ in how far up the chain the guest owns: nothing,
+          # the shape a kind's image has — and differ in how far up the chain the guest owns: nothing,
           # `work_dir`, or `/maf-sandbox` above it. The last carries no `work_dir` at all, which
           # is the one shape where `write_file` has to send `work_dir` itself as an entry rather
           # than let docker create it.

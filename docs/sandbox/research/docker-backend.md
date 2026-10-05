@@ -131,3 +131,22 @@ Rejected alternatives are Docker API clients with unwanted dependency or timeout
 - The named-file pull surface does not establish visibility or confinement for arbitrary image mounts, tmpfs, `/proc`, `/sys` or `/dev` paths.
 - Timeout recovery discards the sandbox; per-command in-container termination and a general environment-variable channel are not part of the protocol.
 - Full model-backed Docker samples and production operational cleanup require the package and CI rollout documented in the current backend guide.
+
+
+## Deletion confinement audit, October 2026
+
+Issue [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) investigated whether root-owned ancestry and an empty Linux capability set justified Docker's deletion and reclamation declarations. The local baseline was commit `a9e7b5f0c3ff806b2bfdc223939bc1142cacbe76`; its Docker and core package sources matched main `883a5a5c7d8e073a3c355961f10c67a5e5b13b5e` at inspection. These are source-specific measurements, not a qualification of other engines or backends.
+
+Three disposable-container probes reproduced an API confinement failure. The guest ran as UID 0 with `CapEff`, `CapPrm`, `CapBnd`, `CapInh` and `CapAmb` all zero, `NoNewPrivs=1`, no configured mounts, and closed networking. All sentinels were inside the container. No host escape or cross-container access was tested or demonstrated.
+
+| Probe | Setup and observation |
+| --- | --- |
+| Removal parent replacement | A deterministic interleaving inserted guest execution after the backend's path check and before its removal command. The guest renamed the work directory and replaced it with a link to a sibling sentinel directory. `remove` returned successfully, deleted the outside sentinel and left the original target intact. This establishes the permitted interleaving, not a measured race success rate. |
+| Reclamation parent replacement | After acquisition recorded its facts, the guest replaced the work directory with the same link before `reclaim`. Reclamation returned successfully, deleted the outside sentinel and left the original call directory intact. No race scheduling was needed. |
+| Guest command replacement | The guest unlinked its `rm` command path and replaced it with a script that deleted the outside sentinel and returned zero. `remove` reported success while leaving the selected target intact. |
+
+Runtime: Docker Desktop 4.94.0, Engine 29.8.2, Linux amd64, kernel 7.0.14-linuxkit, containerd 2.3.6, runc 1.5.1. Workload image ID: `sha256:479bc438f8ce091515ad87e5506f13a20fbe3c655ba598651aa124f4dd5b7eb3`. This is a local image identity, not a registry-published digest qualification.
+
+The retained restriction extends to every configuration: the backend lacks a trusted deletion primitive, and running `rm` as a non-root guest does not establish directory confinement either. `FILES_DELETE` and `RECLAIM` are assessed separately and both remain unsupported. Direct methods refuse before I/O; router cleanup chooses whole-container disposal. Nonempty-grant CALL scope remains unchanged. Guest programs retain their own EXEC authority.
+
+A future implementation would need an independently trusted operation that binds the removal to verified directory identities throughout execution and survives hostile guest state, cancellation and failure. Rechecking ownership before guest `rm` cannot supply that guarantee. Pausing the container does not make the present mechanism usable: [Docker refuses exec in paused containers](https://docs.docker.com/reference/cli/docker/container/exec/). Safe directory removal would still not establish complete cleanup or justify cross-call reuse.

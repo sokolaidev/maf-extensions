@@ -165,11 +165,10 @@ def test_capability_file_network_and_call_boundaries(grants):
 
             await assert_files_in_conformance(subject(sandbox))
             await assert_files_out_conformance(subject(sandbox))
-            if grants:
-                with pytest.raises(NotImplementedError):
-                    await sandbox.remove("child", working_directory=_WORK)
-                with pytest.raises(NotImplementedError):
-                    await sandbox.reclaim("child", working_directory=_WORK, timeout=1)
+            with pytest.raises(NotImplementedError):
+                await sandbox.remove("child", working_directory=_WORK)
+            with pytest.raises(NotImplementedError):
+                await sandbox.reclaim("child", working_directory=_WORK, timeout=1)
 
             async def another():
                 return subject(sibling)

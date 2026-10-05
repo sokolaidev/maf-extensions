@@ -398,3 +398,38 @@ class TestALineReportedTwiceIsRefused:
             "  and docker agrees -> containers: 0\n  and docker agrees -> containers: 9",
         )
         assert check.assess(doubled) != []
+
+
+_DISPOSAL_ONLY = (
+    _HEALTHY.split("== 5.", 1)[0]
+    + """\
+  [measured] Cleanup mode: disposal-only
+  [measured] Cleanup rung for this call: dispose
+  [measured] Disposal probe body completed: True
+  [measured] Containers after disposal-only call: 0
+Completed 5 of 5 disposal-only acts. Purger found 0 on a purged thread and 1 on an unscoped one. Reclaim failures recorded: 0. Containers left behind: 0.
+"""
+)
+
+
+def test_disposal_only_run_requires_completed_work_and_no_survivors():
+    assert check.assess(_DISPOSAL_ONLY) == []
+    for original, replacement in (
+        ("body completed: True", "body completed: False"),
+        ("Containers after disposal-only call: 0", "Containers after disposal-only call: 1"),
+        ("Containers left behind: 0", "Containers left behind: 1"),
+        ("Reclaim failures recorded: 0", "Reclaim failures recorded: 1"),
+        ("Cleanup rung for this call: dispose", "Cleanup rung for this call: reclaim"),
+        ("purger found 1", "purger found 0"),
+        ("Cleanup mode: disposal-only", "Cleanup mode: unknown"),
+    ):
+        assert original in _DISPOSAL_ONLY
+        assert check.assess(_DISPOSAL_ONLY.replace(original, replacement))
+
+
+def test_disposal_only_run_refuses_missing_or_conflicting_evidence():
+    for line in _DISPOSAL_ONLY.splitlines():
+        if "[measured]" in line or line.startswith("Completed"):
+            assert check.assess(_DISPOSAL_ONLY.replace(line, ""))
+            assert check.assess(_DISPOSAL_ONLY + line + "\n")
+    assert check.assess(_DISPOSAL_ONLY + "  [measured] Recorded disposal: disposed\n")
