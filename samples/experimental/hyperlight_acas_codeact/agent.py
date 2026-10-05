@@ -166,7 +166,7 @@ async def run(*, smoke: bool = False) -> int:
         expected = f"{COMPLETED_TEXT}\nResult: ok\nstdout:\n{ANSWER}"
         if not any(output.strip() == expected for output in outputs):
             raise RuntimeError("No successful CodeAct result contained the expected integer.")
-        if reply is not None and ANSWER not in reply:
+        if reply is not None and reply.strip() != ANSWER:
             raise RuntimeError("The model did not report the integer returned by CodeAct.")
     return 0
 

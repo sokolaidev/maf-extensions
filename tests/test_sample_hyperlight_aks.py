@@ -264,8 +264,17 @@ def test_launcher_selects_model_explicitly_and_propagates_exit(launcher, monkeyp
 
 @pytest.mark.parametrize(
     "has_result,reply",
-    [(True, ANSWER) for ANSWER in ["354224848179261915075", "42"]]
-    + [(False, "354224848179261915075")],
+    [
+        (True, "354224848179261915075"),
+        (True, " \n354224848179261915075\n"),
+        (True, "42"),
+        (True, "3542248481792619150750"),
+        (True, "1354224848179261915075"),
+        (True, "-354224848179261915075"),
+        (True, "354224848179261915075.5"),
+        (True, "354224848179261915075 or 42"),
+        (False, "354224848179261915075"),
+    ],
 )
 def test_model_requires_tool_evidence_and_matching_answer(
     sample, stack, monkeypatch, has_result, reply
@@ -296,7 +305,7 @@ def test_model_requires_tool_evidence_and_matching_answer(
         lambda **kwargs: client_args.append(kwargs) or object(),
     )
     monkeypatch.setattr(agent_framework, "Agent", lambda **kwargs: SimpleNamespace(run=turn))
-    if has_result and reply == sample.ANSWER:
+    if has_result and reply.strip() == sample.ANSWER:
         assert asyncio.run(sample.run(smoke=False)) == 0
     else:
         with pytest.raises(RuntimeError):

@@ -236,3 +236,54 @@ def test_live_sample_is_wired_only_into_linux_ci():
         if "tests/test_sample_hyperlight_acas_live.py" in step.get("run", "")
     )
     assert "scripts/check_hyperlight_linux.py --live" in command
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "354224848179261915075",
+        " \n354224848179261915075\n",
+        "3542248481792619150750",
+        "1354224848179261915075",
+        "-354224848179261915075",
+        "354224848179261915075.5",
+        "354224848179261915075 or 42",
+    ],
+)
+def test_model_answer_matches_tool_integer_exactly(sample, smoke_stack, monkeypatch, reply):
+    import agent_framework
+    import agent_framework.openai
+    import azure.identity.aio
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    monkeypatch.setenv("AZURE_OPENAI_CHAT_MODEL", "test-model")
+    credential = AsyncMock()
+    monkeypatch.setattr(azure.identity.aio, "DefaultAzureCredential", lambda: credential)
+    monkeypatch.setattr(agent_framework.openai, "OpenAIChatClient", lambda **kwargs: object())
+    response = SimpleNamespace(
+        text=reply,
+        messages=[
+            SimpleNamespace(
+                contents=[
+                    SimpleNamespace(type="function_call", name="execute_code", call_id="call-1"),
+                    SimpleNamespace(
+                        type="function_result",
+                        call_id="call-1",
+                        result=smoke_stack.tool.invoke.return_value,
+                    ),
+                ]
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        agent_framework,
+        "Agent",
+        lambda **kwargs: SimpleNamespace(run=AsyncMock(return_value=response)),
+    )
+    if reply.strip() == sample.ANSWER:
+        assert asyncio.run(sample.run()) == 0
+    else:
+        with pytest.raises(RuntimeError, match="The model did not report"):
+            asyncio.run(sample.run())
+    assert smoke_stack.events == ["purge", "close"]
+    credential.__aexit__.assert_awaited_once()
