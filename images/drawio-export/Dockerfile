@@ -4,7 +4,8 @@ ARG DRAWIO_VERSION=31.7.0
 ARG DRAWIO_SHA256=eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de
 RUN apk upgrade --no-cache \
     && apk add --no-cache ca-certificates-bundle python-3.13 py3.13-pillow \
-       graphviz xvfb-run xauth ttf-dejavu mesa-gbm alsa-lib gtk-3 libnss cups-libs libudev \
+       graphviz xvfb-run xauth xkbcomp xkeyboard-config font-misc ttf-dejavu \
+       mesa-gbm alsa-lib gtk-3 libnss cups-libs libudev \
     && apk add --no-cache --virtual .unpack curl dpkg \
     && curl --fail --location --retry 3 \
        "https://github.com/jgraph/drawio-desktop/releases/download/v${DRAWIO_VERSION}/drawio-amd64-${DRAWIO_VERSION}.deb" \
@@ -21,7 +22,8 @@ COPY install.py export.py guard.js /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \
     && addgroup -g 10001 renderer \
     && adduser -D -u 10001 -G renderer renderer \
-    && mkdir -p /maf-sandbox/work \
+    && mkdir -p /maf-sandbox/work /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix \
     && chown renderer:renderer /maf-sandbox/work
 ENV DRAWIO_DISABLE_UPDATE=true
 USER root
