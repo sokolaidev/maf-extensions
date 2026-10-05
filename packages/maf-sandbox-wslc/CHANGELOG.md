@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.27.0...maf-sandbox-wslc-v0.27.1) (2026-10-05)
+
+
+### Fixes
+
+* update sandbox image dependencies and enforce vulnerability scans ([#1713](https://github.com/sokolaidev/maf-extensions/issues/1713)) ([453f3da](https://github.com/sokolaidev/maf-extensions/commit/453f3da694fe2088245ac820bf68091ec5b6af29))
+
 ## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.26.2...maf-sandbox-wslc-v0.27.0) (2026-10-04)
 
 
