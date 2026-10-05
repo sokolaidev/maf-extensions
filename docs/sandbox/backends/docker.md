@@ -127,4 +127,4 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Reclamation | Declared; router use requires host opt-in and a compatible cleanup floor | [Cleanup policy](../tool-call.md) |
 | Proxy enforcement and observation | Implemented with the limits above | [Network policy](../network.md), [observability](../observability.md) |
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
-| Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (open) |
+| Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (closed) by [#1717](https://github.com/sokolaidev/maf-extensions/pull/1717) (merged) |
