@@ -330,3 +330,53 @@ def test_real_pod_backend_attaches_codeact_without_acquiring(sample, binding):
         assert len(tools) == 1 and tools[0].name == "execute_code"
     finally:
         asyncio.run(backend.aclose())
+
+
+@pytest.mark.parametrize(
+    "error", [FileNotFoundError("missing"), PermissionError("denied"), ValueError("invalid")]
+)
+def test_unavailable_memory_metric_preserves_success(sample, stack, monkeypatch, error, capsys):
+    def unreadable(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(sample.Path, "read_text", unreadable)
+    assert asyncio.run(sample.run()) == 0
+    assert stack.events == ["purge", "close"]
+    assert '"memory_peak_bytes": null' in capsys.readouterr().out
+
+
+def test_model_secret_replaces_existing_entries_once(launcher, monkeypatch, binding):
+    sent = []
+    monkeypatch.setattr(
+        HyperlightPodController, "api", lambda self, *args, body=None: sent.append(body) or {}
+    )
+    controller = launcher.SampleController(
+        kubeconfig="config", context="context", namespace="apps", model_secret="approved-model"
+    )
+    manifest = cast(
+        "dict[str, Any]",
+        pod_manifest(
+            binding.key,
+            "codeact",
+            HyperlightPodTemplate(
+                "example.invalid/image@sha256:" + "a" * 64, ("python", "agent.py")
+            ),
+            namespace="apps",
+            generation="g",
+            secret_digest="b" * 64,
+        ),
+    )
+    environment = manifest["spec"]["containers"][0]["env"]
+    environment.extend({"name": name, "value": "old"} for name in launcher.MODEL_VARS)
+    environment.append({"name": "OPENAI_MODEL", "value": "duplicate"})
+    original = list(environment)
+    controller.api("create", "-f", "-", body=manifest)
+    result = sent[0]["spec"]["containers"][0]["env"]
+    assert [entry for entry in result if entry["name"] not in launcher.MODEL_VARS] == [
+        entry for entry in original if entry["name"] not in launcher.MODEL_VARS
+    ]
+    for name in launcher.MODEL_VARS:
+        assert [entry for entry in result if entry["name"] == name] == [
+            {"name": name, "valueFrom": {"secretKeyRef": {"name": "approved-model", "key": name}}}
+        ]
+    assert environment == original

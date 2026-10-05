@@ -45,6 +45,7 @@ class SampleController(HyperlightPodController):
             spec = cast("dict[str, object]", body["spec"])
             [container] = cast("list[dict[str, object]]", spec["containers"])
             env = cast("list[dict[str, object]]", container["env"])
+            env[:] = [entry for entry in env if entry.get("name") not in MODEL_VARS]
             env.extend(
                 {
                     "name": name,

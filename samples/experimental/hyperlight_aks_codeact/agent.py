@@ -46,6 +46,14 @@ async def purge_scope(router: SandboxRouter, binding: HyperlightPodConfig) -> No
         raise RuntimeError(f"Not fully disposed: {purge.undisposed}")
 
 
+def memory_peak_bytes() -> int | None:
+    """Return available cgroup telemetry without changing the application outcome."""
+    try:
+        return int(Path("/sys/fs/cgroup/memory.peak").read_text())
+    except (OSError, ValueError):
+        return None
+
+
 async def run(*, smoke: bool = True) -> int:
     """Use the supervisor's identity for every tool call; local execution is refused."""
     binding = HyperlightPodConfig.from_environment()
@@ -113,7 +121,7 @@ async def run(*, smoke: bool = True) -> int:
                 "complete": True,
                 "mode": "smoke" if smoke else "model",
                 "application_seconds": time.monotonic() - started,
-                "memory_peak_bytes": int(Path("/sys/fs/cgroup/memory.peak").read_text()),
+                "memory_peak_bytes": memory_peak_bytes(),
             }
         ),
         flush=True,
