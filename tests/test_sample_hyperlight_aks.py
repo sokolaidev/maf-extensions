@@ -389,3 +389,8 @@ def test_model_secret_replaces_existing_entries_once(launcher, monkeypatch, bind
             {"name": name, "valueFrom": {"secretKeyRef": {"name": "approved-model", "key": name}}}
         ]
     assert environment == original
+
+
+def test_scaffold_matches_numbered_samples():
+    canonical = _SAMPLE.parents[1] / "03_acas_codeact" / "_scaffold.py"
+    assert (_SAMPLE / "_scaffold.py").read_bytes() == canonical.read_bytes()
