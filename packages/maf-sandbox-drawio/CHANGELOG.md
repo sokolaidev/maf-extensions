@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.0...maf-sandbox-drawio-v0.4.1) (2026-10-05)
+
+
+### Documentation
+
+* **drawio:** release the ACAS-compatible export image recipe from [#1712](https://github.com/sokolaidev/maf-extensions/issues/1712) ([#1714](https://github.com/sokolaidev/maf-extensions/issues/1714)) ([673e736](https://github.com/sokolaidev/maf-extensions/commit/673e73660221aa73c0094e1576184f9416ac5855))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.3.4...maf-sandbox-drawio-v0.4.0) (2026-10-04)
 
 
