@@ -370,7 +370,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 response = probe.getresponse()
                 response.read()
-                stale_session = response.getheader("mcp-session-id")
+                stale_session = response.getheader("mcp-session-id") or ""
                 require(
                     response.status == 200 and stale_session,
                     "Stale-session probe did not initialize",
