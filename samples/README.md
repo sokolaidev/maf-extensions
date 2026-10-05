@@ -27,6 +27,8 @@ For contributors, [adding a sample](../CONTRIBUTING.md#adding-a-sample) covers d
 | [`19_autogen_docker_codeact`](19_autogen_docker_codeact/) | Sample 06's task, image and router under an AutoGen agent: `AssistantAgent` with `PythonCodeExecutionTool` attached, and the `CodeExecutor` the sample writes acquiring from the router — AutoGen's executor surface over the same isolation floor, GET-only PyPI egress and purge | A Docker-compatible engine, the packaged egress proxy and an Azure OpenAI deployment (no key — `az login`) or any OpenAI-compatible endpoint |
 | [`20_terraform_validation`](20_terraform_validation/) | One agent validates a random-provider module with Terraform or OpenTofu on Docker or ACAS; checks the engine report and per-call disposal | A random-profile image, Docker or an ACAS group with that image imported, and Azure OpenAI |
 
+The [experimental Hyperlight AKS CodeAct sample](experimental/hyperlight_aks_codeact/) runs a complete application inside a supervised AKS pod, with deterministic smoke mode, optional model inference, and a host launcher for confirmed cleanup and recovery.
+
 ## How these are meant to be read
 
 Docker CodeAct samples 06, 08, 16 and 19 permit only GET requests to `pypi.org` and `files.pythonhosted.org`, covering the PyPI index and package downloads. They require a method-enforcing iron-proxy image through `MAF_EGRESS_PROXY_IMAGE`; [sample 06](06_docker_codeact/README.md#build-the-egress-proxy) has the build instructions. The rules derive `EGRESS_METHODS`, so an older backend refuses instead of serving a host-wide allowlist. Their computation and file tasks do not depend on fetching data; other methods and hosts remain denied.

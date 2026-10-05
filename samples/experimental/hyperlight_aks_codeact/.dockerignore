@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!agent.py
+!_scaffold.py
+
+!requirements.txt
