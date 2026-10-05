@@ -72,7 +72,7 @@ def _input(positioned: bool) -> str:
     return ET.tostring(document, encoding="unicode")
 
 
-async def check(image: str, output: Path, *, cap_drop_all: bool = False) -> None:
+async def check(image: str, output: Path, *, cap_drop_all: bool = True) -> None:
     """Assert actual landed geometry for all four layout-policy combinations."""
     scope = f"drawio-check-{uuid4().hex}"
     backend = await DockerSandboxBackend.create(
@@ -137,7 +137,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--cap-drop-all", action="store_true")
+    parser.add_argument("--cap-drop-all", action="store_true", default=True)
     args = parser.parse_args()
     asyncio.run(check(args.image, args.output, cap_drop_all=args.cap_drop_all))
 

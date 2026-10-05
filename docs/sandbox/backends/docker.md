@@ -11,10 +11,10 @@ Use the [package README](../../../packages/maf-sandbox-docker/README.md) for ins
 | Setting | Value |
 |---|---|
 | Isolation | `CONTAINER`; the host must set `min_isolation=Isolation.CONTAINER` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS`, `RECLAIM` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `HOST_TOOLS`; `FILES_DELETE` and `RECLAIM` only with empty `cap_add` |
 | Network | `CLOSED`; `ALLOWLIST` and egress observation with a configured proxy image |
 | Guest OS | Async factory declares POSIX for a Linux daemon; plain constructor declares none |
-| Sharing | `CONVERSATION`, `CALL` |
+| Sharing | `CONVERSATION`, `CALL`; nonempty `cap_add` permits only `CALL` |
 | Transfers | 64 MiB per file, 256 MiB total, 256 files in each direction |
 | Cleanup | Disposal by default; reclaim requires explicit host opt-in |
 
@@ -66,7 +66,11 @@ Docker's directory archive walks the whole subtree and transfers file bodies. It
 
 ## Linux capability policy
 
-The host controls `DockerSandboxConfig.cap_drop_all` and `cap_add`. Additions are explicit Linux capability names, normalized without the optional `CAP_` prefix; `ALL` is refused. With drop-all enabled only those additions are granted; otherwise they supplement Docker's defaults. Additions apply only to workload containers. The egress proxy continues to drop every capability.
+`DockerSandboxConfig.cap_drop_all` defaults to `True` and refuses any other value. `cap_add` accepts only subsets of `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID` and `KILL`, normalized without the optional `CAP_` prefix. Empty means zero grants; Docker defaults cannot supplement the list. Additions apply only to workload containers. The egress proxy continues to drop every capability.
+
+Every nonempty grant requires effective `CALL` scope, a unique call ID and mandatory disposal. Backend declarations omit `CONVERSATION`, `FILES_DELETE` and `RECLAIM`, and acquisition independently refuses a missing call ID or a workload requiring deletion. Direct `remove` and `reclaim` refuse before executing guest commands. Call isolation prevents sharing; it does not establish deletion confinement. Re-enablement requires the separate investigation in [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732). Empty grants retain existing scope rules without asserting that reuse is safe.
+
+Migrate callers that depended on Docker's implicit grants to explicit supported additions and call isolation, or adapt their images for zero grants. Rebuild older Draw.io export images whose shared working directory belongs to the renderer before zero-grant editable creation. Dispose existing containers with a different policy before reacquiring them.
 
 Acquisition compares the actual container's drop/add policy with the requested configuration before reusing, thawing, restarting or adopting it, and checks the acquired physical container again. Unreadable policy or a privileged container is refused. A policy mismatch requires disposal before acquiring with the new configuration. Capability grants belong to the backend configuration, not the kind; separate backend/router configurations isolate workloads with different requirements.
 
@@ -128,3 +132,5 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Proxy enforcement and observation | Implemented with the limits above | [Network policy](../network.md), [observability](../observability.md) |
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
 | Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (closed) by [#1717](https://github.com/sokolaidev/maf-extensions/pull/1717) (merged) |
+| Supported capability combinations and call-only grants | In progress; live qualification required | [#1730](https://github.com/sokolaidev/maf-extensions/issues/1730) (open) |
+| Confined deletion with nonempty grants | Withheld pending investigation | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (open) |

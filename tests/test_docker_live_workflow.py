@@ -15,6 +15,24 @@ def workflow(name: str) -> dict:
     return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
 
 
+def test_capability_qualification_cannot_pass_by_skipping_or_losing_pipeline_failures():
+    job = workflow("docker-live.yml")["jobs"]["capability-policy"]
+    assert "if" not in job
+    steps = {step.get("name"): step for step in job["steps"]}
+    matrix = steps["Qualify every capability combination"]["run"]
+    assert "set -euo pipefail" in matrix
+    assert "test_docker_capability_e2e.py" in matrix
+    assert "len(cases) == 96" in matrix
+    assert 'case.find("skipped") is None' in matrix
+    drawio = steps["Qualify editable creation and native export"]["run"]
+    assert "set -euo pipefail" in drawio
+    assert "check_drawio_docker.py" in drawio and "check_drawio_exports.py" in drawio
+    assert steps["Retain capability qualification evidence"]["if"] == "always()"
+    identity = steps["Record source and runtime identities"]["run"]
+    assert '"GITHUB_SHA"' in identity and '"RepoDigests"' in identity
+    assert '"version"' in identity
+
+
 def test_live_checks_run_after_merge_daily_and_on_demand():
     live = workflow("docker-live.yml")
     triggers = live[True]  # PyYAML's YAML 1.1 loader reads `on` as True.

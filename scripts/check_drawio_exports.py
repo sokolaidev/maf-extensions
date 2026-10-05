@@ -205,8 +205,8 @@ async def check(
     output: Path,
     backend: SandboxBackend | None = None,
     *,
-    cap_drop_all: bool = False,
-    cap_add: tuple[str, ...] = (),
+    cap_drop_all: bool = True,
+    cap_add: tuple[str, ...] = ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"),
 ) -> None:
     """Exercise the closed-egress kind and verify no artifact lands on resource refusal."""
     scope = "drawio-exports-" + uuid4().hex
@@ -227,7 +227,7 @@ async def check(
     context = make_caller_context(list_no_files, lambda: scope, lambda: "exports")
     report: dict[str, object] = {}
     try:
-        key = SandboxKey(scope, "exports", "renderer-identity")
+        key = SandboxKey(scope, "exports", "renderer-identity", call_id=uuid4().hex)
         try:
             sandbox = await backend.acquire(key, SandboxSpec(kind="renderer-identity", image=image))
             identity = await sandbox.exec(
@@ -457,11 +457,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--cap-drop-all", action="store_true")
-    parser.add_argument("--cap-add", action="append", default=[])
+    parser.add_argument("--cap-drop-all", action="store_true", default=True)
+    parser.add_argument("--cap-add", action="append")
     args = parser.parse_args()
     asyncio.run(
-        check(args.image, args.output, cap_drop_all=args.cap_drop_all, cap_add=tuple(args.cap_add))
+        check(
+            args.image,
+            args.output,
+            cap_drop_all=args.cap_drop_all,
+            cap_add=tuple(args.cap_add)
+            if args.cap_add is not None
+            else ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"),
+        )
     )
 
 

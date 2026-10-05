@@ -19,6 +19,65 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  capability-policy:
+    name: Docker capability contract qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MAF_SANDBOX_DOCKER_CAPABILITY_IMAGE: maf-capability-drawio:ci
+      MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-capability-proxy:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Prepare qualification runtimes
+        run: |
+          uv sync --locked
+          docker build -t "$MAF_SANDBOX_DOCKER_CAPABILITY_IMAGE" images/drawio-export
+          docker build -t "$MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE" packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          mkdir -p out/capability-policy
+      - name: Record source and runtime identities
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          def docker(*args):
+              return subprocess.check_output(["docker", *args], text=True)
+          images = {}
+          for role, variable in (("workload", "MAF_SANDBOX_DOCKER_CAPABILITY_IMAGE"), ("proxy", "MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")):
+              image = json.loads(docker("image", "inspect", os.environ[variable]))[0]
+              images[role] = {key: image[key] for key in ("Id", "RepoDigests", "Architecture", "Os")}
+          identity = {"source_commit": os.environ["GITHUB_SHA"], "images": images, "engine": json.loads(docker("version", "--format", "{{json .Server}}"))}
+          Path("out/capability-policy/identity.json").write_text(json.dumps(identity, indent=2) + "\n")
+          PY
+      - name: Qualify every capability combination
+        run: |
+          set -euo pipefail
+          uv run pytest -q -ra -n 4 --junitxml=out/capability-policy/matrix.xml \
+            packages/maf-sandbox-docker/tests/test_docker_capability_e2e.py \
+            | tee out/capability-policy/matrix.log
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse("out/capability-policy/matrix.xml").findall(".//testcase")
+          assert len(cases) == 96, len(cases)
+          assert all(case.find("skipped") is None for case in cases)
+          PY
+      - name: Qualify editable creation and native export
+        run: |
+          set -euo pipefail
+          uv run python scripts/check_drawio_docker.py --image "$MAF_SANDBOX_DOCKER_CAPABILITY_IMAGE" \
+            --output out/capability-policy/editable | tee out/capability-policy/editable.log
+          uv run python scripts/check_drawio_exports.py --image "$MAF_SANDBOX_DOCKER_CAPABILITY_IMAGE" \
+            --output out/capability-policy/exports | tee out/capability-policy/exports.log
+      - name: Retain capability qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-capability-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/capability-policy/
+          if-no-files-found: error
+
   docker-e2e:
     name: Docker backend live tests
     runs-on: ubuntu-latest

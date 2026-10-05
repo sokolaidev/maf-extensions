@@ -41,9 +41,9 @@ The backend captures the client environment and binds its context, endpoint and 
 | Setting | Behavior |
 |---|---|
 | Isolation | `CONTAINER` |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS`, `RECLAIM` |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`, `HOST_TOOLS`; `FILES_DELETE` and `RECLAIM` only with empty `cap_add` |
 | Network | `CLOSED`; `ALLOWLIST` with a configured proxy |
-| Lifetime | Conversation or separate sandbox per call |
+| Lifetime | Conversation or separate sandbox per call; nonempty `cap_add` requires call scope |
 | Transfer ceiling | 64 MiB per file, 256 MiB total, 256 files in each direction |
 | Command output | 8 MiB of stdout and stderr together; more refuses the call and discards the container |
 | Cleanup | Disposal by default; reclaim requires explicit host opt-in |
@@ -52,9 +52,15 @@ Directory listing, runtime `run_code`, snapshots and core attached identity are 
 
 Acquisition checks the guest commands needed by the requested capabilities. `EXEC` needs `sh`, even for an argv-only workload. Deletion needs `rm`; host tools also need `mkdir`, `mv` and `nohup`. File transfer itself needs no guest command.
 
-The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration. The egress proxy gets the workload's PID, memory and CPU limits and always drops all capabilities.
+The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges`, a PID limit and `--cap-drop ALL`. Memory and CPU limits are optional configuration. The egress proxy gets the workload's PID, memory and CPU limits and always has no capabilities.
 
-`DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"))` drops the default capability set and grants only the listed capabilities to workload containers. Names are case-insensitive, accept an optional `CAP_` prefix, and must be known Linux capabilities; `ALL` is refused. With `cap_drop_all=False`, additions supplement Docker's defaults. Grants apply to every workload using this backend, never to its egress proxy. Use separate backend/router configurations for different workload policies. Existing containers whose inspected drop/add policy differs are refused before reuse or restart; dispose them before changing the configuration.
+`DockerSandboxConfig(cap_add=("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"))` grants only the listed capabilities to workload containers. Any subset of these five is supported; all other grants, including `ALL`, are refused. Names are case-insensitive and accept an optional `CAP_` prefix. Grants apply to every workload using this backend, never to its egress proxy. Use separate backend/router configurations for different workload policies.
+
+Nonempty grants require effective `IsolationScope.CALL`, selected by the workload or the host's `min_isolation_scope`. Each call has a unique call ID and its own container, disposed after the call. Conversation scope is refused. `FILES_DELETE` and `RECLAIM` are withheld, and direct `remove`/`reclaim` calls raise `NotImplementedError` before deletion. This does not restrict a guest command's own filesystem authority. Safe re-enablement is tracked in [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732).
+
+### Migration from implicit Docker grants
+
+`cap_drop_all` now defaults to `True` and rejects every other value. Empty `cap_add` means no grants; the backend no longer inherits Docker's default capability set. Replace reliance on defaults with an explicit supported subset and call isolation, or adapt the image to work without grants. Draw.io editable creation needs no grants with an image containing the root-owned work-directory fix; native export needs all five. Existing containers whose inspected policy differs, including containers created with Docker defaults, are refused before reuse or restart. Dispose them before acquiring under the new configuration; the backend does not silently replace their policy.
 
 ## File transfer
 

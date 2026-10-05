@@ -2806,7 +2806,9 @@ def test_explicit_capabilities_and_reuse_policy(stopped):
     config = DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN", "DAC_OVERRIDE"))
     backend = DockerSandboxBackend(config)
     changed = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN",)))
-    key = _key(f"e2e-capabilities-{uuid.uuid4()}")
+    key = SandboxKey(
+        f"e2e-capabilities-{uuid.uuid4()}", "thread", "agent", call_id=uuid.uuid4().hex
+    )
     spec = _spec()
 
     async def scenario():
