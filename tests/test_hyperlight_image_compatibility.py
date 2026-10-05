@@ -75,8 +75,9 @@ def test_prepared_next_core_defers_image_until_versions_admit_it(metadata, core,
     assert compatibility.pending_adoptions(metadata("0.44.0", ranges)) == []
 
 
-def test_prepared_core_reports_no_image_evidence(metadata, monkeypatch, capsys):
-    ranges = {name: ["maf-sandbox>=0.44.0,<0.45"] for name in compatibility.DEPENDENTS}
+@pytest.mark.parametrize("requirement", ["maf-sandbox>=0.44.0,<0.45", "maf-sandbox>=0.43.1,<0.44"])
+def test_prepared_core_reports_no_image_evidence(metadata, monkeypatch, capsys, requirement):
+    ranges = {name: [requirement] for name in compatibility.DEPENDENTS}
     monkeypatch.setattr(compatibility, "ROOT", metadata(requirements=ranges))
     compatibility.main()
     captured = capsys.readouterr()
@@ -100,6 +101,8 @@ def test_equivalent_ceiling_spellings_defer_the_same_release(metadata, ceiling):
         ["maf-sandbox>=0.44.0,<0.43"],
         ["maf-sandbox>=0.45.0,<0.46"],
         ["maf-sandbox>=0.44.1,<0.45"],
+        ["maf-sandbox>=0.43.2,<0.44"],
+        ["maf-sandbox>=0.43.1,<0.45"],
         ["maf-sandbox>=0.44.0,<0.46"],
         ["maf-sandbox>=0.41.0,<0.42"],
         ["maf-sandbox>=0.42"],
@@ -199,3 +202,18 @@ def test_prepared_floor_defers_image_until_core_and_both_dependents_align(
     assert "Linux worker and KVM checks remain enabled" in captured.err
     ranges["maf-sandbox-hyperlight"] = ["maf-sandbox>=0.47.0,<0.48"]
     assert compatibility.pending_adoptions(metadata("0.47.0", ranges)) == []
+
+
+@pytest.mark.parametrize(
+    "core,prepared", [("0.47.0", "0.47.1"), ("0.47.1", "0.47.2"), ("0.47.9", "0.47.10")]
+)
+@pytest.mark.parametrize("ceiling", ["0.48", "0.48.0.0"])
+def test_prepared_patch_defers_image_until_core_reaches_floor(metadata, core, prepared, ceiling):
+    ranges = {
+        "maf-sandbox-hyperlight": ["maf-sandbox>=0.47.0,<0.48"],
+        "maf-sandbox-codeact": [f"maf-sandbox>={prepared},<{ceiling}"],
+    }
+    pending = compatibility.pending_adoptions(metadata(core, ranges))
+    assert len(pending) == 1
+    assert "maf-sandbox-codeact requires prepared" in pending[0]
+    assert compatibility.pending_adoptions(metadata(prepared, ranges)) == []

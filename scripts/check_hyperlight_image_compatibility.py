@@ -1,4 +1,4 @@
-"""Select CI image builds while dependents adopt a new core release line."""
+"""Select CI image builds while dependents adopt an adjacent core release."""
 
 from __future__ import annotations
 
@@ -43,9 +43,13 @@ def pending_adoptions(root: Path) -> list[str]:
         if not admits(floor, ceiling):
             raise ValueError(f"{name}: {requirement} cannot use core {core_text}")
         if admits(core, floor):
-            prepared = (core[0], core[1] + 1)
-            if not _same_version(floor, prepared) or not _same_version(
-                ceiling, (core[0], core[1] + 2)
+            prepared = (
+                ((core[0], core[1], core[2] + 1), (core[0], core[1] + 1)),
+                ((core[0], core[1] + 1), (core[0], core[1] + 2)),
+            )
+            if not any(
+                _same_version(floor, next_floor) and _same_version(ceiling, next_ceiling)
+                for next_floor, next_ceiling in prepared
             ):
                 raise ValueError(f"{name}: {requirement} cannot use core {core_text}")
             pending.append(f"{name} requires prepared {requirement}; checkout core is {core_text}")
