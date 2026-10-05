@@ -4,7 +4,7 @@ ARG DRAWIO_VERSION=31.7.0
 ARG DRAWIO_SHA256=eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de
 RUN apk upgrade --no-cache \
     && apk add --no-cache ca-certificates-bundle python-3.13 py3.13-pillow \
-       graphviz xvfb-run xauth ttf-dejavu mesa-gbm alsa-lib gtk-3 nss \
+       graphviz xvfb-run xauth ttf-dejavu mesa-gbm alsa-lib gtk-3 libnss cups-libs \
     && apk add --no-cache --virtual .unpack curl dpkg \
     && curl --fail --location --retry 3 \
        "https://github.com/jgraph/drawio-desktop/releases/download/v${DRAWIO_VERSION}/drawio-amd64-${DRAWIO_VERSION}.deb" \
@@ -14,7 +14,8 @@ RUN apk upgrade --no-cache \
     && mkdir -p /opt \
     && cp -a /tmp/drawio-unpacked/opt/drawio /opt/drawio \
     && rm -rf /tmp/drawio-unpacked /tmp/drawio.deb \
-    && apk del --no-cache .unpack
+    && apk del --no-cache .unpack \
+    && dot -c
 
 COPY install.py export.py guard.js /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \
