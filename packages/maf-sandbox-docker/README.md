@@ -62,6 +62,8 @@ Nonempty grants require effective `IsolationScope.CALL`, selected by the workloa
 
 `cap_drop_all` now defaults to `True` and rejects every other value. Empty `cap_add` means no grants; the backend no longer inherits Docker's default capability set. Replace reliance on defaults with an explicit supported subset and call isolation, or adapt the image to work without grants. Draw.io editable creation needs no grants with an image containing the root-owned work-directory fix; native export needs all five. Existing containers whose inspected policy differs, including containers created with Docker defaults, are refused before reuse or restart. Dispose them before acquiring under the new configuration; the backend does not silently replace their policy.
 
+For non-root images using reclaim, make the work directory guest-owned while keeping its ancestors root-owned and not writable by the guest. Without `DAC_OVERRIDE`, root cannot traverse guest-private directories, and the guest cannot remove a call directory from a root-owned, non-writable work directory. That layout can make reclaim raise `OSError`; cleanup must escalate to container disposal. Existing directory ownership is preserved, so fix the image rather than expecting acquisition to change it. Adding a capability does not restore reclaim: every nonempty grant withholds it.
+
 ## File transfer
 
 Acquisition prepares the storage base for workloads using commands or files. `work_dir=None` selects `/maf-sandbox/work`; an explicit path requests that exact base. Use `working_directory="."` to address it.

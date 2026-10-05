@@ -135,13 +135,16 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(image):
             first_id = sandbox.instance_id
             for state in ("cold", "warm", "repaired", "restarted"):
                 if state == "repaired":
+                    emptied = await sandbox.exec(
+                        ["rm", "-f", "marker"], working_directory=spec.work_dir, timeout=30
+                    )
+                    assert emptied.exit_code == 0, emptied.stderr
                     removed = await backend._docker(
                         "exec",
                         "--user",
                         "0",
                         sandbox.container_name,
-                        "rm",
-                        "-rf",
+                        "rmdir",
                         "--",
                         spec.work_dir,
                         timeout=30,
@@ -267,10 +270,8 @@ class TestAGuestThatIsNotRoot:
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
 
-    def test_reclaim_removes_a_call_directory_under_a_work_dir_the_image_carries(self):
-        """`reclaim` promises its own directory and nothing beside it; `_CARRIED` is the
-        control.
-        """
+    def test_reclaim_reports_permission_failure_under_a_root_owned_work_dir(self):
+        """Without DAC_OVERRIDE neither principal can remove this whole tree."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -281,33 +282,35 @@ class TestAGuestThatIsNotRoot:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            # The member the framework calls in its `finally`, not a command of this suite's.
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
-
-            assert self._as_root(sandbox.container_name, f"ls -A {_WORK}").split() == [_CARRIED]
+            with pytest.raises(OSError, match="Permission denied"):
+                await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+            assert await sandbox.stat_file(call_directory, working_directory=_WORK) is not None
+            assert await sandbox.stat_file(_CARRIED, working_directory=_WORK) is not None
 
         try:
             asyncio.run(scenario())
         finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            assert not asyncio.run(backend.dispose_scope(scope, "thread-1")).undisposed
+        assert not _names_on_the_machine(_container_name(_key(scope), self._spec().kind))
 
-    def test_reclaim_removes_a_tree_the_two_principals_share(self):
-        """The host's files beside the guest's, under one directory, removed in one walk."""
+    @pytest.mark.skipif(not _GUEST_OWNED_IMAGE, reason="needs the guest-owned work-dir image")
+    def test_reclaim_removes_shared_inputs_and_guest_outputs(self):
+        """A guest-owned work directory permits reclamation without capability grants."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
         async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec())
+            sandbox = await backend.acquire(_key(scope), self._spec(_GUEST_OWNED_IMAGE))
             call_directory = f"{_WORK}/abc123def456"
             await sandbox.write_file(
                 f"{call_directory}/program.py", "print(1)\n", working_directory=_WORK
             )
-            self._as_root(
-                sandbox.container_name,
-                f"mkdir -p {call_directory}/work && chown -R 10001:10001 {call_directory}/work",
-            )
             wrote = await sandbox.exec(
-                ["sh", "-c", f"echo mine > {call_directory}/work/output.txt"],
+                [
+                    "sh",
+                    "-c",
+                    f"mkdir -p {call_directory}/work && echo mine > {call_directory}/work/output.txt",
+                ],
                 working_directory="/",
                 timeout=60,
             )
@@ -315,7 +318,9 @@ class TestAGuestThatIsNotRoot:
 
             await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
 
-            assert self._as_root(sandbox.container_name, f"ls -A {_WORK}").split() == [_CARRIED]
+            left = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
+            assert left.exit_code == 0, left.stderr
+            assert left.stdout.split() == [_CARRIED]
 
         try:
             asyncio.run(scenario())

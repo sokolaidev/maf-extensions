@@ -88,6 +88,8 @@ Root removal is allowed only when engine metadata establishes that every relevan
 
 `reclaim` uses the acquisition-time ownership check and rejects unsafe placement, including shallow targets. Relative targets must be children of the working directory. Resolved facts are cached by container, image and working directory. Unknown ownership cannot authorize a raised recursive delete.
 
+With zero grants, root cannot bypass a guest-private directory's permissions. For reclaim on non-root images, make the work directory guest-owned and keep its ancestors root-owned and not guest-writable. A guest-private call directory under a root-owned, non-writable work directory can leave neither principal able to remove the whole tree; reclaim raises `OSError` and cleanup must escalate to disposal. Acquisition preserves existing directory ownership, so this migration belongs in the image. A nonempty grant cannot restore reclaim because the capability policy withholds it.
+
 ## Network policy
 
 ![With CLOSED, the workload has no network. With a nonempty ALLOWLIST, the workload joins an internal network and reaches destinations only through iron-proxy. The proxy also joins an outbound network and checks allowed hosts, HTTP methods, paths and resolved addresses. Proxy audit records are attributed to the sandbox before removal. Docker additionally requires an unaddressed internal bridge. The model's content labels remain a separate host-policy check.](../assets/container-egress.svg)
