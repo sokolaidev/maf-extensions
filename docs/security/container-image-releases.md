@@ -1,6 +1,6 @@
 # Container image release contract
 
-**Status: accepted contract; implementation pending.** This document defines the next deliverable after the [candidate image checks](container-images.md). The decisions below are accepted. This document does not enable a publishing workflow or establish that an image has been released.
+This document defines the accepted contract for the next deliverable after the [candidate image checks](container-images.md). Implementation progress is recorded in the [Status table](#status).
 
 ## Outcome
 
@@ -125,11 +125,25 @@ The first PR records accepted decisions and the profile/identity contract. The i
 
 Acceptance requires a rehearsal that proves a retained candidate is promoted without rebuilding, signature verification succeeds under the intended policy, and changed digest/source/signer/evidence plus an unsigned candidate are refused. Reject an index with an extra unassessed runnable child, a nested index or evidence for the wrong manifest. Cover duplicate-version refusal, concurrent publication of different versions of one profile, partial failure and retry from retained bytes. Verify that an older candidate cannot overtake a newer completed release and that retries preserve the predecessor's original superseded time. Also interrupt publication after a successful registry write but before its result is recorded, then verify independent discovery and monitoring from the pre-write catalogue. Exercise abandonment after loss of retained bytes, permanent version retirement, continued monitoring after another release supersedes the candidate, and refusal to retire monitoring when registry visibility is uncertain. Demonstrate that the High/Critical gate still refuses unfixed findings and that a scheduled published-image check reads the recorded registry digest. Report which deployment/live checks were actually run for each profile.
 
-No images have been published or signed under this contract, and this document claims no release verification results.
-
 ## References
 
 - [GitHub Container Registry: linking packages, visibility and digest pulls](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 - [GitHub artifact attestations: container provenance and SBOM subjects](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations).
 - [GitHub CLI verification policy flags](https://cli.github.com/manual/gh_attestation_verify).
 - [Existing isolated Hyperlight signing rehearsal](../../.github/workflows/hyperlight-provenance.yml).
+
+## Status
+
+The design is accepted; implementation is pending. No images have been published or signed under this contract, and no release verification results are claimed. The existing candidate checks do not implement the release publisher or published-digest monitor.
+
+| Decision | State | Tracking |
+|---|---|---|
+| Public GHCR destination and repository linkage | Pending registry setup for releases | untracked |
+| Strict High/Critical gate for publication | Pending publisher integration; candidate checks already enforce this threshold | untracked |
+| 1: Independent per-profile versions and immutable release identities | Pending implementation | untracked |
+| 2: Twelve Linux/amd64 profiles and assessed-manifest scope | Pending release catalogue and index validation | untracked |
+| 3: Maintainer-controlled publication, per-profile serialization and interrupted-attempt lifecycle | Pending build/retain/publish/verify workflow and protected environment | untracked |
+| 4: Digest-bound provenance, SBOM, durable evidence and consumer verification | Pending implementation and signing rehearsal | untracked |
+| 5: Daily exact-digest monitoring, superseded-release window and public-candidate monitoring | Pending catalogue and scheduled monitor | untracked |
+| 6: Publication scan age, public assessment freshness and failure visibility | Pending publisher and public-status enforcement | untracked |
+| Delivery acceptance and per-profile live qualification | Pending rehearsal and recorded results | untracked |
