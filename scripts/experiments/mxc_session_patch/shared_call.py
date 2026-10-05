@@ -1,4 +1,4 @@
-"""Opt-in shared-store supervisor; native export bounds still require qualification."""
+"""Opt-in shared-store supervisor with bounded export and journaled scratch cleanup."""
 
 from __future__ import annotations
 

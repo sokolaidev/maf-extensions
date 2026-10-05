@@ -5,15 +5,20 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 
-storage = importlib.import_module("scripts.experiments.mxc_session_patch.storage_patch")
-output = importlib.import_module("scripts.experiments.mxc_session_patch.output_patch")
-store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_call")
+sys.path.insert(0, str(Path(__file__).parents[1]))
+try:
+    storage = importlib.import_module("scripts.experiments.mxc_session_patch.storage_patch")
+    output = importlib.import_module("scripts.experiments.mxc_session_patch.output_patch")
+    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_call")
+finally:
+    sys.path.remove(str(Path(__file__).parents[1]))
 ROOT = Path(__file__).parents[1] / "scripts/experiments/mxc_session_patch"
 
 

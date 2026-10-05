@@ -1,0 +1,47 @@
+{
+  "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/37370958352/attempts/2",
+  "identity": {
+    "storage_helper_sha256": "bee1a1dcba6f86b4d089b29c8af956e69f842e8f3c322f41944b3828e8e2a325",
+    "bounded_storage_passed": true,
+    "storage_overlay_sha256": "8b4b8ed198c1d15e00f00a7140396d659bcbd4cf5e292e2890200debe2c44beb",
+    "source_commit": "b1ca4bb0a2dfaf04308ab55f584770e78c5f0b25",
+    "run_id": "37370958352",
+    "run_attempt": "2",
+    "kernel": "6.17.0-1022-azure",
+    "architecture": "x86_64",
+    "host_python": "3.12.3",
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "patch_sha256": "af44c05fc59d69f07bd1726eab9c91d8a803750e2f74b6fc93dc542570d28b6b",
+    "bounded_helper_sha256": "6657d925bca293aa59dbe45088113d28320f44af05d7a47c6c899fa757de383a",
+    "bounded_output_passed": true,
+    "output_overlay_sha256": "657f885494a141517076bc3fb98be86b03cace8641e9fba46c86c28ff85a79ef",
+    "helper_sha256": "fb0138f0dea897db065422c9e4ec93dfdc5fed04c6298ad681ed7c0e63fc1a89",
+    "native_passed": true,
+    "publication_passed": true,
+    "ownership_passed": true,
+    "descriptor_experiment_completed": true
+  },
+  "storage": {
+    "helper_sha256": "bee1a1dcba6f86b4d089b29c8af956e69f842e8f3c322f41944b3828e8e2a325",
+    "bounded_export": {
+      "bytes": {
+        "written_bytes": 0,
+        "written_files": 0,
+        "byte_limit": 1,
+        "file_limit": 128
+      },
+      "files": {
+        "written_bytes": 915800064,
+        "written_files": 1,
+        "byte_limit": 2147483648,
+        "file_limit": 1
+      }
+    },
+    "same_machine_restart_replay": true,
+    "failed_exports_preserve_checkpoint": true,
+    "interrupted_calls_refuse_reexecution": true,
+    "scratch_reclaimed": true,
+    "collected_checkpoint_preserves_delivery": true,
+    "max_result_bytes": 2097152
+  }
+}

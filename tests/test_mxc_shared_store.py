@@ -7,10 +7,15 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+sys.path.insert(0, str(Path(__file__).parents[1]))
+try:
+    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+finally:
+    sys.path.remove(str(Path(__file__).parents[1]))
 
 PROFILE = {"runtime": "pinned", "policy": "closed", "machine": "local"}
 LIMITS = store.Limits(

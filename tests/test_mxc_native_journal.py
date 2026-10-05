@@ -7,14 +7,19 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-native = importlib.import_module("scripts.experiments.mxc_session_patch.native_journal")
-identity = importlib.import_module("scripts.experiments.mxc_session_patch.process_identity")
-host = importlib.import_module("scripts.experiments.mxc_session_patch.host_call")
-shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_call")
+sys.path.insert(0, str(Path(__file__).parents[1]))
+try:
+    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    native = importlib.import_module("scripts.experiments.mxc_session_patch.native_journal")
+    identity = importlib.import_module("scripts.experiments.mxc_session_patch.process_identity")
+    host = importlib.import_module("scripts.experiments.mxc_session_patch.host_call")
+    shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_call")
+finally:
+    sys.path.remove(str(Path(__file__).parents[1]))
 PROFILE = {"runtime": "pinned", "machine": "local", "policy": "closed"}
 LIMITS = store.Limits(200_000, 500_000, checkpoint_bytes=1024, result_bytes=1024, files=2)
 SCRATCH = store.ScratchLimits(40_000, 20, 80_000)
