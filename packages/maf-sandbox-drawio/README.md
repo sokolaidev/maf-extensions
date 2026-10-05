@@ -44,7 +44,7 @@ For Docker, use `await DockerSandboxBackend.create(config)` so the backend decla
 
 ## Optional image exports
 
-Build the export runtime with `docker build -t maf-drawio-export:local images/drawio-export`, then opt in through host configuration:
+Build the export runtime with `docker build -t maf-drawio-export:local images/drawio-export`. The image's coordinator runs as root so ACAS's root-owned file-plane directories are usable, while Xvfb and Electron run as uid/gid 10001 ([#1710](https://github.com/sokolaidev/maf-extensions/issues/1710)). An export image built before that change is refused on ACAS, so rebuild and re-import it, under a new tag. Then opt in through host configuration:
 
 ```python
 from maf_sandbox_drawio import DrawioExport, make_drawio_tools
