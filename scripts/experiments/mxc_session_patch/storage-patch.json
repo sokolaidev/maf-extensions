@@ -25,8 +25,8 @@
       "sha256": "ffd23ce77006507f6d2fab60c4905bbcbc7b6373cc0371062201facfc30be289",
       "files": {
         "src/lib.rs": {
-          "before": "dd0d9c3d372432f47d61ba24d74a1ae6eedf715965560bd41eea2a887c14b4a6",
-          "after": "10d55708d0c81f4598551362d14a3787f5be260dc12dadf5561131ccd60f677f"
+          "before": "928c36065f7afb9bcd5a328476933a2c18cf789cadef344dfa0378877b958b71",
+          "after": "54aa93501703139888711dd07ab0ac34aba3a55f0721cc86a58348e106ef5e4f"
         },
         "src/output_capture.rs": {
           "before": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40",

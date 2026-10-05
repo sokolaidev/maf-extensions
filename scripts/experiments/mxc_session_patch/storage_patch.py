@@ -18,7 +18,7 @@ def configure_storage(sources: dict[str, Path], build_dir: Path) -> None:
     """Use one pinned Hyperlight source for both host and common crate identities."""
     configure(sources, build_dir)
     manifest = build_dir / "Cargo.toml"
-    text = manifest.read_text().replace(
+    text = manifest.read_text(encoding="utf-8").replace(
         'default = ["bounded-output"]',
         'default = ["bounded-output", "bounded-storage"]',
     )
@@ -27,7 +27,7 @@ def configure_storage(sources: dict[str, Path], build_dir: Path) -> None:
         text += f"hyperlight-{crate} = {{ path = {json.dumps(path.as_posix())} }}\n"
     manifest.write_text(text, encoding="utf-8")
     lock = build_dir / "Cargo.lock"
-    blocks = lock.read_text().split("[[package]]")
+    blocks = lock.read_text(encoding="utf-8").split("[[package]]")
     for index, block in enumerate(blocks):
         if any(f'\nname = "hyperlight-{crate}"\n' in block for crate in ("host", "common")):
             blocks[index] = "\n".join(
@@ -46,7 +46,7 @@ def main() -> int:
         parser.add_argument(f"--{option}", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path)
     args = parser.parse_args()
-    metadata = json.loads((ROOT / "storage-patch.json").read_text())
+    metadata = json.loads((ROOT / "storage-patch.json").read_text(encoding="utf-8"))
     if (
         hashlib.sha256((ROOT / "output-patch.json").read_bytes()).hexdigest()
         != metadata["prerequisite_sha256"]

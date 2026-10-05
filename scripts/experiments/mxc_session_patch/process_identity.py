@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -70,6 +71,8 @@ def _linux_process(pid: int) -> tuple[str, bool] | None:
 
 
 def _windows_process(pid: int) -> tuple[str, bool] | None:
+    if sys.platform != "win32":
+        raise Refused("Windows process evidence is unavailable on this platform")
     from ctypes import wintypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
