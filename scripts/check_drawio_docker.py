@@ -9,7 +9,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from uuid import uuid4
 
-from maf_sandbox import Isolation, SandboxRouter, make_file_system_sink
+from maf_sandbox import (
+    Isolation,
+    SandboxObserver,
+    SandboxRouter,
+    ToolCallEnded,
+    make_file_system_sink,
+)
 from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_drawio import make_drawio_tools
@@ -66,11 +72,19 @@ def _input(positioned: bool) -> str:
     return ET.tostring(document, encoding="unicode")
 
 
-async def check(image: str, output: Path) -> None:
+async def check(image: str, output: Path, *, cap_drop_all: bool = False) -> None:
     """Assert actual landed geometry for all four layout-policy combinations."""
     scope = f"drawio-check-{uuid4().hex}"
-    backend = await DockerSandboxBackend.create(DockerSandboxConfig(memory="256m", cpus=1))
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    backend = await DockerSandboxBackend.create(
+        DockerSandboxConfig(memory="256m", cpus=1, cap_drop_all=cap_drop_all)
+    )
+    calls: list[ToolCallEnded] = []
+
+    class Observer(SandboxObserver):
+        def tool_call_ended(self, event: ToolCallEnded) -> None:
+            calls.append(event)
+
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER, observer=Observer())
     context = make_caller_context(list_no_files, lambda: scope, lambda: "diagram")
     reports: list[dict[str, object]] = []
     try:
@@ -89,6 +103,7 @@ async def check(image: str, output: Path) -> None:
             texts = [item.text or "" for item in reply]
             if texts[:2] != [COMPLETED_TEXT, "Result: created"]:
                 raise RuntimeError("\n".join(texts))
+            assert len(calls) == len(reports) + 1 and calls[-1].unclean == 0, calls
             artifact = destination / "diagram.drawio"
             document = ET.fromstring(artifact.read_bytes())
             vertices = document.findall(".//mxCell[@vertex='1']")
@@ -104,6 +119,7 @@ async def check(image: str, output: Path) -> None:
             reports.append(
                 {
                     "case": name,
+                    "unclean": calls[-1].unclean,
                     "bytes": artifact.stat().st_size,
                     "vertices": len(vertices),
                     "edges": len(edges),
@@ -121,8 +137,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--cap-drop-all", action="store_true")
     args = parser.parse_args()
-    asyncio.run(check(args.image, args.output))
+    asyncio.run(check(args.image, args.output, cap_drop_all=args.cap_drop_all))
 
 
 if __name__ == "__main__":

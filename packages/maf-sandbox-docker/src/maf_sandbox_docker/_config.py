@@ -17,6 +17,7 @@ network the proxy attaches to, and cannot put a workload anywhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from maf_sandbox.credentials import CredentialGateway
 
@@ -27,6 +28,31 @@ _DEFAULT_OUTBOUND_NETWORK = "bridge"
 _DEFAULT_COMMAND_TIMEOUT_S = 60.0
 _DEFAULT_IMAGE_PULL_TIMEOUT_S = 600.0
 _DEFAULT_PIDS_LIMIT = 512
+
+_LINUX_CAPABILITIES = frozenset(
+    "AUDIT_CONTROL AUDIT_READ AUDIT_WRITE BLOCK_SUSPEND BPF CHECKPOINT_RESTORE CHOWN "
+    "DAC_OVERRIDE DAC_READ_SEARCH FOWNER FSETID IPC_LOCK IPC_OWNER KILL LEASE "
+    "LINUX_IMMUTABLE MAC_ADMIN MAC_OVERRIDE MKNOD NET_ADMIN NET_BIND_SERVICE NET_BROADCAST "
+    "NET_RAW PERFMON SETFCAP SETGID SETPCAP SETUID SYS_ADMIN SYS_BOOT SYS_CHROOT SYS_MODULE "
+    "SYS_NICE SYS_PACCT SYS_PTRACE SYS_RAWIO SYS_RESOURCE SYS_TIME SYS_TTY_CONFIG SYSLOG "
+    "WAKE_ALARM".split()
+)
+
+
+def capability_name(value: object) -> str:
+    """Normalize one explicit Linux capability, excluding the ALL wildcard."""
+    if not isinstance(value, str):
+        raise ValueError("Expected a Linux capability name")
+    name = value.upper().removeprefix("CAP_")
+    if name not in _LINUX_CAPABILITIES:
+        raise ValueError(f"Unknown Linux capability: {value!r}")
+    return name
+
+
+def _capability_names(values: object) -> tuple[str, ...]:
+    if not isinstance(values, tuple):
+        raise ValueError("cap_add must be a tuple of Linux capability names")
+    return tuple(sorted({capability_name(n) for n in cast("tuple[object, ...]", values)}))
 
 
 @dataclass(frozen=True)
@@ -81,8 +107,10 @@ class DockerSandboxConfig:
     this package; ``cap_drop_all`` is off by default until real workloads have been measured
     under it (maintainer ruling — see the design document).  The egress proxy gets the same
     ``pids_limit``, ``memory`` and ``cpus``, because the guest drives its load, and always runs
-    with every capability dropped.  It needs about 16 PIDs; below that, allowlisted acquires
-    fail.
+    with every capability dropped. ``cap_add`` grants named Linux capabilities only to
+    workloads, after ``cap_drop_all``; it accepts optional ``CAP_`` prefixes, but not ``ALL``.
+    Existing containers with a different capability policy must be disposed before reuse.
+    The proxy needs about 16 PIDs; below that, allowlisted acquires fail.
     """
 
     docker_path: str = _DEFAULT_DOCKER_PATH
@@ -96,3 +124,7 @@ class DockerSandboxConfig:
     cap_drop_all: bool = False
     allow_private_http: bool = False
     credential_gateway: CredentialGateway | None = None
+    cap_add: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cap_add", _capability_names(self.cap_add))

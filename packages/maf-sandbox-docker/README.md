@@ -54,6 +54,8 @@ Acquisition checks the guest commands needed by the requested capabilities. `EXE
 
 The backend adds no host bind mount or Docker socket. Every container uses `no-new-privileges` and a PID limit. Dropping all capabilities, memory limits and CPU limits are optional configuration. The egress proxy gets the workload's PID, memory and CPU limits and always drops all capabilities.
 
+`DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"))` drops the default capability set and grants only the listed capabilities to workload containers. Names are case-insensitive, accept an optional `CAP_` prefix, and must be known Linux capabilities; `ALL` is refused. With `cap_drop_all=False`, additions supplement Docker's defaults. Grants apply to every workload using this backend, never to its egress proxy. Use separate backend/router configurations for different workload policies. Existing containers whose inspected drop/add policy differs are refused before reuse or restart; dispose them before changing the configuration.
+
 ## File transfer
 
 Acquisition prepares the storage base for workloads using commands or files. `work_dir=None` selects `/maf-sandbox/work`; an explicit path requests that exact base. Use `working_directory="."` to address it.

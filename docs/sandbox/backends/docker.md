@@ -64,6 +64,12 @@ Docker's directory archive walks the whole subtree and transfers file bodies. It
 
 `list_dir` therefore raises `NotImplementedError`, and `FILES_LIST` is withheld. There is no guest `ls` fallback. See the [archive measurements](../research/docker-backend.md).
 
+## Linux capability policy
+
+The host controls `DockerSandboxConfig.cap_drop_all` and `cap_add`. Additions are explicit Linux capability names, normalized without the optional `CAP_` prefix; `ALL` is refused. With drop-all enabled only those additions are granted; otherwise they supplement Docker's defaults. Additions apply only to workload containers. The egress proxy continues to drop every capability.
+
+Acquisition compares the actual container's drop/add policy with the requested configuration before reusing, thawing, restarting or adopting it, and checks the acquired physical container again. Unreadable policy or a privileged container is refused. A policy mismatch requires disposal before acquiring with the new configuration. Capability grants belong to the backend configuration, not the kind; separate backend/router configurations isolate workloads with different requirements.
+
 ## Write ownership and removal
 
 Uploads are extracted with the daemon's root authority. Archive entries carry the resolved guest uid/gid so the guest can edit its inputs. Ownership stamping does not change placement authority; the pause is what closes guest path replacement during transfer.
@@ -121,3 +127,4 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Reclamation | Declared; router use requires host opt-in and a compatible cleanup floor | [Cleanup policy](../tool-call.md) |
 | Proxy enforcement and observation | Implemented with the limits above | [Network policy](../network.md), [observability](../observability.md) |
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
+| Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (closed) by [#1717](https://github.com/sokolaidev/maf-extensions/pull/1717) (merged) |

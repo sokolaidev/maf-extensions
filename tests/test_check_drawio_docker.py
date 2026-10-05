@@ -22,17 +22,22 @@ checker = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(checker)
 
 
-@pytest.mark.parametrize("outcome", ["created", "refused", "incomplete", "spoofed"])
+@pytest.mark.parametrize("outcome", ["created", "unclean", "refused", "incomplete", "spoofed"])
 def test_checker_result_geometry_report_and_cleanup(outcome, tmp_path, monkeypatch, capsys):
     dispose = AsyncMock(return_value=SimpleNamespace(undisposed=()))
     monkeypatch.setattr(checker.DockerSandboxBackend, "create", AsyncMock())
-    monkeypatch.setattr(
-        checker, "SandboxRouter", lambda *args, **kwargs: SimpleNamespace(dispose_scope=dispose)
-    )
+    observer = None
+
+    def router(*args, **kwargs):
+        nonlocal observer
+        observer = kwargs["observer"]
+        return SimpleNamespace(dispose_scope=dispose)
+
+    monkeypatch.setattr(checker, "SandboxRouter", router)
 
     def tools(*args, preserve_layout, **kwargs):
         async def convert(xml):
-            if outcome != "created":
+            if outcome not in {"created", "unclean"}:
                 texts = (
                     [NOT_COMPLETED_TEXT, "conversion unavailable"]
                     if outcome == "incomplete"
@@ -42,6 +47,8 @@ def test_checker_result_geometry_report_and_cleanup(outcome, tmp_path, monkeypat
                     texts[-1] += "\nResult: created"
                 return [Content.from_text(text) for text in texts]
 
+            assert observer is not None
+            observer.tool_call_ended(SimpleNamespace(unclean=int(outcome == "unclean")))
             document = ET.fromstring(xml)
             positioned = document.find(".//mxCell[@vertex='1']/mxGeometry") is not None
             for vertex in document.findall(".//mxCell[@vertex='1']"):
@@ -78,6 +85,9 @@ def test_checker_result_geometry_report_and_cleanup(outcome, tmp_path, monkeypat
             report["result"].splitlines() == [COMPLETED_TEXT, "Result: created", "diagram.drawio"]
             for report in reports
         )
+    elif outcome == "unclean":
+        with pytest.raises(AssertionError):
+            asyncio.run(checker.check("drawio:test", tmp_path))
     else:
         with pytest.raises(RuntimeError, match="conversion unavailable|invalid XML"):
             asyncio.run(checker.check("drawio:test", tmp_path))

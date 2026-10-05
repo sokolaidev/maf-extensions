@@ -16,7 +16,9 @@ def check() -> dict[str, object]:
         raise RuntimeError("The renderer identity check requires a Linux guest")
     caller_uid = os.geteuid()
     expected = 10001 if caller_uid == 0 else caller_uid
-    observed: set[tuple[str, tuple[int, ...], tuple[int, ...], tuple[int, ...]]] = set()
+    observed: set[
+        tuple[str, tuple[int, ...], tuple[int, ...], tuple[int, ...], tuple[int, ...]]
+    ] = set()
     errors: list[str] = []
     stopped = threading.Event()
 
@@ -39,6 +41,10 @@ def check() -> dict[str, object]:
                             tuple(map(int, fields["Uid"].split())),
                             tuple(map(int, fields["Gid"].split())),
                             tuple(map(int, fields["Groups"].split())),
+                            tuple(
+                                int(fields[key], 16)
+                                for key in ("CapInh", "CapPrm", "CapEff", "CapAmb")
+                            ),
                         )
                     )
                 except (FileNotFoundError, ProcessLookupError):
@@ -76,8 +82,9 @@ def check() -> dict[str, object]:
             os.chdir(original)
     assert not watcher.is_alive() and not errors, errors
     assert {item[0] for item in observed} == {"electron", "renderer"}, observed
-    for _, uids, gids, groups in observed:
+    for _, uids, gids, groups, capabilities in observed:
         assert uids == (expected,) * 4, observed
+        assert capabilities == (0, 0, 0, 0), observed
         if caller_uid == 0:
             assert gids == (10001,) * 4 and not groups, observed
     return {

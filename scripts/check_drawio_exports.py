@@ -17,8 +17,10 @@ from maf_sandbox import (
     ListedFile,
     SandboxBackend,
     SandboxKey,
+    SandboxObserver,
     SandboxRouter,
     SandboxSpec,
+    ToolCallEnded,
     make_file_system_sink,
 )
 from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
@@ -198,15 +200,30 @@ def verify_output(output: Path) -> dict[str, object]:
     return {"decoded_raster_sizes": sizes, "pages": 2, "formats": ["png", "jpg", "svg"]}
 
 
-async def check(image: str, output: Path, backend: SandboxBackend | None = None) -> None:
+async def check(
+    image: str,
+    output: Path,
+    backend: SandboxBackend | None = None,
+    *,
+    cap_drop_all: bool = False,
+    cap_add: tuple[str, ...] = (),
+) -> None:
     """Exercise the closed-egress kind and verify no artifact lands on resource refusal."""
     scope = "drawio-exports-" + uuid4().hex
     docker_image = backend is None
     if backend is None:
         from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
-        backend = await DockerSandboxBackend.create(DockerSandboxConfig(memory="1g", cpus=2))
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+        backend = await DockerSandboxBackend.create(
+            DockerSandboxConfig(memory="1g", cpus=2, cap_drop_all=cap_drop_all, cap_add=cap_add)
+        )
+    calls: list[ToolCallEnded] = []
+
+    class Observer(SandboxObserver):
+        def tool_call_ended(self, event: ToolCallEnded) -> None:
+            calls.append(event)
+
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER, observer=Observer())
     context = make_caller_context(list_no_files, lambda: scope, lambda: "exports")
     report: dict[str, object] = {}
     try:
@@ -427,6 +444,8 @@ async def check(image: str, output: Path, backend: SandboxBackend | None = None)
         )
         assert not (output / "timeout").exists()
         report["timeout"] = "incomplete without artifact delivery"
+        assert len(calls) == 3 + len(cases) and all(event.unclean == 0 for event in calls), calls
+        report["clean_calls"] = len(calls)
     finally:
         purge = await router.dispose_scope(scope, "exports")
         assert not purge.undisposed, purge
@@ -438,8 +457,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--cap-drop-all", action="store_true")
+    parser.add_argument("--cap-add", action="append", default=[])
     args = parser.parse_args()
-    asyncio.run(check(args.image, args.output))
+    asyncio.run(
+        check(args.image, args.output, cap_drop_all=args.cap_drop_all, cap_add=tuple(args.cap_add))
+    )
 
 
 if __name__ == "__main__":

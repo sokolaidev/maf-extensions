@@ -23,8 +23,7 @@ RUN python3 /opt/maf-drawio/install.py \
     && addgroup -g 10001 renderer \
     && adduser -D -u 10001 -G renderer renderer \
     && mkdir -p /maf-sandbox/work /tmp/.X11-unix \
-    && chmod 1777 /tmp/.X11-unix \
-    && chown renderer:renderer /maf-sandbox/work
+    && chmod 1777 /tmp/.X11-unix
 ENV DRAWIO_DISABLE_UPDATE=true
 USER root
 WORKDIR /maf-sandbox/work

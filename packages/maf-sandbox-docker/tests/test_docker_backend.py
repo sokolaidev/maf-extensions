@@ -306,7 +306,13 @@ _WORK_IS_A_DIRECTORY = {
 }
 
 #: What `docker inspect` prints for a container created with `--cap-drop ALL`.
-_CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
+_CAPS_DROPPED = {
+    (
+        "inspect",
+        "-f",
+        "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+    ): _DockerResult(0, b'[["ALL"], [], false]\n', "")
+}
 
 
 @pytest.fixture(autouse=True)
@@ -387,6 +393,12 @@ class _FakeDocker:
             0, b"", ""
         ):
             result = _DockerResult(0, json.dumps({"maf-sandbox.work-dir.v1": _WORK}).encode(), "")
+        if args[:3] == (
+            "inspect",
+            "-f",
+            "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+        ) and result == _DockerResult(0, b"", ""):
+            result = _DockerResult(0, b"[null,null,false]", "")
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
         if max_output_bytes is not None and (
@@ -447,6 +459,7 @@ def _machine(
     live_running = set(running)
     live_stopped = set(stopped)
     storage_labels = {name: {"maf-sandbox.work-dir.v1": work_dir} for name in (*running, *stopped)}
+    capability_policies = {name: [None, None, False] for name in (*running, *stopped)}
     live_networks = dict(networks or {})
     # Who is on each network, so `network rm` can refuse while an endpoint is still attached,
     # the way a real engine does.
@@ -477,6 +490,10 @@ def _machine(
             # given, which the reads after it are entitled to find.
             name = args[3]
             live_running.add(name)
+            capability_policies[name] = [
+                [args[i + 1] for i, arg in enumerate(args) if arg == flag]
+                for flag in ("--cap-drop", "--cap-add")
+            ] + [False]
             storage_labels[name] = dict(
                 args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "--label"
             )
@@ -532,6 +549,13 @@ def _machine(
             asked = modes == [_GATEWAY_MODE_ISOLATED] * len(_GATEWAY_MODE_OPTS)
             live_networks[net] = _UNADDRESSED if asked else _ADDRESSED
             return _DockerResult(0, net.encode() + b"\n", "")
+        if args[:3] == (
+            "inspect",
+            "-f",
+            "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+        ):
+            policy = capability_policies.get(args[-1].removeprefix("id-"), [None, None, False])
+            return _DockerResult(0, json.dumps(policy).encode(), "")
         if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
             return _DockerResult(0, b"\n", "")
         if args[:3] == ("inspect", "-f", "{{.Id}}"):
@@ -1772,7 +1796,10 @@ class TestWhichPrincipalACommandCarries:
             **(overrides or {}),
             ("exec", "-w", "/", f"id-{_NAME}"): _DockerResult(0, b"", ""),
         }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=merged))
+        backend, fake = _backend_with(
+            _machine(running=[_NAME], overrides=merged),
+            DockerSandboxConfig(cap_drop_all=capabilities_dropped),
+        )
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
     def test_a_guest_command_is_the_argv_and_nothing_else(self):
@@ -1833,7 +1860,7 @@ class TestWhichPrincipalACommandCarries:
                 return _DockerResult(1, b"", "rm: Permission denied")
             return base(args)
 
-        backend, fake = _backend_with(refuse_as_root)
+        backend, fake = _backend_with(refuse_as_root, DockerSandboxConfig(cap_drop_all=True))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         monkeypatch.setattr(docker_backend, "time", SimpleNamespace(monotonic=lambda: now))
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
@@ -2118,27 +2145,23 @@ class TestTheHardeningIsReadFromTheContainer:
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         return [call.args[:3] for call in fake.matching("exec")]
 
-    def test_a_hardened_container_retries_even_though_this_config_is_not(self):
-        calls = self._reclaim_calls(DockerSandboxConfig(cap_drop_all=False), True)
-        assert calls == [("exec", "--user", "0"), ("exec", "-w", "/")]
+    @pytest.mark.parametrize("requested,actual", [(False, True), (True, False)])
+    def test_reuse_refuses_a_different_capability_policy(self, requested, actual):
+        with pytest.raises(ValueError, match="different capability policy"):
+            self._reclaim_calls(DockerSandboxConfig(cap_drop_all=requested), actual)
 
-    def test_an_unhardened_container_does_not_retry_even_though_this_config_would(self):
-        backend_config = DockerSandboxConfig(cap_drop_all=True)
-        with pytest.raises(OSError):
-            self._reclaim_calls(backend_config, False)
-
-    def test_a_container_that_will_not_say_is_treated_as_hardened(self):
-        """Unknown costs one extra `exec` on a removal that failed anyway."""
+    def test_a_container_that_will_not_say_is_refused(self):
         overrides = {
-            **_WORK_IS_A_DIRECTORY,
-            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
-            ("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(1, b"", "no such object"),
+            (
+                "inspect",
+                "-f",
+                "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+            ): _DockerResult(1, b"", "unreadable"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        fake.mark()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert len(fake.matching("exec")) == 2
+        with pytest.raises(RuntimeError, match="could not establish the capability policy"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert not fake.matching("exec")
 
 
 class TestAContainerThatVanishedBehindThisBackend:
@@ -2160,7 +2183,11 @@ class TestAContainerThatVanishedBehindThisBackend:
         )
 
         def respond(args):
-            if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
+            if args[:3] == (
+                "inspect",
+                "-f",
+                "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+            ):
                 return _DockerResult(0, hardening[0], "")
             if args[:3] == ("run", "-d", "--name"):
                 present.add(args[3])
@@ -2174,7 +2201,7 @@ class TestAContainerThatVanishedBehindThisBackend:
         """The consequence, not the cache: a root refusal is retried only where the container
         holds no `CAP_DAC_OVERRIDE`, so stale facts leave a hardened container unable to remove.
         """
-        present, hardening = {_NAME}, [b"[]\n"]
+        present, hardening = {_NAME}, [b"[[], [], false]\n"]
         backend, fake = self._backend(present, hardening)
 
         keeps_capabilities = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
@@ -2183,7 +2210,8 @@ class TestAContainerThatVanishedBehindThisBackend:
 
         # Removed by something that is not this backend, and the name taken by a hardened one.
         present.discard(_NAME)
-        hardening[0] = b"[ALL]\n"
+        hardening[0] = b'[["ALL"], [], false]\n'
+        backend._config = replace(backend._config, cap_drop_all=True)
 
         replaced = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         fake.mark()
@@ -2194,7 +2222,7 @@ class TestAContainerThatVanishedBehindThisBackend:
         ]
 
     def test_the_ancestors_of_the_replacement_are_read_again(self):
-        present, hardening = {_NAME}, [b"[]\n"]
+        present, hardening = {_NAME}, [b"[[], [], false]\n"]
         backend, fake = self._backend(present, hardening)
         asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
 
@@ -4824,7 +4852,11 @@ class TestDisposeScope:
         base = _machine()
 
         def a_capability_read_that_hangs(args: tuple[str, ...]) -> _DockerResult:
-            if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
+            if args[:3] == (
+                "inspect",
+                "-f",
+                "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+            ):
                 raise TimeoutError("docker inspect timed out")
             if args[:1] == ("ps",):
                 return _DockerResult(1, b"", "daemon is not responding")
@@ -5349,6 +5381,12 @@ class TestAllowlistReuse:
             if args[:4] == ("run", "-d", "--name", _AL):
                 appeared = True
                 return _DockerResult(1, b"", "Conflict. The name is already in use")
+            if args[:3] == (
+                "inspect",
+                "-f",
+                "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+            ):
+                return _DockerResult(0, b"[null,null,false]", "")
             if args[0] == "inspect" and args[-1] == _AL:
                 if not appeared:
                     return _DockerResult(1, b"", f"error: no such object: {_AL}")
@@ -6538,3 +6576,130 @@ class TestTheIsolationScope:
         listed = [c.args for c in fake.matching("ps", "-a")]
         assert listed, "the purge read no listing at all"
         assert not any("maf-sandbox.call" in arg for args in listed for arg in args)
+
+
+@pytest.mark.parametrize("values", [("CAP_chown", "CHOWN", "setuid"), ("SETUID", "CHOWN")])
+def test_cap_add_normalizes_names_and_duplicates(values):
+    assert DockerSandboxConfig(cap_add=values).cap_add == ("CHOWN", "SETUID")
+
+
+@pytest.mark.parametrize(
+    "values",
+    ["CHOWN", ["CHOWN"], (1,), ("ALL",), ("CAP_ALL",), ("",), ("CHOWN ",), ("NO_SUCH_CAP",)],
+)
+def test_cap_add_refuses_invalid_configuration(values):
+    with pytest.raises(ValueError, match="capability"):
+        DockerSandboxConfig(cap_add=values)
+
+
+@pytest.mark.parametrize("drop", [False, True])
+def test_cap_add_only_grants_workload_capabilities(drop):
+    config = replace(_ALLOW_CONFIG, cap_drop_all=drop, cap_add=("SETUID", "CHOWN"))
+    backend, fake = _backend_with(_machine(), config)
+    asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+    workload = next(c.args for c in fake.matching("run") if not c.args[3].endswith("-proxy"))
+    proxy = next(c.args for c in fake.matching("run") if c.args[3].endswith("-proxy"))
+    assert [workload[i + 1] for i, arg in enumerate(workload) if arg == "--cap-add"] == [
+        "CHOWN",
+        "SETUID",
+    ]
+    if drop:
+        assert workload.index("--cap-drop") < workload.index("--cap-add")
+    else:
+        assert "--cap-drop" not in workload
+    assert "--cap-add" not in proxy
+    assert proxy[proxy.index("--cap-drop") + 1] == "ALL"
+
+
+@pytest.mark.parametrize("state", ["running", "stopped", "conflict-running", "conflict-stopped"])
+@pytest.mark.parametrize("requested,actual", [((), ("CHOWN",)), (("CHOWN",), ())])
+def test_capability_mismatch_never_executes_or_restarts(state, requested, actual):
+    policy = json.dumps([["ALL"], list(actual), False]).encode()
+    overrides = {
+        (
+            "inspect",
+            "-f",
+            "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+        ): _DockerResult(0, policy, "")
+    }
+    machine = _machine(
+        running=[_NAME] if state.endswith("running") else [],
+        stopped=[_NAME] if state.endswith("stopped") else [],
+        overrides=overrides,
+    )
+    absent = _machine()
+    appeared = not state.startswith("conflict")
+
+    def respond(args):
+        nonlocal appeared
+        if args[:4] == ("run", "-d", "--name", _NAME):
+            appeared = True
+            return _DockerResult(1, b"", "Conflict: name already in use")
+        return machine(args) if appeared else absent(args)
+
+    backend, fake = _backend_with(
+        respond, DockerSandboxConfig(cap_drop_all=True, cap_add=requested)
+    )
+    with pytest.raises(ValueError, match="dispose it before acquiring"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert not fake.matching("start")
+    assert not fake.matching("exec")
+    assert not fake.matching("cp")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"bad",
+        b"null",
+        b"[]",
+        b"[[],[],true]",
+        b"[[],[],0]",
+        b"[[],[1],false]",
+        b'[[],["UNKNOWN"],false]',
+    ],
+)
+def test_unreadable_capability_policy_refuses_reuse(payload):
+    backend, fake = _backend_with(
+        _machine(
+            running=[_NAME],
+            overrides={
+                (
+                    "inspect",
+                    "-f",
+                    "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+                ): _DockerResult(0, payload, ""),
+            },
+        )
+    )
+    with pytest.raises(RuntimeError, match="capability policy"):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert not fake.matching("exec")
+
+
+@pytest.mark.parametrize(
+    "added,retries", [((), True), (("CHOWN",), True), (("DAC_OVERRIDE",), False)]
+)
+def test_reclaim_accounts_for_capabilities_added_after_drop_all(added, retries):
+    overrides = {
+        **_WORK_IS_A_DIRECTORY,
+        (
+            "inspect",
+            "-f",
+            "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},{{json .HostConfig.Privileged}}]",
+        ): _DockerResult(0, json.dumps([["ALL"], list(added), False]).encode(), ""),
+        ("exec", "--user", "0"): _DockerResult(1, b"", "Permission denied"),
+    }
+    backend, fake = _backend_with(
+        _machine(running=[_NAME], overrides=overrides),
+        DockerSandboxConfig(cap_drop_all=True, cap_add=added),
+    )
+    sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+    fake.mark()
+    action = sandbox.reclaim(f"{_WORK}/call", working_directory=_WORK, timeout=30)
+    if retries:
+        asyncio.run(action)
+    else:
+        with pytest.raises(OSError, match="Permission denied"):
+            asyncio.run(action)
+    assert len(fake.matching("exec")) == (2 if retries else 1)

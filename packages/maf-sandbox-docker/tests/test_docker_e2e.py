@@ -2799,3 +2799,39 @@ class TestTheCallScopeAgainstARealEngine:
             asyncio.run(scenario())
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_explicit_capabilities_and_reuse_policy(stopped):
+    config = DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN", "DAC_OVERRIDE"))
+    backend = DockerSandboxBackend(config)
+    changed = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True, cap_add=("CHOWN",)))
+    key = _key(f"e2e-capabilities-{uuid.uuid4()}")
+    spec = _spec()
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(key, spec)
+            status = await sandbox.exec(
+                ["cat", "/proc/self/status"], working_directory=_WORK, timeout=30
+            )
+            assert status.exit_code == 0
+            fields = dict(line.split(":", 1) for line in status.stdout.splitlines())
+            assert int(fields["CapEff"], 16) == 3
+            assert int(fields["CapBnd"], 16) == 3
+            reused = await backend.acquire(key, spec)
+            assert reused.instance_id == sandbox.instance_id
+            if stopped:
+                result = await backend._docker("stop", sandbox.container_name, timeout=30)
+                assert result.returncode == 0
+            with pytest.raises(ValueError, match="different capability policy"):
+                await changed.acquire(key, spec)
+            state = await backend._docker(
+                "inspect", "-f", "{{.State.Running}}", sandbox.container_name, timeout=30
+            )
+            assert state.stdout.strip() == (b"false" if stopped else b"true")
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+    assert not _names_on_the_machine(_container_name(key, spec.kind))

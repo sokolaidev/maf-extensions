@@ -102,7 +102,7 @@ from maf_sandbox.paths import (
     tar_header_from_block,
 )
 
-from ._config import DockerSandboxConfig
+from ._config import DockerSandboxConfig, capability_name
 from ._probes import probe_commands
 from ._proxy import build_context
 from ._proxy.policy import (
@@ -806,7 +806,7 @@ class _ContainerFacts:
 
     #: Every directory above ``work_dir`` is root's and writable by nobody else.
     host_owned_ancestors: bool
-    #: Runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE``.
+    #: The inspected capability policy withholds ``CAP_DAC_OVERRIDE``.
     capabilities_dropped: bool
     identity_resolved: bool
     #: The default user UID, or 0 when unknown.
@@ -1917,6 +1917,8 @@ class DockerSandboxBackend:
                 # that call's check and its copy. Released before `prepare_work_dir`, which
                 # takes the same lock.
                 running, frozen = await self._container_state(name)
+                if running or frozen:
+                    await self._verify_capability_policy(name)
                 if frozen:
                     # Claimed rather than merely read, and held across the thaw. The lock binds
                     # to one event loop and a process may run several, so reading the record
@@ -1941,6 +1943,8 @@ class DockerSandboxBackend:
                         _Freezes.release(freeze_key)
                     logger.info("sandbox thawed before reuse: container=%s", name)
             stopped = not running and await self._exists(name)
+            if stopped:
+                await self._verify_capability_policy(name)
             if not running:
                 # Every path that starts a container, not only the create: a `_restart` that
                 # fails removes the container and falls through to one, so gating on
@@ -2000,6 +2004,7 @@ class DockerSandboxBackend:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
             await self._verify_storage_base(instance_id, spec)
+            await self._verify_capability_policy(instance_id)
             facts = await self._container_facts(name, spec, instance_id=instance_id)
             refuse_capabilities_the_guest_cannot_back(
                 spec,
@@ -2180,23 +2185,62 @@ class DockerSandboxBackend:
 
         await probe_commands(spec, verified, run)
 
-    async def _capabilities_dropped(self, name: str) -> bool:
-        """Does this container run without ``CAP_DAC_OVERRIDE``?
-
-        Read from the container, never from :attr:`DockerSandboxConfig.cap_drop_all`, which
-        describes what this backend would create rather than what it reused.  Unknown counts as
-        dropped.
-        """
+    async def _capability_policy(self, name: str) -> tuple[frozenset[str], frozenset[str]]:
         result = await self._docker(
             "inspect",
             "-f",
-            "{{.HostConfig.CapDrop}}",
+            "[{{json .HostConfig.CapDrop}},{{json .HostConfig.CapAdd}},"
+            "{{json .HostConfig.Privileged}}]",
             name,
             timeout=self._config.command_timeout_seconds,
         )
-        if result.returncode != 0:
+        try:
+            if result.returncode:
+                raise ValueError("container inspection failed")
+            policy = json.loads(result.stdout)
+            if not isinstance(policy, list):
+                raise ValueError("invalid capability policy")
+            policy = cast("list[object]", policy)
+            if len(policy) != 3 or policy[2] is not False:
+                raise ValueError("expected an unprivileged container")
+            sets: list[frozenset[str]] = []
+            for values in policy[:2]:
+                if values is None:
+                    values = []
+                if not isinstance(values, list):
+                    raise ValueError("invalid capability list")
+                sets.append(
+                    frozenset(
+                        "ALL" if isinstance(v, str) and v.upper() == "ALL" else capability_name(v)
+                        for v in cast("list[object]", values)
+                    )
+                )
+            return sets[0], sets[1]
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(
+                f"docker could not establish the capability policy of {name}: {exc}"
+            ) from exc
+
+    async def _verify_capability_policy(self, name: str) -> None:
+        dropped, added = await self._capability_policy(name)
+        expected_drop: frozenset[str] = (
+            frozenset({"ALL"}) if self._config.cap_drop_all else frozenset()
+        )
+        if dropped != expected_drop or added != frozenset(self._config.cap_add):
+            raise ValueError(
+                f"docker container {name} has a different capability policy "
+                f"(drop={sorted(dropped)}, add={sorted(added)}; "
+                f"requested drop={sorted(expected_drop)}, add={list(self._config.cap_add)}); "
+                "dispose it before acquiring with this configuration"
+            )
+
+    async def _capabilities_dropped(self, name: str) -> bool:
+        """Whether inspection establishes no DAC override; unknown keeps removal conservative."""
+        try:
+            dropped, added = await self._capability_policy(name)
+        except RuntimeError:
             return True
-        return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
+        return bool({"ALL", "DAC_OVERRIDE"} & dropped) and not bool({"ALL", "DAC_OVERRIDE"} & added)
 
     async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int] | None:
         """Resolve the default user's uid/gid from config, account files, then ``id``.
@@ -3433,6 +3477,8 @@ class DockerSandboxBackend:
 
         args = ["run", "-d", "--name", name]
         args += self._hardening(drop_capabilities=self._config.cap_drop_all)
+        for capability in self._config.cap_add:
+            args += ["--cap-add", capability]
         if allowlisting:
             proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
             args += ["--network", _network_name(name)]
@@ -3866,8 +3912,10 @@ class DockerSandboxBackend:
         """
         await self._verify_storage_base(name, spec, missing_ok=True)
         usable = await self._is_running(name)
-        if not usable:
-            usable = await self._exists(name) and await self._restart(name)
+        if usable or await self._exists(name):
+            await self._verify_capability_policy(name)
+            if not usable:
+                usable = await self._restart(name)
         return usable
 
     async def _remove(self, target: str) -> _Removal:
