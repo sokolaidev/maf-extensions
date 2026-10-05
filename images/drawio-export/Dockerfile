@@ -1,25 +1,25 @@
-FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03
 
 ARG DRAWIO_VERSION=31.7.0
 ARG DRAWIO_SHA256=eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends ca-certificates curl python3 python3-pil \
-       graphviz xvfb xauth fonts-dejavu-core libgbm1 libasound2t64 \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates-bundle python-3.13 py3.13-pillow \
+       graphviz xvfb-run xauth ttf-dejavu mesa-gbm alsa-lib gtk-3 nss \
+    && apk add --no-cache --virtual .unpack curl dpkg \
     && curl --fail --location --retry 3 \
        "https://github.com/jgraph/drawio-desktop/releases/download/v${DRAWIO_VERSION}/drawio-amd64-${DRAWIO_VERSION}.deb" \
        --output /tmp/drawio.deb \
     && echo "${DRAWIO_SHA256}  /tmp/drawio.deb" | sha256sum --check - \
-    && apt-get install -y --no-install-recommends /tmp/drawio.deb \
-    && rm -rf /var/lib/apt/lists/* /tmp/drawio.deb
-
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-extra \
-    && rm -rf /var/lib/apt/lists/*
+    && dpkg-deb --extract /tmp/drawio.deb /tmp/drawio-unpacked \
+    && mkdir -p /opt \
+    && cp -a /tmp/drawio-unpacked/opt/drawio /opt/drawio \
+    && rm -rf /tmp/drawio-unpacked /tmp/drawio.deb \
+    && apk del --no-cache .unpack
 
 COPY install.py export.py guard.js /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \
-    && groupadd --gid 10001 renderer \
-    && useradd --create-home --uid 10001 --gid 10001 renderer \
+    && addgroup -g 10001 renderer \
+    && adduser -D -u 10001 -G renderer renderer \
     && mkdir -p /maf-sandbox/work \
     && chown renderer:renderer /maf-sandbox/work
 ENV DRAWIO_DISABLE_UPDATE=true

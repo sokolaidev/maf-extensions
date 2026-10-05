@@ -26,6 +26,10 @@ import terraform_dependencies as prep  # noqa: E402
 def config_path(tmp_path):
     for name in ("image.json", "dependencies.terraform.json", "dependencies.opentofu.json"):
         (tmp_path / name).write_bytes((IMAGE_SOURCE / name).read_bytes())
+    config = tmp_path / "image.json"
+    document = json.loads(config.read_text())
+    document["engines"]["opentofu"].pop("source_build", None)
+    config.write_text(json.dumps(document))
     return tmp_path / "image.json"
 
 
@@ -155,7 +159,14 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
         pytest.skip("needs explicit Docker image build opt-in")
     context = tmp_path / "context"
     context.mkdir()
-    for name in ("Dockerfile", "build_image.py", "install.py", "runner.py", "image.json"):
+    for name in (
+        "Dockerfile",
+        "build_image.py",
+        "build_opentofu.py",
+        "install.py",
+        "runner.py",
+        "image.json",
+    ):
         shutil.copyfile(IMAGE_SOURCE / name, context / name)
     manifest_name = "approved.custom.json"
     shutil.copyfile(IMAGE_SOURCE / f"dependencies.{engine}.json", context / manifest_name)

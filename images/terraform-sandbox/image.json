@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "base_image": "python:3.13.16-slim-trixie@sha256:3dd7cc108ec1493442514f5c2a871af6af0ec31d768ff6e378a93340c3b3db5f",
+  "base_image": "cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
   "platform": "linux/amd64",
   "engines": {
     "terraform": {
@@ -20,6 +20,14 @@
       "executable": "tofu",
       "url": "https://github.com/opentofu/opentofu/releases/download/v1.13.1/tofu_1.13.1_linux_amd64.zip",
       "sha256": "8ccbc6f8ee21d2827715f3c6e08a9b3e0209b1e62057c05067ef117e047c1a80",
+      "source_build": {
+        "repository": "https://github.com/opentofu/opentofu.git",
+        "revision": "233700b795b6d2372f1c56ed57a4abaec9d36475",
+        "modules": {
+          "google.golang.org/grpc": "v1.83.2",
+          "golang.org/x/mod": "v0.40.0"
+        }
+      },
       "profiles": {
         "builtin": null,
         "random": "dependencies.opentofu.json"

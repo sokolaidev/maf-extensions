@@ -25,6 +25,8 @@ The README badge shows the workflow status on `main`. Passing means every listed
 
 The scan covers the built runtime filesystem. Build-stage-only packages, other architectures, custom image arguments, externally supplied images, upstream device-plugin images and different prepared dependency manifests are outside this inventory. In particular, the larger Terraform AVM and OpenTofu platform/provider/multiversion variants require separate scans. Applying the `sbx` template to another base also creates an unassessed image. Image scanning does not qualify sandbox confinement or backend lifecycle behavior.
 
+The Diagram, Draw.io, Terraform/OpenTofu and Hyperlight profiles use digest-pinned Wolfi bases with signed APK packages. Wolfi is a rolling distribution, so package updates and native-runtime compatibility are assessed by each build and scan. OpenTofu is rebuilt from a pinned upstream commit with explicit Go dependency updates; its retained source-build records distinguish it from the upstream release binary. These images still require deployment-specific qualification, including live AKS/ACAS checks where applicable.
+
 ## Reading the evidence
 
 Each matrix job retains an `image-security-<profile>` Actions artifact for 30 days, including when vulnerability findings fail the scan:
