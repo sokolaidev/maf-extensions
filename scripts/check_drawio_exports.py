@@ -428,8 +428,6 @@ async def check(
             if name == "embedded-svg-filter-image":
                 assert "nested images" in " ".join(text or "" for text in answer), answer
             assert not destination.exists() or not list(destination.iterdir())
-        assert len(calls) == 2 + len(cases) and all(event.unclean == 0 for event in calls), calls
-        report["clean_calls"] = len(calls)
         report["refusals"] = list(cases)
         [bounded] = make_drawio_tools(
             router,
@@ -446,6 +444,8 @@ async def check(
         )
         assert not (output / "timeout").exists()
         report["timeout"] = "incomplete without artifact delivery"
+        assert len(calls) == 3 + len(cases) and all(event.unclean == 0 for event in calls), calls
+        report["clean_calls"] = len(calls)
     finally:
         purge = await router.dispose_scope(scope, "exports")
         assert not purge.undisposed, purge
