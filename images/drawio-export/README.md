@@ -17,7 +17,9 @@ Every nonempty stencil lookup made while painting must resolve. This covers auxi
 
 XML resources, including embedded SVGs, must use UTF-8, optionally with its byte-order mark. NUL characters, DTD/entity declarations and processing instructions other than the XML declaration are refused before XML parsing.
 
-SVG CSS must not reference resources, including data URIs, image-set() and src(). Image attributes use the separate embedded-image validator; local SVG fragment references and resource-free CSS remain supported.
+SVG attributes, inline styles and stylesheets may reference local resources with `url(#id)`. Each reference must resolve to a unique linearGradient, radialGradient, pattern, clipPath, mask or filter in the same SVG. Every remaining URL, data URI, image-set() and src() reference is refused. Image attributes use the separate embedded-image validator. The exact namespaced RDF declaration of the Dublin Core StillImage type is accepted as non-fetching metadata.
+
+Both provisioning paths run check-assets.py against every bundled azure2 SVG. Draw.io Desktop 31.7.0 has 704 icons: 703 pass, and Private_Endpoint.svg retains its existing font-policy refusal because its path styles declare fonts. The check permits only that named refusal; every other rejection fails provisioning.
 
 Embedded SVGs, including bundled assets, must contain no text elements or font declarations in presentation attributes, inline styles or stylesheets. This includes shorthand font properties, @font-face and local() font sources. CSS font tokens are refused conservatively, including in comments and selectors. Convert image text to paths before embedding it. Native diagram labels continue to use the verified DejaVu font set.
 

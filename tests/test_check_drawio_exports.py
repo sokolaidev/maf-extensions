@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,6 +21,25 @@ _SPEC = importlib.util.spec_from_file_location(
 assert _SPEC and _SPEC.loader
 checker = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(checker)
+
+
+@pytest.mark.parametrize("indicator", ["image", "use", "rect", None])
+def test_export_output_requires_image_indicator_in_either_native_form(tmp_path, indicator):
+    for page in (1, 2):
+        for format in ("png", "jpg"):
+            Image.new("RGB", (200 * page, 200), "red").save(tmp_path / f"diagram-{page}.{format}")
+        root = ET.Element("svg", xmlns="http://www.w3.org/2000/svg")
+        root.text = f"Page {page} Résumé fontFamily=Missing; data:font/ttf;base64, #00ff00"
+        ET.SubElement(root, "image", href="data:image/png;base64,AA==")
+        if indicator is not None:
+            ET.SubElement(root, indicator, width="30", height="30")
+        (tmp_path / f"diagram-{page}.svg").write_bytes(ET.tostring(root, encoding="utf-8"))
+    (tmp_path / "diagram.drawio").write_text("<mxfile/>", encoding="utf-8")
+    if indicator in {"image", "use"}:
+        assert checker.verify_output(tmp_path)["pages"] == 2
+    else:
+        with pytest.raises(AssertionError, match="Indicator image was omitted"):
+            checker.verify_output(tmp_path)
 
 
 @pytest.mark.parametrize("timeout_event", ["clean", "unclean", "missing", "duplicate"])

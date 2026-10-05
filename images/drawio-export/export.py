@@ -50,6 +50,11 @@ UNSAFE = re.compile(
 )
 SVG_FONT = re.compile(r"\bfont\b|local\s*\(", re.I)
 SVG_ANIMATION = re.compile(r"\b(?:animation|transition|keyframes)\b", re.I)
+SVG_FRAGMENT = re.compile(r"url\(#([A-Za-z0-9_.:-]+)\)")
+SVG_RESOURCE_TAGS = {
+    f"{{{SVG}}}{tag}"
+    for tag in ("linearGradient", "radialGradient", "pattern", "clipPath", "mask", "filter")
+}
 
 
 class Label(HTMLParser):
@@ -128,6 +133,16 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
     root = xml_document(data)
     if root.tag != f"{{{SVG}}}svg":
         raise ValueError("Output is not SVG")
+    resources: dict[str, str] = {}
+    for element in root.iter():
+        if identifier := element.get("id"):
+            resources[identifier] = element.tag if identifier not in resources else ""
+
+    def strip_fragment(match: re.Match[str]) -> str:
+        if resources.get(match[1]) not in SVG_RESOURCE_TAGS:
+            raise ValueError("SVG fragment must resolve to a unique local resource definition")
+        return ""
+
     for element in root.iter():
         tag = element.tag.rsplit("}", 1)[-1]
         if not exported and (
@@ -176,23 +191,28 @@ def check_svg(data: bytes, *, exported: bool = False) -> ET.Element:
                 ("requiredExtensions", "http://www.w3.org/1999/xhtml"),
             }:
                 continue
+            if (element.tag, name, value) == (
+                "{http://purl.org/dc/elements/1.1/}type",
+                "{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource",
+                "http://purl.org/dc/dcmitype/StillImage",
+            ):
+                continue
             if local in {"href", "src"}:
                 if value.startswith("#"):
                     continue
                 image_data(value)
-            elif UNSAFE.search(value):
-                if not re.fullmatch(r"url\(#[A-Za-z0-9_.:-]+\)", value):
-                    raise ValueError(
-                        f"SVG has an external or unsupported resource: {local}={value[:120]}"
-                    )
+            elif UNSAFE.search(SVG_FRAGMENT.sub(strip_fragment, value)):
+                raise ValueError(
+                    f"SVG has an external or unsupported resource: {local}={value[:120]}"
+                )
         if tag == "style":
             css = "".join(element.itertext())
             if SVG_ANIMATION.search(css):
                 raise ValueError("Active SVG CSS is not supported")
             if not exported and SVG_FONT.search(css):
                 raise ValueError("Embedded SVG text and fonts are not supported")
-            if UNSAFE.search(css):
-                raise ValueError("SVG styles must not reference resources")
+            if UNSAFE.search(SVG_FRAGMENT.sub(strip_fragment, css)):
+                raise ValueError("SVG styles must not reference external or unsupported resources")
     return root
 
 

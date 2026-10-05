@@ -227,6 +227,148 @@ def test_svg_local_fragments_and_resource_free_css_survive():
     assert RUNTIME["image_data"](uri) == uri
 
 
+@pytest.mark.parametrize("exported", [False, True])
+@pytest.mark.parametrize(
+    "style",
+    [
+        "fill:url(#paint)",
+        "fill:url(#paint);stroke:url(#outline);opacity:0.7",
+        "fill:url(#aa2ee697-e8d1-4da1-a8c5-64c8ebbb74cf);stroke:none",
+    ],
+)
+def test_svg_inline_fragment_styles_survive(style, exported):
+    root = ET.Element("svg", {"xmlns": "http://www.w3.org/2000/svg"})
+    definitions = ET.SubElement(root, "defs")
+    for identifier in ("paint", "outline", "aa2ee697-e8d1-4da1-a8c5-64c8ebbb74cf"):
+        ET.SubElement(definitions, "linearGradient", id=identifier)
+    ET.SubElement(root, "path", style=style)
+    data = ET.tostring(root)
+    assert RUNTIME["check_svg"](data, exported=exported)[1].get("style") == style
+    if not exported:
+        uri = "data:image/svg+xml;base64," + base64.b64encode(data).decode()
+        assert RUNTIME["image_data"](uri) == uri
+
+
+@pytest.mark.parametrize("exported", [False, True])
+@pytest.mark.parametrize(
+    "resource",
+    [
+        "url(https://example.invalid/image.svg)",
+        "url(data:image/png;base64,AA==)",
+        "url(relative.svg#paint)",
+        "url(//example.invalid/image.svg)",
+        "url(#paint",
+        "URL(https://example.invalid/image.svg)",
+        "src(relative.svg)",
+        'image-set("relative.png" 1x)',
+        '"data:image/png;base64,AA=="',
+        r"u\72l(https://example.invalid/image.svg)",
+        "expression(alert(1))",
+        "@import 'relative.css'",
+    ],
+)
+@pytest.mark.parametrize("first", [False, True])
+@pytest.mark.parametrize("stylesheet", [False, True])
+def test_svg_local_fragment_does_not_hide_unsafe_css(resource, first, exported, stylesheet):
+    declarations = ["fill:url(#paint)", "background:" + resource]
+    if first:
+        declarations.reverse()
+    root = ET.Element("svg", {"xmlns": "http://www.w3.org/2000/svg"})
+    ET.SubElement(ET.SubElement(root, "defs"), "linearGradient", id="paint")
+    if stylesheet:
+        ET.SubElement(root, "style").text = "path {" + ";".join(declarations) + "}"
+    else:
+        ET.SubElement(root, "path", style=";".join(declarations))
+    with pytest.raises(ValueError, match="external or unsupported resource"):
+        RUNTIME["check_svg"](ET.tostring(root), exported=exported)
+
+
+@pytest.mark.parametrize("exported", [False, True])
+def test_svg_stylesheet_fragment_resources_survive(exported):
+    data = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="paint"/></defs>'
+        b"<style>path {fill:url(#paint)}</style><path/></svg>"
+    )
+    assert RUNTIME["check_svg"](data, exported=exported)[1].text == "path {fill:url(#paint)}"
+
+
+@pytest.mark.parametrize("location", ["fill", "style", "stylesheet"])
+@pytest.mark.parametrize(
+    "definitions",
+    ["", '<path id="paint"/>', '<linearGradient id="paint"/><radialGradient id="paint"/>'],
+)
+def test_svg_fragment_requires_unique_resource_definition(location, definitions):
+    content = (
+        "<style>path {fill:url(#paint)}</style>"
+        if location == "stylesheet"
+        else f'<path {location}="{"fill:" if location == "style" else ""}url(#paint)"/>'
+    )
+    data = f'<svg xmlns="http://www.w3.org/2000/svg">{definitions}{content}</svg>'.encode()
+    with pytest.raises(ValueError, match="unique local resource definition"):
+        RUNTIME["check_svg"](data)
+
+
+@pytest.mark.parametrize(
+    "tag", ["linearGradient", "radialGradient", "pattern", "clipPath", "mask", "filter"]
+)
+def test_svg_fragment_accepts_each_resource_kind(tag):
+    data = (
+        f'<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:url(#paint)"/>'
+        f'<defs><{tag} id="paint"/></defs></svg>'
+    ).encode()
+    assert RUNTIME["check_svg"](data)[0].get("style") == "fill:url(#paint)"
+
+
+@pytest.mark.parametrize("exported", [False, True])
+@pytest.mark.parametrize("valid", [False, True])
+def test_svg_rdf_image_type_is_metadata_only(valid, exported):
+    data = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" '
+        b'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" '
+        b'xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata>'
+        b'<dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>'
+        b"</metadata></svg>"
+    )
+    if valid:
+        assert RUNTIME["check_svg"](data, exported=exported)[0][0].tag.endswith("}type")
+    else:
+        for changed in (
+            data.replace(b"rdf:resource", b"href"),
+            data.replace(b"dc:type", b"image"),
+            data.replace(b"StillImage", b"OtherResource"),
+        ):
+            with pytest.raises(ValueError):
+                RUNTIME["check_svg"](changed, exported=exported)
+
+
+def test_bundled_azure_asset_check_covers_all_icons_and_names_failure(tmp_path):
+    source = Path(__file__).parents[1] / "images/drawio-export"
+    check = runpy.run_path(str(source / "check-assets.py"))["check_assets"]
+    shutil.copyfile(source / "export.py", tmp_path / "export.py")
+    with pytest.raises(ValueError, match="icons are missing"):
+        check(tmp_path)
+    assets = tmp_path / "assets/img/lib/azure2/security"
+    assets.mkdir(parents=True)
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="paint"/></defs>'
+        b'<path style="fill:url(#paint)"/></svg>'
+    )
+    (assets / "first.svg").write_bytes(svg)
+    (assets / "last.svg").write_bytes(svg)
+    assert check(tmp_path) == (2, 0)
+    private = assets.parent / "networking/Private_Endpoint.svg"
+    private.parent.mkdir()
+    private.write_bytes(svg.replace(b"fill:url(#paint)", b"font-family:sans-serif"))
+    assert check(tmp_path) == (2, 1)
+    private.write_bytes(svg.replace(b"fill:url(#paint)", b"fill:url(remote.svg)"))
+    with pytest.raises(ValueError, match="Private_Endpoint.svg:.*unsupported resource"):
+        check(tmp_path)
+    private.write_bytes(svg)
+    (assets / "last.svg").write_bytes(svg.replace(b"url(#paint)", b"url(remote.svg)"))
+    with pytest.raises(ValueError, match="last.svg:.*unsupported resource"):
+        check(tmp_path)
+
+
 @pytest.mark.parametrize(
     "content",
     [

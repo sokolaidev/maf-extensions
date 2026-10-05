@@ -14,6 +14,7 @@ chroot "$target" curl -fL --retry 3 -o /tmp/drawio.deb https://github.com/jgraph
 echo 'eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de  tmp/drawio.deb' | (cd "$target" && sha256sum -c -)
 chroot "$target" /bin/sh -ec 'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/drawio.deb; rm /tmp/drawio.deb; apt-get clean'
 install -d "$target/opt/maf-drawio" "$target/maf-sandbox/work"
-install -m 644 "$sources/install.py" "$sources/export.py" "$sources/guard.js" "$target/opt/maf-drawio/"
+install -m 644 "$sources/install.py" "$sources/export.py" "$sources/guard.js" "$sources/check-assets.py" "$target/opt/maf-drawio/"
 chroot "$target" python3 /opt/maf-drawio/install.py
+chroot "$target" python3 /opt/maf-drawio/check-assets.py
 echo "Runtime ready: $target"
