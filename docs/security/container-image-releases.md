@@ -1,6 +1,6 @@
 # Container image release contract
 
-This document defines the accepted contract for the next deliverable after the [candidate image checks](container-images.md). Implementation progress is recorded in the [Status table](#status).
+This document defines the contract for published container images and their release evidence, complementing the [candidate image checks](container-images.md). Implementation progress is recorded in the [Status table](#status).
 
 ## Outcome
 
@@ -10,12 +10,13 @@ A consumer can select a released image, pull its immutable registry digest, veri
 
 | Decision | Choice | State |
 |---|---|---|
-| Registry | Public packages under `ghcr.io/sokolaidev/maf-extensions/`, linked to this repository | Agreed before this draft |
-| Vulnerability gate | Refuse every High/Critical finding, including unfixed findings; no exclusions | Agreed before this draft |
+| Registry | Public packages under `ghcr.io/sokolaidev/maf-extensions/`, linked to this repository | Accepted |
+| Vulnerability gate | Refuse every High/Critical finding, including unfixed findings; no exclusions | Accepted |
 | Release version | Independent SemVer for each image profile, separate from Python and upstream tool versions | Accepted, decision 1 |
 | Initial scope and names | The twelve currently scanned Linux/amd64 profiles, each in its own image repository | Accepted, decision 2 |
 | Release control | Maintainer-triggered release; build/test/scan before one protected publication approval | Accepted, decision 3 |
 | Signatures | GitHub artifact attestations for provenance and SPDX SBOM, bound to the registry digest | Accepted, decision 4 |
+| Consumer execution | Require verified release identity and completion; report current monitoring status separately | Accepted, decision 4 |
 | Support window | Daily scans of the newest release per profile and each superseded release for 90 days; fixes ship as new versions | Accepted, decision 5 |
 | Evidence freshness | Release scan at most 24 hours old; monitored status becomes stale after 48 hours without a successful assessment | Accepted, decision 6 |
 
@@ -66,7 +67,7 @@ The approval request identifies the retained candidate digests, source, profiles
 
 Use GitHub artifact attestations for build provenance and the SPDX SBOM, with GitHub Actions OIDC identity and the published registry digest as their subject. Retain the original signature bundles and attach the attestations to the registry image. This follows the existing Hyperlight verification approach and avoids maintaining a separate long-lived signing key.
 
-Consumer instructions verify both attestations with GitHub CLI under the expected repository, workflow, source revision and digest policy, and authenticate the completed catalogue record for the selected profile, version and digest before running the image. The provenance identifies who built which source; the SBOM identifies the inventoried components. The signed evidence index binds the scan reports and build records to the same release. The completion record establishes that the release passed publication verification; attestations alone do not. These checks establish release completion, artifact identity and origin, not a general safety certification.
+Consumer instructions verify both attestations with GitHub CLI under the expected repository, workflow, source revision and digest policy, and authenticate the completed catalogue record for the selected profile, version and digest before running the image. The provenance identifies who built which source; the SBOM identifies the inventoried components. The signed evidence index binds the scan reports and build records to the same release. The completion record establishes that the release passed publication verification; attestations alone do not. Report current monitoring status separately from this release-identity result. These checks establish release completion, artifact identity and origin, not a general safety certification.
 
 ## Build and publication flow
 
@@ -90,6 +91,8 @@ Retain the original signed provenance and SBOM bundles, registry manifest, scan 
 Publish durable evidence with the release and registry attestations. The current 30-day Actions artifacts are working storage, not the retention policy for a public release. Retain evidence for as long as the corresponding image remains publicly offered; the monitoring window below does not shorten that retention.
 
 Consumer verification must require the expected repository, exact approved workflow identity, GitHub OIDC issuer, source commit/ref, predicate type and image digest. Verify provenance and SPDX SBOM attestations separately under their respective predicate types; a successful provenance verification does not verify the SBOM. Refuse missing or mismatched attestations and unapproved/self-hosted signing runners. Authenticate the catalogue completion record under the approved release-signing policy and require completed state with the selected profile, version, source, registry and assessed-manifest digests, and evidence-index hash all matching the verified artifact and evidence. Refuse missing, unavailable, unauthenticated, mismatched, incomplete or abandoned records even when provenance and SBOM attestations pass. Select the expected values from the reviewed release policy, not from the unverified candidate. Run image code only after all three checks succeed: provenance attestation, SPDX SBOM attestation and completed-release verification. Reuse the provenance policy and refusal cases in the [existing Hyperlight verifier](../../images/hyperlight-sandbox/README.md#verify-a-published-runtime), adding the separate SBOM and completion checks without weakening its additional payload checks.
+
+The default consumer gate verifies release identity and completion. A stale, unavailable, vulnerable or no-longer-monitored assessment does not invalidate that historical evidence or block execution when the three checks pass. Report the monitoring result alongside the identity result, including when retrieval fails; never present verified identity as a current passing vulnerability assessment. Applications may impose a stricter deployment policy that also requires fresh passing monitoring evidence.
 
 Keep upstream notices and component licence information in the image and SBOM. The repository's MIT licence does not describe every bundled third-party component. A passing vulnerability scan and verified publisher establish specific evidence; they do not certify absence of malware, backdoors or unknown vulnerabilities.
 
@@ -117,19 +120,21 @@ Publication requires a complete passing scan of the retained candidate performed
 
 For every monitored digest, a completed assessment remains fresh for at most 48 hours. Missing the daily schedule therefore has a bounded grace period; beyond it the public status is stale, not green. A scanner, registry or evidence-retrieval failure becomes visibly unavailable as soon as observed, even if the preceding clean scan is less than 48 hours old. An observed High/Critical finding is visibly vulnerable immediately. Preserve known findings and their timestamps when later scans fail or become stale.
 
-Every status exposes its image digest, last assessment time, database identity, latest attempt outcome and monitoring end date where applicable. Consumer verification checks age at the time of use; a cached badge or stopped scheduler must not turn an old success into current evidence. These freshness limits describe assessment age, not a promise that new vulnerabilities cannot appear between scans.
+Every status exposes its image digest, last assessment time, database identity, latest attempt outcome and monitoring end date where applicable. Consumer status reporting reads the authoritative monitor's latest-attempt record over authenticated HTTPS from the endpoint selected by the reviewed release policy, checks the digest and evaluates age at the time of use. A cached badge or previously signed success alone cannot establish the latest attempt. If the authoritative record cannot be retrieved or its identity and latest-attempt relationship cannot be established, report status as unavailable; do not fall back to a cached green result. A stopped scheduler eventually makes its last success stale. This reporting is separate from the release-identity execution gate. These freshness limits describe assessment age, not a promise that new vulnerabilities cannot appear between scans.
 
 The existing README badge remains explicitly about candidate builds. Published-image status identifies the monitored set and distinguishes clean, vulnerable, stale, unavailable and no-longer-monitored evidence from the separate incomplete, completed or abandoned publication state. An aggregate can be green only when every monitored digest belongs to a completed release, has a complete, fresh, passing assessment and has no newer failed assessment attempt. Incomplete and abandoned public candidates prevent a green aggregate even when their vulnerability scans pass.
 
 ## Delivery and acceptance
 
-The first PR records accepted decisions and the profile/identity contract. The implementation PR adds the build/retain/publish/verify path, consumer verification and exact-digest monitoring. Actual publication remains the maintainer's release step, consistent with [RELEASING.md](../../RELEASING.md).
+Release readiness requires the build, retention, publication, consumer-verification and exact-digest monitoring paths to satisfy the acceptance cases below. Actual publication remains the maintainer's release step, consistent with [RELEASING.md](../../RELEASING.md).
 
 Acceptance requires a rehearsal that proves a retained candidate is promoted without rebuilding, signature verification succeeds under the intended policy, and changed digest/source/signer/evidence plus an unsigned candidate are refused. Reject an index with an extra unassessed runnable child, a nested index or evidence for the wrong manifest. Cover duplicate-version refusal, concurrent publication of different versions of one profile, partial failure and retry from retained bytes. Verify that an older candidate cannot overtake a newer completed release and that retries preserve the predecessor's original superseded time. Also interrupt publication after a successful registry write but before its result is recorded, then verify independent discovery and monitoring from the pre-write catalogue. Exercise abandonment after loss of retained bytes, permanent version retirement, continued monitoring after another release supersedes the candidate, and refusal to retire monitoring when registry visibility is uncertain. Demonstrate that the High/Critical gate still refuses unfixed findings and that a scheduled published-image check reads the recorded registry digest. Report which deployment/live checks were actually run for each profile.
 
 Keep provenance and SBOM attestations valid while removing or altering the completion record: consumer verification must reject missing/unavailable records, invalid signatures, mismatched identities or evidence hashes, and incomplete or abandoned state before executing image code. Demonstrate that the publisher can qualify the candidate before completion, while the consumer refuses it until the authenticated completed record exists.
 
 With valid provenance and completion evidence, remove the SBOM attestation or substitute an invalid signature, wrong predicate type or different subject digest: consumer verification must refuse execution. Exercise an approval or lock wait beyond 24 hours: only a fresh passing scan of the approved retained bytes permits publication, failed refreshes block it, and changed bytes or release policy require new approval. Preserve both the approval-time report and the final publication assessment.
+
+With all three release-identity checks passing, exercise stale, unavailable, vulnerable and no-longer-monitored assessments: the default gate still permits execution and reports each monitoring state separately. An older passing report must not hide a newer failed attempt. Wrong-digest status, an untrusted endpoint or inability to establish the latest record must report unavailable, even with a cached passing assessment. Verify the 48-hour age boundary without relying on a new scheduler run. These cases qualify status reporting; they do not add a current-scan requirement to the default execution gate.
 
 ## References
 
