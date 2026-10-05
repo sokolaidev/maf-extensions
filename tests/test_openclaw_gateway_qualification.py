@@ -379,3 +379,130 @@ def test_observer_correlates_interleaved_cancellation_responses(tmp_path):
     call = {"session": observer.digest(b"private-session".hex()), "time_ns": 1}
     assert not checker.matching_cancel(evidence, {**call, "request": observer.digest(7)})
     assert checker.matching_cancel(evidence, {**call, "request": observer.digest(8)})
+
+
+lifecycle = load("openclaw_gateway_lifecycle_check")
+
+
+def loss_evidence():
+    return [
+        {
+            "event": "request",
+            "method": "tools/call",
+            "exchange": "call",
+            "boot": "boot",
+            "session": "A",
+            "time_ns": 10,
+        },
+        {
+            "event": "result_withheld",
+            "exchange": "call",
+            "boot": "boot",
+            "session": "A",
+            "time_ns": 20,
+            "completed": True,
+            "cleanup": "confirmed",
+            "status": 200,
+        },
+    ]
+
+
+def test_lost_result_requires_completed_work_and_a_transport_error():
+    result = lifecycle.verify_loss(
+        loss_evidence(),
+        {"status": "error", "error": "Streamable HTTP error: Internal Server Error"},
+    )
+    assert result["dispatches"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_call",
+        "duplicate_result",
+        "wrong_exchange",
+        "missing_exchange",
+        "wrong_boot",
+        "wrong_session",
+        "stale",
+        "incomplete",
+        "cleanup_failed",
+        "bad_status",
+        "missing",
+    ],
+)
+def test_lost_result_rejects_replay_or_uncorrelated_evidence(mutation):
+    evidence = loss_evidence()
+    if mutation == "duplicate_call":
+        evidence.insert(0, evidence[0].copy())
+    elif mutation == "duplicate_result":
+        evidence.append(evidence[-1].copy())
+    elif mutation == "missing":
+        evidence.pop()
+    else:
+        field, value = {
+            "wrong_exchange": ("exchange", "other"),
+            "missing_exchange": ("exchange", None),
+            "wrong_boot": ("boot", "other"),
+            "wrong_session": ("session", "B"),
+            "stale": ("time_ns", 5),
+            "incomplete": ("completed", False),
+            "cleanup_failed": ("cleanup", "failed"),
+            "bad_status": ("status", 503),
+        }[mutation]
+        evidence[-1][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_loss(
+            evidence, {"status": "error", "error": "Streamable HTTP error: Internal Server Error"}
+        )
+
+
+@pytest.mark.parametrize(
+    "result", [{"error": "unrelated"}, projected(), {"error": "500", "structuredContent": {}}]
+)
+def test_lost_result_refuses_fabricated_or_unrelated_projection(result):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_loss(loss_evidence(), result)
+
+
+def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_transparent(tmp_path):
+    emitted = []
+    fault = tmp_path / "drop"
+    fault.touch()
+    payload = json.dumps(
+        {"result": {"structuredContent": {"completed": True, "cleanup": "confirmed"}}}
+    ).encode()
+
+    class App:
+        sessions = {"private-session": None}
+        service = SimpleNamespace(active=None)
+
+        async def __call__(self, scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": payload[:12], "more_body": True})
+            await send({"type": "http.response.body", "body": payload[12:]})
+
+    async def receive():
+        return {"type": "http.request", "body": b'{"method":"tools/call","id":7}'}
+
+    async def send(message):
+        emitted.append(message)
+
+    app = observer.ObserveHTTP(App(), tmp_path / "audit.jsonl", fault)
+    scope = {"type": "http", "method": "POST", "headers": [(b"mcp-session-id", b"private-session")]}
+    with pytest.raises(RuntimeError, match="intentionally withheld"):
+        asyncio.run(app(scope, receive, send))
+    assert not emitted and not fault.exists()
+    first = checker.records(app.evidence)
+    assert (
+        lifecycle.verify_loss(
+            first, {"status": "error", "error": "Streamable HTTP error: Internal Server Error"}
+        )["dispatches"]
+        == 1
+    )
+    assert not [r for r in first if r["event"] == "response"]
+    assert len({r["boot"] for r in first}) == 1
+    asyncio.run(app(scope, receive, send))
+    assert b"".join(m.get("body", b"") for m in emitted) == payload
+    assert len([r for r in checker.records(app.evidence) if r["event"] == "result_withheld"]) == 1

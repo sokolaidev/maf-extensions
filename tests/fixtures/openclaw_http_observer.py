@@ -33,15 +33,19 @@ def digest(value: Any) -> str:
 
 
 class ObserveHTTP:
-    """Transparent ASGI wrapper; write only allowlisted, pseudonymous transport observations."""
+    """Observe allowlisted transport fields; optionally withhold one result for qualification."""
 
-    def __init__(self, app: Any, evidence: Path) -> None:
+    def __init__(self, app: Any, evidence: Path, drop_result: Path | None = None) -> None:
         self.app = app
         self.evidence = evidence
+        self.drop_result = drop_result
+        self.boot = uuid.uuid4().hex
 
     def record(self, **fields: Any) -> None:
         with self.evidence.open("a", encoding="utf-8") as output:
-            output.write(json.dumps({"time_ns": time.time_ns(), **fields}) + "\n")
+            output.write(
+                json.dumps({"time_ns": time.time_ns(), "boot": self.boot, **fields}) + "\n"
+            )
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -54,9 +58,12 @@ class ObserveHTTP:
         body = bytearray()
         observed = False
         method = scope["method"]
+        drop = False
+        withheld = bytearray()
+        original_status = None
 
         async def read():
-            nonlocal observed
+            nonlocal observed, drop
             message = await receive()
             if message["type"] == "http.request" and not observed:
                 body.extend(message.get("body", b""))
@@ -96,22 +103,53 @@ class ObserveHTTP:
                                 ):
                                     fields["target"] = digest(params["requestId"])
                             self.record(**fields)
+                            if rpc == "tools/call" and self.drop_result is not None:
+                                try:
+                                    self.drop_result.unlink()
+                                except FileNotFoundError:
+                                    pass
+                                else:
+                                    drop = True
+                                    self.record(event="fault_armed", exchange=exchange, session=sid)
             return message
 
         async def write(message):
+            nonlocal original_status
             if message["type"] == "http.response.start":
+                original_status = message["status"]
                 response_session = dict(message.get("headers", [])).get(b"mcp-session-id")
                 self.record(
-                    event="response",
+                    event="withheld_response" if drop else "response",
                     exchange=exchange,
                     method=method,
                     status=message["status"],
                     session=digest(response_session.hex()) if response_session else sid,
                 )
+            if drop:
+                if message["type"] == "http.response.body":
+                    withheld.extend(message.get("body", b""))
+                    if len(withheld) > 2 * 1024 * 1024:
+                        raise RuntimeError("Qualification response exceeds fault buffer")
+                    if not message.get("more_body", False):
+                        value = json.loads(withheld)
+                        result = value.get("result", {}).get("structuredContent", {})
+                        self.record(
+                            event="result_withheld",
+                            exchange=exchange,
+                            session=sid,
+                            status=original_status,
+                            completed=result.get("completed"),
+                            cleanup=result.get("cleanup"),
+                            body_sha256=hashlib.sha256(withheld).hexdigest(),
+                        )
+                return
             await send(message)
 
         try:
             await self.app(scope, read, write)
+            if drop:
+                # Raise outside the SDK handler so its error response is withheld too.
+                raise RuntimeError("Qualification intentionally withheld the tool result")
         finally:
             self.record(
                 event="settled",
@@ -133,6 +171,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("prototype", "config", "state-dir", "token-file", "evidence"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--stop-file", type=Path)
+    parser.add_argument("--drop-result-file", type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
     args = parser.parse_args()
@@ -145,7 +185,7 @@ if __name__ == "__main__":
         config = args.config.read_text(encoding="utf-8")
         with prototype.ownership(args.state_dir) as owner:
             app = await prototype.http_application(args.image, config, owner, token, args.port)
-            observer = ObserveHTTP(app, args.evidence)
+            observer = ObserveHTTP(app, args.evidence, args.drop_result_file)
             observer.record(
                 event="startup",
                 source_hashes={
@@ -169,7 +209,19 @@ if __name__ == "__main__":
             )
             host = transport.server(app)
             host.config.app = observer
-            await host.serve()
+
+            async def stop_requested():
+                while args.stop_file is not None and not args.stop_file.exists():
+                    await asyncio.sleep(0.1)
+                if args.stop_file is not None:
+                    host.should_exit = True
+
+            watcher = asyncio.create_task(stop_requested())
+            try:
+                await host.serve()
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
             observer.record(
                 event="shutdown",
                 sessions=len(app.sessions),
