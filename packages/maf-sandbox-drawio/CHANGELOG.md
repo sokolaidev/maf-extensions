@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.1...maf-sandbox-drawio-v0.4.2) (2026-10-05)
+
+
+### Documentation
+
+* **drawio:** release the root-owned work directory from [#1717](https://github.com/sokolaidev/maf-extensions/issues/1717) and document the export capability grants ([#1722](https://github.com/sokolaidev/maf-extensions/issues/1722)) ([6d9dfbb](https://github.com/sokolaidev/maf-extensions/commit/6d9dfbb6ba55e8e7b7db58db103a7ffb5bacfad3))
+
 ## [0.4.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.0...maf-sandbox-drawio-v0.4.1) (2026-10-05)
 
 
