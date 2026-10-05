@@ -104,7 +104,7 @@ Generation is deterministic, so the committed manifest's diff is the review surf
 
 ### Azure platform provider image
 
-[dependencies.opentofu-platform.policy.json](dependencies.opentofu-platform.policy.json) and its generated [manifest](dependencies.opentofu-platform.json) define a separate, opt-in OpenTofu image, tagged `maf-opentofu:1.12.6-platform-1`. The small seven-provider manifest stays independent. This policy explicitly approves the additional provider sources for this image alone and fixes one version per provider, including AzureRM 5.6.0; updating it requires a policy edit, regeneration and a new image revision.
+[dependencies.opentofu-platform.policy.json](dependencies.opentofu-platform.policy.json) and its generated [manifest](dependencies.opentofu-platform.json) define a separate, opt-in OpenTofu image, tagged `maf-opentofu:1.13.1-platform-1`. The small seven-provider manifest stays independent. This policy explicitly approves the additional provider sources for this image alone and fixes one version per provider, including AzureRM 5.6.0; updating it requires a policy edit, regeneration and a new image revision.
 
 | Providers | Pinned versions | Purpose |
 | --- | --- | --- |

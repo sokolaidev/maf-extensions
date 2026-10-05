@@ -71,7 +71,7 @@ The run prints `Reclaim failures this turn: N` from that handler's own count, an
 ## Prerequisites
 
 - **A Docker-compatible engine, reachable through the `docker` client.** Docker Desktop (macOS, Linux, Windows with WSL 2) or Docker Engine (Linux). `docker version` confirms the client can reach a running daemon.
-- **The `diagram-sandbox` image, built locally.** It is a Debian base with Graphviz and nothing else — see [`images/diagram-sandbox`](../../images/diagram-sandbox/). Build it once, from the repository root so the build context is that directory:
+- **The `diagram-sandbox` image, built locally.** It uses a digest-pinned Wolfi base with Graphviz — see [`images/diagram-sandbox`](../../images/diagram-sandbox/). Build it once, from the repository root so the build context is that directory:
 
   ```bash
   docker build -t diagram-sandbox:local images/diagram-sandbox

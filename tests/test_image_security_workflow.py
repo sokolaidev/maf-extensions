@@ -60,12 +60,10 @@ def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_pa
         check=True,
     )
     evidence = json.loads((tmp_path / "build.json").read_text())
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     assert output.read_text() == f"image_id={evidence['local_image_id']}\n"
     assert evidence["local_image_id"] == IMAGE_ID
-    assert (
-        evidence["source_commit"]
-        == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    )
+    assert evidence["source_commit"] == revision
     assert "not a registry manifest digest" in summary.read_text()
     assert evidence["run_url"] == "https://github.com/sokolaidev/maf-extensions/actions/runs/123"
 
