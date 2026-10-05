@@ -1,6 +1,6 @@
 # maf-extensions
 
-[![Tests](https://img.shields.io/github/actions/workflow/status/sokolaidev/maf-extensions/tests.yml?branch=main&label=tests)](https://github.com/sokolaidev/maf-extensions/actions/workflows/tests.yml) [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Package and Sandbox Validation](https://img.shields.io/github/actions/workflow/status/sokolaidev/maf-extensions/tests.yml?branch=main&label=validation)](https://github.com/sokolaidev/maf-extensions/actions/workflows/tests.yml) [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramework), maintained by [SOKOLAI BV](https://www.sokol.ai). **Not affiliated with or endorsed by Microsoft.** Everything here is experimental (0.x): each package warns on import, and every release before 1.0.0 may include breaking changes.
 

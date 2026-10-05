@@ -237,7 +237,7 @@ jobs:
           VERSION: ${{ steps.resolve.outputs.version }}
         run: python3 scripts/check_published_dependents_admit.py "$VERSION"
 
-      # The full gate again, on the exact commit being released. The Tests workflow already
+      # The full gate again, on the exact commit being released. The Package and Sandbox Validation workflow already
       # ran it on the branch, but a tag can point anywhere.
       - name: Sync workspace
         run: uv sync --locked

@@ -1,4 +1,4 @@
-name: Tests
+name: Package and Sandbox Validation
 
 # The gate is sharded across parallel jobs, joined by the required
 # `Python (pytest + ruff + pyright)` context. Docker live coverage runs after merge

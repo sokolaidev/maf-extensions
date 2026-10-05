@@ -42,7 +42,7 @@ The live probe creates a new private store, kills only its own host-call process
 
 ## Hosted Linux runner
 
-The opt-in `mxc_recovery` input on the Tests workflow builds the locked helper against the pinned MXC commit, requires usable KVM, downloads and verifies the fixed agent rootfs, then runs both native recovery and host publication probes. Missing KVM or any failed probe fails the job. The run retains reports, hashes and diagnostics for 14 days; checkpoint blobs and the session database are excluded.
+The opt-in `mxc_recovery` input on the Package and Sandbox Validation workflow builds the locked helper against the pinned MXC commit, requires usable KVM, downloads and verifies the fixed agent rootfs, then runs both native recovery and host publication probes. Missing KVM or any failed probe fails the job. The run retains reports, hashes and diagnostics for 14 days; checkpoint blobs and the session database are excluded.
 
 ```bash
 gh workflow run tests.yml --repo sokolaidev/maf-extensions --ref spike/1649-mxc-durable-publication -f mxc_recovery=true
