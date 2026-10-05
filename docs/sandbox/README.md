@@ -156,6 +156,21 @@ Host death needs a platform lifecycle policy or an independent operator sweep. N
 | [Deep Agents](../../packages/maf-sandbox-deepagents/README.md) | Use the router for Deep Agents command and file tools; MAF kinds and labels are not part of that adapter |
 | [TUI](../../packages/maf-sandbox-tui/README.md) | Inspect local application-owned instances and request coordinated deletion |
 
+## Development
+
+Run these commands from the repository root:
+
+```bash
+uv sync --locked
+uv run poe gate
+```
+
+The local gate runs tests, Ruff lint and formatting checks, strict type checks for every package, a separate type check for scripts, tests and samples, documentation-reference checks, and an implicit-string-concatenation check. CI additionally builds distributions, checks their metadata and installs wheels into clean environments; a passing local gate does not verify those steps.
+
+Network-dependent checks run separately: `uv run poe md-blocks` checks Python snippets in Markdown, `uv run poe sample-floors` checks samples against their declared core versions, and `uv run poe doc-trackers` checks documentation status rows against GitHub with a token. On Windows, use PowerShell 7 and native Python; see [Contributing](../../CONTRIBUTING.md#getting-set-up) for the portable workflow checks.
+
+Each package is self-contained and lives under `packages/`. Follow [writing a kind](kinds/writing-a-kind.md) for a workload and [writing a backend](backends/writing-a-backend.md) for an execution provider. [Contributing](../../CONTRIBUTING.md) covers the full workflow and boundary tests; [Releasing](../../RELEASING.md) and [maintainer guidance](../maintainers.md) cover publication. AI agents should read [AGENTS.md](../../AGENTS.md) first.
+
 ## Documentation map
 
 | Page | Read it for |
