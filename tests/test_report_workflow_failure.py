@@ -179,6 +179,7 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
                 "maf-sandbox-codeact",
                 "maf-sandbox-bicep",
                 "maf-sandbox-deepagents",
+                "maf-sandbox-drawio",
             },
             "conformance-live.yml": {"maf-sandbox", "maf-sandbox-acas"},
             "cleanup-live.yml": {"maf-sandbox-acas"},
