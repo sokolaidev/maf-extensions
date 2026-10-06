@@ -898,14 +898,6 @@ def refusal_evidence():
             "active": False,
             "sessions": 0,
         },
-        {
-            "event": "shutdown",
-            "boot": "refused",
-            "time_ns": 5,
-            "poisoned": True,
-            "active": False,
-            "sessions": 0,
-        },
     ]
 
 
@@ -914,7 +906,7 @@ def refusal_observation():
         "boot": "refused",
         "container": "orphan",
         "time_ns": 6,
-        "exit_code": 1,
+        "exit_code": 3,
         "paused": True,
         "sole_owned": True,
         "owner_unchanged": True,
@@ -929,7 +921,7 @@ def test_cleanup_refusal_requires_startup_failure_and_two_gateway_errors():
         "refused",
         "orphan",
         refusal_observation(),
-        [{"status": "error", "error": "fetch failed"}] * 2,
+        [{"status": "error", "error": 'bundle-mcp server "bicep" is not connected'}] * 2,
     )
     assert result["dispatches"] == 0 and result["gateway_turns_refused"] == 2
 
@@ -941,7 +933,7 @@ def test_cleanup_refusal_requires_startup_failure_and_two_gateway_errors():
         "missing_fault",
         "extra_fault",
         "missing_failure",
-        "missing_shutdown",
+        "shutdown",
         "wrong_boot",
         "wrong_orphan",
         "wrong_resource",
@@ -950,7 +942,7 @@ def test_cleanup_refusal_requires_startup_failure_and_two_gateway_errors():
         "active",
         "session",
         "early_failure",
-        "late_shutdown",
+        "late_failure",
         "startup_ready",
         "request",
         "response",
@@ -958,12 +950,12 @@ def test_cleanup_refusal_requires_startup_failure_and_two_gateway_errors():
 )
 def test_cleanup_refusal_rejects_incomplete_contradictory_or_uncorrelated_evidence(mutation):
     evidence = refusal_evidence()
-    indices = {"missing_start": 0, "missing_fault": 1, "missing_failure": 3, "missing_shutdown": 4}
+    indices = {"missing_start": 0, "missing_fault": 1, "missing_failure": 3}
     if mutation in indices:
         evidence.pop(indices[mutation])
     elif mutation == "extra_fault":
         evidence.append(evidence[1].copy())
-    elif mutation in {"startup_ready", "request", "response"}:
+    elif mutation in {"startup_ready", "request", "response", "shutdown"}:
         evidence.append({"event": mutation})
     else:
         index, field, value = {
@@ -972,10 +964,10 @@ def test_cleanup_refusal_rejects_incomplete_contradictory_or_uncorrelated_eviden
             "wrong_resource": (1, "resource", "other"),
             "ready": (3, "ready", True),
             "unpoisoned": (3, "poisoned", False),
-            "active": (4, "active", True),
+            "active": (3, "active", True),
             "session": (3, "sessions", 1),
             "early_failure": (3, "time_ns", 2),
-            "late_shutdown": (4, "time_ns", 7),
+            "late_failure": (3, "time_ns", 7),
         }[mutation]
         evidence[index][field] = value
     with pytest.raises(RuntimeError):
@@ -984,7 +976,7 @@ def test_cleanup_refusal_rejects_incomplete_contradictory_or_uncorrelated_eviden
             "refused",
             "orphan",
             refusal_observation(),
-            [{"status": "error", "error": "fetch failed"}] * 2,
+            [{"status": "error", "error": 'bundle-mcp server "bicep" is not connected'}] * 2,
         )
 
 
@@ -994,6 +986,7 @@ def test_cleanup_refusal_rejects_incomplete_contradictory_or_uncorrelated_eviden
         ("boot", "other"),
         ("container", "other"),
         ("exit_code", 0),
+        ("exit_code", 1),
         ("exit_code", 86),
         ("paused", False),
         ("sole_owned", False),
@@ -1012,7 +1005,7 @@ def test_cleanup_refusal_rejects_missing_host_proof(field, value):
             "refused",
             "orphan",
             observed,
-            [{"status": "error", "error": "fetch failed"}] * 2,
+            [{"status": "error", "error": 'bundle-mcp server "bicep" is not connected'}] * 2,
         )
 
 
@@ -1020,11 +1013,20 @@ def test_cleanup_refusal_rejects_missing_host_proof(field, value):
     "projections",
     [
         [],
-        [{"status": "error", "error": "fetch failed"}],
+        [{"status": "error", "error": "Unknown tool id"}] * 2,
+        [{"status": "error", "error": 'bundle-mcp server "bicep" is not connected'}],
         [projected(), projected()],
         [{"status": "error", "error": ""}] * 2,
-        [{"status": "error", "error": "fetch failed", "result": {}}] * 2,
-        [{"status": "error", "error": "fetch failed", "structuredContent": {}}] * 2,
+        [{"status": "error", "error": 'bundle-mcp server "bicep" is not connected', "result": {}}]
+        * 2,
+        [
+            {
+                "status": "error",
+                "error": 'bundle-mcp server "bicep" is not connected',
+                "structuredContent": {},
+            }
+        ]
+        * 2,
     ],
 )
 def test_cleanup_refusal_rejects_fabricated_or_missing_gateway_results(projections):

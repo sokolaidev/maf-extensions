@@ -162,27 +162,26 @@ def verify_cleanup_refusal(
     failures = [r for r in evidence if r.get("event") == "startup_failed"]
     stops = [r for r in evidence if r.get("event") == "shutdown"]
     require(
-        len(starts) == len(failures) == len(stops) == 1 and len(faults) == 2,
-        "Missing unique startup/shutdown or both refused cleanup attempts",
+        len(starts) == len(failures) == 1 and len(faults) == 2 and not stops,
+        "Missing failed startup or both refused cleanup attempts; unexpected shutdown",
     )
     require(
         bool(boot)
         and bool(container)
-        and all(r.get("boot") == boot for r in [*starts, *faults, *failures, *stops])
+        and all(r.get("boot") == boot for r in [*starts, *faults, *failures])
         and all(
             r.get("container") == container and r.get("resource") == "bicep-docker" for r in faults
         )
         and failures[0].get("ready") is False
         and all(
             r.get("poisoned") is True and r.get("active") is False and r.get("sessions") == 0
-            for r in [*failures, *stops]
+            for r in failures
         )
         and 0
         < starts[0].get("time_ns", 0)
         < faults[0].get("time_ns", 0)
         < faults[1].get("time_ns", 0)
         < failures[0].get("time_ns", 0)
-        < stops[0].get("time_ns", 0)
         < observed.get("time_ns", 0),
         "Cleanup refusal is not correlated with failed, poisoned startup",
     )
@@ -193,7 +192,7 @@ def verify_cleanup_refusal(
     require(
         observed.get("boot") == boot
         and observed.get("container") == container
-        and observed.get("exit_code") == 1
+        and observed.get("exit_code") == 3
         and all(
             observed.get(k) is True
             for k in (
@@ -211,7 +210,7 @@ def verify_cleanup_refusal(
         and all(
             p.get("status") == "error"
             and isinstance(p.get("error"), str)
-            and p["error"]
+            and 'bundle-mcp server "bicep" is not connected' in p["error"]
             and "result" not in p
             and "structuredContent" not in p
             for p in projections
@@ -830,12 +829,10 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         require(not owned(), "Owner resources remain after fixture shutdown")
         final = [r for r in records(transport) if r.get("event") == "shutdown"]
         require(
-            len(final) == 3
-            and sum(r.get("poisoned") is True for r in final) == 1
+            len(final) == 2
             and all(
                 r.get("sessions") == 0 and r.get("active") is False and r.get("poisoned") is False
                 for r in final
-                if r.get("poisoned") is not True
             ),
             "Final service shutdown was not clean",
         )
