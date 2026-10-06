@@ -399,8 +399,11 @@ class TestAPackageThatIsNoDependent:
         )
         assert check.names_core(wheel) is False
 
-    def test_the_core_in_any_shape_counts(self, tmp_path: Path):
-        wheel = _wheel(tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", ["maf-sandbox~=0.22"])
+    @pytest.mark.parametrize(
+        "requirement", ["maf-sandbox~=0.22", "maf_sandbox>=0.22,<0.23", "Maf.Sandbox>=0.22,<0.23"]
+    )
+    def test_the_core_in_any_shape_counts(self, tmp_path: Path, requirement: str):
+        wheel = _wheel(tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", [requirement])
         assert check.names_core(wheel) is True
 
     def test_the_cli_passes_such_a_package_without_running_anything(

@@ -125,10 +125,6 @@ _NOTES: Final[dict[str, str]] = {
     _ASSISTANT_TEXT: "[compacted: an earlier assistant reply]",
 }
 
-#: Ceiling on shed passes. Two is enough in practice; the bound exists so a mistake in the
-#: termination condition cannot become an infinite loop inside a chat client.
-_MAX_SHED_PASSES: Final[int] = 4
-
 #: Share of the tokens *behind* a collapse that the collapse must remove before it is worth
 #: making.
 #:
@@ -317,9 +313,10 @@ class AnchoredCompactionStrategy:
             # groups that were already small enough.
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
         # Shedding is repeated because each pass adds notes of its own, which can leave the
-        # prompt fractionally over the ceiling it just tried to meet. Bounded: every pass
-        # removes at least one group, and there are finitely many.
-        for _ in range(_MAX_SHED_PASSES):
+        # prompt over the ceiling it just tried to meet. It ends: a pass that sheds excludes at
+        # least one more group, excluded groups and notes are never shed, and the loop stops at
+        # the first pass that sheds nothing.
+        while True:
             if included_token_count(messages) <= ceiling:
                 break
             shed = self._shed(messages, _TOOL_CALL, ceiling=ceiling)

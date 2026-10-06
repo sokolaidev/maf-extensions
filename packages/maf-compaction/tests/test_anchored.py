@@ -587,6 +587,26 @@ def test_an_explicit_keep_tokens_is_not_exceeded(keep_tokens: int) -> None:
     assert sum(TOKENIZER.count_tokens(end) for end in (head, tail) if end) <= keep_tokens
 
 
+async def test_shedding_continues_while_each_pass_makes_progress() -> None:
+    """The notes a pass inserts can leave it over the ceiling, so passes repeat until none sheds."""
+    passes: list[bool] = []
+
+    class _OneGroupPerPass(AnchoredCompactionStrategy):
+        def _shed(self, messages: list[Message], kind: str, *, ceiling: int) -> bool:
+            # One token under the current size: the pass stops after its first group.
+            current = included_token_count(messages)
+            shed = super()._shed(messages, kind, ceiling=max(ceiling, current - 1))
+            passes.append(shed)
+            return shed
+
+    messages = _conversation(tool_turns=12, payload_chars=200)
+    strategy = _OneGroupPerPass(max_input_tokens=2_000, tokenizer=TOKENIZER, keep_tokens=10_000)
+    await strategy(messages)
+
+    assert len(passes) > 4, "the ceiling needs more groups shed than four passes shed"
+    assert included_token_count(messages) <= 2_000
+
+
 # region preservation
 
 

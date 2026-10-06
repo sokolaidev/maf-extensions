@@ -131,7 +131,7 @@ def _metadata(wheel: Path) -> str:
 
 #: A requirement on the core itself: `maf-sandbox` followed by a version operator, extras,
 #: whitespace or nothing — never a longer name such as `maf-sandbox-docker`.
-_NAMES_CORE = re.compile(rf"^Requires-Dist:\s*{re.escape(_CORE)}(?![A-Za-z0-9._-])")
+_REQUIRES_DIST_NAME = re.compile(r"^Requires-Dist:\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
 
 
 def names_core(wheel: Path) -> bool:
@@ -141,7 +141,11 @@ def names_core(wheel: Path) -> bool:
     no range to read off it; a wheel that names the core but not in the shape
     :func:`declared_range` reads is still refused there.
     """
-    return any(_NAMES_CORE.match(line) for line in _metadata(wheel).splitlines())
+    for line in _metadata(wheel).splitlines():
+        match = _REQUIRES_DIST_NAME.match(line)
+        if match and re.sub(r"[-_.]+", "-", match.group(1)).lower() == _CORE:
+            return True
+    return False
 
 
 def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:

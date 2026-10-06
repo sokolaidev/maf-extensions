@@ -14,9 +14,10 @@ three things in order.
    the code wiring the middleware reads to switch that on -- and the pass drops what each
    record covers. Existing records are left as they are.
 2. **The user half acts only if the record half was not enough.** It is judged at the same
-   line, against the prompt *as the record half left it*, and it runs in the boundary mode, so
-   a summary it wrote is kept as a boundary rather than re-summarised on the next pass. While
-   a record is due and still has time to arrive it is not judged at all: see below.
+   line, against the prompt *as the record half left it*, in the mode its caller set; in the
+   boundary mode, the measured one, a summary it wrote is kept as a boundary rather than
+   re-summarised on the next pass. While a record is due and still has time to arrive it is
+   not judged at all: see below.
 3. **A last-resort chain, started only when the prompt is still over the input budget.** Merge
    the records into one; merge the user summaries into one; rewrite the record harder, up to
    ``harder_attempts`` times; then the record half's fallback, which may drop narration only.
@@ -724,9 +725,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def user_folds(self) -> int:
         """:attr:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.user_folds`.
 
-        On this row the user half runs in the boundary mode and never folds on its own, so every
-        fold counted here is one the chain asked for -- :attr:`user_summaries_merged` -- or a
-        replay of one on the other list.
+        A user half in the boundary mode never folds on its own, so there every fold counted
+        here is one the chain asked for -- :attr:`user_summaries_merged` -- or a replay of one
+        on the other list. In the fold mode it also counts the user half's own folds.
         """
         return self.user_turns.user_folds
 
