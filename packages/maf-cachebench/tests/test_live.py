@@ -10482,3 +10482,13 @@ async def test_manual_fill_allows_zero_filler(monkeypatch: pytest.MonkeyPatch) -
         await run_live_comparison(
             build_parser().parse_args(_live_argv("--fill", "0", "--filler-tokens", "0"))
         )
+
+
+@pytest.mark.parametrize("option", ["placement", "narration"])
+@pytest.mark.parametrize("value", ["", "unknown"])
+@pytest.mark.parametrize("lookups", [{}, {"early": ("AA-0",)}])
+def test_scope_tools_reject_invalid_modes(
+    option: str, value: str, lookups: dict[str, tuple[str, ...]]
+) -> None:
+    with pytest.raises(ValueError, match=option):
+        make_scope_tools(lookups, 10, **{option: value})

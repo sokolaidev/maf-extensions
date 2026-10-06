@@ -1160,6 +1160,10 @@ def make_scope_tools(
     Returns:
         One callable per scope, named ``lookup_<scope>``.
     """
+    if placement not in ("spread", "buried", "head"):
+        raise ValueError(f"Unknown placement {placement!r}.")
+    if narration not in _INSTRUCTIONS_BY_NARRATION:
+        raise ValueError(f"Unknown narration {narration!r}.")
     tools: list[Callable[[], str]] = []
     for index, scope in enumerate(sorted(lookups)):
         codes = lookups[scope]

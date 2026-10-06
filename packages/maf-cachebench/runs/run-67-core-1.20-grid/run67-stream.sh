@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run 67: the final grid re-measured on agent-framework-core 1.20.0 (lab at f86e07248). All 20
+# Run 67: the final grid re-measured on agent-framework-core 1.20.0 (lab at [revision omitted]). All 20
 # strategies at 120,000 tokens, fills 0.9 / 1.5 / 3.0, five seeds, on gpt-5.6-luna (Foundry project
 # endpoint) and gpt-6-luna (azure-responses on the resource endpoint). Shape as run 63 (6 tool turns,
 # reply 384, output 2048, answer 12000). gpt-6-luna is priced with its cache-write rate and the

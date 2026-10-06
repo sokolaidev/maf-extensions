@@ -8,7 +8,6 @@
 uv run pytest -q packages/maf-cachebench/tests
 ```
 
-> `poe test-cachebench`, declared in `python/packages/lab`, runs the same suite from that > directory with coverage on, and the whole suite passes there too. One did not until > `test_narration_probe_declares_every_flag_it_reads` was changed to load > `samples/probe_narration.py` by file path: `samples` only resolves by name when the package > directory is on the path, which it is from here and was not from there.
 
 | file | tests | what it defends |
 | --- | ---: | --- |
@@ -143,7 +142,7 @@ Two other tests assert their own premise the same way — `test_the_recorded_cel
 
 **Nor the interaction with a real provider's cache.** Hit rates, minimum cacheable sizes, TTLs and intermittent engagement are provider behaviour, measured with the probes in `samples/` and recorded in [`README.md`](../cachebench.md) and [`RESULTS.md`](results.md).
 
-**Nor the framework's own strategies.** Their tests are upstream, in `python/packages/core/tests/core/test_compaction.py`. What is tested here is how this package *builds* them — that the `token_budget_*` variants share one ceiling, that `--budget-fraction` moves it, that `context_window` matches the harness's own retention default — not what they then do.
+**Nor the framework's own strategies.** Their tests are upstream, in the framework repository's compaction suite. What is tested here is how this package *builds* them — that the `token_budget_*` variants share one ceiling, that `--budget-fraction` moves it, that `context_window` matches the harness's own retention default — not what they then do.
 
 ---
 

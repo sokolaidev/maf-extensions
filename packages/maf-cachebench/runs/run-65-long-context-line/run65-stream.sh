@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run 65: does compacting below gpt-6-luna's 272K long-context line pay? 1M window, fill 0.4
 # (a ~400K conversation), trigger 0.2 (~200K, under the line), control against the two strategies
-# that held past the window. Long-context tier priced per request (a910c1809).
+# that held past the window. Long-context tier priced per request ([revision omitted]).
 # Usage: run65-stream.sh seed [seed ...]
 set -u
 S="/tmp"
