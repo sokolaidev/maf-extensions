@@ -667,12 +667,19 @@ def scan_artifact(monkeypatch):
         "run_attempt": 1,
         "updated_at": "2026-01-02T00:00:00Z",
     }
-    artifact = {"name": "image-security-diagram", "expired": False}
+    artifact = {
+        "name": "image-security-diagram",
+        "expired": False,
+        "created_at": "2026-01-01T23:59:30Z",
+    }
     files = {
         "build.json": {
             "profile": "diagram",
             "source_commit": SOURCE,
             "local_image_id": RECORD["imageId"],
+            "run_id": "123",
+            "run_attempt": "1",
+            "collected_at": "2026-01-01T23:59:15Z",
         },
         "sbom.syft.json": {
             "artifacts": [{"name": "graphviz", "type": "apk", "version": "2"}],
@@ -697,6 +704,8 @@ def scan_artifact(monkeypatch):
     def request(_self, endpoint):
         if "/workflows/image-security.yml/runs?" in endpoint:
             return encode({"total_count": 1, "workflow_runs": [run]})
+        if "/jobs?" in endpoint:
+            return encode({"total_count": 1, "jobs": [profile_job(run)]})
         return encode(
             {"total_count": 1, "artifacts": [artifact]} if "/artifacts?" in endpoint else run
         )
@@ -710,6 +719,102 @@ def scan_artifact(monkeypatch):
     monkeypatch.setattr(GitHub, "request", request)
     monkeypatch.setattr(tracker.subprocess, "run", download)
     return run, artifact, files
+
+
+def profile_job(run, **updates):
+    return {
+        "id": run["id"],
+        "run_id": run["id"],
+        "run_attempt": 1,
+        "name": "Image security (diagram)",
+        "status": "completed",
+        "started_at": "2026-01-01T23:59:00Z",
+        "completed_at": run["updated_at"],
+    } | updates
+
+
+@pytest.mark.parametrize("newer_scan", [False, True])
+def test_partial_rerun_does_not_refresh_retained_profile_evidence(
+    scan_artifact, monkeypatch, tmp_path, newer_scan
+):
+    run, artifact, _ = scan_artifact
+    producer = profile_job(run)
+    run.update(run_attempt=2, updated_at="2026-01-04T00:00:00Z")
+    rerun = profile_job(run, id=999, run_attempt=2, name="Image security (bicep)")
+    other = run | {"id": 124, "run_attempt": 1, "updated_at": "2026-01-03T00:00:00Z"}
+    original = GitHub.request
+
+    def request(self, endpoint):
+        if "/workflows/" in endpoint:
+            rows = [run, other] if newer_scan else [run]
+            return encode({"total_count": len(rows), "workflow_runs": rows})
+        if "/runs/123/jobs?" in endpoint:
+            return encode({"total_count": 2, "jobs": [producer, rerun]})
+        if "/runs/124/jobs?" in endpoint:
+            return encode({"total_count": 1, "jobs": [profile_job(other)]})
+        if "/runs/124/artifacts?" in endpoint:
+            return encode({"total_count": 1, "artifacts": [artifact]})
+        return original(self, endpoint)
+
+    monkeypatch.setattr(GitHub, "request", request)
+    result = tracker.candidates(GitHub(), "123", tmp_path)
+    if newer_scan:
+        assert result == {}
+    else:
+        assert result["diagram"]["observedAt"] == producer["completed_at"]
+        assert result["diagram"]["evidence"].endswith("/attempts/1")
+
+
+def test_paths_and_component_names_cannot_escape_issue_code_spans():
+    path = "images/diagram-sandbox/a` @unexpected **bold**.txt"
+    observed = candidate()
+    observed["components"][0][1] = "a` @unexpected **bold**"
+    text = tracker.body("diagram", desired(changed=[path], observed=observed))
+    assert f"`` {path} ``" in text
+    assert "`` a` @unexpected **bold** 2 ``" in text
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("run_id", "other"),
+        ("run_attempt", "2"),
+        ("run_attempt", "0"),
+        ("collected_at", "2026-01-03T00:00:00Z"),
+    ],
+)
+def test_candidate_attempt_identity_must_match_a_producing_job(
+    scan_artifact, tmp_path, field, value
+):
+    _, _, files = scan_artifact
+    files["build.json"][field] = value
+    with pytest.raises(ValueError, match="valid candidate evidence"):
+        tracker.candidates(GitHub(), "123", tmp_path)
+
+
+def test_artifact_creation_must_fall_within_its_producing_job(scan_artifact, tmp_path):
+    _, artifact, _ = scan_artifact
+    artifact["created_at"] = "2026-01-03T00:00:00Z"
+    with pytest.raises(ValueError, match="valid candidate evidence"):
+        tracker.candidates(GitHub(), "123", tmp_path)
+
+
+def test_failed_rerun_of_same_profile_supersedes_its_retained_artifact(
+    scan_artifact, monkeypatch, tmp_path
+):
+    run, _, _ = scan_artifact
+    producer = profile_job(run)
+    run.update(run_attempt=2, updated_at="2026-01-03T00:00:00Z", conclusion="failure")
+    failed = profile_job(run, id=999, run_attempt=2)
+    original = GitHub.request
+
+    def request(self, endpoint):
+        if "/jobs?" in endpoint:
+            return encode({"total_count": 2, "jobs": [producer, failed]})
+        return original(self, endpoint)
+
+    monkeypatch.setattr(GitHub, "request", request)
+    assert tracker.candidates(GitHub(), "123", tmp_path) == {}
 
 
 def test_candidate_reports_are_validated_against_source_and_image(scan_artifact, tmp_path):
@@ -757,6 +862,7 @@ def test_no_issue_observation_still_prevents_older_scan_creating_request(
     assert optional_desired(observed=observed, released=released) is None
     newer = copy.deepcopy(run)
     run.update(id=122, updated_at="2026-01-03T00:00:00Z")
+    files["build.json"]["run_id"] = "122"
     files["sbom.syft.json"]["artifacts"][0]["version"] = "3"
 
     def request(_self, endpoint):
@@ -764,7 +870,10 @@ def test_no_issue_observation_still_prevents_older_scan_creating_request(
             return encode({"total_count": 2, "workflow_runs": [newer, run]})
         if "/jobs?" in endpoint:
             return encode(
-                {"total_count": 1, "jobs": [{"id": 77, "name": "Image security (diagram)"}]}
+                {
+                    "total_count": 1,
+                    "jobs": [profile_job(run if "/runs/122/" in endpoint else newer)],
+                }
             )
         if "/artifacts?" in endpoint:
             return encode({"total_count": 1, "artifacts": [artifact]})
@@ -803,12 +912,15 @@ def test_scan_history_supersession_is_scoped_to_trusted_completed_profiles(
         return encode(
             {
                 "total_count": 1,
-                "jobs": [{"id": 77, "name": f"Image security ({profile})"}],
+                "jobs": [profile_job(newer, name=f"Image security ({profile})")],
             }
         )
 
     monkeypatch.setattr(GitHub, "request", request)
-    assert tracker.newer_profiles(GitHub(), run) == expected
+    assert (
+        tracker.newer_profiles(GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES})
+        == expected
+    )
 
 
 @pytest.mark.parametrize("damage", ["none", "missing", "duplicate", "changed-count"])
@@ -830,10 +942,13 @@ def test_scan_history_paginates_and_rejects_incomplete_ordering(scan_artifact, m
 
     monkeypatch.setattr(GitHub, "request", request)
     if damage == "none":
-        assert tracker.newer_profiles(GitHub(), run) == set()
+        assert (
+            tracker.newer_profiles(GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES})
+            == set()
+        )
     else:
         with pytest.raises(ValueError, match="history"):
-            tracker.newer_profiles(GitHub(), run)
+            tracker.newer_profiles(GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES})
     assert len(seen) == 2
 
 
@@ -851,6 +966,8 @@ def test_failed_profile_without_artifact_supersedes_older_scan(
             return encode({"total_count": 2, "workflow_runs": [newer, run]})
         if "/runs/124/artifacts?" in endpoint:
             return encode({"total_count": 0, "artifacts": []})
+        if "/runs/123/jobs?" in endpoint:
+            return encode({"total_count": 1, "jobs": [profile_job(run)]})
         if "/runs/124/jobs?" in endpoint:
             return encode(
                 {
@@ -859,6 +976,7 @@ def test_failed_profile_without_artifact_supersedes_older_scan(
                         {
                             "id": 77,
                             "name": "Image security (diagram)",
+                            "completed_at": newer["updated_at"],
                             "steps": [{"name": failed_step, "conclusion": "failure"}],
                         }
                     ],
@@ -888,9 +1006,7 @@ def test_profile_job_history_is_complete_across_all_attempts(scan_artifact, monk
         if endpoint.endswith("page=1"):
             return encode({"total_count": 101, "jobs": first})
         assert endpoint.endswith("page=2")
-        last = (
-            first[0] if damage == "duplicate" else {"id": 101, "name": "Image security (diagram)"}
-        )
+        last = first[0] if damage == "duplicate" else profile_job(newer, id=101)
         return encode(
             {
                 "total_count": 102 if damage == "changed-count" else 101,
@@ -900,7 +1016,9 @@ def test_profile_job_history_is_complete_across_all_attempts(scan_artifact, monk
 
     monkeypatch.setattr(GitHub, "request", request)
     if damage == "none":
-        assert tracker.newer_profiles(GitHub(), run) == {"diagram"}
+        assert tracker.newer_profiles(
+            GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES}
+        ) == {"diagram"}
     else:
         with pytest.raises(ValueError, match="history"):
-            tracker.newer_profiles(GitHub(), run)
+            tracker.newer_profiles(GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES})

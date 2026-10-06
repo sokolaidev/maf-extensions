@@ -58,6 +58,8 @@ def main() -> None:
     details = json.loads((directory / "image-inspect.json").read_text())
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     evidence = record(details, revision, os.environ["PROFILE"])
+    evidence["run_id"] = os.environ["GITHUB_RUN_ID"]
+    evidence["run_attempt"] = os.environ["GITHUB_RUN_ATTEMPT"]
     evidence["run_url"] = (
         f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
         f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"

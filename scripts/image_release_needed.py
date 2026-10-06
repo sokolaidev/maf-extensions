@@ -16,6 +16,7 @@ from container_release import REPOSITORY, ROOT, read, scan_result, timestamp
 from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
 from image_security_evidence import verify_inventory
+from report_stuck_releases import as_code
 from select_image_security import PROFILES, SCRIPT_INPUTS, affected, metadata_only
 from verify_container_release import verify_identity
 
@@ -134,8 +135,10 @@ def action_listing(client: GitHub, endpoint: str, field: str) -> list[dict[str, 
     return list(items.values())
 
 
-def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
+def newer_profiles(client: GitHub, run: dict[str, Any], observed_at: dict[str, str]) -> set[str]:
     """Reject superseded scan events even when no issue exists to retain their ordering."""
+    if not observed_at:
+        return set()
     # Unfiltered listing avoids GitHub's 1,000-result cap on run searches.
     runs = action_listing(
         client, f"repos/{REPOSITORY}/actions/workflows/image-security.yml/runs", "workflow_runs"
@@ -151,7 +154,7 @@ def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
             or other.get("event") not in {"schedule", "workflow_dispatch"}
             or other.get("path") != ".github/workflows/image-security.yml"
             or other.get("status") != "completed"
-            or timestamp(other["updated_at"]) < timestamp(run["updated_at"])
+            or timestamp(other["updated_at"]) < min(timestamp(at) for at in observed_at.values())
         ):
             continue
         jobs = action_listing(
@@ -159,8 +162,12 @@ def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
         )
         if not jobs:
             raise ValueError("Completed scan has no job history")
-        names = {job["name"] for job in jobs}
-        result.update(profile for profile in PROFILES if f"Image security ({profile})" in names)
+        for job in jobs:
+            for profile, at in observed_at.items():
+                if job["name"] == f"Image security ({profile})" and timestamp(
+                    job["completed_at"]
+                ) >= timestamp(at):
+                    result.add(profile)
     return result
 
 
@@ -182,10 +189,10 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
         return {}
     result = {}
     artifacts = run_artifacts(client, run_id)
-    superseded = newer_profiles(client, run)
+    jobs = action_listing(
+        client, f"repos/{REPOSITORY}/actions/runs/{run_id}/jobs?filter=all", "jobs"
+    )
     for profile in PROFILES:
-        if profile in superseded:
-            continue
         matches = [a for a in artifacts if a["name"] == f"image-security-{profile}"]
         if not matches:
             continue
@@ -212,16 +219,38 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
             build = read(target / "build.json")
             if build["profile"] != profile or build["source_commit"] != run["head_sha"]:
                 raise ValueError("Candidate source does not match the scan run")
+            if build["run_id"] != run_id or not re.fullmatch(r"[1-9][0-9]*", build["run_attempt"]):
+                raise ValueError("Candidate does not identify its producing attempt")
+            profile_jobs = [job for job in jobs if job["name"] == f"Image security ({profile})"]
+            producers = [
+                job for job in profile_jobs if str(job["run_attempt"]) == build["run_attempt"]
+            ]
+            if len(producers) != 1:
+                raise ValueError("Candidate has no unique producing job")
+            producer = producers[0]
+            if producer["status"] != "completed" or str(producer["run_id"]) != run_id:
+                raise ValueError("Candidate producing job is incomplete or unrelated")
+            started, completed = (
+                timestamp(producer["started_at"]),
+                timestamp(producer["completed_at"]),
+            )
+            if not all(
+                started <= timestamp(at) <= completed
+                for at in (build["collected_at"], matches[0]["created_at"])
+            ):
+                raise ValueError("Candidate evidence was not collected during its producing job")
+            if any(job["run_attempt"] > producer["run_attempt"] for job in profile_jobs):
+                continue
             inventory = components(read(target / "sbom.syft.json"), build["local_image_id"])
             assessment = scan_result(
-                read(target / "grype.json"), build["local_image_id"], run["updated_at"]
+                read(target / "grype.json"), build["local_image_id"], producer["completed_at"]
             )
             result[profile] = {
                 "components": inventory,
                 "assessment": assessment,
                 "source": run["head_sha"],
-                "observedAt": run["updated_at"],
-                "evidence": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{run['run_attempt']}",
+                "observedAt": producer["completed_at"],
+                "evidence": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{producer['run_attempt']}",
             }
         except (OSError, ValueError, KeyError, TypeError) as error:
             if run.get("conclusion") == "success":
@@ -230,7 +259,10 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
                 ) from error
             # A failed scan is handled by its workflow's operational failure tracker.
             print(f"{profile}: candidate evidence unavailable: {error}")
-    return result
+    superseded = newer_profiles(
+        client, run, {profile: value["observedAt"] for profile, value in result.items()}
+    )
+    return {profile: value for profile, value in result.items() if profile not in superseded}
 
 
 def desired(
@@ -341,22 +373,23 @@ def body(profile: str, state: dict[str, Any]) -> str:
     if "source" in reasons:
         source = reasons["source"]
         details.append(
-            f"Build inputs changed at `{source['commit']}`: "
-            + ", ".join(f"`{p}`" for p in source["paths"])
+            f"Build inputs changed at {as_code(source['commit'])}: "
+            + ", ".join(as_code(p) for p in source["paths"])
         )
     if "components" in reasons:
         for change in ("added", "removed"):
             rows = reasons["components"][change]
             details.append(
                 f"Components {change} ({len(rows)}): "
-                + ", ".join(f"`{r[1]} {r[2]}`" for r in rows[:40])
+                + ", ".join(as_code(f"{r[1]} {r[2]}") for r in rows[:40])
             )
     if "vulnerabilities" in reasons:
         value = reasons["vulnerabilities"]
         details.append(
             "High/Critical findings (including unfixed): "
             + ", ".join(
-                f"`{f['id']}` ({f['severity']}, {f['fix']['state']})" for f in value["findings"]
+                f"{as_code(f['id'])} ({as_code(f['severity'])}, {as_code(f['fix']['state'])})"
+                for f in value["findings"]
             )
         )
         details.append(f"[Monitoring evidence]({value['evidence']}).")
@@ -364,7 +397,7 @@ def body(profile: str, state: dict[str, Any]) -> str:
         details.append(
             "Candidate blockers: "
             + ", ".join(
-                f"`{f['id']}` ({f['severity']}, {f['fix']['state']})"
+                f"{as_code(f['id'])} ({as_code(f['severity'])}, {as_code(f['fix']['state'])})"
                 for f in state["candidateFindings"]
             )
         )
@@ -376,7 +409,7 @@ def body(profile: str, state: dict[str, Any]) -> str:
     text = (
         f"{MARKER}{profile} -->\n<!-- image-release-state\n{state_json}\n-->\n\n"
         "**Is your feature request related to a problem? Please describe.**\n\n"
-        f"Profile: `{profile}`. Current release: `{state['currentVersion']}` at `{state['currentDigest']}`.\n\n"
+        f"Profile: {as_code(profile)}. Current release: {as_code(state['currentVersion'])} at {as_code(state['currentDigest'])}.\n\n"
         + "\n\n".join(details)
         + "\n\n**Describe the solution you'd like**\n\n"
         + (
