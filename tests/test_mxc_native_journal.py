@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -406,3 +407,81 @@ def test_relative_helper_and_startup_are_bound_before_changing_child_directory(
     assert all(
         Path(command[0]).is_absolute() and Path(command[2]).is_absolute() for command in launches
     )
+
+
+@pytest.mark.parametrize("output_limit", [1, 2, 3, 100])
+def test_serialized_output_must_fit_before_new_admission(tmp_path, monkeypatch, output_limit):
+    envelope = json.dumps(
+        {
+            "console_base64": "A" * (4 * ((output_limit + 2) // 3)),
+            "output": {
+                "limit_bytes": output_limit,
+                "retained_bytes": output_limit,
+                "omitted_bytes": 2**64 - 1,
+                "omitted_bytes_saturated": False,
+                "truncated": True,
+            },
+        },
+        sort_keys=True,
+    ).encode()
+    limits = replace(LIMITS, result_bytes=len(envelope) - 1)
+    budget = replace(SCRATCH, bytes=4 * store.CHUNK, store_bytes=8 * store.CHUNK, entries=2048)
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits) as db:
+
+        def unexpected(*args, **kwargs):
+            pytest.fail("helper must not execute for an unpublishable result bound")
+
+        monkeypatch.setattr(shared, "execute", unexpected)
+        with pytest.raises(store.Refused, match="serialized result"):
+            shared.call(
+                db, "a", b"code", tmp_path / "helper", tmp_path / "startup", budget, output_limit
+            )
+        assert db.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
+        assert db.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+        assert scratch_usage(db) == 0
+        assert db.begin("a", b"code") is None
+        checkpoint = tmp_path / "checkpoint"
+        checkpoint.mkdir()
+        (checkpoint / "index.json").write_bytes(b"checkpoint")
+        db.commit("a", checkpoint, b"saved")
+        assert (
+            shared.call(
+                db, "a", b"code", tmp_path / "missing", tmp_path / "missing", budget, output_limit
+            )
+            == b"saved"
+        )
+
+
+@pytest.mark.parametrize("output_limit", [1, 2, 3, 100])
+def test_serialized_output_exact_bound_can_publish(tmp_path, monkeypatch, output_limit):
+    envelope = json.dumps(
+        {
+            "console_base64": "A" * (4 * ((output_limit + 2) // 3)),
+            "output": {
+                "limit_bytes": output_limit,
+                "retained_bytes": output_limit,
+                "omitted_bytes": 2**64 - 1,
+                "omitted_bytes_saturated": False,
+                "truncated": True,
+            },
+        },
+        sort_keys=True,
+    ).encode()
+    limits = replace(LIMITS, result_bytes=len(envelope))
+    budget = replace(SCRATCH, bytes=4 * store.CHUNK, store_bytes=8 * store.CHUNK, entries=2048)
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits) as db:
+
+        def finish(helper, base, work, *args, **kwargs):
+            (work / "candidate").mkdir()
+            (work / "candidate" / "index.json").write_bytes(b"checkpoint")
+            db.db.execute("DELETE FROM launches")
+            return envelope
+
+        monkeypatch.setattr(shared, "execute", finish)
+        monkeypatch.setattr(native.NativeJournal, "reclaim", lambda *args: None)
+        assert (
+            shared.call(
+                db, "a", b"code", tmp_path / "helper", tmp_path / "startup", budget, output_limit
+            )
+            == envelope
+        )

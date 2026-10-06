@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .host_call import execute
+from .host_call import bounded_result_size, execute
 from .host_store import CHUNK, Refused
 from .native_journal import NativeJournal
 from .shared_store import PATH_BYTES, ScratchLimits, SharedStore
@@ -27,6 +27,8 @@ def call(
     existing = store.db.execute(
         "SELECT 1 FROM calls WHERE session=? AND id=?", (store.session, call_id)
     ).fetchone()
+    if existing is None and bounded_result_size(output_limit) > store.limits.result_bytes:
+        raise Refused("maximum serialized result exceeds the result allowance")
     if existing is None and (scratch.bytes < minimum_bytes or scratch.entries < minimum_entries):
         raise Refused("scratch allowance cannot cover restore, bounded export and control files")
     saved = store.begin(call_id, code, scratch=scratch)

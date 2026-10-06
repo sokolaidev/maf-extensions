@@ -769,3 +769,53 @@ def test_failed_admission_preserves_previously_committed_final_grant(tmp_path):
         clock.monotonic += store.SECOND
         with pytest.raises(store.Refused, match="result_expired"):
             db.begin("a", b"code")
+
+
+@pytest.mark.parametrize("reopen", [False, True])
+def test_expiry_uses_indexed_order_on_new_and_existing_stores(tmp_path, reopen):
+    root = tmp_path / "db"
+    if reopen:
+        with store.SharedStore(root, "one", PROFILE, LIMITS, Clock()) as db:
+            for name in ("calls_expiry", "calls_uncertain"):
+                db.db.execute(f"DROP INDEX IF EXISTS {name}")
+    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock()) as db:
+        queries = []
+        db.db.set_trace_callback(queries.append)
+        db.expire(limit=1)
+        db.db.set_trace_callback(None)
+        query = next(q for q in queries if q.startswith("SELECT id,expires,"))
+        plan = " ".join(r[3] for r in db.db.execute("EXPLAIN QUERY PLAN " + query))
+        assert "calls_expiry" in plan
+        assert "TEMP B-TREE" not in plan
+        assert "expires<?" in plan
+
+
+def test_uncertainty_marks_only_unexpired_unmarked_rows_and_retries_rollback(tmp_path):
+    clock = Clock()
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock) as db:
+        publish(db, tmp_path / "a", call="a")
+        publish(db, tmp_path / "b", call="b")
+        db.db.execute("UPDATE calls SET expired=1 WHERE id='a'")
+        clock.utc -= 2 * store.SECOND
+        with pytest.raises(RuntimeError):
+            with db._transaction():
+                db._observe()
+                raise RuntimeError("rollback")
+        assert row(db, "b")["uncertain"] == 0
+        queries = []
+        db.db.set_trace_callback(queries.append)
+        with db._transaction():
+            db._observe()
+        assert row(db, "a")["uncertain"] == 0
+        assert row(db, "b")["uncertain"] == 1
+        changed = db.db.total_changes
+        with db._transaction():
+            db._observe()
+        assert db.db.total_changes == changed
+        db.db.set_trace_callback(None)
+        query = next(q for q in queries if q.startswith("UPDATE calls SET uncertain"))
+        plan = " ".join(r[3] for r in db.db.execute("EXPLAIN QUERY PLAN " + query))
+        assert "calls_uncertain" in plan
+        assert "uncertain=?" in plan
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock) as db:
+        assert row(db, "a")["uncertain"] == 0

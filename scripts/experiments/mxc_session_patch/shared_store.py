@@ -194,6 +194,12 @@ class SharedStore:
                         self.db.execute(
                             "INSERT INTO settings VALUES(1, ?, ?)", (VERSION, limits.store_quota)
                         )
+                    self.db.execute(
+                        "CREATE INDEX IF NOT EXISTS calls_expiry ON calls(session,status,expired,expires,id)"
+                    )
+                    self.db.execute(
+                        "CREATE INDEX IF NOT EXISTS calls_uncertain ON calls(session,status,expired,uncertain)"
+                    )
                     if (
                         self.db.execute("SELECT quota FROM settings").fetchone()[0]
                         != limits.store_quota
@@ -243,7 +249,7 @@ class SharedStore:
                     (session,),
                 )
                 self.db.execute(
-                    "UPDATE calls SET uncertain=1 WHERE session=? AND status='committed'",
+                    "UPDATE calls SET uncertain=1 WHERE session=? AND status='committed' AND expired=0 AND uncertain=0",
                     (session,),
                 )
         except BaseException:
@@ -318,7 +324,7 @@ class SharedStore:
             self.uncertain = True
         if self.uncertain:
             self.db.execute(
-                "UPDATE calls SET uncertain=1 WHERE session=? AND status='committed'",
+                "UPDATE calls SET uncertain=1 WHERE session=? AND status='committed' AND expired=0 AND uncertain=0",
                 (self.session,),
             )
         self.last_utc = utc

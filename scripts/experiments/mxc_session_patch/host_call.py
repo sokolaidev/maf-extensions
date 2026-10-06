@@ -63,6 +63,21 @@ def chart_data(combined: str) -> dict[str, str]:
     return {"chart.png": base64.b64encode(b"".join(chunks)).decode("ascii")} if finished else {}
 
 
+def bounded_result_size(limit: int) -> int:
+    """Maximum serialized console envelope, including base64 expansion and counters."""
+    envelope = {
+        "console_base64": "",
+        "output": {
+            "limit_bytes": limit,
+            "retained_bytes": limit,
+            "omitted_bytes": 2**64 - 1,
+            "omitted_bytes_saturated": False,
+            "truncated": True,
+        },
+    }
+    return len(json.dumps(envelope, sort_keys=True).encode()) + 4 * ((limit + 2) // 3)
+
+
 def bounded_result(report: Path, limit: int) -> dict[str, object]:
     """Validate host control separately from the bounded console payload."""
     if report.stat().st_size > 1024:
