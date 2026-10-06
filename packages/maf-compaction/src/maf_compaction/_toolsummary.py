@@ -1965,7 +1965,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 
 
 class ToolResultRecallMiddleware(ChatMiddleware):
-    """Force the recall call once, so phase 2 has something to anchor on.
+    """Force recall calls when phase 2 needs written records to anchor on.
 
     Serves one conversation. This middleware, its gate and the strategy it is paired with each
     hold that conversation's decisions on the instance, so an agent serving several sessions
@@ -1987,15 +1987,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         trigger_fraction: Fraction of the ceiling at which the record is forced. Comfortably
             below the strategy's fallback threshold, because the decision is made one call
             late -- see :meth:`process`. Defaults to :data:`DEFAULT_TRIGGER_FRACTION`, the
-            same constant the strategy defaults to, so the two halves cannot silently disagree
-            about when a record is wanted.
+            same default as the strategy. Keep both values aligned when overriding it.
         repeat_records: Let the size trigger ask again once there is new tool work to record.
-            **On by default.** Off, the strategy compacts exactly once: the first record is written
-            when the prompt passes the trigger, and every tool result after it is never recorded
-            and, since it is held from the fallback, never shortened, so a conversation that keeps
-            going grows until it passes the window -- at three times the window it overflows on
-            every seed of every model measured. Off is right only for a conversation that ends soon
-            after it first outgrows its window, which is not a default a framework can assume.
+            **On by default.** Off, the size trigger asks only for the first record.
+            ``max_groups_before_record`` and ``reforce`` can still ask for later records.
+            Without those triggers, new tool results remain unrecorded and protected from
+            fallback, so an ongoing conversation can outgrow its window.
 
             What on costs where one record is already complete: a second one is duplication,
             and duplication here is preserved, unshrinkable prompt: on a model whose records
@@ -2010,18 +2007,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             trigger reading size alone would therefore pin every remaining call in the run.
             What re-arms it is new *material* -- see :meth:`_record_due` for the rule, which is
             stated there once and nowhere else.
-
-            This governs the size trigger only. ``max_groups_before_record`` is a caller
-            asking for repeats outright, so it keeps forcing them whatever this says.
         record_max_tokens: Cap put on the forced call's response, and on no other call.
             ``None`` leaves whatever cap the run already sets, so the record inherits the cap
             sized for an ordinary answer and a record asked to summarise everything has no
             bound of its own at all.
         max_groups_before_record: How many tool-call groups one record may be asked to cover
-            before another is forced. ``None`` switches this bound off and leaves the size
-            trigger as the only thing that asks. It is a second trigger beside
+            before another is forced. ``None`` switches only this bound off; the size trigger
+            and ``reforce`` still apply. It is a second trigger beside
             ``trigger_fraction`` rather than a replacement for it: whichever fires first
-            forces the call. It is a bound, not a policy: whether records repeat at all is
+            forces the call. This bound can force repeated records independently of
             ``repeat_records``.
 
             It exists because coverage does not scale with how much there is to cover.
@@ -2239,12 +2233,6 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if forced_this_call:
             # Replaced rather than mutated: options may be shared with the caller's own dict,
             # and pinning a tool choice into it would outlive this call.
-            # The tool is offered on this call and no other. Registering it on the agent
-            # would put its schema in every request, and its description reads as sensible
-            # hygiene right after a lookup, so a model calls it unprompted and the record
-            # reflects the model's initiative rather than this middleware. Options replace the
-            # tool list rather than adding to it, so offering it here also hides everything
-            # else, which is harmless on a call whose only purpose is to make this one call.
             self.arm()
             options: dict[str, Any] = {
                 **dict(context.options or {}),
