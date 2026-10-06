@@ -374,7 +374,7 @@ def commit(root, changes):
     tracker.git(
         root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "test"
     )
-    return tracker.git(root, "rev-parse", "HEAD")
+    return tracker.git(root, "rev-parse", "HEAD").strip()
 
 
 def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependencies(tmp_path):
@@ -404,6 +404,48 @@ def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependenc
         tmp_path, payload, prepared, "terraform-prepared"
     )
     assert tracker.changed_inputs(tmp_path, payload, prepared, "diagram") == []
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["caf\u00e9.txt", "line\nbreak", "cr\rname", "crlf\r\nname", "tab\tname", "trailing "],
+)
+def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_path, filename):
+    tracker.git(tmp_path, "init")
+    base = commit(tmp_path, {"README.md": "baseline"})
+
+    def object_id(*args, data):
+        return subprocess.check_output(["git", *args], input=data, cwd=tmp_path).decode().strip()
+
+    blob = object_id("hash-object", "-w", "--stdin", data=b"changed input")
+    tree = object_id("mktree", "-z", data=f"100644 blob {blob}\t{filename}\0".encode())
+    for directory in ("diagram-sandbox", "images"):
+        tree = object_id("mktree", "-z", data=f"040000 tree {tree}\t{directory}\0".encode())
+    head = tracker.git(
+        tmp_path,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit-tree",
+        tree,
+        "-p",
+        base,
+        "-m",
+        "input change",
+    ).strip()
+    path = f"images/diagram-sandbox/{filename}"
+    changed = tracker.changed_inputs(tmp_path, base, head, "diagram")
+    assert changed == [path]
+    previous = desired(changed=[path])
+    result = desired(record=replacement(), changed=changed, previous=previous)
+    assert not result["resolved"]
+
+
+def test_git_helper_preserves_output_whitespace(tmp_path):
+    tracker.git(tmp_path, "init")
+    tracker.git(tmp_path, "config", "test.value", " value \t")
+    assert tracker.git(tmp_path, "config", "--get", "test.value") == " value \t\n"
 
 
 def test_ci_has_no_automatic_image_builds_and_tracker_cannot_publish():

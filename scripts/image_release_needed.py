@@ -30,7 +30,7 @@ WORKFLOWS = {
 
 def git(root: Path, *args: str) -> str:
     """Read the checked-out source without executing candidate code."""
-    return subprocess.check_output(["git", *args], cwd=root, text=True, encoding="utf-8").strip()
+    return subprocess.check_output(["git", *args], cwd=root).decode("utf-8")
 
 
 def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
@@ -38,7 +38,8 @@ def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
     for revision in (base, head):
         if not re.fullmatch(r"[0-9a-f]{40}", revision):
             raise ValueError("Invalid comparison commit")
-    paths = git(root, "diff", "--name-only", "--no-renames", base, head, "--").splitlines()
+    output = git(root, "diff", "--name-only", "--no-renames", "-z", base, head, "--")
+    paths = [path for path in output.split("\0") if path]
     ignored = metadata_only(root, base, head, paths)
     result = []
     for path in paths:
@@ -388,7 +389,7 @@ def main() -> None:
         print("No completed image releases; no replacement requests to reconcile.")
         return
     issues = client.pages(f"repos/{REPOSITORY}/issues?state=all")
-    source = git(ROOT, "rev-parse", "HEAD")
+    source = git(ROOT, "rev-parse", "HEAD").strip()
     with tempfile.TemporaryDirectory(prefix="maf-release-requests-") as temporary:
         root = Path(temporary)
         observed = candidates(client, os.environ.get("TRIGGER_RUN_ID", ""), root / "candidates")
@@ -425,7 +426,9 @@ def main() -> None:
             if candidate and changed_inputs(ROOT, candidate["source"], source, profile):
                 candidate = None
             required_source = (
-                git(ROOT, "log", "-1", "--format=%H", source, "--", *changed) if changed else source
+                git(ROOT, "log", "-1", "--format=%H", source, "--", *changed).strip()
+                if changed
+                else source
             )
             state = desired(record, released, changed, required_source, candidate, previous)
             if state is not None:
