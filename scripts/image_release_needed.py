@@ -109,34 +109,41 @@ def run_artifacts(client: GitHub, run_id: str) -> list[dict[str, Any]]:
     return listing["artifacts"]
 
 
-def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
-    """Reject superseded scan events even when no issue exists to retain their ordering."""
-    runs = {}
+def action_listing(client: GitHub, endpoint: str, field: str) -> list[dict[str, Any]]:
+    """Require complete Actions metadata without losing entries to pagination changes."""
+    items = {}
     total = None
-    # Unfiltered listing avoids GitHub's 1,000-result cap on run searches.
+    separator = "&" if "?" in endpoint else "?"
     for page in range(1, 10_001):
-        listing = decode(
-            client.request(
-                f"repos/{REPOSITORY}/actions/workflows/image-security.yml/runs?per_page=100&page={page}"
-            )
-        )
+        listing = decode(client.request(f"{endpoint}{separator}per_page=100&page={page}"))
         if total is None:
             total = listing["total_count"]
         if listing["total_count"] != total:
             raise ValueError("Scan history changed during retrieval")
-        batch = listing["workflow_runs"]
+        batch = listing[field]
         for item in batch:
-            if item["id"] in runs:
+            if item["id"] in items:
                 raise ValueError("Duplicate scan history entry")
-            runs[item["id"]] = item
+            items[item["id"]] = item
         if len(batch) < 100:
             break
     else:
         raise ValueError("Scan history pagination exceeded its bound")
-    if len(runs) != total or run["id"] not in runs:
+    if len(items) != total:
+        raise ValueError("Incomplete scan history")
+    return list(items.values())
+
+
+def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
+    """Reject superseded scan events even when no issue exists to retain their ordering."""
+    # Unfiltered listing avoids GitHub's 1,000-result cap on run searches.
+    runs = action_listing(
+        client, f"repos/{REPOSITORY}/actions/workflows/image-security.yml/runs", "workflow_runs"
+    )
+    if run["id"] not in {item["id"] for item in runs}:
         raise ValueError("Incomplete scan history")
     result = set()
-    for other in runs.values():
+    for other in runs:
         if (
             other["id"] == run["id"]
             or other.get("head_repository", {}).get("full_name") != REPOSITORY
@@ -147,8 +154,13 @@ def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
             or timestamp(other["updated_at"]) < timestamp(run["updated_at"])
         ):
             continue
-        names = {artifact["name"] for artifact in run_artifacts(client, str(other["id"]))}
-        result.update(profile for profile in PROFILES if f"image-security-{profile}" in names)
+        jobs = action_listing(
+            client, f"repos/{REPOSITORY}/actions/runs/{other['id']}/jobs?filter=all", "jobs"
+        )
+        if not jobs:
+            raise ValueError("Completed scan has no job history")
+        names = {job["name"] for job in jobs}
+        result.update(profile for profile in PROFILES if f"Image security ({profile})" in names)
     return result
 
 

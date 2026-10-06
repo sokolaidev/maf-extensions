@@ -469,6 +469,7 @@ def test_ci_has_no_automatic_image_builds_and_tracker_cannot_publish():
     scan = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
     triggers = scan.get("on", scan.get(True))
     assert set(triggers) == {"schedule", "workflow_dispatch"}
+    assert scan["jobs"]["scan"]["name"] == "Image security (${{ matrix.profile }})"
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-release-needed.yml").read_text())
     trigger = workflow.get("on", workflow.get(True))["workflow_run"]
     assert trigger["branches"] == ["main"]
@@ -761,6 +762,10 @@ def test_no_issue_observation_still_prevents_older_scan_creating_request(
     def request(_self, endpoint):
         if "/workflows/image-security.yml/runs?" in endpoint:
             return encode({"total_count": 2, "workflow_runs": [newer, run]})
+        if "/jobs?" in endpoint:
+            return encode(
+                {"total_count": 1, "jobs": [{"id": 77, "name": "Image security (diagram)"}]}
+            )
         if "/artifacts?" in endpoint:
             return encode({"total_count": 1, "artifacts": [artifact]})
         return encode(run)
@@ -794,11 +799,11 @@ def test_scan_history_supersession_is_scoped_to_trusted_completed_profiles(
     def request(_self, endpoint):
         if "/workflows/" in endpoint:
             return encode({"total_count": 2, "workflow_runs": [run, newer]})
-        assert endpoint.endswith("/runs/124/artifacts?per_page=100")
+        assert endpoint.endswith("/runs/124/jobs?filter=all&per_page=100&page=1")
         return encode(
             {
                 "total_count": 1,
-                "artifacts": [{"name": f"image-security-{profile}", "expired": True}],
+                "jobs": [{"id": 77, "name": f"Image security ({profile})"}],
             }
         )
 
@@ -830,3 +835,72 @@ def test_scan_history_paginates_and_rejects_incomplete_ordering(scan_artifact, m
         with pytest.raises(ValueError, match="history"):
             tracker.newer_profiles(GitHub(), run)
     assert len(seen) == 2
+
+
+@pytest.mark.parametrize(
+    "failed_step", ["Build the selected image", "Record the immutable local image identity"]
+)
+def test_failed_profile_without_artifact_supersedes_older_scan(
+    scan_artifact, monkeypatch, tmp_path, failed_step
+):
+    run, artifact, _ = scan_artifact
+    newer = run | {"id": 124, "updated_at": "2026-01-03T00:00:00Z", "conclusion": "failure"}
+
+    def request(_self, endpoint):
+        if "/workflows/" in endpoint:
+            return encode({"total_count": 2, "workflow_runs": [newer, run]})
+        if "/runs/124/artifacts?" in endpoint:
+            return encode({"total_count": 0, "artifacts": []})
+        if "/runs/124/jobs?" in endpoint:
+            return encode(
+                {
+                    "total_count": 1,
+                    "jobs": [
+                        {
+                            "id": 77,
+                            "name": "Image security (diagram)",
+                            "steps": [{"name": failed_step, "conclusion": "failure"}],
+                        }
+                    ],
+                }
+            )
+        if "/artifacts?" in endpoint:
+            return encode({"total_count": 1, "artifacts": [artifact]})
+        return encode(run)
+
+    monkeypatch.setattr(GitHub, "request", request)
+    observed = tracker.candidates(GitHub(), "123", tmp_path)
+    assert optional_desired(observed=observed.get("diagram")) is None
+
+
+@pytest.mark.parametrize("damage", ["none", "missing", "duplicate", "changed-count", "empty"])
+def test_profile_job_history_is_complete_across_all_attempts(scan_artifact, monkeypatch, damage):
+    run, _, _ = scan_artifact
+    newer = run | {"id": 124, "updated_at": "2026-01-03T00:00:00Z"}
+    first = [{"id": index, "name": "Select image security profiles"} for index in range(100)]
+
+    def request(_self, endpoint):
+        if "/workflows/" in endpoint:
+            return encode({"total_count": 2, "workflow_runs": [newer, run]})
+        assert "/runs/124/jobs?filter=all&per_page=100&page=" in endpoint
+        if damage == "empty":
+            return encode({"total_count": 0, "jobs": []})
+        if endpoint.endswith("page=1"):
+            return encode({"total_count": 101, "jobs": first})
+        assert endpoint.endswith("page=2")
+        last = (
+            first[0] if damage == "duplicate" else {"id": 101, "name": "Image security (diagram)"}
+        )
+        return encode(
+            {
+                "total_count": 102 if damage == "changed-count" else 101,
+                "jobs": [] if damage == "missing" else [last],
+            }
+        )
+
+    monkeypatch.setattr(GitHub, "request", request)
+    if damage == "none":
+        assert tracker.newer_profiles(GitHub(), run) == {"diagram"}
+    else:
+        with pytest.raises(ValueError, match="history"):
+            tracker.newer_profiles(GitHub(), run)
