@@ -874,3 +874,227 @@ def test_observer_records_owner_state_before_startup_completion(tmp_path, monkey
         assert evidence[0]["owner_empty"] is (not bool(containers))
 
     asyncio.run(app({"type": "lifespan"}, receive, send))
+
+
+def refusal_evidence():
+    return [
+        {"event": "startup", "boot": "refused", "time_ns": 1},
+        *[
+            {
+                "event": "cleanup_refused",
+                "boot": "refused",
+                "container": "orphan",
+                "resource": "bicep-docker",
+                "time_ns": t,
+            }
+            for t in (2, 3)
+        ],
+        {
+            "event": "startup_failed",
+            "boot": "refused",
+            "time_ns": 4,
+            "ready": False,
+            "poisoned": True,
+            "active": False,
+            "sessions": 0,
+        },
+        {
+            "event": "shutdown",
+            "boot": "refused",
+            "time_ns": 5,
+            "poisoned": True,
+            "active": False,
+            "sessions": 0,
+        },
+    ]
+
+
+def refusal_observation():
+    return {
+        "boot": "refused",
+        "container": "orphan",
+        "time_ns": 6,
+        "exit_code": 1,
+        "paused": True,
+        "sole_owned": True,
+        "owner_unchanged": True,
+        "listener_closed": True,
+        "sentinel_preserved": True,
+    }
+
+
+def test_cleanup_refusal_requires_startup_failure_and_two_gateway_errors():
+    result = lifecycle.verify_cleanup_refusal(
+        refusal_evidence(),
+        "refused",
+        "orphan",
+        refusal_observation(),
+        [{"status": "error", "error": "fetch failed"}] * 2,
+    )
+    assert result["dispatches"] == 0 and result["gateway_turns_refused"] == 2
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_start",
+        "missing_fault",
+        "extra_fault",
+        "missing_failure",
+        "missing_shutdown",
+        "wrong_boot",
+        "wrong_orphan",
+        "wrong_resource",
+        "ready",
+        "unpoisoned",
+        "active",
+        "session",
+        "early_failure",
+        "late_shutdown",
+        "startup_ready",
+        "request",
+        "response",
+    ],
+)
+def test_cleanup_refusal_rejects_incomplete_contradictory_or_uncorrelated_evidence(mutation):
+    evidence = refusal_evidence()
+    indices = {"missing_start": 0, "missing_fault": 1, "missing_failure": 3, "missing_shutdown": 4}
+    if mutation in indices:
+        evidence.pop(indices[mutation])
+    elif mutation == "extra_fault":
+        evidence.append(evidence[1].copy())
+    elif mutation in {"startup_ready", "request", "response"}:
+        evidence.append({"event": mutation})
+    else:
+        index, field, value = {
+            "wrong_boot": (1, "boot", "other"),
+            "wrong_orphan": (2, "container", "other"),
+            "wrong_resource": (1, "resource", "other"),
+            "ready": (3, "ready", True),
+            "unpoisoned": (3, "poisoned", False),
+            "active": (4, "active", True),
+            "session": (3, "sessions", 1),
+            "early_failure": (3, "time_ns", 2),
+            "late_shutdown": (4, "time_ns", 7),
+        }[mutation]
+        evidence[index][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_cleanup_refusal(
+            evidence,
+            "refused",
+            "orphan",
+            refusal_observation(),
+            [{"status": "error", "error": "fetch failed"}] * 2,
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("boot", "other"),
+        ("container", "other"),
+        ("exit_code", 0),
+        ("exit_code", 86),
+        ("paused", False),
+        ("sole_owned", False),
+        ("owner_unchanged", False),
+        ("listener_closed", False),
+        ("sentinel_preserved", False),
+        ("time_ns", 4),
+    ],
+)
+def test_cleanup_refusal_rejects_missing_host_proof(field, value):
+    observed = refusal_observation()
+    observed[field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_cleanup_refusal(
+            refusal_evidence(),
+            "refused",
+            "orphan",
+            observed,
+            [{"status": "error", "error": "fetch failed"}] * 2,
+        )
+
+
+@pytest.mark.parametrize(
+    "projections",
+    [
+        [],
+        [{"status": "error", "error": "fetch failed"}],
+        [projected(), projected()],
+        [{"status": "error", "error": ""}] * 2,
+        [{"status": "error", "error": "fetch failed", "result": {}}] * 2,
+        [{"status": "error", "error": "fetch failed", "structuredContent": {}}] * 2,
+    ],
+)
+def test_cleanup_refusal_rejects_fabricated_or_missing_gateway_results(projections):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_cleanup_refusal(
+            refusal_evidence(), "refused", "orphan", refusal_observation(), projections
+        )
+
+
+@pytest.mark.parametrize("owned", ["a" * 12, "b" * 12, "", "a" * 12 + "\n" + "b" * 12])
+def test_cleanup_fault_preserves_exact_orphan_and_delegates_after_removal(
+    tmp_path, monkeypatch, owned
+):
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Resource:
+        name: str
+        cleanup: object
+
+    calls = []
+
+    async def cleanup():
+        calls.append("cleanup")
+        return True
+
+    resource = Resource("bicep-docker", cleanup)
+    service = SimpleNamespace(resources={resource.name: resource})
+    app = observer.ObserveHTTP(
+        SimpleNamespace(service=service), tmp_path / "audit", owned_scope="owner"
+    )
+    fault = tmp_path / "fault"
+    fault.write_text("a" * 12)
+
+    def inspect(command, **kwargs):
+        assert command[-1] == "label=maf-sandbox.scope=owner"
+        return owned
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+    observer.refuse_owned_cleanup(app, fault)
+    wrapped = service.resources[resource.name].cleanup
+    if owned == "a" * 12:
+        assert asyncio.run(wrapped()) is False
+        assert checker.records(app.evidence)[0]["event"] == "cleanup_refused"
+    else:
+        with pytest.raises(RuntimeError, match="retained orphan"):
+            asyncio.run(wrapped())
+        assert not app.evidence.exists()
+    assert not calls
+    fault.unlink()
+    assert asyncio.run(wrapped()) is True and calls == ["cleanup"]
+
+
+def test_observer_records_failed_startup_without_retaining_exception_payload(tmp_path):
+    class App:
+        service = SimpleNamespace(ready=False, poisoned=True, active=None)
+        sessions = {}
+
+        async def __call__(self, scope, receive, send):
+            await send({"type": "lifespan.startup.failed", "message": "private exception text"})
+
+    app = observer.ObserveHTTP(App(), tmp_path / "audit")
+
+    async def unused():
+        return {}
+
+    async def send(message):
+        record = checker.records(app.evidence)[0]
+        assert record["event"] == "startup_failed" and record["poisoned"] is True
+        assert record["ready"] is False and record["active"] is False and record["sessions"] == 0
+        assert "private exception text" not in app.evidence.read_text()
+
+    asyncio.run(app({"type": "lifespan"}, unused, send))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import http.client
 import json
@@ -148,6 +149,85 @@ def verify_recovery(evidence: list[dict[str, Any]], boot: str, container: str) -
     )
 
 
+def verify_cleanup_refusal(
+    evidence: list[dict[str, Any]],
+    boot: str,
+    container: str,
+    observed: dict[str, Any],
+    projections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require failed startup, retained ownership and two refused Gateway turns."""
+    starts = [r for r in evidence if r.get("event") == "startup"]
+    faults = [r for r in evidence if r.get("event") == "cleanup_refused"]
+    failures = [r for r in evidence if r.get("event") == "startup_failed"]
+    stops = [r for r in evidence if r.get("event") == "shutdown"]
+    require(
+        len(starts) == len(failures) == len(stops) == 1 and len(faults) == 2,
+        "Missing unique startup/shutdown or both refused cleanup attempts",
+    )
+    require(
+        bool(boot)
+        and bool(container)
+        and all(r.get("boot") == boot for r in [*starts, *faults, *failures, *stops])
+        and all(
+            r.get("container") == container and r.get("resource") == "bicep-docker" for r in faults
+        )
+        and failures[0].get("ready") is False
+        and all(
+            r.get("poisoned") is True and r.get("active") is False and r.get("sessions") == 0
+            for r in [*failures, *stops]
+        )
+        and 0
+        < starts[0].get("time_ns", 0)
+        < faults[0].get("time_ns", 0)
+        < faults[1].get("time_ns", 0)
+        < failures[0].get("time_ns", 0)
+        < stops[0].get("time_ns", 0)
+        < observed.get("time_ns", 0),
+        "Cleanup refusal is not correlated with failed, poisoned startup",
+    )
+    require(
+        not any(r.get("event") in {"startup_ready", "request", "response"} for r in evidence),
+        "Failed startup admitted transport work or advertised readiness",
+    )
+    require(
+        observed.get("boot") == boot
+        and observed.get("container") == container
+        and observed.get("exit_code") == 1
+        and all(
+            observed.get(k) is True
+            for k in (
+                "paused",
+                "sole_owned",
+                "owner_unchanged",
+                "listener_closed",
+                "sentinel_preserved",
+            )
+        ),
+        "Failed startup did not retain the exact orphan and refuse its listener",
+    )
+    require(
+        len(projections) == 2
+        and all(
+            p.get("status") == "error"
+            and isinstance(p.get("error"), str)
+            and p["error"]
+            and "result" not in p
+            and "structuredContent" not in p
+            for p in projections
+        ),
+        "Unavailable service produced a workload result or did not refuse both turns",
+    )
+    return {
+        "startup_refused": True,
+        "cleanup_attempts_refused": 2,
+        "gateway_turns_refused": 2,
+        "dispatches": 0,
+        "retained_orphan": True,
+        "listener_closed": True,
+    }
+
+
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -197,6 +277,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     stop_file = root / "stop-service"
     crash_file = root / "crash-service"
     drop_file = root / "drop-result"
+    refusal_file = root / "refuse-cleanup"
     owner_file = root / "owner" / "owner"
     image = resolve_image(args.image)
     digest = hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
@@ -252,6 +333,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     str(drop_file),
                     "--crash-file",
                     str(crash_file),
+                    "--refuse-cleanup-file",
+                    str(refusal_file),
                 ],
             )
 
@@ -573,6 +656,68 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     and owned() == [crashed_container],
                     "Orphan did not remain frozen until replacement startup",
                 )
+                before_refusal = len(records(transport))
+                refusal_file.write_text(crashed_container, encoding="ascii")
+                service_process = service()
+                exit_code = service_process.wait(timeout=90)
+                refused_startups = [
+                    r for r in records(transport)[before_refusal:] if r.get("event") == "startup"
+                ]
+                require(len(refused_startups) == 1, "Missing refused replacement startup")
+                refused_startup = refused_startups[0]
+                require(
+                    refused_startup["boot"] != crash_boot
+                    and refused_startup["source_hashes"] == startups[-1]["source_hashes"]
+                    and refused_startup["versions"] == startups[-1]["versions"],
+                    "Refused startup changed code or dependencies",
+                )
+                refused_projections = []
+                for index in range(2):
+                    refused_connection, refused_turn = begin_turn(index, "valid")
+                    try:
+                        response = refused_connection.getresponse()
+                        response.read()
+                        require(response.status == 200, "Gateway did not settle refused work")
+                    finally:
+                        refused_connection.close()
+                    refused_projections.append(
+                        projected_result(records(provider), refused_turn, "valid")
+                    )
+                with socket.socket() as probe:
+                    listener_closed = probe.connect_ex(("127.0.0.1", service_url.port)) in {
+                        errno.ECONNREFUSED,
+                        10061,
+                    }
+                refused_observation = {
+                    "boot": refused_startup["boot"],
+                    "container": crashed_container,
+                    "exit_code": exit_code,
+                    "paused": docker("inspect", "--format", "{{.State.Paused}}", crashed_container)
+                    == "true",
+                    "sole_owned": owned() == [crashed_container],
+                    "owner_unchanged": owner_file.read_bytes() == owner_before,
+                    "listener_closed": listener_closed,
+                    "sentinel_preserved": bool(docker("ps", "-q", "--filter", f"id={sentinel}")),
+                    "time_ns": time.time_ns(),
+                }
+                refusal_evidence = records(transport)[before_refusal:]
+                report["startup_cleanup_refusal"] = verify_cleanup_refusal(
+                    refusal_evidence,
+                    refused_startup["boot"],
+                    crashed_container,
+                    refused_observation,
+                    refused_projections,
+                )
+                verify_dispatch_count(records(transport), expected_calls)
+                (root / "cleanup-refusal.json").write_text(
+                    json.dumps({"transport": refusal_evidence, "observed": refused_observation}),
+                    encoding="utf-8",
+                )
+                print(
+                    "Unconfirmed startup cleanup refused readiness and both Gateway turns",
+                    flush=True,
+                )
+                refusal_file.unlink()
                 service_process = service()
                 recovery_evidence = []
 
@@ -610,7 +755,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 service_ready(service_process)
                 startup = [r for r in records(transport) if r.get("event") == "startup"][-1]
                 require(
-                    startup["boot"] != crash_boot
+                    startup["boot"] not in {crash_boot, refused_startup["boot"]}
                     and startup["source_hashes"] == startups[-1]["source_hashes"]
                     and startup["versions"] == startups[-1]["versions"],
                     "Crash recovery changed service code or dependency identity",
@@ -633,6 +778,12 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     len(set(recovered_sessions)) == 2
                     and not set(recovered_sessions) & set(after_restart + restarted + fresh + old),
                     "Crash recovery reused previous MCP sessions",
+                )
+                report["startup_cleanup_refusal"].update(
+                    fault_removed=True,
+                    retained_owner=True,
+                    recovery_before_readiness=True,
+                    fresh_sessions=2,
                 )
                 report["active_service_crash"].update(
                     compiler_survived=True,
@@ -660,7 +811,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             )
             report["remaining"] = [
                 "active Gateway runtime disposal",
-                "cleanup-failure recovery and remaining interruption cases",
+                "cleanup failure after a completed call and remaining interruption cases",
                 "full real-host transport/MAF matrix",
             ]
         finally:
@@ -679,10 +830,12 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         require(not owned(), "Owner resources remain after fixture shutdown")
         final = [r for r in records(transport) if r.get("event") == "shutdown"]
         require(
-            len(final) == 2
+            len(final) == 3
+            and sum(r.get("poisoned") is True for r in final) == 1
             and all(
                 r.get("sessions") == 0 and r.get("active") is False and r.get("poisoned") is False
                 for r in final
+                if r.get("poisoned") is not True
             ),
             "Final service shutdown was not clean",
         )
