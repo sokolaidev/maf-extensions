@@ -214,10 +214,10 @@ from agent_framework._compaction import (
 
 from ._anchored import DEFAULT_MIN_GAIN_FRACTION, EXCLUDE_REASON, MARKER_ID_PREFIX
 from ._toolsummary import (
-    RECORD_MARKER,
     RecordDecisions,
     ToolResultAnchoredSummarizationCompactionStrategy,
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
+    _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
     build_record_message,
     consolidatable_record_groups,
     find_record_index,
@@ -402,32 +402,6 @@ def _responses(messages: list[Message]) -> int:
         and not (message.message_id or "").startswith(MARKER_ID_PREFIX)
         and not _is_written_record(message)
     )
-
-
-def _newest_record_identity(messages: list[Message]) -> str:
-    """Return what identifies the newest record, or an empty string when there is none.
-
-    The record the record half anchors on, found the way it finds it
-    (:func:`~._toolsummary.find_record_index`), and named by something the copies sent on a call
-    and the store after it both carry -- not a position, which differs between the two lists.
-
-    A record the model made is named by its call id, which the provider issued. A record the
-    chain wrote has no call id -- it is an ordinary message, see
-    :func:`~._toolsummary.build_record_message` -- so it is named by its text. The two lists
-    agree on that text because the chain puts the answer the copies pass was given on the store
-    (:meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._ask`). And a change of
-    text is always a new record: the chain writes one only in place of every standing record,
-    and only when it is smaller than them, so a written record never repeats the one straight
-    before it. The two forms are prefixed apart so neither can read as the other.
-    """
-    index = find_record_index(messages)
-    if index is None:
-        return ""
-    message = messages[index]
-    for content in message.contents:
-        if content.type == "function_result" and RECORD_MARKER in str(content.result):
-            return f"call:{content.call_id or ''}"
-    return f"text:{message.text}"
 
 
 def _transcript(messages: list[Message], groups: list[dict[str, Any]]) -> str:
@@ -996,9 +970,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         pass after that drops what the record covers. The user half, judged on that first pass,
         sees a prompt the record half has not yet touched, acts at once, and -- when summarising
         the user turns alone gets back under the line -- takes the prompt below the trigger the
-        middleware reads, so the record is never asked for. Measured on gpt-5.6-luna at 200,000
-        tokens, 0.9 fill and a 0.8 trigger: no record on five seeds of five and one user
-        compaction on each, which is this row with its layers the wrong way round.
+        middleware reads, so the record is never asked for and the cache-breaking half does all
+        the work.
 
         **The rule.** The user half holds on a pass where the prompt, as the record phase left
         it, is over the shared line and over the record half's own trigger, and the record half

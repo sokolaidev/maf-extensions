@@ -37,6 +37,7 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
+from maf_compaction import _usersummary
 from maf_compaction._preserve import (
     PRESERVE_REASON_KEY,
     PRESERVED_KEY,
@@ -302,6 +303,15 @@ def test_the_defaults_are_one_turn_at_each_end_a_late_trigger_and_a_tenth_of_the
     assert (DEFAULT_KEEP_HEAD_USER_TURNS, DEFAULT_KEEP_TAIL_USER_TURNS) == (1, 1)
     assert DEFAULT_USER_TRIGGER_FRACTION == 0.8
     assert DEFAULT_MIN_BAND_SHARE == 0.1
+
+
+def test_a_user_turn_quoting_the_marker_is_not_a_summary() -> None:
+    """The marker identifies a summary only where the strategy writes it, at the start."""
+    quoting = Message(role="user", contents=[f"Why does my log say {USER_SUMMARY_MARKER}?"])
+    written = Message(role="user", contents=[f"{USER_SUMMARY_MARKER}\nThe user asked about X."])
+
+    assert not _usersummary._is_summary(quoting)
+    assert _usersummary._is_summary(written)
 
 
 async def test_it_compacts_user_turns_and_leaves_tool_results_and_assistant_messages_alone() -> (

@@ -103,18 +103,13 @@ recall tool's result; an excluded record is not a record to anything that reads 
 :func:`find_record_index` and :func:`record_text`. The standalone strategy calls none of it.
 
 **Coverage is measured in values, not in tool names, because models do not write tool names.**
-The first version of the check asked whether the record contained the group's function name,
-on the reading that :data:`RECALL_VALUES_DESCRIPTION` asks for the results "grouped by the
-tool that produced it". Models do not comply with that clause the way the check assumed.
-Luna's record says *"extra0 deployment lookup returned codes: ..."* and never writes
-``lookup_extra0`` anywhere; gpt-5.4-mini, whose records carry every value from every group,
-scored ``UNCOVERED:4`` on the same rule, and its compaction fell from a 20% reduction to 5-6%
-for no benefit whatsoever. A check that penalises the model that complied is not a check. The
-rule is now the first thing that description actually asks for -- "Quote verbatim any value
-that cannot be reconstructed or guessed" -- so a group is covered when the record quotes
-enough of the distinctive values its results contain. :data:`DEFAULT_COVERAGE_SHARE` is how
-much of them, and :func:`_distinctive_tokens` states the rule that finds them and what it
-cannot see.
+A record describes a lookup in its own words -- *"extra0 deployment lookup returned codes:
+..."* -- rather than naming ``lookup_extra0``, so a name rule would score a complete record as
+missing groups. The rule is the first thing :data:`RECALL_VALUES_DESCRIPTION` asks for --
+"Quote verbatim any value that cannot be reconstructed or guessed" -- so a group is covered
+when the record quotes enough of the distinctive values its results contain.
+:data:`DEFAULT_COVERAGE_SHARE` is how much of them, and :func:`_distinctive_tokens` states the
+rule that finds them and what it cannot see.
 
 **The record is protected from the fallback, and had to be.** When a record does not free
 enough, whatever remains goes to ``fallback``, which defaults to
@@ -126,16 +121,13 @@ surviving copy of what was already deleted. Both halves therefore agree through
 skips preserved messages in each of its three removal paths.
 
 **What the record failed to cover is held out of the fallback's reach too, and asked for
-again.** The coverage check keeps a group the record does not carry, and for a while that was
-the whole of it: the group stayed in the prompt as an ordinary tool group, and the fallback
-that runs when the prompt is still over the ceiling could then shorten or shed it like any
-other. That is a gap in the headline claim -- this row is supposed never to lose a fact -- and
-it is reachable whenever the fallback legitimately runs behind a partial record, which is not a
-one-model concern: gpt-5.4-mini's ``RECFALLBACK`` records sit at 0.89 to 0.955 of the billed
-ceiling and are genuine firings. Two layers now stand between an uncovered group and the
-fallback, in this order. First the
-strategy asks the middleware for another record while the group is still whole, and holds the
-group out of the fallback's reach until that record has had its chance --
+again.** Keeping a group the record does not carry is not enough on its own: left as an
+ordinary tool group, the fallback that runs when the prompt is still over the ceiling would
+shorten or shed it like any other, and this row is supposed never to lose a fact. That is
+reachable whenever the fallback legitimately runs behind a partial record. Two layers stand
+between an uncovered group and the fallback, in this order. First the strategy asks the
+middleware for another record while the group is still whole, and holds the group out of the
+fallback's reach until that record has had its chance --
 :meth:`ToolResultAnchoredSummarizationCompactionStrategy.take_reforce` is the channel, and the
 bound on asking again is stated on
 :meth:`ToolResultAnchoredSummarizationCompactionStrategy._reforce_or_settle`.
@@ -496,6 +488,32 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
             if RECORD_MARKER in result:
                 newest = index
     return newest
+
+
+def _newest_record_identity(messages: list[Message]) -> str:
+    """Return what identifies the newest record, or an empty string when there is none.
+
+    The record the record half anchors on, found the way it finds it
+    (:func:`find_record_index`), and named by something the copies sent on a call
+    and the store after it both carry -- not a position, which differs between the two lists.
+
+    A record the model made is named by its call id, which the provider issued. A record the
+    chain wrote has no call id -- it is an ordinary message, see
+    :func:`build_record_message` -- so it is named by its text. The two lists agree on that text
+    because the chain puts the answer the copies pass was given on the store
+    (:meth:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._ask`).
+    And a change of text is always a new record: the chain writes one only in place of every
+    standing record, and only when it is smaller than them, so a written record never repeats
+    the one straight before it. The two forms are prefixed apart so neither can read as the other.
+    """
+    index = find_record_index(messages)
+    if index is None:
+        return ""
+    message = messages[index]
+    for content in message.contents:
+        if content.type == "function_result" and RECORD_MARKER in str(content.result):
+            return f"call:{content.call_id or ''}"
+    return f"text:{message.text}"
 
 
 def _is_written_record(message: Message) -> bool:
@@ -1673,15 +1691,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         response cap, raising the stated target and rewriting the prompt each leave coverage
         where it was, so the rule has to be here, in what the strategy is willing to delete.
 
-        **Coverage is checked in values, because models do not write tool names.** The first
-        version of this check asked whether the record contained the group's function name, on
-        the reading that :data:`RECALL_VALUES_DESCRIPTION` asks for the results "grouped by the
-        tool that produced it". Measured on both models, that is not the clause they comply
-        with. Luna's record reads *"extra0 deployment lookup returned codes: AB-123456, ..."*
-        and never writes ``lookup_extra0`` at all; gpt-5.4-mini, whose records carry every value
-        from every group, was scored ``UNCOVERED:4`` by the name rule and its compaction fell
-        from a 20% reduction to 5-6% in exchange for nothing. A check that penalises the model
-        that complied is a net negative, and this one was.
+        **Coverage is checked in values, because models do not write tool names.** A record
+        reads *"extra0 deployment lookup returned codes: AB-123456, ..."* rather than naming
+        ``lookup_extra0``, so a name rule would score a complete record as missing groups and
+        keep results it had every reason to drop.
 
         So the test is the clause the description actually leads with -- "Quote verbatim any
         value that cannot be reconstructed or guessed" -- applied to what the group's tool
@@ -2062,7 +2075,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._records_forced = 0
         self._records_volunteered = 0
         self._records_truncated = 0
-        self._seen_record = False
+        self._last_record = ""
         self._awaiting_record = False
         self._session_id: str | None = None
 
@@ -2244,11 +2257,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         messages = list(context.messages)
         record_index = find_record_index(messages) if messages else None
-        # The transition is tracked on the instance, not read from the messages on the way in.
-        # Before the pipeline runs, context.messages holds only the new turn, so a pre-call
-        # check reports "no record" on every call and every later call counts as a fresh one.
-        if record_index is not None and not self._seen_record:
-            self._seen_record = True
+        # Each record is counted once, when its identity first appears as the newest, so a
+        # record that stays visible for many calls counts once and a repeat counts again. Read
+        # on the way out: before the pipeline runs, context.messages holds only the new turn.
+        newest = _newest_record_identity(messages) if record_index is not None else ""
+        if newest and newest != self._last_record:
+            self._last_record = newest
             # Attributed to the ask, not to the call the record became visible on: a forced
             # call cannot see its own record, so the record surfaces one call later and
             # crediting that call would report every forced record as volunteered. A record

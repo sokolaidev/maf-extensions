@@ -523,7 +523,8 @@ def _is_summary(message: Message) -> bool:
     without losing the message. Getting this wrong in the false direction is not a crash, which
     is why it is worth doubling: the recompacting mode simply stops recognising its own output,
     treats every pass as new material, and accumulates summaries it believes are turns; the
-    boundary modes lose the boundary and re-read it as a turn.
+    boundary modes lose the boundary and re-read it as a turn. The marker counts only at the
+    start of the text, where the strategy writes it: a user turn quoting it is still a turn.
 
     This is also the whole of how a boundary is identified. The preserved mark is the
     boundary's protection, not its identity -- see the module docstring for why the two are
@@ -537,7 +538,7 @@ def _is_summary(message: Message) -> bool:
     """
     if message.message_id and message.message_id.startswith(SUMMARY_ID_PREFIX):
         return True
-    return USER_SUMMARY_MARKER in (message.text or "")
+    return (message.text or "").lstrip().startswith(USER_SUMMARY_MARKER)
 
 
 def _is_standing_summary(message: Message) -> bool:

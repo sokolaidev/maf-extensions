@@ -1753,6 +1753,20 @@ async def test_a_single_record_is_attributed_exactly_once() -> None:
     assert middleware.records_forced + middleware.records_volunteered == 1
 
 
+async def test_each_repeated_record_is_attributed_once() -> None:
+    """A second record is a second arrival, however long the first stayed visible."""
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=1_000, tokenizer=TOKENIZER, arm=lambda: None, trigger_fraction=0.1
+    )
+    first = _conversation(tool_turns=8, record="CODE-0")
+    second = first + _record_messages("CODE-1", call_id="rec2")
+
+    for conversation in (first, first, second, second):
+        await _run(middleware, conversation)
+
+    assert middleware.records_forced + middleware.records_volunteered == 2
+
+
 async def test_one_trigger_event_forces_exactly_one_call() -> None:
     """One ask, one record.
 
@@ -2377,17 +2391,10 @@ async def test_the_strategy_counts_every_record_the_conversation_carries() -> No
 async def test_the_record_count_is_a_maximum_rather_than_a_running_total() -> None:
     """The same conversation is re-examined on every later pass, so a tally would multiply it.
 
-    ``records_volunteered`` already had to be fixed for exactly this: it reported 18 for a
-    single record, because the check ran once per call rather than once per record. A count
-    reading 18 where the answer is 1 is not a rougher version of the truth, it is a number with
-    a different meaning.
-
-    **The fixture has to stay above the trigger, and the previous one did not.** Written with
-    records that covered their groups, the first pass dropped enough to put the conversation
-    below the trigger, so every later pass returned at the first line of ``__call__`` without
-    reaching the counter -- and the test passed just as well against ``+=`` as against ``max``,
-    which is to say it asserted nothing. These records quote nothing, so nothing is dropped, the
-    conversation stays where it started, and all four passes reach the count.
+    **The fixture has to stay above the trigger.** Records that covered their groups would drop
+    enough to put the conversation below it, every later pass would return before reaching the
+    counter, and the test would pass against ``+=`` as well as ``max``. These records quote
+    nothing, so nothing is dropped and all four passes reach the count.
     """
     strategy = _strategy(max_input_tokens=_TWO_RECORD_CEILING)
     messages = _conversation(tool_turns=2, record="older record, quoting nothing.")
