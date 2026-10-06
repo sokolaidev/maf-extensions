@@ -34,10 +34,18 @@ from container_release import (
     write,
 )
 from container_release_history import History
-from container_release_oci import MANIFEST, validate_layout, verify_registry_manifest
+from container_release_oci import INDEX, MANIFEST, validate_layout, verify_registry_manifest
 from prepare_container_release import assess, run
 
 LIMIT = 8 * 1024 * 1024
+MANIFEST_TYPES = ", ".join(
+    (
+        MANIFEST,
+        INDEX,
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    )
+)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -79,7 +87,7 @@ def manifest(profile: str, reference: str, *, authenticated: bool = False) -> by
     try:
         return request(
             f"https://ghcr.io/v2/{REPOSITORY}/{profile}/manifests/{reference}",
-            {"Authorization": f"Bearer {token}", "Accept": MANIFEST},
+            {"Authorization": f"Bearer {token}", "Accept": MANIFEST_TYPES},
         )
     except urllib.error.HTTPError as error:
         if error.code != 404:

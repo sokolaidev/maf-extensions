@@ -208,6 +208,69 @@ def test_failed_registry_discovery_cannot_report_clean(monkeypatch, tmp_path, mo
     assert assessment_status(record, DONE) == "unavailable"
 
 
+@pytest.mark.parametrize(
+    "media_type",
+    [
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ],
+)
+def test_unsupported_registry_content_is_retained_without_false_absence(
+    monkeypatch, tmp_path, monitor_context, media_type
+):
+    raw = encode({"schemaVersion": 2, "mediaType": media_type})
+    unexpected = sha256(raw)
+
+    def request(url, headers):
+        if "/token?" in url:
+            return b'{"token":"scoped"}'
+        if url.endswith(CANDIDATE["registryDigest"]) or media_type not in headers["Accept"].split(
+            ", "
+        ):
+            raise urllib.error.HTTPError(
+                url,
+                404,
+                "manifest unknown",
+                {},
+                io.BytesIO(encode({"errors": [{"code": "MANIFEST_UNKNOWN"}]})),
+            )
+        return raw
+
+    monkeypatch.setattr(registry, "request", request)
+    monkeypatch.setattr(monitor, "manifest", registry.manifest)
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *args: {},
+            retain=lambda *args: None,
+            publish=lambda *args: None,
+        ),
+    )
+    pulls = []
+    monkeypatch.setattr(monitor, "anonymous_pull", lambda candidate: pulls.append(candidate))
+    monkeypatch.setattr(monitor.subprocess, "run", lambda *a, **k: None)
+    monitor.begin(tmp_path)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.scan(tmp_path, 0)
+    monitor.finish(tmp_path)
+    record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
+    entry = record["unexpectedDigests"][unexpected]
+    assert entry["latestAttempt"]["outcome"] == "unavailable"
+    assert "absenceProof" not in entry
+    assert all(c["registryDigest"] != unexpected for c in pulls)
+    assert record["candidate"] == CANDIDATE
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        manifests = [
+            name
+            for name in archive.namelist()
+            if unexpected[7:] in name and name.endswith("manifest.json")
+        ]
+        assert len(manifests) == 1
+        assert archive.read(manifests[0]) == raw
+
+
 @pytest.mark.parametrize("mutation", ["delete", "time", "assessment"])
 def test_discovered_public_digest_history_cannot_be_erased(
     monkeypatch, tmp_path, monitor_context, mutation
@@ -381,6 +444,41 @@ def test_registry_absence_does_not_confuse_authentication_or_server_errors(
     else:
         with pytest.raises((ValueError, urllib.error.HTTPError)):
             registry.manifest("bicep", "0.1.0")
+
+
+@pytest.mark.parametrize(
+    "media_type",
+    [
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ],
+)
+@pytest.mark.parametrize("reference", ["0.1.0", "sha256:" + "d" * 64])
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_registry_negotiation_retains_existing_manifest_bytes(
+    monkeypatch, media_type, reference, authenticated
+):
+    raw = encode({"schemaVersion": 2, "mediaType": media_type})
+    monkeypatch.setenv("GITHUB_ACTOR", "publisher")
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+
+    def request(url, headers):
+        if "/token?" in url:
+            return b'{"token":"scoped"}'
+        if media_type not in headers["Accept"].split(", "):
+            raise urllib.error.HTTPError(
+                url,
+                404,
+                "unsupported media type",
+                {},
+                io.BytesIO(encode({"errors": [{"code": "MANIFEST_UNKNOWN"}]})),
+            )
+        return raw
+
+    monkeypatch.setattr(registry, "request", request)
+    assert registry.manifest("bicep", reference, authenticated=authenticated) == raw
 
 
 def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkeypatch, tmp_path):
