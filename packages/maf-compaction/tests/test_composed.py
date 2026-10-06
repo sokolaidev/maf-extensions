@@ -1638,10 +1638,11 @@ class _LoggedFallback(AnchoredCompactionStrategy):
 
 def _standing_summary(serial: int) -> Message:
     """Return a user summary as the boundary mode leaves one standing."""
-    return Message(
-        role="user",
-        contents=[f"{USER_SUMMARY_MARKER}\n" + "s" * _CHAIN_PADDING_CHARS],
-        message_id=f"user_summary_{serial}",
+    return UserTurnAnchoredSummarizationCompactionStrategy._summary_message(
+        [Message(role="user", contents=["Original turn."], message_id=f"source_{serial}")],
+        [{"group_id": f"source_group_{serial}"}],
+        "s" * _CHAIN_PADDING_CHARS,
+        summary_id=f"user_summary_{serial}",
     )
 
 
@@ -2895,14 +2896,12 @@ def test_a_compactions_own_insertions_are_not_responses_to_the_user_halfs_wait()
         Message(role="assistant", contents=["Reply 0."], message_id="a0"),
     ]
     before = _responses(messages)
-    messages += [
-        build_record_message("lookup_1: CODE-1."),
-        Message(
-            role="assistant",
-            contents=["[compacted: an earlier assistant reply]"],
-            message_id="anchored_g1",
-        ),
-    ]
+    messages.append(build_record_message("lookup_1: CODE-1."))
+    AnchoredCompactionStrategy(max_input_tokens=8_000, tokenizer=TOKENIZER)._insert_note(
+        messages,
+        {"group_id": "g1", "start_index": 1, "end_index": 1},
+        "[compacted: an earlier assistant reply]",
+    )
 
     assert before == 1
     assert _responses(messages) == before

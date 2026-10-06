@@ -66,6 +66,7 @@ from agent_framework._compaction import (
 )
 
 from ._preserve import any_preserved, is_preserved, removable_whole
+from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -173,11 +174,12 @@ DEFAULT_MIN_GAIN_FRACTION: Final[float] = 0.29
 def _is_marker(message: Message) -> bool:
     """Return whether ``message`` is a note this strategy left in place of a dropped group.
 
-    Both the id and the text must match: an id is assigned by whoever stores the conversation,
-    so a prefix alone could claim an ordinary message.
+    Source links distinguish generated notes from ordinary messages with matching text and ids.
     """
     return bool(
-        message.message_id
+        message.role == "assistant"
+        and has_summary_links(message)
+        and message.message_id
         and message.message_id.startswith(MARKER_ID_PREFIX)
         and message.text in _NOTES.values()
     )

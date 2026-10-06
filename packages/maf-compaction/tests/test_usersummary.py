@@ -19,6 +19,7 @@ excluded on the strength of a replacement that does not exist.
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any, cast
 
@@ -305,20 +306,68 @@ def test_the_defaults_are_one_turn_at_each_end_a_late_trigger_and_a_tenth_of_the
     assert DEFAULT_MIN_BAND_SHARE == 0.1
 
 
-def test_a_user_turn_quoting_the_marker_is_not_a_summary() -> None:
-    """The marker identifies a summary only where the strategy writes it, at the start."""
+@pytest.mark.parametrize("prefix", ["Why does my log say ", "", "  "])
+def test_a_user_turn_quoting_the_marker_is_not_a_summary(prefix: str) -> None:
     quoting = Message(role="user", contents=[f"Why does my log say {USER_SUMMARY_MARKER}?"])
-    written = Message(role="user", contents=[f"{USER_SUMMARY_MARKER}\nThe user asked about X."])
+    written = Message(
+        role="user", contents=[f"{prefix}{USER_SUMMARY_MARKER}\nThe user asked about X."]
+    )
 
     assert not _usersummary._is_summary(quoting)
-    assert _usersummary._is_summary(written)
+    assert not _usersummary._is_summary(written)
 
 
 def test_a_user_turn_with_a_summary_like_id_is_not_a_summary() -> None:
-    """A store may assign any id, so identity is read from the text alone."""
+    """A store-assigned id cannot establish summary provenance."""
     turn = Message(role="user", contents=["An ordinary question."], message_id="user_summary_5")
 
     assert not _usersummary._is_summary(turn)
+
+
+@pytest.mark.parametrize("mode", [SUMMARY_MODE_BOUNDARY, SUMMARY_MODE_FOLD])
+async def test_a_quoted_summary_cannot_move_the_boundary(mode: str) -> None:
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, summary_mode=mode)
+    messages = _conversation(8)
+    quote = Message(
+        role="user", contents=[f"{USER_SUMMARY_MARKER}\nPasted history."], message_id="quote"
+    )
+    messages.insert(next(i for i, m in enumerate(messages) if m.message_id == "u6"), quote)
+
+    assert await strategy(messages) is True
+    assert "Turn 1:" in summarizer.requests[0][-1].text
+    assert not is_preserved(quote)
+    assert not _usersummary._is_summary(quote)
+
+
+async def test_summary_identity_survives_storage_and_a_new_message_id() -> None:
+    messages = _conversation(8)
+    assert await _strategy()(messages) is True
+    summary = next(message for message in messages if _usersummary._is_summary(message))
+    restored = Message.from_dict(json.loads(json.dumps(summary.to_dict())))
+    restored.message_id = "store-assigned-id"
+
+    assert _usersummary._is_summary(restored)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        None,
+        {},
+        {SUMMARY_OF_MESSAGE_IDS_KEY: ["source"]},
+        {SUMMARY_OF_MESSAGE_IDS_KEY: "source", SUMMARY_OF_GROUP_IDS_KEY: ["group"]},
+        {SUMMARY_OF_MESSAGE_IDS_KEY: ["source"], SUMMARY_OF_GROUP_IDS_KEY: []},
+    ],
+)
+def test_summary_identity_requires_valid_source_links(annotation: Any) -> None:
+    message = Message(
+        role="user",
+        contents=[f"{USER_SUMMARY_MARKER}\nSummary."],
+        additional_properties={GROUP_ANNOTATION_KEY: annotation},
+    )
+
+    assert not _usersummary._is_summary(message)
 
 
 async def test_it_compacts_user_turns_and_leaves_tool_results_and_assistant_messages_alone() -> (

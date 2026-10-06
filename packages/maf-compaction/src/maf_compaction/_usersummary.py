@@ -164,8 +164,8 @@ of the turns behind it, which no later pass will stand for again. Every removal 
 turns "the record half cannot reach a user group" from an accident of group kinds into a
 stated contract. The mark is *not* how the boundary is found, because the mark is also set by
 other strategies on turns that are not boundaries, and because it does not survive storage:
-the boundary is the newest included message :func:`_is_summary` recognises, by the id prefix
-and the text marker that already survive a store round trip, and the mark is re-applied to
+the boundary is the newest included message :func:`_is_summary` recognises, by its summary links
+and text marker. Hosts must retain those links through storage, and the mark is re-applied to
 every standing summary on every pass, as :func:`~._toolsummary._preserve_records` re-applies
 it to every record. In the recompacting mode the summary is deliberately *not* marked --
 :meth:`UserTurnAnchoredSummarizationCompactionStrategy._band` skips preserved turns, so a
@@ -236,6 +236,7 @@ from agent_framework._compaction import (
 )
 
 from ._preserve import any_preserved, set_preserved
+from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -411,7 +412,7 @@ DEFAULT_KEEP_TAIL_USER_TURNS: Final[int] = 1
 #:
 #: Two jobs, as :data:`~._anchored.REMOVAL_MARKER` has two. It tells the model that what it is
 #: reading stands for turns that are no longer present, which a model shown a silently reduced
-#: conversation cannot know; and it is how a later pass recognises its own earlier output,
+#: conversation cannot know; and together with the summary links it identifies earlier output,
 #: which decides whether there is new material to compact at all -- or, in the boundary modes,
 #: where the band begins.
 USER_SUMMARY_MARKER: Final[str] = "[earlier turns in this conversation, compacted]"
@@ -419,7 +420,7 @@ USER_SUMMARY_MARKER: Final[str] = "[earlier turns in this conversation, compacte
 #: Prefix of the ``message_id`` given to every summary this strategy inserts.
 #:
 #: For the framework's trace metadata, which is keyed on ids. It does not identify a summary:
-#: a store may assign its own ids, so :func:`_is_summary` reads :data:`USER_SUMMARY_MARKER`.
+#: a store may assign its own ids, so :func:`_is_summary` reads the marker and summary links.
 SUMMARY_ID_PREFIX: Final[str] = "user_summary_"
 
 #: Prefix of the ``message_id`` given to the summary a fold inserts.
@@ -511,25 +512,15 @@ def _mark_summarized_by(message: Message, summary_id: str) -> None:
 
 
 def _is_summary(message: Message) -> bool:
-    """Return whether ``message`` is a summary this strategy wrote.
+    """Recognize user summaries by their text marker and persisted source links.
 
-    Read from the text alone. A message id is assigned by whoever stores the conversation, so a
-    round trip is free to replace it and an ordinary turn may arrive with an id that looks like
-    ours; the marker travels inside the text and cannot be lost without losing the message. It
-    counts only at the start of the text, where the strategy writes it: a user turn quoting it
-    is still a turn.
-
-    This is also the whole of how a boundary is identified. The preserved mark is the
-    boundary's protection, not its identity -- see the module docstring for why the two are
-    kept apart.
-
-    Args:
-        message: The message to inspect.
-
-    Returns:
-        True when this strategy wrote it.
+    Hosts must preserve the links through storage and keep them separate from user text.
     """
-    return (message.text or "").lstrip().startswith(USER_SUMMARY_MARKER)
+    return (
+        message.role == "user"
+        and has_summary_links(message)
+        and (message.text or "").startswith(USER_SUMMARY_MARKER)
+    )
 
 
 def _is_standing_summary(message: Message) -> bool:
@@ -537,8 +528,7 @@ def _is_standing_summary(message: Message) -> bool:
 
     A superseded summary -- one the recompacting mode replaced, or one a fold collapsed -- is
     excluded and stands for nothing on the wire, so it is neither a boundary nor part of the
-    floor the standing count reports. Only user messages are read: every summary is one, and
-    the text test in :func:`_is_summary` is the one scan here that costs anything.
+    floor the standing count reports. Only user messages are read, since every summary is one.
 
     Args:
         message: The message to inspect.
@@ -1614,7 +1604,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary_id: The ``message_id`` the summary carries.
 
         Returns:
-            The unannotated summary message.
+            The summary message, carrying its source links.
         """
         return Message(
             role="user",

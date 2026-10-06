@@ -660,7 +660,7 @@ def test_shortening_that_would_grow_a_result_leaves_it_alone() -> None:
 
 
 def test_an_ordinary_message_with_a_marker_like_id_is_not_a_note() -> None:
-    """An id is the store's to assign, so the note's own text must match as well."""
+    """Store-assigned ids and quoted note text cannot establish note provenance."""
     real = Message(role="assistant", contents=["Looked it up."], message_id="anchored_7")
     note = Message(
         role="assistant",
@@ -669,7 +669,7 @@ def test_an_ordinary_message_with_a_marker_like_id_is_not_a_note() -> None:
     )
 
     assert not anchored_module._is_marker(real)
-    assert anchored_module._is_marker(note)
+    assert not anchored_module._is_marker(note)
 
 
 def test_a_note_is_inserted_even_when_a_stored_message_holds_its_id() -> None:
