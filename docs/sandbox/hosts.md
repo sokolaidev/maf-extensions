@@ -272,7 +272,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | ACAS group-configured identity | Supported outside the core attached-authority contract; host description and acquisition scope checks implemented | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
 | Principal references | Unimplemented | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) (open) |
 | Credentials for guest HTTP | Docker and WSLC external gateways implemented | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (closed) by [#1427](https://github.com/sokolaidev/maf-extensions/pull/1427) (merged) |
-| Shared host-bound store composition | Implemented; native store factory owns confinement | untracked |
+| Shared host-bound store composition | Implemented; native store factory owns confinement | [#1749](https://github.com/sokolaidev/maf-extensions/pull/1749) (merged) |
 | File-store provenance and result labels | Implemented with the read/write interval limits above | [Information-flow status](information-flow.md#status) |
 | Cross-conversation host storage paths | Host-owned partitioning; no automatic callback inspection | [#793](https://github.com/sokolaidev/maf-extensions/issues/793) (closed) |
 | Storage-base preparation and allocation | Implemented | [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (closed); [#1086](https://github.com/sokolaidev/maf-extensions/pull/1086) (merged); [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |

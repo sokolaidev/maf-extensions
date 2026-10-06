@@ -239,6 +239,7 @@ For tools with standing guidance, read the workload claim from `maf_sandbox_deri
 
 | Decision | State | Tracking |
 |---|---|---|
+| Public provenance and native fixed-guidance adapters | Implemented with MAF 1.20.0 fallback and local lifetime/availability guards | [#1749](https://github.com/sokolaidev/maf-extensions/pull/1749) (merged) |
 | Wrapper owns labels, checks file reads and preserves standing guidance | Implemented | [Kind-authoring guide](kinds/writing-a-kind.md) and [host configuration](hosts.md) |
 | Four-field `SandboxResult` | Implemented in `maf-sandbox`; opt-in with `result_contract=True` | [Kind-authoring guide](kinds/writing-a-kind.md) |
 | Use the result contract in all four kinds, samples and live checks | Implemented for Bicep, Terraform/OpenTofu, CodeAct and draw.io, including their samples and live checks | Bicep by [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged); Terraform/OpenTofu by [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); draw.io by [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); CodeAct by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged), completing [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) |
