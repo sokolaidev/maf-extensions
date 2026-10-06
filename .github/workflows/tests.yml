@@ -1,26 +1,26 @@
-name: Tests
+name: Package and Sandbox Validation
 
 # The gate is sharded across parallel jobs, joined by the required
 # `Python (pytest + ruff + pyright)` context. Docker live coverage runs after merge
 # and daily in `docker-live.yml`; documentation checks live in `docs.yml`.
 #
 # **There are still no path filters on these triggers, and that is deliberate.** A
-# workflow-level `paths-ignore` does not make a required check pass — it stops the workflow
+# workflow-level `paths-ignore` does not make a required check pass â€” it stops the workflow
 # triggering, so the check never reports and the pull request is unmergeable for ever. Instead
 # the `changes` job classifies the diff and the expensive steps skip on its verdict: the
 # contexts still report, in seconds rather than minutes (#560). For the same reason no shard is
-# skipped wholesale with a job-level `if:` — a genuine success is worth more than relying on a
+# skipped wholesale with a job-level `if:` â€” a genuine success is worth more than relying on a
 # skipped job counting as one, and the join below refuses a shard that did not run.
 on:
   push:
     branches: [main]
   pull_request:
-    # `edited` is deliberately absent. It used to be here for one step — the release-order
-    # report, which reads the pull request title — and every retitle then re-ran the whole
+    # `edited` is deliberately absent. It used to be here for one step â€” the release-order
+    # report, which reads the pull request title â€” and every retitle then re-ran the whole
     # suite for a check that takes a second. That step lives in
     # `pr-title.yml` now, which already triggers on `edited` for the title checks proper.
     types: [opened, synchronize, reopened]
-  # A bot-opened pull request does start this — and then stops at `action_required`, the
+  # A bot-opened pull request does start this â€” and then stops at `action_required`, the
   # "Approve and run" gate, so the required check never reports until someone clears it.
   # Clearing it by hand is the only thing that does. Dispatching a second run here reports
   # the same contexts and leaves the held one blocking the merge anyway, which is why the
@@ -102,7 +102,7 @@ jobs:
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
-        # agent-framework-core resolves from PyPI at the released range — deliberately the
+        # agent-framework-core resolves from PyPI at the released range â€” deliberately the
         # same artifact every consumer of the published wheels gets, not a git pin.
         #
         # `--locked` because a plain sync silently re-locks in the runner: a lockfile left
@@ -333,6 +333,17 @@ jobs:
           cargo +1.98.0 test --locked --manifest-path "$RUNNER_TEMP/mxc/bounded-build/Cargo.toml"
           cargo +1.98.0 build --locked --manifest-path "$RUNNER_TEMP/mxc/bounded-build/Cargo.toml"
           python3 scripts/experiments/mxc_session_patch/bounded_probe.py --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/bounded"
+          git clone --no-checkout https://github.com/hyperlight-dev/hyperlight.git "$RUNNER_TEMP/mxc/host"
+          git -C "$RUNNER_TEMP/mxc/host" checkout 388ea8ebd88639a062f7a87f477db2930605a307
+          python3 scripts/experiments/mxc_session_patch/storage_patch.py apply --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime" --host "$RUNNER_TEMP/mxc/host"
+          python3 scripts/experiments/mxc_session_patch/storage_patch.py configure --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime" --host "$RUNNER_TEMP/mxc/host" --build-dir "$RUNNER_TEMP/mxc/storage-build"
+          rustc +1.98.0 --edition 2024 --test "$RUNNER_TEMP/mxc/host/src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs" -o "$RUNNER_TEMP/mxc/storage-budget-tests"
+          "$RUNNER_TEMP/mxc/storage-budget-tests"
+          cargo +1.98.0 test --locked --manifest-path "$RUNNER_TEMP/mxc/storage-build/Cargo.toml"
+          cargo +1.98.0 build --locked --manifest-path "$RUNNER_TEMP/mxc/storage-build/Cargo.toml"
+          python3 -m scripts.experiments.mxc_session_patch.storage_probe --helper "$CARGO_TARGET_DIR/debug/mxc-session-state-probe" --startup "$RUNNER_TEMP/mxc/images/agent/snapshot" --state-dir "$RUNNER_TEMP/mxc/storage"
+          python3 scripts/experiments/mxc_session_patch/storage_patch.py remove --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime" --host "$RUNNER_TEMP/mxc/host"
+          python3 scripts/experiments/mxc_session_patch/storage_patch.py check --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime" --host "$RUNNER_TEMP/mxc/host"
           python3 scripts/experiments/mxc_session_patch/output_patch.py remove --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime"
           python3 scripts/experiments/mxc_session_patch/output_patch.py check --source "$RUNNER_TEMP/mxc/source" --runtime "$RUNNER_TEMP/mxc/runtime"
           python3 scripts/experiments/mxc_session_patch/patch.py check --source "$RUNNER_TEMP/mxc/source"
@@ -365,7 +376,12 @@ jobs:
           bounded = json.loads((root / "bounded/result.json").read_text())
           assert bounded["lost_ack_redelivery_identical"] and bounded["checkpoint_after_truncation"]
           assert bounded["guest_failure_and_timeout_refuse_publication"]
+          storage = json.loads((root / "storage/result.json").read_text())
+          for key in ("same_machine_restart_replay", "failed_exports_preserve_checkpoint", "interrupted_calls_refuse_reexecution", "scratch_reclaimed", "collected_checkpoint_preserves_delivery"):
+              assert storage[key] is True
           record = {
+              "storage_helper_sha256": storage["helper_sha256"], "bounded_storage_passed": True,
+              "storage_overlay_sha256": hashlib.sha256(Path("scripts/experiments/mxc_session_patch/storage-patch.json").read_bytes()).hexdigest(),
               "source_commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "kernel": platform.release(),
               "architecture": platform.machine(), "host_python": platform.python_version(),
@@ -407,6 +423,7 @@ jobs:
             ${{ runner.temp }}/mxc/descriptors/*.stderr
             ${{ runner.temp }}/mxc/bounded/*.json
             ${{ runner.temp }}/mxc/bounded/*.log
+            ${{ runner.temp }}/mxc/storage/result.json
           if-no-files-found: error
           retention-days: 14
 
@@ -482,8 +499,8 @@ jobs:
         # its default stage. A hook whose `stages` were dropped would run here, which is how
         # the wiring is caught (the suite's config test pins it too).
         env:
-          # `main` is checked out as a local branch here, so the branch guard — a local
-          # hook that keeps a commit on the protected branch — would fail the run.
+          # `main` is checked out as a local branch here, so the branch guard â€” a local
+          # hook that keeps a commit on the protected branch â€” would fail the run.
           SKIP: no-commit-to-branch
         run: uv run pre-commit run --all-files
 
@@ -527,9 +544,9 @@ jobs:
         # pyright above does not see them. The root [tool.pyright] in pyproject.toml drives this
         # pass: scripts/ stays at full standard (it sits under no execution environment), and each
         # test tree is one that relaxes the four loose-fake rules to warnings so intentional fakes
-        # do not block. The two InMemoryStore→AgentFileStore duck-types in smoke_install.py are
+        # do not block. The two InMemoryStoreâ†’AgentFileStore duck-types in smoke_install.py are
         # suppressed inline; everything outside those four rules is real drift. samples/ relaxes
-        # nothing and suppresses inline instead — pyproject.toml says why (#334).
+        # nothing and suppresses inline instead â€” pyproject.toml says why (#334).
         run: uv run pyright
 
   # Wheel validation and sample compatibility run alongside dependent compatibility.
@@ -556,8 +573,8 @@ jobs:
 
       - name: Build + metadata check
         if: needs.changes.outputs.code == 'true'
-        # Enumerated: the directory basename is the distribution name — an invariant
-        # test_release_config.py pins — so a new package builds on the commit that adds it.
+        # Enumerated: the directory basename is the distribution name â€” an invariant
+        # test_release_config.py pins â€” so a new package builds on the commit that adds it.
         run: |
           set -euo pipefail
           for package in packages/*/; do
@@ -566,7 +583,7 @@ jobs:
           uv run twine check dist/*
 
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
-      # PyPI — deliberately opposite of publish-packages.yml's copy of this gate.
+      # PyPI â€” deliberately opposite of publish-packages.yml's copy of this gate.
       # The core this checkout built, named once. A dependent floored on the release this
       # branch cuts resolves against neither the index nor `dist/`, where the core still
       # carries its pre-bump version, so the steps below are handed it directly. The loop
@@ -585,7 +602,7 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         # The core is overridden to the one this checkout built. A dependent whose floor waits
         # on the release this branch cuts cannot resolve against the index or against `dist/`,
-        # where the core still carries its pre-bump version — and what this step asks is
+        # where the core still carries its pre-bump version â€” and what this step asks is
         # whether the wheel installs and works, not whether that number exists yet. Pairing
         # against a *published* core is the published-cores gate's question, and the upload is
         # checked without any of this.
@@ -603,7 +620,7 @@ jobs:
 
       # Every wheel the build step produced, installed into one environment. The samples take
       # several of these together, so a range that moved past a *sibling* rather than past the
-      # index leaves the family unresolvable — which no per-package check can see (#628).
+      # index leaves the family unresolvable â€” which no per-package check can see (#628).
       - name: The suite installs as a set
         if: needs.changes.outputs.code == 'true'
         run: |
@@ -615,7 +632,7 @@ jobs:
       #
       # `--local-core` on the same terms as the dependent checks, and it substitutes every wheel
       # `dist/` holds rather than the core alone. Passing it unconditionally means the second
-      # refusal — a floor no published core satisfies — is not reachable here; a Release PR
+      # refusal â€” a floor no published core satisfies â€” is not reachable here; a Release PR
       # merged and never published is `report_stuck_releases.py`'s signal, not this one's.
       # docs/release-compatibility.md carries both, and `poe sample-floors` is the flagless run.
       - name: Each sample against the core its own block names
@@ -670,7 +687,7 @@ jobs:
   # The required aggregate context runs no checks of its own: it fails unless every
   # shard above succeeded.
   #
-  # `always()` so this reports on a shard that failed or was cancelled — without it the join is
+  # `always()` so this reports on a shard that failed or was cancelled â€” without it the join is
   # skipped, and a skipped required check never reports, which is the unmergeable-for-ever
   # state the trigger comment above describes. `success` is the only result accepted: a
   # `skipped` shard is refused too, because the shards skip *steps* on the `changes` verdict

@@ -12,5 +12,6 @@
   "packages/maf-sandbox-drawio": "0.4.3",
   "packages/maf-sandbox-tui": "0.3.6",
   "packages/maf-sandbox-docker-sbx": "0.5.1",
-  "packages/maf-sandbox-bubblewrap": "0.1.1"
+  "packages/maf-sandbox-bubblewrap": "0.1.1",
+  "packages/maf-compaction": "0.1.0"
 }

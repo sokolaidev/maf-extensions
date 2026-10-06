@@ -399,6 +399,7 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-drawio",
         "maf-sandbox-otel",
         "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.
+        "maf-compaction",  # Compaction strategies; touches no sandbox at all.
     }
 )
 

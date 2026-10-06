@@ -8,6 +8,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "maf-compaction",
     "maf-sandbox",
     "maf-sandbox-acas",
     "maf-sandbox-bicep",
@@ -1315,6 +1316,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/45/98/7a1a5f31fd5c7ba93
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/d4/1152d1c7ab42d8b908be64fd200ddc870dc9d4925e951198702084aa1a7d/linkify_it_py-2.2.0-py3-none-any.whl", hash = "sha256:3adc40eb5af300b2605fcfdb968c24e1d780a90f1f2221af7c15e5111e94d443", size = 21971, upload-time = "2026-08-29T07:07:07.164Z" },
 ]
+
+[[package]]
+name = "maf-compaction"
+version = "0.1.0"
+source = { editable = "packages/maf-compaction" }
+dependencies = [
+    { name = "agent-framework-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "agent-framework-core", specifier = ">=1.20.0,<1.21" }]
 
 [[package]]
 name = "maf-sandbox"

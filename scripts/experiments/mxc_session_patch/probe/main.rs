@@ -43,6 +43,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
         #[cfg(feature = "bounded-output")]
         println!("mxc-session-state-probe call-bounded <restore> <checkpoint> <code-file> <report> [output-limit-bytes]");
+        #[cfg(feature = "bounded-storage")]
+        println!("mxc-session-state-probe call-stored <restore> <checkpoint> <code-file> <report> <output-bytes> <checkpoint-bytes> <checkpoint-files>");
         return Ok(());
     }
     match args.get(1).map(String::as_str) {
@@ -106,7 +108,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
         }
         #[cfg(feature = "bounded-output")]
-        Some("call-bounded") if args.len() == 6 || args.len() == 7 => {
+        Some(mode @ ("call-bounded" | "call-stored"))
+            if (mode == "call-bounded" && (args.len() == 6 || args.len() == 7))
+                || (mode == "call-stored" && args.len() == 9) =>
+        {
+            if mode == "call-stored" && !cfg!(feature = "bounded-storage") {
+                return Err("bounded storage is not enabled".into());
+            }
             owner::watch();
             let limit = args
                 .get(6)
@@ -121,6 +129,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             sandbox.execute(&code)?;
             assert!(sandbox.refuses_execution());
             let (output, omitted, saturated) = sandbox.take_output()?;
+            #[cfg(feature = "bounded-storage")]
+            let _candidate = if mode == "call-stored" {
+                sandbox.capture_bounded(Path::new(&args[3]), args[7].parse()?, args[8].parse()?)?
+            } else {
+                sandbox.capture(Path::new(&args[3]))?
+            };
+            #[cfg(not(feature = "bounded-storage"))]
             let _candidate = sandbox.capture(Path::new(&args[3]))?;
             assert!(sandbox.refuses_execution());
             sandbox.close();

@@ -120,13 +120,37 @@ def _select_published_siblings(core: str) -> dict[str, str]:
     return selected
 
 
-def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """The floor and ceiling the wheel's own metadata declares on ``maf-sandbox``."""
+def _metadata(wheel: Path) -> str:
+    """The wheel's METADATA text, or a refusal for a file that carries none."""
     with zipfile.ZipFile(wheel) as archive:
         names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
         if not names:
             raise SystemExit(f"{wheel.name} carries no METADATA — it is not a wheel this can read")
-        metadata = archive.read(names[0]).decode("utf-8")
+        return archive.read(names[0]).decode("utf-8")
+
+
+#: A requirement on the core itself: `maf-sandbox` followed by a version operator, extras,
+#: whitespace or nothing — never a longer name such as `maf-sandbox-docker`.
+_REQUIRES_DIST_NAME = re.compile(r"^Requires-Dist:\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
+
+
+def names_core(wheel: Path) -> bool:
+    """Whether the wheel's metadata requires ``maf-sandbox`` at all.
+
+    A package of this workspace that does not is no dependent of the core, and this check has
+    no range to read off it; a wheel that names the core but not in the shape
+    :func:`declared_range` reads is still refused there.
+    """
+    for line in _metadata(wheel).splitlines():
+        match = _REQUIRES_DIST_NAME.match(line)
+        if match and re.sub(r"[-_.]+", "-", match.group(1)).lower() == _CORE:
+            return True
+    return False
+
+
+def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """The floor and ceiling the wheel's own metadata declares on ``maf-sandbox``."""
+    metadata = _metadata(wheel)
     for line in metadata.splitlines():
         if line.startswith("Requires-Dist:") and _CORE in line:
             if match := _RANGE.search(line):
@@ -331,6 +355,11 @@ def main(argv: list[str]) -> int:
     if not tests.is_dir():
         print(f"no test tree at {tests} — nothing to run", file=sys.stderr)
         return 2
+    if not names_core(wheel):
+        # Not a failure and not a usage error: the workspace holds packages that depend on the
+        # framework alone, and a release of one has no core pairing for this gate to earn.
+        print(f"ok   {distribution} requires no {_CORE} — not a dependent, nothing to check")
+        return 0
 
     floor, ceiling = declared_range(wheel)
     cores = admitted_published_cores(floor, ceiling)

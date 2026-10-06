@@ -52,6 +52,7 @@ Three things a Release PR does need from you first, all of them because it is a 
 | `maf-sandbox-otel-v*` | `packages/maf-sandbox-otel` |
 | `maf-sandbox-tui-v*` | `packages/maf-sandbox-tui` |
 | `maf-sandbox-wslc-v*` | `packages/maf-sandbox-wslc` |
+| `maf-compaction-v*` | `packages/maf-compaction` |
 
 Note the order this leaves you with: **the GitHub Release exists before PyPI has the package.** release-please creates it when its PR merges, and the alternatives that would delay it break release-please outright — see [`docs/maintainers.md`](docs/maintainers.md#why-a-release-exists-before-its-upload-does). If a publish fails there is nothing to delete: Releases here are immutable, so neither it nor its tag can be removed or repointed. What follows depends on the cause, and the two are not the same cost. A transient failure or a mis-ordered one is **re-run against the tag that already exists**, and that same version gets its artifact — which is what an ordering refusal at step 2 below is, where a dependent is merged ahead of the core its floor names. Only a failure that version can never get past leaves the gap permanent, and then the number is spent: annotate its changelog section and force the replacement with `Release-As:`. [*If a release goes wrong*](#if-a-release-goes-wrong) carries both, with the command.
 
@@ -113,7 +114,7 @@ Packages version independently. There is no lockstep release, and a fix in one i
 ## What the workflow refuses to do
 
 - **Publish a tag that disagrees with the manifest.** PyPI releases are immutable, so a mismatched version would be permanent and unreproducible from this history.
-- **Publish without the full gate passing on the tagged commit.** The Tests workflow ran on a branch; a tag can point anywhere.
+- **Publish without the full gate passing on the tagged commit.** The Package and Sandbox Validation workflow ran on a branch; a tag can point anywhere.
 - **Publish a stale or mixed `dist/`.** Exactly one sdist and one wheel, both named for the package being released.
 - **Publish a wheel missing `py.typed` or the licence.** Both are invisible to this repository's own tests and break consumers.
 - **Publish a package whose dependency is not on PyPI yet** (see *Release order*).

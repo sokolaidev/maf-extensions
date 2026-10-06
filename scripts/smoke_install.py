@@ -41,6 +41,7 @@ _PACKAGES = {
     "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
     "maf-sandbox-bubblewrap": "maf_sandbox_bubblewrap",
+    "maf-compaction": "maf_compaction",
 }
 
 _SARIF = json.dumps(
@@ -844,6 +845,35 @@ def _smoke_maf_sandbox_tui() -> str:
     return "runs its installed entry point, reports its version and exposes a three-instance demo"
 
 
+def _smoke_maf_compaction() -> str:
+    from agent_framework import CharacterEstimatorTokenizer, Message
+    from maf_compaction import (
+        AnchoredCompactionStrategy,
+        RecallGate,
+        ToolResultAnchoredSummarizationCompactionStrategy,
+        find_nested_strategy,
+        make_recall_tool,
+    )
+
+    tokenizer = CharacterEstimatorTokenizer()
+    fallback = AnchoredCompactionStrategy(max_input_tokens=1_000, tokenizer=tokenizer)
+    strategy = ToolResultAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=1_000, tokenizer=tokenizer, fallback=fallback
+    )
+    assert (
+        find_nested_strategy(strategy, ToolResultAnchoredSummarizationCompactionStrategy)
+        is strategy
+    )
+    assert find_nested_strategy(strategy, AnchoredCompactionStrategy) is None, (
+        "a fallback is not a part"
+    )
+    tool = make_recall_tool(RecallGate())
+    assert tool.__name__ == "recall_earlier_tool_results"
+    assert "nothing was recorded" in tool("AB-123456"), "the gate keeps an unarmed tool inert"
+    assert Message(role="user", contents=["hello"]).text == "hello"
+    return "record strategy built over an anchored fallback, recall tool minted"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -859,6 +889,7 @@ _SMOKES = {
     "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
     "maf-sandbox-bubblewrap": _smoke_maf_sandbox_bubblewrap,
+    "maf-compaction": _smoke_maf_compaction,
 }
 
 
