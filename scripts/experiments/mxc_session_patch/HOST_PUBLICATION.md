@@ -101,7 +101,20 @@ Format 4 adds these totals. A format-3 root requires explicit `SharedStore(..., 
 
 Opening a root, upgrading, explicit accounting audits and checkpoint collection still scan retained history. Scratch admission separately audits managed scratch and sums outstanding launch allowances; this change does not optimize that path. The result-expiry and uncertainty indexes remain unchanged. No bound on full-store audit latency or physical-disk usage follows from indexed admission.
 
-The [MXC accounting scaling workflow](../../../.github/workflows/mxc-accounting.yml) runs [accounting_benchmark.py](accounting_benchmark.py) on GitHub Linux and Windows runners. It seeds 0, 1,000 and 10,000 interrupted identities and measures 50 admissions at each size. Its scan control uses the prior aggregate lookups with the same current trigger/write costs. Each mode reports admission and write-lock median/p95, admissions per measured second, accounting audit time and zero-payload collection time separately. Setup, reconciliation and teardown are excluded from admission timing. Identities accumulate during measurement. This synthetic workload does not measure native guest execution, payload-heavy collection, concurrent-writer throughput or physical power loss. Runner measurements are pending for this increment.
+The [MXC accounting scaling workflow](../../../.github/workflows/mxc-accounting.yml) runs [accounting_benchmark.py](accounting_benchmark.py) on GitHub Linux and Windows runners. It seeds 0, 1,000 and 10,000 interrupted identities and measures 50 admissions at each size. Its scan control uses the prior aggregate lookups with the same current trigger/write costs. Each mode reports admission and write-lock median/p95, admissions per measured second, accounting audit time and zero-payload collection time separately. Setup, reconciliation and teardown are excluded from admission timing. Identities accumulate during measurement. This synthetic workload does not measure native guest execution, payload-heavy collection, concurrent-writer throughput or physical power loss. [Run 37540209616, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/37540209616) passed on both platforms. The [Linux result](linux-accounting-result.json) and [Windows result](windows-accounting-result.json) retain the complete measurements, Python/SQLite versions and source identity: PR head `1984359b5836bed9c511de9ed8b151d39ac0fdfe`, tested merge `f7ac3453306b89852a27010b26436c29cd94c03a`.
+
+The pairs below are **stored totals / scan control**. Throughput covers measured admission time only, not the excluded reconciliation step.
+
+| Runner | Initial retained identities | Median admission (ms) | Median write lock (ms) | Admissions / measured second |
+| --- | ---: | ---: | ---: | ---: |
+| Linux | 0 | 1.300 / 1.202 | 1.285 / 1.181 | 572.0 / 468.2 |
+| Linux | 1,000 | 1.224 / 1.265 | 1.204 / 1.245 | 221.9 / 622.1 |
+| Linux | 10,000 | 1.123 / 2.367 | 1.104 / 2.345 | 832.4 / 284.5 |
+| Windows | 0 | 38.191 / 38.304 | 38.050 / 38.193 | 25.4 / 25.2 |
+| Windows | 1,000 | 41.849 / 43.756 | 41.711 / 43.616 | 23.2 / 22.5 |
+| Windows | 10,000 | 40.476 / 41.037 | 40.330 / 40.895 | 24.2 / 20.8 |
+
+At 10,000 initial identities, the stored-total accounting audit took 8.153 ms on Linux and 12.304 ms on Windows; zero-payload collection took 9.547 ms and 13.955 ms respectively. Those history scans remain. Linux median admission improved in this run; the Windows median difference was small. One runner sample does not establish a general speedup or isolate filesystem-flush cost from scheduling noise. The regression test independently verifies absence of aggregate admission queries and stable SQLite VM work between 0 and 5,000 retained identities.
 
 ### Journaled supervisor increment
 

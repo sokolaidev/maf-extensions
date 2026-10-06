@@ -1,0 +1,93 @@
+{
+  "source_sha": "f7ac3453306b89852a27010b26436c29cd94c03a",
+  "run_id": "37540209616",
+  "run_attempt": "1",
+  "platform": "Linux",
+  "architecture": "x86_64",
+  "python": "3.12.3",
+  "sqlite": "3.45.1",
+  "journal_mode": "DELETE",
+  "synchronous": "FULL",
+  "scope": "single-session, synthetic interrupted identities; no native execution, payloads, concurrent writers or physical power loss",
+  "control": "previous aggregate lookups with current triggers; both modes retain new identities and exclude reconciliation from admission timing",
+  "results": [
+    {
+      "mode": "stored_totals",
+      "retained_identities_before": 0,
+      "retained_identities_after": 50,
+      "samples": 50,
+      "admission_median_seconds": 0.0012995314999990626,
+      "admission_p95_seconds": 0.0019087999999953809,
+      "write_lock_median_seconds": 0.001284613500001086,
+      "write_lock_p95_seconds": 0.0018914310000042178,
+      "admissions_per_measured_second": 572.010878502978,
+      "accounting_audit_seconds": 0.00015057200000256898,
+      "collection_zero_payload_seconds": 0.0002306929999988938
+    },
+    {
+      "mode": "scan_control",
+      "retained_identities_before": 0,
+      "retained_identities_after": 50,
+      "samples": 50,
+      "admission_median_seconds": 0.0012017300000017883,
+      "admission_p95_seconds": 0.008787171999998122,
+      "write_lock_median_seconds": 0.0011813984999982097,
+      "write_lock_p95_seconds": 0.008764020000000983,
+      "admissions_per_measured_second": 468.2211953715005,
+      "accounting_audit_seconds": 0.000299552999997843,
+      "collection_zero_payload_seconds": 0.00036393399999923304
+    },
+    {
+      "mode": "stored_totals",
+      "retained_identities_before": 1000,
+      "retained_identities_after": 1050,
+      "samples": 50,
+      "admission_median_seconds": 0.0012243285000010928,
+      "admission_p95_seconds": 0.0029104370000041513,
+      "write_lock_median_seconds": 0.001203542500000765,
+      "write_lock_p95_seconds": 0.0028922120000061113,
+      "admissions_per_measured_second": 221.87067750159358,
+      "accounting_audit_seconds": 0.0010586659999987091,
+      "collection_zero_payload_seconds": 0.0013273980000008123
+    },
+    {
+      "mode": "scan_control",
+      "retained_identities_before": 1000,
+      "retained_identities_after": 1050,
+      "samples": 50,
+      "admission_median_seconds": 0.0012645225000014193,
+      "admission_p95_seconds": 0.0015039019999960601,
+      "write_lock_median_seconds": 0.001245434499999476,
+      "write_lock_p95_seconds": 0.001482970999994393,
+      "admissions_per_measured_second": 622.0655070565582,
+      "accounting_audit_seconds": 0.0009502869999948871,
+      "collection_zero_payload_seconds": 0.0011571490000008566
+    },
+    {
+      "mode": "stored_totals",
+      "retained_identities_before": 10000,
+      "retained_identities_after": 10050,
+      "samples": 50,
+      "admission_median_seconds": 0.0011234585000039488,
+      "admission_p95_seconds": 0.0015537009999988527,
+      "write_lock_median_seconds": 0.00110423050000108,
+      "write_lock_p95_seconds": 0.0015345499999952494,
+      "admissions_per_measured_second": 832.4360089372075,
+      "accounting_audit_seconds": 0.008153061000001571,
+      "collection_zero_payload_seconds": 0.009546862999997074
+    },
+    {
+      "mode": "scan_control",
+      "retained_identities_before": 10000,
+      "retained_identities_after": 10050,
+      "samples": 50,
+      "admission_median_seconds": 0.0023674804999984644,
+      "admission_p95_seconds": 0.0027645510000056106,
+      "write_lock_median_seconds": 0.002345449999999971,
+      "write_lock_p95_seconds": 0.002739854000004982,
+      "admissions_per_measured_second": 284.47983181372143,
+      "accounting_audit_seconds": 0.008231437000006281,
+      "collection_zero_payload_seconds": 0.009596430999998518
+    }
+  ]
+}
