@@ -156,11 +156,9 @@ async def test_decisions_are_frozen_as_the_conversation_grows() -> None:
     share must come out byte-identical.
 
     Run at a ceiling the strategy is actually configured for, and with results large enough to
-    be cut well clear of ``DEFAULT_KEEP_TOKENS``. An earlier version of this test used a
-    3,000-token ceiling, where every per-result budget clamped to that 150-token floor and
-    both conversations trimmed to the same number whatever rule produced it. It therefore
-    passed against a strategy whose retention moved by a factor of six with the band's width,
-    which is the one thing it exists to forbid.
+    be cut well clear of ``DEFAULT_KEEP_TOKENS``: if every per-result budget clamped to that
+    floor, both conversations would trim to the same length whatever rule produced it, and the
+    test would pass against retention that moves with the band's width.
     """
     strategy = AnchoredCompactionStrategy(max_input_tokens=117_952, tokenizer=TOKENIZER)
 
@@ -587,11 +585,9 @@ def _preserve(messages: list[Message], *message_ids: str) -> None:
 async def test_shortening_in_place_skips_a_preserved_result() -> None:
     """Removal path one: the trim that rewrites a tool result where it stands.
 
-    This is the path that produced the measured failure. The record written by the
-    record-then-drop strategy is a tool result like any other, so the collapse shortened it,
-    and a record holding four lookups' worth of identifiers arrived at the answering prompt
-    holding two -- 16,617 tokens gone while only three messages left, which no message-counting
-    diagnostic could see. ``keep_tokens`` is pinned and the ceiling chosen so that shortening
+    The record written by the record-then-drop strategy is a tool result like any other, so
+    this trim reaches it unless it honours the flag, and shortening loses values without
+    removing a message. ``keep_tokens`` is pinned and the ceiling chosen so that shortening
     alone reaches it, which isolates this path from the shed steps below.
     """
     strategy = AnchoredCompactionStrategy(

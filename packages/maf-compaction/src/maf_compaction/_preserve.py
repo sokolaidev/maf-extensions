@@ -1,22 +1,13 @@
 """One annotation that says a message must survive compaction intact.
 
-**The failure this exists for was measured, and it is the worst kind: a strategy destroying
-its own output.** :class:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy`
-asks the model to write everything that matters from the earlier tool results into one tool
-result of its own, and then deletes the groups that record replaced. When the record does not
-free enough on its own it hands what is left to a fallback strategy, which defaults to
-:class:`~._anchored.AnchoredCompactionStrategy` -- and that strategy shortens and sheds tool
-results. *The record is a tool result.* Nothing in ``_anchored`` had ever heard of a record,
-so it treated the one artefact the whole design exists to produce as ordinary trimmable bulk.
-Measured on a live seed: a record holding four lookups' worth of values, thirty-two
-identifiers, reached the prompt the questions were answered from carrying two lookups' worth.
-16,617 tokens left while only three messages did, which is shortening rather than deletion,
-and nothing reported a loss of any kind because every counter was counting messages.
-
-That is not a bug in one branch. Every deletion the record licences is only safe *because* the
-record is there, so trimming the record after the fact discards the sole surviving copy of
-everything the strategy already deleted, and does so at the exact moment the conversation is
-under most pressure -- which is when the record is worth most.
+**A strategy must not destroy its own output.**
+:class:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy` asks the model to
+write everything that matters from the earlier tool results into one tool result of its own,
+deletes the groups that record replaced, and hands what is left to a fallback strategy that
+shortens and sheds tool results. The record is a tool result. Every deletion it licences is
+safe only because the record is there, so trimming it afterwards discards the sole surviving
+copy of everything already deleted, at the moment the conversation is under most pressure.
+This flag is what stops the fallback treating the record as ordinary trimmable bulk.
 
 **Preserved is not excluded, and the difference is the whole design.** ``EXCLUDED_KEY`` in
 ``agent_framework._compaction`` says "this message is not being sent", so an excluded message

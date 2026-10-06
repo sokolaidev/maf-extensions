@@ -32,12 +32,12 @@ Twenty strategies, the five here and fifteen from the framework, on a harness ag
 | `user_summary_anchored` | $0.085 | $0.221 (5 DQ) | $0.590 (5 DQ) | $0.044 | $0.111 (5 DQ) | $0.301 (5 DQ) |
 | `anchored_min_gain` | $0.079 | lost facts | lost facts | $0.034 | lost facts | lost facts |
 
-Every row shown kept all 53 facts on every seed; the models are gpt-5.6-luna (5.6) and gpt-6-luna (6). The composition is the only strategy that keeps every fact inside the window on both models past it: on gpt-6-luna 22% below the control at 1.5 times the window and 65% below at 3 times, on every seed; on gpt-5.6-luna 18-35% below on four seeds of five at 1.5 times, and at 3 times it holds on four seeds and fails loudly on the fifth. What decides the row on gpt-5.6-luna is the quality of the record the model writes. The framework's own strategies either lose most of the facts past the window or disqualify.
+Every priced cell kept all 53 facts on every seed, and *lost facts* marks a cell that did not; the models are gpt-5.6-luna (5.6) and gpt-6-luna (6). Past the window, the composition is the only strategy that keeps every fact on both models and stays inside the window on all but one seed: on gpt-6-luna 22% below the control at 1.5 times the window and 65% below at 3 times, on every seed; on gpt-5.6-luna 18-35% below on four seeds of five at 1.5 times, and at 3 times it holds on four seeds and fails loudly on the fifth. What decides the row on gpt-5.6-luna is the quality of the record the model writes. The framework's own strategies either lose most of the facts past the window or disqualify.
 
 ## When to use which
 
 - **Inside the context window, do not compact.** The best strategy here costs within 3-8% of not compacting, inside the seed spread, and the whole conversation stays cached.
-- **Past the window, use the composition.** It is the only strategy that keeps every fact on both models, and it is cheaper than an unlimited model would be.
+- **Past the window, use the composition.** It is the only strategy that keeps every fact on both models. It is cheaper than an unlimited model in every cell but gpt-5.6-luna at three times the window, where it costs more and overflows on one seed of five.
 - **The record strategy alone** suits a conversation whose bulk is tool output and that ends soon after it outgrows the window; it cannot touch user turns, so a conversation that keeps going grows until it overflows.
 - **The anchored strategies alone** keep a conversation admissible and the cache intact, but they discard values past the window; use one as the fallback the record strategy needs rather than on its own.
 - **The user-turn strategy alone** is never enough, since it cannot reach the tool half; it is the composition's second half.

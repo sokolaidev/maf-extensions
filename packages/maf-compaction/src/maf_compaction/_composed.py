@@ -28,21 +28,17 @@ three things in order.
 speeds.** The record half compacts in two steps: on the pass where the prompt crosses the line
 it can only ask -- its middleware pins a *later* call, the model writes the record there, and
 only the pass after that drops what the record covers. The user half compacts in one. Judged
-on the asking pass, it saw a prompt the record half had not yet touched and acted at once; when
-summarising the user turns alone got back under the line, the middleware, which reads the
-prompt on each call's way out, never saw it over the line again and never asked. Measured on
-gpt-5.6-luna at 200,000 tokens, 0.9 fill and a 0.8 trigger: no record and one user compaction
-on every seed -- the layering inverted, and the cache-breaking half doing all the work. So on
-a pass over the line where the record half has tool work a record is due for, or has
-already asked for, the user half holds; it acts on the pass that sees the record arrive, if the
-prompt is still over the line after the record's drops, or after
+on the asking pass, it can bring the prompt back under the line by itself, and the middleware,
+which reads the prompt on each call's way out, then never asks: the layering inverts and the
+cache-breaking half does all the work. So on a pass over the line where the record half has
+tool work a record is due for, or has already asked for, the user half holds; it acts on the
+pass that sees the record arrive, if the prompt is still over the line after the record's
+drops, or after
 :data:`_RECORD_WAIT_RESPONSES` model responses with no record, so a model that never records
 cannot leave the conversation uncompacted. With nothing pending it acts as before. The rule,
 and the guards on it, are on
 :meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._holds_for_record`;
-``USERWAIT`` counts the passes held. At 0.6 of 120,000 tokens a record still arrives, because
-summarising the user turns there does not get back under the line; a late trigger makes the
-inversion more likely rather than causing it.
+``USERWAIT`` counts the passes held.
 
 **Judged after the record phase.** User compaction rewrites a message just behind the head, and
 so breaks nearly the whole cached prefix; it is the second line of defence, and if tool
