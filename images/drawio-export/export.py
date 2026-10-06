@@ -292,7 +292,7 @@ def prepare_document(xml: str, manifest: dict) -> str:
                 normalized: list[str] = []
                 for part in parts:
                     key, sep, setting = part.partition("=")
-                    if key in {"image", "indicatorImage"}:
+                    if sep and key in {"image", "indicatorImage"}:
                         if setting.startswith("https://app.diagrams.net/img/lib/"):
                             setting = setting.removeprefix("https://app.diagrams.net/")
                         asset = setting if setting in manifest["assets"] else None
