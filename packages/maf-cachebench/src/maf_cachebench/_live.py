@@ -63,7 +63,7 @@ from maf_compaction import (
 )
 from maf_compaction import record_text as _record_text
 
-from ._metrics import serialize_message
+from ._metrics import clamp_cached_tokens, serialize_message
 from ._recall import (
     COMBINED_SCOPE,
     FactOutcome,
@@ -425,7 +425,9 @@ class UsageRecorder(ChatMiddleware):
                 prompt_text="\n".join(serialize_message(message) for message in sent),
                 messages_before_compaction=len(outgoing),
                 input_tokens=usage.get("input_token_count") or 0,
-                cached_tokens=usage.get("cache_read_input_token_count") or 0,
+                cached_tokens=clamp_cached_tokens(
+                    usage.get("input_token_count") or 0, usage.get("cache_read_input_token_count")
+                ),
                 output_tokens=usage.get("output_token_count") or 0,
             )
         )
@@ -506,12 +508,14 @@ class MeteredClient:
         self.usage.append(
             SummarizerUsage(
                 input_tokens=usage.get("input_token_count") or 0,
-                cached_tokens=usage.get("cache_read_input_token_count") or 0,
+                cached_tokens=clamp_cached_tokens(
+                    usage.get("input_token_count") or 0, usage.get("cache_read_input_token_count")
+                ),
                 output_tokens=usage.get("output_token_count") or 0,
             )
         )
         self.input_tokens += usage.get("input_token_count") or 0
-        self.cached_tokens += usage.get("cache_read_input_token_count") or 0
+        self.cached_tokens += self.usage[-1].cached_tokens
         self.output_tokens += usage.get("output_token_count") or 0
         return response
 

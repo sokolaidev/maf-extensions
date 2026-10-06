@@ -58,7 +58,7 @@ OLLAMA_MODEL
 
 **Pin `OPENROUTER_PROVIDER_ORDER` if you use OpenRouter.** It dispatches to an upstream provider that can change between requests, and a different upstream is a different cache; without the pin you are measuring the router. Setting it also disables fallbacks.
 
-Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells. If no cells run, the command exits with failure and writes no summary table.
+Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells. If no cells run, the command exits with failure and writes no summary table. Duplicate selections and unknown summarizer providers are rejected before setup; different model-qualified selectors on one provider remain valid.
 
 ### What each provider reports
 
@@ -162,6 +162,8 @@ The achieved fill and the achieved share are both measured on the uncompacted ru
 These are separate because a seeding reply is appended to the history and re-sent on every later turn, while nothing follows a closing answer — the snapshot is restored before the next probe, so its length is never re-sent, and it is the one call that has to enumerate everything planted. **One number per call path, reserved and sent.** Were the arithmetic to use `--max-output-tokens` while the request carried `--answer-max-tokens`, at a 60,000-token window with a 12,000-token answer cap the strategies would believe 57,952 tokens of input were available when 48,000 were.
 
 Sizing `--max-output-tokens` too low also inflates the budget and can push a trigger above what the service will accept, which disables compaction with no warning.
+
+Provider cache-read counts are bounded per request between zero and that request's input count before aggregation and pricing. An over-reported cache count cannot offset another request's fresh input.
 
 ### Tuning the strategies
 

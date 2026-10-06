@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from agent_framework import Message, apply_compaction
 
-from ._metrics import common_message_prefix, serialize_message
+from ._metrics import clamp_cached_tokens, common_message_prefix, serialize_message
 from ._types import CellKey, TurnRecord
 
 if TYPE_CHECKING:
@@ -421,7 +421,15 @@ class ProviderCaller:
             return CallOutcome(
                 latency_ms=latency_ms,
                 input_tokens=usage.get("input_token_count"),
-                cached_tokens=usage.get("cache_read_input_token_count"),
+                cached_tokens=(
+                    clamp_cached_tokens(
+                        usage.get("input_token_count") or 0,
+                        usage.get("cache_read_input_token_count"),
+                    )
+                    if usage.get("cache_read_input_token_count") is not None
+                    and usage.get("input_token_count") is not None
+                    else usage.get("cache_read_input_token_count")
+                ),
                 cache_write_tokens=usage.get("cache_creation_input_token_count"),
                 output_tokens=usage.get("output_token_count"),
                 text=response.text,

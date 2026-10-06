@@ -357,3 +357,146 @@ def test_orphan_long_tier_prices_fail_before_catalogue_lookup(
     args = _live_cli.build_parser().parse_args(argv)
     with pytest.raises(SystemExit, match="--price-long-input"):
         _live_cli._resolve_pricing(args, provider, "stub")
+
+
+@pytest.mark.parametrize(
+    "option,selection",
+    [
+        ("--providers", "azure:model,azure:model"),
+        ("--strategies", "none,none"),
+        ("--sizes", "small,small"),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_replay_duplicates_fail_before_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    option: str,
+    selection: str,
+    dry_run: bool,
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Duplicate selections must fail before setup")
+
+    monkeypatch.setattr(_cli, "build_tokenizer", unexpected)
+    output = tmp_path / "records"
+    argv = [option, selection, "--out", str(output)] + (["--dry-run"] if dry_run else [])
+    with pytest.raises(SystemExit, match="Duplicate"):
+        await _cli.run_benchmark(_cli.build_parser().parse_args(argv))
+    assert not output.exists()
+
+
+async def test_replay_allows_distinct_models_on_one_provider(tmp_path: Path) -> None:
+    args = _cli.build_parser().parse_args(
+        [
+            "--dry-run",
+            "--providers",
+            "azure:first,azure:second",
+            "--strategies",
+            "none",
+            "--sizes",
+            "small",
+            "--out",
+            str(tmp_path),
+            "--run-id",
+            "models",
+        ]
+    )
+    assert await _cli.run_benchmark(args) == 0
+    with (tmp_path / "models-summary.csv").open(encoding="utf-8", newline="") as stream:
+        assert {row["model"] for row in csv.DictReader(stream)} == {"first", "second"}
+
+
+@pytest.mark.parametrize("module,run", COMMANDS)
+async def test_standalone_duplicate_strategies_fail_before_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    run: Any,
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Duplicate strategies must fail before setup")
+
+    monkeypatch.setattr(module, "build_tokenizer", unexpected)
+    with pytest.raises(SystemExit, match="Duplicate"):
+        await run(module.build_parser().parse_args(["azure", "--strategies", "none,none"]))
+
+
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_unknown_summarizer_fails_before_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    live: bool,
+    dry_run: bool,
+) -> None:
+    from maf_cachebench import _live_cli
+
+    module = _live_cli if live else _cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unknown summarizers must fail before setup")
+
+    for name in ("build_provider", "build_tokenizer"):
+        monkeypatch.setattr(module, name, unexpected)
+    output = tmp_path / "records"
+    argv = (
+        (["azure"] if live else ["--out", str(output)])
+        + [
+            "--strategies",
+            "none,summarization",
+            "--summarizer-provider",
+            "unknown:model",
+        ]
+        + (["--dry-run"] if dry_run else [])
+    )
+    args = module.build_parser().parse_args(argv)
+    with pytest.raises(SystemExit, match="Unknown summarizer provider"):
+        if live:
+            await _live_cli.run_live_comparison(args)
+        else:
+            await _cli.run_benchmark(args)
+    assert not output.exists()
+
+
+async def test_live_duplicate_strategies_fail_before_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Duplicate strategies must fail before setup")
+
+    monkeypatch.setattr(_live_cli, "build_tokenizer", unexpected)
+    with pytest.raises(SystemExit, match="Duplicate"):
+        await _live_cli.run_live_comparison(
+            _live_cli.build_parser().parse_args(["azure", "--strategies", "none,none"])
+        )
+
+
+@pytest.mark.parametrize("cached,normalized", [(-50, 0), (400, 100), (50, 50)])
+async def test_summary_bounds_cache_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+    cached: int,
+    normalized: int,
+) -> None:
+    from types import SimpleNamespace
+
+    from maf_cachebench import CallOutcome
+
+    calls = 0
+
+    async def caller(messages: Any) -> CallOutcome:
+        nonlocal calls
+        calls += 1
+        return CallOutcome(
+            latency_ms=0, input_tokens=100, cached_tokens=cached if calls % 2 else 0, text="answer"
+        )
+
+    monkeypatch.setattr(_summary_cli, "build_provider", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(_summary_cli, "ProviderCaller", lambda *a, **k: caller)
+    args = _summary_cli.build_parser().parse_args(
+        ["azure", "--tokenizer", "estimator", "--filler-turns", "0"]
+    )
+    outcome = await _summary_cli._measure(args, "azure", None, "none", ModelPricing(1, 0.1))
+    expected = normalized * ((calls + 1) // 2)
+    assert calls > 1
+    assert outcome.cached_tokens == expected
+    assert outcome.cost == pytest.approx(((calls * 100 - expected) + expected * 0.1) / 1_000_000)

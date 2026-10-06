@@ -221,3 +221,25 @@ def test_both_sides_need_repeats_for_high_confidence(
         ),
     ]
     assert advise(summaries, LUNA).confidence == "low"
+
+
+@pytest.mark.parametrize("cached,normalized", [(-100, 0), (4000, 1000), (100, 100)])
+def test_pricing_bounds_cached_tokens(cached: int, normalized: int) -> None:
+    pricing = ModelPricing(
+        1,
+        0.1,
+        cache_write_per_million=2,
+        long_context_threshold=500,
+        long_context=ModelPricing(3, 0.3),
+    )
+    assert pricing.input_cost(1000, cached) == pytest.approx(
+        ((1000 - normalized) * 2 + normalized * 0.1) / 1_000_000
+    )
+    assert pricing.tiered_input_cost(
+        1000, cached, long_input_tokens=1000, long_cached_tokens=cached
+    ) == pytest.approx(((1000 - normalized) * 3 + normalized * 0.3) / 1_000_000)
+    summary = _summary("none", repeat=1, input_tokens=1000, cached=cached)
+    assert cost_of(summary, LUNA) == pytest.approx(
+        ((1000 - normalized) * 0.2 + normalized * 0.02) / 1_000_000
+    )
+    assert advise([summary], LUNA).baseline.hit_rate == pytest.approx(normalized / 1000)

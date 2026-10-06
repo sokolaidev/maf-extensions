@@ -31,6 +31,7 @@ from maf_compaction import (
 )
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
+from ._cli_selection import validate_summarizer_selector, validate_unique_selection
 from ._fill import ASSUMED_REPLY_TOKENS, FillPlan, plan_fill
 from ._live import (
     AGENT_KINDS,
@@ -3982,6 +3983,8 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
     strategies = [entry.strip() for entry in args.strategies.split(",") if entry.strip()]
+    validate_unique_selection("strategy", strategies)
+    validate_summarizer_selector(args.summarizer_provider)
     unknown = set(strategies) - set(strategy_names())
     if unknown:
         raise SystemExit(f"Unknown strategies: {', '.join(sorted(unknown))}.")

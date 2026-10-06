@@ -12,7 +12,11 @@ from typing import Any
 
 from agent_framework import Message, TokenizerProtocol
 
-from ._cli_selection import replay_strategy_names
+from ._cli_selection import (
+    replay_strategy_names,
+    validate_summarizer_selector,
+    validate_unique_selection,
+)
 from ._metrics import summarize_cell
 from ._providers import (
     PROVIDER_SPECS,
@@ -349,6 +353,9 @@ async def run_benchmark(args: argparse.Namespace) -> int:
     providers = _split(args.providers)
     strategies = _split(args.strategies)
     sizes = _split(args.sizes)
+    for name, selection in (("provider", providers), ("strategy", strategies), ("size", sizes)):
+        validate_unique_selection(name, selection)
+    validate_summarizer_selector(args.summarizer_provider)
     _validate_selection(
         "provider", [parse_provider_selector(p)[0] for p in providers], provider_names()
     )

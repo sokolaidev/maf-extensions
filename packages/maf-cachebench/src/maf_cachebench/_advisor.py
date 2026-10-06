@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 
 import httpx
 
-from ._metrics import percentile
+from ._metrics import clamp_cached_tokens, percentile
 
 if TYPE_CHECKING:
     from ._types import CellSummary
@@ -91,6 +91,7 @@ class ModelPricing:
         Returns:
             Cost in the pricing's currency units.
         """
+        cached_tokens = clamp_cached_tokens(input_tokens, cached_tokens)
         fresh = max(input_tokens - cached_tokens, 0)
         return (
             fresh * self.fresh_per_million + cached_tokens * self.cached_read_per_million
@@ -268,7 +269,11 @@ def cost_of(summary: CellSummary, pricing: ModelPricing) -> float:
     Returns:
         Cost in the pricing's currency units.
     """
-    cached = summary.total_cached_tokens if summary.reports_cache_tokens else 0
+    cached = (
+        clamp_cached_tokens(summary.total_input_tokens, summary.total_cached_tokens)
+        if summary.reports_cache_tokens
+        else 0
+    )
     fresh = max(summary.total_input_tokens - cached, 0)
     return (
         fresh * pricing.input_per_million + cached * pricing.cached_read_per_million
@@ -297,7 +302,10 @@ def _collect(summaries: list[CellSummary], pricing: ModelPricing) -> list[Strate
                 strategy=strategy,
                 costs=tuple(cost_of(cell, pricing) for cell in usable),
                 total_input_tokens=sum(cell.total_input_tokens for cell in usable),
-                total_cached_tokens=sum(cell.total_cached_tokens for cell in usable),
+                total_cached_tokens=sum(
+                    clamp_cached_tokens(cell.total_input_tokens, cell.total_cached_tokens)
+                    for cell in usable
+                ),
                 cache_reported=any(cell.reports_cache_tokens for cell in usable),
             )
         )

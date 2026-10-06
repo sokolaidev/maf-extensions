@@ -928,3 +928,26 @@ async def test_option_correction_does_not_reset_or_expand_throttle_retries() -> 
     outcome = await ProviderCaller(runtime, max_retries=2, retry_base_delay=0)(())
     assert outcome.error is not None
     assert client.calls == 4
+
+
+@pytest.mark.parametrize("cached,normalized", [(-50, 0), (400, 100), (50, 50), (None, None)])
+async def test_provider_caller_bounds_reported_cache(
+    cached: int | None, normalized: int | None
+) -> None:
+    from typing import Any
+
+    from agent_framework import ChatResponse, UsageDetails
+
+    class Inner:
+        async def get_response(self, *args: Any, **kwargs: Any) -> ChatResponse[Any]:
+            return ChatResponse(
+                messages=Message(role="assistant", contents=["answer"]),
+                usage_details=UsageDetails(
+                    input_token_count=100, cache_read_input_token_count=cached
+                ),
+            )
+
+    caller = ProviderCaller(ProviderRuntime(client=Inner(), model="stub"))
+    outcome = await caller([Message(role="user", contents=["question"])])
+    assert outcome.error is None
+    assert outcome.cached_tokens == normalized

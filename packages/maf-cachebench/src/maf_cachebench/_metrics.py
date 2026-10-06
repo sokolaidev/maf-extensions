@@ -22,6 +22,7 @@ from agent_framework import Content, Message, TokenizerProtocol
 from ._types import CellKey, CellSummary, TurnRecord
 
 __all__ = [
+    "clamp_cached_tokens",
     "common_message_prefix",
     "percentile",
     "serialize_message",
@@ -126,17 +127,9 @@ def _has_usable_usage(record: TurnRecord) -> bool:
     return not (record.sent_tokens_local > 0 and not record.input_tokens)
 
 
-def _clamped_cached(record: TurnRecord) -> int:
-    """Return a turn's cached tokens, never exceeding the input count they are part of.
-
-    Cached tokens are a *subset* of the prompt, not an addition to it. A provider
-    reporting more cached than input is an upstream inconsistency; letting it through
-    would produce a hit ratio above 100% that reads as a broken benchmark.
-    """
-    cached = record.cached_tokens or 0
-    if record.input_tokens is None:
-        return cached
-    return min(cached, record.input_tokens)
+def clamp_cached_tokens(input_tokens: int, cached_tokens: int | None) -> int:
+    """Keep cache reads within the input tokens of the request they belong to."""
+    return min(max(cached_tokens or 0, 0), max(input_tokens, 0))
 
 
 def summarize_cell(
@@ -172,7 +165,10 @@ def summarize_cell(
         # against a denominator the provider never sent.
         turns_missing_input=len(completed) - len(successful),
         total_input_tokens=sum(record.input_tokens or 0 for record in successful),
-        total_cached_tokens=sum(_clamped_cached(record) for record in successful),
+        total_cached_tokens=sum(
+            clamp_cached_tokens(record.input_tokens or 0, record.cached_tokens)
+            for record in successful
+        ),
         total_output_tokens=sum(record.output_tokens or 0 for record in successful),
         total_local_sent_tokens=sum(record.sent_tokens_local for record in completed),
         total_local_reusable_tokens=sum(

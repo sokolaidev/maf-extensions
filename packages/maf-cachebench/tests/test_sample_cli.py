@@ -90,3 +90,22 @@ def test_ollama_surface_flag_never_becomes_the_model(
     suffix = "/v1/chat/completions" if openai else "/api/chat"
     assert len(sent) == 2
     assert all(url.endswith(suffix) and selected == model for url, selected in sent)
+
+
+@pytest.mark.parametrize(
+    "option,selection", [("--narrations", "neutral,neutral"), ("--placements", "head,head")]
+)
+async def test_narration_duplicates_fail_before_provider_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+    selection: str,
+) -> None:
+    namespace = runpy.run_path(str(SAMPLES / "probe_narration.py"))
+    run = namespace["run"]
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Duplicate configurations must fail before setup")
+
+    monkeypatch.setitem(run.__globals__, "build_provider", unexpected)
+    with pytest.raises(SystemExit, match="Duplicate"):
+        await run(namespace["build_parser"]().parse_args(["azure", option, selection]))

@@ -11,7 +11,7 @@ from agent_framework import Message, apply_compaction
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
 from ._cli_selection import select_standalone_strategies, standalone_strategy_names
-from ._metrics import serialize_message
+from ._metrics import clamp_cached_tokens, serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
 from ._runner import CallOutcome, ProviderCaller
@@ -168,7 +168,7 @@ async def _measure(
         projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
         outcome = await measured(interim, projected)
         input_tokens += outcome.input_tokens or 0
-        cached_tokens += outcome.cached_tokens or 0
+        cached_tokens += clamp_cached_tokens(outcome.input_tokens or 0, outcome.cached_tokens)
         history.extend(turn.reply)
 
     history.extend(turns[-1].request)
@@ -176,7 +176,9 @@ async def _measure(
     final_prompt = "\n".join(serialize_message(message) for message in projected)
     answer_outcome = await measured(final, projected)
     input_tokens += answer_outcome.input_tokens or 0
-    cached_tokens += answer_outcome.cached_tokens or 0
+    cached_tokens += clamp_cached_tokens(
+        answer_outcome.input_tokens or 0, answer_outcome.cached_tokens
+    )
     answer = answer_outcome.text or ""
 
     fresh = max(input_tokens - cached_tokens, 0)

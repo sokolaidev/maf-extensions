@@ -42,6 +42,7 @@ from maf_cachebench import (
     score_samples,
     wants_client_side_history,
 )
+from maf_cachebench._cli_selection import validate_unique_selection
 
 #: Points of correctness range above which a control cannot be ranked against. Matches the
 #: limit the live run itself enforces, so a configuration this probe passes is one that run
@@ -190,6 +191,8 @@ async def run(args: argparse.Namespace) -> int:
         raise SystemExit("--repeats must be greater than 0.")
     narrations = [item.strip() for item in args.narrations.split(",") if item.strip()]
     placements = [item.strip() for item in args.placements.split(",") if item.strip()]
+    validate_unique_selection("narration", narrations)
+    validate_unique_selection("placement", placements)
     provider, model_override = parse_provider_selector(args.provider)
     runtime = build_provider(
         provider, temperature=None, response_max_tokens=16, model=model_override

@@ -10138,3 +10138,63 @@ async def test_unknown_live_strategy_fails_before_setup(monkeypatch: pytest.Monk
     monkeypatch.setattr("maf_cachebench._live_cli.build_tokenizer", unexpected)
     with pytest.raises(SystemExit, match="Unknown strategies"):
         await run_live_comparison(build_parser().parse_args(["azure", "--strategies", "none,typo"]))
+
+
+@pytest.mark.parametrize("cached,normalized", [(-50, 0), (400, 100), (50, 50)])
+async def test_live_capture_bounds_cache_per_call(cached: int, normalized: int) -> None:
+    class Inconsistent(StubChatClient):
+        def _inner_get_response(
+            self, *, messages: Any, stream: Any, options: Any, **kwargs: Any
+        ) -> Any:
+            index = len(self.seen)
+            pending = super()._inner_get_response(
+                messages=messages, stream=stream, options=options, **kwargs
+            )
+
+            async def respond() -> ChatResponse[Any]:
+                response = await pending
+                return ChatResponse(
+                    messages=response.messages,
+                    usage_details=UsageDetails(
+                        input_token_count=100,
+                        cache_read_input_token_count=cached if index % 2 == 0 else 0,
+                    ),
+                )
+
+            return respond()
+
+    outcome = await run_live(
+        ProviderRuntime(client=Inconsistent(), model="stub"),
+        strategy_name="none",
+        options=_options(),
+        scenario=_probe_scenario(),
+    )
+    assert outcome.error is None
+    assert len(outcome.calls) > 1
+    assert [call.cached_tokens for call in outcome.calls] == [
+        normalized if i % 2 == 0 else 0 for i in range(len(outcome.calls))
+    ]
+    assert outcome.cached_tokens == normalized * ((len(outcome.calls) + 1) // 2)
+    assert outcome.probe_cached_tokens <= outcome.probe_input_tokens
+
+
+@pytest.mark.parametrize("cached,normalized", [(-50, 0), (400, 100), (50, 50)])
+async def test_summarizer_meter_bounds_cache_per_call(cached: int, normalized: int) -> None:
+    class Inner:
+        count = 0
+
+        async def get_response(self, *args: Any, **kwargs: Any) -> ChatResponse[Any]:
+            self.count += 1
+            return ChatResponse(
+                messages=Message(role="assistant", contents=["summary"]),
+                usage_details=UsageDetails(
+                    input_token_count=100,
+                    cache_read_input_token_count=cached if self.count == 1 else 0,
+                ),
+            )
+
+    meter = MeteredClient(Inner())
+    await meter.get_response([])
+    await meter.get_response([])
+    assert meter.cached_tokens == normalized
+    assert [usage.cached_tokens for usage in meter.usage] == [normalized, 0]
