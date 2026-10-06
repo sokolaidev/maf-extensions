@@ -194,9 +194,9 @@ The successful checker report was produced before stopping the processes. The fi
 
 On the same candidate and rebuilt image, the focused suites ran with `MAF_OPENCLAW_BICEP_IMAGE` set: **158 passed, no skips**. This includes all four opt-in Docker cases: HTTP MAF outcomes/cancellation/owned recovery, the published-dependency two-client HTTP smoke, stdio compiler outcomes/cleanup, and active-compiler cancellation/owned recovery. The published smoke reported the same six package versions as the Gateway service above. The offline transport cases in those files cover additional isolation and malformed-input behavior; they do not substitute for every real Gateway lifecycle case.
 
-The checker recorded these source identities. Its report, observer evidence, provider results and process logs remain outside the repository; raw logs can contain host paths and diagnostic source content. The report digest above identifies the retained successful report without publishing those logs.
+The checker recorded these source identities from the exact bytes read during execution. These are local file hashes, not Git blob hashes; checkout line-ending conversion can change them without changing the Python source. The active-service crash table below distinguishes the executed bytes from the LF-normalized Git files explicitly. Its report, observer evidence, provider results and process logs remain outside the repository; raw logs can contain host paths and diagnostic source content. The report digest above identifies the retained successful report without publishing those logs.
 
-| Source | SHA-256 |
+| Source | Executed file bytes SHA-256 |
 |---|---|
 | `server.py` | `95879a31bd6d4dccefa7fa620e86d24547c22568e30327760a3841419f00a591` |
 | `workload_http.py` | `b291f4539b3e1d4a4ef3aa570683585da84cfb5b0911eddb20fda7e0cb366b33` |
@@ -231,7 +231,7 @@ The Gateway restart is deliberately an idle process kill and relaunch. It proves
 
 That candidate's successful local report SHA-256 is `da5de023447241cb1b8e3eabe80b2b75f0f58d9cfd779086745228075be3d0c3`. The image/count hardening report on `2759de3d1dbb665ccef08a78f97ef84402376da3` remains historical at `e7d6c2bd5ac9aed1e9531891c02619421eeaf7883c28d3d4d527e41013226c5d`, and the initial report at `0f70995823891d3440edd3fdd8231677f4b1c866fa4bea8c27172a9991438c07`. Its service and provider source identities match the preceding table. The revised checkers, observer and unchanged Docker helper are identified below. Raw provider output, process logs, credentials and owner/session identities remain outside the repository. A separate post-run process inspection found no remaining process associated with the isolated qualification directory.
 
-| Source | SHA-256 |
+| Source | Executed file bytes SHA-256 |
 |---|---|
 | `openclaw_gateway_lifecycle_check.py` | `cf993e0a563a2f61109bb41120b4a6fe56b9f00fb2411e0c0ceefd3cb4af1737` |
 | `openclaw_http_observer.py` | `65315a5301cb1e384d8440970276f9c5ecf10111d27e8755d769f52c57fef527` |
@@ -275,12 +275,12 @@ Use the reproduction command above with a fresh `--root`; the extended checker i
 
 The offline evidence suite has 109 passing cases. New negative cases reject absent or repeated crash observations, wrong process/session correlation, completed or gracefully settled work, fabricated workload results, surviving resources, wrong recovery identity and readiness preceding cleanup. Startup observation is checked before its ASGI message is forwarded. These tests validate the checker and fault controls; the live execution establishes the bounded host behavior above.
 
-| Changed source | SHA-256 |
-|---|---|
-| `openclaw_gateway_lifecycle_check.py` | `169ea6305f308ac5c44cce2eed52611809611bdd69796dbad13831bc4b981877` |
-| `openclaw_http_observer.py` | `d20c3f6a20a38b2b0bb5af6ef24c3945860144192ea4f43f3f23f9c33707eb55` |
+| Changed source | Executed CRLF bytes SHA-256 | Git LF bytes SHA-256 |
+|---|---|---|
+| `openclaw_gateway_lifecycle_check.py` | `169ea6305f308ac5c44cce2eed52611809611bdd69796dbad13831bc4b981877` | `0a3704df986bc45032c4d46cc57c87b125f9de60c141612a1216b66649323c02` |
+| `openclaw_http_observer.py` | `d20c3f6a20a38b2b0bb5af6ef24c3945860144192ea4f43f3f23f9c33707eb55` | `775460b4f73679ce86e64f587c21277eb0b28aad58cccb831ec1491a37c3c966` |
 
-The service, provider, baseline checker and Docker helper retain the source identities listed in the preceding evidence tables.
+The executed service, provider, baseline checker and Docker helper retained the measured byte identities listed in the preceding evidence tables. For the two changed fixtures, the Git files at the executed candidate and the final PR revision are byte-identical to each other after LF normalization. Converting those LF files to CRLF exactly reproduces the measured execution hashes above. The retained report is unchanged; its `source_hashes` values describe executed bytes. A fresh LF checkout records the Git LF values instead. Compare like byte representations, or deliberately reproduce CRLF files when checking the historical execution digests; a clean Git status alone does not prove byte identity across checkout line endings.
 
 ## Status
 
