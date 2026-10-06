@@ -62,6 +62,7 @@ from copy import copy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_type_hints
 from uuid import uuid4
+from weakref import WeakKeyDictionary
 
 from ._cleanup import QUEUED_CALL_TIMEOUT, PendingCleanup
 from ._containment import CONTAINED, escapes_containment
@@ -173,6 +174,9 @@ __all__ = [
     "hidden_content_candidates",
     "positions_holding_hidden_content",
     "sandboxed_tool",
+    "sandbox_label_tracking_middleware",
+    "FileStoreBinding",
+    "ScopedFileStores",
 ]
 
 # Acquisition failures use fixed text because provider details can carry account identifiers
@@ -329,6 +333,62 @@ def argument_provenance_middleware() -> Any:
                 record.closed = True
 
     return _ArgumentProvenance()
+
+
+_GUIDANCE: WeakKeyDictionary[Any, tuple[str, ...]] = WeakKeyDictionary()
+_GUIDANCE_LOCK = threading.Lock()
+
+
+def _remember_guidance(attached: Any, committed: tuple[str, ...]) -> None:
+    if committed:
+        with _GUIDANCE_LOCK:
+            _GUIDANCE[attached] = committed
+
+
+def sandbox_label_tracking_middleware(**kwargs: Any) -> Any:
+    """Build MAF label tracking with native fixed guidance where the SDK supports it.
+
+    Use in place of ``LabelTrackingFunctionMiddleware``. Constructor options pass through.
+    Older SDKs and call-id templates retain the wrapper's rendering and validation.
+    """
+    from agent_framework.security import LabelTrackingFunctionMiddleware
+
+    class _SandboxLabelTracking(LabelTrackingFunctionMiddleware):
+        async def process(self, context: Any, call_next: Any) -> None:
+            with _GUIDANCE_LOCK:
+                promised = _GUIDANCE.get(context.function, ())
+            # MAF has no public capability flag for this optional declaration channel.
+            native = "standing_guidance" in inspect.signature(self._label_result).parameters
+            if not promised or not native:
+                await super().process(context, call_next)
+                return
+            original = context.function
+            isolated = copy(original)
+            isolated.additional_properties = dict(original.additional_properties or {})
+            committed = () if _needs_call_id(promised) else tuple(s.format() for s in promised)
+            isolated.additional_properties.pop("standing_guidance", None)
+            if committed:
+                isolated.additional_properties["standing_guidance"] = list(committed)
+            context.function = isolated
+
+            async def invoke() -> None:
+                await call_next()
+                if not committed:
+                    return
+                result = context.result
+                if not isinstance(result, list) or len(cast("list[Any]", result)) < len(committed):
+                    raise ValueError("Sandbox fixed guidance is missing from the validated result.")
+                tail = cast("list[Any]", result)[-len(committed) :]
+                if any(getattr(item, "text", None) != text for item, text in zip(tail, committed)):
+                    raise ValueError("Sandbox fixed guidance differs from its attachment snapshot.")
+                context.result = result[: -len(committed)]
+
+            try:
+                await super().process(context, invoke)
+            finally:
+                context.function = original
+
+    return _SandboxLabelTracking(**kwargs)
 
 
 def file_store_provenance_middleware(
@@ -821,6 +881,46 @@ def hidden_content_candidates() -> frozenset[str]:
     return frozenset(_hidden_payloads(middleware))
 
 
+def _public_rewritten_positions(
+    context: Any, argument: str, values: Sequence[str]
+) -> frozenset[int] | None:
+    """Translate public provenance only for the complete, current argument value."""
+    from agent_framework import security
+
+    accessor = getattr(security, "rewritten_arguments", None)
+    if not callable(accessor):
+        return None
+    arguments = getattr(context, "arguments", None)
+    if arguments is None:
+        return None
+    dump = getattr(arguments, "model_dump", None)
+    if callable(dump):
+        arguments = dump()
+    if not isinstance(arguments, Mapping):
+        return frozenset(range(len(values)))
+    current = cast("Mapping[str, Any]", arguments).get(argument)
+    expected = [current] if isinstance(current, str) else current
+    if not isinstance(expected, (list, tuple)) or list(cast("Sequence[Any]", expected)) != list(
+        values
+    ):
+        return frozenset(range(len(values)))
+    rewritten = accessor(context)
+    # An empty public map does not distinguish unavailable tracking from no rewrites.
+    if not rewritten:
+        return None
+    if not isinstance(rewritten, dict):
+        return frozenset(range(len(values)))
+    positions = cast("dict[str, Any]", rewritten).get(argument, set())
+    if not isinstance(positions, (set, frozenset)) or any(
+        type(index) is not int or index < -1 or index >= len(values)
+        for index in cast("set[Any]", positions)
+    ):
+        return frozenset(range(len(values)))
+    if -1 in positions:
+        return frozenset(range(len(values)))
+    return frozenset(cast("set[int]", positions))
+
+
 def positions_holding_hidden_content(
     values: Sequence[str],
     *,
@@ -835,8 +935,9 @@ def positions_holding_hidden_content(
     :func:`~maf_sandbox.echoed_name` as ``hidden`` and it renders the position instead.
 
     Answered two ways.  Where a host has wired :func:`argument_provenance_middleware` *and*
-    ``argument`` names the parameter these values came from, each is compared with the spelling
-    the caller gave at the same position: exact, and consulting no stored payload.  Otherwise it
+    ``argument`` names the parameter these values came from, use public rewrite positions where
+    available, with the original-spelling adapter for older SDKs and ambiguous empty maps.
+    This exact path consults no stored payload. Otherwise it
     falls back to containment against the whole conversation's store, which is conservative — a
     store holding ``"main"`` reports an untouched ``"main.bicep"`` — and reports a value the
     caller chose that merely matches hidden content.  ``docs/sandbox/information-flow.md``
@@ -865,6 +966,9 @@ def positions_holding_hidden_content(
         return frozenset()
     record = _CALL_CONTEXT.get()
     if record is not None and not record.closed and argument is not None:
+        public = _public_rewritten_positions(record.context, argument, values)
+        if public is not None:
+            return public
         if _the_framework_kept_no_record(record.context):
             # A missing record means the contract moved, so no checked position can be vouched for.
             _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
@@ -3198,6 +3302,7 @@ def sandboxed_tool(
 
         setattr(checked, "__signature__", call_signature)
         attached = decorate(checked)
+        _remember_guidance(attached, committed)
         return [attached]
     if spec.work_dir is not None and not [
         part for part in posixpath.normpath(spec.work_dir).split("/") if part
@@ -3330,6 +3435,7 @@ def sandboxed_tool(
 
     setattr(reclaiming, "__signature__", call_signature)
     attached = decorate(reclaiming)
+    _remember_guidance(attached, committed)
     return [attached]
 
 
@@ -3651,3 +3757,89 @@ async def list_no_files(_store: object) -> list[ListedFile]:
     stated decision rather than an empty lambda the next reader has to interpret.
     """
     return []
+
+
+@dataclass(frozen=True)
+class FileStoreBinding:
+    """One host-authorized store and provenance record for a tenant/session pair.
+
+    Obtain from ``ScopedFileStores.bind`` and keep it for the request's entire lifetime.
+    The store factory owns confinement; this binding never adds a second namespace.
+    """
+
+    scope: str
+    thread_id: str
+    store: Any
+    provenance: FileStoreProvenance
+    provider: Any
+    middleware: Any
+
+    def caller_context(self) -> CallerContext:
+        """Build the sandbox context bound to this same store and provenance record."""
+
+        async def listing(store: Any) -> list[ListedFile]:
+            if store is not self.store:
+                raise ValueError("File listing must use the bound scoped store.")
+            return await list_all_files(store, provenance=self.provenance)
+
+        return CallerContext(
+            current_scope=lambda: self.scope,
+            current_thread_id=lambda: self.thread_id,
+            list_files=listing,
+        )
+
+
+class ScopedFileStores:
+    """Resolve shared bindings from explicit host identities, never model arguments.
+
+    ``factory(scope, thread_id)`` must return an independently confined native store for each
+    pair. Native stores are retained unchanged, including their concurrency capabilities.
+    Bindings are retained for this registry's lifetime; reaching ``max_scopes`` refuses new
+    scopes rather than evicting provenance for stored bytes. Use one registry per host lifetime.
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[str, str], Any],
+        *,
+        floor: SourceIntegrity | None = None,
+        max_scopes: int = 256,
+    ) -> None:
+        if type(max_scopes) is not int or max_scopes <= 0:
+            raise ValueError("max_scopes must be a positive integer.")
+        self._factory = factory
+        self._floor = floor
+        self._max_scopes = max_scopes
+        self._bindings: dict[tuple[str, str], FileStoreBinding] = {}
+        self._lock = threading.Lock()
+
+    def bind(self, *, scope: str, thread_id: str) -> FileStoreBinding:
+        """Return the stable binding for a complete, host-authorized tenant/session pair."""
+        from agent_framework import FileAccessProvider
+
+        if type(scope) is not str or not scope.strip():
+            raise ValueError("A host-authorized scope is required.")
+        if type(thread_id) is not str or not thread_id.strip():
+            raise ValueError("A host-authorized thread_id is required.")
+        key = (scope, thread_id)
+        with self._lock:
+            if key in self._bindings:
+                return self._bindings[key]
+            if len(self._bindings) >= self._max_scopes:
+                raise ValueError("Scoped file-store capacity reached; no provenance was evicted.")
+            store = self._factory(scope, thread_id)
+            if store is None or any(store is bound.store for bound in self._bindings.values()):
+                raise ValueError(
+                    "The factory must return a distinct confined store for each scope."
+                )
+            provenance = FileStoreProvenance(floor=self._floor)
+            binding = FileStoreBinding(
+                scope=scope,
+                thread_id=thread_id,
+                store=store,
+                provenance=provenance,
+                provider=FileAccessProvider(store=store, session_scoped=False),
+                middleware=file_store_provenance_middleware(provenance),
+            )
+            self._bindings[key] = binding
+            return binding

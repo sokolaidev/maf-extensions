@@ -197,6 +197,26 @@ Credential injection always requires verified upstream TLS, including private de
 
 <a id="file-store-provenance--what-a-kind-reads-and-what-it-is-worth"></a>
 
+## Shared scoped file stores
+
+`maf_sandbox.maf.ScopedFileStores` resolves one stable binding per explicit host-authorized `(scope, thread_id)` pair. Its factory supplies an independently confined native store for each pair. The binding shares that exact object with `FileAccessProvider(session_scoped=False)`, custom readers, listings and output sinks, preserving the store's concurrency capabilities without copying the provider's private namespace rules. The factory owns physical confinement, including filesystem roots and symlink protection; distinct wrapper objects over one shared root do not establish isolation.
+
+Resolve the binding at the request boundary and retain it for the request. Pass `binding.store` and `binding.caller_context()` to kinds, `binding.provenance` to their provenance parameter and `make_file_store_sink`, and wire `binding.middleware` alongside the agent's other function middleware. Use `binding.provider` for file tools. The binding is fixed to one pair; do not reuse its provider or context for another request identity, or enable provider scoping a second time. Host identity must never come from model arguments.
+
+```python
+from agent_framework import InMemoryAgentFileStore
+from maf_sandbox.maf import make_file_store_sink
+from maf_sandbox.maf import ScopedFileStores
+
+stores = ScopedFileStores(lambda scope, thread_id: InMemoryAgentFileStore())
+binding = stores.bind(scope="authorized-tenant", thread_id="authorized-session")
+sink = make_file_store_sink(binding.store, provenance=binding.provenance)
+context = binding.caller_context()
+# Wire binding.provider and binding.middleware into this request's agent.
+```
+
+The registry retains bindings and provenance for its lifetime, refuses missing identities and reuse of the same store object across scopes, and refuses new bindings at `max_scopes` (256 by default). It never silently evicts provenance while bytes remain. Persistent hosts must restore provenance with their stores or keep the default unestablished floor after restart. The registry does not add transaction, cross-process locking or conditional-write guarantees; those remain properties of the native store and provider. Model writes and deletes still use the observation interval described below, and direct out-of-band host writes remain the host's responsibility.
+
 ## File-store provenance
 
 `AgentFileStore` returns text without content labels. `FileStoreProvenance` records model-driven mutations by path so a kind can assess what it reads.
@@ -252,6 +272,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | ACAS group-configured identity | Supported outside the core attached-authority contract; host description and acquisition scope checks implemented | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
 | Principal references | Unimplemented | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) (open) |
 | Credentials for guest HTTP | Docker and WSLC external gateways implemented | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (closed) by [#1427](https://github.com/sokolaidev/maf-extensions/pull/1427) (merged) |
+| Shared host-bound store composition | Implemented; native store factory owns confinement | untracked |
 | File-store provenance and result labels | Implemented with the read/write interval limits above | [Information-flow status](information-flow.md#status) |
 | Cross-conversation host storage paths | Host-owned partitioning; no automatic callback inspection | [#793](https://github.com/sokolaidev/maf-extensions/issues/793) (closed) |
 | Storage-base preparation and allocation | Implemented | [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (closed); [#1086](https://github.com/sokolaidev/maf-extensions/pull/1086) (merged); [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |
