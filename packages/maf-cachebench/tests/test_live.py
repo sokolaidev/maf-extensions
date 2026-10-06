@@ -10408,3 +10408,42 @@ async def test_valid_fill_reaches_sizing(monkeypatch: pytest.MonkeyPatch, fill: 
     monkeypatch.setattr(_live_cli, "_plan_or_exit", plan)
     with pytest.raises(SizingReached):
         await run_live_comparison(build_parser().parse_args(_live_argv("--fill", str(fill))))
+
+
+async def test_reconstruction_separates_correctness_bars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    low = _cell_params(min_correctness=0.4)
+    high = replace(low, min_correctness=0.9)
+    rows = {"none": [(0.03, 1.0)], "truncation": [(0.02, 0.7)]}
+    paths = [
+        _written(tmp_path / f"bar-{cell.min_correctness}.jsonl", await _priced_records(cell, rows))
+        for cell in (low, high)
+    ]
+    seen: list[float] = []
+
+    def capturing(
+        outcomes: Any, *, min_correctness: float, baseline_admissible: bool = True
+    ) -> Any:
+        seen.append(min_correctness)
+        return recommend(
+            outcomes, min_correctness=min_correctness, baseline_admissible=baseline_admissible
+        )
+
+    monkeypatch.setattr("maf_cachebench._live_cli.recommend", capturing)
+    printed = await _rebuilt(capsys, *paths)
+    assert seen == [0.4, 0.9]
+    records = [record for path in paths for record in read_seed_records(path)]
+    assert len(group_by_cell(records)) == 2
+    assert low.workload_key != high.workload_key
+    assert low.model_key == high.model_key
+    assert printed.count("Cell: ") == 2
+    for cell in (low, high):
+        assert f"correctness bar {cell.min_correctness:g}" in cell.label
+        assert f"correctness bar {cell.min_correctness:g}" in cell.workload_label
+    await run_live_comparison(
+        build_parser().parse_args(
+            ["--from-jsonl", *(str(path) for path in paths), "--min-correctness", "0.5"]
+        )
+    )
+    assert seen == [0.4, 0.9, 0.5, 0.5]

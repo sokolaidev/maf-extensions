@@ -326,3 +326,45 @@ def test_mistral_sample_isolates_executions(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(set(prefixes)) == 4
     assert all(len(set(prefixes[index : index + 3])) == 1 for index in range(0, 12, 3))
     assert sent[3]["prompt_cache_key"] != sent[9]["prompt_cache_key"]
+
+
+@pytest.mark.parametrize(
+    "reports,steady",
+    [
+        ([50], False),
+        ([0, 50], False),
+        ([0, 50, 50], True),
+        ([0, None, 50], False),
+        ([0, -1, 50], False),
+        ([0, None, -1, 50, 50], True),
+    ],
+)
+async def test_stability_requires_warm_observations(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reports: list[int | None],
+    steady: bool,
+) -> None:
+    from maf_cachebench import CallOutcome, ProviderRuntime
+
+    namespace = runpy.run_path(str(SAMPLES / "probe_cache_stability.py"))
+    run = namespace["run"]
+    monkeypatch.setitem(
+        run.__globals__, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
+    )
+    pending = iter(reports)
+
+    async def respond(messages: Any) -> CallOutcome:
+        cached = next(pending)
+        if cached == -1:
+            return CallOutcome(error="unavailable", latency_ms=1)
+        return CallOutcome(input_tokens=100, cached_tokens=cached, latency_ms=1)
+
+    monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
+    args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(len(reports))])
+    assert await run(args) == 0
+    output = capsys.readouterr().out
+    assert ("\nSTEADY:" in output) is steady
+    assert ("Not enough usable calls" in output) is not steady
+    if steady:
+        assert "warm calls (excluding the first): 2" in output

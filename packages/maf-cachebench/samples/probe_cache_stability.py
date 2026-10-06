@@ -113,7 +113,7 @@ async def run(args: argparse.Namespace) -> int:
         hits.append(hit)
         print(f"{index:>5}{got:>9,}{cached:>9,}{hit:>6.0%}{outcome.latency_ms:>8.0f}")
 
-    if len(hits) < 2:
+    if len(hits) < 3:
         print("\nNot enough usable calls to judge stability.")
         return 0
 

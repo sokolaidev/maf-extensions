@@ -395,6 +395,7 @@ _CELL_KEY_FIELDS: Final[tuple[str, ...]] = (
     "fill",
     "probe_repeats",
     "combined_repeats",
+    "min_correctness",
     "narration",
     "fact_placement",
     "tool_result_tokens",
@@ -944,7 +945,8 @@ class CellParams:
         return (
             f"{self.provider}:{self.model}  agent {self.agent_kind}  "
             f"window {self.context_window:,}  {fill}  {payload}  "
-            f"probes {self.probe_repeats}  combined {self.combined_repeats}"
+            f"probes {self.probe_repeats}  combined {self.combined_repeats}  "
+            f"correctness bar {self.min_correctness:g}"
         )
 
     @property
@@ -969,7 +971,7 @@ class CellParams:
             f"narration {self.narration}  facts {self.fact_placement}  "
             f"filler {self.filler_turns}x{self.filler_tokens:,}  "
             f"probes {self.probe_repeats}  combined {self.combined_repeats}  "
-            f"{self.workload_flags}"
+            f"correctness bar {self.min_correctness:g}  {self.workload_flags}"
         )
 
     @property
