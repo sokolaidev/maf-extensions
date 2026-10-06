@@ -317,7 +317,7 @@ def _collect(summaries: list[CellSummary], pricing: ModelPricing) -> list[Strate
                     clamp_cached_tokens(cell.total_input_tokens, cell.total_cached_tokens)
                     for cell in usable
                 ),
-                cache_reported=any(cell.reports_cache_tokens for cell in usable),
+                cache_reported=all(cell.reports_cache_tokens for cell in usable),
             )
         )
     return collected
@@ -368,13 +368,11 @@ def advise(
     single_sample = min(len(base.costs), len(contender.costs)) < 2
     saving = (base.median - contender.median) / base.median if base.median > 0 else 0.0
 
-    if not base.cache_reported:
+    if not base.cache_reported or not contender.cache_reported:
         confidence = "low"
         rationale = (
-            f"{base.strategy!r} reported no cache statistics, so cost is computed as if "
-            f"nothing were "
-            "discounted. That systematically overstates the no-compaction option and biases the "
-            "recommendation toward compacting."
+            "Some repeats reported no cache statistics, so their cost assumes no discount. "
+            "Incomplete cache telemetry can bias the comparison in either direction."
         )
     elif single_sample:
         confidence = "low"

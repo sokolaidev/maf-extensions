@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import time
 from collections.abc import Sequence
 
 from agent_framework import Message, apply_compaction
@@ -17,6 +16,7 @@ from ._cli_selection import (
 from ._metrics import serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
+from ._run_identity import new_run_id
 from ._runner import ProviderCaller
 from ._strategies import StrategyOptions, build_strategy
 from ._tokenizers import TOKENIZER_NAMES, build_tokenizer
@@ -86,7 +86,7 @@ async def _probe(
 ):
     """Replay the scenario under one strategy and score the final answer."""
     tokenizer = build_tokenizer(args.tokenizer)
-    salt = f"{time.strftime('%Y%m%d-%H%M%S')}-{strategy_name}-{repeat}"
+    salt = f"{new_run_id()}-{strategy_name}-{repeat}"
     scenario = build_recall_scenario(
         salt=salt,
         filler_turns=args.filler_turns,

@@ -277,3 +277,21 @@ def test_advisor_charges_cache_writes(reported: bool) -> None:
 def test_zero_rates_remain_valid() -> None:
     pricing = ModelPricing(0, 0, output_per_million=0, cache_write_per_million=0)
     assert pricing.input_cost(1_000, 100) == 0
+
+
+@pytest.mark.parametrize("partial", ["none", "truncation"])
+def test_partial_cache_reporting_lowers_comparison_confidence(partial: str) -> None:
+    summaries = [
+        _summary(
+            name,
+            repeat=repeat,
+            input_tokens=1_000_000 if name == "none" else 500_000,
+            cached=0,
+            reported=not (name == partial and repeat == 2),
+        )
+        for name in ("none", "truncation")
+        for repeat in (1, 2)
+    ]
+    verdict = advise(summaries, LUNA)
+    assert verdict.confidence == "low"
+    assert next(row for row in verdict.ranked if row.strategy == partial).cache_reported is False

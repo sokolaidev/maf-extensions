@@ -15,6 +15,7 @@ sometimes overlooks a fact even when everything is in front of it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from statistics import fmean
 from typing import TYPE_CHECKING, Final
@@ -147,6 +148,7 @@ def recommend(
     Raises:
         ValueError: If no outcomes were supplied or the control is missing.
     """
+    validate_min_correctness(min_correctness)
     if not outcomes:
         raise ValueError("No measured strategies to compare.")
     by_name = {outcome.strategy: outcome for outcome in outcomes}
@@ -298,3 +300,9 @@ def _recommend_without_baseline(
         ),
         baseline_admissible=False,
     )
+
+
+def validate_min_correctness(value: float) -> None:
+    """Require a finite, non-negative share of the control's correctness."""
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("min_correctness must be finite and non-negative.")

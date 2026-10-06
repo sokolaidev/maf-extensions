@@ -128,12 +128,7 @@ class StrategyOptions:
     """
     band_share: float = DEFAULT_BAND_SHARE
     min_gain_fraction: float = DEFAULT_MIN_GAIN_FRACTION
-    """Break-even floor under every collapse ``anchored_min_gain`` would make.
-
-    The one setting that row exists to measure, and it was unreachable: the builder took the
-    constructor's default, so the pair ``anchored``/``anchored_min_gain`` could only ever be
-    compared at one value of the thing that separates them.
-    """
+    """Break-even floor under every collapse made by ``anchored_min_gain``."""
     trigger_fraction: float = DEFAULT_TRIGGER_FRACTION
     """Share of the input budget at which ``tool_summary_anchored`` asks for its record.
 
@@ -194,10 +189,7 @@ class StrategyOptions:
     is the arm the archive was taken on -- the recompacting one -- until a run has measured the
     others against it.
 
-    **It does not reach the composed row any more**, which it used to, through the same builder.
-    ``tool_and_user_summary_anchored`` keeps its user summaries standing rather than re-summarising
-    them, so its builder runs the user half in ``boundary`` whatever this says; the single row is
-    the only one this field moves.
+    This affects only the standalone row; the composed row always uses ``boundary``.
     """
     record_harder_attempts: int = DEFAULT_HARDER_ATTEMPTS
     """Harder rewrites of the record ``tool_and_user_summary_anchored`` may try per pass when over.
@@ -342,11 +334,6 @@ def _build_anchored_min_gain(options: StrategyOptions) -> CompactionStrategy:
 
     Pairs with ``anchored`` to measure one setting: whether declining collapses too small to
     repay the prompt cache they invalidate is worth the information they would have removed.
-    What the pair has actually shown so far is that the floor's effect reverses between cells
-    -- the floored row kept fewer facts than its parent at one tool share and more at another --
-    which the review of 2 September traced to retention being path-dependent rather than to the
-    floor. Both defects are fixed; the pair has not been re-measured since. See
-    :mod:`maf_compaction._anchored`.
     """
     return MinimumGainAnchoredCompactionStrategy(
         max_input_tokens=options.input_budget_tokens,

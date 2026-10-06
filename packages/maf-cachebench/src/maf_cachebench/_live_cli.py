@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -66,6 +65,7 @@ from ._records import (
     group_by_cell,
     read_seed_records,
 )
+from ._run_identity import new_run_id
 from ._strategies import (
     STRATEGIES_NEEDING_SUMMARIZER,
     StrategyOptions,
@@ -80,6 +80,7 @@ from ._summary import (
     JointVerdict,
     recommend,
     relative_correctness,
+    validate_min_correctness,
 )
 from ._tokenizers import TOKENIZER_NAMES, build_tokenizer
 
@@ -3976,6 +3977,11 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     Raises:
         SystemExit: If the arguments do not describe a runnable cell.
     """
+    if args.min_correctness is not None:
+        try:
+            validate_min_correctness(args.min_correctness)
+        except ValueError as error:
+            raise SystemExit(f"--min-correctness: {error}") from error
     if args.from_jsonl is not None:
         return _render_from_records(args)
     if args.provider is None:
@@ -4043,12 +4049,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
             "--context-window.",
             flush=True,
         )
-    # The third call path, and the one place the same defect survives the fix above. A recall
-    # record is a tool call the model writes into the conversation, and every record is
-    # preserved for the rest of the run, so that reply is re-sent on every later turn exactly
-    # as a seeding reply is -- which makes --max-output-tokens its reservation too, and makes
-    # --record-max-tokens a tightening of the run's cap for one call rather than a cap of its
-    # own. The shipped defaults have it the other way round: 4,000 against a 2,048 reservation.
+    # Record replies persist in history, so their cap must fit the reserved output budget.
     if forces_records(strategies) and args.record_max_tokens > args.max_output_tokens:
         print(
             f"WARNING: --record-max-tokens {args.record_max_tokens:,} is above the "
@@ -4188,11 +4189,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-    # Clients on the Responses API keep the conversation server-side. When they do, the agent
-    # sends only the new turn and MAF skips HistoryProvider.before_run entirely -- the history
-    # never reaches the outgoing messages, so a compaction strategy has nothing to compact and
-    # every setting silently measures the same thing. Measured on Foundry before this was
-    # forced: a 16-turn conversation reported a one-message prompt on every row.
+    # Client-side history is required for local compaction to see the full conversation.
     stores_by_default = bool(getattr(runtime.client, "STORES_BY_DEFAULT", False))
     if wants_client_side_history(runtime.client, allow_server_history=workload.server_history):
         print(
@@ -4283,17 +4280,14 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     cells: list[CellStats] = []
     for name in strategies:
         print(f"-> {name}", flush=True)
-        # A fresh meter per strategy. Sharing one accumulates every earlier strategy's
-        # summarizer spend into every later row: measured as a flat +$0.0172 on all five
-        # strategies that happened to run after 'summarization', which is invisible in a
-        # total and inverted the ranking of the whole token_budget family.
+        # Each seed needs an independent meter so summarizer charges cannot cross cells.
         seeds: list[SeedRecord] = []
         for repeat in range(args.seed_offset + 1, args.seed_offset + args.repeats + 1):
             if args.repeats > 1 or args.seed_offset:
                 print(f"   seed {repeat}", flush=True)
             summarizer = MeteredClient(summarizer_client) if summarizer_client is not None else None
             scenario = build_live_scenario(
-                salt=f"{time.strftime('%Y%m%d-%H%M%S')}-{name}-{repeat}",
+                salt=f"{new_run_id()}-{name}-{repeat}",
                 filler_turns=filler_turns,
                 filler_tokens=filler_tokens,
                 tool_turns=args.tool_turns,
@@ -4319,10 +4313,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 narration=args.narration,
                 retrieval_guidance=workload.retrieval_guidance,
                 fact_placement=args.fact_placement,
-                # Passed rather than left to the default, which is not a tidy-up: run_live
-                # forces store=False whenever the client stores by default and it is not told
-                # otherwise, so --server-history printed its warning here and was then undone
-                # one frame down. The flag measured nothing.
+                # Preserve the selected history ownership mode.
                 allow_server_history=workload.server_history,
                 probe_repeats=args.probe_repeats,
                 combined_repeats=args.combined_repeats,

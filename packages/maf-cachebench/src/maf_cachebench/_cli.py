@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import math
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ from ._providers import (
     provider_names,
 )
 from ._report import render_summary_table, write_summary_csv
+from ._run_identity import new_run_id
 from ._runner import CallOutcome, ProviderCaller, run_cell
 from ._strategies import (
     StrategyOptions,
@@ -380,7 +380,7 @@ async def run_benchmark(args: argparse.Namespace) -> int:
         if args.summarizer_provider is None:
             raise SystemExit("Summarization strategies require --summarizer-provider.")
 
-    args.run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
+    args.run_id = args.run_id or new_run_id()
     tokenizer = build_tokenizer(args.tokenizer)
     _print_preflight(providers, sizes, strategies, args.repeats)
 

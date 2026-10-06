@@ -10261,3 +10261,26 @@ async def test_failed_summarizer_cannot_enter_live_verdict() -> None:
     assert excluded[0] == {"summarization"}
     ranked, _ = _verdict_outcomes(cells, *excluded, split=True)
     assert [row.strategy for row in ranked] == ["none"]
+
+
+async def test_live_salts_isolate_same_second_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from maf_cachebench import _live_cli
+
+    _stub_provider(monkeypatch)
+    monkeypatch.setattr(time, "strftime", lambda *a: "fixed-second")
+    original = build_live_scenario
+    salts: list[str] = []
+
+    def capture(**kwargs: Any) -> Any:
+        if kwargs["salt"] != "probe":
+            salts.append(kwargs["salt"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(_live_cli, "build_live_scenario", capture)
+    for _ in range(2):
+        args = build_parser().parse_args(_live_argv("--strategies", "none", "--repeats", "1"))
+        assert await run_live_comparison(args) == 0
+    assert len(salts) == 2
+    assert len(set(salts)) == 2

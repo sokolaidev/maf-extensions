@@ -322,15 +322,7 @@ TRANSCRIPT_PRESETS: Final[dict[str, TranscriptPreset]] = {
     "small": TranscriptPreset("small", turns=6, tool_result_tokens=250),
     "mid": TranscriptPreset("mid", turns=20, tool_result_tokens=350),
     "large": TranscriptPreset("large", turns=100, tool_result_tokens=600),
-    # Sized against a real tokenizer, not the estimator: prompts start near 50k true
-    # tokens, cross 100k around turn 7, and finish near 200k. This is the regime where
-    # compaction is actually load-bearing and where provider cache floors are irrelevant.
-    # 50k up to 350k: the regime where an agent is genuinely approaching its context window
-    # and compaction has to earn its keep. The peak is 350k rather than 400k because these
-    # targets count message *text* only, while providers also bill chat-template overhead —
-    # role markers and message delimiters. Measured against gpt-5.4-mini, that overhead is
-    # about 9%: a 380,539-token transcript by this count was billed as 414,786 and rejected
-    # by a 400k endpoint. 350k here lands near 382k on the wire.
+    # Text targets leave headroom for the provider's chat-template overhead.
     "xxl": TranscriptPreset(
         "xxl",
         turns=9,

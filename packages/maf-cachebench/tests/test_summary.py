@@ -131,3 +131,9 @@ def test_render_nonpositive_baseline_cost_as_unavailable(baseline_cost: float) -
     text = _render(verdict, ModelPricing(1.0, 0.1), "stub", show_answers=False)
     row = next(line for line in text.splitlines() if line.startswith("truncation"))
     assert row.split()[3] == "n/a"
+
+
+@pytest.mark.parametrize("threshold", [-1, float("nan"), float("inf")])
+def test_recommend_rejects_invalid_correctness(threshold: float) -> None:
+    with pytest.raises(ValueError, match="min_correctness must be finite and non-negative"):
+        recommend([_outcome("none", cost=1, recalled=10)], min_correctness=threshold)

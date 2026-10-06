@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,7 @@ from ._providers import (
     prompt_cache_key_options,
     provider_names,
 )
+from ._run_identity import new_run_id
 from ._runner import ProviderCaller, run_cell
 from ._strategies import StrategyOptions, build_strategy, resolve_context_window
 from ._tokenizers import TOKENIZER_NAMES, build_tokenizer
@@ -137,7 +137,7 @@ async def _measure(
 ) -> list[CellSummary]:
     """Replay every selected strategy against the model and summarize each cell."""
     tokenizer = build_tokenizer(args.tokenizer)
-    run_id = time.strftime("%Y%m%d-%H%M%S")
+    run_id = new_run_id()
     summaries: list[CellSummary] = []
     stream: Any = None
     if args.out is not None:

@@ -196,11 +196,7 @@ async def run(args: argparse.Namespace) -> int:
         print("so the client sends the conversation and the measurement describes it.\n")
 
     if args.repeats < 5:
-        # Measured the hard way: the same configuration was estimated at a 9-point range on
-        # one set of three repeats and 30 on another. A range is the gap between the two most
-        # extreme of n samples, so at n=3 it is a poor estimator of anything, and comparing
-        # two configurations by it is worse. It is still a reliable *alarm* -- a wide range
-        # always means instability -- so a low count is worth a warning, not a refusal.
+        # Small samples can reveal instability but cannot reliably rank configurations.
         print(f"warning: a range from {args.repeats} repeats is noisy. Use it to detect")
         print(
             "instability, not to rank one configuration above another. --repeats 5+ to compare.\n"

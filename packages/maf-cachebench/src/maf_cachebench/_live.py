@@ -368,24 +368,8 @@ class ModelCall:
 class UsageRecorder(ChatMiddleware):
     """Record what each model call actually sent, and what it was billed for.
 
-    Everything about *when* this reads the prompt is deliberate, because two separate
-    layers sit between this middleware and the request that is finally sent.
-
-    On the way in, ``context.messages`` holds only the new user message. The full history
-    is loaded further in, by ``PerServiceCallHistoryPersistingMiddleware``, which replaces
-    ``context.messages`` with the loaded list. A reference captured before ``call_next``
-    therefore points at a stale one-element list, and would report a five-turn conversation
-    as a single message.
-
-    Compaction then runs deeper still, inside ``BaseChatClient.get_response``, and it works
-    by mutation: ``apply_compaction`` sets exclusion flags on the ``Message`` objects
-    themselves rather than shortening the list it was handed. So after the call completes,
-    ``context.messages`` holds every message the turn had, each flagged with whether it
-    survived, and projecting it reproduces the prompt the model actually received.
-
-    Reading it any earlier reports the history as one message; reading it without projecting
-    reports that every strategy preserved every fact. Both were measured before this was
-    written the way it is.
+    Read after history loading and compaction, then project included messages to recover
+    the prompt actually sent.
     """
 
     def __init__(self) -> None:

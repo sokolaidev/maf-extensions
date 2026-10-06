@@ -718,3 +718,79 @@ async def test_live_rejects_nonpositive_long_threshold_before_setup(
     )
     with pytest.raises(SystemExit, match="--long-context-threshold must be greater than 0"):
         await _live_cli.run_live_comparison(args)
+
+
+@pytest.mark.parametrize(
+    "module_name,from_records", [("_summary_cli", False), ("_live_cli", False), ("_live_cli", True)]
+)
+@pytest.mark.parametrize("value", ["-1", "nan", "inf"])
+async def test_invalid_correctness_fails_before_setup_or_record_loading(
+    monkeypatch: pytest.MonkeyPatch, module_name: str, value: str, from_records: bool
+) -> None:
+    import importlib
+
+    module = importlib.import_module(f"maf_cachebench.{module_name}")
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid correctness must fail before setup or record loading")
+
+    for name in ("build_provider", "build_tokenizer"):
+        monkeypatch.setattr(module, name, unexpected)
+    if module_name == "_live_cli":
+        monkeypatch.setattr(module, "_render_from_records", unexpected)
+    argv = ["--from-jsonl", "unused.jsonl"] if from_records else ["azure"]
+    args = module.build_parser().parse_args([*argv, f"--min-correctness={value}"])
+    run = module.run_summary if module_name == "_summary_cli" else module.run_live_comparison
+    with pytest.raises(SystemExit, match="--min-correctness"):
+        await run(args)
+
+
+async def test_default_run_ids_isolate_same_second_replay_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import time
+
+    monkeypatch.setattr(time, "strftime", lambda *a: "fixed-second")
+    identities = []
+    for _ in range(2):
+        args = _cli.build_parser().parse_args(
+            ["--dry-run", "--strategies", "none", "--sizes", "small", "--out", str(tmp_path)]
+        )
+        assert await _cli.run_benchmark(args) == 0
+        identities.append(args.run_id)
+    assert len(set(identities)) == 2
+    assert len(list(tmp_path.glob("*-records.jsonl"))) == 2
+
+
+@pytest.mark.parametrize("module_name", ["_recall_cli", "_summary_cli", "_advise_cli"])
+async def test_measurement_salts_isolate_same_second_calls(
+    monkeypatch: pytest.MonkeyPatch, module_name: str
+) -> None:
+    import importlib
+    import time
+    from types import SimpleNamespace
+
+    module = importlib.import_module(f"maf_cachebench.{module_name}")
+    monkeypatch.setattr(time, "strftime", lambda *a: "fixed-second")
+    salts: list[str] = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        salts.append(kwargs["salt"])
+        raise Captured
+
+    monkeypatch.setattr(
+        module, "build_preset" if module_name == "_advise_cli" else "build_recall_scenario", capture
+    )
+    args = module.build_parser().parse_args(["azure"])
+    for _ in range(2):
+        with pytest.raises(Captured):
+            if module_name == "_recall_cli":
+                await module._probe(args, "azure", None, "none", 1)
+            elif module_name == "_summary_cli":
+                await module._measure(args, "azure", None, "none", ModelPricing(1, 0.1))
+            else:
+                await module._measure(args, "azure", SimpleNamespace(model="stub"))
+    assert len(set(salts)) == 2

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import time
 from collections.abc import Sequence
 
 from agent_framework import Message, apply_compaction
@@ -20,6 +19,7 @@ from ._cli_selection import (
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
+from ._run_identity import new_run_id
 from ._runner import CallOutcome, ProviderCaller
 from ._strategies import StrategyOptions, build_strategy
 from ._summary import (
@@ -28,6 +28,7 @@ from ._summary import (
     JointVerdict,
     recommend,
     relative_correctness,
+    validate_min_correctness,
 )
 from ._tokenizers import TOKENIZER_NAMES, build_tokenizer
 
@@ -134,7 +135,7 @@ async def _measure(
 ) -> JointOutcome:
     """Replay the scenario under one strategy, sending every turn, and score the answer."""
     tokenizer = build_tokenizer(args.tokenizer)
-    salt = f"{time.strftime('%Y%m%d-%H%M%S')}-{strategy_name}"
+    salt = f"{new_run_id()}-{strategy_name}"
     scenario = build_recall_scenario(
         salt=salt, filler_turns=args.filler_turns, filler_tokens=args.filler_tokens
     )
@@ -277,6 +278,10 @@ async def run_summary(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
+    try:
+        validate_min_correctness(args.min_correctness)
+    except ValueError as error:
+        raise SystemExit(f"--min-correctness: {error}") from error
     strategies = select_standalone_strategies(args.strategies)
     require_baseline(strategies)
     validate_pricing_options(args)
