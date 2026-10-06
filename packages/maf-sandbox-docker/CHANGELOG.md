@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.26.0...maf-sandbox-docker-v0.27.0) (2026-10-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **docker:** require explicit capabilities and isolate granted workloads per call ([#1737](https://github.com/sokolaidev/maf-extensions/issues/1737))
+
+### Fixes
+
+* **docker:** require explicit capabilities and isolate granted workloads per call ([#1737](https://github.com/sokolaidev/maf-extensions/issues/1737)) ([71a994a](https://github.com/sokolaidev/maf-extensions/commit/71a994a6a56f08f3300660f7e412a7bee4cea38d))
+* require maf-sandbox 0.48.0 in the dependents, and admit the 0.48 line ([#1747](https://github.com/sokolaidev/maf-extensions/issues/1747)) ([0926d2f](https://github.com/sokolaidev/maf-extensions/commit/0926d2f4a6944e2755a82ce187ef219ee227192b))
+
 ## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.25.0...maf-sandbox-docker-v0.26.0) (2026-10-05)
 
 
