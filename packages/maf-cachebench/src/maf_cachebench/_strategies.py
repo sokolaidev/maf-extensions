@@ -106,19 +106,9 @@ _MIN_AUTO_WINDOW_TOKENS: Final[int] = 4_096
 
 @dataclass(frozen=True, slots=True)
 class StrategyOptions:
-    """Parameters shared by every strategy builder.
+    """CLI-settable parameters shared by the strategy builders.
 
-    Every field here is a knob the CLI can set, and that is the point of the type: a builder
-    reading a constructor default instead of a field makes that parameter unreachable from a
-    sweep, which is how ``min_gain_fraction`` and the two record thresholds came to be
-    unsettable while the rows that depend on them were being compared.
-
-    The ranges are not validated here. Each strategy validates its own, in ``compaction/``,
-    which is where the constraint belongs -- those classes ship without this package -- and
-    duplicating the checks would give a sweep two places to disagree about what is legal. What
-    this package owes instead is that every selected strategy is *built* before a run spends
-    anything, so a bad value fails at the command line rather than on the first paid call; see
-    ``_live_cli._build_or_exit``.
+    Strategy constructors validate their ranges during preflight.
     """
 
     tokenizer: TokenizerProtocol
@@ -310,7 +300,7 @@ def _build_context_window_lazy(options: StrategyOptions) -> CompactionStrategy:
     return _context_window(options, eviction=0.7, truncation=0.95)
 
 
-def _build_anchored(options: StrategyOptions) -> CompactionStrategy:
+def _build_anchored(options: StrategyOptions) -> AnchoredCompactionStrategy:
     """Return the anchored strategy, designed against what the framework's rows measured.
 
     Its ceiling is the full input budget rather than a fraction of it, because unlike the

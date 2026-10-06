@@ -1,6 +1,7 @@
 """Selection validation before benchmark provider setup."""
 
 import argparse
+import math
 from collections.abc import Sequence
 
 from ._providers import parse_provider_selector, provider_names
@@ -57,6 +58,19 @@ def select_standalone_strategies(value: str) -> list[str]:
 
 def validate_pricing_options(args: argparse.Namespace) -> None:
     """Require an input rate before accepting individual price overrides."""
+    for name in (
+        "price_input",
+        "price_cached",
+        "price_output",
+        "price_cache_write",
+        "price_long_input",
+        "price_long_cached",
+        "price_long_output",
+        "price_long_cache_write",
+    ):
+        value = getattr(args, name, None)
+        if value is not None and (not math.isfinite(value) or value < 0):
+            raise SystemExit(f"--{name.replace('_', '-')} must be finite and non-negative.")
     if args.price_input is None:
         for name in ("price_cached", "price_output", "price_cache_write"):
             if getattr(args, name, None) is not None:

@@ -634,3 +634,51 @@ async def test_replay_distinct_resolved_models_keep_distinct_cells(
     assert await _cli.run_benchmark(args) == 0
     with (tmp_path / "resolved-summary.csv").open(encoding="utf-8", newline="") as stream:
         assert {row["model"] for row in csv.DictReader(stream)} == {"default", "other"}
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "price-input",
+        "price-cached",
+        "price-output",
+        "price-cache-write",
+        "price-long-input",
+        "price-long-cached",
+        "price-long-output",
+        "price-long-cache-write",
+    ],
+)
+@pytest.mark.parametrize("value", ["-1", "nan", "inf"])
+async def test_live_rejects_invalid_rates_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str, value: str
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid rates must fail before tokenizer or provider setup")
+
+    monkeypatch.setattr(_live_cli, "build_tokenizer", unexpected)
+    args = _live_cli.build_parser().parse_args(["azure", f"--{option}={value}"])
+    with pytest.raises(SystemExit, match=f"--{option} must be finite and non-negative"):
+        await _live_cli.run_live_comparison(args)
+
+
+@pytest.mark.parametrize(
+    "module_name", ["_cli", "_advise_cli", "_recall_cli", "_summary_cli", "_live_cli"]
+)
+def test_default_tokenizer_needs_no_optional_dependency(
+    monkeypatch: pytest.MonkeyPatch, module_name: str
+) -> None:
+    import importlib
+    import sys
+
+    from maf_cachebench._tokenizers import build_tokenizer
+
+    monkeypatch.setitem(sys.modules, "tiktoken", None)
+    module = importlib.import_module(f"maf_cachebench.{module_name}")
+    args = module.build_parser().parse_args([] if module_name == "_cli" else ["azure"])
+    tokenizer = build_tokenizer(args.tokenizer)
+    assert tokenizer.count_tokens("A short prompt") > 0
+    with pytest.raises(RuntimeError, match="requires the tiktoken package"):
+        build_tokenizer("tiktoken")

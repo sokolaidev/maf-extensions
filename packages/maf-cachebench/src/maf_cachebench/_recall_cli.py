@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--answer-max-tokens", type=int, default=800, help="Cap on the final answer. Default 800."
     )
     parser.add_argument(
-        "--tokenizer", default="tiktoken", choices=list(TOKENIZER_NAMES), help="Token counter."
+        "--tokenizer", default="estimator", choices=list(TOKENIZER_NAMES), help="Token counter."
     )
     parser.add_argument(
         "--no-temperature", action="store_true", help="Omit temperature for models that reject it."
@@ -170,7 +170,7 @@ def _render(rows: list[tuple[str, int, RecallScore]], *, show_answers: bool) -> 
         "            (* marks a perfect score; recall cannot fall when an answer is confidently",
         "            wrong)",
         (
-            "retracted  = the answer states the superseded decision — confidently wrong, not "
+            "retracted  = the answer states the superseded decision â€” confidently wrong, not "
             "merely incomplete"
         ),
     ]

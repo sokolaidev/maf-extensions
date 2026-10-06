@@ -13,7 +13,7 @@ pip install maf-cachebench[openai]      # Azure OpenAI, OpenRouter and the Azure
 pip install maf-cachebench[foundry]     # Microsoft Foundry project endpoints
 pip install maf-cachebench[mistral]
 pip install maf-cachebench[ollama]
-pip install maf-cachebench[tiktoken]    # exact token counts; the estimator is the default
+pip install maf-cachebench[tiktoken]    # then pass --tokenizer tiktoken for exact counts
 ```
 
 That puts five executables on the path. Note the **underscores** — `pyproject.toml` declares them that way, so `cachebench-live` is not a command even though argparse prints it in the usage line.
@@ -243,7 +243,7 @@ The two need different numbers of attempts to be equally settled, which is why t
 | `--no-force-tool-calls` | let the model choose its own tool calls. Needed for routes that reject a pinned `tool_choice`, and it must then be set for the **whole** run: a run where some rows were pinned and others were not is comparing different conversations |
 | `--server-history` | let the service keep the conversation server-side. Compaction then has nothing to act on, because the agent only sends the new turn. Off by default so that what is measured is actually compaction |
 | `--no-temperature` | omit temperature for models that reject the parameter |
-| `--tokenizer` | `tiktoken` (default) or `estimator`. The estimator is fast and runs about 2x a real BPE count; use `tiktoken` whenever thresholds must land on real token values |
+| `--tokenizer` | `estimator` (default) or `tiktoken`. The estimator is fast and runs about 2x a real BPE count; use `tiktoken` whenever thresholds must land on real token values |
 
 **Tool pinning matters for comparability.** By default each tool turn forces its own no-argument tool and every other turn is closed with `tool_choice="none"`. Without it, models gather different numbers of facts between runs, which moves both axes for reasons unrelated to compaction. A row whose provider rejected the option carries `NO:temp` or a similar flag and is not comparable with one that did not.
 

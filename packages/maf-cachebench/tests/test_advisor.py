@@ -243,3 +243,37 @@ def test_pricing_bounds_cached_tokens(cached: int, normalized: int) -> None:
         ((1000 - normalized) * 0.2 + normalized * 0.02) / 1_000_000
     )
     assert advise([summary], LUNA).baseline.hit_rate == pytest.approx(normalized / 1000)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "input_per_million",
+        "cached_read_per_million",
+        "output_per_million",
+        "cache_write_per_million",
+    ],
+)
+@pytest.mark.parametrize("value", [-1.0, float("nan"), float("inf")])
+def test_model_pricing_rejects_invalid_rates(field: str, value: float) -> None:
+    rates = dict(input_per_million=1.0, cached_read_per_million=0.1)
+    rates[field] = value
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        ModelPricing(
+            input_per_million=rates["input_per_million"],
+            cached_read_per_million=rates["cached_read_per_million"],
+            output_per_million=rates.get("output_per_million", 0),
+            cache_write_per_million=rates.get("cache_write_per_million"),
+        )
+
+
+@pytest.mark.parametrize("reported", [True, False])
+def test_advisor_charges_cache_writes(reported: bool) -> None:
+    summary = _summary("none", repeat=1, input_tokens=1_000_000, cached=800_000, reported=reported)
+    pricing = ModelPricing(1, 0.1, cache_write_per_million=2)
+    assert cost_of(summary, pricing) == pytest.approx(0.48 if reported else 2.0)
+
+
+def test_zero_rates_remain_valid() -> None:
+    pricing = ModelPricing(0, 0, output_per_million=0, cache_write_per_million=0)
+    assert pricing.input_cost(1_000, 100) == 0

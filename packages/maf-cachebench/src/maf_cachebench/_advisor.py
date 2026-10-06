@@ -7,13 +7,14 @@ reliable way to know is to price both options against that model directly.
 
 This module runs a strategy sweep for a single model, converts the measured token usage
 into money, and returns a verdict. It deliberately refuses to give one when the repeats
-disagree by more than the gap between the options — several providers were measured
+disagree by more than the gap between the options â€” several providers were measured
 swinging two- to fourfold on equivalent replay workloads, and a confident recommendation drawn
 from a single sample of that would be worse than no recommendation.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -69,6 +70,17 @@ class ModelPricing:
     """
     long_context: ModelPricing | None = None
     """The rates a request above :attr:`long_context_threshold` is billed at, ``None`` for none."""
+
+    def __post_init__(self) -> None:
+        for name in (
+            "input_per_million",
+            "cached_read_per_million",
+            "output_per_million",
+            "cache_write_per_million",
+        ):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise ValueError(f"{name} must be finite and non-negative.")
 
     @property
     def cache_discount(self) -> float:
@@ -258,7 +270,7 @@ class Verdict:
 def cost_of(summary: CellSummary, pricing: ModelPricing) -> float:
     """Return what one replay of a cell costs in input charges.
 
-    Cached tokens are billed at the discounted rate and fresh ones at full rate. Output is
+    Cached tokens use the read rate; fresh ones use the cache-write rate when set. Output is
     ignored: the benchmark caps generation at a handful of tokens because only the prompt
     side is under study.
 
@@ -274,10 +286,7 @@ def cost_of(summary: CellSummary, pricing: ModelPricing) -> float:
         if summary.reports_cache_tokens
         else 0
     )
-    fresh = max(summary.total_input_tokens - cached, 0)
-    return (
-        fresh * pricing.input_per_million + cached * pricing.cached_read_per_million
-    ) / 1_000_000
+    return pricing.input_cost(summary.total_input_tokens, cached)
 
 
 def _collect(summaries: list[CellSummary], pricing: ModelPricing) -> list[StrategyCost]:
@@ -344,7 +353,7 @@ def advise(
     best = ranked[0]
 
     # The comparison that decides the verdict is baseline versus the cheapest *compacted*
-    # option — not baseline versus the overall cheapest. When the baseline already wins,
+    # option â€” not baseline versus the overall cheapest. When the baseline already wins,
     # those are the same entry and their difference is zero, which would otherwise be
     # reported as "every option ties with not compacting" even though the alternatives
     # might be 50% dearer.
@@ -440,7 +449,7 @@ def fetch_openrouter_pricing(model: str, *, timeout: float = 30.0) -> ModelPrici
             continue
         pricing = cast("dict[str, Any]", entry.get("pricing") or {})
         input_price = float(pricing.get("prompt") or 0.0) * 1_000_000
-        # A missing input_cache_read means the model advertises no cache discount at all —
+        # A missing input_cache_read means the model advertises no cache discount at all â€”
         # 142 of OpenRouter's 417 paid models are in that position. Reading the absent field
         # as zero would price cache reads as free, inventing a 100% discount for exactly the
         # models that have none, and biasing the verdict against compacting them.

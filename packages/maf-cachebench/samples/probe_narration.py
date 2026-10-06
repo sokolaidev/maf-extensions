@@ -5,15 +5,8 @@ of that control disagree about how much the agent remembered, nothing can be ran
 it -- and the disagreement is invisible in a normal run, because the reported figure comes
 from one repeat.
 
-On ``gpt-5.4-mini`` the uncompacted control's correctness varied by **78 points** across
-three identical repeats under the harness's own default narration guidance, and by 9 under
-suppressed narration. Same model, same scenario, same prompt: the only difference was
-whether the instructions told it what to do with the values it had looked up.
-
-That is a property of the model, not of this benchmark, so the answer for the next model is
-unlikely to be the same. This probe measures it rather than assuming it. It runs the
-uncompacted control only -- no compaction strategies, nothing to rank -- across the
-configurations you intend to use, and reports which of them hold still.
+Narration can affect control stability. This probe repeats the uncompacted control
+across narration and placement configurations and reports which produce consistent recall.
 
 Usage:
     python probe_narration.py foundry:gpt-5.4-mini

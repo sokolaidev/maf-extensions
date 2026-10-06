@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--price-cached", type=float, default=None, help="Cached-read price per million tokens."
     )
     parser.add_argument(
-        "--tokenizer", default="tiktoken", choices=list(TOKENIZER_NAMES), help="Token counter."
+        "--tokenizer", default="estimator", choices=list(TOKENIZER_NAMES), help="Token counter."
     )
     parser.add_argument(
         "--no-temperature", action="store_true", help="Omit temperature for models that reject it."
@@ -115,7 +115,7 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
     if provider == "openrouter":
         try:
             return fetch_openrouter_pricing(model)
-        except (KeyError, OSError) as error:
+        except (KeyError, OSError, ValueError) as error:
             raise SystemExit(
                 f"Could not fetch pricing for {model!r}: {error}. Pass --price-input."
             ) from error

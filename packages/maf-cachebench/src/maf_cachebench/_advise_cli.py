@@ -122,7 +122,7 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
     if provider == "openrouter":
         try:
             return fetch_openrouter_pricing(model)
-        except (KeyError, OSError) as error:
+        except (KeyError, OSError, ValueError) as error:
             raise SystemExit(
                 f"Could not fetch pricing for {model!r}: {error}. Pass --price-input."
             ) from error
@@ -232,7 +232,7 @@ def _render(verdict: Verdict, pricing: ModelPricing, model: str) -> str:
         lines.append("Cost cannot separate these strategies on this model.")
     elif verdict.recommended == verdict.baseline.strategy:
         lines.append(
-            "Compaction does not pay for itself here — keep it off except as an overflow guard."
+            "Compaction does not pay for itself here â€” keep it off except as an overflow guard."
         )
     else:
         lines.append(

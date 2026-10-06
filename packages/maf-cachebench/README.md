@@ -24,7 +24,7 @@ pip install maf-cachebench[openai]        # Azure OpenAI, OpenRouter and the Azu
 pip install maf-cachebench[foundry]       # Microsoft Foundry project endpoints
 pip install maf-cachebench[mistral]
 pip install maf-cachebench[ollama]
-pip install maf-cachebench[tiktoken]      # exact token counts; the estimator is the default
+pip install maf-cachebench[tiktoken]      # then pass --tokenizer tiktoken for exact counts
 ```
 
 Five commands land on the path: `cachebench`, `cachebench_live`, `cachebench_advise`, `cachebench_recall` and `cachebench_summary`. Each prints its own `--help`.
@@ -82,3 +82,5 @@ The full option reference, the flags legend and the measurement design are in th
 ## Licence
 
 MIT. See the [LICENSE](https://github.com/sokolaidev/maf-extensions/blob/main/LICENSE).
+
+All commands default to the dependency-free estimator. Install the `tiktoken` extra and pass `--tokenizer tiktoken` for BPE counts. Explicit price rates must be finite and non-negative.
