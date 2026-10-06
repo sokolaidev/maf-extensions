@@ -1073,3 +1073,41 @@ async def test_run_cell_refuses_invalid_delay_before_call(value: float) -> None:
             caller=unexpected,
             turn_delay=value,
         )
+
+
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({"Retry-After": "30"}, [30.0, 30.0]),
+        ({"Retry-After": "0"}, [0.0, 0.0]),
+        ({"Retry-After": "600"}, [60.0, 60.0]),
+        ({"retry-after-ms": "1500"}, [1.5, 1.5]),
+        ({"Retry-After": "-1"}, [2.0, 4.0]),
+        ({"Retry-After": "nan"}, [2.0, 4.0]),
+        ({"Retry-After": "inf"}, [2.0, 4.0]),
+        ({"Retry-After": "invalid"}, [2.0, 4.0]),
+    ],
+)
+async def test_replay_retry_uses_bounded_provider_delay(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], expected: list[float]
+) -> None:
+    import asyncio
+
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class Client:
+        calls = 0
+
+        async def get_response(self, *args: object, **kwargs: object) -> None:
+            self.calls += 1
+            raise _Throttled(headers)
+
+    client = Client()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    result = await ProviderCaller(ProviderRuntime(client, "stub"), max_retries=2)(())
+    assert result.error is not None
+    assert client.calls == 3
+    assert sleeps == expected

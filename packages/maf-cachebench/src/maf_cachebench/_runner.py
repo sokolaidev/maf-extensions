@@ -250,7 +250,7 @@ def _seconds(raw: Any) -> float | None:
         value = float(raw)
     except (TypeError, ValueError):
         return None
-    return value if value >= 0 else None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def retry_after_seconds(error: BaseException) -> float | None:
@@ -365,7 +365,8 @@ class ProviderCaller:
                 replaced, so a cell key cannot drop a provider's routing configuration.
             max_retries: Attempts made after throttling before the turn is recorded as an
                 error.
-            retry_base_delay: Seconds for the first backoff, doubled per retry.
+            retry_base_delay: Initial fallback delay, doubled per retry. Provider Retry-After
+                takes precedence; each wait is capped at 60 seconds.
             request_timeout: Seconds a single call may take before it is abandoned and
                 recorded as an error. Without a bound, one queue-happy provider can wedge a
                 multi-hour sweep indefinitely: the underlying SDK's own timeout stacks with
@@ -409,7 +410,10 @@ class ProviderCaller:
             except Exception as exc:
                 last_error = exc
                 if rate_retries < self.max_retries and is_rate_limited(exc):
-                    await asyncio.sleep(self.retry_base_delay * (2**rate_retries))
+                    delay = retry_after_seconds(exc)
+                    if delay is None:
+                        delay = self.retry_base_delay * (2**rate_retries)
+                    await asyncio.sleep(min(delay, 60.0))
                     rate_retries += 1
                     continue
                 # A rejected sampling parameter is deterministic, not transient: drop the

@@ -395,3 +395,66 @@ async def test_stability_invalid_configuration_fails_before_setup(
     args = namespace["build_parser"]().parse_args(["mistral", option, value])
     with pytest.raises(SystemExit, match=option):
         await run(args)
+
+
+@pytest.mark.parametrize("first_error", [False, True])
+@pytest.mark.parametrize("warm_hits", [[50, 50], [10, 50, 50]])
+async def test_stability_keeps_all_warm_calls_after_unreported_first_call(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    first_error: bool,
+    warm_hits: list[int],
+) -> None:
+    from maf_cachebench import CallOutcome, ProviderRuntime
+
+    namespace = runpy.run_path(str(SAMPLES / "probe_cache_stability.py"))
+    run = namespace["run"]
+    outcomes = iter(
+        [
+            CallOutcome(
+                latency_ms=1, input_tokens=100, error="unavailable" if first_error else None
+            ),
+            *(CallOutcome(latency_ms=1, input_tokens=100, cached_tokens=hit) for hit in warm_hits),
+        ]
+    )
+
+    async def respond(messages: Any) -> CallOutcome:
+        return next(outcomes)
+
+    monkeypatch.setitem(
+        run.__globals__, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
+    )
+    monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
+    args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(len(warm_hits) + 1)])
+    assert await run(args) == 0
+    output = capsys.readouterr().out
+    assert f"warm calls (excluding the first): {len(warm_hits)}" in output
+    assert ("INTERMITTENT:" in output) is (10 in warm_hits)
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--narrations", ""),
+        ("--narrations", ", ,"),
+        ("--narrations", "unknown"),
+        ("--placements", ""),
+        ("--placements", ", ,"),
+        ("--placements", "unknown"),
+        ("--agent", "unknown"),
+    ],
+)
+async def test_narration_invalid_modes_fail_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str, value: str
+) -> None:
+    namespace = runpy.run_path(str(SAMPLES / "probe_narration.py"))
+    run = namespace["run"]
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid modes must fail before provider/tokenizer setup")
+
+    for name in ("build_provider", "build_tokenizer"):
+        monkeypatch.setitem(run.__globals__, name, unexpected)
+    args = namespace["build_parser"]().parse_args(["azure", option, value])
+    with pytest.raises(SystemExit, match=option):
+        await run(args)

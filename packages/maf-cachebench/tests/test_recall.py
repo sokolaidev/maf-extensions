@@ -340,14 +340,7 @@ def test_the_combined_question_is_not_double_counted() -> None:
 
 
 def test_the_combined_question_states_how_many_codes_it_wants() -> None:
-    """Ask for "every code returned by every lookup" and a model answers a different question.
-
-    Measured across 240 control samples under the old wording: 226 were either every value or
-    exactly eleven -- five non-tool facts plus *one* code per lookup. The model reads it as
-    *the* return code of each lookup, answers that correctly, and is scored as having recalled
-    21%. `acc2` was measuring the phrasing. The per-scope questions state their counts for this
-    reason; this one did not.
-    """
+    """The combined prompt states both the total and per-lookup code counts."""
     lookups = {"early": ("a",) * 8, "mid": ("b",) * 8, "late": ("c",) * 8, "aside": ()}
 
     question = combined_question(lookups)

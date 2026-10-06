@@ -92,7 +92,7 @@ async def run(args: argparse.Namespace) -> int:
         f"model: {runtime.model}   prompt: ~{args.prompt_tokens:,} tokens   calls: {args.calls}\n"
     )
     print(f"{'call':>5}{'input':>9}{'cached':>9}{'hit%':>7}{'ms':>8}")
-    hits: list[float] = []
+    hits: list[tuple[int, float]] = []
     for index in range(1, args.calls + 1):
         outcome = await caller(messages)
         if outcome.error:
@@ -104,16 +104,16 @@ async def run(args: argparse.Namespace) -> int:
             print(f"{index:>5}{got:>9,}{'n/a':>9}{'n/a':>7}{outcome.latency_ms:>8.0f}")
             continue
         hit = cached / got if got else 0.0
-        hits.append(hit)
+        hits.append((index, hit))
         print(f"{index:>5}{got:>9,}{cached:>9,}{hit:>6.0%}{outcome.latency_ms:>8.0f}")
 
-    if len(hits) < 3:
+    warm = [hit for index, hit in hits if index > 1]
+    if len(warm) < 2:
         print("\nNot enough usable calls to judge stability.")
         return 0
 
     # The first call cannot hit a cache that nothing has written yet, so it is reported but
     # excluded: counting it as a miss would make every provider look intermittent.
-    warm = hits[1:]
     lo, hi = min(warm), max(warm)
     print(f"\nwarm calls (excluding the first): {len(warm)}")
     print(f"hit rate  min {lo:.0%}   median {statistics.median(warm):.0%}   max {hi:.0%}")

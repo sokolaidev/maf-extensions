@@ -1687,17 +1687,9 @@ async def run_live(
     ``Message`` objects themselves, so a shallow copy would hand every probe a history the
     previous probe had already re-marked.
 
-    **Probe.** Every closing question is asked from that snapshot, restored before each one,
-    and asked as many times as its scope calls for -- ``probe_repeats`` for a per-scope
-    question, ``combined_repeats`` for the combined one, which is the only difference between
-    them. No probe's answer can reach another probe's context, no question is asked from a
-    context an earlier question has already compacted further, and
-    survival is scored against the snapshot -- which is by construction exactly the context
-    every probe was answered from. None of the three held when the closing questions were
-    ordinary turns appended to the conversation, and each moved the numbers: the first scope
-    was answered from a fuller context than the last, the combined question from the most
-    compacted context of the run, and a code compaction had destroyed came back because the
-    model had recited it two questions earlier.
+    **Probe.** Every closing question uses a fresh copy of the snapshot. Per-scope questions
+    use ``probe_repeats`` and the combined question uses ``combined_repeats``. Answers and
+    compaction mutations cannot reach other probes; survival is scored against the snapshot.
 
     Args:
         runtime: The provider's client, model and per-request options.
@@ -2271,17 +2263,9 @@ def score_samples(
 def score_combined_samples(outcome: LiveOutcome, scenario: RecallScenario) -> tuple[float, ...]:
     """Return, per attempt, the share of planted facts the combined answer contained.
 
-    The per-scope questions ask for a handful of values each from a nearby part of the conversation.
-    This one asks for all 53 at once from a context they are scattered through, which is a
-    materially harder task and the one a real user is more likely to pose. It is the question the
-    old design punished hardest by construction, since it was asked last and so from the most
-    compacted context of the run; asked from the snapshot it is on the same footing as every other
-    probe.
-
-    Taken from the combined probes themselves rather than by counting up to a repeat count, so
-    a run that asked it once and a run that asked it three times both read as what they did.
-    That is what lets records written before the combined question had its own count aggregate
-    beside new ones instead of being read as a failed three.
+    Each combined probe asks for all planted facts from the same snapshot as the per-scope
+    probes. Only attempts present in the outcome are scored, so records with different
+    repeat counts retain their actual sample counts.
 
     Args:
         outcome: The finished run.

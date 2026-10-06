@@ -25,6 +25,7 @@ import statistics
 from collections.abc import Sequence
 
 from maf_cachebench import (
+    AGENT_KINDS,
     RecallScore,
     StrategyOptions,
     build_live_scenario,
@@ -195,6 +196,13 @@ async def run(args: argparse.Namespace) -> int:
     placements = [item.strip() for item in args.placements.split(",") if item.strip()]
     validate_unique_selection("narration", narrations)
     validate_unique_selection("placement", placements)
+    for option, values, allowed in (
+        ("--narrations", narrations, ("neutral", "prompted", "suppressed")),
+        ("--placements", placements, ("spread", "buried", "head")),
+        ("--agent", [args.agent], AGENT_KINDS),
+    ):
+        if not values or any(value not in allowed for value in values):
+            raise SystemExit(f"{option} requires values from: {', '.join(allowed)}.")
     preflight_strategies(
         ["none"],
         StrategyOptions(
