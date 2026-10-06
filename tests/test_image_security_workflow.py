@@ -14,6 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from image_security_evidence import record, verify_inventory  # noqa: E402
+from select_image_security import PROFILES  # noqa: E402
 
 pytestmark = pytest.mark.workflow
 IMAGE_ID = "sha256:" + "a" * 64
@@ -120,8 +121,10 @@ def test_scans_fail_on_unfixed_high_findings_and_keep_failure_evidence():
 
 def test_every_scan_profile_is_named_in_the_documented_scope():
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
-    profiles = workflow["jobs"]["scan"]["strategy"]["matrix"]["include"]
-    names = [p["profile"] for p in profiles]
+    assert workflow["jobs"]["scan"]["strategy"]["matrix"] == {
+        "profile": "${{ fromJSON(needs.select.outputs.profiles) }}"
+    }
+    names = PROFILES
     assert len(names) == len(set(names)) == 12
     scope = (ROOT / "docs/security/container-images.md").read_text()
     for profile in names:

@@ -2,23 +2,8 @@ name: Image security
 
 on:
   pull_request:
-    paths:
-      - images/**
-      - packages/**
-      - scripts/**
-      - uv.lock
-      - pyproject.toml
-      - .github/workflows/image-security.yml
-      - tests/test_image_security_workflow.py
   push:
     branches: [main]
-    paths:
-      - images/**
-      - packages/**
-      - scripts/**
-      - uv.lock
-      - pyproject.toml
-      - .github/workflows/image-security.yml
   schedule:
     - cron: "35 6 * * *"
   workflow_dispatch:
@@ -27,31 +12,39 @@ permissions:
   contents: read
 
 concurrency:
-  group: image-security-${{ github.event.pull_request.number || github.ref }}
+  group: image-security-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  select:
+    name: Select image security profiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      profiles: ${{ steps.select.outputs.profiles }}
+      scan: ${{ steps.select.outputs.scan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select affected image profiles
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/select_image_security.py
+
   scan:
     name: Image security (${{ matrix.profile }})
+    needs: select
+    if: needs.select.outputs.scan == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
-        include:
-          - profile: bicep
-          - profile: bicep-prepared
-          - profile: sbx-bicep
-          - profile: diagram
-          - profile: drawio-sandbox
-          - profile: drawio-export
-          - profile: terraform-random
-          - profile: opentofu-random
-          - profile: terraform-prepared
-          - profile: opentofu-prepared
-          - profile: hyperlight
-          - profile: egress-proxy
+        profile: ${{ fromJSON(needs.select.outputs.profiles) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,10 +113,31 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  check:
+    name: Image security checks
+    needs: [select, scan]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful selection and selected scans
+        env:
+          SELECTION: ${{ needs.select.result }}
+          SCAN_REQUIRED: ${{ needs.select.outputs.scan }}
+          SCAN_RESULT: ${{ needs.scan.result }}
+        run: |
+          test "$SELECTION" = success
+          if [ "$SCAN_REQUIRED" = true ]; then
+            test "$SCAN_RESULT" = success
+          else
+            test "$SCAN_REQUIRED" = false
+            test "$SCAN_RESULT" = skipped
+          fi
+
   report-failure:
     name: Report image security failure
-    needs: scan
-    if: always() && needs.scan.result == 'failure' && github.event_name != 'pull_request'
+    needs: [select, scan, check]
+    if: always() && (needs.select.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -141,5 +155,5 @@ jobs:
           --marker '<!-- image-security-failure-tracker -->'
           --title 'Container image security checks failed'
           --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'
-          --expected 'All twelve documented Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings.'
+          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled and manual runs select all twelve documented profiles, subject to the documented Hyperlight release-transition preflight.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-drawio maf-sandbox-hyperlight
