@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import urllib.error
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ import container_release_registry as registry  # noqa: E402
 import prepare_container_release_dispatch as dispatcher  # noqa: E402
 from container_release import (  # noqa: E402
     abandon,
+    assessment_status,
     complete,
     digest,
     empty_catalogue,
@@ -85,7 +87,144 @@ def monitor_context(monkeypatch):
     monkeypatch.setattr(monitor, "context", lambda *a: (CANDIDATE["sourceCommit"], "456", "1"))
     monkeypatch.setattr(monitor, "now", lambda: LATER)
     monkeypatch.setattr(monitor, "outputs", lambda value: None)
+    monkeypatch.setattr(monitor, "manifest", lambda *args: None)
     return history
+
+
+def test_unexpected_public_digest_is_reserved_before_scanning_and_survives_tag_movement(
+    monkeypatch, tmp_path, monitor_context
+):
+    raw = (
+        b'{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:'
+        + b"d" * 64
+        + b'"}}'
+    )
+    wrong = sha256(raw)
+    monkeypatch.setattr(monitor, "manifest", lambda *args: raw)
+    monitor.begin(tmp_path)
+    record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
+    assert record["unexpectedDigests"][wrong]["latestAttempt"]["outcome"] == "running"
+    assert record["candidate"] == CANDIDATE
+    with pytest.raises(ValueError, match="[Uu]nexpected"):
+        complete(monitor_context.catalogue, CANDIDATE, CANDIDATE["imageId"], DONE)
+    monkeypatch.setattr(monitor, "manifest", lambda *args: None)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.begin(tmp_path)
+    targets = read(tmp_path / "plan.json")["targets"]
+    assert {t.get("unexpectedDigest") for t in targets} == {None, wrong}
+
+
+@pytest.mark.parametrize("registry_error", [False, True])
+def test_unexpected_image_is_scanned_and_retained_until_its_own_confirmed_absence(
+    monkeypatch, tmp_path, monitor_context, registry_error
+):
+    raw = encode({"mediaType": registry.MANIFEST, "config": {"digest": "sha256:" + "d" * 64}})
+    wrong = sha256(raw)
+    monkeypatch.setattr(
+        monitor,
+        "manifest",
+        lambda profile, ref: raw if ref != CANDIDATE["registryDigest"] else None,
+    )
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *args: {},
+            retain=lambda *args: None,
+            publish=lambda *args: None,
+        ),
+    )
+    pulls = []
+
+    def pull(candidate):
+        pulls.append(candidate["registryDigest"])
+        if candidate["registryDigest"] != wrong:
+            raise ValueError("Expected image was never published")
+        return candidate["imageId"]
+
+    def assess(directory, image_id, **kwargs):
+        assert kwargs == {"require_clean": False}
+        report = scan_report()
+        report["source"]["target"]["imageID"] = image_id
+        report["matches"] = [{"vulnerability": {"id": "CVE-unexpected", "severity": "High"}}]
+        result = scan_result(report, image_id, DONE)
+        write(directory / "grype.json", report)
+        write(directory / "assessment.json", result)
+        write(
+            directory / "sbom.syft.json",
+            {"artifacts": [{}], "source": {"type": "image", "metadata": {"imageID": image_id}}},
+        )
+        return result
+
+    monkeypatch.setattr(monitor, "anonymous_pull", pull)
+    monkeypatch.setattr(monitor, "assess", assess)
+    monkeypatch.setattr(monitor.subprocess, "run", lambda *a, **k: None)
+    monitor.begin(tmp_path)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.scan(tmp_path, 0)
+    monitor.finish(tmp_path)
+    record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
+    entry = record["unexpectedDigests"][wrong]
+    assert wrong in pulls
+    assert entry["latestAttempt"]["outcome"] == "vulnerable"
+    assert entry["lastKnownVulnerable"]["findings"][0]["id"] == "CVE-unexpected"
+    assert record["registryDigest"] == CANDIDATE["registryDigest"]
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        assert any(
+            wrong[7:] in name and name.endswith("manifest.json") for name in archive.namelist()
+        )
+    monitor_context.catalogue = abandon(
+        monitor_context.catalogue, "bicep/0.1.0", "unexpected publication", DONE
+    )
+    next_directory = tmp_path / "next"
+    monkeypatch.setattr(monitor, "now", lambda: "2026-01-03T00:00:00Z")
+
+    def missing(profile, ref):
+        if ref == wrong and registry_error:
+            raise TimeoutError("registry unavailable")
+        return None
+
+    monkeypatch.setattr(monitor, "manifest", missing)
+    monitor.begin(next_directory)
+    monkeypatch.setattr(monitor, "now", lambda: "2026-01-03T01:00:00Z")
+    monitor.scan(next_directory, 0)
+    monitor.finish(next_directory)
+    record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
+    assert monitor.monitored(record, "2026-01-04T00:00:00Z") is registry_error
+    assert (
+        record["unexpectedDigests"][wrong]["lastKnownVulnerable"]["findings"][0]["id"]
+        == "CVE-unexpected"
+    )
+
+
+def test_failed_registry_discovery_cannot_report_clean(monkeypatch, tmp_path, monitor_context):
+    def unavailable(*args):
+        raise TimeoutError("registry unavailable")
+
+    monkeypatch.setattr(monitor, "manifest", unavailable)
+    monitor.begin(tmp_path)
+    record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
+    record["latestAttempt"].update(outcome="clean")
+    assert assessment_status(record, DONE) == "unavailable"
+
+
+@pytest.mark.parametrize("mutation", ["delete", "time", "assessment"])
+def test_discovered_public_digest_history_cannot_be_erased(
+    monkeypatch, tmp_path, monitor_context, mutation
+):
+    monkeypatch.setattr(monitor, "manifest", lambda *args: b"unexpected bytes")
+    monitor.begin(tmp_path)
+    changed = copy.deepcopy(monitor_context.catalogue)
+    discoveries = changed["releases"]["bicep/0.1.0"]["unexpectedDigests"]
+    entry = next(iter(discoveries.values()))
+    if mutation == "delete":
+        discoveries.clear()
+    elif mutation == "time":
+        entry["discoveredAt"] = AT
+    else:
+        entry["latestAttempt"]["outcome"] = "clean"
+    with pytest.raises(ValueError):
+        validate_transition(monitor_context.catalogue, changed)
 
 
 def test_monitor_commits_running_before_workers_and_missing_worker_is_unavailable(
@@ -171,7 +310,7 @@ def test_absence_retirement_requires_abandonment_and_two_confirmed_absences(
     result = read(tmp_path / "reports/bicep-0.1.0/observation.json")["assessment"]
     assert ("absenceProof" in result) == proof
     if proof:
-        assert calls == [CANDIDATE["registryDigest"], CANDIDATE["version"]]
+        assert calls == [CANDIDATE["version"], CANDIDATE["registryDigest"], CANDIDATE["version"]]
 
 
 def test_monitor_rejects_forged_clean_observation(monkeypatch, tmp_path, monitor_context):

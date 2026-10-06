@@ -74,13 +74,28 @@ async function latestMonitor(at = Date.now()) {
   return {id: r.id, run_attempt: r.run_attempt, status: r.status, conclusion: r.conclusion, updated_at: r.updated_at};
 }
 
-function status(record, monitor, at) {
-  if (record.state === "completed" && record.supersededAt && at >= date(record.supersededAt) + 90 * 24 * HOUR) return "no-longer-monitored";
+function unexpectedRecord(entry) {
+  return {...entry, registryDigest: entry.digest, state: "unexpected", delivery: "not-approved"};
+}
+
+function monitoringEnd(record) {
+  if (record.state === "completed" && record.supersededAt) return date(record.supersededAt) + 90 * 24 * HOUR;
   const proof = record.absenceProof;
-  if (record.state === "abandoned" && record.publicExposure === "absent" && proof?.digest === record.registryDigest && proof.digestMissing === true && proof.versionTagMissing === true && date(proof.checkedAt) >= date(record.abandonedAt) && at >= date(proof.checkedAt)) return "no-longer-monitored";
+  if (record.state === "unexpected" && proof?.digest === record.registryDigest && proof.digestMissing === true && date(proof.checkedAt) >= date(record.discoveredAt)) return date(proof.checkedAt);
+  if (record.state === "abandoned" && record.publicExposure === "absent" && proof?.digest === record.registryDigest && proof.digestMissing === true && proof.versionTagMissing === true && date(proof.checkedAt) >= date(record.abandonedAt)) {
+    const ends = Object.values(record.unexpectedDigests || {}).map(entry => monitoringEnd(unexpectedRecord(entry)));
+    if (ends.every(end => end !== null)) return Math.max(date(proof.checkedAt), ...ends);
+  }
+  return null;
+}
+
+function status(record, monitor, at) {
+  const end = monitoringEnd(record);
+  if (end !== null && at >= end) return "no-longer-monitored";
   const a = record.latestAttempt;
   if (!monitor || !a || a.digest !== record.registryDigest || a.monitorRunId !== String(monitor.id) || a.monitorRunAttempt !== monitor.run_attempt || date(a.assessedAt) > at || date(monitor.updated_at) > at) return "unavailable";
   if (a.outcome === "vulnerable") return "vulnerable";
+  if (Object.values(record.unexpectedDigests || {}).some(entry => monitoringEnd(unexpectedRecord(entry)) === null) || record.registryDiscovery?.outcome === "unavailable") return "unavailable";
   if (monitor.status !== "completed" || monitor.conclusion !== "success" || a.outcome !== "clean") return "unavailable";
   return at - date(a.assessedAt) >= 48 * HOUR ? "stale" : "clean";
 }
@@ -111,7 +126,8 @@ function render(value, monitor, at) {
   const rows = document.getElementById("releases");
   rows.replaceChildren();
   const states = [];
-  for (const [name, r] of Object.entries(value.catalogue.releases).sort()) {
+  const entries = Object.entries(value.catalogue.releases).sort().flatMap(([name, r]) => [[name, r], ...Object.values(r.unexpectedDigests || {}).map(entry => [name, unexpectedRecord(entry)])]);
+  for (const [name, r] of entries) {
     assert(/^[a-z][a-z0-9-]*\/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(name) && digest(r.registryDigest), "Invalid release identity");
     const state = status(r, monitor, at);
     states.push(state === "clean" && (r.state !== "completed" || r.delivery !== "complete") ? "incomplete" : state);
@@ -119,10 +135,12 @@ function render(value, monitor, at) {
     const a = r.latestAttempt;
     const database = a?.database || r.lastKnownVulnerable?.database;
     const databaseText = database ? `Source: ${database.from}; built: ${database.built}; schema: ${database.schemaVersion}; checksum: ${database.checksum || "Unavailable"}${a?.database ? "" : " (last known vulnerable assessment)"}` : "Unavailable";
-    const end = r.state === "completed" && r.supersededAt ? new Date(date(r.supersededAt) + 90 * 24 * HOUR).toISOString() : state === "no-longer-monitored" ? r.absenceProof.checkedAt : "Not scheduled";
+    const endTime = monitoringEnd(r);
+    const end = endTime === null ? "Not scheduled" : new Date(endTime).toISOString();
     const workflow = monitor ? `Workflow ${monitor.id}, attempt ${monitor.run_attempt}: ${monitor.status} / ${monitor.conclusion || "pending"}` : "Workflow unavailable";
     const findings = (r.lastKnownVulnerable?.findings || []).map(f => `${f.id} (${f.severity}); fix: ${f.fix?.state || "unknown"}; versions: ${(f.fix?.versions || []).join(", ") || "not reported"}`).join("; ") || "None recorded";
-    const values = [name, `${r.state} / ${r.delivery}`, state, a?.assessedAt || "Unavailable", `Outcome: ${a?.outcome || "unavailable"}; ${workflow}`, databaseText, end, findings];
+    const publication = r.unexpectedDigests && Object.keys(r.unexpectedDigests).length ? " / failed: unexpected public bytes" : "";
+    const values = [r.state === "unexpected" ? `${name} (unexpected image)` : name, `${r.state} / ${r.delivery}${publication}`, state, a?.assessedAt || "Unavailable", `Outcome: ${a?.outcome || "unavailable"}; ${workflow}`, databaseText, end, findings];
     for (const [index, text] of values.entries()) {
       const td = document.createElement("td");
       td.textContent = text;

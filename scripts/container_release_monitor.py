@@ -14,19 +14,23 @@ from typing import Any
 from container_release import (
     PREFIX,
     assessment_status,
+    decode,
     digest,
     key,
     monitoring_end,
     now,
     observe,
     read,
+    require_digest,
     scan_result,
     timestamp,
+    unexpected_end,
     validate_identity,
     write,
 )
 from container_release_assets import Evidence
-from container_release_history import History
+from container_release_history import History, sha256
+from container_release_oci import MANIFEST
 from container_release_publish import context, outputs
 from container_release_registry import anonymous_pull, manifest
 from container_release_status import MONITOR
@@ -34,6 +38,22 @@ from image_security_evidence import verify_inventory
 from prepare_container_release import assess
 
 BATCH_SIZE = 6
+
+
+def target_name(target: dict[str, Any]) -> str:
+    """Keep unexpected registry bytes separate from the approved candidate's evidence."""
+    candidate = target["candidate"]
+    suffix = (
+        "-" + target["unexpectedDigest"].removeprefix("sha256:")
+        if "unexpectedDigest" in target
+        else ""
+    )
+    return f"{candidate['profile']}-{candidate['version']}{suffix}"
+
+
+def target_digest(target: dict[str, Any]) -> str:
+    """Select an independently monitored digest without changing the approved identity."""
+    return require_digest(target.get("unexpectedDigest", target["candidate"]["registryDigest"]))
 
 
 def monitored(record: dict[str, Any], at: str) -> bool:
@@ -55,7 +75,33 @@ def begin(directory: Path) -> None:
                 continue
             candidate = record["candidate"]
             validate_identity(candidate)
+            current = result["releases"][name]
+            if record["state"] != "completed":
+                try:
+                    raw = manifest(candidate["profile"], candidate["version"])
+                    current["registryDiscovery"] = {"checkedAt": at, "outcome": "checked"}
+                    if raw is not None and sha256(raw) != candidate["registryDigest"]:
+                        found = sha256(raw)
+                        entry = current.setdefault("unexpectedDigests", {}).setdefault(
+                            found, {"digest": found, "discoveredAt": at}
+                        )
+                        entry.pop("absenceProof", None)
+                except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+                    current["registryDiscovery"] = {"checkedAt": at, "outcome": "unavailable"}
             targets.append({"candidate": candidate, "state": record["state"]})
+            for found, entry in sorted(current.get("unexpectedDigests", {}).items()):
+                if unexpected_end(entry) is not None:
+                    continue
+                targets.append(
+                    {"candidate": candidate, "state": record["state"], "unexpectedDigest": found}
+                )
+                entry["latestAttempt"] = {
+                    "digest": found,
+                    "assessedAt": at,
+                    "outcome": "running",
+                    "monitorRunId": run_id,
+                    "monitorRunAttempt": int(attempt),
+                }
             result = observe(
                 result,
                 name,
@@ -98,7 +144,14 @@ def plan(directory: Path) -> dict[str, Any]:
     seen = set()
     for target in targets:
         candidate = target["candidate"]
-        name = key(candidate)
+        validate_identity(candidate)
+        target_digest(target)
+        if "unexpectedDigest" in target and (
+            target["unexpectedDigest"] == candidate["registryDigest"]
+            or target.get("state") == "completed"
+        ):
+            raise ValueError("Unexpected monitor target cannot claim approved identity")
+        name = target_name(target)
         if name in seen or target.get("state") not in {"incomplete", "completed", "abandoned"}:
             raise ValueError("Ambiguous monitor target")
         seen.add(name)
@@ -112,12 +165,13 @@ def scan(directory: Path, batch: int) -> None:
         raise ValueError("Unknown monitor batch")
     for target in value["targets"][batch * BATCH_SIZE : (batch + 1) * BATCH_SIZE]:
         candidate = target["candidate"]
-        root = directory / "reports" / f"{candidate['profile']}-{candidate['version']}"
+        root = directory / "reports" / target_name(target)
         root.mkdir(parents=True)
-        image = f"{PREFIX}/{candidate['profile']}@{candidate['registryDigest']}"
+        selected = target_digest(target)
+        image = f"{PREFIX}/{candidate['profile']}@{selected}"
         image_id = None
         result: dict[str, Any] = {
-            "digest": candidate["registryDigest"],
+            "digest": selected,
             "monitorRunId": value["runId"],
             "monitorRunAttempt": value["runAttempt"],
             "outcome": "unavailable",
@@ -125,20 +179,38 @@ def scan(directory: Path, batch: int) -> None:
         }
         try:
             absent = False
-            if target["state"] == "abandoned":
+            selected_candidate = candidate
+            if "unexpectedDigest" in target:
+                raw = manifest(candidate["profile"], selected)
+                absent = raw is None
+                if raw is not None:
+                    if sha256(raw) != selected:
+                        raise ValueError("Unexpected registry digest changed bytes")
+                    (root / "manifest.json").write_bytes(raw)
+                    document = decode(raw)
+                    if document.get("mediaType") != MANIFEST:
+                        raise ValueError("Unexpected image is not a supported single manifest")
+                    config = require_digest(document.get("config", {}).get("digest"))
+                    result["imageId"] = config
+                    selected_candidate = candidate | {
+                        "registryDigest": selected,
+                        "assessedManifestDigest": selected,
+                        "imageId": config,
+                    }
+            elif target["state"] == "abandoned":
                 absent = (
                     manifest(candidate["profile"], candidate["registryDigest"]) is None
                     and manifest(candidate["profile"], candidate["version"]) is None
                 )
             if absent:
                 result["absenceProof"] = {
-                    "digest": candidate["registryDigest"],
+                    "digest": selected,
                     "digestMissing": True,
-                    "versionTagMissing": True,
+                    **({"versionTagMissing": True} if "unexpectedDigest" not in target else {}),
                     "checkedAt": now(),
                 }
             else:
-                image_id = anonymous_pull(candidate)
+                image_id = anonymous_pull(selected_candidate)
                 result.update(assess(root, image_id, require_clean=False))
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
             result.update(
@@ -171,7 +243,7 @@ def finish(directory: Path) -> None:
     members: dict[str, str] = {}
     for number, target in enumerate(value["targets"]):
         candidate = target["candidate"]
-        name = f"{candidate['profile']}-{candidate['version']}"
+        name = target_name(target)
         root = directory / "reports" / name
         observation = root / "observation.json"
         if observation.is_file() and not observation.is_symlink():
@@ -179,7 +251,7 @@ def finish(directory: Path) -> None:
             assessment = result["assessment"]
             if (
                 result.get("candidate") != candidate
-                or assessment.get("digest") != candidate["registryDigest"]
+                or assessment.get("digest") != target_digest(target)
                 or assessment.get("monitorRunId") != run_id
                 or assessment.get("monitorRunAttempt") != int(attempt)
                 or timestamp(assessment.get("assessedAt")) < timestamp(value["startedAt"])
@@ -188,7 +260,7 @@ def finish(directory: Path) -> None:
                 raise ValueError("Monitor result differs from its planned attempt")
         else:
             assessment = {
-                "digest": candidate["registryDigest"],
+                "digest": target_digest(target),
                 "monitorRunId": run_id,
                 "monitorRunAttempt": int(attempt),
                 "outcome": "unavailable",
@@ -198,17 +270,24 @@ def finish(directory: Path) -> None:
             root.mkdir(parents=True, exist_ok=True)
             write(observation, {"candidate": candidate, "assessment": assessment})
         if assessment.get("outcome") in {"clean", "vulnerable"}:
-            verify_inventory(read(root / "sbom.syft.json"), candidate["imageId"])
-            verified = scan_result(
-                read(root / "grype.json"), candidate["imageId"], assessment["assessedAt"]
-            )
+            image_id = candidate["imageId"]
+            if "unexpectedDigest" in target:
+                raw_manifest = root / "manifest.json"
+                if raw_manifest.is_symlink() or digest(raw_manifest) != target_digest(target):
+                    raise ValueError("Unexpected image evidence differs from its digest")
+                document = read(raw_manifest)
+                image_id = require_digest(document.get("config", {}).get("digest"))
+                if document.get("mediaType") != MANIFEST or assessment.get("imageId") != image_id:
+                    raise ValueError("Unexpected image configuration differs from its assessment")
+            verify_inventory(read(root / "sbom.syft.json"), image_id)
+            verified = scan_result(read(root / "grype.json"), image_id, assessment["assessedAt"])
             if any(assessment.get(field) != expected for field, expected in verified.items()):
                 raise ValueError("Monitor result differs from its retained scanner report")
             if read(root / "assessment.json") != verified:
                 raise ValueError("Monitor assessment differs from its scanner evidence")
         elif assessment.get("outcome") != "unavailable":
             raise ValueError("Monitor worker did not finish its assessment")
-        assessments[key(candidate)] = assessment
+        assessments[name] = assessment
         archive = retained / f"reports-{number // BATCH_SIZE:04d}.zip"
         with zipfile.ZipFile(
             archive, "w" if number % BATCH_SIZE == 0 else "a", zipfile.ZIP_DEFLATED
@@ -225,6 +304,7 @@ def finish(directory: Path) -> None:
                         "sbom.spdx.json",
                         "grype.json",
                         "grype.yaml",
+                        "manifest.json",
                     }
                 ):
                     raise ValueError("Unexpected monitor evidence file")
@@ -254,15 +334,24 @@ def finish(directory: Path) -> None:
     def record(catalogue: dict[str, Any]) -> dict[str, Any]:
         result = copy.deepcopy(catalogue)
         for name, assessment in assessments.items():
-            current = result["releases"][name]
-            expected = next(t["candidate"] for t in value["targets"] if key(t["candidate"]) == name)
+            target = next(t for t in value["targets"] if target_name(t) == name)
+            expected = target["candidate"]
+            current = result["releases"][key(expected)]
             if current["candidate"] != expected:
                 raise ValueError("Release identity changed during monitoring")
             assessment = assessment | {"evidenceRelease": evidence_tag}
             proof = assessment.get("absenceProof")
+            if "unexpectedDigest" in target:
+                entry = current["unexpectedDigests"][target["unexpectedDigest"]]
+                entry["latestAttempt"] = assessment
+                if assessment["outcome"] == "vulnerable":
+                    entry["lastKnownVulnerable"] = copy.deepcopy(assessment)
+                if proof:
+                    entry["absenceProof"] = proof
+                continue
             if proof and current["state"] == "abandoned":
                 current.update(publicExposure="absent", absenceProof=proof)
-            result = observe(result, name, assessment)
+            result = observe(result, key(expected), assessment)
         return result
 
     snapshot = History().append(

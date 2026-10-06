@@ -121,6 +121,11 @@ def report(
             publicationState=record["state"],
             latestAttempt=record.get("latestAttempt"),
             lastKnownVulnerable=record.get("lastKnownVulnerable"),
+            unexpectedDigests=record.get("unexpectedDigests", {}),
+            registryDiscovery=record.get("registryDiscovery"),
+            publicationFailure="unexpected-registry-digest"
+            if record.get("unexpectedDigests")
+            else None,
         )
         end = monitoring_end(record)
         result["monitoringEndsAt"] = end.isoformat() if end else None

@@ -182,6 +182,45 @@ def validate_catalogue(value: Any) -> None:
                     require_digest(saved[field])
         if record.get("state") not in {"incomplete", "completed", "abandoned"}:
             raise ValueError("Invalid publication state")
+        unexpected = record.get("unexpectedDigests", {})
+        if not isinstance(unexpected, dict) or (unexpected and record["state"] == "completed"):
+            raise ValueError("Unexpected public digests cannot belong to a completed release")
+        for found, entry in unexpected.items():
+            require_digest(found)
+            if (
+                not isinstance(entry, dict)
+                or found == record["registryDigest"]
+                or entry.get("digest") != found
+            ):
+                raise ValueError("Unexpected digest identity conflicts with its reservation")
+            if timestamp(entry.get("discoveredAt")) < created:
+                raise ValueError("Unexpected digest discovery predates reservation")
+            unexpected_end(entry)
+            for field in ("latestAttempt", "lastKnownVulnerable"):
+                attempt = entry.get(field)
+                if attempt is not None:
+                    if (
+                        not isinstance(attempt, dict)
+                        or attempt.get("digest") != found
+                        or attempt.get("outcome")
+                        not in (
+                            {"vulnerable"}
+                            if field == "lastKnownVulnerable"
+                            else {"running", "unavailable", "clean", "vulnerable"}
+                        )
+                    ):
+                        raise ValueError(
+                            "Unexpected digest assessment has invalid identity or outcome"
+                        )
+                    if timestamp(attempt.get("assessedAt")) < timestamp(entry["discoveredAt"]):
+                        raise ValueError("Unexpected digest assessment predates discovery")
+        discovery = record.get("registryDiscovery")
+        if discovery is not None and (
+            not isinstance(discovery, dict)
+            or discovery.get("outcome") not in {"checked", "unavailable"}
+            or timestamp(discovery.get("checkedAt")) < created
+        ):
+            raise ValueError("Invalid registry discovery attempt")
         if record.get("delivery") not in {"pending", "complete"}:
             raise ValueError("Invalid evidence delivery state")
         if record.get("publicExposure") not in {"unknown", "public", "absent"}:
@@ -265,6 +304,29 @@ def validate_transition(before: dict[str, Any], after: dict[str, Any]) -> None:
             permanent.append("supersededAt")
         if any(new.get(field) != old[field] for field in permanent):
             raise ValueError("Committed release history cannot be rewritten")
+        for found, entry in old.get("unexpectedDigests", {}).items():
+            replacement = new.get("unexpectedDigests", {}).get(found)
+            if replacement is None or any(
+                replacement.get(field) != entry[field] for field in ("digest", "discoveredAt")
+            ):
+                raise ValueError("Unexpected public digest history is permanent")
+            for field in ("latestAttempt", "lastKnownVulnerable"):
+                previous = entry.get(field)
+                following = replacement.get(field)
+                if previous and (
+                    not following
+                    or timestamp(following["assessedAt"]) < timestamp(previous["assessedAt"])
+                ):
+                    raise ValueError("Unexpected digest assessment history cannot be erased")
+                if (
+                    previous
+                    and following
+                    and timestamp(previous["assessedAt"]) == timestamp(following["assessedAt"])
+                    and previous != following
+                ):
+                    raise ValueError(
+                        "Conflicting unexpected digest assessments have the same timestamp"
+                    )
         if old.get("latestAttempt") and (
             not new.get("latestAttempt")
             or timestamp(new["latestAttempt"]["assessedAt"])
@@ -298,6 +360,8 @@ def reserve(catalogue: dict[str, Any], candidate: dict[str, Any], at: str) -> di
     )
     existing = result["releases"].get(name)
     if existing:
+        if existing.get("unexpectedDigests"):
+            raise ValueError("Unexpected public bytes permanently retire the reserved version")
         if any(existing.get(field) != candidate.get(field) for field in IDENTITY_FIELDS):
             raise ValueError("A reserved version cannot change identity or owner")
         if existing.get("candidate", retained) != retained:
@@ -388,6 +452,21 @@ def abandon(catalogue: dict[str, Any], name: str, reason: str, at: str) -> dict[
     return result
 
 
+def unexpected_end(entry: dict[str, Any]) -> datetime | None:
+    """Retire an unexpected digest only after explicit registry absence is recorded."""
+    proof = entry.get("absenceProof")
+    if proof is None:
+        return None
+    if (
+        not isinstance(proof, dict)
+        or proof.get("digest") != entry["digest"]
+        or proof.get("digestMissing") is not True
+        or timestamp(proof.get("checkedAt")) < timestamp(entry["discoveredAt"])
+    ):
+        raise ValueError("Invalid unexpected digest absence proof")
+    return timestamp(proof["checkedAt"])
+
+
 def monitoring_end(record: dict[str, Any]) -> datetime | None:
     """Apply the 90-day window only to superseded completed releases."""
     if record["state"] == "completed" and record.get("supersededAt"):
@@ -399,7 +478,15 @@ def monitoring_end(record: dict[str, Any]) -> datetime | None:
             and proof.get("digestMissing") is True
             and proof.get("versionTagMissing") is True
         ):
-            return timestamp(proof.get("checkedAt"))
+            ends = [unexpected_end(entry) for entry in record.get("unexpectedDigests", {}).values()]
+            if all(end is not None for end in ends):
+                return (
+                    max(
+                        timestamp(proof.get("checkedAt")), *(end for end in ends if end is not None)
+                    )
+                    if ends
+                    else timestamp(proof.get("checkedAt"))
+                )
     return None
 
 
@@ -414,6 +501,10 @@ def assessment_status(record: dict[str, Any], at: str) -> str:
         return "unavailable"
     if attempt.get("outcome") == "vulnerable":
         return "vulnerable"
+    if any(unexpected_end(entry) is None for entry in record.get("unexpectedDigests", {}).values()):
+        return "unavailable"
+    if record.get("registryDiscovery", {}).get("outcome") == "unavailable":
+        return "unavailable"
     if attempt.get("outcome") != "clean":
         return "unavailable"
     age = clock - timestamp(attempt.get("assessedAt"))

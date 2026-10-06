@@ -117,4 +117,21 @@ test('render exposes assessment metadata, monitoring expiry and fix availability
   vm.runInContext('render(value, run, at)', context);
   const text = rows.children[0].children.map(n => n.textContent).join(' ');
   for (const expected of ['https://example.test/db', '2025-12-31T00:00:00Z', '2026-04-01T00:00:00.000Z', 'fixed', '1.2.3', 'completed / success', 'Outcome: clean']) assert.ok(text.includes(expected), expected);
+  const wrong = 'sha256:' + 'c'.repeat(64);
+  context.value.catalogue.releases['bicep/0.1.0'].state = 'incomplete';
+  context.value.catalogue.releases['bicep/0.1.0'].unexpectedDigests = {[wrong]: {digest: wrong, discoveredAt: '2026-01-01T00:00:00Z', latestAttempt: {...record.latestAttempt, digest: wrong, outcome: 'vulnerable'}}};
+  vm.runInContext('render(value, run, at)', context);
+  assert.equal(rows.children.length, 2);
+  assert.match(rows.children[0].children[1].textContent, /failed: unexpected public bytes/);
+  assert.match(rows.children[1].children[0].textContent, /unexpected image/);
+  assert.equal(rows.children[1].children[2].textContent, 'vulnerable');
+});
+
+test('unexpected digests prevent retirement until independently absent', () => {
+  const wrong = 'sha256:' + 'c'.repeat(64);
+  const entry = {digest: wrong, discoveredAt: '2025-12-01T00:00:00Z'};
+  const abandoned = {...record, state: 'abandoned', publicExposure: 'absent', abandonedAt: '2025-12-01T00:00:00Z', absenceProof: {digest, digestMissing: true, versionTagMissing: true, checkedAt: '2026-01-01T00:00:00Z'}, unexpectedDigests: {[wrong]: entry}};
+  assert.equal(status(abandoned, run, at), 'unavailable');
+  entry.absenceProof = {digest: wrong, digestMissing: true, checkedAt: '2026-01-01T01:00:00Z'};
+  assert.equal(status(abandoned, run, at), 'no-longer-monitored');
 });
