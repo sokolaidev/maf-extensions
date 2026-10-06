@@ -10371,3 +10371,40 @@ async def test_live_summarizer_preserves_provider_options(monkeypatch: pytest.Mo
     assert observed
     assert observed[0]["max_tokens"] == 1024
     assert observed[0]["temperature"] == 0.0
+
+
+@pytest.mark.parametrize("value", ["-1", "-inf", "nan", "inf", "10.1"])
+@pytest.mark.parametrize("mode", ["live", "dry", "records"])
+async def test_invalid_fill_fails_before_setup(
+    monkeypatch: pytest.MonkeyPatch, value: str, mode: str
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid fill must fail before setup or loading records")
+
+    for name in ("build_tokenizer", "build_provider", "_render_from_records"):
+        monkeypatch.setattr(_live_cli, name, unexpected)
+    argv = ["azure", f"--fill={value}"]
+    if mode == "dry":
+        argv.append("--dry-run")
+    elif mode == "records":
+        argv.extend(["--from-jsonl", "unused.jsonl"])
+    with pytest.raises(SystemExit, match="--fill must be finite and between 0 and 10"):
+        await run_live_comparison(build_parser().parse_args(argv))
+
+
+@pytest.mark.parametrize("fill", [0.0, 0.86, 10.0])
+async def test_valid_fill_reaches_sizing(monkeypatch: pytest.MonkeyPatch, fill: float) -> None:
+    from maf_cachebench import _live_cli
+
+    class SizingReached(Exception):
+        pass
+
+    def plan(args: Any, *rest: Any) -> None:
+        assert args.fill == fill
+        raise SizingReached
+
+    monkeypatch.setattr(_live_cli, "_plan_or_exit", plan)
+    with pytest.raises(SizingReached):
+        await run_live_comparison(build_parser().parse_args(_live_argv("--fill", str(fill))))

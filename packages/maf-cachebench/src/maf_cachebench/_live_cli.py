@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -36,7 +37,7 @@ from ._cli_selection import (
     validate_summarizer_selector,
     validate_unique_selection,
 )
-from ._fill import ASSUMED_REPLY_TOKENS, FillPlan, plan_fill
+from ._fill import ASSUMED_REPLY_TOKENS, MAX_FILL_FRACTION, FillPlan, plan_fill
 from ._live import (
     AGENT_KINDS,
     DEFAULT_COMBINED_REPEATS,
@@ -3037,7 +3038,7 @@ def _plan_or_exit(
             asked for without a fill target to be a share of.
     """
     tool_share = _resolve_tool_share(args.tool_share, fill_fraction=args.fill)
-    if args.fill <= 0:
+    if args.fill == 0:
         if tool_share > 0:
             raise SystemExit(
                 "--tool-share is a share of the fill target, and --fill 0 sets no target. Either "
@@ -4007,6 +4008,8 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     Raises:
         SystemExit: If the arguments do not describe a runnable cell.
     """
+    if not math.isfinite(args.fill) or not 0 <= args.fill <= MAX_FILL_FRACTION:
+        raise SystemExit(f"--fill must be finite and between 0 and {MAX_FILL_FRACTION}.")
     if args.min_correctness is not None:
         try:
             validate_min_correctness(args.min_correctness)
