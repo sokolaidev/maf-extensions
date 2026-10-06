@@ -132,7 +132,7 @@ def test_all_three_attestations_are_verified_separately(tmp_path, monkeypatch):
     expected, results = evidence(tmp_path)
     calls = mock_verifier(monkeypatch, results)
     result = verify(expected, tmp_path)
-    assert calls == [PROVENANCE, SPDX, COMPLETION]
+    assert calls == [PROVENANCE, PROVENANCE, SPDX, SPDX, COMPLETION]
     assert result["releaseIdentityVerified"] is True
     assert result["monitoringStatus"] == "not-queried"
 
@@ -142,8 +142,11 @@ def test_registry_retrieval_pins_the_same_digest_and_all_three_predicates(tmp_pa
     targets = []
 
     def run(command, **kwargs):
-        targets.append(command[3])
-        assert "--bundle-from-oci" in command
+        if "--bundle" not in command:
+            targets.append(command[3])
+            assert "--bundle-from-oci" in command
+        else:
+            assert command[3] == str(tmp_path / "manifest.json")
         assert command[command.index("--signer-digest") + 1] == expected["sourceCommit"]
         predicate = command[command.index("--predicate-type") + 1]
         return subprocess.CompletedProcess(command, 0, json.dumps(results[predicate]))
@@ -158,7 +161,7 @@ def test_hyperlight_payload_runs_only_after_all_three_attestations(tmp_path, mon
     calls = mock_verifier(monkeypatch, results)
 
     def payload(policy, directory):
-        assert calls == [PROVENANCE, SPDX, COMPLETION]
+        assert calls == [PROVENANCE, PROVENANCE, SPDX, SPDX, COMPLETION]
         assert policy == expected and directory == tmp_path
         return {"checked": True}
 
@@ -305,3 +308,67 @@ def test_index_path_escape_is_refused(tmp_path):
     write(tmp_path / "evidence-index.json", index)
     with pytest.raises(ValueError, match="Invalid or circular"):
         verify_evidence(tmp_path, digest(tmp_path / "evidence-index.json"))
+
+
+@pytest.mark.parametrize("registry", [False, True])
+def test_rerun_attestations_select_authenticated_retained_evidence(tmp_path, monkeypatch, registry):
+    expected, retained = evidence(tmp_path)
+    remote = copy.deepcopy(retained)
+    for predicate in (PROVENANCE, SPDX):
+        duplicate = copy.deepcopy(remote[predicate][0])
+        claim = duplicate["verificationResult"]["statement"]["predicate"]
+        if predicate == PROVENANCE:
+            claim["runDetails"] = {"metadata": {"invocationId": "rerun-attempt-2"}}
+        else:
+            claim["creationInfo"] = {"created": "2026-10-06T00:00:00Z"}
+        remote[predicate].append(duplicate)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        predicate = command[command.index("--predicate-type") + 1]
+        results = retained if "--bundle" in command else remote
+        return subprocess.CompletedProcess(command, 0, json.dumps(results[predicate]))
+
+    monkeypatch.setattr("verify_container_release.subprocess.run", run)
+    assert verify(expected, tmp_path, registry=registry)["releaseIdentityVerified"]
+    assert sum("--bundle" in command for command in calls) == 2
+
+
+def test_conflicting_completions_still_fail(tmp_path, monkeypatch):
+    expected, results = evidence(tmp_path)
+    duplicate = copy.deepcopy(results[COMPLETION][0])
+    duplicate["verificationResult"]["statement"]["predicate"]["evidenceIndexSha256"] = (
+        "sha256:" + "e" * 64
+    )
+    results[COMPLETION].append(duplicate)
+    mock_verifier(monkeypatch, results)
+    with pytest.raises(ValueError, match="Conflicting authenticated"):
+        verify(expected, tmp_path)
+
+
+@pytest.mark.parametrize("fault", ["missing-claim", "signature", "changed-bundle", "wrong-subject"])
+def test_retained_selection_cannot_bypass_authentication_or_completion(
+    tmp_path, monkeypatch, fault
+):
+    expected, retained = evidence(tmp_path)
+    remote = copy.deepcopy(retained)
+    if fault == "missing-claim":
+        remote[PROVENANCE][0]["verificationResult"]["statement"]["predicate"]["other"] = True
+    elif fault == "changed-bundle":
+        write(tmp_path / "provenance.jsonl", {"substituted": True})
+    elif fault == "wrong-subject":
+        duplicate = copy.deepcopy(remote[PROVENANCE][0])
+        duplicate["verificationResult"]["statement"]["subject"][0]["digest"]["sha256"] = "f" * 64
+        remote[PROVENANCE].append(duplicate)
+
+    def run(command, **kwargs):
+        predicate = command[command.index("--predicate-type") + 1]
+        if fault == "signature" and "--bundle" in command:
+            raise subprocess.CalledProcessError(1, command)
+        results = retained if "--bundle" in command else remote
+        return subprocess.CompletedProcess(command, 0, json.dumps(results[predicate]))
+
+    monkeypatch.setattr("verify_container_release.subprocess.run", run)
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        verify(expected, tmp_path)

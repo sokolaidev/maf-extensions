@@ -469,7 +469,20 @@ def scan_result(report: dict[str, Any], image_id: str, at: str) -> dict[str, Any
         if severity not in {"Negligible", "Low", "Medium", "High", "Critical", "Unknown"}:
             raise ValueError("Unknown vulnerability severity")
         if severity in {"High", "Critical"}:
-            high.append({"id": vuln["id"], "severity": severity})
+            fix = vuln.get("fix") or {}
+            state = fix.get("state", "unknown")
+            if state not in {"fixed", "not-fixed", "wont-fix", "unknown"}:
+                state = "unknown"
+            versions = fix.get("versions") or []
+            if not isinstance(versions, list) or any(not isinstance(v, str) for v in versions):
+                raise ValueError("Invalid vulnerability fix versions")
+            high.append(
+                {
+                    "id": vuln["id"],
+                    "severity": severity,
+                    "fix": {"state": state, "versions": sorted(set(versions))},
+                }
+            )
     return {
         "assessedAt": at,
         "outcome": "vulnerable" if high else "clean",

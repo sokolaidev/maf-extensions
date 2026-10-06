@@ -200,6 +200,26 @@ def test_unfixed_high_finding_fails_assessment():
     assert scan_result(report, candidate()["imageId"], AT)["outcome"] == "vulnerable"
 
 
+@pytest.mark.parametrize("state", ["fixed", "not-fixed", "wont-fix", "unknown", "future-state"])
+def test_findings_retain_normalized_fix_availability(state):
+    report = scan()
+    report["matches"] = [
+        {
+            "vulnerability": {
+                "id": "CVE-example",
+                "severity": "High",
+                "fix": {"state": state, "versions": ["2.0", "1.9"]},
+            }
+        }
+    ]
+    assessment = scan_result(report, candidate()["imageId"], AT)
+    assert assessment["outcome"] == "vulnerable"
+    assert assessment["findings"][0]["fix"] == {
+        "state": state if state != "future-state" else "unknown",
+        "versions": ["1.9", "2.0"],
+    }
+
+
 @pytest.mark.parametrize(
     "change",
     [

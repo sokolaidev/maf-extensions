@@ -156,6 +156,7 @@ def scan(directory: Path, batch: int) -> None:
                         timeout=60,
                     )
                 except (OSError, subprocess.SubprocessError):
+                    # Best-effort cleanup must not discard the completed assessment.
                     pass
         write(root / "observation.json", {"candidate": candidate, "assessment": result})
 

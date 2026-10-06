@@ -53,7 +53,13 @@ def policy_flags(expected: dict[str, Any], predicate: str) -> list[str]:
     ]
 
 
-def statement(result: Any, expected: dict[str, Any], predicate: str) -> dict[str, Any]:
+def statement(
+    result: Any,
+    expected: dict[str, Any],
+    predicate: str,
+    *,
+    selected: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Select a verified statement only after matching its complete subject and claim type."""
     if not isinstance(result, list) or not result:
         raise ValueError("No authenticated attestation was returned")
@@ -77,6 +83,12 @@ def statement(result: Any, expected: dict[str, Any], predicate: str) -> dict[str
         if not isinstance(claim, dict):
             raise ValueError("Attestation has no predicate object")
         accepted.append(claim)
+    if selected is not None:
+        if selected not in accepted:
+            raise ValueError(
+                "Retrieved attestations do not include the authenticated retained claim"
+            )
+        return selected
     if any(value != accepted[0] for value in accepted[1:]):
         raise ValueError("Conflicting authenticated predicates")
     return accepted[0]
@@ -222,7 +234,32 @@ def _verify(
             errors="strict",
             timeout=120,
         )
-        claims[predicate] = statement(json.loads(result.stdout), expected, predicate)
+        selected = None
+        if not bundles and predicate in {PROVENANCE, SPDX}:
+            bundle = directory / filename
+            if bundle.is_symlink() or not bundle.is_file() or not bundle.stat().st_size:
+                raise ValueError("Missing original attestation bundle")
+            retained = subprocess.run(
+                [
+                    "gh",
+                    "attestation",
+                    "verify",
+                    str(manifest),
+                    *policy_flags(expected, predicate),
+                    "--bundle",
+                    str(bundle),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                timeout=120,
+            )
+            selected = statement(json.loads(retained.stdout), expected, predicate)
+        claims[predicate] = statement(
+            json.loads(result.stdout), expected, predicate, selected=selected
+        )
     dependencies = claims[PROVENANCE].get("buildDefinition", {}).get("resolvedDependencies", [])
     source = {
         "uri": f"git+https://github.com/{REPOSITORY}@refs/heads/main",

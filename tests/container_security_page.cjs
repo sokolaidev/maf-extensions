@@ -51,7 +51,7 @@ test('history binds exact bytes, ancestry and the actual Git tag', async () => {
 test('failed GitHub request and mutable history cannot leave green evidence', async () => {
   global.fetch = async () => ({ok: false});
   await assert.rejects(history(), /unavailable/);
-  global.fetch = async () => ({ok: true, json: async () => [{tag_name: 'security-history-000000000001', draft: false, immutable: false}]});
+  global.fetch = async url => ({ok: true, json: async () => url.includes('matching-refs') ? [{ref: 'refs/tags/security-history-000000000001', object: {type: 'commit', sha: 'a'.repeat(40)}}] : {tag_name: 'security-history-000000000001', draft: false, immutable: false}});
   await assert.rejects(history(), /not immutable/);
 });
 
@@ -73,4 +73,48 @@ test('same-second attempts cannot be ordered by creation ID', async () => {
     {...common, id: 100, run_attempt: 2, conclusion: 'failure'},
   ]})});
   await assert.rejects(latestMonitor(), /ambiguous update times/);
+});
+
+test('browser history lookup has constant request count across years of releases', async () => {
+  const source = 'a'.repeat(40);
+  const refs = Array.from({length: 10000}, (_, i) => ({ref: `refs/tags/security-history-${String(i + 1).padStart(12, '0')}`, object: {type: 'commit', sha: source}}));
+  const requests = [];
+  global.fetch = async url => {
+    requests.push(url);
+    if (url.endsWith('/git/matching-refs/tags/security-history-')) return {ok: true, json: async () => refs};
+    assert.ok(url.endsWith('/releases/tags/security-history-000000010000'), url);
+    return {ok: true, json: async () => ({id: 42, tag_name: 'security-history-000000010000', draft: false, immutable: true, target_commitish: source, assets: [{name: 'catalogue.json', state: 'uploaded', digest, size: 100}]})};
+  };
+  const records = await history();
+  assert.equal(records.length, 10000);
+  assert.equal(records.at(-1).sha256, digest);
+  assert.equal(requests.length, 2);
+});
+
+test('monitor lookup bounds API requests and refuses a truncated result set', async () => {
+  let requests = 0;
+  global.fetch = async url => {
+    requests++;
+    assert.ok(new URL(url).searchParams.get('created').startsWith('>='));
+    const batch = Array.from({length: 100}, (_, i) => ({id: requests * 100 + i}));
+    return {ok: true, json: async () => ({total_count: 1001, workflow_runs: batch})};
+  };
+  await assert.rejects(latestMonitor(at), /bound|limit|Incomplete/);
+  assert.equal(requests, 1);
+});
+
+test('render exposes assessment metadata, monitoring expiry and fix availability', () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const context = vm.createContext({});
+  vm.runInContext(fs.readFileSync(require.resolve('../docs/security/status/status.js'), 'utf8'), context);
+  const node = () => ({textContent: '', children: [], append(child) { this.children.push(child); }, replaceChildren() { this.children = []; }});
+  const rows = node();
+  context.document = {getElementById: id => id === 'releases' ? rows : node(), createElement: node};
+  context.value = {catalogue: {releases: {'bicep/0.1.0': {...record, delivery: 'complete', supersededAt: '2026-01-01T00:00:00Z', latestAttempt: {...record.latestAttempt, database: {built: '2025-12-31T00:00:00Z', from: 'https://example.test/db', schemaVersion: '6', checksum: digest}}, lastKnownVulnerable: {findings: [{id: 'CVE-example', severity: 'High', fix: {state: 'fixed', versions: ['1.2.3']}}]}}}}};
+  context.run = run;
+  context.at = at;
+  vm.runInContext('render(value, run, at)', context);
+  const text = rows.children[0].children.map(n => n.textContent).join(' ');
+  for (const expected of ['https://example.test/db', '2025-12-31T00:00:00Z', '2026-04-01T00:00:00.000Z', 'fixed', '1.2.3', 'completed / success', 'Outcome: clean']) assert.ok(text.includes(expected), expected);
 });

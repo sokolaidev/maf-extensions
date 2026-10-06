@@ -15,15 +15,18 @@ async function get(url) {
   return response;
 }
 
-async function list(path, field = null) {
+async function monitorRuns(at) {
   const values = [];
-  for (let page = 1; page <= 10000; page++) {
-    const response = await (await get(`${API}/${path}?per_page=100&page=${page}`)).json();
-    const batch = field ? response[field] : response;
+  // 30 days to rerun + 35 days to finish + more than the 48-hour freshness window.
+  const created = encodeURIComponent(`>=${new Date(at - 70 * 24 * HOUR).toISOString()}`);
+  for (let page = 1; page <= 10; page++) {
+    const response = await (await get(`${API}/actions/workflows/${MONITOR}/runs?created=${created}&per_page=100&page=${page}`)).json();
+    const batch = response.workflow_runs;
     assert(Array.isArray(batch), "Invalid GitHub evidence listing");
+    assert(Number.isSafeInteger(response.total_count) && response.total_count >= 0 && response.total_count <= 1000, "Monitor history exceeds the bounded query limit");
     values.push(...batch);
-    if (batch.length < 100) {
-      if (field) assert(values.length === response.total_count, "Incomplete or changing monitor history");
+    if (batch.length < 100 || values.length === response.total_count) {
+      assert(values.length === response.total_count && new Set(values.map(r => r.id)).size === values.length, "Incomplete or changing monitor history");
       return values;
     }
   }
@@ -31,22 +34,33 @@ async function list(path, field = null) {
 }
 
 async function history() {
-  const releases = (await list("releases")).filter(r => !r.draft && r.tag_name.startsWith("security-history-"));
-  const records = releases.map(r => {
-    assert(/^security-history-[0-9]{12}$/.test(r.tag_name) && r.immutable === true, "History is not immutable");
+  const response = await get(`${API}/git/matching-refs/tags/security-history-`);
+  assert(!response.headers?.get("link"), "Incomplete history reference index");
+  const refs = await response.json();
+  assert(Array.isArray(refs), "Invalid history reference index");
+  const records = refs.map(r => {
+    assert(/^refs\/tags\/security-history-[0-9]{12}$/.test(r.ref), "Invalid history reference");
+    const tag = r.ref.slice("refs/tags/".length);
+    const sequence = Number(tag.slice("security-history-".length));
+    assert(sequence > 0 && ["commit", "tag"].includes(r.object?.type) && /^[a-f0-9]{40}$/.test(r.object?.sha), "Invalid history identity");
+    return {sequence, tag, object: r.object};
+  }).sort((a, b) => a.sequence - b.sequence);
+  assert(new Set(records.map(r => r.sequence)).size === records.length, "Conflicting history sequence");
+  const head = records.at(-1);
+  if (head) {
+    const r = await (await get(`${API}/releases/tags/${head.tag}`)).json();
+    assert(r.tag_name === head.tag && r.draft === false && r.immutable === true, "History is not immutable");
     assert(Array.isArray(r.assets) && r.assets.length === 1, "Ambiguous history assets");
     const a = r.assets[0];
     assert(a.name === "catalogue.json" && a.state === "uploaded" && digest(a.digest), "Incomplete history asset");
-    const sequence = Number(r.tag_name.slice("security-history-".length));
-    assert(sequence > 0 && Number.isSafeInteger(r.id), "Invalid history identity");
-    return {sequence, sha256: a.digest, id: r.id, source: r.target_commitish, tag: r.tag_name, size: a.size};
-  }).sort((a, b) => a.sequence - b.sequence);
-  assert(new Set(records.map(r => r.sequence)).size === records.length, "Conflicting history sequence");
+    assert(Number.isSafeInteger(r.id) && r.id > 0 && Number.isSafeInteger(a.size) && a.size > 0, "Invalid history asset identity");
+    Object.assign(head, {sha256: a.digest, id: r.id, source: r.target_commitish, size: a.size});
+  }
   return records;
 }
 
-async function latestMonitor() {
-  const runs = (await list(`actions/workflows/${MONITOR}/runs`, "workflow_runs"))
+async function latestMonitor(at = Date.now()) {
+  const runs = (await monitorRuns(at))
     .filter(r => ["schedule", "workflow_dispatch", "workflow_run"].includes(r.event) && r.head_branch === "main");
   for (const run of runs) {
     assert(run.path === `.github/workflows/${MONITOR}` && run.head_repository?.full_name === REPOSITORY, "Unexpected monitor source");
@@ -81,7 +95,8 @@ async function verifySnapshot(raw, records) {
   const bytes = new TextEncoder().encode(raw);
   const hashed = "sha256:" + Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
   assert(hashed === head.sha256 && bytes.length === head.size && value.sequence === head.sequence && value.sourceCommit === head.source, "Pages snapshot differs from the latest immutable catalogue");
-  assert(same([...(value.ancestors || []), {sequence: value.sequence, sha256: hashed}], records.map(r => ({sequence: r.sequence, sha256: r.sha256}))), "History ancestry is incomplete or conflicting");
+  assert(Array.isArray(value.ancestors) && value.ancestors.every(a => digest(a.sha256)), "Invalid history ancestry");
+  assert(same([...value.ancestors.map(a => a.sequence), value.sequence], records.map(r => r.sequence)), "History ancestry is incomplete or conflicting");
   assert(same(value.previous, value.ancestors.at(-1) || null), "Invalid history predecessor");
   let object = (await (await get(`${API}/git/ref/tags/${head.tag}`)).json()).object;
   for (let n = 0; n < 8 && object?.type === "tag"; n++) {
@@ -101,7 +116,13 @@ function render(value, monitor, at) {
     const state = status(r, monitor, at);
     states.push(state === "clean" && (r.state !== "completed" || r.delivery !== "complete") ? "incomplete" : state);
     const tr = document.createElement("tr");
-    const values = [name, `${r.state} / ${r.delivery}`, state, r.latestAttempt?.assessedAt || "Unavailable", (r.lastKnownVulnerable?.findings || []).map(f => `${f.id} (${f.severity})`).join(", ") || "None recorded"];
+    const a = r.latestAttempt;
+    const database = a?.database || r.lastKnownVulnerable?.database;
+    const databaseText = database ? `Source: ${database.from}; built: ${database.built}; schema: ${database.schemaVersion}; checksum: ${database.checksum || "Unavailable"}${a?.database ? "" : " (last known vulnerable assessment)"}` : "Unavailable";
+    const end = r.state === "completed" && r.supersededAt ? new Date(date(r.supersededAt) + 90 * 24 * HOUR).toISOString() : state === "no-longer-monitored" ? r.absenceProof.checkedAt : "Not scheduled";
+    const workflow = monitor ? `Workflow ${monitor.id}, attempt ${monitor.run_attempt}: ${monitor.status} / ${monitor.conclusion || "pending"}` : "Workflow unavailable";
+    const findings = (r.lastKnownVulnerable?.findings || []).map(f => `${f.id} (${f.severity}); fix: ${f.fix?.state || "unknown"}; versions: ${(f.fix?.versions || []).join(", ") || "not reported"}`).join("; ") || "None recorded";
+    const values = [name, `${r.state} / ${r.delivery}`, state, a?.assessedAt || "Unavailable", `Outcome: ${a?.outcome || "unavailable"}; ${workflow}`, databaseText, end, findings];
     for (const [index, text] of values.entries()) {
       const td = document.createElement("td");
       td.textContent = text;
@@ -123,12 +144,13 @@ async function refresh() {
   verified = null;
   document.getElementById("summary").textContent = "Checking authoritative GitHub evidence…";
   try {
+    const started = Date.now();
     const first = await history();
     const raw = await (await get("./catalogue.json")).text();
     const value = await verifySnapshot(raw, first);
-    const monitor = first.length ? await latestMonitor() : null;
+    const monitor = first.length ? await latestMonitor(started) : null;
     assert(same(first, await history()), "History changed during verification; refresh again");
-    if (monitor) assert(same(monitor, await latestMonitor()), "Monitor changed during verification; refresh again");
+    if (monitor) assert(same(monitor, await latestMonitor(started)), "Monitor changed during verification; refresh again");
     const at = Date.now();
     render(value, monitor, at);
     verified = {value, monitor, at};
