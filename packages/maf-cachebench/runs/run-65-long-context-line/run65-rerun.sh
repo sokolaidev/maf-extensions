@@ -6,6 +6,7 @@
 set -u
 S="/tmp"
 OUT="$S/run65"
+mkdir -p "$OUT"
 export AZURE_OPENAI_ENDPOINT="https://<resource>.openai.azure.com"
 BIN="cachebench_live"
 ALL="${STRATS}"
