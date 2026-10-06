@@ -197,6 +197,30 @@ Credential injection always requires verified upstream TLS, including private de
 
 <a id="file-store-provenance--what-a-kind-reads-and-what-it-is-worth"></a>
 
+## Shared scoped file stores
+
+`maf_sandbox.maf.ScopedFileStores` resolves one stable binding per explicit host-authorized `(scope, thread_id)` pair. Its factory supplies an independently confined native store for each pair. The binding shares that exact object with a read-only `FileAccessProvider(session_scoped=False, disable_write_tools=True)`, custom readers, listings and output sinks, preserving the store's concurrency capabilities without copying the provider's private namespace rules. The factory owns physical confinement, including filesystem roots and symlink protection; distinct wrapper objects over one shared root do not establish isolation.
+
+Resolve the binding at the request boundary and retain it for the request. Pass `binding.store` and `binding.caller_context()` to kinds, `binding.provenance` to their provenance parameter and `make_file_store_sink`, and wire `binding.middleware` alongside the agent's other function middleware. Use `binding.provider` for read-only file tools when it is the agent's only file provider. Model-writable scratch storage requires a separate registry with `read_only=False` and independently confined stores; never pass those stores to an output sink or expose the sink store through another writable provider. To expose both stores to one agent, use `sandbox_outputs_read_tools(binding.store)` for outputs and only the scratch binding's native provider. Two native providers advertise duplicate `file_access_*` names; `source_id` does not rename them. Give each additional output store a distinct `name_prefix`. The binding is fixed to one pair; do not reuse its provider or context for another request identity, or enable provider scoping a second time. Host identity must never come from model arguments.
+
+```python
+from agent_framework import InMemoryAgentFileStore
+from maf_sandbox.maf import ScopedFileStores, make_file_store_sink, sandbox_outputs_read_tools
+
+stores = ScopedFileStores(lambda scope, thread_id: InMemoryAgentFileStore())
+binding = stores.bind(scope="authorized-tenant", thread_id="authorized-session")
+sink = make_file_store_sink(binding.store, provenance=binding.provenance)
+context = binding.caller_context()
+output_tools = sandbox_outputs_read_tools(binding.store)
+scratch_stores = ScopedFileStores(
+    lambda scope, thread_id: InMemoryAgentFileStore(), read_only=False
+)
+scratch = scratch_stores.bind(scope="authorized-tenant", thread_id="authorized-session")
+# Wire output_tools, scratch.provider and scratch.middleware into this request's agent.
+```
+
+The registry retains bindings and provenance for its lifetime, refuses missing identities and reuse of store or provenance objects across live bindings (including bindings in different registries in this process), and refuses new bindings at `max_scopes` (256 by default). It never silently evicts provenance while bytes remain. Retain each binding while its provider or tools are in use; process-wide identity checks hold weak references and do not extend binding lifetimes. Persistent hosts can supply `provenance_factory(scope, thread_id, store)`, a synchronous callback returning the restored `FileStoreProvenance`. It runs under the registry lock before the binding is cached or returned; restoration failure publishes no binding. Return a distinct record per store and set any floor on that record, rather than also passing `floor` to the registry. The callback must not re-enter the registry. Without restoration, keep the default unestablished floor after restart. The registry does not add transaction, cross-process locking or conditional-write guarantees; those remain properties of the native store and provider. Model writes and deletes still use the observation interval described below, and direct out-of-band host writes remain the host's responsibility.
+
 ## File-store provenance
 
 `AgentFileStore` returns text without content labels. `FileStoreProvenance` records model-driven mutations by path so a kind can assess what it reads.
@@ -252,6 +276,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | ACAS group-configured identity | Supported outside the core attached-authority contract; host description and acquisition scope checks implemented | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (closed) by [#1528](https://github.com/sokolaidev/maf-extensions/pull/1528) (merged) |
 | Principal references | Unimplemented | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) (open) |
 | Credentials for guest HTTP | Docker and WSLC external gateways implemented | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) (closed) by [#1427](https://github.com/sokolaidev/maf-extensions/pull/1427) (merged) |
+| Shared host-bound store composition | Implemented; native store factory owns confinement | [#1749](https://github.com/sokolaidev/maf-extensions/pull/1749) (merged) |
 | File-store provenance and result labels | Implemented with the read/write interval limits above | [Information-flow status](information-flow.md#status) |
 | Cross-conversation host storage paths | Host-owned partitioning; no automatic callback inspection | [#793](https://github.com/sokolaidev/maf-extensions/issues/793) (closed) |
 | Storage-base preparation and allocation | Implemented | [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (closed); [#1086](https://github.com/sokolaidev/maf-extensions/pull/1086) (merged); [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |
