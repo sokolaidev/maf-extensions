@@ -189,7 +189,7 @@ def desired(
         }
     )
     reasons = state["reasons"]
-    if candidate and timestamp(candidate["observedAt"]) < max(
+    if candidate and timestamp(candidate["observedAt"]) <= max(
         timestamp(record["completedAt"]),
         timestamp(state.get("candidateObservedAt", record["completedAt"])),
     ):

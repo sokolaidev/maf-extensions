@@ -176,12 +176,13 @@ def test_replacement_must_address_component_and_source_reasons():
     assert resolved["reasons"] == {}
 
 
-def test_older_candidate_cannot_undo_replacement_resolution():
+@pytest.mark.parametrize("observed_at", ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"])
+def test_older_or_tied_candidate_cannot_undo_replacement_resolution(observed_at):
     previous = desired(observed=candidate())
     result = desired(
         record=replacement(),
         released=RELEASED | {"components": candidate()["components"]},
-        observed=candidate(version="3"),
+        observed=candidate(version="3", observedAt=observed_at),
         previous=previous,
     )
     assert result["resolved"]
@@ -192,6 +193,20 @@ def test_delayed_candidate_cannot_rewind_newer_inventory_or_findings():
     previous = desired(observed=newer)
     result = desired(observed=candidate(), previous=previous)
     assert result == previous
+
+
+@pytest.mark.parametrize("first,second", [("clean", "vulnerable"), ("vulnerable", "clean")])
+def test_equal_timestamp_candidate_cannot_replace_persisted_state(first, second):
+    client = Issues()
+    previous = desired(observed=candidate(outcome=first))
+    tracker.reconcile(client, "diagram", previous, None)
+    match = tracker.STATE.search(client.items[0]["body"])
+    assert match is not None
+    saved = json.loads(match[1])
+    result = desired(observed=candidate(version="3", outcome=second), previous=saved)
+    tracker.reconcile(client, "diagram", result, client.items[0])
+    assert result == saved
+    assert len(client.calls) == 1
 
 
 def test_new_vulnerability_prevents_closure_after_replacement():
@@ -253,7 +268,9 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
     again = desired(observed=candidate(evidence="run/2"), previous=state)
     tracker.reconcile(client, "diagram", again, client.items[0])
     assert len(client.items) == len(client.calls) == 1
-    changed = desired(observed=candidate(version="3"), previous=again)
+    changed = desired(
+        observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
+    )
     tracker.reconcile(client, "diagram", changed, client.items[0])
     assert len(client.calls) == 2
     assert client.calls[-1][1] == "PATCH"
@@ -526,7 +543,7 @@ def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):
     tracker.main()
     tracker.main()
     assert len(client.calls) == 1
-    current["observed"] = candidate(version="3")
+    current["observed"] = candidate(version="3", observedAt="2026-01-02T00:00:01Z")
     tracker.main()
     assert len(client.calls) == 2
     current["record"] = replacement()
