@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import tomllib
@@ -11,6 +12,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 _CORE = "maf-sandbox"
+_NAME = re.compile(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
+
+
+def _distribution(requirement: str) -> str:
+    """The PEP 503-normalised name a PEP 508 requirement starts with, whatever follows it."""
+    match = _NAME.match(requirement)
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower() if match else ""
 
 
 def depends_on_core(package: Path) -> bool:
@@ -24,8 +32,7 @@ def depends_on_core(package: Path) -> bool:
         return False
     project = tomllib.loads(pyproject.read_text("utf-8")).get("project", {})
     return any(
-        requirement.split(">")[0].split("<")[0].split("=")[0].split("[")[0].strip() == _CORE
-        for requirement in project.get("dependencies", [])
+        _distribution(requirement) == _CORE for requirement in project.get("dependencies", [])
     )
 
 

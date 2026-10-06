@@ -1026,6 +1026,10 @@ class RecallGate:
         """Permit the next call to record."""
         self._armed = True
 
+    def disarm(self) -> None:
+        """Withdraw a permission no forced call used."""
+        self._armed = False
+
     def take(self) -> bool:
         """Consume the permission.
 
@@ -1940,6 +1944,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         arm: Called immediately before the forced request, arming the recall tool for one
             call. The tool is inert otherwise, which is what stops the model producing a
             record on its own initiative -- it cannot be hidden, only disabled.
+        disarm: Called when the forced request fails and by :meth:`forget_pending`, so a
+            permission no forced call used cannot license an unpinned one. Pass
+            :meth:`RecallGate.disarm`; ``None`` leaves such a permission armed.
         trigger_fraction: Fraction of the ceiling at which the record is forced. Comfortably
             below the strategy's fallback threshold, because the decision is made one call
             late -- see :meth:`process`. Defaults to :data:`DEFAULT_TRIGGER_FRACTION`, the
@@ -2014,6 +2021,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         max_input_tokens: int,
         tokenizer: TokenizerProtocol,
         arm: Callable[[], None],
+        disarm: Callable[[], None] | None = None,
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         record_max_tokens: int | None = DEFAULT_RECORD_MAX_TOKENS,
         max_groups_before_record: int | None = None,
@@ -2041,6 +2049,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.arm = arm
+        self.disarm = disarm
         self.trigger_fraction = trigger_fraction
         self.record_max_tokens = record_max_tokens
         self.max_groups_before_record = max_groups_before_record
@@ -2072,12 +2081,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         ask on the evidence of a turn that no longer exists.
 
         It also releases the session this middleware is bound to, so the restored conversation
-        may continue under a session of its own.
+        may continue under a session of its own, and disarms the recall tool.
         """
         self._force_next = False
         self._reforce_next = False
         self._awaiting_record = False
         self._session_id = None
+        if self.disarm is not None:
+            self.disarm()
 
     def _bind_session(self, context: ChatContext) -> None:
         """Bind to the first session seen, and refuse any other.
@@ -2182,6 +2193,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         """
         self._bind_session(context)
         forced_this_call = self._force_next
+        reforced_this_call = forced_this_call and self._reforce_next
         if forced_this_call:
             # Replaced rather than mutated: options may be shared with the caller's own dict,
             # and pinning a tool choice into it would outlive this call.
@@ -2208,7 +2220,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._reforce_next = False
                 self._reforced += 1
 
-        await call_next()
+        try:
+            await call_next()
+        except BaseException:
+            if forced_this_call:
+                self._requeue_forced(reforced=reforced_this_call)
+            raise
 
         if (
             forced_this_call
@@ -2250,6 +2267,16 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
         self._force_next = self._record_due(messages, record_index)
+
+    def _requeue_forced(self, *, reforced: bool) -> None:
+        """Undo a forced call that failed, so the next call is pinned in its place."""
+        self._force_next = True
+        self._forced -= 1
+        if reforced:
+            self._reforce_next = True
+            self._reforced -= 1
+        if self.disarm is not None:
+            self.disarm()
 
     def _record_due(self, messages: list[Message], record_index: int | None) -> bool:
         """Return whether the next call should be pinned to the recall tool.

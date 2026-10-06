@@ -16,7 +16,7 @@ This is an independent package. It is not affiliated with or endorsed by Microso
 | `MinimumGainAnchoredCompactionStrategy` | The same, with a floor: a collapse that would save too little to repay the cache it invalidates is declined. |
 | `ToolResultAnchoredSummarizationCompactionStrategy` | Has the model write the facts from its tool results into a *record* through a recall tool, then drops the tool groups the record covers. Ships with `make_recall_tool`, `RecallGate` and `ToolResultRecallMiddleware`, which ask for the record at the right moment. |
 | `UserTurnAnchoredSummarizationCompactionStrategy` | Summarises the user's turns between a fixed head and tail with a summarizer client, in one of three modes. |
-| `ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy` | Runs the two summarising strategies over one conversation, record phase first, with a last-resort chain that merges and rewrites until the prompt fits. |
+| `ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy` | Runs the two summarising strategies over one conversation, record phase first, with a bounded last-resort chain that merges and rewrites while the prompt is over budget. When nothing safe is left to remove it stops, and the prompt goes out over the limit: a loud failure rather than a quiet loss of facts. |
 
 All of them implement the framework's `CompactionStrategy` and attach wherever the framework takes one: `create_harness_agent`, or a `CompactionProvider` on a plain `Agent`.
 
@@ -104,6 +104,7 @@ recall = ToolResultRecallMiddleware(
     max_input_tokens=BUDGET,
     tokenizer=tokenizer,  # the same tokenizer as the strategy
     arm=gate.arm,
+    disarm=gate.disarm,
     trigger_fraction=strategy.trigger_fraction,
     record_max_tokens=4_000,
     repeat_records=True,  # a record per new batch of tool work

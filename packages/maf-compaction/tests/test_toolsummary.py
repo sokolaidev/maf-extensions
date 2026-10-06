@@ -1673,6 +1673,33 @@ async def test_the_middleware_refuses_a_second_session() -> None:
     assert "tool_choice" not in released, "a restore releases the session binding"
 
 
+async def test_a_forced_call_that_fails_is_forced_again_and_leaves_the_tool_disarmed() -> None:
+    """The ask outlives a failed call, and the permission armed for it does not."""
+    gate = RecallGate()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=1_000,
+        tokenizer=TOKENIZER,
+        arm=gate.arm,
+        disarm=gate.disarm,
+        trigger_fraction=0.1,
+    )
+    big = _conversation(tool_turns=8)
+    await _run(middleware, big)
+
+    async def failing() -> None:
+        raise ConnectionError("provider unavailable")
+
+    context = ChatContext(client=None, messages=[Message(role="user", contents=["q"])], options={})
+    with pytest.raises(ConnectionError):
+        await middleware.process(context, failing)
+
+    assert gate.take() is False, "no unpinned call may use the failed call's permission"
+    assert middleware.forced_calls == 0
+    retried = await _run(middleware, big)
+    assert retried["tool_choice"]["required_function_name"] == RECALL_TOOL_NAME
+    assert middleware.forced_calls == 1
+
+
 async def test_the_middleware_stops_once_a_record_exists() -> None:
     """Forcing a second record would re-drop what the first already covered."""
     _armings.clear()

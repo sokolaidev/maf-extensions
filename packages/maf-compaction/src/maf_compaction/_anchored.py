@@ -510,9 +510,9 @@ class AnchoredCompactionStrategy:
         # behaviour this strategy exists to avoid.
         if REMOVAL_MARKER in text or self.tokenizer.count_tokens(text) <= budget:
             return text
-        half = max(budget // 2, 1)
-        head_chars = self._fit(text, half, from_end=False)
-        tail_chars = self._fit(text, half, from_end=True)
+        head_budget = budget // 2
+        head_chars = self._fit(text, head_budget, from_end=False)
+        tail_chars = self._fit(text, budget - head_budget, from_end=True)
         head, tail = text[:head_chars], text[len(text) - tail_chars :]
         removed = len(text) - head_chars - tail_chars
         return f"{head}\n[{REMOVAL_MARKER}: {removed:,} characters]\n{tail}"

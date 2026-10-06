@@ -81,6 +81,17 @@ def test_a_package_without_a_core_requirement_is_not_a_dependent(checkout: Path)
     assert "maf-aside" not in {call[0] for call in checked(checkout)}
 
 
+@pytest.mark.parametrize(
+    "requirement",
+    ["maf-sandbox~=1.0", "maf-sandbox!=1.0.1", "maf_sandbox>=1.0", "Maf.Sandbox[x] >=1.0"],
+)
+def test_a_core_requirement_in_any_pep_508_shape_is_a_dependent(checkout: Path, requirement: str):
+    _package(checkout, "maf-other", requirement)
+    for shard in (0, 1):
+        assert run_shard(checkout, shard).returncode == 0
+    assert "maf-other" in {call[0] for call in checked(checkout)}
+
+
 def test_every_dependent_runs_once_with_its_wheel_and_local_core(checkout: Path):
     first = run_shard(checkout, 0)
     assert first.returncode == 0, first.stderr

@@ -12,7 +12,8 @@ def find_nested_strategy[StrategyT](strategy: Any, kind: type[StrategyT]) -> Str
     A composition is not an instance of its parts, so a plain ``isinstance`` leaves a composed
     strategy's record half without the middleware it needs. The walk follows ``strategies``,
     the attribute the framework's composed strategy and this package's use for their parts,
-    breadth-first so the outermost match wins, and cycle-guarded. A record strategy's
+    depth-first and in order, so a composition's parts are searched before its later siblings
+    and the match is the one that runs first. It is cycle-guarded. A record strategy's
     ``fallback`` is not followed: it is what the strategy degrades into, not a phase it runs.
 
     Args:
@@ -25,7 +26,7 @@ def find_nested_strategy[StrategyT](strategy: Any, kind: type[StrategyT]) -> Str
     seen: set[int] = set()
     pending: list[Any] = [strategy]
     while pending:
-        candidate = pending.pop(0)
+        candidate = pending.pop()
         if candidate is None or id(candidate) in seen:
             continue
         seen.add(id(candidate))
@@ -33,5 +34,5 @@ def find_nested_strategy[StrategyT](strategy: Any, kind: type[StrategyT]) -> Str
             return candidate
         parts: object = getattr(candidate, "strategies", None)
         if isinstance(parts, Sequence) and not isinstance(parts, (str, bytes)):
-            pending.extend(cast(Sequence[Any], parts))
+            pending.extend(reversed(cast(Sequence[Any], parts)))
     return None

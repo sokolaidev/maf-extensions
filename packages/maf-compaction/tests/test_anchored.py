@@ -571,6 +571,22 @@ def test_no_band_share_makes_a_small_payload_worth_trimming() -> None:
         )
 
 
+@pytest.mark.parametrize("keep_tokens", [0, 1, 3])
+def test_an_explicit_keep_tokens_is_not_exceeded(keep_tokens: int) -> None:
+    """The two ends share the budget, so a small one is not rounded up to one token per end."""
+    strategy = AnchoredCompactionStrategy(
+        max_input_tokens=8_000, tokenizer=TOKENIZER, keep_tokens=keep_tokens
+    )
+    text = "abcdefgh " * 500
+
+    shortened = strategy._shorten(text, keep_tokens)
+
+    head, _, rest = shortened.partition(f"\n[{REMOVAL_MARKER}")
+    tail = rest.split("]\n", 1)[1]
+    # The estimator counts an empty string as one token, so an empty end is not counted.
+    assert sum(TOKENIZER.count_tokens(end) for end in (head, tail) if end) <= keep_tokens
+
+
 # region preservation
 
 
