@@ -1,0 +1,70 @@
+[project]
+name = "maf-compaction"
+version = "0.0.0"
+description = "Prompt-cache-aware compaction strategies for Microsoft Agent Framework: anchored trimming, tool-result records and user-turn summaries that keep the cached prefix intact."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "compaction",
+    "context-window",
+    "prompt-cache",
+    "agent-framework",
+    "microsoft-agent-framework",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    # The strategies subclass the framework's `CompactionStrategy` and call its private
+    # `_compaction` helpers (grouping, token annotation, the exclusion flags), which nothing
+    # public exposes. The ceiling admits only the minor those helpers were read against: a
+    # private module changing shape must be a resolution failure, not a silent change of
+    # behaviour.
+    "agent-framework-core>=1.20.0,<1.21",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.build-backend]
+module-name = "maf_compaction"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+# The length rules join the docstring pair: test fixtures are lenient, not API surface.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

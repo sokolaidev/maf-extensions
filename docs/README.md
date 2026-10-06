@@ -2,7 +2,9 @@
 
 One directory per extension family, plus the repo-wide notes that belong to no family.
 
-[`sandbox/`](sandbox/README.md) — the sandboxed-execution suite: a backend-neutral protocol that lets an agent's tool run its work in a sandbox, any sandbox, while the host decides which sandboxes qualify. **Start at its front door.** It assumes no prior knowledge of Microsoft Agent Framework, and its *Where to read next* is the deep map of everything beside it. That is the only family today.
+[`sandbox/`](sandbox/README.md) — the sandboxed-execution suite: a backend-neutral protocol that lets an agent's tool run its work in a sandbox, any sandbox, while the host decides which sandboxes qualify. **Start at its front door.** It assumes no prior knowledge of Microsoft Agent Framework, and its *Where to read next* is the deep map of everything beside it. 
+
+[`compaction/`](compaction/README.md) — prompt-cache-aware compaction for Microsoft Agent Framework: strategies that keep the cached prefix intact while they shrink a conversation, and the benchmark they were measured with.
 
 [`maintainers.md`](maintainers.md) — repo-wide release plumbing: trusted publishing, the release train, and the order the packages go out in.
 
