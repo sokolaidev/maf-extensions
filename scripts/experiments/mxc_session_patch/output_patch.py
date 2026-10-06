@@ -46,7 +46,7 @@ def configure(sources: dict[str, Path], build_dir: Path) -> None:
         "@COMMON@": sources["session"] / "src/backends/hyperlight/common",
         "@WXC@": sources["session"] / "src/core/wxc_common",
     }.items():
-        template = template.replace(key, json.dumps(path.as_posix()))
+        template = template.replace(key, json.dumps(path.as_posix(), ensure_ascii=False))
     (build_dir / "Cargo.toml").write_text(template, encoding="utf-8")
     shutil.copyfile(ROOT / "Cargo.lock", build_dir / "Cargo.lock")
     manifest = build_dir / "Cargo.toml"
@@ -56,7 +56,7 @@ def configure(sources: dict[str, Path], build_dir: Path) -> None:
         )
         + '\n[features]\ndefault = ["bounded-output"]\nbounded-storage = []\nbounded-output = ["hyperlight_common/maf-output-preview"]\n'
         "\n[patch.crates-io]\nhyperlight-unikraft = { path = "
-        + json.dumps(sources["runtime"].as_posix())
+        + json.dumps(sources["runtime"].as_posix(), ensure_ascii=False)
         + " }\n",
         encoding="utf-8",
     )

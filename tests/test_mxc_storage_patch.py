@@ -8,11 +8,13 @@ import json
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
+    base = importlib.import_module("scripts.experiments.mxc_session_patch.patch")
     storage = importlib.import_module("scripts.experiments.mxc_session_patch.storage_patch")
     output = importlib.import_module("scripts.experiments.mxc_session_patch.output_patch")
     store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
@@ -39,7 +41,9 @@ def test_retained_overlays_match_their_pins():
 def test_generated_manifest_and_lock_preserve_versions_and_one_crate_identity(
     tmp_path, bounded_storage
 ):
-    sources = {key: tmp_path / "caf\u00e9" / key for key in ("session", "runtime", "host")}
+    sources = {
+        key: tmp_path / "caf\u00e9-\U0001f680" / key for key in ("session", "runtime", "host")
+    }
     build = tmp_path / "build"
     if bounded_storage:
         storage.configure_storage(sources, build)
@@ -98,3 +102,27 @@ def test_storage_prerequisites_match_the_pinned_output_overlay():
     for label, item in output_metadata["patches"].items():
         for name, hashes in item["files"].items():
             assert storage_metadata["patches"][label]["files"][name]["before"] == hashes["after"]
+
+
+def test_base_manifest_preserves_non_bmp_source_path(tmp_path, monkeypatch):
+    source = tmp_path / "session-\U0001f680"
+    source.mkdir()
+    build = tmp_path / "base-build"
+    metadata = json.loads((ROOT / "patch.json").read_text(encoding="utf-8"))
+
+    def git(_source, *args, **_kwargs):
+        return SimpleNamespace(
+            stdout=metadata["base"],
+            returncode=0 if args[0] == "rev-parse" or "--reverse" in args else 1,
+        )
+
+    monkeypatch.setattr(base, "git", git)
+    monkeypatch.setattr(
+        sys, "argv", ["patch.py", "configure", "--source", str(source), "--build-dir", str(build)]
+    )
+    assert base.main() == 0
+    manifest = tomllib.loads((build / "Cargo.toml").read_text(encoding="utf-8"))
+    assert (
+        manifest["dependencies"]["hyperlight_common"]["path"]
+        == (source / "src/backends/hyperlight/common").as_posix()
+    )

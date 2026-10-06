@@ -230,7 +230,7 @@ def test_stale_generation_cannot_reserve_publish_or_expire(tmp_path):
 @pytest.mark.parametrize("legacy_name", ["state.sqlite", "shared.sqlite"])
 def test_unknown_formats_refuse_without_modifying_database(tmp_path, legacy_name):
     root = tmp_path / "db"
-    root.mkdir()
+    root.mkdir(mode=0o700)
     path = root / legacy_name
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE old_format(value)")
@@ -740,3 +740,22 @@ def test_previous_experimental_format_requires_explicit_migration(tmp_path, vers
     with pytest.raises(store.Refused, match="format"):
         store.SharedStore(root, "one", PROFILE, LIMITS, Clock())
     assert (root / "shared.sqlite").read_bytes() == before
+
+
+def test_failed_admission_preserves_previously_committed_final_grant(tmp_path):
+    clock = Clock()
+    exact = store.SESSION_METADATA + store.CALL_METADATA + LIMITS.reservation
+    limits = replace(LIMITS, session_quota=exact, grace_seconds=1)
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, clock) as db:
+        publish(db, tmp_path / "a")
+        clock.utc += 10 * store.SECOND
+        assert db.begin("a", b"code") == b"result"
+        assert row(db)["remaining"] == 0
+        grant = db.grants.copy()
+        with pytest.raises(store.Refused, match="quota"):
+            db.begin("b", b"next")
+        assert db.grants == grant
+        assert db.begin("a", b"code") == b"result"
+        clock.monotonic += store.SECOND
+        with pytest.raises(store.Refused, match="result_expired"):
+            db.begin("a", b"code")

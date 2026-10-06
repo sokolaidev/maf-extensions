@@ -26,6 +26,7 @@ from .host_store import (
     _name,
     _relative,
 )
+from .private_root import check_file, prepare
 
 VERSION = 3
 STORE_METADATA = 4096
@@ -158,18 +159,19 @@ class SharedStore:
         )
         if len(encoded.encode()) > SESSION_METADATA - 4096:
             raise Refused("profile exceeds metadata allowance")
-        if root.is_symlink() or root.is_junction():
-            raise Refused("store root must be private")
-        root.mkdir(parents=True, exist_ok=True)
+        prepare(root)
         self.root = root.resolve()
         self.db: sqlite3.Connection
         self.lock = None
+        check_file(self.root / "initialize.lock")
         with (self.root / "initialize.lock").open("a+b") as initializer:
             if initializer.seek(0, 2) == 0:
                 initializer.write(b"0")
                 initializer.flush()
             _lock(initializer, True)
             path = self.root / "shared.sqlite"
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                check_file(self.root / ("shared.sqlite" + suffix))
             existed = path.exists()
             if (self.root / "state.sqlite").exists() and not existed:
                 raise Refused("legacy store requires explicit migration")
@@ -217,6 +219,7 @@ class SharedStore:
                 raise
         try:
             lock_path = self.root / (hashlib.sha256(session.encode()).hexdigest() + ".lock")
+            check_file(lock_path)
             self.lock = lock_path.open("a+b")
             if self.lock.seek(0, 2) == 0:
                 self.lock.write(b"0")
@@ -265,12 +268,13 @@ class SharedStore:
     @contextmanager
     def _transaction(self) -> Iterator[None]:
         self.db.execute("BEGIN IMMEDIATE")
+        grants = self.grants.copy()
         try:
             yield
             self.db.commit()
         except BaseException:
             self.db.rollback()
-            self.grants.clear()
+            self.grants = grants
             raise
 
     def __enter__(self) -> SharedStore:

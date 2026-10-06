@@ -24,7 +24,9 @@ def configure_storage(sources: dict[str, Path], build_dir: Path) -> None:
     )
     for crate in ("host", "common"):
         path = sources["host"] / f"src/hyperlight_{crate}"
-        text += f"hyperlight-{crate} = {{ path = {json.dumps(path.as_posix())} }}\n"
+        text += (
+            f"hyperlight-{crate} = {{ path = {json.dumps(path.as_posix(), ensure_ascii=False)} }}\n"
+        )
     manifest.write_text(text, encoding="utf-8")
     lock = build_dir / "Cargo.lock"
     blocks = lock.read_text(encoding="utf-8").split("[[package]]")

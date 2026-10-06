@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import hashlib
 import json
 import os
@@ -73,7 +74,7 @@ def _linux_process(pid: int) -> tuple[str, bool] | None:
 def _windows_process(pid: int) -> tuple[str, bool] | None:
     if sys.platform != "win32":
         raise Refused("Windows process evidence is unavailable on this platform")
-    from ctypes import wintypes
+    wintypes = ctypes.wintypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)

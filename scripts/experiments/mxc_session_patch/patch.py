@@ -61,7 +61,7 @@ def main() -> int:
             "@COMMON@": source / "src/backends/hyperlight/common",
             "@WXC@": source / "src/core/wxc_common",
         }.items():
-            manifest = manifest.replace(key, json.dumps(path.as_posix()))
+            manifest = manifest.replace(key, json.dumps(path.as_posix(), ensure_ascii=False))
         (build / "Cargo.toml").write_text(manifest, encoding="utf-8")
         shutil.copyfile(ROOT / "Cargo.lock", build / "Cargo.lock")
         print(
