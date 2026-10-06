@@ -14,6 +14,7 @@ from ._cli_selection import (
     standalone_strategy_names,
     validate_generation_caps,
     validate_recall_counts,
+    validate_timing_options,
 )
 from ._metrics import serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
@@ -194,6 +195,7 @@ async def run_recall(args: argparse.Namespace) -> int:
     strategies = select_standalone_strategies(args.strategies)
     validate_recall_counts(args)
     validate_generation_caps(args)
+    validate_timing_options(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

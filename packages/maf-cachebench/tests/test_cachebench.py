@@ -1045,3 +1045,31 @@ def test_strategy_shared_budget_boundaries_remain_valid(fraction: float) -> None
     )
     assert build_strategy("none", options) is None
     assert options.composed_budget_tokens == int(100 * fraction)
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), float("-inf")])
+def test_provider_caller_refuses_invalid_timeout(value: float) -> None:
+    with pytest.raises(ValueError, match="request_timeout"):
+        ProviderCaller(ProviderRuntime(None, "stub"), request_timeout=value)
+
+
+@pytest.mark.parametrize("value", [None, 0, 0.01])
+def test_provider_caller_timeout_disable_and_positive_values(value: float | None) -> None:
+    caller = ProviderCaller(ProviderRuntime(None, "stub"), request_timeout=value)
+    assert caller.request_timeout == (value or None)
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), float("-inf")])
+async def test_run_cell_refuses_invalid_delay_before_call(value: float) -> None:
+    async def unexpected(messages: Sequence[Message]) -> CallOutcome:
+        pytest.fail("Invalid delays must fail before calls")
+
+    with pytest.raises(ValueError, match="turn_delay"):
+        await run_cell(
+            cell=_cell(),
+            transcript=build_preset("small", salt="timing", tokenizer=TOKENIZER),
+            strategy=None,
+            tokenizer=TOKENIZER,
+            caller=unexpected,
+            turn_delay=value,
+        )

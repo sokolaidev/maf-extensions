@@ -1040,3 +1040,63 @@ async def test_optional_record_caps_reject_negative_before_setup(
         await _live_cli.run_live_comparison(
             _live_cli.build_parser().parse_args(["azure", option, "-1"])
         )
+
+
+@pytest.mark.parametrize(
+    "entry,option",
+    [
+        ("replay", "--request-timeout"),
+        ("advisor", "--request-timeout"),
+        ("summary", "--request-timeout"),
+        ("recall", "--request-timeout"),
+        ("replay", "--turn-delay"),
+        ("advisor", "--turn-delay"),
+    ],
+)
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "-inf"])
+async def test_invalid_timing_fails_before_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entry: str, option: str, value: str
+) -> None:
+    module, run = {
+        "replay": (_cli, _cli.run_benchmark),
+        "advisor": (_advise_cli, _advise_cli.run_advice),
+        "summary": (_summary_cli, _summary_cli.run_summary),
+        "recall": (_recall_cli, _recall_cli.run_recall),
+    }[entry]
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid timing must fail before setup")
+
+    monkeypatch.setattr(module, "build_provider", unexpected)
+    monkeypatch.setattr(module, "build_tokenizer", unexpected)
+    argv = ["--out", str(tmp_path / "out")] if entry == "replay" else ["azure"]
+    with pytest.raises(SystemExit, match=option):
+        await run(module.build_parser().parse_args([*argv, f"{option}={value}"]))
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("entry", ["replay", "advisor", "summary", "recall"])
+@pytest.mark.parametrize("value", ["0", "0.01"])
+async def test_zero_or_positive_cli_timing_is_valid(
+    monkeypatch: pytest.MonkeyPatch, entry: str, value: str
+) -> None:
+    module, run = {
+        "replay": (_cli, _cli.run_benchmark),
+        "advisor": (_advise_cli, _advise_cli.run_advice),
+        "summary": (_summary_cli, _summary_cli.run_summary),
+        "recall": (_recall_cli, _recall_cli.run_recall),
+    }[entry]
+
+    class ReachedSetup(Exception):
+        pass
+
+    def setup(*args: Any, **kwargs: Any) -> None:
+        raise ReachedSetup
+
+    monkeypatch.setattr(module, "build_provider", setup)
+    monkeypatch.setattr(module, "build_tokenizer", setup)
+    argv = [] if entry == "replay" else ["azure"]
+    if entry in {"advisor", "summary"}:
+        argv += ["--price-input", "1"]
+    with pytest.raises(ReachedSetup):
+        await run(module.build_parser().parse_args([*argv, "--request-timeout", value]))

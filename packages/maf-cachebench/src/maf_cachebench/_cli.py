@@ -17,6 +17,7 @@ from ._cli_selection import (
     replay_strategy_names,
     validate_generation_caps,
     validate_summarizer_selector,
+    validate_timing_options,
     validate_unique_selection,
 )
 from ._metrics import summarize_cell
@@ -365,6 +366,7 @@ async def run_benchmark(args: argparse.Namespace) -> int:
         A process exit code.
     """
     validate_generation_caps(args)
+    validate_timing_options(args)
     if not math.isfinite(args.cache_read_ratio) or args.cache_read_ratio < 0:
         raise SystemExit("--cache-read-ratio must be finite and non-negative.")
     providers = _split(args.providers)

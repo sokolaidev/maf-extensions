@@ -16,6 +16,7 @@ from ._cli_selection import (
     standalone_strategy_names,
     validate_generation_caps,
     validate_pricing_options,
+    validate_timing_options,
 )
 from ._metrics import summarize_cell
 from ._providers import (
@@ -261,6 +262,7 @@ async def run_advice(args: argparse.Namespace) -> int:
     require_baseline(strategies)
     validate_pricing_options(args)
     validate_generation_caps(args)
+    validate_timing_options(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

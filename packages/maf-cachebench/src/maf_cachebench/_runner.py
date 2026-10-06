@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import socket
 import time
@@ -328,6 +329,12 @@ def _merge_options(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[
     return merged
 
 
+def validate_duration(value: float, name: str) -> None:
+    """Require a finite, non-negative timeout or delay."""
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and non-negative.")
+
+
 class ProviderCaller:
     """Calls a real provider and extracts normalized usage from the response.
 
@@ -363,15 +370,17 @@ class ProviderCaller:
                 recorded as an error. Without a bound, one queue-happy provider can wedge a
                 multi-hour sweep indefinitely: the underlying SDK's own timeout stacks with
                 its internal retries and with this class's, so a single wedged call can
-                absorb hours. ``None`` disables the bound.
+                absorb hours. ``None`` or zero disables the bound.
         """
+        if request_timeout is not None:
+            validate_duration(request_timeout, "request_timeout")
         self.runtime = runtime
         # A private copy: the unsupported-parameter retry mutates this, and the runtime's
         # options are shared with every other cell on the same provider.
         self.options = _merge_options(runtime.options, extra_options or {})
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
-        self.request_timeout = request_timeout
+        self.request_timeout = request_timeout or None
 
     async def __call__(self, messages: Sequence[Message]) -> CallOutcome:
         """Send ``messages``, retrying on throttling, and return the usage measurements."""
@@ -462,6 +471,7 @@ async def run_cell(
     Returns:
         One record per turn, in order.
     """
+    validate_duration(turn_delay, "turn_delay")
     history: list[Message] = [transcript.system]
     previous_serialized: list[str] = []
     records: list[TurnRecord] = []

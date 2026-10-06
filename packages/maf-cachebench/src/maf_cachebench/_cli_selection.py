@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from agent_framework import TokenizerProtocol
 
 from ._providers import parse_provider_selector, provider_names
+from ._runner import validate_duration
 from ._strategies import (
     StrategyOptions,
     build_strategy,
@@ -177,3 +178,14 @@ def validate_generation_caps(args: argparse.Namespace) -> None:
         value = getattr(args, name, None)
         if value is not None and value < 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be non-negative.")
+
+
+def validate_timing_options(args: argparse.Namespace) -> None:
+    """Reject invalid waits before provider work, keeping zero as the disable value."""
+    for name in ("request_timeout", "turn_delay"):
+        value = getattr(args, name, None)
+        if value is not None:
+            try:
+                validate_duration(value, f"--{name.replace('_', '-')}")
+            except ValueError as error:
+                raise SystemExit(str(error)) from error

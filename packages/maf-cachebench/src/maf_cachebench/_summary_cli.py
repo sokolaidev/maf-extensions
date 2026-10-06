@@ -17,6 +17,7 @@ from ._cli_selection import (
     validate_generation_caps,
     validate_pricing_options,
     validate_recall_counts,
+    validate_timing_options,
 )
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
@@ -294,6 +295,7 @@ async def run_summary(args: argparse.Namespace) -> int:
     validate_pricing_options(args)
     validate_recall_counts(args)
     validate_generation_caps(args)
+    validate_timing_options(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
