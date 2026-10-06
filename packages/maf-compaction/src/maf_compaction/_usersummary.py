@@ -901,7 +901,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_summary_failures(self) -> int:
-        """Passes where the summarizer raised, or returned nothing, and the band was left alone.
+        """Passes where the summarizer raised, returned nothing, or returned a summary no smaller
+        than what it would replace, and the band was left alone.
 
         Non-zero means part of what this row measured is a summarizer that was not answering,
         and the row is then the uncompacted control for those passes -- reported rather than
@@ -1076,12 +1077,23 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary_id = _next_summary_id(
                 messages, prefix=SUMMARY_ID_PREFIX, minimum=self._compactions
             )
-            self._compactions += 1
             self._remember(_Remembered(self.prompt, transcript, summary_id, summary))
         else:
             # The same band, seen again on the other list the live path runs this on. The answer
             # and the id are the ones the model has already been sent.
             summary_id, summary = remembered.summary_id, remembered.text
+        replaced = [
+            message
+            for span in band
+            for message in messages[span["start_index"] : span["end_index"] + 1]
+        ]
+        if not self._smaller(replaced, band, summary, summary_id=summary_id):
+            # Remembered all the same, so the other list replays the refusal instead of asking.
+            self._failures += remembered is None
+            return False
+        if remembered is None:
+            self._compactions += 1
+        else:
             self._replayed += 1
         self._replace(messages, band, summary, summary_id=summary_id)
         self._replaced = len(band)
@@ -1353,7 +1365,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         answer = await self._fold_answer(messages, standing)
         if answer is None:
             return False
-        self._apply_fold(messages, standing, *answer)
+        remembered, replayed = answer
+        summaries: list[Message] = [messages[span["start_index"]] for span in standing]
+        if not self._smaller(
+            summaries, standing, remembered.text, summary_id=remembered.summary_id
+        ):
+            self._failures += not replayed
+            return False
+        self._apply_fold(messages, standing, remembered, replayed)
         return True
 
     async def fold_if_smaller(self, messages: list[Message]) -> FoldOutcome:
@@ -1390,13 +1409,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return "failed"
         remembered, replayed = answer
         summaries: list[Message] = [messages[span["start_index"]] for span in standing]
-        candidate = [
-            self._summary_message(
-                summaries, standing, remembered.text, summary_id=remembered.summary_id
-            )
-        ]
-        annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
-        if included_token_count(candidate) >= included_token_count(summaries):
+        if not self._smaller(
+            summaries, standing, remembered.text, summary_id=remembered.summary_id
+        ):
             return "rejected"
         self._apply_fold(messages, standing, remembered, replayed)
         self._kept_folds[remembered.transcript] = remembered
@@ -1467,6 +1482,23 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         remembered = _Remembered(self.fold_prompt, transcript, summary_id, summary)
         self._remember(remembered)
         return remembered, False
+
+    def _smaller(
+        self,
+        replaced: list[Message],
+        spans: list[dict[str, Any]],
+        summary: str,
+        *,
+        summary_id: str,
+    ) -> bool:
+        """Return whether ``summary``, as inserted, counts fewer tokens than what it replaces.
+
+        A summarizer can answer at length, and a summary no smaller than its band would grow the
+        prompt while the pass reported success.
+        """
+        candidate = [self._summary_message(replaced, spans, summary, summary_id=summary_id)]
+        annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
+        return included_token_count(candidate) < included_token_count(replaced)
 
     def _apply_fold(
         self,

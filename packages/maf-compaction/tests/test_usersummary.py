@@ -562,6 +562,18 @@ async def test_a_summarizer_that_answers_with_nothing_is_the_same_failure() -> N
     assert strategy.user_summary_failures == 1
 
 
+async def test_a_summary_no_smaller_than_its_band_is_refused() -> None:
+    """A verbose answer would grow the prompt while the pass reported success."""
+    strategy = _strategy(_RatioSummarizer(1.5))
+    messages = _conversation(8)
+    before = list(messages)
+
+    assert await strategy(messages) is False
+    assert messages == before
+    assert strategy.user_summary_failures == 1
+    assert strategy.user_compactions == 0
+
+
 async def test_the_replacement_carries_the_frameworks_own_supersession_annotations() -> None:
     """Replace, in the way the framework already means by it, rather than in a private way.
 

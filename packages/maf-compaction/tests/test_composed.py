@@ -1448,6 +1448,16 @@ async def test_the_composed_row_holds_the_tool_groups_behind_its_record_when_its
     )
 
 
+def test_halves_counting_with_another_tokenizer_are_refused() -> None:
+    """One ceiling means one counter: each phase's cached counts drive the other's thresholds."""
+    with pytest.raises(ValueError, match="one tokenizer"):
+        ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+            tokenizer=CharacterEstimatorTokenizer(),
+            tool_results=_record_phase(),
+            user_turns=_user_phase(),
+        )
+
+
 def test_two_halves_measuring_against_two_ceilings_are_refused() -> None:
     """One shared line, and one budget for the chain, need one ceiling."""
     with pytest.raises(ValueError, match="one max_input_tokens"):

@@ -522,7 +522,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             budget, as it stopped before the setting existed.
 
     Raises:
-        ValueError: If the two phases measure against different ceilings, if an explicit
+        ValueError: If the two phases measure against different ceilings or with different
+            tokenizer objects, if an explicit
             ``user_trigger_fraction`` is outside ``(0.0, 1.0]``, or if ``harder_attempts`` is
             negative, or if ``chain_gain_fraction`` is outside ``[0.0, 1.0)``, or if a user half
             outside the recompacting mode remembers fewer than two requests. Each phase's
@@ -552,6 +553,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 f"{tool_results.max_input_tokens} and {user_turns.max_input_tokens} are two "
                 "ceilings, "
                 "and the trigger fractions are then not comparable."
+            )
+        if tool_results.tokenizer is not tokenizer or user_turns.tokenizer is not tokenizer:
+            raise ValueError(
+                "tool_results, user_turns and the composition must share one tokenizer: the "
+                "phases' cached counts drive each other's thresholds, so two counters disagree "
+                "about one ceiling."
             )
         if user_trigger_fraction is not None and not 0.0 < user_trigger_fraction <= 1.0:
             raise ValueError("user_trigger_fraction must be in (0.0, 1.0].")
