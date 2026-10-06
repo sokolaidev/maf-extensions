@@ -62,7 +62,7 @@ from copy import copy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args, get_type_hints
 from uuid import uuid4
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from ._cleanup import QUEUED_CALL_TIMEOUT, PendingCleanup
 from ._containment import CONTAINED, escapes_containment
@@ -3792,11 +3792,16 @@ class FileStoreBinding:
         )
 
 
+_FILE_BINDINGS: WeakValueDictionary[tuple[str, int], FileStoreBinding] = WeakValueDictionary()
+_FILE_BINDINGS_LOCK = threading.Lock()
+
+
 class ScopedFileStores:
     """Resolve shared bindings from explicit host identities, never model arguments.
 
     ``factory(scope, thread_id)`` must return an independently confined native store for each
     pair. Native stores are retained unchanged, including their concurrency capabilities.
+    Live bindings cannot reuse store or provenance objects across registries.
     Providers are read-only by default; writable scratch stores must be separate from sinks.
     ``provenance_factory(scope, thread_id, store)`` restores a record before publication;
     it must finish synchronously and must not re-enter this registry.
@@ -3867,5 +3872,13 @@ class ScopedFileStores:
                 ),
                 middleware=file_store_provenance_middleware(provenance),
             )
-            self._bindings[key] = binding
+            identities = (("store", id(store)), ("provenance", id(provenance)))
+            with _FILE_BINDINGS_LOCK:
+                if any(identity in _FILE_BINDINGS for identity in identities):
+                    raise ValueError(
+                        "The store or provenance record is already bound in another registry."
+                    )
+                for identity in identities:
+                    _FILE_BINDINGS[identity] = binding
+                self._bindings[key] = binding
             return binding

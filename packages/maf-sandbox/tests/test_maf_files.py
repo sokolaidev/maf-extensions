@@ -1,10 +1,12 @@
 """File tools, listings, sinks and provenance share a host-bound native store."""
 
 import asyncio
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
-from threading import Event
+from threading import Barrier, Event
 from typing import Any, cast
+from weakref import ref
 
 import pytest
 from agent_framework import (
@@ -15,7 +17,7 @@ from agent_framework import (
 )
 
 from maf_sandbox import Artifact, FileStoreProvenance, SourceIntegrity
-from maf_sandbox.maf import ScopedFileStores, make_file_store_sink
+from maf_sandbox.maf import ScopedFileStores, make_file_store_sink, sandbox_outputs_read_tools
 
 
 async def tools_for(binding):
@@ -139,6 +141,13 @@ def test_output_binding_exposes_only_reads_and_keeps_scratch_mutations_separate(
     async def scenario():
         readers = await tools_for(a)
         writers = await tools_for(writable)
+        output_tools = sandbox_outputs_read_tools(a.store)
+        composition = FunctionInvocationContext(
+            function=writers["file_access_write"], arguments={}, tools=list(writers.values())
+        )
+        composition.add_tools(output_tools)
+        assert composition.tools is not None
+        assert len(composition.tools) == len(writers) + len(output_tools)
         assert readers
         for operation in ("write", "delete", "replace", "replace_lines"):
             assert f"file_access_{operation}" not in readers
@@ -150,6 +159,10 @@ def test_output_binding_exposes_only_reads_and_keeps_scratch_mutations_separate(
                 name="report.txt", content=b"result", kind="probe", media_type=None, call_id="call"
             )
         )
+        output_reader = next(tool for tool in output_tools if tool.name == "sandbox_outputs_read")
+        assert (await output_reader.invoke(arguments={"name": "call/report.txt"}))[
+            0
+        ].text == "result"
         assert (await invoke(a, readers, "read", file_name="call/report.txt"))[0].text == "result"
         await invoke(writable, writers, "delete", file_name="call/report.txt")
         assert await a.store.read("call/report.txt") == "result"
@@ -248,3 +261,58 @@ def test_restoration_rejects_invalid_or_shared_records_and_ambiguous_floor():
     shared.bind(scope="tenant", thread_id="a")
     with pytest.raises(ValueError, match="distinct provenance"):
         shared.bind(scope="tenant", thread_id="b")
+
+
+@pytest.mark.parametrize("first_read_only", [True, False])
+def test_live_bindings_refuse_store_reuse_across_registries(first_read_only):
+    store = InMemoryAgentFileStore()
+    first_registry = ScopedFileStores(lambda scope, thread: store, read_only=first_read_only)
+    second_registry = ScopedFileStores(lambda scope, thread: store, read_only=not first_read_only)
+    first = first_registry.bind(scope="tenant", thread_id="thread")
+    with pytest.raises(ValueError, match="already bound"):
+        second_registry.bind(scope="tenant", thread_id="thread")
+    assert first_registry.bind(scope="tenant", thread_id="thread") is first
+
+
+def test_concurrent_registries_cannot_publish_the_same_store():
+    store = InMemoryAgentFileStore()
+    barrier = Barrier(2)
+
+    def factory(scope, thread):
+        barrier.wait(timeout=5)
+        return store
+
+    registries = [ScopedFileStores(factory), ScopedFileStores(factory, read_only=False)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(registry.bind, scope="tenant", thread_id="thread")
+            for registry in registries
+        ]
+        errors = [future.exception() for future in futures]
+        assert sum(error is None for error in errors) == 1
+        assert sum(isinstance(error, ValueError) for error in errors) == 1
+
+
+def test_cross_registry_provenance_reuse_is_refused():
+    record = FileStoreProvenance()
+    first_registry = ScopedFileStores(
+        lambda scope, thread: InMemoryAgentFileStore(),
+        provenance_factory=lambda scope, thread, store: record,
+    )
+    second_registry = ScopedFileStores(
+        lambda scope, thread: InMemoryAgentFileStore(),
+        provenance_factory=lambda scope, thread, store: record,
+    )
+    first = first_registry.bind(scope="tenant", thread_id="thread")
+    with pytest.raises(ValueError, match="already bound"):
+        second_registry.bind(scope="tenant", thread_id="thread")
+    assert first.provenance is record
+
+
+def test_identity_registry_does_not_keep_unused_bindings_alive():
+    registry = ScopedFileStores(lambda scope, thread: InMemoryAgentFileStore())
+    binding = registry.bind(scope="tenant", thread_id="thread")
+    weak = ref(binding)
+    del binding, registry
+    gc.collect()
+    assert weak() is None
