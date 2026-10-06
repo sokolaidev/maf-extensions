@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from . import accounting
+from .accounting import CALL_METADATA, MAX_INTEGER, SESSION_METADATA, STORE_METADATA
 from .host_store import (
     CHUNK,
     MAX_CHECKPOINT,
@@ -28,15 +30,11 @@ from .host_store import (
 )
 from .private_root import check_file, prepare
 
-VERSION = 3
-STORE_METADATA = 4096
-SESSION_METADATA = 20480
-CALL_METADATA = 2048
+VERSION = 4
 PATH_BYTES = 512
 FILE_METADATA = PATH_BYTES + 256
 REFERENCE_METADATA = 80
 SECOND = 1_000_000_000
-MAX_INTEGER = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -131,6 +129,8 @@ class SharedStore:
         profile: dict[str, str],
         limits: Limits,
         clock: Clock | None = None,
+        *,
+        upgrade_accounting: bool = False,
     ):
         if (
             limits.session_quota < SESSION_METADATA
@@ -178,13 +178,17 @@ class SharedStore:
             self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
             self.db.row_factory = sqlite3.Row
             try:
+                upgrading = False
                 if existed:
                     try:
                         row = self.db.execute("SELECT version FROM settings WHERE id=1").fetchone()
                     except sqlite3.DatabaseError as error:
                         raise Refused("unsupported or corrupt store format") from error
-                    if row is None or row[0] != VERSION:
-                        raise Refused("unsupported or corrupt store format")
+                    upgrading = row is not None and row[0] == 3 and upgrade_accounting
+                    if row is None or (row[0] != VERSION and not upgrading):
+                        raise Refused(
+                            "unsupported or corrupt store format; explicit upgrade required"
+                        )
                 self.db.execute("PRAGMA journal_mode=DELETE")
                 self.db.execute("PRAGMA synchronous=FULL")
                 self.db.execute("PRAGMA foreign_keys=ON")
@@ -194,6 +198,12 @@ class SharedStore:
                         self.db.execute(
                             "INSERT INTO settings VALUES(1, ?, ?)", (VERSION, limits.store_quota)
                         )
+                    if not existed or upgrading:
+                        if upgrading:
+                            self._audit_checkpoints()
+                        accounting.initialize(self.db)
+                        self.db.execute("UPDATE settings SET version=? WHERE id=1", (VERSION,))
+                    accounting.audit(self.db)
                     self.db.execute(
                         "CREATE INDEX IF NOT EXISTS calls_expiry ON calls(session,status,expired,expires,id)"
                     )
@@ -332,24 +342,13 @@ class SharedStore:
 
     def usage(self, session: str | None = None) -> int:
         """Return retained logical charges plus durable reservations."""
-        where = "" if session is None else " WHERE session=?"
-        args = () if session is None else (session,)
-        count = self.db.execute(
-            "SELECT count(*) FROM sessions" + ("" if session is None else " WHERE id=?"), args
-        ).fetchone()[0]
-        retained = self.db.execute(
-            "SELECT coalesce(sum(? + result_charge + checkpoint_charge),0) FROM calls" + where,
-            (CALL_METADATA, *args),
-        ).fetchone()[0]
-        reserved = self.db.execute(
-            "SELECT coalesce(sum(charge),0) FROM reservations" + where, args
-        ).fetchone()[0]
-        return (
-            (STORE_METADATA if session is None else 0)
-            + count * SESSION_METADATA
-            + retained
-            + reserved
-        )
+        return accounting.usage(self.db, session)
+
+    def audit_usage(self) -> None:
+        """Compare stored totals with retained records under a consistent write transaction."""
+        with self._transaction():
+            self._owner()
+            accounting.audit(self.db)
 
     def _available(self, row: sqlite3.Row, utc: int, monotonic: int) -> bool:
         if row["expired"]:
@@ -505,6 +504,9 @@ class SharedStore:
             utc, _ = self._observe()
             grace = self.limits.grace_seconds * SECOND
             self.db.execute(
+                "DELETE FROM reservations WHERE session=? AND call=?", (self.session, call_id)
+            )
+            self.db.execute(
                 "UPDATE calls SET status='committed',result=?,result_hash=?,result_charge=?,checkpoint_charge=?,checkpoint_hash=?,expires=?,grace=?,remaining=?,uncertain=? WHERE session=? AND id=?",
                 (
                     result,
@@ -522,9 +524,6 @@ class SharedStore:
             )
             self.db.execute(
                 "UPDATE sessions SET current_call=? WHERE id=?", (call_id, self.session)
-            )
-            self.db.execute(
-                "DELETE FROM reservations WHERE session=? AND call=?", (self.session, call_id)
             )
         boundary("after_commit")
 
@@ -774,6 +773,7 @@ class SharedStore:
                 (self.session, self.session),
             ).fetchone():
                 raise Refused("outstanding reservation requires explicit recovery")
+            accounting.audit(self.db)
             self._audit_checkpoints()
             calls = self.db.execute(
                 "SELECT id FROM calls WHERE session=? AND checkpoint_charge>0 AND (?='retired' OR id!=?) ORDER BY id LIMIT ?",
