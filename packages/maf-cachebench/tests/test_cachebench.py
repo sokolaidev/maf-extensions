@@ -885,3 +885,46 @@ def test_local_metrics_keep_completed_turns_without_usage_and_exclude_errors() -
     assert summary.total_cached_tokens == 20
     assert summary.errors == 1
     assert summary.turns_missing_input == 1
+
+
+@pytest.mark.parametrize("rate_failures", [0, 1, 3])
+async def test_option_corrections_survive_an_exhausted_throttle_budget(rate_failures: int) -> None:
+    class Correctable:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_response(self, messages: object, *, options: dict[str, object]) -> object:
+            self.calls += 1
+            if self.calls <= rate_failures:
+                raise _Throttled()
+            for name in ("temperature", "max_tokens"):
+                if name in options:
+                    raise ValueError(f"Unsupported parameter: '{name}'")
+            return SimpleNamespace(usage_details={"input_token_count": 7}, text="ok")
+
+    client = Correctable()
+    runtime = ProviderRuntime(
+        client=client, model="stub", options={"temperature": 0, "max_tokens": 16}
+    )
+    outcome = await ProviderCaller(runtime, max_retries=rate_failures, retry_base_delay=0)(())
+    assert outcome.error is None
+    assert outcome.text == "ok"
+    assert client.calls == rate_failures + 3
+    assert runtime.options == {"temperature": 0, "max_tokens": 16}
+
+
+async def test_option_correction_does_not_reset_or_expand_throttle_retries() -> None:
+    class ThrottledAfterCorrection:
+        calls = 0
+
+        async def get_response(self, messages: object, *, options: dict[str, object]) -> object:
+            self.calls += 1
+            if "temperature" in options:
+                raise ValueError("Unsupported parameter: 'temperature'")
+            raise _Throttled()
+
+    client = ThrottledAfterCorrection()
+    runtime = ProviderRuntime(client=client, model="stub", options={"temperature": 0})
+    outcome = await ProviderCaller(runtime, max_retries=2, retry_base_delay=0)(())
+    assert outcome.error is not None
+    assert client.calls == 4

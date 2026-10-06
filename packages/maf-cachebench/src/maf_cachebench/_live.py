@@ -2038,24 +2038,9 @@ async def run_live(
         # control, so the retry that exists to save seeds was destroying them instead.
         before = snapshot_state(session)
         before_decisions = snapshot_decisions(strategy)
-        # Two attempts. Providers differ in which request options they accept, and one that
-        # rejects an option names it. Dropping that option and retrying is what lets a model
-        # with an unusual surface be measured at all instead of returning an empty run:
-        # measured on two of five models, one rejecting temperature and one rejecting any
-        # pinned tool choice.
-        #
-        # Throttling and lost connections are retried inside each of these attempts rather than
-        # beside them, so they compose: an option rejected on the third attempt after two 429s
-        # still drops the option and goes round again, with fresh wait budgets for the new
-        # option set. The sweep this was built for lost 100 seeds and EUR 4.17 because a rate
-        # limit fell through a loop that only knew how to drop an option it was never given,
-        # and a later cell lost all 30 of its seed records the same way to a connection drop.
-        #
-        # Every loop restores, because every one of them re-sends. An option is named on the
-        # call that carries it, and after a tool result that is the second call of the turn --
-        # so this one reaches a half-finished turn exactly as the rate limit does, and a run
-        # that restored only the throttled path would still send a dangling call down the other.
-        for _ in range(2):
+        # Allow one correction per runtime option, plus tool_choice and max_tokens, then success.
+        # Restore the session before resending a turn that may have persisted a partial tool call.
+        for _ in range(len(runtime.options) + 3):
             # Per-turn options carry the runtime's own options too: this replaces the
             # per-call option set rather than adding to it.
             turn_options: dict[str, Any] = {
@@ -2083,7 +2068,7 @@ async def run_live(
                 return await _attempt(text, turn_options, before, before_decisions)
             except Exception as exc:
                 option = unsupported_option(exc)
-                if option is None or option in dropped:
+                if option is None or option in dropped or option not in turn_options:
                     error = f"{label}: {type(exc).__name__}: {exc}"
                     return None
                 dropped.append(option)

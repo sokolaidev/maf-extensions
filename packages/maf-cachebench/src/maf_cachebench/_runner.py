@@ -377,7 +377,8 @@ class ProviderCaller:
     async def __call__(self, messages: Sequence[Message]) -> CallOutcome:
         """Send ``messages``, retrying on throttling, and return the usage measurements."""
         last_error: BaseException | None = None
-        for attempt in range(self.max_retries + 1):
+        rate_retries = 0
+        for _ in range(self.max_retries + len(self.options) + 1):
             started = time.perf_counter()
             try:
                 # Options travel as a single ``options`` mapping, not as **kwargs: the
@@ -399,8 +400,9 @@ class ProviderCaller:
                 )
             except Exception as exc:
                 last_error = exc
-                if attempt < self.max_retries and is_rate_limited(exc):
-                    await asyncio.sleep(self.retry_base_delay * (2**attempt))
+                if rate_retries < self.max_retries and is_rate_limited(exc):
+                    await asyncio.sleep(self.retry_base_delay * (2**rate_retries))
+                    rate_retries += 1
                     continue
                 # A rejected sampling parameter is deterministic, not transient: drop the
                 # option the provider named and retry immediately. Without this a single

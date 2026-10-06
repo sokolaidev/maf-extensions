@@ -10037,3 +10037,56 @@ async def test_live_cli_rejects_nonpositive_repeats_before_setup(
         argv.append("--dry-run")
     with pytest.raises(SystemExit, match=f"{option} must be greater than 0"):
         await run_live_comparison(build_parser().parse_args(argv))
+
+
+async def test_live_retries_after_each_of_several_option_corrections() -> None:
+    class Picky(StubChatClient):
+        def _inner_get_response(
+            self, *, messages: Any, stream: Any, options: Any, **kwargs: Any
+        ) -> Any:
+            for name in ("temperature", "tool_choice", "max_tokens"):
+                if name == "tool_choice" and options.get(name) in (None, "auto"):
+                    continue
+                if options.get(name) is not None:
+                    raise RuntimeError(f"Unsupported parameter: '{name}'")
+            return super()._inner_get_response(
+                messages=messages, stream=stream, options=options, **kwargs
+            )
+
+    scenario = build_live_scenario(
+        salt="picky-many", filler_turns=3, filler_tokens=50, tool_turns=6
+    )
+    runtime = ProviderRuntime(
+        client=Picky(), model="stub", options={"temperature": 0.0, "max_tokens": 16}
+    )
+    outcome = await run_live(runtime, strategy_name="none", options=_options(), scenario=scenario)
+    assert outcome.error is None
+    assert outcome.dropped_options == ("temperature", "tool_choice", "max_tokens")
+    assert outcome.turns_completed == outcome.turns_total
+
+
+@pytest.mark.parametrize("selector", ["azure:other", "mistral:tested"])
+async def test_live_rejects_unpriced_summarizer_before_seed_calls(
+    monkeypatch: pytest.MonkeyPatch, selector: str
+) -> None:
+    _stub_provider(monkeypatch)
+
+    async def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("A differently priced summarizer must be rejected before any seed runs")
+
+    monkeypatch.setattr("maf_cachebench._live_cli.run_live", unexpected)
+    args = build_parser().parse_args(_live_argv("--summarizer-provider", selector))
+    args.provider = "azure:tested"
+    with pytest.raises(SystemExit, match="same provider and model"):
+        await run_live_comparison(args)
+
+
+async def test_live_accepts_summarizer_resolving_to_the_same_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_provider(monkeypatch)
+    args = build_parser().parse_args(
+        _live_argv("--summarizer-provider", "azure", "--strategies", "none", "--repeats", "1")
+    )
+    args.provider = "azure:stub-model"
+    assert await run_live_comparison(args) == 0

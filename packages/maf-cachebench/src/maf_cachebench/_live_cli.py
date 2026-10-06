@@ -762,7 +762,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--summarizer-provider", default=None, help="Provider for summarization strategies."
+        "--summarizer-provider",
+        default=None,
+        help="Summarizer must resolve to the tested provider and model for pricing.",
     )
     parser.add_argument(
         "--price-input", type=float, default=None, help="Input price per million tokens."
@@ -4192,6 +4194,11 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         summarizer_runtime = build_provider(
             sum_provider, temperature=0.0, response_max_tokens=1_024, model=sum_model
         )
+        if sum_provider != provider or summarizer_runtime.model != runtime.model:
+            raise SystemExit(
+                "The summarizer must use the same provider and model as the agent: "
+                "this benchmark records one set of prices for both."
+            )
         summarizer_client = summarizer_runtime.client
         # The model the provider settled on, not the selector that was typed. A run naming only
         # a provider records which model summarized for it, which is the difference between two
