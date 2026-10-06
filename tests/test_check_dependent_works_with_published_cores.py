@@ -378,3 +378,38 @@ class TestTheInstallCommands:
     ):
         assert check.main(["prog", "maf-sandbox-bicep", "w.whl", "--local-core"]) == 2
         assert "--local-core <wheel>" in capsys.readouterr().err
+
+
+class TestAPackageThatIsNoDependent:
+    """A wheel requiring no core at all is left alone, with the refusal kept for a mis-shaped one."""
+
+    def test_a_wheel_without_the_core_is_not_a_dependent(self, tmp_path: Path):
+        wheel = _wheel(
+            tmp_path,
+            "maf_compaction-0.0.0-py3-none-any.whl",
+            ["agent-framework-core>=1.20.0,<1.21"],
+        )
+        assert check.names_core(wheel) is False
+
+    def test_a_longer_name_does_not_count_as_the_core(self, tmp_path: Path):
+        wheel = _wheel(
+            tmp_path,
+            "maf_sandbox_codeact-0.7.3-py3-none-any.whl",
+            ["maf-sandbox-docker>=0.7.0,<0.9"],
+        )
+        assert check.names_core(wheel) is False
+
+    def test_the_core_in_any_shape_counts(self, tmp_path: Path):
+        wheel = _wheel(tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", ["maf-sandbox~=0.22"])
+        assert check.names_core(wheel) is True
+
+    def test_the_cli_passes_such_a_package_without_running_anything(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        wheel = _wheel(
+            tmp_path,
+            "maf_compaction-0.0.0-py3-none-any.whl",
+            ["agent-framework-core>=1.20.0,<1.21"],
+        )
+        assert check.main(["check", "maf-compaction", str(wheel)]) == 0
+        assert "not a dependent" in capsys.readouterr().out

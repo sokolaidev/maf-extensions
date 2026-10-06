@@ -1,13 +1,32 @@
-"""Run one PR compatibility shard, retaining the checker's local-core fallback."""
+"""Run one PR compatibility shard over the maf-sandbox dependents, with the local-core fallback."""
 
 from __future__ import annotations
 
 import argparse
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+_CORE = "maf-sandbox"
+
+
+def depends_on_core(package: Path) -> bool:
+    """Whether a package's own metadata names ``maf-sandbox`` among its dependencies.
+
+    A package that does not is no dependent, however it is laid out: the checker reads the
+    core range off its wheel and has nothing to read.
+    """
+    pyproject = package / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    project = tomllib.loads(pyproject.read_text("utf-8")).get("project", {})
+    return any(
+        requirement.split(">")[0].split("<")[0].split("=")[0].split("[")[0].strip() == _CORE
+        for requirement in project.get("dependencies", [])
+    )
 
 
 def wheel_for(distribution: str) -> Path:
@@ -30,7 +49,7 @@ def main(argv: list[str]) -> int:
     packages = sorted(
         path
         for path in (ROOT / "packages").iterdir()
-        if path.is_dir() and path.name != "maf-sandbox"
+        if path.is_dir() and path.name != _CORE and depends_on_core(path)
     )
     selected = packages[args.shard :: args.shards]
     if not selected:
