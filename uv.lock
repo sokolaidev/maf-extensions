@@ -1404,7 +1404,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-docker"
-version = "0.26.0"
+version = "0.27.0"
 source = { editable = "packages/maf-sandbox-docker" }
 dependencies = [
     { name = "maf-sandbox" },
