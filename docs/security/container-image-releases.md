@@ -19,6 +19,8 @@ A consumer can select a released image, pull its immutable registry digest, veri
 | Consumer execution | Require verified release identity and completion; report current monitoring status separately | Accepted, decision 4 |
 | Support window | Daily scans of the newest release per profile and each superseded release for 90 days; fixes ship as new versions | Accepted, decision 5 |
 | Evidence freshness | Release scan at most 24 hours old; monitored status becomes stale after 48 hours without a successful assessment | Accepted, decision 6 |
+| Public hosting | GHCR for images, GitHub Release assets for durable release evidence, and Actions-deployed GitHub Pages for the public catalogue, reports and badge data; no generated-data branch | Accepted, decision 7 |
+| Authoritative state | Numbered immutable security-history releases containing complete JSON snapshots; serialize all state writers and retain interrupted drafts | Accepted, decision 8 |
 
 ## Decision 1: independent image versions
 
@@ -132,6 +134,26 @@ Every status exposes its image digest, last assessment time, database identity, 
 
 The existing README badge remains explicitly about candidate builds. Published-image status identifies the monitored set and distinguishes clean, vulnerable, stale, unavailable and no-longer-monitored evidence from the separate incomplete, completed or abandoned publication state. An aggregate can be green only when every monitored digest belongs to a completed release, has a complete, fresh, passing assessment and has no newer failed assessment attempt. Incomplete and abandoned public candidates prevent a green aggregate even when their vulnerability scans pass.
 
+## Decision 7: GitHub-hosted evidence and public status
+
+Store published images in GHCR and retain each release's evidence as GitHub Release assets. Assemble the evidence before publishing an immutable release, because its assets cannot be added or replaced afterward. Interrupted completion delivery must reconcile the existing draft or published evidence without modifying an immutable release. Image release tags and evidence remain separate from release-please's Python package releases.
+
+Generate the public catalogue, monitoring reports and badge data in GitHub Actions and deploy them directly to GitHub Pages. Generated files do not enter Git history, and no dedicated data or Pages branch is required. Pages is a public view of release and monitoring records; a successful deployment does not itself establish a durable catalogue transaction or prove that a displayed assessment is the latest attempt.
+
+Pages is derived from the authoritative security history defined below. Consumers retrieve current state from the GitHub API rather than treating a cached Pages deployment as proof of the latest attempt.
+
+## Decision 8: immutable security history
+
+Store each catalogue transaction in a new GitHub Release named `security-history-<12-digit sequence>`, marked as a prerelease with `make_latest: false`. These automated history entries are intentionally visible alongside software releases. Each contains exactly one `catalogue.json` asset with the complete release catalogue, operation identity, source commit, UTC creation time and the preceding committed snapshot's sequence and SHA-256. Its ancestry list also records every preceding committed snapshot's sequence and hash, allowing readers to check retained history against GitHub's immutable asset metadata without downloading every historical report. Release completion, the current-release pointer and predecessor supersession time occupy the same snapshot. Daily monitoring similarly retains its latest-attempt records in this history; large evidence files remain separate release assets with explicit hashes.
+
+All catalogue-writing jobs share one repository-wide Actions concurrency group with queued execution and no cancellation of a running writer. Publication has a separate lock spanning approval, registry writes, independent verification and completion; state writes acquire the shorter catalogue lock within that publication lifecycle. Monitoring uses the catalogue lock without waiting for publication approval. Every writer reloads the committed head inside its job and checks it again before publishing. Reject a changed head or a conflicting history rather than overwriting it. Recheck candidate freshness immediately before registry writes as already required.
+
+Create a draft, upload and read back its exact assets, then publish it with repository release immutability enabled. Only an immutable, published release whose asset hashes and predecessor agree with the committed history is a committed transaction. Release notes, titles and the repository's mutable latest-release designation do not carry authoritative state. Sequence gaps may represent interrupted drafts; a published fork, missing predecessor or conflicting sequence makes state unavailable. Never delete or replace committed history assets, and never infer success from an uncertain upload or publication response.
+
+Keep interrupted drafts for reconciliation. A retry may finish a draft only when its operation, payload, source and predecessor still match; a stale draft cannot supersede a newer committed snapshot. A new writer can allocate a later unused sequence without publishing an unrelated draft. Read back the committed snapshot before permitting a registry write or completion signature. A crash before a reservation commits therefore cannot expose an unregistered image; a crash after the reservation leaves an independently discoverable incomplete release. A crash after completion commits preserves the completed record and its pending evidence delivery.
+
+Register each monitoring attempt before scanning. An interrupted scan leaves a running attempt, which reports unavailable. Report GitHub retrieval or history-validation failures as unavailable without falling back to an older passing snapshot. The public view must also detect newer monitor workflow attempts whose state write failed, so a failed history update cannot leave an older assessment looking current. Verify this protocol through interruption and concurrency rehearsals before enabling the workflows; repository-hosted unit tests alone do not establish GitHub's live behavior.
+
 ## Delivery and acceptance
 
 Release readiness requires the build, retention, publication, consumer-verification and exact-digest monitoring paths to satisfy the acceptance cases below. Actual publication remains the maintainer's release step, consistent with [RELEASING.md](../../RELEASING.md).
@@ -148,26 +170,76 @@ With valid provenance and completion evidence, remove the SBOM attestation or su
 
 With all three release-identity checks passing, exercise stale, unavailable, vulnerable and no-longer-monitored assessments: the default gate still permits execution and reports each monitoring state separately. An older passing report must not hide a newer failed attempt. Wrong-digest status, an untrusted endpoint or inability to establish the latest record must report unavailable, even with a cached passing assessment. Verify the 48-hour age boundary without relying on a new scheduler run. These cases qualify status reporting; they do not add a current-scan requirement to the default execution gate.
 
+## Implementation tools
+
+The repository provides the following implementation behind explicit enablement variables. Hosted acceptance and per-profile release qualification remain pending; adding these workflows does not enable or publish releases.
+
+| Capability | Implementation |
+|---|---|
+| Profile scope and independent versions | [Release profiles](../../images/release-profiles.json) and [catalogue transitions](../../scripts/container_release.py) |
+| Prepare retained candidates and strict assessments | [Candidate preparation](../../scripts/prepare_container_release.py), [offline packaging checks](../../scripts/check_container_release_image.py) and [OCI validation](../../scripts/container_release_oci.py) |
+| Read and append immutable state snapshots | [Security history adapter](../../scripts/container_release_history.py) |
+| Verify provenance, SPDX and completion | [Consumer verifier](../../scripts/verify_container_release.py) |
+| Report current assessments independently | [Monitoring status reader](../../scripts/container_release_status.py) |
+| Publish an approved retained candidate and signed completion | [Release workflow](../../.github/workflows/container-image-release.yml), [publisher stages](../../scripts/container_release_publish.py), [registry adapter](../../scripts/container_release_registry.py) and [durable evidence](../../scripts/container_release_assets.py) |
+| Monitor exact public digests daily | [Monitor workflow](../../.github/workflows/container-image-monitor.yml) and [monitor stages](../../scripts/container_release_monitor.py) |
+| Deploy a public report without a data branch | [Pages workflow](../../.github/workflows/container-security-pages.yml), [exporter](../../scripts/export_container_security_page.py) and [browser status checks](status/status.js) |
+
+The history adapter's command line only exports validated state through `--output`; trusted workflow code uses its append API under the shared writer lock. Mutations require a stable operation identity and the original transition inputs when reconciling a retained draft. Readers require immutable releases, original asset hashes, complete ancestry and the actual tag's source commit. The current snapshot is bounded to 32 MiB, and incomplete retrieval fails closed.
+
+The consumer verifier takes independently selected identity fields in `--policy` and retained evidence in `--evidence`. It verifies all three attestations through GitHub by default, through retained signature bundles with `--bundles`, or through the digest's registry attestations with `--registry`. The initial tools accept the single runnable OCI manifests emitted by the candidate preparer; index inputs require additional qualification. Hyperlight policy additionally supplies `buildInputsSha256`; after all three attestations and the evidence index pass, the verifier pulls the selected digest and preserves the existing build-input and clean-source payload checks. Other profiles' consumer identity verification does not execute their image code.
+
+The command reports monitoring status separately and keeps a valid release identity result when status retrieval fails. It retrieves the committed catalogue and checks the monitor workflow's latest attempt, including reruns of older runs. A failed state write, incomplete history listing, changed monitor attempt or newer workflow without matching assessment evidence yields unavailable status. Known High/Critical findings from that same attempt remain visibly vulnerable even if the workflow later fails. Until the monitor is enabled and records assessments, current monitoring is unavailable.
+
+### Maintainer setup and first use
+
+1. Keep immutable releases enabled. The publisher and monitor refuse to accept mutable published history or evidence. Reserve the `security-history-*`, `image-<profile>-v<version>` and `image-monitor-*` release/tag namespaces for these workflows; do not manually publish interrupted drafts.
+2. Configure the `container-release` environment with required maintainer reviewers and deployment restrictions allowing protected `main` only. The workflow displays the candidate manifest, configuration, source and evidence hash before this gate, and retains GitHub's approval record. A release handles one profile per dispatch; a global publication queue currently serializes all profiles, while short catalogue locks allow monitoring to continue during approval waits.
+3. Establish public visibility and repository access for each GHCR package before release acceptance. New GHCR packages default to private; the read-only qualification stage requires an anonymous pull and fails until public access works. A retry uses the original candidate bytes. Do not bootstrap this by publishing an unrelated image under a reserved release version.
+4. Configure this repository's GitHub Pages source as **GitHub Actions**, with the `github-pages` deployment environment. This report occupies the repository's Pages site. Confirm that it will not replace another site before enabling it.
+5. After reviewing these prerequisites, enable `CONTAINER_IMAGE_RELEASES_ENABLED`, `CONTAINER_IMAGE_MONITOR_ENABLED` and `CONTAINER_IMAGE_PAGES_ENABLED` with the string value `true` when their respective workflows are ready for maintainer-operated qualification. These variables default to disabled. Dispatch the image release from `main`, initially with version `0.1.0`, inspect its retained evidence and approve the protected environment. Actual dispatch, approval and irreversible publication remain maintainer actions.
+6. Complete the acceptance scenarios below before advertising published releases. The checked-in tests cover local state transitions and simulated API failures; they do not establish GitHub's hosted signing, registry visibility, writer concurrency, release immutability, Pages deployment or all twelve profiles' live behavior.
+
+### Recovery and monitoring operations
+
+Use **Re-run all jobs** for monitor retries. Each attempt records a new running outcome before scanning, and scan results from a previous attempt cannot be relabeled as a fresh assessment. Monitor workers have read-only permissions, scan batches of six exact digests without executing entrypoints, and retain their raw reports in immutable `image-monitor-<run>-<attempt>` release assets before the catalogue records outcomes. Missing workers become unavailable; API or evidence delivery failures leave the running attempt visible. Abandoned candidates retire only after explicit registry responses establish that both their digest and version tag are absent. Authentication failures and unknown registry responses do not prove absence.
+
+Once enabled, monitor failures also use the repository's scheduled-workflow failure tracker: a separate job opens one tracking issue or comments on the existing open issue with the failed run. Scanner and catalogue jobs do not receive issue-writing permissions. Successful runs do not automatically close the tracker; a maintainer verifies recovery first.
+
+Release reruns recover the original retained OCI artifact. Missing or expired bytes before completion permanently retire an existing reservation; rebuilding requires a new dispatch and unused version. After completion, delivery can recover from durable release assets without the OCI artifact, preserving the original completion and supersession times. Evidence files are never overwritten. The evidence index is uploaded last and provides the recovery checkpoint for a fully retained qualification. A partial upload with conflicting bytes or an incomplete starter asset fails closed; retain its evidence, investigate the failed stage and either retry with the original qualified artifact or explicitly abandon the incomplete version. Never abandon a committed completion.
+
+The preparation index binds the reports displayed for approval. If a same-bytes refresh is required, originals are retained as `approval-<filename>` while the unprefixed files contain the publication assessment; the final signed evidence index covers both sets. Durable evidence assets are bounded below GitHub's 2 GiB per-file limit and streamed during upload/download. Actions artifacts are working copies retained for 30 days, not the permanent evidence store.
+
+The Pages badge says **security evidence: view report**. A static cached SVG cannot reliably establish that a monitor has not failed since its generation. The report verifies the deployed snapshot's exact hash, immutable release ancestry, source tag and latest monitor attempt against GitHub at view time; it shows the verification time, recalculates scan age locally, and provides an explicit refresh button. Stale deployments, API rate limits and retrieval failures show unavailable status. Its aggregate clean statement also requires completed evidence delivery for every active image. This page does not replace cryptographic consumer verification.
+
+### Hosted acceptance still required
+
+Rehearse a digest-preserving push, native provenance/SPDX/completion signing, anonymous verification on a fresh read-only runner and immutable evidence read-back for every released profile. Exercise interruptions before reservation, after push, during evidence upload, after the completion commit and during bundle delivery; verify that reruns neither rebuild reserved versions nor reset completed history. Exercise concurrent release and monitor writers, stale drafts, unavailable scanners, unfixed High/Critical findings, stopped schedules, expired artifacts, superseded monitoring expiry and stale Pages deployments. Record the resulting run URLs and exact digests before enabling consumer-facing release claims. Packaging probes do not qualify AKS deployments or establish compatibility with a Python package release; those claims require separate recorded acceptance evidence.
+
 ## References
 
 - [GitHub Container Registry: linking packages, visibility and digest pulls](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 - [GitHub artifact attestations: container provenance and SBOM subjects](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations).
 - [GitHub CLI verification policy flags](https://cli.github.com/manual/gh_attestation_verify).
 - [GitHub custom attestation predicates](https://github.com/actions/attest#custom-attestation).
+- [Immutable GitHub Releases and assembling assets before publication](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases).
+- [Deploying GitHub Pages directly from Actions artifacts](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
 - [Existing isolated Hyperlight signing rehearsal](../../.github/workflows/hyperlight-provenance.yml).
 
 ## Status
 
-The design is accepted; implementation is pending. No images have been published or signed under this contract, and no release verification results are claimed. The existing candidate checks do not implement the release publisher or published-digest monitor.
+The design and storage decisions are accepted. Publisher, monitor, durable evidence, consumer-verification and Pages workflows are implemented behind explicit enablement variables. Hosted release acceptance, repository/environment setup and per-profile qualification remain pending. No images have been published or signed under this contract, and no end-to-end release verification results are claimed.
 
 | Decision | State | Tracking |
 |---|---|---|
 | Public GHCR destination and repository linkage | Pending registry setup for releases | untracked |
-| Strict High/Critical gate for publication | Pending publisher integration; candidate checks already enforce this threshold | untracked |
-| 1: Independent per-profile versions and immutable release identities | Pending implementation | untracked |
-| 2: Twelve Linux/amd64 profiles and assessed-manifest scope | Pending release catalogue and index validation | untracked |
-| 3: Maintainer-controlled publication, per-profile serialization and interrupted-attempt lifecycle | Pending build/retain/publish/verify workflow and protected environment | untracked |
-| 4: Digest-bound provenance, SBOM, signed completion records, durable evidence and consumer verification | Pending implementation and signing rehearsal | untracked |
-| 5: Daily exact-digest monitoring, superseded-release window and public-candidate monitoring | Pending catalogue and scheduled monitor | untracked |
-| 6: Publication scan age, public assessment freshness and failure visibility | Pending publisher and public-status enforcement | untracked |
+| Strict High/Critical gate for publication | Implemented, including unfixed findings; pending hosted qualification | untracked |
+| 1: Independent per-profile versions and immutable release identities | Implemented; pending hosted qualification | untracked |
+| 2: Twelve Linux/amd64 profiles and assessed-manifest scope | Scope and single-manifest validation implemented; pending index qualification | untracked |
+| 3: Maintainer-controlled publication, per-profile serialization and interrupted-attempt lifecycle | Implemented with global publication serialization; pending protected environment and hosted recovery qualification | untracked |
+| 4: Digest-bound provenance, SBOM, signed completion records, durable evidence and consumer verification | Implemented; pending hosted signing and delivery rehearsal | untracked |
+| 5: Daily exact-digest monitoring, superseded-release window and public-candidate monitoring | Implemented; pending enablement and hosted qualification | untracked |
+| 6: Publication scan age, public assessment freshness and failure visibility | Implemented; pending hosted qualification | untracked |
+| 7: GitHub-hosted release evidence and public status without a data branch | Implemented; pending Pages setup and hosted deployment | untracked |
+| 8: Immutable security-history snapshots and serialized state writers | Implemented; pending hosted concurrency rehearsal | untracked |
 | Delivery acceptance and per-profile live qualification | Pending rehearsal and recorded results | untracked |

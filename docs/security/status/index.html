@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' https://api.github.com; img-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Container security evidence · maf-extensions</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+  body { max-width: 76rem; margin: 3rem auto; padding: 0 1.5rem; }
+  h1 { line-height: 1.15; font-size: clamp(2rem, 5vw, 3.5rem); letter-spacing: -.04em; }
+  a { color: light-dark(#1557a0, #8dbfff); }
+  .intro { max-width: 52rem; }
+  #summary { border: 1px solid; padding: 1rem; margin: 2rem 0 1rem; }
+  button { padding: .5rem 1rem; cursor: pointer; font: inherit; }
+  .table { overflow: auto; margin: 2rem 0; }
+  table { border-collapse: collapse; width: 100%; text-align: left; }
+  th, td { padding: .8rem; border-bottom: 1px solid #8886; vertical-align: top; }
+  code { font-size: .8rem; overflow-wrap: anywhere; }
+  .clean { color: light-dark(#176432, #87d39b); }
+  .vulnerable { color: light-dark(#a32121, #ffa4a4); }
+</style>
+<main>
+  <p><a href="https://github.com/sokolaidev/maf-extensions">maf-extensions</a> / Security evidence</p>
+  <h1>Know which image you use.</h1>
+  <p class="intro">This report shows release delivery and known High/Critical vulnerabilities for exact container digests. It checks the deployed catalogue against GitHub's immutable release history and latest monitor attempt when you open or refresh it. A clean scan does not prove the absence of malware, backdoors, or unknown vulnerabilities.</p>
+  <div id="summary" role="status">Monitoring status unavailable until current evidence is checked.</div>
+  <p id="checked">No live verification yet.</p>
+  <button id="refresh" type="button">Refresh evidence</button>
+  <noscript><p>JavaScript is required to check current monitoring status. Download and verify the release evidence using the repository's consumer verifier.</p></noscript>
+  <div class="table"><table>
+    <thead><tr><th>Image / version</th><th>Release delivery</th><th>Monitoring</th><th>Latest assessment</th><th>Known findings</th></tr></thead>
+    <tbody id="releases"></tbody>
+  </table></div>
+  <p>Monitoring runs daily, assessments expire after 48 hours, and superseded completed releases remain monitored for 90 days. Incomplete and abandoned public candidates remain visible. Previously known findings remain listed even if a later scan cannot complete.</p>
+  <p><a href="https://github.com/sokolaidev/maf-extensions/blob/main/docs/security/container-image-releases.md">Release contract and consumer verification</a> · <a href="https://github.com/sokolaidev/maf-extensions/actions/workflows/container-image-monitor.yml">Monitor runs</a> · <a href="./catalogue.json">Deployed catalogue snapshot</a></p>
+  <p>Release identity and current monitoring are separate checks. This page does not verify image signatures or authorize execution.</p>
+</main>
+<script src="./status.js" defer></script>
+</html>
