@@ -257,26 +257,32 @@ async def _run_matrix(
     all_records: list[TurnRecord] = []
     summaries: list[CellSummary] = []
 
+    identities: dict[tuple[str, str], str] = {}
+    resolved: list[tuple[str, str, str]] = []
     for selector in providers:
         provider, model_override = parse_provider_selector(selector)
         model = model_override or "dry-run"
         if not args.dry_run:
-            if selector not in runtimes:
-                try:
-                    runtimes[selector] = build_provider(
-                        provider,
-                        temperature=None if args.no_temperature else args.temperature,
-                        response_max_tokens=args.response_max_tokens,
-                        model=model_override,
-                    )
-                except Exception as exc:
-                    # Construction happens outside the per-turn error handling, so an
-                    # unset variable or a missing credential would otherwise abort every
-                    # remaining provider's cells along with this one.
-                    print(f"!! skipping {selector}: {type(exc).__name__}: {exc}", flush=True)
-                    continue
+            try:
+                runtimes[selector] = build_provider(
+                    provider,
+                    temperature=None if args.no_temperature else args.temperature,
+                    response_max_tokens=args.response_max_tokens,
+                    model=model_override,
+                )
+            except Exception as exc:
+                print(f"!! skipping {selector}: {type(exc).__name__}: {exc}", flush=True)
+                continue
             model = runtimes[selector].model
+        identity = (provider, model)
+        if identity in identities:
+            raise SystemExit(
+                f"Duplicate resolved provider/model: {identities[identity]!r} and {selector!r}."
+            )
+        identities[identity] = selector
+        resolved.append((selector, provider, model))
 
+    for selector, provider, model in resolved:
         for size in sizes:
             for strategy_name in strategies:
                 for repeat in range(1, args.repeats + 1):

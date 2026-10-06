@@ -58,7 +58,9 @@ OLLAMA_MODEL
 
 **Pin `OPENROUTER_PROVIDER_ORDER` if you use OpenRouter.** It dispatches to an upstream provider that can change between requests, and a different upstream is a different cache; without the pin you are measuring the router. Setting it also disables fallbacks.
 
-Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells. If no cells run, the command exits with failure and writes no summary table. Duplicate selections and unknown summarizer providers are rejected before setup; different model-qualified selectors on one provider remain valid.
+Advisor and summary selections must include the `none` baseline before measurement. Recall-based CLIs reject negative filler counts or sizes and counts below the scenario minimum instead of silently changing the archived workload.
+
+Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells. If no cells run, the command exits with failure and writes no summary table. Duplicate selections and unknown summarizer providers are rejected before setup; different resolved models on one provider remain valid. All selected providers are resolved before any cell runs, so aliases of the same provider/model pair cannot share a cache namespace.
 
 ### What each provider reports
 
@@ -130,9 +132,9 @@ Defaults are as `cachebench_live --help` prints them. Every constructor paramete
 | `--tool-result-tokens` | 4,000 | absolute size of each tool result: the fixed payload. **Read only under `--tool-share 0`**, since `--tool-share` wins when both are given |
 | `--tool-share` | 0.6 | share of the seeded conversation that is tool-result text, deriving the result size from the fill target so the payload scales with the window. **Wins when both are given**; `0` selects the fixed path above. Needs `--fill`: under `--fill 0` it is refused if asked for and off if it was not. |
 | `--assumed-reply-tokens` | 150 | how large the model's own replies are assumed to be when solving for the fill. The one term the solver cannot compute, and it is per model: ~150 on `gpt-5.4-mini`, ~602 on `gpt-5.6-luna`. Measure it from a one-seed probe before sizing a matrix on a new model |
-| `--tool-turns` | 6 | tool-call groups to plant. Must exceed `--keep-last-tool-groups` or tool-oriented compaction never fires |
-| `--filler-tool-turns` | 0 | extra tool calls whose results carry no codes: bulk without anything to remember |
-| `--markers-per-tool` | 2 | verifiable codes each tool result carries. More codes raise the resolution of the accuracy measure and make narration a weaker substitute for preservation |
+| `--tool-turns` | 6 | tool-call groups to plant (minimum 3). Must exceed `--keep-last-tool-groups` or tool-oriented compaction never fires |
+| `--filler-tool-turns` | 0 | non-negative count of extra tool calls whose results carry no codes: bulk without anything to remember |
+| `--markers-per-tool` | 2 | verifiable codes each tool result carries (minimum 1). More codes raise the resolution of the accuracy measure and make narration a weaker substitute for preservation |
 
 **Absolute is right within one window and wrong across two.** 3,500-token results are 6% of a 60,000-token context and 3% of a 120,000-token one, so a sweep over window sizes with `--tool-result-tokens` is a sweep over two variables. That disabled a strategy once: the anchored family shortens each banded result to a share of the *ceiling*, so its allowance grew from ~2,900 to ~5,900 tokens while the results stayed at 3,500, and at 120,000 it planned nothing while its rows were read as measurements. `--tool-share` holds the proportions.
 
@@ -229,7 +231,7 @@ The two need different numbers of attempts to be equally settled, which is why t
 | flag | |
 | --- | --- |
 | `--price-input` | input price per million tokens |
-| `--price-cached` | cached-read price per million tokens |
+| `--price-cached` | cached-read price per million tokens; requires `--price-input`, as do other individual price overrides |
 | `--price-output` | output price per million tokens |
 
 **Only OpenRouter is auto-discovered; everywhere else these must be passed** or the money columns have nothing to work from. Pass the same currency throughout — the tool does no conversion.
@@ -428,7 +430,7 @@ Two independent measurement channels, and the output shows both:
 | `hit%` | what the provider actually served from cache |
 | `real%` | `hit%` ÷ `reuse%`. Below 100% means misses compaction does *not* explain: eviction, TTL expiry, minimum-size floors, intermittent engagement, or upstream re-routing. Deliberately not `cached ÷ reusable_tokens` — those totals use different tokenizers and dividing them halves the answer. Above 1.0 is possible and means partial-message token-level matching |
 | `breaks` | turns where the prompt was not a pure extension of the previous one. Each is a forced re-prefill |
-| `no_in` | turns that reported cached tokens but no input count. Some providers drop `input_token_count` on a hit; when this is non-zero, `hit%` is suppressed rather than divided by a denominator the provider never sent |
+| `no_in` | successful non-empty requests with missing or non-positive input usage. Some providers drop `input_token_count` on a hit; when this is non-zero, `hit%` is suppressed rather than divided by a denominator the provider never sent |
 | `eff_in@<r>` | fresh tokens plus cached tokens priced at `--cache-read-ratio`. Set it to your provider's real discount to compare strategies on real cost |
 
 `in_tok` should be similar across repeats for a given strategy. Scripts have the same structure and a fixed-width salt, whose tokenization can still vary; compare input counts when interpreting variation in `cached`. The baseline to compare against is always `none`: it sends the most tokens and breaks the prefix zero times.
@@ -479,4 +481,3 @@ Tests are offline; the provider call is stubbed. The [testing record](research/t
 | Per-request long-context pricing and cache-write rates | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Retrying the summariser path on rate limits rather than counting a failure | Not started | untracked |
 | Fact retention measured for the user half of a conversation | Not started | untracked — the planted facts live in tool results |
-

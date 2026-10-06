@@ -10,7 +10,13 @@ from collections.abc import Sequence
 from agent_framework import Message, apply_compaction
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
-from ._cli_selection import select_standalone_strategies, standalone_strategy_names
+from ._cli_selection import (
+    require_baseline,
+    select_standalone_strategies,
+    standalone_strategy_names,
+    validate_pricing_options,
+    validate_recall_counts,
+)
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
@@ -100,6 +106,7 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
     Raises:
         SystemExit: If prices are neither supplied nor discoverable.
     """
+    validate_pricing_options(args)
     if args.price_input is not None:
         return ModelPricing(
             args.price_input,
@@ -271,6 +278,9 @@ async def run_summary(args: argparse.Namespace) -> int:
         A process exit code.
     """
     strategies = select_standalone_strategies(args.strategies)
+    require_baseline(strategies)
+    validate_pricing_options(args)
+    validate_recall_counts(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

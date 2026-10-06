@@ -109,3 +109,26 @@ async def test_narration_duplicates_fail_before_provider_setup(
     monkeypatch.setitem(run.__globals__, "build_provider", unexpected)
     with pytest.raises(SystemExit, match="Duplicate"):
         await run(namespace["build_parser"]().parse_args(["azure", option, selection]))
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--tool-turns", "2"),
+        ("--markers-per-tool", "0"),
+        ("--filler-turns", "-1"),
+        ("--filler-tokens", "-1"),
+    ],
+)
+async def test_narration_rejects_clamped_workload_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str, value: str
+) -> None:
+    namespace = runpy.run_path(str(SAMPLES / "probe_narration.py"))
+    run = namespace["run"]
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid workload must fail before provider setup")
+
+    monkeypatch.setitem(run.__globals__, "build_provider", unexpected)
+    with pytest.raises(SystemExit, match=option):
+        await run(namespace["build_parser"]().parse_args(["azure", option, value]))

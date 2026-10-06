@@ -116,15 +116,10 @@ def token_counts(messages: Sequence[Message], *, tokenizer: TokenizerProtocol) -
 
 
 def _has_usable_usage(record: TurnRecord) -> bool:
-    """Return whether a successful turn reported usage that can be believed.
-
-    A provider occasionally returns HTTP 200 with an empty or zeroed usage block. Summing
-    that as a real measurement silently understates a cell's input tokens — observed once
-    on a 200,341-token prompt that reported ``input_token_count`` of 0 with no error, which
-    swallowed 200k tokens out of the total. A non-empty prompt billing zero input is not a
-    real zero, so those turns are excluded from totals and counted instead.
-    """
-    return not (record.sent_tokens_local > 0 and not record.input_tokens)
+    """Require positive reported input for a non-empty request."""
+    if record.input_tokens is not None and record.input_tokens < 0:
+        return False
+    return record.sent_tokens_local <= 0 or (record.input_tokens or 0) > 0
 
 
 def clamp_cached_tokens(input_tokens: int, cached_tokens: int | None) -> int:

@@ -9,7 +9,11 @@ from collections.abc import Sequence
 
 from agent_framework import Message, apply_compaction
 
-from ._cli_selection import select_standalone_strategies, standalone_strategy_names
+from ._cli_selection import (
+    select_standalone_strategies,
+    standalone_strategy_names,
+    validate_recall_counts,
+)
 from ._metrics import serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
@@ -186,6 +190,7 @@ async def run_recall(args: argparse.Namespace) -> int:
         A process exit code.
     """
     strategies = select_standalone_strategies(args.strategies)
+    validate_recall_counts(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

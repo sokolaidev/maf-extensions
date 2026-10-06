@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from ._advisor import ModelPricing, Verdict, advise, fetch_openrouter_pricing
-from ._cli_selection import select_standalone_strategies, standalone_strategy_names
+from ._cli_selection import (
+    require_baseline,
+    select_standalone_strategies,
+    standalone_strategy_names,
+    validate_pricing_options,
+)
 from ._metrics import summarize_cell
 from ._providers import (
     ProviderRuntime,
@@ -108,6 +113,7 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
     Raises:
         SystemExit: If prices are neither supplied nor discoverable.
     """
+    validate_pricing_options(args)
     if args.price_input is not None:
         return ModelPricing(
             args.price_input,
@@ -250,7 +256,9 @@ async def run_advice(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
-    select_standalone_strategies(args.strategies)
+    strategies = select_standalone_strategies(args.strategies)
+    require_baseline(strategies)
+    validate_pricing_options(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

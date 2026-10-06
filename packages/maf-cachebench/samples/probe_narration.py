@@ -42,7 +42,7 @@ from maf_cachebench import (
     score_samples,
     wants_client_side_history,
 )
-from maf_cachebench._cli_selection import validate_unique_selection
+from maf_cachebench._cli_selection import validate_recall_counts, validate_unique_selection
 
 #: Points of correctness range above which a control cannot be ranked against. Matches the
 #: limit the live run itself enforces, so a configuration this probe passes is one that run
@@ -187,6 +187,7 @@ async def run(args: argparse.Namespace) -> int:
         A process exit code. Non-zero when no configuration was stable enough to measure
         under, which is a result worth failing a script on.
     """
+    validate_recall_counts(args)
     if args.repeats <= 0:
         raise SystemExit("--repeats must be greater than 0.")
     narrations = [item.strip() for item in args.narrations.split(",") if item.strip()]

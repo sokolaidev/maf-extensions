@@ -500,3 +500,137 @@ async def test_summary_bounds_cache_per_call(
     assert calls > 1
     assert outcome.cached_tokens == expected
     assert outcome.cost == pytest.approx(((calls * 100 - expected) + expected * 0.1) / 1_000_000)
+
+
+@pytest.mark.parametrize("module_name", ["_advise_cli", "_summary_cli", "_live_cli"])
+@pytest.mark.parametrize("value", ["0", "1"])
+async def test_orphan_cached_price_fails_before_setup(
+    monkeypatch: pytest.MonkeyPatch, module_name: str, value: str
+) -> None:
+    import importlib
+
+    module = importlib.import_module(f"maf_cachebench.{module_name}")
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Orphan prices must fail before provider or catalogue setup")
+
+    for name in ("build_provider", "build_tokenizer", "fetch_openrouter_pricing"):
+        monkeypatch.setattr(module, name, unexpected)
+    args = module.build_parser().parse_args(["openrouter:model", "--price-cached", value])
+    run = getattr(
+        module,
+        {
+            "_advise_cli": "run_advice",
+            "_summary_cli": "run_summary",
+            "_live_cli": "run_live_comparison",
+        }[module_name],
+    )
+    with pytest.raises(SystemExit, match="--price-cached needs --price-input"):
+        await run(args)
+
+
+@pytest.mark.parametrize("module,run", [COMMANDS[0], COMMANDS[2]])
+async def test_recommendation_requires_baseline_before_setup(
+    monkeypatch: pytest.MonkeyPatch, module: Any, run: Any
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Missing baseline must fail before setup")
+
+    monkeypatch.setattr(module, "build_provider", unexpected)
+    with pytest.raises(SystemExit, match="'none' baseline"):
+        await run(module.build_parser().parse_args(["azure", "--strategies", "truncation"]))
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--tool-turns", "0"),
+        ("--tool-turns", "2"),
+        ("--markers-per-tool", "0"),
+        ("--filler-tool-turns", "-1"),
+        ("--filler-turns", "-1"),
+        ("--filler-tokens", "-1"),
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_live_rejects_clamped_workload_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str, value: str, dry_run: bool
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid counts must fail before tokenizer or provider setup")
+
+    monkeypatch.setattr(_live_cli, "build_tokenizer", unexpected)
+    argv = ["azure", option, value] + (["--dry-run"] if dry_run else [])
+    with pytest.raises(SystemExit, match=option):
+        await _live_cli.run_live_comparison(_live_cli.build_parser().parse_args(argv))
+
+
+@pytest.mark.parametrize("module,run", [COMMANDS[1], COMMANDS[2]])
+@pytest.mark.parametrize("option", ["--filler-turns", "--filler-tokens"])
+async def test_standalone_rejects_negative_workload_before_setup(
+    monkeypatch: pytest.MonkeyPatch, module: Any, run: Any, option: str
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid counts must fail before provider setup")
+
+    monkeypatch.setattr(module, "build_provider", unexpected)
+    with pytest.raises(SystemExit, match=option):
+        await run(module.build_parser().parse_args(["azure", option, "-1"]))
+
+
+@pytest.mark.parametrize("selection", ["azure,azure:default", "azure:default,azure"])
+async def test_replay_rejects_resolved_aliases_before_first_cell(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, selection: str
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(_cli, "build_provider", lambda *a, **k: SimpleNamespace(model="default"))
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Resolved aliases must fail before any cells or paid calls")
+
+    monkeypatch.setattr(_cli, "build_preset", unexpected)
+    args = _cli.build_parser().parse_args(
+        [
+            "--providers",
+            selection,
+            "--strategies",
+            "none",
+            "--sizes",
+            "small",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+    with pytest.raises(SystemExit, match="Duplicate resolved provider/model"):
+        await _cli.run_benchmark(args)
+
+
+async def test_replay_distinct_resolved_models_keep_distinct_cells(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        _cli, "build_provider", lambda *a, **k: SimpleNamespace(model=k["model"] or "default")
+    )
+    monkeypatch.setattr(_cli, "ProviderCaller", lambda *a, **k: _cli._DryRunCaller())
+    args = _cli.build_parser().parse_args(
+        [
+            "--providers",
+            "azure,azure:other",
+            "--strategies",
+            "none",
+            "--sizes",
+            "small",
+            "--out",
+            str(tmp_path),
+            "--run-id",
+            "resolved",
+        ]
+    )
+    assert await _cli.run_benchmark(args) == 0
+    with (tmp_path / "resolved-summary.csv").open(encoding="utf-8", newline="") as stream:
+        assert {row["model"] for row in csv.DictReader(stream)} == {"default", "other"}

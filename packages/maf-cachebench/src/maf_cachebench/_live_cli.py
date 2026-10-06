@@ -31,7 +31,12 @@ from maf_compaction import (
 )
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
-from ._cli_selection import validate_summarizer_selector, validate_unique_selection
+from ._cli_selection import (
+    validate_pricing_options,
+    validate_recall_counts,
+    validate_summarizer_selector,
+    validate_unique_selection,
+)
 from ._fill import ASSUMED_REPLY_TOKENS, FillPlan, plan_fill
 from ._live import (
     AGENT_KINDS,
@@ -917,6 +922,7 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
         raise SystemExit(
             "--long-context-threshold and --price-long-input go together; set both or neither."
         )
+    validate_pricing_options(args)
     if args.price_input is not None:
         output = args.price_output if args.price_output is not None else args.price_input
         long_context = None
@@ -947,11 +953,6 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
         raise SystemExit(
             "--long-context-threshold needs --price-input: catalogue rates carry no "
             "long-context tier."
-        )
-    if args.price_cache_write is not None:
-        raise SystemExit(
-            "--price-cache-write needs --price-input: the catalogue rates carry no "
-            "cache-write price."
         )
     if provider == "openrouter":
         try:
@@ -3976,6 +3977,8 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         raise SystemExit(
             "A provider is required, unless --from-jsonl is rebuilding a table from a results file."
         )
+    validate_recall_counts(args)
+    validate_pricing_options(args)
     for name in ("repeats", "probe_repeats", "combined_repeats"):
         if getattr(args, name) <= 0:
             raise SystemExit(f"--{name.replace('_', '-')} must be greater than 0.")
