@@ -99,6 +99,59 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
     }
 
 
+def run_artifacts(client: GitHub, run_id: str) -> list[dict[str, Any]]:
+    """Require the complete, bounded scan artifact listing."""
+    listing = decode(
+        client.request(f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")
+    )
+    if listing["total_count"] != len(listing["artifacts"]):
+        raise ValueError("Incomplete candidate artifact listing")
+    return listing["artifacts"]
+
+
+def newer_profiles(client: GitHub, run: dict[str, Any]) -> set[str]:
+    """Reject superseded scan events even when no issue exists to retain their ordering."""
+    runs = {}
+    total = None
+    # Unfiltered listing avoids GitHub's 1,000-result cap on run searches.
+    for page in range(1, 10_001):
+        listing = decode(
+            client.request(
+                f"repos/{REPOSITORY}/actions/workflows/image-security.yml/runs?per_page=100&page={page}"
+            )
+        )
+        if total is None:
+            total = listing["total_count"]
+        if listing["total_count"] != total:
+            raise ValueError("Scan history changed during retrieval")
+        batch = listing["workflow_runs"]
+        for item in batch:
+            if item["id"] in runs:
+                raise ValueError("Duplicate scan history entry")
+            runs[item["id"]] = item
+        if len(batch) < 100:
+            break
+    else:
+        raise ValueError("Scan history pagination exceeded its bound")
+    if len(runs) != total or run["id"] not in runs:
+        raise ValueError("Incomplete scan history")
+    result = set()
+    for other in runs.values():
+        if (
+            other["id"] == run["id"]
+            or other.get("head_repository", {}).get("full_name") != REPOSITORY
+            or other.get("head_branch") != "main"
+            or other.get("event") not in {"schedule", "workflow_dispatch"}
+            or other.get("path") != ".github/workflows/image-security.yml"
+            or other.get("status") != "completed"
+            or timestamp(other["updated_at"]) < timestamp(run["updated_at"])
+        ):
+            continue
+        names = {artifact["name"] for artifact in run_artifacts(client, str(other["id"]))}
+        result.update(profile for profile in PROFILES if f"image-security-{profile}" in names)
+    return result
+
+
 def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
     """Read artifacts only from completed main-branch scans in this repository."""
     if not run_id:
@@ -116,13 +169,11 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
     if run["status"] != "completed" or run["path"] != ".github/workflows/image-security.yml":
         return {}
     result = {}
-    listing = decode(
-        client.request(f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")
-    )
-    artifacts = listing["artifacts"]
-    if listing["total_count"] != len(artifacts):
-        raise ValueError("Incomplete candidate artifact listing")
+    artifacts = run_artifacts(client, run_id)
+    superseded = newer_profiles(client, run)
     for profile in PROFILES:
+        if profile in superseded:
+            continue
         matches = [a for a in artifacts if a["name"] == f"image-security-{profile}"]
         if not matches:
             continue

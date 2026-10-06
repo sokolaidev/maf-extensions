@@ -479,6 +479,11 @@ def test_ci_has_no_automatic_image_builds_and_tracker_cannot_publish():
     }
     assert workflow["concurrency"]["cancel-in-progress"] is False
     job = workflow["jobs"]["reconcile"]
+    assert job["concurrency"] == {
+        "group": "container-security-catalogue",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
     assert job["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
     assert "head_repository.full_name == github.repository" in job["if"]
     assert job["steps"][0]["with"]["ref"] == "${{ github.sha }}"
@@ -650,6 +655,7 @@ def test_dry_run_does_not_write_issues(reporter, monkeypatch):
 @pytest.fixture
 def scan_artifact(monkeypatch):
     run = {
+        "id": 123,
         "head_branch": "main",
         "head_repository": {"full_name": tracker.REPOSITORY},
         "head_sha": SOURCE,
@@ -688,6 +694,8 @@ def scan_artifact(monkeypatch):
     }
 
     def request(_self, endpoint):
+        if "/workflows/image-security.yml/runs?" in endpoint:
+            return encode({"total_count": 1, "workflow_runs": [run]})
         return encode(
             {"total_count": 1, "artifacts": [artifact]} if "/artifacts?" in endpoint else run
         )
@@ -736,3 +744,89 @@ def test_expired_scan_artifact_does_not_erase_release_reasons(scan_artifact, tmp
     artifact["expired"] = True
     with pytest.raises(ValueError, match="expired"):
         tracker.candidates(GitHub(), "123", tmp_path)
+
+
+def test_no_issue_observation_still_prevents_older_scan_creating_request(
+    scan_artifact, monkeypatch, tmp_path
+):
+    run, artifact, files = scan_artifact
+    run["updated_at"] = "2026-01-04T00:00:00Z"
+    observed = tracker.candidates(GitHub(), "123", tmp_path / "newer")["diagram"]
+    released = RELEASED | {"components": observed["components"]}
+    assert optional_desired(observed=observed, released=released) is None
+    newer = copy.deepcopy(run)
+    run.update(id=122, updated_at="2026-01-03T00:00:00Z")
+    files["sbom.syft.json"]["artifacts"][0]["version"] = "3"
+
+    def request(_self, endpoint):
+        if "/workflows/image-security.yml/runs?" in endpoint:
+            return encode({"total_count": 2, "workflow_runs": [newer, run]})
+        if "/artifacts?" in endpoint:
+            return encode({"total_count": 1, "artifacts": [artifact]})
+        return encode(run)
+
+    monkeypatch.setattr(GitHub, "request", request)
+    older = tracker.candidates(GitHub(), "122", tmp_path / "older")
+    assert optional_desired(observed=older.get("diagram"), released=released) is None
+
+
+@pytest.mark.parametrize(
+    "updates,profile,expected",
+    [
+        ({}, "diagram", {"diagram"}),
+        ({"updated_at": "2026-01-02T00:00:00Z"}, "diagram", {"diagram"}),
+        ({"updated_at": "2026-01-01T00:00:00Z"}, "diagram", set()),
+        ({"conclusion": "failure"}, "diagram", {"diagram"}),
+        ({}, "bicep", {"bicep"}),
+        ({"head_branch": "topic"}, "diagram", set()),
+        ({"head_repository": {"full_name": "other/repo"}}, "diagram", set()),
+        ({"status": "in_progress"}, "diagram", set()),
+        ({"event": "pull_request"}, "diagram", set()),
+        ({"path": ".github/workflows/other.yml"}, "diagram", set()),
+    ],
+)
+def test_scan_history_supersession_is_scoped_to_trusted_completed_profiles(
+    scan_artifact, monkeypatch, updates, profile, expected
+):
+    run, _, _ = scan_artifact
+    newer = run | {"id": 124, "updated_at": "2026-01-03T00:00:00Z"} | updates
+
+    def request(_self, endpoint):
+        if "/workflows/" in endpoint:
+            return encode({"total_count": 2, "workflow_runs": [run, newer]})
+        assert endpoint.endswith("/runs/124/artifacts?per_page=100")
+        return encode(
+            {
+                "total_count": 1,
+                "artifacts": [{"name": f"image-security-{profile}", "expired": True}],
+            }
+        )
+
+    monkeypatch.setattr(GitHub, "request", request)
+    assert tracker.newer_profiles(GitHub(), run) == expected
+
+
+@pytest.mark.parametrize("damage", ["none", "missing", "duplicate", "changed-count"])
+def test_scan_history_paginates_and_rejects_incomplete_ordering(scan_artifact, monkeypatch, damage):
+    run, _, _ = scan_artifact
+    first = [run | {"id": index, "status": "in_progress"} for index in range(200, 300)]
+    seen = []
+
+    def request(_self, endpoint):
+        seen.append(endpoint)
+        page = int(endpoint.rsplit("=", 1)[1])
+        if page == 1:
+            return encode({"total_count": 101, "workflow_runs": first})
+        assert page == 2
+        rows = [] if damage == "missing" else [first[0] if damage == "duplicate" else run]
+        return encode(
+            {"total_count": 102 if damage == "changed-count" else 101, "workflow_runs": rows}
+        )
+
+    monkeypatch.setattr(GitHub, "request", request)
+    if damage == "none":
+        assert tracker.newer_profiles(GitHub(), run) == set()
+    else:
+        with pytest.raises(ValueError, match="history"):
+            tracker.newer_profiles(GitHub(), run)
+    assert len(seen) == 2
