@@ -132,3 +132,197 @@ async def test_narration_rejects_clamped_workload_before_setup(
     monkeypatch.setitem(run.__globals__, "build_provider", unexpected)
     with pytest.raises(SystemExit, match=option):
         await run(namespace["build_parser"]().parse_args(["azure", option, value]))
+
+
+@pytest.mark.parametrize("entry", ["replay", "advisor", "sample"])
+@pytest.mark.parametrize("cached", [None, 0, 50])
+async def test_replay_requires_every_turn_cache_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entry: str, cached: int | None
+) -> None:
+    from maf_cachebench import ProviderRuntime, TurnRecord, _advise_cli, _cli, summarize_cell
+
+    if entry == "sample":
+        namespace = runpy.run_path(str(SAMPLES / "run_benchmark.py"))["main"].__globals__
+    else:
+        namespace = vars(_cli if entry == "replay" else _advise_cli)
+    monkeypatch.setitem(namespace, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub"))
+    observed: list[Any] = []
+
+    async def records(**kwargs: Any) -> list[TurnRecord]:
+        return [
+            TurnRecord(
+                cell=kwargs["cell"],
+                turn=index,
+                history_messages=2,
+                sent_messages=2,
+                sent_tokens_local=100,
+                reusable_prefix_tokens_local=50,
+                prefix_broken=False,
+                input_tokens=100,
+                cached_tokens=value,
+                output_tokens=1,
+                latency_ms=1,
+            )
+            for index, value in enumerate((40, cached), start=1)
+        ]
+
+    def summarize(*args: Any, **kwargs: Any) -> Any:
+        assert kwargs["reports_cache_tokens"] is (cached is not None)
+        result = summarize_cell(*args, **kwargs)
+        observed.append(result)
+        return result
+
+    monkeypatch.setitem(namespace, "run_cell", records)
+    monkeypatch.setitem(namespace, "summarize_cell", summarize)
+    if entry == "sample":
+        await namespace["main"]()
+    elif entry == "replay":
+        args = _cli.build_parser().parse_args(
+            [
+                "--providers",
+                "azure",
+                "--strategies",
+                "none",
+                "--sizes",
+                "small",
+                "--out",
+                str(tmp_path),
+                "--tokenizer",
+                "estimator",
+            ]
+        )
+        assert await _cli.run_benchmark(args) == 0
+    else:
+        args = _advise_cli.build_parser().parse_args(
+            [
+                "azure",
+                "--strategies",
+                "none",
+                "--repeats",
+                "1",
+                "--tokenizer",
+                "estimator",
+            ]
+        )
+        await _advise_cli._measure(args, "azure", ProviderRuntime(None, "stub"))
+    assert observed
+    assert all((cell.cache_hit_ratio is not None) is (cached is not None) for cell in observed)
+
+
+async def test_benchmark_sample_isolates_executions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_cachebench import ProviderRuntime
+
+    main = runpy.run_path(str(SAMPLES / "run_benchmark.py"))["main"]
+    namespace = main.__globals__
+    monkeypatch.setitem(namespace, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub"))
+    monkeypatch.setitem(namespace, "PROVIDER", "mistral")
+    monkeypatch.setitem(
+        namespace, "prompt_cache_key_options", lambda provider, salt: {"prompt_cache_key": salt}
+    )
+    salts: list[str] = []
+    keys: list[Any] = []
+    original = namespace["build_preset"]
+
+    def preset(*args: Any, **kwargs: Any) -> Any:
+        salts.append(kwargs["salt"])
+        return original(*args, **kwargs)
+
+    def caller(*args: Any, **kwargs: Any) -> None:
+        keys.append(kwargs.get("extra_options"))
+
+    async def records(**kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setitem(namespace, "build_preset", preset)
+    monkeypatch.setitem(namespace, "ProviderCaller", caller)
+    monkeypatch.setitem(namespace, "run_cell", records)
+    await main()
+    await main()
+    assert len(salts) == len(set(salts)) == 4
+    assert len({str(key) for key in keys}) == 4
+    assert "none" in salts[0]
+    assert "context_window" in salts[1]
+
+
+async def test_cache_stability_sample_isolates_executions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_cachebench import CallOutcome, ProviderRuntime
+
+    namespace = runpy.run_path(str(SAMPLES / "probe_cache_stability.py"))
+    run = namespace["run"]
+    monkeypatch.setitem(
+        run.__globals__, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
+    )
+    prompts: list[list[str]] = []
+    keys: list[Any] = []
+
+    def caller(*args: Any, **kwargs: Any) -> Any:
+        seen: list[str] = []
+        prompts.append(seen)
+        keys.append(kwargs["extra_options"])
+
+        async def respond(messages: Any) -> CallOutcome:
+            seen.append(str(messages[0].text))
+            return CallOutcome(input_tokens=100, cached_tokens=50, latency_ms=1)
+
+        return respond
+
+    monkeypatch.setitem(run.__globals__, "ProviderCaller", caller)
+    monkeypatch.setitem(
+        run.__globals__,
+        "prompt_cache_key_options",
+        lambda provider, salt: {"prompt_cache_key": salt},
+    )
+    args = namespace["build_parser"]().parse_args(["mistral", "--calls", "3"])
+    assert await run(args) == await run(args) == 0
+    assert all(len(set(prompt)) == 1 and len(prompt) == 3 for prompt in prompts)
+    assert prompts[0][0] != prompts[1][0]
+    assert keys[0] != keys[1]
+
+
+async def test_narration_sample_isolates_executions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_framework import CharacterEstimatorTokenizer
+
+    from maf_cachebench import ProviderRuntime
+
+    namespace = runpy.run_path(str(SAMPLES / "probe_narration.py"))
+    measure = namespace["_measure"]
+    globals_ = measure.__globals__
+    monkeypatch.setitem(globals_, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub"))
+    monkeypatch.setitem(globals_, "build_tokenizer", lambda *a: CharacterEstimatorTokenizer())
+    salts: list[str] = []
+
+    def scenario(**kwargs: Any) -> Any:
+        salts.append(kwargs["salt"])
+        return SimpleNamespace()
+
+    async def live(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(error=None)
+
+    monkeypatch.setitem(globals_, "build_live_scenario", scenario)
+    monkeypatch.setitem(globals_, "run_live", live)
+    monkeypatch.setitem(globals_, "score_samples", lambda *a: [])
+    args = namespace["build_parser"]().parse_args(["azure", "--repeats", "2"])
+    await measure(args, "neutral", "head")
+    await measure(args, "neutral", "head")
+    assert len(salts) == len(set(salts)) == 4
+    assert all("neutral-head" in salt for salt in salts)
+
+
+def test_mistral_sample_isolates_executions(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[dict[str, Any]] = []
+
+    def post(url: str, *, json: dict[str, Any], **kwargs: Any) -> httpx.Response:
+        sent.append(json)
+        return httpx.Response(200, request=httpx.Request("POST", url), json={})
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(sys, "argv", ["probe_mistral_cache.py"])
+    namespace = runpy.run_path(str(SAMPLES / "probe_mistral_cache.py"))
+    main = namespace["main"]
+    monkeypatch.setitem(main.__globals__, "API_KEY", "stub")
+    assert main() == main() == 0
+    prefixes = [request["messages"][0]["content"] for request in sent]
+    assert len(prefixes) == 12
+    assert len(set(prefixes)) == 4
+    assert all(len(set(prefixes[index : index + 3])) == 1 for index in range(0, 12, 3))
+    assert sent[3]["prompt_cache_key"] != sent[9]["prompt_cache_key"]

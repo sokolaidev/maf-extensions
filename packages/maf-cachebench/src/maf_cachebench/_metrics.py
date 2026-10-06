@@ -140,8 +140,8 @@ def summarize_cell(
 
     Keyword Args:
         cell: Identity of the cell being summarized.
-        reports_cache_tokens: Whether the provider reports cache statistics at all. When
-            False, cache-derived ratios are suppressed rather than reported as zero.
+        reports_cache_tokens: Whether cache statistics should be reported. Incomplete telemetry, or
+            False, suppresses cache-derived ratios rather than reporting zero.
 
     Returns:
         The aggregated summary.
@@ -151,7 +151,9 @@ def summarize_cell(
     latencies = [record.latency_ms for record in successful if record.latency_ms is not None]
     return CellSummary(
         cell=cell,
-        reports_cache_tokens=reports_cache_tokens,
+        reports_cache_tokens=reports_cache_tokens
+        and bool(records)
+        and all(record.cached_tokens is not None for record in records),
         turns=len(records),
         errors=len(records) - len(completed),
         prefix_breaks=sum(1 for record in records if record.prefix_broken),

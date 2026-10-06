@@ -24,11 +24,13 @@ from maf_cachebench import (
     build_preset,
     build_provider,
     build_strategy,
+    prompt_cache_key_options,
     render_summary_table,
     resolve_context_window,
     run_cell,
     summarize_cell,
 )
+from maf_cachebench._run_identity import new_run_id
 from maf_cachebench._strategies import StrategyOptions
 
 PROVIDER = os.environ.get("CACHEBENCH_PROVIDER", "azure")
@@ -39,7 +41,7 @@ async def main() -> None:
     """Replay the same transcript with and without compaction, then print the comparison."""
     tokenizer = CharacterEstimatorTokenizer()
     runtime = build_provider(PROVIDER, temperature=0.0, response_max_tokens=16)
-    caller = ProviderCaller(runtime)
+    run_id = new_run_id()
 
     summaries = []
     for strategy_name in ("none", "context_window"):
@@ -52,7 +54,9 @@ async def main() -> None:
         )
         # A distinct salt per cell keeps the two runs in separate cache namespaces, so the
         # baseline cannot serve cache hits to the compacted run.
-        transcript = build_preset(SIZE, salt=f"sample-{cell.label}", tokenizer=tokenizer)
+        salt = f"{run_id}-{cell.label}"
+        transcript = build_preset(SIZE, salt=salt, tokenizer=tokenizer)
+        caller = ProviderCaller(runtime, extra_options=prompt_cache_key_options(PROVIDER, salt))
         options = StrategyOptions(
             tokenizer=tokenizer,
             max_context_window_tokens=resolve_context_window(transcript.approx_final_prompt_tokens),
@@ -70,7 +74,8 @@ async def main() -> None:
             summarize_cell(
                 records,
                 cell=cell,
-                reports_cache_tokens=any(record.cached_tokens is not None for record in records),
+                reports_cache_tokens=bool(records)
+                and all(record.cached_tokens is not None for record in records),
             )
         )
 

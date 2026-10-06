@@ -36,6 +36,7 @@ from maf_cachebench import (
     wants_client_side_history,
 )
 from maf_cachebench._cli_selection import validate_recall_counts, validate_unique_selection
+from maf_cachebench._run_identity import new_run_id
 
 #: Points of correctness range above which a control cannot be ranked against. Matches the
 #: limit the live run itself enforces, so a configuration this probe passes is one that run
@@ -134,9 +135,10 @@ async def _measure(
     scores: list[float] = []
     recalled: list[int] = []
     error = ""
+    run_id = new_run_id()
     for repeat in range(args.repeats):
         scenario = build_live_scenario(
-            salt=f"{narration}-{placement}-{repeat}",
+            salt=f"{run_id}-{narration}-{placement}-{repeat}",
             filler_turns=args.filler_turns,
             filler_tokens=args.filler_tokens,
             tool_turns=args.tool_turns,

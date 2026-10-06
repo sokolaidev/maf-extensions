@@ -10,6 +10,8 @@ import time
 
 import httpx
 
+from maf_cachebench._run_identity import new_run_id
+
 API_KEY = os.environ.get("MISTRAL_API_KEY")
 MODEL = (
     sys.argv[1]
@@ -28,10 +30,13 @@ PREFIX = "You are a systems engineering assistant. Reference notes: " + (
 )
 
 
-def _call(user: str, cache_key: str | None) -> tuple[dict, float]:
+def _call(user: str, cache_key: str | None, namespace: str) -> tuple[dict, float]:
     payload: dict = {
         "model": MODEL,
-        "messages": [{"role": "system", "content": PREFIX}, {"role": "user", "content": user}],
+        "messages": [
+            {"role": "system", "content": f"Probe {namespace}. {PREFIX}"},
+            {"role": "user", "content": user},
+        ],
         "max_tokens": 4,
         "temperature": 0,
         "stream": False,
@@ -47,12 +52,12 @@ def _call(user: str, cache_key: str | None) -> tuple[dict, float]:
     return response.json(), elapsed
 
 
-def _round(label: str, cache_key: str | None) -> bool:
+def _round(label: str, cache_key: str | None, namespace: str) -> bool:
     print(f"\n===== {label} =====")
     saw_cache = False
     for index in range(1, ROUNDS + 1):
         try:
-            body, elapsed = _call(f"Say OK ({index}).", cache_key)
+            body, elapsed = _call(f"Say OK ({index}).", cache_key, namespace)
         except httpx.HTTPStatusError as error:
             print(f"  [{index}] HTTP {error.response.status_code}: {error.response.text[:300]}")
             return saw_cache
@@ -74,8 +79,9 @@ def main() -> int:
         return 2
     print(f"url={URL}  model={MODEL}  prefix_chars={len(PREFIX)}")
 
-    without = _round("WITHOUT prompt_cache_key", None)
-    with_key = _round("WITH prompt_cache_key", "cachebench-probe-fixed-key")
+    run_id = new_run_id()
+    without = _round("WITHOUT prompt_cache_key", None, f"{run_id}-without")
+    with_key = _round("WITH prompt_cache_key", f"{run_id}-with", f"{run_id}-with")
 
     print("\n===== verdict =====")
     print(f"  cached_tokens reported without a key: {without}")

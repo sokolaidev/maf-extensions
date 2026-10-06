@@ -32,6 +32,7 @@ from maf_cachebench import (
     parse_provider_selector,
     prompt_cache_key_options,
 )
+from maf_cachebench._run_identity import new_run_id
 from maf_cachebench._transcripts import TRUE_CHARS_PER_TOKEN, filler_text
 
 
@@ -78,14 +79,18 @@ async def run(args: argparse.Namespace) -> int:
     )
     # Responses-API clients keep history server-side; pin it off so every call is judged on
     # the prompt it carries rather than on a conversation the service is holding for us.
-    extra = dict(prompt_cache_key_options(provider, "cache-stability"))
+    namespace = new_run_id()
+    extra = dict(prompt_cache_key_options(provider, namespace))
     if getattr(runtime.client, "STORES_BY_DEFAULT", False):
         extra["store"] = False
     caller = ProviderCaller(runtime, extra_options=extra, request_timeout=300.0)
 
     body = filler_text(11, int(args.prompt_tokens * TRUE_CHARS_PER_TOKEN))
     messages = [
-        Message(role="system", contents=["You are a terse assistant. Reply with one word."]),
+        Message(
+            role="system",
+            contents=[f"Probe {namespace}. You are a terse assistant. Reply with one word."],
+        ),
         Message(role="user", contents=[f"{body}\n\nReply with the single word: acknowledged."]),
     ]
 

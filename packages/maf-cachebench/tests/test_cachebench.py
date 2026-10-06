@@ -978,3 +978,27 @@ def test_nonpositive_usage_cannot_reduce_cell_totals(reported: int | None) -> No
     assert summary.total_output_tokens == 10
     assert summary.total_local_sent_tokens == 200
     assert summary.cache_hit_ratio is None
+
+
+@pytest.mark.parametrize("cached", [None, 0, 50])
+def test_aggregation_requires_every_turn_cache_report(cached: int | None) -> None:
+    records = [
+        TurnRecord(
+            cell=_cell(),
+            turn=index,
+            history_messages=2,
+            sent_messages=2,
+            sent_tokens_local=100,
+            reusable_prefix_tokens_local=50,
+            prefix_broken=False,
+            input_tokens=100,
+            cached_tokens=value,
+            output_tokens=1,
+            latency_ms=1,
+        )
+        for index, value in enumerate((40, cached), start=1)
+    ]
+    summary = summarize_cell(records, cell=_cell(), reports_cache_tokens=True)
+    assert summary.reports_cache_tokens is (cached is not None)
+    assert (summary.cache_hit_ratio is not None) is (cached is not None)
+    assert (summary.cache_realization is not None) is (cached is not None)

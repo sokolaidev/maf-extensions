@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Number seeds from this offset. The seed number joins the run timestamp and "
+            "Number seeds from this offset. The seed number joins the random run identity and "
             "strategy in the scenario salt; use an offset to give resumed runs distinct "
             "recorded seed numbers."
         ),

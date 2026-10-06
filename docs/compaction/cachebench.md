@@ -123,7 +123,7 @@ Defaults are as `cachebench_live --help` prints them. Every constructor paramete
 | `--strategies` | 11 of the 20 | comma-separated; see [strategies.md](strategies.md) |
 | `--agent` | `plain` | `harness` swaps in `create_harness_agent`, which is what production code calls. Its optional providers are switched off, because each adds tools and system-prompt text to every measured prompt |
 | `--repeats` | 1 | seeds per strategy — whole conversations driven from scratch. This is the axis that measures compaction's own reliability. 3 or more is what makes a ranking defensible |
-| `--seed-offset` | 0 | number the seeds from here. The seed number joins the run timestamp and strategy in the scenario salt. Offsetting gives resumed runs distinct recorded seed numbers |
+| `--seed-offset` | 0 | number the seeds from here. The seed number joins the random run identity and strategy in the scenario salt. Offsetting gives resumed runs distinct recorded seed numbers |
 
 ### Sizing the workload
 
@@ -421,7 +421,7 @@ A *combination* is a strategy plus the settings it ran under. Rows are ranked on
 | `--turn-delay` | 0 | seconds between turns, for strict rate limits |
 | `--summarizer-provider` | — | client for the `summarization` strategy |
 | `--out` | `cachebench-results` | output directory: per-turn JSONL plus a summary CSV |
-| `--run-id` | timestamp | run identifier |
+| `--run-id` | timestamp + random UUID suffix | run identifier; generated filenames differ on each execution |
 | `--dry-run` | off | run the whole matrix locally with no API calls, reporting prompt sizes and prefix reuse only |
 
 Two independent measurement channels, and the output shows both:

@@ -185,9 +185,8 @@ async def _measure(
                     summarize_cell(
                         records,
                         cell=cell,
-                        reports_cache_tokens=any(
-                            record.cached_tokens is not None for record in records
-                        ),
+                        reports_cache_tokens=bool(records)
+                        and all(record.cached_tokens is not None for record in records),
                     )
                 )
     finally:

@@ -183,7 +183,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out", type=Path, default=Path("cachebench-results"), help="Output directory."
     )
-    parser.add_argument("--run-id", default=None, help="Run identifier. Defaults to a timestamp.")
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Run identifier. Defaults to a timestamp plus a random UUID suffix.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -342,9 +346,8 @@ async def _run_matrix(
                         summarize_cell(
                             records,
                             cell=cell,
-                            reports_cache_tokens=any(
-                                record.cached_tokens is not None for record in records
-                            ),
+                            reports_cache_tokens=bool(records)
+                            and all(record.cached_tokens is not None for record in records),
                         )
                     )
     return all_records, summaries
