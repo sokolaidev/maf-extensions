@@ -414,6 +414,22 @@ async def test_the_floor_is_measured_against_the_tokens_the_edit_re_bills() -> N
     assert strategy.declined_collapses == 0
 
 
+async def test_the_floor_yields_to_the_ceiling_a_composition_asks_for() -> None:
+    """Under the strategy's own ceiling but over the one requested, shortening still wins."""
+    strategy = MinimumGainAnchoredCompactionStrategy(
+        max_input_tokens=10_000_000, tokenizer=TOKENIZER, keep_tokens=500, min_gain_fraction=0.99
+    )
+    messages = _conversation(tool_turns=8)
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+
+    await strategy.compact_to(messages, ceiling=included_token_count(messages) - 100)
+
+    rendered = _rendered(messages)
+    assert REMOVAL_MARKER in rendered, "the floor declined the trim"
+    assert "[compacted: an earlier tool call and its result]" not in rendered, "and shed instead"
+
+
 async def test_above_the_floor_it_is_the_anchored_strategy() -> None:
     """The floor is the only difference between the two rows, so above it there is none.
 
@@ -605,6 +621,17 @@ async def test_shedding_continues_while_each_pass_makes_progress() -> None:
 
     assert len(passes) > 4, "the ceiling needs more groups shed than four passes shed"
     assert included_token_count(messages) <= 2_000
+
+
+def test_a_result_quoting_the_marker_is_still_shortened() -> None:
+    """Only the marker as the strategy writes it means a result was already shortened."""
+    strategy = AnchoredCompactionStrategy(max_input_tokens=8_000, tokenizer=TOKENIZER)
+    quoting = f"log line: {REMOVAL_MARKER} appears in this tool's own output. " * 200
+
+    shortened = strategy._shorten(quoting, 100)
+
+    assert shortened != quoting
+    assert strategy._shorten(shortened, 100) == shortened, "and its own output stays put"
 
 
 # region preservation

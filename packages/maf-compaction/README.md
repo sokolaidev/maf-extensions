@@ -30,7 +30,7 @@ The package depends on `agent-framework-core` alone. The summarising strategies 
 
 ## Quickstart
 
-Every strategy sizes its decisions with a tokenizer. The one below counts exactly; the framework's `CharacterEstimatorTokenizer` works too, at the cost of precision.
+Every strategy sizes its decisions with a tokenizer. The one below counts exactly and needs `tiktoken`, which this package does not install (`pip install tiktoken`); the framework's `CharacterEstimatorTokenizer` needs nothing extra and works too, at the cost of precision.
 
 ```python
 import tiktoken

@@ -47,6 +47,7 @@ beats a silent loss it cannot.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
@@ -113,6 +114,10 @@ _FIT_PASSES: Final[int] = 2
 #: document with no sign of truncation answers as though it had seen all of it, and the
 #: marker is how a later pass recognises its own earlier work and leaves it alone.
 REMOVAL_MARKER: Final[str] = "... removed by compaction"
+
+#: The marker exactly as :meth:`AnchoredCompactionStrategy._shorten` writes it, so a result that
+#: merely quotes :data:`REMOVAL_MARKER` is not mistaken for one already shortened.
+_SHORTENED = re.compile(rf"\n\[{re.escape(REMOVAL_MARKER)}: [\d,]+ characters\]\n")
 
 #: Prefix of the ``message_id`` given to every note this strategy leaves behind.
 MARKER_ID_PREFIX: Final[str] = "anchored_"
@@ -305,7 +310,7 @@ class AnchoredCompactionStrategy:
         # Shortening results first is what keeps the conversation legible: the model still
         # sees that each call happened and roughly what it returned. Only when that is not
         # enough does anything get removed outright.
-        changed = self._collapse_tool_results(messages, band)
+        changed = self._collapse_tool_results(messages, band, ceiling=ceiling)
         if changed:
             # Token counts are cached per message inside the group annotations, so shortening
             # a result in place leaves the cached number describing text that no longer
@@ -357,12 +362,18 @@ class AnchoredCompactionStrategy:
         members = messages[group["start_index"] : group["end_index"] + 1]
         return bool(members) and all(_is_marker(message) for message in members)
 
-    def _collapse_tool_results(self, messages: list[Message], band: list[dict[str, Any]]) -> bool:
+    def _collapse_tool_results(
+        self, messages: list[Message], band: list[dict[str, Any]], *, ceiling: int
+    ) -> bool:
         """Shrink every tool result in the band, in place, keeping both of its ends.
 
         Rewrites content rather than excluding the message, so the tool-call structure stays
         intact: the model still sees that a call happened and what it returned a little of,
         which reads far better than a hole in place of a result.
+
+        Keyword Args:
+            ceiling: The ceiling this pass compacts to. Unread here, since shortening is decided
+                by position alone; a subclass that prices a collapse reads it.
 
         Returns:
             True if any result was shortened.
@@ -505,7 +516,7 @@ class AnchoredCompactionStrategy:
         # own tokens on top of the budget, so a second pass would shorten it again and a third
         # again -- each one a fresh mutation at the same position, which is precisely the cache
         # behaviour this strategy exists to avoid.
-        if REMOVAL_MARKER in text or self.tokenizer.count_tokens(text) <= budget:
+        if _SHORTENED.search(text) or self.tokenizer.count_tokens(text) <= budget:
             return text
         head_budget = budget // 2
         head_chars = self._fit(text, head_budget, from_end=False)
@@ -586,7 +597,7 @@ class AnchoredCompactionStrategy:
             # whole group, because dropping a tool call while keeping its result -- or the
             # reverse -- is a malformed conversation on most providers, so there is no partial
             # shed available. A group skipped here still counts toward the ceiling, which is
-            # why the caller's loop can end over budget; see :meth:`__call__`.
+            # why the caller's loop can end over budget; see :meth:`compact_to`.
             if any_preserved(members):
                 continue
             # The same rule from the other side: a group whose call and result would not leave
@@ -775,7 +786,9 @@ class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):
         """
         return self._declined
 
-    def _collapse_tool_results(self, messages: list[Message], band: list[dict[str, Any]]) -> bool:
+    def _collapse_tool_results(
+        self, messages: list[Message], band: list[dict[str, Any]], *, ceiling: int
+    ) -> bool:
         """Collapse the band's tool results, unless doing so would not pay for itself.
 
         The saving is weighed against the tokens the edit puts back on the meter, which is the
@@ -787,12 +800,16 @@ class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):
         group that has just aged out of the tail, where the edit is near the end and ``B`` is
         a fraction of the prompt.
 
-        Relies on the token annotations :meth:`AnchoredCompactionStrategy.__call__` refreshes
+        Relies on the token annotations :meth:`AnchoredCompactionStrategy.compact_to` refreshes
         before it calls this, which is the only caller.
 
         Args:
             messages: The message list, mutated in place only if the collapse goes ahead.
             band: The middle groups, as returned by :meth:`_middle_band`.
+
+        Keyword Args:
+            ceiling: The ceiling this pass compacts to, which may be below
+                :attr:`max_input_tokens` when a composition compacts to a target.
 
         Returns:
             True if any result was shortened.
@@ -803,7 +820,7 @@ class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):
         # Over the ceiling the collapse is not being judged on its saving: it is the cheapest
         # way left to make the conversation fit, and refusing it here would hand the work to
         # the shed step, which removes whole groups rather than trimming them.
-        if included_token_count(messages) > self.max_input_tokens:
+        if included_token_count(messages) > ceiling:
             return self._apply_shortenings(plan)
         behind = included_token_count(messages[min(item.message_index for item in plan) :])
         if sum(item.saved_tokens for item in plan) < int(behind * self.min_gain_fraction):
