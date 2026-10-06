@@ -59,7 +59,6 @@ from maf_compaction._composed import (
     DEFAULT_RECORD_MERGE_PROMPT,
     ChainDecisions,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
-    _newest_record_identity,
     _responses,
     harder_record_prompt,
 )
@@ -76,6 +75,7 @@ from maf_compaction._toolsummary import (
     _droppable_groups_after,
     _hold_unrecorded,
     _is_written_record,
+    _newest_record_identity,
     _preserve_records,
     active_record_groups,
     build_record_message,
