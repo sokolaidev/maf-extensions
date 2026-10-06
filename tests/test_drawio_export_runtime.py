@@ -454,10 +454,12 @@ def test_native_svg_declarations_and_warning_become_offline_content():
     assert not list(root.iter("{http://www.w3.org/2000/svg}a"))
 
 
+@pytest.mark.parametrize("prefix", ["", "image;", "indicatorImage;"])
 @pytest.mark.parametrize("key", ["image", "indicatorImage"])
 @pytest.mark.parametrize(
     "resource",
     [
+        "",
         "/etc/passwd",
         "../../secret.png",
         "relative.png",
@@ -465,10 +467,10 @@ def test_native_svg_declarations_and_warning_become_offline_content():
         "https://example.invalid/icon.png",
     ],
 )
-def test_image_styles_refuse_unlisted_resources(key, resource):
+def test_image_styles_refuse_unlisted_resources(prefix, key, resource):
     with pytest.raises(ValueError):
         RUNTIME["prepare_document"](
-            f'<mxfile><mxCell style="{key}={resource};"/></mxfile>',
+            f'<mxfile><mxCell style="{prefix}{key}={resource};"/></mxfile>',
             {"assets": {}, "fonts": {"DejaVu Sans": "unused"}},
         )
 
@@ -494,6 +496,31 @@ def test_image_styles_embed_verified_assets(tmp_path, monkeypatch, key, referenc
         },
     )
     assert f"{key}=data:image/svg+xml,{encoded};" in prepared
+
+
+@pytest.mark.parametrize("name", ["image", "indicatorImage"])
+@pytest.mark.parametrize("key", ["image", "indicatorImage"])
+def test_palette_named_style_preserves_style_and_embeds_asset(tmp_path, monkeypatch, name, key):
+    reference = "img/lib/azure2/networking/Front_Doors.svg"
+    data = b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>'
+    asset = tmp_path / "assets" / reference
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(data)
+    monkeypatch.setitem(RUNTIME["prepare_document"].__globals__, "ROOT", tmp_path)
+    prefix = f"{name};html=1;aspect=fixed;verticalLabelPosition=bottom;verticalAlign=top;"
+    prepared = RUNTIME["prepare_document"](
+        f'<mxfile><mxCell style="{prefix}{key}={reference};"/></mxfile>',
+        {
+            "assets": {reference: hashlib.sha256(data).hexdigest()},
+            "fonts": {"DejaVu Sans": "unused"},
+        },
+    )
+    cell = ET.fromstring(prepared).find("mxCell")
+    assert cell is not None
+    encoded = base64.b64encode(data).decode()
+    assert cell.get("style") == (
+        f"{prefix}{key}=data:image/svg+xml,{encoded};fontFamily=DejaVu Sans;"
+    )
 
 
 @pytest.fixture
