@@ -694,11 +694,26 @@ class AnchoredCompactionStrategy:
         The ``message_id`` is derived from the group, not from a counter or a timestamp, so
         the replacement is byte-identical on every later turn. A marker that varied would be
         a cache mutation in its own right, which is the failure this whole strategy is built
-        to avoid. The framework's own summary insertion uses the same convention.
+        to avoid. The framework's own summary insertion uses the same convention. An existing
+        note is recognised by its text and the group it stands for, not by the id alone, since
+        a stored message may already hold that id; the note then takes the first free suffix.
         """
-        marker_id = f"{MARKER_ID_PREFIX}{group['group_id']}"
-        if any(message.message_id == marker_id for message in messages):
+        group_id = group["group_id"]
+        if any(
+            _is_marker(message)
+            and group_id
+            in message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
+                SUMMARY_OF_GROUP_IDS_KEY, []
+            )
+            for message in messages
+        ):
             return
+        taken = {message.message_id for message in messages if message.message_id}
+        marker_id = f"{MARKER_ID_PREFIX}{group_id}"
+        suffix = 0
+        while marker_id in taken:
+            suffix += 1
+            marker_id = f"{MARKER_ID_PREFIX}{group_id}_{suffix}"
         members = messages[group["start_index"] : group["end_index"] + 1]
         messages.insert(
             group["start_index"],

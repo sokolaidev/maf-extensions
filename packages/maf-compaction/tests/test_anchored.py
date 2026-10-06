@@ -672,6 +672,22 @@ def test_an_ordinary_message_with_a_marker_like_id_is_not_a_note() -> None:
     assert anchored_module._is_marker(note)
 
 
+def test_a_note_is_inserted_even_when_a_stored_message_holds_its_id() -> None:
+    """An id collision is not proof the note exists; the note takes the next free id."""
+    strategy = AnchoredCompactionStrategy(max_input_tokens=8_000, tokenizer=TOKENIZER)
+    messages = _conversation(tool_turns=3)
+    annotate_message_groups(messages)
+    group = next(g for g in group_messages(messages) if g["kind"] == "tool_call")
+    messages[1].message_id = f"{anchored_module.MARKER_ID_PREFIX}{group['group_id']}"
+
+    strategy._insert_note(messages, group, "[compacted: an earlier tool call and its result]")
+    strategy._insert_note(messages, group, "[compacted: an earlier tool call and its result]")
+
+    notes = [m for m in messages if anchored_module._is_marker(m)]
+    assert len(notes) == 1, "inserted once, and recognised as present on the second call"
+    assert notes[0].message_id == f"{anchored_module.MARKER_ID_PREFIX}{group['group_id']}_1"
+
+
 # region preservation
 
 
