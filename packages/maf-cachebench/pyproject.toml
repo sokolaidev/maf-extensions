@@ -1,0 +1,93 @@
+[project]
+name = "maf-cachebench"
+version = "0.0.0"
+description = "Benchmark for Microsoft Agent Framework compaction strategies: what each one costs in prompt-cache hits and what it loses, measured on a replayed conversation or a live agent."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "benchmark",
+    "compaction",
+    "prompt-cache",
+    "agent-framework",
+    "microsoft-agent-framework",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    # The strategies under measurement, and the private `_compaction` helpers both packages
+    # read; the same minor as maf-compaction pins, for the same reason.
+    "agent-framework-core>=1.20.0,<1.21",
+    "maf-compaction>=0.0.0",
+    # Model prices are fetched from OpenRouter for the advisor's cost table.
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+# One extra per provider route; a run needs only the client it points at. The floors are the
+# client versions the published measurements were made with; the Mistral and Ollama clients
+# have only pre-release versions on the index, so their floors name one.
+openai = ["agent-framework-openai>=1.15.0,<2", "azure-identity>=1.17,<2"]
+foundry = ["agent-framework-foundry>=1.14.0,<2", "azure-identity>=1.17,<2"]
+mistral = ["agent-framework-mistral>=1.0.0b260918,<2"]
+# The Ollama route builds the client's own async HTTP client, so that package is named too.
+ollama = ["agent-framework-ollama>=1.0.0b261002,<2", "ollama>=0.5.3,<0.6"]
+tiktoken = ["tiktoken>=0.8,<1"]
+
+[project.scripts]
+cachebench = "maf_cachebench:main"
+cachebench_live = "maf_cachebench:live_main"
+cachebench_advise = "maf_cachebench:advise_main"
+cachebench_recall = "maf_cachebench:recall_main"
+cachebench_summary = "maf_cachebench:summary_main"
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-compaction = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_cachebench"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+# The length rules join the docstring pair: test fixtures and probe scripts are lenient, not
+# API surface.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+"samples/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

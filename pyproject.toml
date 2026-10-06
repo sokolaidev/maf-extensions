@@ -35,6 +35,13 @@ dev = [
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.
     "agent-framework-openai>=1.13.0,<2",
+    # maf-cachebench imports the other provider clients lazily, one per provider route, and
+    # its strict pyright pass has to resolve every one of them. The Mistral and Ollama clients
+    # exist only as pre-releases on the index, so their floors name one.
+    "agent-framework-foundry>=1.14.0,<2",
+    "agent-framework-mistral>=1.0.0b260918,<2",
+    "agent-framework-ollama>=1.0.0b261002,<2",
+    "ollama>=0.5.3,<0.6",
     # Sample 17's Deep Agents wiring, for the same reason as the line above. `langchain-core`
     # arrives with it today and is named anyway: a sample declares what it imports, and a
     # transitive edge is a declared-dependency violation the moment that graph changes.
@@ -139,6 +146,7 @@ executionEnvironments = [
   { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-bubblewrap/tests", pythonPlatform = "Linux", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-compaction/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-cachebench/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
 ]
 
 # From-the-root test runs. Each package also carries its own [tool.pytest.ini_options] for
@@ -170,6 +178,7 @@ testpaths = [
     "packages/maf-sandbox-wslc/tests",
     "packages/maf-sandbox-bubblewrap/tests",
     "packages/maf-compaction/tests",
+    "packages/maf-cachebench/tests",
 ]
 faulthandler_timeout = 90.0
 

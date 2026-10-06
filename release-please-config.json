@@ -185,6 +185,17 @@
           "jsonpath": "$.package[?(@.name.value=='maf-compaction')].version"
         }
       ]
+    },
+    "packages/maf-cachebench": {
+      "package-name": "maf-cachebench",
+      "exclude-paths": ["packages/maf-cachebench/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-cachebench')].version"
+        }
+      ]
     }
   }
 }

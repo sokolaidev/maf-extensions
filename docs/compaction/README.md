@@ -18,7 +18,7 @@ That gives a break-even an edit has to clear. With `p` the input rate, `c` the c
 
 Three constraints follow, and every strategy here is built on them. Decide from a message's *position*, never from the conversation's current size, so the same prefix compacts to the same bytes on every later turn. Make mutations march forward, never backward, so each turn invalidates only the small suffix that newly aged out. And carry *information* forward rather than *positions*: head-and-tail truncation of a tool result keeps the first and last slice of it, which keeps none of the values spread through the middle.
 
-The family holds two packages. [`maf-compaction`](../../packages/maf-compaction/README.md) is the strategies and the middleware they need, written against the framework's `CompactionStrategy` protocol so they attach wherever the framework takes one. `maf-cachebench` is the benchmark they were measured with: it replays a scripted conversation that plants facts in tool results, asks for them back after compaction, and prices every request at the provider's cached and uncached rates. It arrives in this repository as its own package; the measurements below are its.
+The family holds two packages. [`maf-compaction`](../../packages/maf-compaction/README.md) is the strategies and the middleware they need, written against the framework's `CompactionStrategy` protocol so they attach wherever the framework takes one. [`maf-cachebench`](../../packages/maf-cachebench/README.md) is the benchmark they were measured with: it replays a scripted conversation that plants facts in tool results, asks for them back after compaction, and prices every request at the provider's cached and uncached rates. The measurements below are its, and the records behind them ship with it.
 
 ## What was measured
 
@@ -47,6 +47,7 @@ Every priced cell kept all 53 facts on every seed, and *lost facts* marks a cell
 | Page | Read it for |
 |---|---|
 | [Strategies](strategies.md) | Each strategy's mechanism, defaults, wiring, and where it fails |
-| [Research records](research/) | The design argument as it was written during development |
+| [The benchmark](cachebench.md) | Running `maf-cachebench`: providers, every option, reading the table and the flags |
+| [Research records](research/) | The design argument, the run write-ups and the test philosophy as written during development |
 
 Package READMEs cover installation and configuration. [Authoring guidance](../AUTHORING.md) defines the documentation structure.

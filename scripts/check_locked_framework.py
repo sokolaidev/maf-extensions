@@ -22,7 +22,13 @@ from pathlib import Path
 #: dev group's `ruff`, `pyright` and `pytest` bands are deliberately not here: those are pinned
 #: so a new lint minor cannot drift findings across unrelated pull requests, and refreshing
 #: them is a decision rather than maintenance.
-FRAMEWORK = ("agent-framework-core", "agent-framework-openai")
+FRAMEWORK = (
+    "agent-framework-core",
+    "agent-framework-openai",
+    "agent-framework-foundry",
+    "agent-framework-mistral",
+    "agent-framework-ollama",
+)
 
 #: What a distribution the committed lock never recorded is reported as. It is not drift the
 #: refresh command fixes, so it is named rather than rendered as a version.
