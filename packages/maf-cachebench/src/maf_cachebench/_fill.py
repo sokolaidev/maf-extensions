@@ -345,8 +345,8 @@ def plan_fill(
         retrieval_guidance: Whether the instructions carry the retrieval clause, which is part
             of every prompt and so part of the size.
         subset_questions: Whether the run closes with several targeted questions.
-        filler_turn_tokens: Size each filler turn should sit near. The solver picks how many
-            turns from this and then adjusts their size to land exactly.
+        filler_turn_tokens: Positive target size per filler turn. The solver chooses the
+            number of turns from this and then adjusts their size to land exactly.
         reply_tokens: Assumed size of each reply. See :data:`ASSUMED_REPLY_TOKENS`.
 
     Returns:
@@ -367,6 +367,8 @@ def plan_fill(
     # not tool results themselves.
     if not 0.0 <= tool_share < 1.0:
         raise ValueError(f"tool_share must be in [0.0, 1.0); got {tool_share}.")
+    if filler_turn_tokens <= 0:
+        raise ValueError("filler_turn_tokens must be greater than 0.")
     target = round(context_limit * fill_fraction)
     instructions = resolve_instructions(narration, retrieval_guidance=retrieval_guidance)
 

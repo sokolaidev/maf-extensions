@@ -177,7 +177,6 @@ async def _measure(
     history: list[Message] = [scenario.transcript.system]
     input_tokens = cached_tokens = 0
     turns = scenario.transcript.turns
-    projected: list[Message] = []
     for turn in turns[:-1]:
         history.extend(turn.request)
         projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)

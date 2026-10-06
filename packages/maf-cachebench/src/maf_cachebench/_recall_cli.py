@@ -111,13 +111,12 @@ async def _probe(
     caller = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
 
     history: list[Message] = [scenario.transcript.system]
-    projected: list[Message] = []
     turns = scenario.transcript.turns
     for turn in turns[:-1]:
         history.extend(turn.request)
         # Compaction runs on every turn, exactly as it would in a real agent loop, so the
         # final prompt reflects the cumulative damage rather than a single trim.
-        projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
+        await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
         history.extend(turn.reply)
 
     history.extend(turns[-1].request)

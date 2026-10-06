@@ -10447,3 +10447,38 @@ async def test_reconstruction_separates_correctness_bars(
         )
     )
     assert seen == [0.4, 0.9, 0.5, 0.5]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_automatic_fill_rejects_zero_filler_before_setup(
+    monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid filler target must fail before setup")
+
+    for name in ("build_tokenizer", "build_provider"):
+        monkeypatch.setattr(_live_cli, name, unexpected)
+    argv = _live_argv("--fill", "0.5", "--filler-tokens", "0")
+    if dry_run:
+        argv.append("--dry-run")
+    with pytest.raises(SystemExit, match="--filler-tokens must be greater than 0"):
+        await run_live_comparison(build_parser().parse_args(argv))
+
+
+async def test_manual_fill_allows_zero_filler(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_cachebench import _live_cli
+
+    class SizingReached(Exception):
+        pass
+
+    def plan(args: Any, *rest: Any) -> None:
+        assert args.fill == args.filler_tokens == 0
+        raise SizingReached
+
+    monkeypatch.setattr(_live_cli, "_plan_or_exit", plan)
+    with pytest.raises(SizingReached):
+        await run_live_comparison(
+            build_parser().parse_args(_live_argv("--fill", "0", "--filler-tokens", "0"))
+        )

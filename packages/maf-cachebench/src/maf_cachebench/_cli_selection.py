@@ -108,6 +108,9 @@ def validate_recall_counts(args: argparse.Namespace) -> None:
         if getattr(args, name, minimum) < minimum:
             raise SystemExit(f"--{name.replace('_', '-')} must be at least {minimum}.")
 
+    if getattr(args, "fill", 0) > 0 and args.filler_tokens == 0:
+        raise SystemExit("--filler-tokens must be greater than 0 when --fill is enabled.")
+
 
 def require_baseline(strategies: Sequence[str]) -> None:
     """Require both the control and a compaction alternative before measurement."""

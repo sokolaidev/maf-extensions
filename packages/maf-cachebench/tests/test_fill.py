@@ -381,3 +381,9 @@ async def test_the_seeded_conversation_lands_on_the_requested_tool_share() -> No
     assert abs(achieved - 0.45) / 0.45 <= FILL_TOLERANCE, (
         f"seeded {seeded_tools:,} tool tokens of {outcome.seed_prompt_tokens:,}, {achieved:.1%}"
     )
+
+
+@pytest.mark.parametrize("filler_turn_tokens", [0, -1])
+def test_fill_rejects_nonpositive_filler_target(filler_turn_tokens: int) -> None:
+    with pytest.raises(ValueError, match="filler_turn_tokens must be greater than 0"):
+        _plan(0.5, filler_turn_tokens=filler_turn_tokens)

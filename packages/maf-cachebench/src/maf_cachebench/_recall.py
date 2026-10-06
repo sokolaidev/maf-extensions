@@ -94,9 +94,6 @@ _SWEEPING_QUESTION: Final[str] = (
     "e settled on; and every code returned by the lookups. List them plainly, no preamble."
 )
 
-#: Kinds of planted fact, in the order they appear in the conversation.
-FACT_KINDS: Final[tuple[str, ...]] = ("requirement", "correction", "tool_result")
-
 
 @dataclass(frozen=True, slots=True)
 class PlantedFact:
