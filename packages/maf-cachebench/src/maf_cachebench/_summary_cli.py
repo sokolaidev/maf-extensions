@@ -14,7 +14,7 @@ from ._cli_selection import select_standalone_strategies, standalone_strategy_na
 from ._metrics import serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
-from ._runner import ProviderCaller
+from ._runner import CallOutcome, ProviderCaller
 from ._strategies import StrategyOptions, build_strategy
 from ._summary import (
     DEFAULT_MIN_CORRECTNESS,
@@ -152,6 +152,13 @@ async def _measure(
     )
     final = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
 
+    async def measured(caller: ProviderCaller, messages: list[Message]) -> CallOutcome:
+        outcome = await caller(messages)
+        if outcome.error or not outcome.input_tokens or outcome.input_tokens < 0:
+            reason = outcome.error or "provider omitted positive input usage"
+            raise SystemExit(f"Cannot measure {strategy_name!r}: {reason}.")
+        return outcome
+
     history: list[Message] = [scenario.transcript.system]
     input_tokens = cached_tokens = 0
     turns = scenario.transcript.turns
@@ -159,7 +166,7 @@ async def _measure(
     for turn in turns[:-1]:
         history.extend(turn.request)
         projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
-        outcome = await interim(projected)
+        outcome = await measured(interim, projected)
         input_tokens += outcome.input_tokens or 0
         cached_tokens += outcome.cached_tokens or 0
         history.extend(turn.reply)
@@ -167,7 +174,7 @@ async def _measure(
     history.extend(turns[-1].request)
     projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
     final_prompt = "\n".join(serialize_message(message) for message in projected)
-    answer_outcome = await final(projected)
+    answer_outcome = await measured(final, projected)
     input_tokens += answer_outcome.input_tokens or 0
     cached_tokens += answer_outcome.cached_tokens or 0
     answer = answer_outcome.text or ""

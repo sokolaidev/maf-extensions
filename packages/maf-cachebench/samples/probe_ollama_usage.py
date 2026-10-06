@@ -1,11 +1,3 @@
-"""Probe what an Ollama Cloud deployment reports in its usage block."""
-
-import json
-import os
-import sys
-
-import httpx
-
 """Probe what an Ollama endpoint actually reports about prompt caching.
 
 The `ollama` Python SDK's `ChatResponse` is a closed pydantic model (extra fields are
@@ -28,10 +20,17 @@ the native /api/chat one; cached counts would arrive there as
 `usage.prompt_tokens_details.cached_tokens`.
 """
 
+import json
+import os
+import sys
+
+import httpx
+
 HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 API_KEY = os.environ.get("OLLAMA_API_KEY")
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "glm-5.2:cloud"
-USE_OPENAI = "--openai" in sys.argv
+USE_OPENAI = "--openai" in sys.argv[1:]
+POSITIONAL = [arg for arg in sys.argv[1:] if arg != "--openai"]
+MODEL = POSITIONAL[0] if POSITIONAL else "glm-5.2:cloud"
 
 # Long enough to clear any plausible minimum cacheable prefix.
 PREFIX = "You are a systems engineering assistant. Reference notes: " + (

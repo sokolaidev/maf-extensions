@@ -14,7 +14,7 @@ Provider prompt caches match on an exact prefix, and every compaction strategy r
 
 Two harnesses answer two questions:
 
-- `cachebench` replays a scripted transcript. Every provider and every strategy sees a byte-identical conversation, so its numbers compare across providers. It answers how a *prompt* caches.
+- `cachebench` replays a scripted transcript. Every provider and strategy replays the same scripted structure, with a fixed-width per-cell salt isolating its cache prefix. These controlled workloads support comparisons across providers. It answers how a *prompt* caches.
 - `cachebench_live` drives a real agent, with real replies and real tool calls, so compaction acts on the history an agent would accumulate. Its numbers compare strategies within one model. It answers what a strategy costs an agent.
 
 ## Install

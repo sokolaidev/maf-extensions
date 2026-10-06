@@ -290,3 +290,70 @@ async def test_replay_resolves_summarizer_model_selector(monkeypatch: pytest.Mon
         on_record=None,
     ) == ([], [])
     assert seen == [("azure", "summarizer-model")]
+
+
+@pytest.mark.parametrize("phase", ["first", "interim", "final"])
+@pytest.mark.parametrize("failure", ["error", "missing", "zero", "negative", "none"])
+async def test_summary_requires_every_call_to_have_valid_usage(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    failure: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from maf_cachebench import CallOutcome, build_recall_scenario
+
+    scenario = build_recall_scenario(salt="valid-usage", filler_turns=0, filler_tokens=0)
+    total = len(scenario.transcript.turns)
+    target = {"first": 1, "interim": 2, "final": total}[phase]
+    calls = 0
+
+    async def caller(messages: Any) -> CallOutcome:
+        nonlocal calls
+        calls += 1
+        if calls == target and failure != "none":
+            return CallOutcome(
+                latency_ms=0,
+                error="failed request" if failure == "error" else None,
+                input_tokens={"error": 100, "missing": None, "zero": 0, "negative": -1}[failure],
+            )
+        return CallOutcome(latency_ms=0, input_tokens=100, cached_tokens=50, text="answer")
+
+    monkeypatch.setattr(_summary_cli, "build_provider", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(_summary_cli, "ProviderCaller", lambda *a, **k: caller)
+    monkeypatch.setattr(_summary_cli, "build_recall_scenario", lambda **k: scenario)
+    args = _summary_cli.build_parser().parse_args(["azure", "--tokenizer", "estimator"])
+    if failure == "none":
+        measured = await _summary_cli._measure(args, "azure", None, "none", ModelPricing(1, 0.1))
+        assert measured.input_tokens == total * 100
+        assert measured.score.error is None
+        assert calls == total
+    else:
+        with pytest.raises(SystemExit, match="Cannot measure"):
+            await _summary_cli._measure(args, "azure", None, "none", ModelPricing(1, 0.1))
+        assert calls == target
+
+
+@pytest.mark.parametrize(
+    "option", ["--price-long-cached", "--price-long-output", "--price-long-cache-write"]
+)
+@pytest.mark.parametrize("value", ["0", "1"])
+@pytest.mark.parametrize("provider", ["azure", "openrouter"])
+def test_orphan_long_tier_prices_fail_before_catalogue_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+    value: str,
+    provider: str,
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid prices must fail before catalogue lookup")
+
+    monkeypatch.setattr(_live_cli, "fetch_openrouter_pricing", unexpected)
+    argv = [provider, option, value]
+    if provider == "azure":
+        argv += ["--price-input", "1"]
+    args = _live_cli.build_parser().parse_args(argv)
+    with pytest.raises(SystemExit, match="--price-long-input"):
+        _live_cli._resolve_pricing(args, provider, "stub")

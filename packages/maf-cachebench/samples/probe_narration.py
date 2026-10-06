@@ -186,6 +186,8 @@ async def run(args: argparse.Namespace) -> int:
         A process exit code. Non-zero when no configuration was stable enough to measure
         under, which is a result worth failing a script on.
     """
+    if args.repeats <= 0:
+        raise SystemExit("--repeats must be greater than 0.")
     narrations = [item.strip() for item in args.narrations.split(",") if item.strip()]
     placements = [item.strip() for item in args.placements.split(",") if item.strip()]
     provider, model_override = parse_provider_selector(args.provider)
@@ -218,6 +220,8 @@ async def run(args: argparse.Namespace) -> int:
     for placement in placements:
         for narration in narrations:
             scores, recalled, error = await _measure(args, narration, placement)
+            if not scores and not error:
+                error = "No completed probe samples."
             if error:
                 print(f"{narration:>11}{placement:>11}{'ERROR':>9}  {error[:40]}")
                 continue

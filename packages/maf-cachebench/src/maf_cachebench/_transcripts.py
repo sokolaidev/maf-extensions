@@ -1,7 +1,7 @@
 """Deterministic transcript generation.
 
-Cross-provider comparison is only meaningful when every provider sees byte-identical
-prompts, so transcripts are scripted up front rather than driven by live model output.
+Transcripts use deterministic scripted content and structure for cross-provider comparison,
+with fixed-width per-cell salts isolating cache prefixes. Live model output is discarded.
 Filler text is produced by a small linear congruential generator seeded from the message
 position, which keeps generation reproducible across runs, machines, and Python versions
 without pulling in :mod:`random`.

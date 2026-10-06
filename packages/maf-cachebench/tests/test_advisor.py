@@ -188,3 +188,36 @@ def test_declared_cache_price_is_used_verbatim(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(advisor.httpx, "get", lambda *a, **k: _Response())  # type: ignore[attr-defined]
     pricing = advisor.fetch_openrouter_pricing("m")
     assert pricing.cache_discount == pytest.approx(0.9)
+
+
+@pytest.mark.parametrize("field", ["errors", "turns_missing_input"])
+@pytest.mark.parametrize("strategy", ["none", "truncation"])
+def test_incomplete_cells_cannot_enter_cost_ranking(field: str, strategy: str) -> None:
+    from dataclasses import replace
+
+    incomplete = replace(_summary(strategy, repeat=2, input_tokens=1, cached=0), **{field: 1})
+    summaries = [
+        _summary("none", repeat=1, input_tokens=1000, cached=0),
+        _summary("truncation", repeat=1, input_tokens=2000, cached=0),
+        incomplete,
+    ]
+    verdict = advise(summaries, LUNA)
+    assert verdict.recommended == "none"
+    assert all(len(entry.costs) == 1 for entry in verdict.ranked)
+    with pytest.raises(ValueError, match="No cells"):
+        advise([incomplete], LUNA)
+
+
+@pytest.mark.parametrize("baseline_repeats,contender_repeats", [(1, 3), (3, 1)])
+def test_both_sides_need_repeats_for_high_confidence(
+    baseline_repeats: int,
+    contender_repeats: int,
+) -> None:
+    summaries = [
+        *(_summary("none", repeat=r, input_tokens=1000, cached=0) for r in range(baseline_repeats)),
+        *(
+            _summary("truncation", repeat=r, input_tokens=500, cached=0)
+            for r in range(contender_repeats)
+        ),
+    ]
+    assert advise(summaries, LUNA).confidence == "low"

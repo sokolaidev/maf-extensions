@@ -1,12 +1,12 @@
 """Drive the recall scenario through a real agent instead of a scripted replay.
 
-The replay harness sends every provider a byte-identical prompt, which is what makes its
-cross-provider numbers comparable. It buys that by scripting the assistant's replies, and a
+The replay harness preserves scripted content and structure across providers, with a
+fixed-width salt isolating each cell's cache prefix. It scripts the assistant's replies, and a
 scripted reply is not what an agent accumulates: real replies carry information, vary in
 length, and are themselves candidates for eviction. Replay also cannot produce a genuine
 tool-calling loop, so a turn is always exactly one model call.
 
-This module gives up byte-identity to get those back. The scenario's user turns go to a
+This module uses live replies to capture those effects. The scenario's user turns go to a
 real ``Agent`` with a real tool, and the model writes its own replies into the history that
 compaction then acts on. The consequence is that live numbers are **within-model only**:
 two models write different replies, so their histories diverge from the first turn and

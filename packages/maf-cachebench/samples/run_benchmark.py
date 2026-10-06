@@ -1,4 +1,17 @@
-"""Run the replay benchmark from Python rather than the command line."""
+"""Compare one compaction strategy against the uncompacted baseline on a live provider.
+
+This is the programmatic equivalent of:
+
+    cachebench --providers azure --sizes mid --strategies none,context_window
+
+Use the CLI for real sweeps. This sample exists to show how the pieces fit together when
+you want to drive the benchmark from your own code, for example to plug in a custom
+CompactionStrategy of your own.
+
+Requires the environment variables for whichever provider you select. For the default
+Azure provider that is AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY and
+AZURE_OPENAI_CHAT_COMPLETION_MODEL.
+"""
 
 import asyncio
 import os
@@ -17,21 +30,6 @@ from maf_cachebench import (
     summarize_cell,
 )
 from maf_cachebench._strategies import StrategyOptions
-
-"""Compare one compaction strategy against the uncompacted baseline on a live provider.
-
-This is the programmatic equivalent of:
-
-    cachebench --providers azure --sizes mid --strategies none,context_window
-
-Use the CLI for real sweeps. This sample exists to show how the pieces fit together when
-you want to drive the benchmark from your own code, for example to plug in a custom
-CompactionStrategy of your own.
-
-Requires the environment variables for whichever provider you select. For the default
-Azure provider that is AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY and
-AZURE_OPENAI_CHAT_COMPLETION_MODEL.
-"""
 
 PROVIDER = os.environ.get("CACHEBENCH_PROVIDER", "azure")
 SIZE = "mid"

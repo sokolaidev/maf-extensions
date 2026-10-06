@@ -163,12 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Number the seeds from here instead of 1. The seed number goes into the scenario "
-            "salt, so two invocations of one cell that both start at seed 1 build byte-identical "
-            "conversations -- the salt's other term is a whole-second timestamp, which concurrent "
-            "processes share. Offsetting is what makes several single-seed invocations of the "
-            "same cell into different seeds rather than one seed measured repeatedly, which is "
-            "the difference between measuring compaction's reliability and not."
+            "Number seeds from this offset. The seed number joins the run timestamp and "
+            "strategy in the scenario salt; use an offset to give resumed runs distinct "
+            "recorded seed numbers."
         ),
     )
     parser.add_argument(
@@ -904,6 +901,17 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
     Raises:
         SystemExit: If prices are neither supplied nor discoverable.
     """
+    if args.price_long_input is None and any(
+        value is not None
+        for value in (
+            args.price_long_cached,
+            args.price_long_output,
+            args.price_long_cache_write,
+        )
+    ):
+        raise SystemExit(
+            "Long-tier prices require --price-long-input and --long-context-threshold."
+        )
     if (args.long_context_threshold is None) != (args.price_long_input is None):
         raise SystemExit(
             "--long-context-threshold and --price-long-input go together; set both or neither."

@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="cachebench",
         description=(
             "Measure how Agent Framework compaction strategies interact with provider "
-            "prompt caching, by replaying byte-identical scripted transcripts."
+            "prompt caching, by replaying deterministic scripts with isolated per-cell prefixes."
         ),
     )
     parser.add_argument(

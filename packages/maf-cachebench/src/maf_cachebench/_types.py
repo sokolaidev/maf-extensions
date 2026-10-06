@@ -22,7 +22,7 @@ class TranscriptTurn:
 
     ``request`` messages are appended to history immediately before the model call and
     ``reply`` messages immediately after it. The model's real answer is discarded so that
-    every provider and every strategy replays a byte-identical conversation.
+    providers and strategies replay the same script, apart from per-cell cache-isolation salts.
     """
 
     request: tuple[Message, ...]

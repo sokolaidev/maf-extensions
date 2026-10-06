@@ -8,7 +8,7 @@ reliable way to know is to price both options against that model directly.
 This module runs a strategy sweep for a single model, converts the measured token usage
 into money, and returns a verdict. It deliberately refuses to give one when the repeats
 disagree by more than the gap between the options — several providers were measured
-swinging two- to fourfold on byte-identical input, and a confident recommendation drawn
+swinging two- to fourfold on equivalent replay workloads, and a confident recommendation drawn
 from a single sample of that would be worse than no recommendation.
 """
 
@@ -282,7 +282,14 @@ def _collect(summaries: list[CellSummary], pricing: ModelPricing) -> list[Strate
         grouped.setdefault(summary.cell.strategy, []).append(summary)
     collected: list[StrategyCost] = []
     for strategy, cells in grouped.items():
-        usable = [cell for cell in cells if cell.total_input_tokens > 0]
+        usable = [
+            cell
+            for cell in cells
+            if cell.turns > 0
+            and cell.total_input_tokens > 0
+            and not cell.errors
+            and not cell.turns_missing_input
+        ]
         if not usable:
             continue
         collected.append(
@@ -336,10 +343,10 @@ def advise(
     compacted = [entry for entry in collected if entry.strategy != baseline]
     contender = min(compacted, key=lambda entry: entry.median) if compacted else base
 
-    # Noise first: several providers were measured swinging 2-4x on byte-identical input,
+    # Noise first: several providers were measured swinging 2-4x on equivalent replay workloads,
     # and ranking those on a median of two samples would manufacture false precision.
     worst_spread = max(base.spread, contender.spread)
-    single_sample = max(len(base.costs), len(contender.costs)) < 2
+    single_sample = min(len(base.costs), len(contender.costs)) < 2
     saving = (base.median - contender.median) / base.median if base.median > 0 else 0.0
 
     if not base.cache_reported:

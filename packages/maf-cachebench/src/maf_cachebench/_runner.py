@@ -4,8 +4,8 @@ One cell is one scripted transcript replayed against one provider under one comp
 strategy. Each turn appends the scripted request messages to history, runs compaction over
 that history exactly as ``CompactionProvider.before_run`` would, sends the resulting
 projection to the provider, and then appends the scripted reply. The model's real answer
-is discarded, which is what keeps every provider and every strategy on a byte-identical
-conversation.
+is discarded, keeping the script and its structure stable across providers and strategies.
+A fixed-width per-cell salt isolates the cache prefix.
 
 Cells are run sequentially by default. Provider caches are shared, rate-limited, and
 eviction-prone, so overlapping cells would contaminate each other's measurements.

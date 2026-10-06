@@ -20,7 +20,7 @@ That puts five executables on the path. Note the **underscores** — `pyproject.
 
 | command | what it does |
 | --- | --- |
-| `cachebench` | the replay harness: byte-identical scripted transcripts, comparable **across** providers |
+| `cachebench` | the replay harness: deterministic scripts with per-cell cache isolation, comparable **across** providers |
 | `cachebench_live` | the live-agent harness: a real agent, real replies, real tool calls, one model at a time |
 | `cachebench_advise` | one model against several strategies, with a cheapest-strategy recommendation |
 | `cachebench_recall` | what each strategy destroys, on one planted conversation |
@@ -74,7 +74,7 @@ Under `cachebench` (replay), a provider that fails to construct is skipped with 
 
 ## The two harnesses, and when to use which
 
-**`cachebench` replays a scripted transcript.** Each turn appends fixed request messages, compaction runs over the history exactly as `CompactionProvider.before_run` would, the projection goes to the provider, and then a *scripted* reply is appended — the model's real answer is discarded. That is what lets every provider and every strategy replay a byte-identical conversation, and it is the only mode whose numbers compare **across** providers.
+**`cachebench` replays a scripted transcript.** Each turn appends fixed request messages, compaction runs over the history exactly as `CompactionProvider.before_run` would, the projection goes to the provider, and then a *scripted* reply is appended — the model's real answer is discarded. This preserves the scripted content and structure across providers and strategies; a fixed-width per-cell salt isolates each cache prefix. These controlled workloads support comparison **across** providers.
 
 ```bash
 # validate the matrix and see prompt sizes without spending anything
@@ -117,7 +117,7 @@ Defaults are as `cachebench_live --help` prints them. Every constructor paramete
 | `--strategies` | 11 of the 20 | comma-separated; see [strategies.md](strategies.md) |
 | `--agent` | `plain` | `harness` swaps in `create_harness_agent`, which is what production code calls. Its optional providers are switched off, because each adds tools and system-prompt text to every measured prompt |
 | `--repeats` | 1 | seeds per strategy — whole conversations driven from scratch. This is the axis that measures compaction's own reliability. 3 or more is what makes a ranking defensible |
-| `--seed-offset` | 0 | number the seeds from here. The seed number goes into the scenario salt, so two invocations that both start at seed 1 build byte-identical conversations; offsetting is what makes several single-seed invocations into different seeds rather than one seed measured repeatedly |
+| `--seed-offset` | 0 | number the seeds from here. The seed number joins the run timestamp and strategy in the scenario salt. Offsetting gives resumed runs distinct recorded seed numbers |
 
 ### Sizing the workload
 
@@ -429,7 +429,7 @@ Two independent measurement channels, and the output shows both:
 | `no_in` | turns that reported cached tokens but no input count. Some providers drop `input_token_count` on a hit; when this is non-zero, `hit%` is suppressed rather than divided by a denominator the provider never sent |
 | `eff_in@<r>` | fresh tokens plus cached tokens priced at `--cache-read-ratio`. Set it to your provider's real discount to compare strategies on real cost |
 
-`in_tok` should be **identical across repeats** for a given strategy — that is the byte-identical replay working, and it is what makes a varying `cached` column attributable to the provider rather than to the harness. The baseline to compare against is always `none`: it sends the most tokens and breaks the prefix zero times.
+`in_tok` should be similar across repeats for a given strategy. Scripts have the same structure and a fixed-width salt, whose tokenization can still vary; compare input counts when interpreting variation in `cached`. The baseline to compare against is always `none`: it sends the most tokens and breaks the prefix zero times.
 
 The harness enforces its own controls: a unique cell salt at the front of the system message so cells cannot serve each other cache hits, a system anchor sized above 1,024 tokens so prompts clear the provider minimum from turn 1, sequential execution so cells do not contend, cached tokens clamped to the input count they are a subset of, and turn 1 counted as a write since a real session pays for it too.
 
@@ -470,7 +470,7 @@ Tests are offline; the provider call is stubbed. The [testing record](research/t
 
 | Decision | State | Tracking |
 |---|---|---|
-| Replay harness: byte-identical transcripts, comparable across providers | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
+| Replay harness: deterministic scripts with per-cell cache isolation, comparable across providers | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Live harness: seed, snapshot and probe, with the control as a price reference past the window | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Records keyed on every workload and strategy setting, with the schema refusing what it cannot read | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Cost split into seeding and probing, ranking on the seeding half behind an accuracy bar | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |

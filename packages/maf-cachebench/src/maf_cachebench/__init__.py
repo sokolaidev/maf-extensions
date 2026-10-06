@@ -7,8 +7,8 @@ what that costs: how much of each prompt stays reusable under a given strategy, 
 of that reusable prefix a given provider actually serves from cache, and whether
 compacting earlier saves more prompt tokens than it loses in cache reads.
 
-Measurements come from replaying deterministic scripted transcripts, so every provider and
-every strategy sees a byte-identical conversation.
+Measurements replay deterministic scripted content and structure across providers and
+strategies, with fixed-width per-cell salts isolating their cache prefixes.
 """
 
 import importlib.metadata
