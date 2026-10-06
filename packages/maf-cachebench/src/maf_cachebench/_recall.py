@@ -567,9 +567,11 @@ def build_recall_scenario(
     fillers = [f"aside{n}" for n in range(max(filler_tool_turns, 0))]
     next_position = 1
 
-    def _filler_section(base: int) -> None:
+    section_turns, remainder = divmod(max(filler_turns, 0), 3)
+
+    def _filler_section(base: int, section: int) -> None:
         nonlocal next_position
-        for offset in range(filler_turns // 3):
+        for offset in range(section_turns + (section < remainder)):
             turns.append(_filler_pair(base + offset))
             if extras:
                 turns.append(_tool_turn(extras.pop(0), 50 + next_position, next_position))
@@ -577,7 +579,7 @@ def build_recall_scenario(
             if fillers:
                 turns.append(_tool_turn(fillers.pop(0), 70 + len(turns), 0, bearing=False))
 
-    _filler_section(0)
+    _filler_section(0, 0)
 
     # Middle: a correction that reverses the earlier plan. Losing this is worse than losing
     # a requirement, because the agent then confidently acts on superseded information.
@@ -612,12 +614,12 @@ def build_recall_scenario(
         PlantedFact("streaming pipeline", "correction", correction_turn, "the corrected direction"),
     ]
 
-    _filler_section(30)
+    _filler_section(30, 1)
 
     mid_position, next_position = next_position, next_position + 1
     turns.append(_tool_turn("mid", 41, mid_position))
 
-    _filler_section(60)
+    _filler_section(60, 2)
 
     turns.append(_tool_turn("late", 43, next_position))
 

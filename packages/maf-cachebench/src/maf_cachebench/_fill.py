@@ -67,9 +67,7 @@ _FUNCTION_CALL_TOKENS: Final[int] = 20
 pinned by which function is called, so no arguments travel.
 """
 
-#: Filler turns per section, and there are three sections. The scenario generator places
-#: ``filler_turns // 3`` pairs in each of them, so the count only moves in steps of three and
-#: asking for anything else silently rounds down.
+#: Automatic sizing adds equal padding to the scenario's three filler sections.
 _SECTIONS: Final[int] = 3
 
 #: Second point on the line the derived tool-result size is solved from. The first is a result

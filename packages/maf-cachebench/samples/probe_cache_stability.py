@@ -98,12 +98,14 @@ async def run(args: argparse.Namespace) -> int:
         if outcome.error:
             print(f"{index:>5}  ERROR {outcome.error[:60]}")
             continue
-        got = outcome.input_tokens or 0
+        got = outcome.input_tokens
         cached = outcome.cached_tokens
-        if cached is None:
-            print(f"{index:>5}{got:>9,}{'n/a':>9}{'n/a':>7}{outcome.latency_ms:>8.0f}")
+        if got is None or got <= 0 or cached is None:
+            input_text = f"{got:,}" if got is not None and got > 0 else "n/a"
+            cached_text = f"{cached:,}" if cached is not None else "n/a"
+            print(f"{index:>5}{input_text:>9}{cached_text:>9}{'n/a':>7}{outcome.latency_ms:>8.0f}")
             continue
-        hit = cached / got if got else 0.0
+        hit = cached / got
         hits.append((index, hit))
         print(f"{index:>5}{got:>9,}{cached:>9,}{hit:>6.0%}{outcome.latency_ms:>8.0f}")
 

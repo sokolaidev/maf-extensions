@@ -458,3 +458,47 @@ async def test_narration_invalid_modes_fail_before_setup(
     args = namespace["build_parser"]().parse_args(["azure", option, value])
     with pytest.raises(SystemExit, match=option):
         await run(args)
+
+
+@pytest.mark.parametrize("input_tokens", [None, 0, -1, 100])
+@pytest.mark.parametrize("valid_warm_calls", [1, 2])
+async def test_stability_requires_positive_reported_input(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    input_tokens: int | None,
+    valid_warm_calls: int,
+) -> None:
+    from maf_cachebench import CallOutcome, ProviderRuntime
+
+    namespace = runpy.run_path(str(SAMPLES / "probe_cache_stability.py"))
+    run = namespace["run"]
+    outcomes = iter(
+        [
+            CallOutcome(latency_ms=1, input_tokens=100, cached_tokens=0),
+            CallOutcome(latency_ms=1, input_tokens=input_tokens, cached_tokens=80),
+            *(
+                CallOutcome(latency_ms=1, input_tokens=100, cached_tokens=80)
+                for _ in range(valid_warm_calls)
+            ),
+        ]
+    )
+
+    async def respond(messages: Any) -> CallOutcome:
+        return next(outcomes)
+
+    monkeypatch.setitem(
+        run.__globals__, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
+    )
+    monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
+    args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(valid_warm_calls + 2)])
+    assert await run(args) == 0
+    output = capsys.readouterr().out
+    usable = valid_warm_calls + (input_tokens == 100)
+    if usable < 2:
+        assert "Not enough usable calls" in output
+    else:
+        assert f"warm calls (excluding the first): {usable}" in output
+        assert "STEADY:" in output
+    assert "INTERMITTENT:" not in output
+    if input_tokens != 100:
+        assert "n/a" in next(line for line in output.splitlines() if line.strip().startswith("2 "))

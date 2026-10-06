@@ -358,3 +358,18 @@ def test_the_combined_question_omits_the_per_lookup_count_when_it_varies() -> No
 
     assert "all 11 codes" in question
     assert "from each" not in question
+
+
+@pytest.mark.parametrize("filler_turns", [0, 1, 2, 3, 4, 5, 6, 8])
+@pytest.mark.parametrize("live", [False, True])
+def test_scenario_preserves_requested_filler_count(filler_turns: int, live: bool) -> None:
+    from maf_cachebench._live import build_live_scenario
+
+    builder = build_live_scenario if live else build_recall_scenario
+    scenario = builder(salt="s", filler_turns=filler_turns, filler_tokens=100)
+    fillers = [
+        turn
+        for turn in scenario.transcript.turns
+        if (turn.request[0].contents[0].text or "").startswith("[note ")
+    ]
+    assert len(fillers) == filler_turns
