@@ -50,8 +50,8 @@ __all__ = [
     "hashed_scoped_thread",
 ]
 
-# Experimental package (Beta): importing it emits a UserWarning rather than a FutureWarning,
-# so a host running under `python -W error` can still import it.
+# Experimental package (Beta): importing it emits a warning, and catches it when
+# `python -W error` promotes it, so such a host can still import the package.
 import warnings as _warnings
 
 
