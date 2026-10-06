@@ -21,7 +21,7 @@ import socket
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 from agent_framework import Message, apply_compaction
 
@@ -129,6 +129,18 @@ def unsupported_option(error: BaseException) -> str | None:
         if match := pattern.search(text):
             return match.group(1) or "tool_choice"
     return None
+
+
+def drop_option(options: dict[str, Any], name: str) -> bool:
+    """Remove a rejected option from either request layer without mutating shared mappings."""
+    removed = name in options
+    options.pop(name, None)
+    extra = options.get("extra_body")
+    if isinstance(extra, Mapping) and name in extra:
+        nested = cast("Mapping[str, Any]", extra)
+        options["extra_body"] = {key: value for key, value in nested.items() if key != name}
+        removed = True
+    return removed
 
 
 def _error_chain(error: BaseException) -> Iterator[BaseException]:
@@ -420,8 +432,7 @@ class ProviderCaller:
                 # option the provider named and retry immediately. Without this a single
                 # reasoning model fails every turn of every one of its cells, and the run
                 # returns nothing for it.
-                if (option := unsupported_option(exc)) and option in self.options:
-                    self.options.pop(option)
+                if (option := unsupported_option(exc)) and drop_option(self.options, option):
                     logger.warning("Provider rejected %r; retrying without it", option)
                     continue
                 return CallOutcome(

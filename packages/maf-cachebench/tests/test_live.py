@@ -10492,3 +10492,34 @@ def test_scope_tools_reject_invalid_modes(
 ) -> None:
     with pytest.raises(ValueError, match=option):
         make_scope_tools(lookups, 10, **{option: value})
+
+
+async def test_live_removes_all_rejected_nested_options_without_mutating_runtime() -> None:
+    from copy import deepcopy
+
+    rejected = ("prompt_cache_key", "temperature", "top_p", "frequency_penalty")
+
+    class Picky(StubChatClient):
+        def _inner_get_response(
+            self, *, messages: Any, stream: Any, options: Any, **kwargs: Any
+        ) -> Any:
+            extra = options.get("extra_body", {})
+            for name in rejected:
+                if name in extra:
+                    raise RuntimeError(f"Unsupported parameter: '{name}'")
+            assert extra["provider"] == {"only": ["pinned"]}
+            return super()._inner_get_response(
+                messages=messages, stream=stream, options=options, **kwargs
+            )
+
+    options = {
+        "extra_body": {**dict.fromkeys(rejected, "test-value"), "provider": {"only": ["pinned"]}}
+    }
+    original = deepcopy(options)
+    scenario = build_live_scenario(salt="nested-options", filler_turns=0, filler_tokens=0)
+    runtime = ProviderRuntime(Picky(), "stub", options)
+    outcome = await run_live(runtime, strategy_name="none", options=_options(), scenario=scenario)
+    assert outcome.error is None
+    assert outcome.dropped_options == rejected
+    assert outcome.turns_completed == outcome.turns_total
+    assert options == original

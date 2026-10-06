@@ -170,20 +170,14 @@ class StrategyOptions:
     user_min_band_share: float = DEFAULT_MIN_BAND_SHARE
     """Share of the prompt the user band must be worth before ``user_summary_anchored`` acts.
 
-    The hysteresis, and the field that says what a row of that strategy means. Without it the
-    trigger alone fires the strategy once per turn for the rest of a run that stays above it --
-    30 passes in a measured run where the design expects one or two -- because the band it reads
-    after its first pass is its own summary plus the turns since. Sweepable because the right
-    value is a property of the workload's user share rather than of the strategy: 0.0 is the
-    behaviour every run before this measured, and every archived row is one.
+    This hysteresis prevents repeated compaction while the band remains small after a
+    summary. Zero disables the minimum share; tune it to the workload's user-turn share.
     """
     user_summary_mode: str = DEFAULT_SUMMARY_MODE
     """What ``user_summary_anchored`` does with the summary its previous pass left behind.
 
-    ``recompact``, ``boundary`` or ``fold``; ``compaction/_usersummary`` says what each buys and
-    what each costs. Sweepable because the three are the arms of one measurement, and the default
-    is the arm the archive was taken on -- the recompacting one -- until a run has measured the
-    others against it.
+    ``recompact`` rewrites the standing summary, ``boundary`` preserves prior summaries,
+    and ``fold`` merges them when their accumulated size crosses the configured bound.
 
     This affects only the standalone row; the composed row always uses ``boundary``.
     """
@@ -201,7 +195,7 @@ class StrategyOptions:
     behind the earliest edit it made, so the next turns fit without another early edit. The
     default is the break-even share an edit must remove to repay the re-bill it causes, the
     anchored floor's number; ``compaction/_composed`` carries the argument. Zero stops the chain
-    at the budget, as it stopped before the setting existed.
+    at the budget.
     """
     token_budget_fraction: float = 0.5
     summarizer: SupportsChatGetResponse[Any] | None = None

@@ -377,13 +377,12 @@ def advise(
         rationale = (
             "Only one repeat per strategy, so nothing measures stability. Re-run with --repeats 3."
         )
-    elif worst_spread > UNSTABLE_SPREAD and worst_spread > abs(saving):
+    elif worst_spread > UNSTABLE_SPREAD or worst_spread > abs(saving):
         confidence = "inconclusive"
         rationale = (
-            f"Repeats of the same strategy varied by {worst_spread:.0%}, which is larger than the "
-            f"{abs(saving):.0%} gap between the options. This model's caching is too erratic "
-            f"to rank "
-            "strategies on cost."
+            f"Repeats varied by {worst_spread:.0%} against a {abs(saving):.0%} cost gap. "
+            "The measurements are too erratic to rank: spread must stay within both "
+            f"the cost gap and the {UNSTABLE_SPREAD:.0%} stability threshold."
         )
     elif saving > NEGLIGIBLE_SAVING:
         confidence = "high"

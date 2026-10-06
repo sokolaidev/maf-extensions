@@ -302,3 +302,28 @@ def test_partial_cache_reporting_lowers_comparison_confidence(partial: str) -> N
 def test_advisor_refuses_baseline_only_comparison() -> None:
     with pytest.raises(ValueError, match="compaction strategy"):
         advise([_summary("none", repeat=1, input_tokens=1000, cached=0)], LUNA)
+
+
+@pytest.mark.parametrize(
+    "base,contender",
+    [
+        ([95, 100, 105], 94),
+        ([95, 100, 105], 106),
+        ([80, 100, 120], 50),
+        ([80, 100, 120], 160),
+    ],
+)
+def test_either_spread_condition_prevents_confident_ranking(
+    base: list[int], contender: int
+) -> None:
+    summaries = [
+        *(
+            _summary("none", repeat=r, input_tokens=value * 1000, cached=0)
+            for r, value in enumerate(base)
+        ),
+        *(
+            _summary("truncation", repeat=r, input_tokens=contender * 1000, cached=0)
+            for r in range(3)
+        ),
+    ]
+    assert advise(summaries, ModelPricing(1, 1)).confidence == "inconclusive"

@@ -1111,3 +1111,32 @@ async def test_replay_retry_uses_bounded_provider_delay(
     assert result.error is not None
     assert client.calls == 3
     assert sleeps == expected
+
+
+@pytest.mark.parametrize("location", ["top", "nested", "both"])
+async def test_replay_removes_rejected_options_without_mutating_runtime(location: str) -> None:
+    from copy import deepcopy
+    from typing import Any
+
+    class Client:
+        calls = 0
+
+        async def get_response(self, messages: Any, *, options: dict[str, Any]) -> Any:
+            self.calls += 1
+            extra = options.get("extra_body", {})
+            if "prompt_cache_key" in options or "prompt_cache_key" in extra:
+                raise ValueError("Unsupported parameter: 'prompt_cache_key'")
+            assert extra["provider"] == {"only": ["pinned"]}
+            return SimpleNamespace(usage_details={"input_token_count": 7}, text="ok")
+
+    options: dict[str, Any] = {"extra_body": {"provider": {"only": ["pinned"]}}}
+    if location in ("top", "both"):
+        options["prompt_cache_key"] = "test-key"
+    if location in ("nested", "both"):
+        options["extra_body"]["prompt_cache_key"] = "test-key"
+    original = deepcopy(options)
+    client = Client()
+    outcome = await ProviderCaller(ProviderRuntime(client, "stub", options), max_retries=0)(())
+    assert outcome.error is None
+    assert client.calls == 2
+    assert options == original

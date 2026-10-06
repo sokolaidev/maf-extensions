@@ -32,7 +32,7 @@ import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import (
     Agent,
@@ -74,7 +74,13 @@ from ._recall import (
     score_answer,
     score_scoped,
 )
-from ._runner import is_connection_error, is_rate_limited, retry_after_seconds, unsupported_option
+from ._runner import (
+    drop_option,
+    is_connection_error,
+    is_rate_limited,
+    retry_after_seconds,
+    unsupported_option,
+)
 from ._strategies import StrategyOptions, build_strategy
 from ._tokenizers import stamp_reasoning_tokens
 from ._transcripts import TRUE_CHARS_PER_TOKEN, sized_text
@@ -930,14 +936,8 @@ class LiveOutcome:
     def disqualified(self, tried_limit: int) -> bool:
         """Whether any call sent a prompt larger than the context limit this run stands in for.
 
-        The limit is simulated. The model under test accepts 272,000 tokens, so a 60,000-token
-        cell means nothing unless our own code refuses what a 60,000-token model would have
-        refused: the uncompacted control at 60,000 ran at 78,003 tokens and was ranked anyway,
-        which made every "+18% versus not compacting" at that size a comparison against a
-        baseline no 60,000-token model could have produced.
-
-        Measured on billed prompt size, so a provider that reports no usage can never be
-        policed by this. That case is visible in the table anyway, because its cost is zero.
+        The simulated limit is enforced against billed prompt size even when the provider
+        accepts a larger context. Missing usage cannot establish whether a call fit.
 
         Args:
             tried_limit: The context limit this cell is standing in for.
@@ -1204,9 +1204,7 @@ def _spread_codes(codes: Sequence[str], body: str, *, labelled: bool) -> str:
 
     Keyword Args:
         labelled: Give each code its own line with a ``[record N]`` prefix. Unlabelled, the
-            codes go inline in running prose, which is a materially harder task: two
-            independent controls read the first code of each tool result and none of the
-            other seven, scoring exactly 11 of 53 both times.
+            codes go inline in running prose, so retrieval must locate them without labels.
 
     Returns:
         The body with one code inserted before each of ``len(codes)`` evenly spaced
@@ -1980,12 +1978,14 @@ async def run_live(
         before_decisions = snapshot_decisions(strategy)
         # Allow one correction per runtime option, plus tool_choice and max_tokens, then success.
         # Restore the session before resending a turn that may have persisted a partial tool call.
-        for _ in range(len(runtime_options) + 3):
+        extra = runtime_options.get("extra_body")
+        nested_count = len(cast("Mapping[str, Any]", extra)) if isinstance(extra, Mapping) else 0
+        for _ in range(len(runtime_options) + nested_count + 3):
             # Per-turn options carry the runtime's own options too: this replaces the
             # per-call option set rather than adding to it.
-            turn_options: dict[str, Any] = {
-                k: v for k, v in runtime_options.items() if k not in dropped
-            }
+            turn_options = dict(runtime_options)
+            for name in dropped:
+                drop_option(turn_options, name)
             # After the drop filter and gated on it, so a provider that rejected max_tokens
             # outright does not have it put straight back by the closing questions.
             if max_tokens is not None and "max_tokens" not in dropped:
@@ -2004,7 +2004,7 @@ async def run_live(
                 return await _attempt(text, turn_options, before, before_decisions)
             except Exception as exc:
                 option = unsupported_option(exc)
-                if option is None or option in dropped or option not in turn_options:
+                if option is None or option in dropped or not drop_option(turn_options, option):
                     error = f"{label}: {type(exc).__name__}: {exc}"
                     return None
                 dropped.append(option)
