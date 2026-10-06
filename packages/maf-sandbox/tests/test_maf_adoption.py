@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 from agent_framework import Content, FunctionInvocationContext, FunctionTool, security
-from agent_framework.security import ContentLabel, IntegrityLabel, LabelTrackingFunctionMiddleware
+from agent_framework.security import (
+    ConfidentialityLabel,
+    ContentLabel,
+    IntegrityLabel,
+    LabelTrackingFunctionMiddleware,
+)
 
 from maf_sandbox import CallerContext, Isolation, SandboxRouter, SandboxSpec
 from maf_sandbox.maf import (
@@ -419,5 +424,32 @@ def test_guided_call_preserves_policy_approval_request_and_resumes():
         assert calls == ["executed"]
         assert context.function is tool
         assert sum(item.text == "Fixed guidance." for item in context.result) == 1
+
+    asyncio.run(scenario())
+
+
+def test_tracker_forwards_positional_and_keyword_constructor_options():
+    tracker = sandbox_label_tracking_middleware(
+        IntegrityLabel.TRUSTED,
+        ConfidentialityLabel.PUBLIC,
+        False,
+        IntegrityLabel.UNTRUSTED,
+        session_state_key="custom_security_state",
+    )
+
+    async def body():
+        return "visible result"
+
+    tool = FunctionTool(name="plain", func=body)
+
+    async def scenario():
+        context = FunctionInvocationContext(function=tool, arguments={})
+
+        async def invoke():
+            context.result = await tool.invoke(arguments=context.arguments)
+
+        await tracker.process(context, invoke)
+        assert context.result[0].text == "visible result"
+        assert context.result[0].additional_properties["security_label"]["integrity"] == "trusted"
 
     asyncio.run(scenario())

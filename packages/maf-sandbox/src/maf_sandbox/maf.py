@@ -345,7 +345,7 @@ def _remember_guidance(attached: Any, committed: tuple[str, ...]) -> None:
             _GUIDANCE[attached] = committed
 
 
-def sandbox_label_tracking_middleware(**kwargs: Any) -> Any:
+def sandbox_label_tracking_middleware(*args: Any, **kwargs: Any) -> Any:
     """Build MAF label tracking with native fixed guidance where the SDK supports it.
 
     Use in place of ``LabelTrackingFunctionMiddleware``. Constructor options pass through.
@@ -391,7 +391,7 @@ def sandbox_label_tracking_middleware(**kwargs: Any) -> Any:
             finally:
                 context.function = original
 
-    return _SandboxLabelTracking(**kwargs)
+    return _SandboxLabelTracking(*args, **kwargs)
 
 
 def file_store_provenance_middleware(
