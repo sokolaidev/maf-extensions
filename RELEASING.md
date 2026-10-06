@@ -114,7 +114,7 @@ Packages version independently. There is no lockstep release, and a fix in one i
 ## What the workflow refuses to do
 
 - **Publish a tag that disagrees with the manifest.** PyPI releases are immutable, so a mismatched version would be permanent and unreproducible from this history.
-- **Publish without the full gate passing on the tagged commit.** The Tests workflow ran on a branch; a tag can point anywhere.
+- **Publish without the full gate passing on the tagged commit.** The Package and Sandbox Validation workflow ran on a branch; a tag can point anywhere.
 - **Publish a stale or mixed `dist/`.** Exactly one sdist and one wheel, both named for the package being released.
 - **Publish a wheel missing `py.typed` or the licence.** Both are invisible to this repository's own tests and break consumers.
 - **Publish a package whose dependency is not on PyPI yet** (see *Release order*).

@@ -49,6 +49,13 @@ impl BackendSession {
             .map(Checkpoint)
             .map_err(failure)
     }
+    #[cfg(feature = "bounded-storage")]
+    pub fn capture_bounded(&mut self, path: &Path, bytes: u64, files: u64) -> Result<Checkpoint, Failure> {
+        self.0
+            .prepare_checkpoint_bounded(path, bytes, files)
+            .map(Checkpoint)
+            .map_err(failure)
+    }
     pub fn committed(&mut self, checkpoint: &Checkpoint) -> Result<(), Failure> {
         self.0.confirm_commit(&checkpoint.0).map_err(failure)
     }

@@ -2,6 +2,7 @@
 
 > A research record and initial proposal, recorded on 2026-10-02: what MXC v0.9.0 adds to the suite, what the suite can offer MXC users, and how an experimental adapter could fit the existing protocol. The maintainer selected rich Python through MXC Hyperlight, with code/text execution, file inputs and output artifacts, on both Windows and Linux for the first usable version. Optional persistent Python state must be recoverable after host restart, with a durable checkpoint after every successful tool call. Host configuration may also permit recovery on another compatible machine. Allowlisted networking is desired where enforceable; closed networking remains the baseline. Transport and runtime distribution remain implementation decisions to validate. No MXC adapter is implemented or qualified by this record.
 > The agreed scope and recovery decisions now live in [MXC Hyperlight design decisions](../backends/mxc.md). This record retains the original assessment and design reasoning; the main document owns the decisions and their implementation status.
+> The follow-up logical-byte quota and local SQLite recommendations were subsequently accepted; their selected semantics now live under [Storage quotas](../backends/mxc.md#storage-quotas) and [Local storage implementation](../backends/mxc.md#local-storage-implementation). The maintainer subsequently selected [bounded clock forgiveness](../backends/mxc.md#clock-forgiveness) for result expiry and [session deletion](../backends/mxc.md#session-deletion) that preserves promised delivery while retiring the session identity. The owning design now also specifies [durable clock-budget accounting](../backends/mxc.md#durable-clock-budget-accounting) and [reservation recovery](../backends/mxc.md#reservation-recovery). The follow-up proposal below retains its pre-decision wording.
 
 MXC would extend the suite's execution environments. The proposed integration places it beneath `SandboxRouter`, with a separately qualified profile for each concrete MXC backend. Workload kinds, admission, result labels and application ownership remain in the suite. A common configuration schema does not make all MXC backends interchangeable.
 
@@ -207,3 +208,75 @@ The maintainer subsequently selected extending MXC's Hyperlight API; the [owning
 | Runtime distribution | Explicit operator-provisioned pinned artifacts during the experiment | Verified release contents, licenses, installation and upgrade experience |
 
 Adapter work and live validation are tracked by [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648), beginning with feasibility spike [#1649](https://github.com/sokolaidev/maf-extensions/issues/1649). This record does not establish implementation or live validation. Rich Python through Hyperlight is the selected priority; the remaining recommendations are not approvals or measured guarantees.
+
+## Storage retention follow-up proposal
+
+This section records a follow-up proposal on 2026-10-04 for [#1672](https://github.com/sokolaidev/maf-extensions/issues/1672). The accepted lifetime, retry and reservation policies live in the [owning design](../backends/mxc.md#session-lifetime). The implementation below remains proposed; it does not change the earlier feasibility assessment or establish runtime support.
+
+### Findings in the existing experiment
+
+At suite commit `b95508b3d579fbeb7e9504aec9d274623fedb08a`, [Store](../../../scripts/experiments/mxc_session_patch/host_store.py) owns one local database and retains every committed call, file inventory and compressed chunk. Its checkpoint and result limits bound individual publications, not cumulative storage. Independent counters in those databases would not provide atomic admission against a shared-store quota.
+
+`Store.begin` treats an absent call ID as new execution. Collection therefore cannot delete call identity when it removes a result. `Store.restore` also requires the latest checkpoint's call to remain committed: result expiry must be represented separately from execution outcome. A checkpoint can remain current after its result expires, and an old result can remain deliverable after its checkpoint is superseded.
+
+[The supervisor](../../../scripts/experiments/mxc_session_patch/host_call.py) materializes a restore directory and exports a candidate outside the database. Those copies, bounded diagnostics and interrupted work require ownership and cleanup accounting too. A sum of compressed database payload lengths would omit them. SQLite deletion also normally leaves reusable pages in the database; shrinking the file with `VACUUM` can require free space up to twice the original database size. Logical collection and physical reclamation need separate acceptance criteria. See [SQLite's VACUUM documentation](https://sqlite.org/lang_vacuum.html).
+
+### Accounting decision pending
+
+Recommend measuring both quotas in uncompressed retained checkpoint, result and artifact bytes, plus explicitly bounded metadata charges and outstanding reservations. Charge each retained object in full to its owning session; compression and content deduplication would save physical space without increasing admission capacity. Artifacts embedded in the serialized result would be counted there once; separately retained artifacts would have their own charge. Superseded checkpoints would remain charged until collection removes their references. Compact expired-call records would remain charged, so indefinitely retaining identity can eventually refuse new work even when old payloads have been collected.
+
+This model would require separate physical-space safeguards for restored files, candidate export, compression overhead, SQLite pages and journals, and cleanup or compaction. Scratch byte/count limits and maximum concurrent reservations would bound expected temporary demand; a free-space check alone would not reserve disk against unrelated writers. Publication must still handle disk exhaustion without acknowledging success. The alternative is a strict physical allocation quota covering all these files, which requires filesystem-level enforcement or a separately qualified allocator. The logical model is a recommendation awaiting a maintainer decision, not an approved interpretation of the quotas.
+
+### Proposed local transaction boundary
+
+For the first storage experiment, prefer one local SQLite database for all admitted sessions in a configured store root. Session ownership would remain an operating-system lock per session, acquired before database transactions. Admission, reservation conversion and collection would transact in the same database; guest execution would run outside its write transaction. This avoids a separate quota ledger and session database disagreeing after a crash. Database writes would serialize, which needs measurement before promising throughput. Network filesystems, remote takeover and distributed fencing would remain the separate [#1671](https://github.com/sokolaidev/maf-extensions/issues/1671) qualification.
+
+The proposed records would separate these responsibilities:
+
+| Record | Purpose |
+|---|---|
+| Store configuration | Schema/accounting version and explicit aggregate quota |
+| Session | Trusted identity, compatibility profile, owner generation, per-session quota and current checkpoint |
+| Call identity | Session and call ID, request digest and durable execution outcome; retained after payload expiry |
+| Delivery record | Result hash, retained artifact references, committed timestamp and fixed expiry |
+| Checkpoint | Independently retained file inventory and chunk references |
+| Reservation | Session, call, owner generation, maximum charges and cleanup state |
+| Content/reference records | Verified bytes and explicit checkpoint/artifact reachability |
+
+A new format should reject old databases explicitly until a migration is provided. Existing calls have no committed timestamps: opening a store must not fabricate an expiry or silently remove an earlier retry promise. Quota reductions below retained usage would block new admissions while preserving existing promises. Delivery would check identity and availability before attempting a new reservation, so a full store could still answer retries.
+
+### Publication, restart and collection
+
+| Boundary | Proposed durable behavior |
+|---|---|
+| Before execution | In one transaction, validate both available balances and persist call intent plus the complete reservation; refusal starts no guest |
+| During execution/capture | Keep reservation and prior committed state; enforce the candidate/result bounds rather than relying only on the eventual commit check |
+| Publication | Atomically publish checkpoint, result/artifact references and fixed expiry, advance the current checkpoint, and convert reservation into actual retained charges |
+| Publication failure | Keep the previous recovery point; retain the failed call identity and cleanup charge until private data is reclaimed |
+| Commit followed by lost acknowledgment | Return the saved delivery record on retry; create neither a new guest nor a new execution reservation |
+| Owner death | Acquire exclusive ownership and a new generation, establish old execution termination, reconcile publication and private scratch, then release only proven-unused capacity |
+| Expired delivery | Return `result_expired`; remove eligible payload references without changing the committed execution outcome or current checkpoint |
+| Collection interruption | Recover a committed reference/accounting transaction or roll it back; retry physical cleanup idempotently with its charge retained |
+
+A reservation age or missing PID alone would not authorize reclamation. Cleanup would use host-owned directory identities and confined no-follow access, and refuse unknown or corrupt inventory. A committed call could still have residual scratch after acknowledgment; that cleanup would retain its own charge without making the call eligible for execution again.
+
+Collection would retain roots for the current checkpoint, every unexpired delivery artifact, active reservations and any active restore or delivery reader. It would validate the reference graph before deleting an unreachable inventory or chunk, and update references and charged usage atomically. Incremental batches would bound transaction work; unfinished batches would retain their remaining charge. A corrupt live root would refuse destructive collection rather than being treated as absent. Freshly verified checkpoint bytes must still replace differing stored bytes under the same hash inside publication, preserving the experiment's existing corruption-repair and rollback behavior.
+
+Persisted expiry requires an explicit clock contract across restarts. The implementation plan must cover clock rollback and forward jumps before enabling destructive expiry; elapsed process time alone cannot establish time spent offline. Session deletion/idle expiry must also preserve promised deliveries and prevent an old session identity from being recreated as fresh while retries remain valid. These are remaining design questions, not silently selected policies.
+
+### Implementation and qualification sequence
+
+1. Settle quota accounting, then the local transaction boundary and expiry clock contract one decision at a time. Specify bounded metadata charges, scratch admission and session retirement before coding the storage format.
+2. Extend the experimental store and focused tests with the new schema, atomic dual-quota admission and retry states. Keep production adapter and cross-machine claims out of this increment.
+3. Add publication conversion, restart reconciliation and reference-based collection with process-death injection. Wire bounded private scratch and cleanup into the supervisor.
+4. Exercise the integrated experiment on GitHub runners for Windows/WHP and Linux/KVM where the required hypervisors are available, recording the exact candidate and any unavailable platform. Retain reports and hashes rather than large checkpoint trees.
+
+| Test area | Required evidence |
+|---|---|
+| Admission | Exact quota boundary; either limit exceeded; competing processes from different sessions; maximum reservation before guest launch; replay succeeds at full quota |
+| Delivery | Fixed expiry across retry/restart/config changes; matching expired ID refuses execution; changed request digest refuses; retained artifacts remain byte-identical |
+| Checkpoint independence | Latest checkpoint restores after its result expires; older result replays after newer checkpoint publication |
+| Reservation recovery | Process death before/during/after publication and cleanup; stale generation refuses; unknown scratch does not free capacity; failed cleanup remains charged |
+| Collection | Shared chunks and active readers remain pinned; corrupt root refuses deletion; interrupted batches recover; replacement of corrupt historical chunks remains transactional |
+| Storage bounds | Incompressible data, metadata/tombstone growth, scratch duplication, journal overhead, filesystem exhaustion and physical reclamation measured separately from logical usage |
+| Compatibility | Old format refuses without mutation; no invented historic expiry; unsupported remote store refuses rather than starting fresh |

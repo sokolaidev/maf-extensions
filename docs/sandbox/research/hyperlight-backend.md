@@ -504,7 +504,7 @@ On a prepared Linux KVM host, use the existing cgroup helper with those environm
 sudo env MAF_HYPERLIGHT_HTTPS_LIVE=1 MAF_HYPERLIGHT_CLOUDFLARED="$CLOUDFLARED" python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python" -- -q -s packages/maf-sandbox-hyperlight/tests/test_hyperlight_https_live.py
 ```
 
-The Tests workflow exposes the same Linux run through its `hyperlight_https` dispatch input, disabled by default. Its download is pinned and verified, and the test prints `HTTPS_METHOD_EVIDENCE` with platform, dependency versions, matrix counts, body observations and completed cleanup. Both opt-ins are required for the HTTPS test; the existing offline and loopback HTTP suites retain their original behavior.
+The Package and Sandbox Validation workflow exposes the same Linux run through its `hyperlight_https` dispatch input, disabled by default. Its download is pinned and verified, and the test prints `HTTPS_METHOD_EVIDENCE` with platform, dependency versions, matrix counts, body observations and completed cleanup. Both opt-ins are required for the HTTPS test; the existing offline and loopback HTTP suites retain their original behavior.
 
 ## Core/exec migration and native publication check, 2026-10-02
 

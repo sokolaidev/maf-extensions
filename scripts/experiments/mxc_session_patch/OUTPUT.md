@@ -31,7 +31,7 @@ Build the helper using the [existing patch instructions](README.md#apply-and-rep
 python scripts/experiments/mxc_session_patch/descriptor_probe.py --helper <native-helper> --startup <startup-snapshot> --state-dir <new-evidence-directory>
 ```
 
-The existing Tests workflow runs the same probe on GitHub Linux/KVM when dispatched with `mxc_recovery=true`. It retains JSON and bounded diagnostic streams, not snapshot directories. The probe's final assessment distinguishes successful reproduction of a limitation from successful qualification of the requested contract.
+The existing Package and Sandbox Validation workflow runs the same probe on GitHub Linux/KVM when dispatched with `mxc_recovery=true`. It retains JSON and bounded diagnostic streams, not snapshot directories. The probe's final assessment distinguishes successful reproduction of a limitation from successful qualification of the requested contract.
 
 ## Minimal console reproducer and proposed fix
 

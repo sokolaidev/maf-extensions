@@ -1,0 +1,39 @@
+--- a/src/backends/hyperlight/common/src/session_preview.rs
++++ b/src/backends/hyperlight/common/src/session_preview.rs
+@@ -123,15 +123,32 @@
+
+     /// Export into a new caller-owned directory; failure retires the uncommitted guest.
+     pub fn prepare_checkpoint(&mut self, destination: &Path) -> Result<Candidate, Error> {
++        self.prepare_checkpoint_with_limits(destination, None)
++    }
++
++    /// Export to a new directory within the host's reserved byte and file bounds.
++    pub fn prepare_checkpoint_bounded(
++        &mut self, destination: &Path, bytes: u64, files: u64,
++    ) -> Result<Candidate, Error> {
++        self.prepare_checkpoint_with_limits(destination, Some((bytes, files)))
++    }
++
++    fn prepare_checkpoint_with_limits(
++        &mut self, destination: &Path, limits: Option<(u64, u64)>,
++    ) -> Result<Candidate, Error> {
+         if self.state != State::Uncommitted {
+             return Err(Error::InvalidState(self.state));
+         }
+         self.state = State::RecoveryRequired;
+         let mut guest = self.guest.take().ok_or(Error::InvalidState(self.state))?;
+-        fs::create_dir(destination).map_err(|e| Error::Checkpoint(e.to_string()))?;
+-        guest
+-            .snapshot_to(destination)
+-            .map_err(|e| Error::Checkpoint(e.to_string()))?;
++        if let Some((bytes, files)) = limits {
++            guest.snapshot_to_bounded(destination, bytes, files)
++                .map_err(|e| Error::Checkpoint(e.to_string()))?;
++        } else {
++            fs::create_dir(destination).map_err(|e| Error::Checkpoint(e.to_string()))?;
++            guest.snapshot_to(destination)
++                .map_err(|e| Error::Checkpoint(e.to_string()))?;
++        }
+         let candidate = Candidate(Arc::new(()));
+         self.candidate = Some(candidate.clone());
+         self.guest = Some(guest);

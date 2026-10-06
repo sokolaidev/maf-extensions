@@ -1,0 +1,197 @@
+--- /dev/null
++++ b/src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs
+@@ -0,0 +1,54 @@
++// SPDX-License-Identifier: Apache-2.0
++// Copyright 2026 The Hyperlight Authors.
++
++use std::io;
++
++pub(crate) struct WriteBudget {
++    bytes: u64,
++    files: u64,
++}
++
++impl WriteBudget {
++    pub(crate) fn new(bytes: u64, files: u64) -> Self {
++        Self { bytes, files }
++    }
++
++    // Debit before file creation; failed writes never restore the allowance.
++    pub(crate) fn charge(&mut self, bytes: u64) -> io::Result<()> {
++        if self.files == 0 || bytes > self.bytes {
++            return Err(io::Error::other("snapshot export exceeds reserved bounds"));
++        }
++        self.bytes -= bytes;
++        self.files -= 1;
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn bytes_are_aggregate_and_exact_boundary_passes() {
++        let mut budget = WriteBudget::new(7, 3);
++        budget.charge(3).unwrap();
++        budget.charge(4).unwrap();
++        assert!(budget.charge(1).is_err());
++        budget.charge(0).unwrap();
++        assert!(budget.charge(0).is_err());
++    }
++
++    #[test]
++    fn refused_charge_cannot_overflow_or_consume_allowance() {
++        let mut budget = WriteBudget::new(3, 1);
++        assert!(budget.charge(u64::MAX).is_err());
++        budget.charge(3).unwrap();
++        assert!(budget.charge(0).is_err());
++    }
++
++    #[test]
++    fn empty_budget_refuses_creation() {
++        assert!(WriteBudget::new(0, 0).charge(0).is_err());
++        assert!(WriteBudget::new(0, 1).charge(1).is_err());
++    }
++}
+--- a/src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs
++++ b/src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs
+@@ -7,12 +7,18 @@
+ use tempfile::NamedTempFile;
+
+ use super::digest::{Digest256, verify_blob_file};
++use super::write_budget::WriteBudget;
+
+ /// Replace `target` atomically: a reader either sees the old
+ /// contents or the full new contents, never a partial write. A
+ /// failure before commit leaves `target` untouched and removes the
+ /// staging file.
+-pub(super) fn replace_file_atomic(target: &Path, bytes: &[u8]) -> crate::Result<()> {
++pub(super) fn replace_file_atomic(
++    target: &Path, bytes: &[u8], budget: Option<&mut WriteBudget>,
++) -> crate::Result<()> {
++    if let Some(budget) = budget {
++        budget.charge(bytes.len() as u64).map_err(|e| crate::new_error!("{}", e))?;
++    }
+     let parent = target.parent().ok_or_else(|| {
+         crate::new_error!("atomic write: target {:?} has no parent directory", target)
+     })?;
+@@ -35,8 +41,10 @@
+ /// via [`replace_file_atomic`]. Intended for small blobs (manifest,
+ /// config) where the cost of an extra atomic write is negligible
+ /// compared to the cost of reading and re-hashing the existing file.
+-pub(super) fn put_blob(blobs_dir: &Path, digest: &Digest256, bytes: &[u8]) -> crate::Result<()> {
+-    replace_file_atomic(&blobs_dir.join(&digest.hex), bytes)
++pub(super) fn put_blob(
++    blobs_dir: &Path, digest: &Digest256, bytes: &[u8], budget: Option<&mut WriteBudget>,
++) -> crate::Result<()> {
++    replace_file_atomic(&blobs_dir.join(&digest.hex), bytes, budget)
+ }
+
+ /// Write a content-addressed blob into `blobs_dir`, reusing the
+@@ -52,6 +60,7 @@
+     blobs_dir: &Path,
+     digest: &Digest256,
+     bytes: &[u8],
++    budget: Option<&mut WriteBudget>,
+ ) -> crate::Result<()> {
+     let target = blobs_dir.join(&digest.hex);
+     if let Ok(meta) = std::fs::symlink_metadata(&target)
+@@ -62,7 +71,7 @@
+     {
+         return Ok(());
+     }
+-    replace_file_atomic(&target, bytes)
++    replace_file_atomic(&target, bytes, budget)
+ }
+
+ /// Reject a path that is a symbolic link.
+--- a/src/hyperlight_host/src/sandbox/snapshot/file/mod.rs
++++ b/src/hyperlight_host/src/sandbox/snapshot/file/mod.rs
+@@ -7,6 +7,8 @@
+ mod config;
+ mod digest;
+ mod fsutil;
++mod write_budget;
++use self::write_budget::WriteBudget;
+ mod media_types;
+ pub(crate) mod reference;
+
+@@ -337,7 +339,22 @@
+     /// # }
+     /// ```
+     pub fn save(&self, path: impl AsRef<Path>, tag: &OciTag) -> crate::Result<OciDigest> {
++        self.save_with_budget(path.as_ref(), tag, None)
++    }
++
++    /// Save to a new directory, charging every staging write before file creation.
++    pub fn save_bounded(
++        &self, path: impl AsRef<Path>, tag: &OciTag, bytes: u64, files: u64,
++    ) -> crate::Result<OciDigest> {
+         let path = path.as_ref();
++        std::fs::create_dir(path)
++            .map_err(|e| crate::new_error!("bounded snapshot destination: {}", e))?;
++        self.save_with_budget(path, tag, Some(WriteBudget::new(bytes, files)))
++    }
++
++    fn save_with_budget(
++        &self, path: &Path, tag: &OciTag, mut budget: Option<WriteBudget>,
++    ) -> crate::Result<OciDigest> {
+
+         // Building the config can reject the snapshot. Do it before
+         // writing any file.
+@@ -435,7 +452,7 @@
+             Vec::new()
+         };
+
+-        let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes)?;
++        let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes, budget.as_mut())?;
+         let written_digest = OciDigest::from_oci_spec_digest(new_desc.digest());
+
+         // Replacement is by tag, not by digest: a new snapshot may
+@@ -468,11 +485,11 @@
+                 "imageLayoutVersion": OCI_LAYOUT_VERSION,
+             }))
+             .map_err(|e| crate::new_error!("failed to serialise oci-layout: {}", e))?;
+-            replace_file_atomic(&layout_marker, &layout_bytes)?;
++            replace_file_atomic(&layout_marker, &layout_bytes, budget.as_mut())?;
+         }
+
+         // Index swap is the commit point.
+-        replace_file_atomic(&index_path, &index_bytes)?;
++        replace_file_atomic(&index_path, &index_bytes, budget.as_mut())?;
+
+         Ok(written_digest)
+     }
+@@ -483,6 +500,7 @@
+         tag: &OciTag,
+         cfg: &OciSnapshotConfig,
+         cfg_bytes: &[u8],
++        mut budget: Option<&mut WriteBudget>,
+     ) -> crate::Result<Descriptor> {
+         let memory_bytes = self.memory.as_slice();
+         let memory_size = memory_bytes.len();
+@@ -500,11 +518,11 @@
+
+         // Snapshot blob: the raw memory bytes.
+         let snapshot_digest = Digest256::from_bytes(memory_bytes);
+-        put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes)?;
++        put_blob_if_absent(&blobs_dir, &snapshot_digest, memory_bytes, budget.as_deref_mut())?;
+
+         // Config blob.
+         let cfg_digest = Digest256::from_bytes(cfg_bytes);
+-        put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
++        put_blob(&blobs_dir, &cfg_digest, cfg_bytes, budget.as_deref_mut())?;
+
+         // Manifest blob.
+         let config_descriptor = DescriptorBuilder::default()
+@@ -535,7 +553,7 @@
+             .map_err(|e| crate::new_error!("failed to serialise OCI manifest: {}", e))?;
+         check_json_blob_size("manifest blob", manifest_bytes.len())?;
+         let manifest_digest = Digest256::from_bytes(&manifest_bytes);
+-        put_blob(&blobs_dir, &manifest_digest, &manifest_bytes)?;
++        put_blob(&blobs_dir, &manifest_digest, &manifest_bytes, budget)?;
+
+         let mut anns = std::collections::HashMap::new();
+         anns.insert(ANNOTATION_REF_NAME.to_string(), tag.as_str().to_string());
