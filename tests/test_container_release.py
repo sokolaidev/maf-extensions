@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import runpy
 import sys
 from pathlib import Path
 
@@ -54,9 +55,13 @@ def completed():
 
 def test_release_scope_matches_every_candidate_scan():
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
-    assert set(profiles()) == {
-        r["profile"] for r in workflow["jobs"]["scan"]["strategy"]["matrix"]["include"]
-    }
+    matrix = workflow["jobs"]["scan"]["strategy"]["matrix"]
+    if "include" in matrix:
+        scanned = {row["profile"] for row in matrix["include"]}
+    else:
+        assert matrix == {"profile": "${{ fromJSON(needs.select.outputs.profiles) }}"}
+        scanned = set(runpy.run_path(str(ROOT / "scripts/select_image_security.py"))["PROFILES"])
+    assert set(profiles()) == scanned
 
 
 @pytest.mark.parametrize(
