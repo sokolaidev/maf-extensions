@@ -188,7 +188,10 @@ def desired(
         }
     )
     reasons = state["reasons"]
-    if candidate and timestamp(candidate["observedAt"]) < timestamp(record["completedAt"]):
+    if candidate and timestamp(candidate["observedAt"]) < max(
+        timestamp(record["completedAt"]),
+        timestamp(state.get("candidateObservedAt", record["completedAt"])),
+    ):
         candidate = None
     replacement = state["baseline"] != record["registryDigest"]
     new_release = state.get("currentDigest", state["baseline"]) != record["registryDigest"]
@@ -239,6 +242,7 @@ def desired(
             else "Blocked on candidate remediation"
         )
         state["candidateEvidence"] = candidate["evidence"]
+        state["candidateObservedAt"] = candidate["observedAt"]
         state["candidateFindings"] = sorted(
             candidate["assessment"]["findings"], key=lambda item: json.dumps(item, sort_keys=True)
         )
@@ -300,7 +304,11 @@ def body(profile: str, state: dict[str, Any]) -> str:
                 for f in state["candidateFindings"]
             )
         )
-    state_json = json.dumps(state, sort_keys=True, ensure_ascii=True).replace("<", "\\u003c")
+    state_json = (
+        json.dumps(state, sort_keys=True, ensure_ascii=True)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
     text = (
         f"{MARKER}{profile} -->\n<!-- image-release-state\n{state_json}\n-->\n\n"
         "**Is your feature request related to a problem? Please describe.**\n\n"
@@ -322,7 +330,7 @@ def body(profile: str, state: dict[str, Any]) -> str:
             if state.get("candidateEvidence")
             else ""
         )
-        + "This body is maintained automatically; add maintainer notes as comments. Unchanged findings produce no update.\n"
+        + "This body is maintained automatically; add maintainer notes as comments. Newer observations advance saved ordering metadata without reminder comments.\n"
     )
     if len(text) > 60_000:
         raise ValueError("Release request exceeds the issue size limit")
@@ -389,7 +397,10 @@ def main() -> None:
             matches = [
                 i
                 for i in issues
-                if "pull_request" not in i and f"{MARKER}{profile} -->" in (i.get("body") or "")
+                if "pull_request" not in i
+                and i.get("user", {}).get("login") == "github-actions[bot]"
+                and i.get("user", {}).get("type") == "Bot"
+                and f"{MARKER}{profile} -->" in (i.get("body") or "")
             ]
             active = [i for i in matches if i["state"] == "open"]
             if len(active) > 1:

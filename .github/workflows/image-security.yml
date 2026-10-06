@@ -159,5 +159,5 @@ jobs:
           --marker '<!-- image-security-failure-tracker -->'
           --title 'Container image security checks failed'
           --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'
-          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled and manual runs select all twelve documented profiles, subject to the documented Hyperlight release-transition preflight.'
+          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled runs select all twelve documented profiles; manual runs select all profiles or one chosen profile, subject to the documented Hyperlight release-transition preflight.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-drawio maf-sandbox-hyperlight

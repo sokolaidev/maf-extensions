@@ -187,6 +187,13 @@ def test_older_candidate_cannot_undo_replacement_resolution():
     assert result["resolved"]
 
 
+def test_delayed_candidate_cannot_rewind_newer_inventory_or_findings():
+    newer = candidate(version="3", outcome="vulnerable", observedAt="2026-01-04T00:00:00Z")
+    previous = desired(observed=newer)
+    result = desired(observed=candidate(), previous=previous)
+    assert result == previous
+
+
 def test_new_vulnerability_prevents_closure_after_replacement():
     previous = desired(changed=["images/diagram-sandbox/Dockerfile"])
     record = replacement() | {
@@ -226,7 +233,14 @@ class Issues(GitHub):
         payload = json.loads(kwargs["payload"])
         self.calls.append((endpoint, kwargs["method"], payload))
         if kwargs["method"] == "POST":
-            self.items.append(payload | {"number": 1, "state": "open"})
+            self.items.append(
+                payload
+                | {
+                    "number": 1,
+                    "state": "open",
+                    "user": {"login": "github-actions[bot]", "type": "Bot"},
+                }
+            )
         else:
             self.items[0].update(payload)
         return b"{}"
@@ -272,10 +286,12 @@ def test_missing_issue_state_refuses_mutation():
     assert not client.calls
 
 
-def test_issue_state_cannot_break_its_html_comment():
-    result = desired(changed=["images/diagram-sandbox/-->file"])
+@pytest.mark.parametrize("ending", ["-->", "--!>"])
+def test_issue_state_cannot_break_its_html_comment(ending):
+    result = desired(changed=[f"images/diagram-sandbox/{ending}file"])
     match = tracker.STATE.search(tracker.body("diagram", result))
     assert match is not None
+    assert ending not in match[1]
     assert json.loads(match[1]) == result
 
 
@@ -481,6 +497,37 @@ def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):
     tracker.main()
     assert len(client.items) == 1
     assert client.items[0]["state"] == "open"
+
+
+def test_unchanged_newer_observation_prevents_delayed_intermediate_scan(reporter):
+    client, current = reporter
+    tracker.main()
+    current["observed"] = candidate(observedAt="2026-01-04T00:00:00Z")
+    tracker.main()
+    saved = copy.deepcopy(client.items)
+    current["observed"] = candidate(
+        version="3", outcome="vulnerable", observedAt="2026-01-03T00:00:00Z"
+    )
+    tracker.main()
+    assert client.items == saved
+    assert len(client.items) == 1
+
+
+@pytest.mark.parametrize("author", ["outside-contributor", "other-bot[bot]"])
+def test_unowned_marker_issue_is_never_used_or_modified(reporter, author):
+    client, _ = reporter
+    state = desired(observed=candidate())
+    forged = {
+        "number": 100,
+        "state": "open",
+        "user": {"login": author, "type": "Bot"},
+        "body": tracker.body("diagram", state),
+    }
+    client.items.append(forged)
+    tracker.main()
+    assert client.calls[0][1] == "POST"
+    assert client.items[0] == forged
+    assert len(client.items) == 2
 
 
 def test_uncertain_issue_creation_is_reconciled_without_duplicate(reporter, monkeypatch):
