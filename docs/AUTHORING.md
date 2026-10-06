@@ -4,7 +4,7 @@ How a document under `docs/` is shaped, so the next one lands in the same shape 
 
 ## One directory per extension family
 
-Put everything about one extension suite in `docs/<family>/`. Today there is one, [`sandbox/`](sandbox/README.md). Give a second family its own directory beside it — never a section inside an existing one, however much the two overlap.
+Put everything about one extension suite in `docs/<family>/`. Today there are two, [`sandbox/`](sandbox/README.md) and [`compaction/`](compaction/README.md). Give a further family its own directory beside them — never a section inside an existing one, however much the two overlap.
 
 Leave [`maintainers.md`](maintainers.md) outside the families. Release plumbing — trusted publishing, the release train, the order the packages go out in — is repo-wide and belongs to no suite.
 

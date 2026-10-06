@@ -33,6 +33,7 @@ _STEPS = _WORKFLOW["jobs"]["prepare"]["steps"]
 #: the fixture's own: the manifest moves on every release, so a copy of it here would turn
 #: this suite red whenever anybody ships.
 _RELEASES = {
+    "maf-compaction": "0.1.0",
     "maf-sandbox": "0.23.1",
     "maf-sandbox-acas": "0.13.0",
     "maf-sandbox-bicep": "0.9.6",

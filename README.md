@@ -40,6 +40,7 @@ All packages require Python 3.12–3.14. Install the backend and workload or fra
 | [`maf-sandbox-terraform`](packages/maf-sandbox-terraform/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-terraform)](https://pypi.org/project/maf-sandbox-terraform/) | Offline Terraform and OpenTofu validation and formatting | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-tui`](packages/maf-sandbox-tui/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-tui)](https://pypi.org/project/maf-sandbox-tui/) | Terminal console to inspect and dispose application sandboxes | `maf-sandbox`, `textual` |
 | [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | Local container backend using WSL's container CLI | `maf-sandbox` |
+| [`maf-compaction`](packages/maf-compaction/) | not yet released | Prompt-cache-aware compaction strategies, from the [compaction family](docs/compaction/README.md) below | `agent-framework-core` |
 
 ```
 app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  ->  the sandbox
@@ -55,6 +56,10 @@ app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  -
 The [samples README](samples/README.md) lists runnable examples and their requirements. Useful entry points include [Docker CodeAct](samples/06_docker_codeact/), [file inputs and artifacts](samples/08_docker_codeact_files/), [host tools](samples/15_acas_codeact_host_tools/), [Deep Agents](samples/17_deepagents_docker_bicep/), and [Terraform/OpenTofu validation](samples/20_terraform_validation/).
 
 Use [OpenTelemetry](packages/maf-sandbox-otel/) to observe sandbox activity and the [TUI](packages/maf-sandbox-tui/) to inspect application-owned sandboxes. The [shared MCP workload service](docs/sandbox/openclaw.md) is experimental; its documentation records bounded two-session Gateway evidence and the lifecycle and recovery qualification still pending.
+
+## maf-compaction
+
+Compaction strategies shaped around the provider's prompt cache. A prompt cache matches on an exact prefix, and every compaction rewrites history inside that prefix, so compaction breaks the cache by construction. These strategies keep a fixed head and tail of the conversation verbatim, change only the band between them, and change it by rules that produce the same bytes on every later turn. The record strategy has the model write the facts from its tool results into a record and drops the tool groups the record covers; the user-turn strategy summarises the user's turns; the composition runs both with a last-resort chain. They were measured against the framework's own strategies with a benchmark that plants facts in tool results and asks for them back after compaction; the [compaction overview](docs/compaction/README.md) carries the findings and when to use which, and the [package table](#packages) above carries the release state.
 
 ## Provenance
 

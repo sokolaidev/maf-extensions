@@ -35,10 +35,22 @@ def checkout(tmp_path: Path) -> Path:
         "maf-sandbox-b",
         "maf-sandbox-a",
     ):
-        (tmp_path / "packages" / name).mkdir()
-        (tmp_path / "dist" / f"{name.replace('-', '_')}-1.0.0-py3-none-any.whl").touch()
+        _package(tmp_path, name, "maf-sandbox>=1.0.0,<1.1" if name != "maf-sandbox" else None)
+    # A package of the workspace that is no dependent: it names no maf-sandbox requirement, so
+    # the shard has no core range to check it against and must leave it out.
+    _package(tmp_path, "maf-aside", "agent-framework-core>=1.0.0,<1.1")
     (tmp_path / "packages" / "README.md").touch()
     return tmp_path
+
+
+def _package(checkout: Path, name: str, requirement: str | None) -> None:
+    (checkout / "packages" / name).mkdir()
+    dependencies = f'["{requirement}"]' if requirement else "[]"
+    (checkout / "packages" / name / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\nversion = "1.0.0"\ndependencies = {dependencies}\n',
+        encoding="utf-8",
+    )
+    (checkout / "dist" / f"{name.replace('-', '_')}-1.0.0-py3-none-any.whl").touch()
 
 
 def run_shard(checkout: Path, shard: int, shards: int = 2) -> subprocess.CompletedProcess[str]:
@@ -60,6 +72,24 @@ def run_shard(checkout: Path, shard: int, shards: int = 2) -> subprocess.Complet
 
 def checked(checkout: Path) -> list[list[str]]:
     return [json.loads(line) for line in (checkout / "checked.jsonl").read_text().splitlines()]
+
+
+def test_a_package_without_a_core_requirement_is_not_a_dependent(checkout: Path):
+    for shard in (0, 1):
+        result = run_shard(checkout, shard)
+        assert result.returncode == 0, result.stderr
+    assert "maf-aside" not in {call[0] for call in checked(checkout)}
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    ["maf-sandbox~=1.0", "maf-sandbox!=1.0.1", "maf_sandbox>=1.0", "Maf.Sandbox[x] >=1.0"],
+)
+def test_a_core_requirement_in_any_pep_508_shape_is_a_dependent(checkout: Path, requirement: str):
+    _package(checkout, "maf-other", requirement)
+    for shard in (0, 1):
+        assert run_shard(checkout, shard).returncode == 0
+    assert "maf-other" in {call[0] for call in checked(checkout)}
 
 
 def test_every_dependent_runs_once_with_its_wheel_and_local_core(checkout: Path):
