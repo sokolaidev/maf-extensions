@@ -14,7 +14,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
     store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-    accounting = importlib.import_module("scripts.experiments.mxc_session_patch.accounting")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
