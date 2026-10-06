@@ -26,7 +26,7 @@ That puts five executables on the path. Note the **underscores** — `pyproject.
 | `cachebench_recall` | what each strategy destroys, on one planted conversation |
 | `cachebench_summary` | cost and correctness together on one conversation, with a recommendation |
 
-Everything below covers the first two. The other three take a subset of the same flags and print their own `--help`.
+Everything below covers the first two. The advisor, recall and summary commands accept only strategies that need neither a summarizer nor live-agent recall middleware; their `--help` lists those choices. Use `cachebench_live` for the full strategy set.
 
 ## Credentials and provider selection
 
@@ -58,7 +58,7 @@ OLLAMA_MODEL
 
 **Pin `OPENROUTER_PROVIDER_ORDER` if you use OpenRouter.** It dispatches to an upstream provider that can change between requests, and a different upstream is a different cache; without the pin you are measuring the router. Setting it also disables fallbacks.
 
-Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells.
+Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells. If no cells run, the command exits with failure and writes no summary table.
 
 ### What each provider reports
 

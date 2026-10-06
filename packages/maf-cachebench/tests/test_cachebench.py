@@ -860,3 +860,28 @@ async def test_final_prompt_estimate_matches_last_replay_request(
         str(content.text or "") for message in sent[-1] for content in message.contents
     )
     assert transcript.approx_final_prompt_tokens == TOKENIZER.count_tokens(final_text)
+
+
+def test_local_metrics_keep_completed_turns_without_usage_and_exclude_errors() -> None:
+    records = [
+        TurnRecord(
+            cell=_cell(),
+            turn=index,
+            history_messages=4,
+            sent_messages=4,
+            sent_tokens_local=100,
+            reusable_prefix_tokens_local=50,
+            prefix_broken=False,
+            input_tokens=usage,
+            cached_tokens=20,
+            error=error,
+        )
+        for index, (usage, error) in enumerate([(100, None), (None, None), (100, "failed")], 1)
+    ]
+    summary = summarize_cell(records, cell=_cell(), reports_cache_tokens=True)
+    assert summary.total_local_sent_tokens == 200
+    assert summary.total_local_reusable_tokens == 100
+    assert summary.total_input_tokens == 100
+    assert summary.total_cached_tokens == 20
+    assert summary.errors == 1
+    assert summary.turns_missing_input == 1

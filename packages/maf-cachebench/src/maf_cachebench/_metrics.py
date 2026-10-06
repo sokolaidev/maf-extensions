@@ -174,9 +174,9 @@ def summarize_cell(
         total_input_tokens=sum(record.input_tokens or 0 for record in successful),
         total_cached_tokens=sum(_clamped_cached(record) for record in successful),
         total_output_tokens=sum(record.output_tokens or 0 for record in successful),
-        total_local_sent_tokens=sum(record.sent_tokens_local for record in successful),
+        total_local_sent_tokens=sum(record.sent_tokens_local for record in completed),
         total_local_reusable_tokens=sum(
-            record.reusable_prefix_tokens_local for record in successful
+            record.reusable_prefix_tokens_local for record in completed
         ),
         mean_latency_ms=(sum(latencies) / len(latencies)) if latencies else None,
         p50_latency_ms=percentile(latencies, 0.5),

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ._advisor import ModelPricing, Verdict, advise, fetch_openrouter_pricing
+from ._cli_selection import select_standalone_strategies, standalone_strategy_names
 from ._metrics import summarize_cell
 from ._providers import (
     build_provider,
@@ -18,7 +19,7 @@ from ._providers import (
     provider_names,
 )
 from ._runner import ProviderCaller, run_cell
-from ._strategies import StrategyOptions, build_strategy, resolve_context_window, strategy_names
+from ._strategies import StrategyOptions, build_strategy, resolve_context_window
 from ._tokenizers import TOKENIZER_NAMES, build_tokenizer
 from ._transcripts import TRANSCRIPT_PRESETS, build_preset
 from ._types import CellKey, CellSummary
@@ -45,7 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
         "provider", help="Provider or provider:model, e.g. openrouter:openai/gpt-5.6-luna"
     )
     parser.add_argument(
-        "--strategies", default=_DEFAULT_STRATEGIES, help=f"Available: {','.join(strategy_names())}"
+        "--strategies",
+        default=_DEFAULT_STRATEGIES,
+        help=f"Available: {','.join(standalone_strategy_names())}",
     )
     parser.add_argument(
         "--size", default="mid", choices=list(TRANSCRIPT_PRESETS), help="Transcript preset."
@@ -252,6 +255,7 @@ async def run_advice(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
+    select_standalone_strategies(args.strategies)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

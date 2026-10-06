@@ -194,6 +194,8 @@ def _validate_selection(name: str, selected: Sequence[str], known: Sequence[str]
     Raises:
         SystemExit: If any selected entry is not known.
     """
+    if not selected:
+        raise SystemExit(f"At least one {name} is required.")
     unknown = [entry for entry in selected if entry not in known]
     if unknown:
         raise SystemExit(f"Unknown {name}: {', '.join(unknown)}. Available: {', '.join(known)}")
@@ -377,6 +379,10 @@ async def run_benchmark(args: argparse.Namespace) -> int:
             strategies=strategies,
             on_record=_append,
         )
+
+    if not summaries:
+        print("No benchmark cells ran; check the provider configuration.", flush=True)
+        return 1
 
     cache_read_ratio = None if args.no_cost else args.cache_read_ratio
     print()

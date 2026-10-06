@@ -10,11 +10,12 @@ from collections.abc import Sequence
 from agent_framework import Message, apply_compaction
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
+from ._cli_selection import select_standalone_strategies, standalone_strategy_names
 from ._metrics import serialize_message
 from ._providers import build_provider, parse_provider_selector, provider_names
 from ._recall import RecallScore, build_recall_scenario, score_answer
 from ._runner import ProviderCaller
-from ._strategies import StrategyOptions, build_strategy, strategy_names
+from ._strategies import StrategyOptions, build_strategy
 from ._summary import (
     DEFAULT_MIN_CORRECTNESS,
     JointOutcome,
@@ -44,7 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("provider", help="Provider or provider:model.")
     parser.add_argument(
-        "--strategies", default=_DEFAULT_STRATEGIES, help=f"Available: {','.join(strategy_names())}"
+        "--strategies",
+        default=_DEFAULT_STRATEGIES,
+        help=f"Available: {','.join(standalone_strategy_names())}",
     )
     parser.add_argument(
         "--filler-turns", type=int, default=9, help="Padding turns between planted facts."
@@ -258,6 +261,7 @@ async def run_summary(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
+    strategies = select_standalone_strategies(args.strategies)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
@@ -271,7 +275,7 @@ async def run_summary(args: argparse.Namespace) -> int:
     pricing = _resolve_pricing(args, provider, probe.model)
 
     outcomes: list[JointOutcome] = []
-    for strategy_name in [entry.strip() for entry in args.strategies.split(",") if entry.strip()]:
+    for strategy_name in strategies:
         print(f"-> {strategy_name}", flush=True)
         outcomes.append(await _measure(args, provider, model_override, strategy_name, pricing))
 
