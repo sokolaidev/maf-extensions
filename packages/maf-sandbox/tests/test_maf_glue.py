@@ -5522,6 +5522,9 @@ class TestArgumentProvenanceMiddleware:
         import logging as _logging
 
         monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
+        from agent_framework import security
+
+        monkeypatch.setattr(security, "rewritten_arguments", None, raising=False)
         monkeypatch.setattr(_maf, "_ORIGINAL_ARGUMENTS_KEY", "renamed_by_a_compatible_minor")
 
         with caplog.at_level(_logging.WARNING, logger=_maf.__name__):

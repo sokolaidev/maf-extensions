@@ -1363,7 +1363,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bubblewrap"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/maf-sandbox-bubblewrap" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1389,7 +1389,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-deepagents"
-version = "0.4.6"
+version = "0.4.7"
 source = { editable = "packages/maf-sandbox-deepagents" }
 dependencies = [
     { name = "deepagents" },
@@ -1426,7 +1426,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-drawio"
-version = "0.4.2"
+version = "0.4.3"
 source = { editable = "packages/maf-sandbox-drawio" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1441,7 +1441,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-hyperlight"
-version = "0.8.2"
+version = "0.8.3"
 source = { editable = "packages/maf-sandbox-hyperlight" }
 dependencies = [
     { name = "hyperlight-sandbox" },
@@ -1507,7 +1507,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-wslc"
-version = "0.27.1"
+version = "0.27.2"
 source = { editable = "packages/maf-sandbox-wslc" }
 dependencies = [
     { name = "maf-sandbox" },

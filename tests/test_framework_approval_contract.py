@@ -13,13 +13,13 @@ from agent_framework import (
     Message,
 )
 from maf_sandbox import CallerContext, Isolation, SandboxRouter, SandboxSpec
-from maf_sandbox.maf import SandboxResult, sandboxed_tool
+from maf_sandbox.maf import SandboxResult, sandbox_label_tracking_middleware, sandboxed_tool
 from maf_sandbox.testing import InMemoryStore, InProcessSandboxBackend
 
 
 class ScriptedClient(FunctionInvocationLayer, BaseChatClient):
-    def __init__(self, responses):
-        super().__init__()
+    def __init__(self, responses, **kwargs):
+        super().__init__(**kwargs)
         self.responses = iter(responses)
 
     async def _inner_get_response(self, *, messages, stream, options, **kwargs) -> Any:
@@ -27,7 +27,7 @@ class ScriptedClient(FunctionInvocationLayer, BaseChatClient):
         return next(self.responses)
 
 
-def _guarded_tool(executed):
+def _guarded_tool(executed, *, guidance=()):
     def build(session):
         async def guarded(value: str) -> SandboxResult:
             """Record an approved operation."""
@@ -50,15 +50,21 @@ def _guarded_tool(executed):
         source_integrity="untrusted",
         result_contract=True,
         approval_mode="always_require",
+        standing_guidance=guidance,
     )[0]
 
 
+@pytest.mark.parametrize("native_guidance", [False, True])
 @pytest.mark.parametrize("resume_scope", ["same", "different", "missing"])
 @pytest.mark.parametrize("approved", [True, False])
-def test_sandbox_body_requires_approval_bound_to_the_issuing_session(resume_scope, approved):
+def test_sandbox_body_requires_approval_bound_to_the_issuing_session(
+    resume_scope, approved, native_guidance
+):
     async def exercise():
         executed = []
-        guarded = _guarded_tool(executed)
+        guarded = _guarded_tool(
+            executed, guidance=("Only approved operations execute.",) if native_guidance else ()
+        )
         client = ScriptedClient(
             [
                 ChatResponse(
@@ -73,7 +79,8 @@ def test_sandbox_body_requires_approval_bound_to_the_issuing_session(resume_scop
                 ),
                 ChatResponse(messages=Message(role="assistant", contents=["done"])),
                 ChatResponse(messages=Message(role="assistant", contents=["still done"])),
-            ]
+            ],
+            middleware=[sandbox_label_tracking_middleware()] if native_guidance else [],
         )
         session = AgentSession(session_id="issuing-session")
         first = await client.get_response(

@@ -212,9 +212,15 @@ The framework expands hidden references before the body runs. A file name argume
 
 With `argument_provenance_middleware`, a kind can check which argument positions changed. Without it, `positions_holding_hidden_content` compares against stored payloads and can report extra matches. Ask before host code can change the hidden-content store, then use `echoed_name` to render a safe name or position.
 
-The middleware uses a private framework record, guarded by upgrade tests. If tracking is active but that record is missing, the helper warns and treats every queried position as possibly rewritten.
+The helper prefers the public `rewritten_arguments(context)` API when available and validates that the queried values are the complete current argument. A scalar marker applies to every queried position. Empty public maps still need the legacy availability check because the API does not distinguish unavailable tracking from no rewrites. MAF 1.20.0 uses the existing private-record adapter, guarded by upgrade tests. If tracking is active but neither path establishes provenance, the helper warns and treats every queried position as possibly rewritten. A completed-call guard prevents inherited child tasks from consuming stale exact provenance; generated values and calls outside that guard retain the conservative containment fallback.
 
 The host's policy normally blocks expanded untrusted arguments. Host approval settings, logging-only settings or an integrity opt-in can allow them through. Confidentiality checks still apply. Report positions rather than echoing possibly hidden values.
+
+### Native fixed guidance
+
+Hosts can use `maf_sandbox.maf.sandbox_label_tracking_middleware()` in place of `LabelTrackingFunctionMiddleware`; its constructor options pass through. On SDKs with the native fixed-guidance channel, the adapter supplies the immutable attachment snapshot through a separate tool copy for each call. It removes the already-validated local guidance items before the framework appends its own, preserving exactly-once delivery and the framework's confidentiality and principal labels. Direct calls and MAF 1.20.0 keep the local rendering. Native capability detection is isolated to the upstream result-labeling signature because MAF exposes no public capability flag; pinned-source tests exercise the actual native branch.
+
+Templates containing `{call_id}` retain local rendering for the host-created artifact route. Finite completion/verdict fields and trusted host explanations retain the structured-result contract and its raised declaration. This adoption does not broaden the admitted framework range or remove local validation.
 
 ## What the shipped kinds declare
 
@@ -233,6 +239,7 @@ For tools with standing guidance, read the workload claim from `maf_sandbox_deri
 
 | Decision | State | Tracking |
 |---|---|---|
+| Public provenance and native fixed-guidance adapters | Implemented with MAF 1.20.0 fallback and local lifetime/availability guards | [#1749](https://github.com/sokolaidev/maf-extensions/pull/1749) (merged) |
 | Wrapper owns labels, checks file reads and preserves standing guidance | Implemented | [Kind-authoring guide](kinds/writing-a-kind.md) and [host configuration](hosts.md) |
 | Four-field `SandboxResult` | Implemented in `maf-sandbox`; opt-in with `result_contract=True` | [Kind-authoring guide](kinds/writing-a-kind.md) |
 | Use the result contract in all four kinds, samples and live checks | Implemented for Bicep, Terraform/OpenTofu, CodeAct and draw.io, including their samples and live checks | Bicep by [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged); Terraform/OpenTofu by [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); draw.io by [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); CodeAct by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged), completing [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) |
