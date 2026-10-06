@@ -9,8 +9,10 @@ from collections.abc import Sequence
 from agent_framework import Message, apply_compaction
 
 from ._cli_selection import (
+    preflight_strategies,
     select_standalone_strategies,
     standalone_strategy_names,
+    validate_generation_caps,
     validate_recall_counts,
 )
 from ._metrics import serialize_message
@@ -191,12 +193,22 @@ async def run_recall(args: argparse.Namespace) -> int:
     """
     strategies = select_standalone_strategies(args.strategies)
     validate_recall_counts(args)
+    validate_generation_caps(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
 
     if args.repeats <= 0:
         raise SystemExit("--repeats must be greater than 0.")
+
+    preflight_strategies(
+        strategies,
+        StrategyOptions(
+            tokenizer=build_tokenizer(args.tokenizer),
+            max_context_window_tokens=args.context_window,
+            max_output_tokens=args.max_output_tokens,
+        ),
+    )
 
     rows: list[tuple[str, int, RecallScore]] = []
     for strategy_name in strategies:

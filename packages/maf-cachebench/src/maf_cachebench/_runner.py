@@ -81,9 +81,8 @@ _CONNECTION_TYPES: Final[tuple[type[BaseException], ...]] = (
 # from, which is how ``APIConnectionError`` usually reaches us: its own message is "Connection
 # error." and nothing structural survives the rendering.
 #
-# Every marker is a phrase rather than a word. A bare "timeout" would match a provider refusing
-# a request option *called* timeout, and that refusal would then be retried four times before
-# the option-drop loop it belongs to ever saw it -- the same shape as the "429" substring bug.
+# Match complete connection-failure phrases. Option names and numeric substrings belong
+# to their dedicated rejection and rate-limit handlers.
 _CONNECTION_MARKERS: Final[tuple[str, ...]] = (
     "connection error",
     "connection reset",

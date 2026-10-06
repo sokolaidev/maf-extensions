@@ -3,9 +3,24 @@
 import argparse
 import math
 from collections.abc import Sequence
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, cast
+
+from agent_framework import TokenizerProtocol
 
 from ._providers import parse_provider_selector, provider_names
-from ._strategies import forces_records, needs_summarizer, strategy_names
+from ._strategies import (
+    StrategyOptions,
+    build_strategy,
+    forces_records,
+    needs_summarizer,
+    resolve_context_window,
+    strategy_names,
+)
+from ._transcripts import build_preset
+
+if TYPE_CHECKING:
+    from agent_framework._clients import SupportsChatGetResponse
 
 
 def validate_unique_selection(name: str, selected: Sequence[str]) -> None:
@@ -94,6 +109,71 @@ def validate_recall_counts(args: argparse.Namespace) -> None:
 
 
 def require_baseline(strategies: Sequence[str]) -> None:
-    """Require the control before spending calls on a recommendation."""
+    """Require both the control and a compaction alternative before measurement."""
     if "none" not in strategies:
         raise SystemExit("The 'none' baseline must be included.")
+
+    if not any(name != "none" for name in strategies):
+        raise SystemExit("At least one non-none strategy is required for a comparison.")
+
+
+class _PreflightSummarizer:
+    """Validate constructors without creating a provider client."""
+
+    async def get_response(self, *args: Any, **kwargs: Any) -> Any:
+        """Refuse provider work during preflight."""
+        raise RuntimeError("preflight must not call a summarizer")
+
+
+def preflight_strategies(strategies: Sequence[str], options: StrategyOptions) -> None:
+    """Validate selected constructors without provider work or output changes."""
+    for name in strategies:
+        built_from = options
+        if needs_summarizer([name]) and options.summarizer is None:
+            built_from = replace(
+                options, summarizer=cast("SupportsChatGetResponse[Any]", _PreflightSummarizer())
+            )
+        try:
+            build_strategy(name, built_from)
+        except ValueError as error:
+            raise SystemExit(
+                f"{name} rejects this configuration: {error} Each parameter named there is the "
+                "flag of the same name, with underscores written as dashes."
+            ) from error
+
+
+def preflight_replay(
+    args: argparse.Namespace,
+    strategies: Sequence[str],
+    sizes: Sequence[str],
+    tokenizer: TokenizerProtocol,
+) -> None:
+    """Resolve and validate each transcript budget before creating clients or files."""
+    for size in sizes:
+        transcript = build_preset(size, salt="preflight", tokenizer=tokenizer)
+        preflight_strategies(
+            strategies,
+            StrategyOptions(
+                tokenizer=tokenizer,
+                max_context_window_tokens=resolve_context_window(
+                    transcript.approx_final_prompt_tokens,
+                    override=args.context_window,
+                    max_output_tokens=args.max_output_tokens,
+                ),
+                max_output_tokens=args.max_output_tokens,
+                keep_last_groups=getattr(args, "keep_last_groups", 6),
+                keep_last_tool_call_groups=getattr(args, "keep_tool_groups", 4),
+            ),
+        )
+
+
+def validate_generation_caps(args: argparse.Namespace) -> None:
+    """Reject unusable token limits while preserving zero-valued optional record controls."""
+    for name in ("answer_max_tokens", "response_max_tokens"):
+        value = getattr(args, name, None)
+        if value is not None and value <= 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be positive.")
+    for name in ("record_max_tokens", "record_target_tokens", "max_groups_before_record"):
+        value = getattr(args, name, None)
+        if value is not None and value < 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be non-negative.")

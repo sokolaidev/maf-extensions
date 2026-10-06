@@ -10,9 +10,11 @@ from typing import Any
 
 from ._advisor import ModelPricing, Verdict, advise, fetch_openrouter_pricing
 from ._cli_selection import (
+    preflight_replay,
     require_baseline,
     select_standalone_strategies,
     standalone_strategy_names,
+    validate_generation_caps,
     validate_pricing_options,
 )
 from ._metrics import summarize_cell
@@ -258,12 +260,14 @@ async def run_advice(args: argparse.Namespace) -> int:
     strategies = select_standalone_strategies(args.strategies)
     require_baseline(strategies)
     validate_pricing_options(args)
+    validate_generation_caps(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
     if args.repeats <= 0:
         raise SystemExit("--repeats must be greater than 0.")
 
+    preflight_replay(args, strategies, [args.size], build_tokenizer(args.tokenizer))
     pricing = None
     if provider != "openrouter" or args.price_input is not None:
         pricing = _resolve_pricing(args, provider, model_override or provider)

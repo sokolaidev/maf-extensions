@@ -242,7 +242,9 @@ def test_pricing_bounds_cached_tokens(cached: int, normalized: int) -> None:
     assert cost_of(summary, LUNA) == pytest.approx(
         ((1000 - normalized) * 0.2 + normalized * 0.02) / 1_000_000
     )
-    assert advise([summary], LUNA).baseline.hit_rate == pytest.approx(normalized / 1000)
+    assert advise(
+        [summary, _summary("truncation", repeat=1, input_tokens=500, cached=0)], LUNA
+    ).baseline.hit_rate == pytest.approx(normalized / 1000)
 
 
 @pytest.mark.parametrize(
@@ -295,3 +297,8 @@ def test_partial_cache_reporting_lowers_comparison_confidence(partial: str) -> N
     verdict = advise(summaries, LUNA)
     assert verdict.confidence == "low"
     assert next(row for row in verdict.ranked if row.strategy == partial).cache_reported is False
+
+
+def test_advisor_refuses_baseline_only_comparison() -> None:
+    with pytest.raises(ValueError, match="compaction strategy"):
+        advise([_summary("none", repeat=1, input_tokens=1000, cached=0)], LUNA)

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -31,7 +31,9 @@ from maf_compaction import (
 )
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
+from ._cli_selection import preflight_strategies as _build_or_exit
 from ._cli_selection import (
+    validate_generation_caps,
     validate_pricing_options,
     validate_recall_counts,
     validate_summarizer_selector,
@@ -68,9 +70,7 @@ from ._records import (
 )
 from ._run_identity import new_run_id
 from ._strategies import (
-    STRATEGIES_NEEDING_SUMMARIZER,
     StrategyOptions,
-    build_strategy,
     forces_records,
     needs_summarizer,
     strategy_names,
@@ -3173,64 +3173,6 @@ def _workload_settings(args: argparse.Namespace) -> WorkloadSettings:
     )
 
 
-class _PreflightSummarizer:
-    """The client a summarizer-needing strategy is built against when the run configured none.
-
-    It exists so :func:`_build_or_exit` can run a strategy's constructor, and with it every
-    parameter check that constructor makes, before a summarizer has been chosen. Constructors
-    store a client and do not call it, so this is never asked anything; if it ever is, that is
-    a pre-flight doing work it must not do, and it says so.
-    """
-
-    async def get_response(self, *args: Any, **kwargs: Any) -> Any:
-        """Refuse: nothing built for a pre-flight is ever run."""
-        raise RuntimeError(
-            "the pre-flight summarizer stand-in was called; a pre-flight must not run a strategy"
-        )
-
-
-def _build_or_exit(strategies: Sequence[str], options: StrategyOptions) -> None:
-    """Build every selected strategy once, before the run spends anything.
-
-    This is where the numeric flags are range-checked, and it is deliberately not a second
-    copy of the checks. Each strategy validates its own bounds in its own constructor --
-    ``compaction/`` ships without this package, so the constraint has to live there -- and a
-    duplicate here would give a sweep two places to disagree about what is legal. What this
-    adds is *when*: without it a bad ``--band-share`` surfaced on the first seed, after the
-    provider was built, the pricing fetched and the first call paid for, and a bad one under
-    ``--dry-run`` surfaced not at all, because the dry run built from defaults rather than
-    from the flags it was printing a plan for.
-
-    A strategy needing a summarizer is built against a stand-in client when the run configured
-    none, rather than skipped. Skipping it left its parameters unchecked in exactly the case a
-    dry run is most often used -- planning a cell before choosing a provider -- and it hid more
-    than ranges: on ``tool_and_user_summary_anchored`` a ``--trigger-fraction`` at or above the
-    record half's ``--fallback-fraction`` is refused by the constructor, and a dry run without
-    ``--summarizer-provider`` printed a clean plan for it. The stand-in is never called; the
-    missing client is still reported separately, where the run needs it, and says what to do.
-
-    Args:
-        strategies: The selected strategy names.
-        options: What they will be built from.
-
-    Raises:
-        SystemExit: If any strategy rejects the configuration.
-    """
-    for name in strategies:
-        built_from = options
-        if name in STRATEGIES_NEEDING_SUMMARIZER and options.summarizer is None:
-            built_from = replace(
-                options, summarizer=cast("SupportsChatGetResponse[Any]", _PreflightSummarizer())
-            )
-        try:
-            build_strategy(name, built_from)
-        except ValueError as error:
-            raise SystemExit(
-                f"{name} rejects this configuration: {error} Each parameter named there is the "
-                "flag of the same name, with underscores written as dashes."
-            ) from error
-
-
 def _progress(record: SeedRecord) -> str:
     """Return the line printed the moment a seed lands.
 
@@ -3989,6 +3931,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
             "A provider is required, unless --from-jsonl is rebuilding a table from a results file."
         )
     validate_recall_counts(args)
+    validate_generation_caps(args)
     validate_pricing_options(args)
     for name in ("repeats", "probe_repeats", "combined_repeats"):
         if getattr(args, name) <= 0:

@@ -94,6 +94,7 @@ from maf_cachebench import (
     wants_client_side_history,
 )
 from maf_cachebench._advisor import ModelPricing
+from maf_cachebench._cli_selection import preflight_strategies as _build_or_exit
 from maf_cachebench._live import (
     CONNECTION_ATTEMPTS,
     CONNECTION_BASE_DELAY,
@@ -120,7 +121,6 @@ from maf_cachebench._live_cli import (
     CellStats,
     _accuracy_note,
     _aggregate,
-    _build_or_exit,
     _control_message_gap,
     _cost,
     _coverage,

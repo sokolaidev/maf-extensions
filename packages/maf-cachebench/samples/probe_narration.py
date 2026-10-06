@@ -35,7 +35,12 @@ from maf_cachebench import (
     score_samples,
     wants_client_side_history,
 )
-from maf_cachebench._cli_selection import validate_recall_counts, validate_unique_selection
+from maf_cachebench._cli_selection import (
+    preflight_strategies,
+    validate_generation_caps,
+    validate_recall_counts,
+    validate_unique_selection,
+)
 from maf_cachebench._run_identity import new_run_id
 
 #: Points of correctness range above which a control cannot be ranked against. Matches the
@@ -183,12 +188,21 @@ async def run(args: argparse.Namespace) -> int:
         under, which is a result worth failing a script on.
     """
     validate_recall_counts(args)
+    validate_generation_caps(args)
     if args.repeats <= 0:
         raise SystemExit("--repeats must be greater than 0.")
     narrations = [item.strip() for item in args.narrations.split(",") if item.strip()]
     placements = [item.strip() for item in args.placements.split(",") if item.strip()]
     validate_unique_selection("narration", narrations)
     validate_unique_selection("placement", placements)
+    preflight_strategies(
+        ["none"],
+        StrategyOptions(
+            tokenizer=build_tokenizer("tiktoken"),
+            max_context_window_tokens=args.context_window,
+            max_output_tokens=args.max_output_tokens,
+        ),
+    )
     provider, model_override = parse_provider_selector(args.provider)
     runtime = build_provider(
         provider, temperature=None, response_max_tokens=16, model=model_override

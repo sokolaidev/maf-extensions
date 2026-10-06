@@ -13,7 +13,9 @@ from typing import Any
 from agent_framework import Message, TokenizerProtocol
 
 from ._cli_selection import (
+    preflight_replay,
     replay_strategy_names,
+    validate_generation_caps,
     validate_summarizer_selector,
     validate_unique_selection,
 )
@@ -362,6 +364,7 @@ async def run_benchmark(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
+    validate_generation_caps(args)
     if not math.isfinite(args.cache_read_ratio) or args.cache_read_ratio < 0:
         raise SystemExit("--cache-read-ratio must be finite and non-negative.")
     providers = _split(args.providers)
@@ -393,6 +396,7 @@ async def run_benchmark(args: argparse.Namespace) -> int:
         raise SystemExit("--run-id must be a filename stem without paths or reserved characters.")
     args.run_id = args.run_id if args.run_id is not None else new_run_id()
     tokenizer = build_tokenizer(args.tokenizer)
+    preflight_replay(args, strategies, sizes, tokenizer)
     _print_preflight(providers, sizes, strategies, args.repeats)
 
     # Stream every turn to disk as it completes. A long sweep is hours of paid API calls,

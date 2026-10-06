@@ -10,9 +10,11 @@ from agent_framework import Message, apply_compaction
 
 from ._advisor import ModelPricing, fetch_openrouter_pricing
 from ._cli_selection import (
+    preflight_strategies,
     require_baseline,
     select_standalone_strategies,
     standalone_strategy_names,
+    validate_generation_caps,
     validate_pricing_options,
     validate_recall_counts,
 )
@@ -291,9 +293,19 @@ async def run_summary(args: argparse.Namespace) -> int:
     require_baseline(strategies)
     validate_pricing_options(args)
     validate_recall_counts(args)
+    validate_generation_caps(args)
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
+
+    preflight_strategies(
+        strategies,
+        StrategyOptions(
+            tokenizer=build_tokenizer(args.tokenizer),
+            max_context_window_tokens=args.context_window,
+            max_output_tokens=args.max_output_tokens,
+        ),
+    )
 
     probe = build_provider(
         provider,

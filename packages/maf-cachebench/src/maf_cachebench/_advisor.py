@@ -338,7 +338,7 @@ def advise(
         cannot support a recommendation.
 
     Raises:
-        ValueError: If no priced cells were supplied, or the baseline is missing from them.
+        ValueError: If priced cells lack the baseline or a compaction alternative.
     """
     collected = _collect(summaries, pricing)
     if not collected:
@@ -357,7 +357,9 @@ def advise(
     # reported as "every option ties with not compacting" even though the alternatives
     # might be 50% dearer.
     compacted = [entry for entry in collected if entry.strategy != baseline]
-    contender = min(compacted, key=lambda entry: entry.median) if compacted else base
+    if not compacted:
+        raise ValueError("At least one compaction strategy is required for a comparison.")
+    contender = min(compacted, key=lambda entry: entry.median)
 
     # A cost gap smaller than repeat variability cannot support a ranking.
     worst_spread = max(base.spread, contender.spread)

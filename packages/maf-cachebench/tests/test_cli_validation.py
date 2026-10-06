@@ -919,3 +919,124 @@ async def test_replay_safe_run_id_keeps_both_outputs_under_out(tmp_path: Path) -
         "trial-1.2_ok-records.jsonl",
         "trial-1.2_ok-summary.csv",
     }
+
+
+@pytest.mark.parametrize("entry", ["replay", "advisor", "summary", "recall"])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--context-window", "0"],
+        ["--context-window", "-1"],
+        ["--context-window", "100", "--max-output-tokens", "100"],
+        ["--max-output-tokens", "-1"],
+    ],
+)
+async def test_budget_preflight_preserves_output_before_provider_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entry: str, argv: list[str]
+) -> None:
+    module, run = {
+        "replay": (_cli, _cli.run_benchmark),
+        "advisor": (_advise_cli, _advise_cli.run_advice),
+        "summary": (_summary_cli, _summary_cli.run_summary),
+        "recall": (_recall_cli, _recall_cli.run_recall),
+    }[entry]
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Budget validation must precede provider and pricing setup")
+
+    monkeypatch.setattr(module, "build_provider", unexpected)
+    if hasattr(module, "_resolve_pricing"):
+        monkeypatch.setattr(module, "_resolve_pricing", unexpected)
+    out = tmp_path / "out"
+    out.mkdir()
+    archive = out / "existing-records.jsonl"
+    archive.write_bytes(b"prior archive\n")
+    if entry == "replay":
+        selection = [
+            "--providers",
+            "azure",
+            "--out",
+            str(out),
+            "--run-id",
+            "existing",
+            "--sizes",
+            "small",
+        ]
+    else:
+        selection = ["azure"]
+        if entry == "advisor":
+            selection += ["--out", str(out), "--size", "small"]
+    args = module.build_parser().parse_args([*selection, "--strategies", "none,truncation", *argv])
+    with pytest.raises(SystemExit, match="rejects this configuration"):
+        await run(args)
+    assert archive.read_bytes() == b"prior archive\n"
+    assert list(out.iterdir()) == [archive]
+
+
+@pytest.mark.parametrize("module,run", COMMANDS[:1] + COMMANDS[2:])
+async def test_baseline_only_selection_fails_before_setup(
+    monkeypatch: pytest.MonkeyPatch, module: Any, run: Any
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Comparison validation must precede setup")
+
+    monkeypatch.setattr(module, "build_provider", unexpected)
+    monkeypatch.setattr(module, "build_tokenizer", unexpected)
+    with pytest.raises(SystemExit, match="non-none"):
+        await run(module.build_parser().parse_args(["azure", "--strategies", "none"]))
+
+
+@pytest.mark.parametrize("entry", ["replay", "advisor", "recall", "summary", "live", "narration"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+async def test_generation_caps_fail_before_setup(
+    monkeypatch: pytest.MonkeyPatch, entry: str, value: str
+) -> None:
+    import runpy
+
+    from maf_cachebench import _live_cli
+
+    option = "--response-max-tokens" if entry in {"replay", "advisor"} else "--answer-max-tokens"
+    if entry == "narration":
+        namespace = runpy.run_path(
+            str(Path(__file__).resolve().parent.parent / "samples/probe_narration.py")
+        )
+        run = namespace["run"]
+        globals_ = run.__globals__
+        parser = namespace["build_parser"]()
+    else:
+        module, run = {
+            "replay": (_cli, _cli.run_benchmark),
+            "advisor": (_advise_cli, _advise_cli.run_advice),
+            "summary": (_summary_cli, _summary_cli.run_summary),
+            "recall": (_recall_cli, _recall_cli.run_recall),
+            "live": (_live_cli, _live_cli.run_live_comparison),
+        }[entry]
+        globals_ = vars(module)
+        parser = module.build_parser()
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Generation limits must fail before tokenizer/provider setup")
+
+    monkeypatch.setitem(globals_, "build_provider", unexpected)
+    monkeypatch.setitem(globals_, "build_tokenizer", unexpected)
+    argv = [] if entry == "replay" else ["azure"]
+    with pytest.raises(SystemExit, match=option):
+        await run(parser.parse_args([*argv, option, value]))
+
+
+@pytest.mark.parametrize(
+    "option", ["--record-max-tokens", "--record-target-tokens", "--max-groups-before-record"]
+)
+async def test_optional_record_caps_reject_negative_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid record caps must fail before setup")
+
+    monkeypatch.setattr(_live_cli, "build_tokenizer", unexpected)
+    with pytest.raises(SystemExit, match=option):
+        await _live_cli.run_live_comparison(
+            _live_cli.build_parser().parse_args(["azure", option, "-1"])
+        )
