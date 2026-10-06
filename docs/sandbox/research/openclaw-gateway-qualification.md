@@ -288,3 +288,33 @@ The executed service, provider, baseline checker and Docker helper retained the 
 |---|---|---|
 | Bicep host qualification | One-session stdio and bounded two-session HTTP Gateway paths qualified with a deterministic provider; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
 | Multiple Gateway sessions | Two-session HTTP outcomes, Gateway-abort cancellation, bounded reload/restart, withheld-result behavior and one active-service crash/reconciliation case qualified on recorded candidates; selective retirement and remaining crash/recovery matrix open | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+
+
+## Startup cleanup refusal and explicit Gateway recovery (2026-10-06)
+
+The extended lifecycle checker passed on clean candidate `ca1d6271e67272fdbf72790a9646a93b761f05e9`, using the same pinned OpenClaw 2026.9.7, published Python dependencies, immutable prepared image and compiler configuration above. The report SHA-256 is `4edfcad41e1b60d114c24ad8fc2643713ba06f8c74874f9a352cceb7cdc4725a`; the private `cleanup-refusal.json` evidence SHA-256 is `1de180a75e3854a3fe28c214937ba813732b0979f4dc7a317c2b1a19b75319df`. The report retains `complete_matrix: false` and repeats the baseline, reload/restart, withheld-result and active-service crash cases.
+
+| Check | Observed result |
+|---|---|
+| Exact retained orphan | The compiler survived forced service exit and was then paused; its owner-file bytes and sole-container identity remained unchanged |
+| Injected cleanup refusal | The observer returned false at the Bicep resource cleanup contract, once during replacement startup and once during startup rollback, only while Docker independently reported that exact orphan in the retained scope |
+| Readiness and admission | The service reported failed ASGI startup with poisoned admission, no active call and zero sessions; pinned Uvicorn exited with status 3, and the supervisor observed a refused TCP connection rather than a ready listener |
+| Gateway refusal | Fresh turns in both existing logical sessions reported the Bicep binding disconnected, with no workload result and zero additional service dispatches |
+| Service recovery | Removing the fault and restarting with identical owner bytes, source identities and dependencies removed the paused orphan before ASGI startup completion and authenticated readiness |
+| Gateway recovery | An explicit idle Gateway process restart rebuilt discovery; both logical sessions obtained distinct fresh MCP sessions and completed newly submitted valid calls |
+| No replay and isolation | Exactly 21 service dispatches remained through final shutdown; the unrelated owner's sentinel survived, and independent post-execution inspection found zero owned containers and fixture processes |
+
+The observer's opt-in `--refuse-cleanup-file` names the exact retained orphan. While present it reports unconfirmed cleanup without calling the underlying resource cleanup; a mismatched owner/container refuses the fault. Removing the file restores delegation to the real resource cleanup. This injects the service's cleanup-result boundary, not a Docker API, permission or daemon failure. No production service or binding code changed. The fault is persistent across both startup cleanup attempts and never edits the retained owner directory.
+
+Service readiness alone did not restore the Gateway's tool catalog in a preceding clean attempt (`9cbcad99`). Both refused turns reported the disconnected binding; after service recovery, the next turn failed before tool execution because the explicit allowlist matched no registered callable tool. That attempt wrote no success report. The successful procedure therefore includes an explicit idle Gateway restart after service readiness, retaining the logical session names and submitting new calls. It does not qualify automatic discovery recovery, arbitrary retries or transparent replay. The prior active-crash evidence without intervening refused turns remains a separate, narrower observation.
+
+Use the same reproduction command above with a fresh root. The checker creates and removes its fault file, retains `cleanup-refusal.json` alongside `recovery.json`, `lifecycle-report.json` and private transport/provider evidence, and rejects an unexpected successful startup, another orphan/process, missing refusal attempts, wrong exit status, an unrelated Gateway error or fabricated workload projection. The offline evidence suite has 150 passing cases. Removing the no-readiness/no-dispatch check made three negative cases fail. The complete local gate passed with 14,782 tests and 906 skips; Markdown examples and 226 live documentation trackers also passed. These checks validate the harness separately from the real Gateway/Docker execution.
+
+The changed fixtures were executed with LF bytes, identical to the committed Git bytes in this candidate. Other source identities are unchanged from the preceding execution.
+
+| Changed source | Executed and Git-LF SHA-256 |
+|---|---|
+| `openclaw_gateway_lifecycle_check.py` | `a2e3dcaee1d86da0d7a75b96eea5754cc35bc1499190a97a771ac195921529ad` |
+| `openclaw_http_observer.py` | `01e87632aed5aa1e9dac1f71cb5870505f279f3e4b3639e2dbb66d16d6ba17fe` |
+
+[#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open. Cleanup failure after a completed call, automatic Gateway discovery recovery after an unavailable service, selective active/idle runtime retirement, registry saturation/churn and the remaining transport/MAF combinations still need evidence. Host/daemon crashes, actual-model retry decisions, an independent watchdog and unattended operation remain unqualified.
