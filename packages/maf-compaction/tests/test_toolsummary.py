@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatContext, Message
+from agent_framework import AgentSession, CharacterEstimatorTokenizer, ChatContext, Message
 from agent_framework._compaction import included_token_count, project_included_messages
 
 from maf_compaction._anchored import REMOVAL_MARKER
@@ -1635,10 +1635,14 @@ async def _run(
     middleware: ToolResultRecallMiddleware,
     messages: list[Message],
     finish_reason: str | None = None,
+    session: AgentSession | None = None,
 ) -> dict[str, Any]:
     """Drive one middleware pass and return the options the call went out with."""
     context = ChatContext(
-        client=None, messages=[Message(role="user", contents=["q"])], options={"temperature": 0}
+        client=None,
+        messages=[Message(role="user", contents=["q"])],
+        options={"temperature": 0},
+        session=session,
     )
     recorder = _Recorder(context, messages, finish_reason)
     await middleware.process(context, recorder)
@@ -1700,6 +1704,27 @@ async def test_forgetting_the_pending_decision_stops_the_next_call_forcing() -> 
     assert "tool_choice" not in after
     assert not _armings, "the recall tool was armed on a call the snapshot had reset"
     assert middleware.forced_calls == 0
+
+
+async def test_the_middleware_refuses_a_second_session() -> None:
+    """A decision taken for one session must not pin a call made for another."""
+    _armings.clear()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=1_000,
+        tokenizer=TOKENIZER,
+        arm=lambda: _armings.append(1),
+        trigger_fraction=0.1,
+    )
+    big = _conversation(tool_turns=8)
+
+    await _run(middleware, big, session=AgentSession(session_id="a"))
+    with pytest.raises(RuntimeError, match="once per session"):
+        await _run(middleware, big, session=AgentSession(session_id="b"))
+
+    assert not _armings, "the recall tool was armed for a session that never asked"
+    middleware.forget_pending()
+    released = await _run(middleware, big, session=AgentSession(session_id="b"))
+    assert "tool_choice" not in released, "a restore releases the session binding"
 
 
 async def test_the_middleware_stops_once_a_record_exists() -> None:

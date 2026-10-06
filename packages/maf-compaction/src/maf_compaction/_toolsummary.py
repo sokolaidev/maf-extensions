@@ -1938,6 +1938,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 class ToolResultRecallMiddleware(ChatMiddleware):
     """Force the recall call once, so phase 2 has something to anchor on.
 
+    Serves one conversation. This middleware, its gate and the strategy it is paired with each
+    hold that conversation's decisions on the instance, so an agent serving several sessions
+    needs a stack per session. A second session reaching this middleware raises rather than
+    inherit the first one's pending decision.
+
     Args:
         max_input_tokens: Ceiling the prompt must stay under, matching the strategy's.
         tokenizer: Token counter, matching the strategy's.
@@ -2061,6 +2066,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._records_truncated = 0
         self._seen_record = False
         self._awaiting_record = False
+        self._session_id: str | None = None
 
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.
@@ -2075,10 +2081,32 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         conversation past the forced call, so the record that call was writing is not in the
         state being restored to; leaving the middleware waiting for it would suppress the next
         ask on the evidence of a turn that no longer exists.
+
+        It also releases the session this middleware is bound to, so the restored conversation
+        may continue under a session of its own.
         """
         self._force_next = False
         self._reforce_next = False
         self._awaiting_record = False
+        self._session_id = None
+
+    def _bind_session(self, context: ChatContext) -> None:
+        """Bind to the first session seen, and refuse any other.
+
+        Raises:
+            RuntimeError: If the call belongs to a different session than earlier calls did.
+        """
+        if context.session is None:
+            return
+        session_id = context.session.session_id
+        if self._session_id is None:
+            self._session_id = session_id
+        elif session_id != self._session_id:
+            raise RuntimeError(
+                f"ToolResultRecallMiddleware is bound to session {self._session_id!r} and was "
+                f"called for session {session_id!r}. Build the middleware, its RecallGate and "
+                "its strategy once per session."
+            )
 
     @property
     def forced_calls(self) -> int:
@@ -2159,7 +2187,12 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         Whether the *next* call is pinned is the whole of the decision, and it is taken in
         :meth:`_record_due`, which is the one place the rule is written down.
+
+        Raises:
+            RuntimeError: If the call belongs to another session than the one this middleware
+                is bound to.
         """
+        self._bind_session(context)
         forced_this_call = self._force_next
         if forced_this_call:
             # Replaced rather than mutated: options may be shared with the caller's own dict,
