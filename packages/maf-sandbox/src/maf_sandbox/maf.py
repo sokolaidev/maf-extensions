@@ -351,6 +351,7 @@ def sandbox_label_tracking_middleware(**kwargs: Any) -> Any:
     Use in place of ``LabelTrackingFunctionMiddleware``. Constructor options pass through.
     Older SDKs and call-id templates retain the wrapper's rendering and validation.
     """
+    from agent_framework import Content
     from agent_framework.security import LabelTrackingFunctionMiddleware
 
     class _SandboxLabelTracking(LabelTrackingFunctionMiddleware):
@@ -376,6 +377,8 @@ def sandbox_label_tracking_middleware(**kwargs: Any) -> Any:
                 if not committed:
                     return
                 result = context.result
+                if isinstance(result, Content) and result.type == "function_approval_request":
+                    return
                 if not isinstance(result, list) or len(cast("list[Any]", result)) < len(committed):
                     raise ValueError("Sandbox fixed guidance is missing from the validated result.")
                 tail = cast("list[Any]", result)[-len(committed) :]
@@ -3794,6 +3797,9 @@ class ScopedFileStores:
 
     ``factory(scope, thread_id)`` must return an independently confined native store for each
     pair. Native stores are retained unchanged, including their concurrency capabilities.
+    Providers are read-only by default; writable scratch stores must be separate from sinks.
+    ``provenance_factory(scope, thread_id, store)`` restores a record before publication;
+    it must finish synchronously and must not re-enter this registry.
     Bindings are retained for this registry's lifetime; reaching ``max_scopes`` refuses new
     scopes rather than evicting provenance for stored bytes. Use one registry per host lifetime.
     """
@@ -3803,12 +3809,20 @@ class ScopedFileStores:
         factory: Callable[[str, str], Any],
         *,
         floor: SourceIntegrity | None = None,
+        provenance_factory: Callable[[str, str, Any], FileStoreProvenance] | None = None,
+        read_only: bool = True,
         max_scopes: int = 256,
     ) -> None:
         if type(max_scopes) is not int or max_scopes <= 0:
             raise ValueError("max_scopes must be a positive integer.")
+        if provenance_factory is not None and floor is not None:
+            raise ValueError("Set the floor on the restored provenance record, not the registry.")
+        if type(read_only) is not bool:
+            raise ValueError("read_only must be a boolean.")
         self._factory = factory
         self._floor = floor
+        self._provenance_factory = provenance_factory
+        self._read_only = read_only
         self._max_scopes = max_scopes
         self._bindings: dict[tuple[str, str], FileStoreBinding] = {}
         self._lock = threading.Lock()
@@ -3832,13 +3846,25 @@ class ScopedFileStores:
                 raise ValueError(
                     "The factory must return a distinct confined store for each scope."
                 )
-            provenance = FileStoreProvenance(floor=self._floor)
+            provenance = (
+                self._provenance_factory(scope, thread_id, store)
+                if self._provenance_factory is not None
+                else FileStoreProvenance(floor=self._floor)
+            )
+            if not isinstance(cast("object", provenance), FileStoreProvenance) or any(
+                provenance is bound.provenance for bound in self._bindings.values()
+            ):
+                raise ValueError(
+                    "The factory must return a distinct provenance record for each scope."
+                )
             binding = FileStoreBinding(
                 scope=scope,
                 thread_id=thread_id,
                 store=store,
                 provenance=provenance,
-                provider=FileAccessProvider(store=store, session_scoped=False),
+                provider=FileAccessProvider(
+                    store=store, session_scoped=False, disable_write_tools=self._read_only
+                ),
                 middleware=file_store_provenance_middleware(provenance),
             )
             self._bindings[key] = binding

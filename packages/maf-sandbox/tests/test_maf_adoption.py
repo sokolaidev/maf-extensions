@@ -114,7 +114,7 @@ def test_empty_public_map_cannot_hide_missing_tracking(monkeypatch):
     from maf_sandbox import maf
 
     monkeypatch.setattr(security, "rewritten_arguments", lambda context: {}, raising=False)
-    monkeypatch.setattr(maf, "_reachable_middleware", lambda: object())
+    monkeypatch.setattr(maf, "_reachable_middleware", object)
     context = SimpleNamespace(arguments={"files": ["a", "b"]}, metadata={})
 
     async def body():
@@ -386,5 +386,38 @@ def test_schema_alias_cannot_strand_hidden_provenance_under_the_old_name():
 
         await tracker.process(context, inner)
         assert seen and 0 in seen[0]
+
+    asyncio.run(scenario())
+
+
+def test_guided_call_preserves_policy_approval_request_and_resumes():
+    calls = []
+
+    async def body():
+        calls.append("executed")
+        return [Content.from_text("diagnostic"), Content.from_text("Fixed guidance.")]
+
+    tool = attach(body)
+    tracker = sandbox_label_tracking_middleware()
+    request = Content(type="function_approval_request")
+
+    async def scenario():
+        context = FunctionInvocationContext(function=tool, arguments={})
+
+        async def suspend():
+            context.result = request
+
+        await tracker.process(context, suspend)
+        assert context.result is request
+        assert context.function is tool
+        assert calls == []
+
+        async def resume():
+            context.result = await context.function.invoke(arguments=context.arguments)
+
+        await tracker.process(context, resume)
+        assert calls == ["executed"]
+        assert context.function is tool
+        assert sum(item.text == "Fixed guidance." for item in context.result) == 1
 
     asyncio.run(scenario())
