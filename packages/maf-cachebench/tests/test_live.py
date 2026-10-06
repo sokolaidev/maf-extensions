@@ -79,6 +79,7 @@ from maf_cachebench import (
     ProbeOutcome,
     ProviderRuntime,
     StrategyOptions,
+    SummarizerUsage,
     UsageRecorder,
     build_live_agent,
     build_live_scenario,
@@ -3841,8 +3842,7 @@ def test_cost_includes_generation_and_summarizer_charges() -> None:
         tool_calls_made=0,
         turns_completed=1,
         turns_total=1,
-        summarizer_input_tokens=1_000_000,
-        summarizer_output_tokens=100_000,
+        summarizer_usage=(SummarizerUsage(1_000_000, 0, 100_000),),
     )
 
     assert _cost(base, pricing) == pytest.approx(2.0)
@@ -3885,8 +3885,7 @@ def test_total_cost_is_the_agent_plus_its_own_summarizer() -> None:
         tool_calls_made=0,
         turns_completed=1,
         turns_total=1,
-        summarizer_input_tokens=500_000,
-        summarizer_output_tokens=50_000,
+        summarizer_usage=(SummarizerUsage(500_000, 0, 50_000),),
     )
 
     agent_only = (2_000_000 * 1.0 + 100_000 * 10.0) / 1_000_000
@@ -3918,8 +3917,7 @@ def test_a_cache_write_rate_charges_every_uncached_input_token_the_agent_and_sum
         tool_calls_made=0,
         turns_completed=1,
         turns_total=1,
-        summarizer_input_tokens=400_000,
-        summarizer_output_tokens=50_000,
+        summarizer_usage=(SummarizerUsage(400_000, 0, 50_000),),
     )
 
     summarizer = (400_000 * 1.25 + 50_000 * 10.0) / 1_000_000
@@ -7041,42 +7039,37 @@ def test_narration_probe_declares_every_flag_it_reads() -> None:
     assert set(args.placements.split(",")) <= {"spread", "buried", "head"}
 
 
-async def test_run_live_forces_client_side_history_without_being_asked() -> None:
-    """A Responses-API client must have store=False set by run_live, not by its caller.
+async def test_run_live_forces_client_side_history_without_being_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
 
-    When the service owns the conversation, MAF skips history loading and the agent sends
-    only the new turn: compaction has nothing to act on and every setting measures the same
-    thing. The live CLI has always forced this. A calibration probe calling run_live directly
-    did not, and reported all three narration modes as stable with ranges of 0 to 7 points --
-    against 78 points for the same model measured properly -- because the model was reading a
-    history the client had never compacted.
-    """
+    class Storing(StubChatClient):
+        def _inner_get_response(
+            self, *, messages: Any, stream: Any, options: Any, **kwargs: Any
+        ) -> Any:
+            seen.append(options.get("store"))
+            return super()._inner_get_response(
+                messages=messages, stream=stream, options=options, **kwargs
+            )
 
-    class StoringRuntime:
-        """Minimal stand-in exposing what the forcing looks at."""
-
-        STORES_BY_DEFAULT = True
-
-    runtime = SimpleNamespace(client=StoringRuntime(), model="stub", options={})
-
-    assert wants_client_side_history(runtime.client) is True
-    assert "store" not in runtime.options
-
-    # run_live sets it before doing anything else; the call is expected to fail past that
-    # point because the stub is not a real client, which is enough to prove the ordering.
-    with contextlib.suppress(Exception):
-        await run_live(
-            cast(Any, runtime),
+    monkeypatch.setattr(
+        "maf_cachebench._live.wants_client_side_history",
+        lambda client, *, allow_server_history=False: not allow_server_history,
+    )
+    runtime = ProviderRuntime(client=Storing(), model="stub", options={})
+    for allow in (False, True):
+        seen.clear()
+        outcome = await run_live(
+            runtime,
             strategy_name="none",
-            options=StrategyOptions(
-                tokenizer=TOKENIZER, max_context_window_tokens=1_000, max_output_tokens=100
-            ),
-            scenario=build_live_scenario(
-                salt="store", filler_turns=1, filler_tokens=10, tool_turns=6
-            ),
+            options=_options(),
+            scenario=_probe_scenario(),
+            allow_server_history=allow,
         )
-
-    assert runtime.options.get("store") is False
+        assert outcome.error is None
+        assert seen and all(value is (None if allow else False) for value in seen)
+        assert runtime.options == {}
 
 
 async def test_server_history_can_still_be_opted_into() -> None:
@@ -10090,3 +10083,58 @@ async def test_live_accepts_summarizer_resolving_to_the_same_model(
     )
     args.provider = "azure:stub-model"
     assert await run_live_comparison(args) == 0
+
+
+async def test_summarizer_usage_retains_cache_hits_and_per_request_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = [SummarizerUsage(100, 50, 10), SummarizerUsage(300, 200, 20)]
+
+    class Inner:
+        async def get_response(self, *args: Any, **kwargs: Any) -> ChatResponse[Any]:
+            usage = calls.pop(0)
+            return ChatResponse(
+                messages=Message(role="assistant", contents=["summary"]),
+                usage_details=UsageDetails(
+                    input_token_count=usage.input_tokens,
+                    cache_read_input_token_count=usage.cached_tokens,
+                    output_token_count=usage.output_tokens,
+                ),
+            )
+
+    meter = MeteredClient(Inner())
+    await meter.get_response([])
+    await meter.get_response([])
+    outcome = await run_live(
+        ProviderRuntime(client=StubChatClient(), model="stub"),
+        strategy_name="none",
+        options=replace(_options(), summarizer=cast(Any, meter)),
+        scenario=_probe_scenario(),
+    )
+    assert outcome.error is None
+    assert outcome.summarizer_usage == (
+        SummarizerUsage(100, 50, 10),
+        SummarizerUsage(300, 200, 20),
+    )
+    pricing = ModelPricing(
+        1,
+        0.1,
+        output_per_million=2,
+        cache_write_per_million=1.25,
+        long_context_threshold=200,
+        long_context=ModelPricing(3, 0.3, output_per_million=4, cache_write_per_million=3.75),
+    )
+    expected = (50 * 1.25 + 50 * 0.1 + 10 * 2 + 100 * 3.75 + 200 * 0.3 + 20 * 4) / 1_000_000
+    assert _summarizer_cost(outcome, pricing) == pytest.approx(expected)
+    assert _cost(outcome, pricing) - _cost(
+        replace(outcome, summarizer_usage=()), pricing
+    ) == pytest.approx(expected)
+
+
+async def test_unknown_live_strategy_fails_before_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unknown strategies must fail before setup")
+
+    monkeypatch.setattr("maf_cachebench._live_cli.build_tokenizer", unexpected)
+    with pytest.raises(SystemExit, match="Unknown strategies"):
+        await run_live_comparison(build_parser().parse_args(["azure", "--strategies", "none,typo"]))

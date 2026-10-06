@@ -26,7 +26,7 @@ That puts five executables on the path. Note the **underscores** — `pyproject.
 | `cachebench_recall` | what each strategy destroys, on one planted conversation |
 | `cachebench_summary` | cost and correctness together on one conversation, with a recommendation |
 
-Everything below covers the first two. The advisor, recall and summary commands accept only strategies that need neither a summarizer nor live-agent recall middleware; their `--help` lists those choices. Use `cachebench_live` for the full strategy set.
+Everything below covers the first two. The advisor, recall and summary commands accept only strategies that need neither a summarizer nor live-agent recall middleware; their `--help` lists those choices. Use `cachebench_live` for the full strategy set. Replay excludes the three strategies requiring live record or user-summary middleware. Its `summarization` and `token_budget_summarize` strategies require `--summarizer-provider` and cannot run under `--dry-run`, which makes no provider calls. The advisor resolves prices before measurement, including catalogue lookup for the resolved OpenRouter model.
 
 ## Credentials and provider selection
 
@@ -286,7 +286,7 @@ The tool prints the full legend under every table; this is the short form.
 | `probe$` | what the probing cost — the instrument. Every probe re-sends the whole snapshot, so a strategy that compacted hard collects that discount once per probe, on a phase no deployed agent has. Folding it in turned one cell's -14.1% into -3.5% and flipped the sign on two others |
 | `run$` | `seed$` + `probe$`: what was actually billed. Here because it is the number earlier write-ups quote, not because it ranks anything |
 | `seed$+-` | spread between the cheapest and dearest seed, on `seed$`. **A gap smaller than this is not a result.** `0%` with one seed means stability is unknown, not that it is stable |
-| `summ$` | what this strategy's own summarization calls cost, of `seed$` |
+| `summ$` | what this strategy's own summarization calls cost, of `seed$`; cache hits and long-context rates are applied per summarizer request |
 | `vs none$` | `seed$` against the control's. `?` means the comparison is unavailable |
 | `facts` | planted facts surviving compaction into the snapshot: recall's ceiling, scored against exactly the context every probe was answered from. A mean over seeds; a row whose seeds disagree gets a per-seed line under the table, because 50/53 on the record row is four seeds at 53 and one at 37 |
 | `lost` | compaction removed it, so the model could not use it — **the damage** |

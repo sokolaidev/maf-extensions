@@ -40,6 +40,7 @@ from ._live import (
     LiveOutcome,
     MeteredClient,
     ModelCall,
+    SummarizerUsage,
     build_live_scenario,
     probe_count,
     run_live,
@@ -984,7 +985,9 @@ def _cost(outcome: LiveOutcome, pricing: ModelPricing) -> float:
     return agent_cost + _summarizer_cost(outcome, pricing)
 
 
-def _long_totals(calls: Sequence[ModelCall], pricing: ModelPricing) -> tuple[int, int, int]:
+def _long_totals(
+    calls: Sequence[ModelCall | SummarizerUsage], pricing: ModelPricing
+) -> tuple[int, int, int]:
     """Return the input, cached and output tokens of the calls billed at the long-context rates.
 
     Per call, because the tier is decided per request: a run whose last ten calls crossed the
@@ -1000,17 +1003,15 @@ def _long_totals(calls: Sequence[ModelCall], pricing: ModelPricing) -> tuple[int
 
 
 def _summarizer_cost(outcome: LiveOutcome, pricing: ModelPricing) -> float:
-    """Return what a strategy's own summarization calls cost.
-
-    Reported as its own column rather than folded silently into the total. A shared meter
-    once leaked one strategy's summarizer spend into every later row as a flat addition,
-    which a single total cannot show but a per-row column makes obvious.
-    """
-    # No cached count is reported for these calls, so all of their input is priced as uncached,
-    # at the cache-write rate where the model charges one, as the agent's own uncached input is.
-    return (
-        pricing.input_cost(outcome.summarizer_input_tokens, 0)
-        + outcome.summarizer_output_tokens * pricing.output_per_million / 1_000_000
+    """Price summarizer requests using their cache usage and individual context tiers."""
+    long_input, long_cached, long_output = _long_totals(outcome.summarizer_usage, pricing)
+    return pricing.tiered_cost(
+        outcome.summarizer_input_tokens,
+        sum(call.cached_tokens for call in outcome.summarizer_usage),
+        outcome.summarizer_output_tokens,
+        long_input_tokens=long_input,
+        long_cached_tokens=long_cached,
+        long_output_tokens=long_output,
     )
 
 
@@ -3973,6 +3974,9 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")
     strategies = [entry.strip() for entry in args.strategies.split(",") if entry.strip()]
+    unknown = set(strategies) - set(strategy_names())
+    if unknown:
+        raise SystemExit(f"Unknown strategies: {', '.join(sorted(unknown))}.")
     if "none" not in strategies:
         raise SystemExit("The 'none' control must be included; every comparison is relative to it.")
     mute_unrooted_summary_warnings()
@@ -4172,9 +4176,6 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     # forced: a 16-turn conversation reported a one-message prompt on every row.
     stores_by_default = bool(getattr(runtime.client, "STORES_BY_DEFAULT", False))
     if wants_client_side_history(runtime.client, allow_server_history=workload.server_history):
-        # run_live forces this itself; setting it here too keeps the note honest about what
-        # the run will actually do.
-        runtime.options["store"] = False
         print(
             f"note: {runtime.model} keeps history server-side by default. Forcing store=False so "
             "the history is sent by the client and compaction actually applies.",

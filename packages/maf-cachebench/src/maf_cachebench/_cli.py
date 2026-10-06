@@ -12,6 +12,7 @@ from typing import Any
 
 from agent_framework import Message, TokenizerProtocol
 
+from ._cli_selection import replay_strategy_names
 from ._metrics import summarize_cell
 from ._providers import (
     PROVIDER_SPECS,
@@ -26,8 +27,8 @@ from ._runner import CallOutcome, ProviderCaller, run_cell
 from ._strategies import (
     StrategyOptions,
     build_strategy,
+    needs_summarizer,
     resolve_context_window,
-    strategy_names,
 )
 from ._tokenizers import TOKENIZER_NAMES, build_tokenizer
 from ._transcripts import TRANSCRIPT_PRESETS, build_preset
@@ -75,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strategies",
         default=_DEFAULT_STRATEGIES,
-        help=f"Comma-separated. Available: {','.join(strategy_names())}",
+        help=f"Comma-separated. Available: {','.join(replay_strategy_names())}",
     )
     parser.add_argument(
         "--sizes",
@@ -240,11 +241,13 @@ async def _run_matrix(
     run_id: str = args.run_id
     runtimes: dict[str, ProviderRuntime] = {}
     summarizer: Any = None
-    if args.summarizer_provider is not None:
+    if args.summarizer_provider is not None and not args.dry_run:
+        summarizer_provider, summarizer_model = parse_provider_selector(args.summarizer_provider)
         summarizer = build_provider(
-            args.summarizer_provider,
+            summarizer_provider,
             temperature=None if args.no_temperature else args.temperature,
             response_max_tokens=512,
+            model=summarizer_model,
         ).client
 
     all_records: list[TurnRecord] = []
@@ -349,12 +352,17 @@ async def run_benchmark(args: argparse.Namespace) -> int:
     _validate_selection(
         "provider", [parse_provider_selector(p)[0] for p in providers], provider_names()
     )
-    _validate_selection("strategy", strategies, strategy_names())
+    _validate_selection("strategy", strategies, replay_strategy_names())
     _validate_selection("size", sizes, list(TRANSCRIPT_PRESETS))
     if args.repeats <= 0:
         raise SystemExit("--repeats must be greater than 0.")
-    if "summarization" in strategies and args.summarizer_provider is None and not args.dry_run:
-        raise SystemExit("The 'summarization' strategy requires --summarizer-provider.")
+    if needs_summarizer(strategies):
+        if args.dry_run:
+            raise SystemExit(
+                "Summarization strategies require provider calls; omit them for --dry-run."
+            )
+        if args.summarizer_provider is None:
+            raise SystemExit("Summarization strategies require --summarizer-provider.")
 
     args.run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
     tokenizer = build_tokenizer(args.tokenizer)

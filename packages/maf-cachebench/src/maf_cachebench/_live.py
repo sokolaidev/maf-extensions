@@ -106,6 +106,7 @@ __all__ = [
     "LiveOutcome",
     "MeteredClient",
     "ModelCall",
+    "SummarizerUsage",
     "ProbeOutcome",
     "UsageRecorder",
     "build_live_agent",
@@ -430,6 +431,15 @@ class UsageRecorder(ChatMiddleware):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SummarizerUsage:
+    """Usage from one summarizer request, retained for per-request pricing tiers."""
+
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+
+
 class MeteredClient:
     """Wrap a chat client so calls made outside the agent are still counted.
 
@@ -458,6 +468,7 @@ class MeteredClient:
         self.inner = inner
         self.calls = 0
         self.failures = 0
+        self.usage: list[SummarizerUsage] = []
         self.input_tokens = 0
         self.cached_tokens = 0
         self.output_tokens = 0
@@ -492,6 +503,13 @@ class MeteredClient:
             self.failures += 1
             raise
         usage: dict[str, Any] = dict(getattr(response, "usage_details", None) or {})
+        self.usage.append(
+            SummarizerUsage(
+                input_tokens=usage.get("input_token_count") or 0,
+                cached_tokens=usage.get("cache_read_input_token_count") or 0,
+                output_tokens=usage.get("output_token_count") or 0,
+            )
+        )
         self.input_tokens += usage.get("input_token_count") or 0
         self.cached_tokens += usage.get("cache_read_input_token_count") or 0
         self.output_tokens += usage.get("output_token_count") or 0
@@ -814,10 +832,19 @@ class LiveOutcome:
     The achieved fill, against which the analytic sizing is checked. Taken from the last
     seeding call rather than from a probe, because a probe's prompt carries its question too.
     """
-    summarizer_input_tokens: int = 0
-    summarizer_output_tokens: int = 0
+    summarizer_usage: tuple[SummarizerUsage, ...] = ()
     error: str | None = None
     replies: tuple[str, ...] = field(default_factory=tuple[str, ...])
+
+    @property
+    def summarizer_input_tokens(self) -> int:
+        """Input tokens billed by the summarizer."""
+        return sum(call.input_tokens for call in self.summarizer_usage)
+
+    @property
+    def summarizer_output_tokens(self) -> int:
+        """Output tokens billed by the summarizer."""
+        return sum(call.output_tokens for call in self.summarizer_usage)
 
     @property
     def input_tokens(self) -> int:
@@ -1827,8 +1854,9 @@ async def run_live(
         The outcome. A turn that fails sets ``error`` and stops the run rather than raising,
         so a partial result is still reported instead of losing the spend already made.
     """
+    runtime_options = dict(runtime.options)
     if wants_client_side_history(runtime.client, allow_server_history=allow_server_history):
-        runtime.options["store"] = False
+        runtime_options["store"] = False
     strategy = build_strategy(strategy_name, options)
     recorder = UsageRecorder()
     summarizer = options.summarizer if isinstance(options.summarizer, MeteredClient) else None
@@ -2040,11 +2068,11 @@ async def run_live(
         before_decisions = snapshot_decisions(strategy)
         # Allow one correction per runtime option, plus tool_choice and max_tokens, then success.
         # Restore the session before resending a turn that may have persisted a partial tool call.
-        for _ in range(len(runtime.options) + 3):
+        for _ in range(len(runtime_options) + 3):
             # Per-turn options carry the runtime's own options too: this replaces the
             # per-call option set rather than adding to it.
             turn_options: dict[str, Any] = {
-                k: v for k, v in runtime.options.items() if k not in dropped
+                k: v for k, v in runtime_options.items() if k not in dropped
             }
             # After the drop filter and gated on it, so a provider that rejected max_tokens
             # outright does not have it put straight back by the closing questions.
@@ -2201,8 +2229,7 @@ async def run_live(
         # Taken from the snapshot rather than from the live session, so it is the record the
         # probes were answered from and not one a probe's own compaction pass moved.
         record_text=recall_record_text(agent, snapshot),
-        summarizer_input_tokens=summarizer.input_tokens if summarizer else 0,
-        summarizer_output_tokens=summarizer.output_tokens if summarizer else 0,
+        summarizer_usage=tuple(summarizer.usage) if summarizer else (),
         error=error,
         replies=tuple(replies),
     )

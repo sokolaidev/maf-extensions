@@ -144,3 +144,151 @@ async def test_replay_continues_after_one_provider_fails(
         rows = list(csv.DictReader(stream))
     assert len(rows) == 1
     assert rows[0]["provider"] == "mistral"
+
+
+@pytest.mark.parametrize("provider", ["azure", "azure-responses", "foundry", "mistral", "ollama"])
+async def test_advice_requires_pricing_before_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    async def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Missing prices must fail before measurement")
+
+    monkeypatch.setattr(_advise_cli, "_measure", unexpected)
+    with pytest.raises(SystemExit, match="--price-input is required"):
+        await _advise_cli.run_advice(_advise_cli.build_parser().parse_args([provider]))
+
+
+async def test_advice_resolves_default_catalogue_model_before_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    runtime = SimpleNamespace(model="resolved-model")
+    events: list[str] = []
+    monkeypatch.setattr(_advise_cli, "build_provider", lambda *a, **k: runtime)
+
+    def catalogue(model: str) -> Any:
+        assert model == "resolved-model"
+        events.append("pricing")
+        return _advise_cli.ModelPricing(1, 0.1)
+
+    async def measure(args: Any, provider: str, configured: Any) -> Any:
+        assert configured is runtime
+        assert events == ["pricing"]
+        events.append("measurement")
+        return []
+
+    monkeypatch.setattr(_advise_cli, "fetch_openrouter_pricing", catalogue)
+    monkeypatch.setattr(_advise_cli, "_measure", measure)
+    with pytest.raises(SystemExit, match="Cannot advise"):
+        await _advise_cli.run_advice(_advise_cli.build_parser().parse_args(["openrouter"]))
+    assert events == ["pricing", "measurement"]
+
+
+@pytest.mark.parametrize("module_name", ["_advise_cli", "_summary_cli", "_live_cli"])
+@pytest.mark.parametrize("failure", ["transport", "status"])
+def test_catalogue_failures_have_actionable_cli_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    failure: str,
+) -> None:
+    import importlib
+
+    import httpx
+
+    from maf_cachebench import _advisor
+
+    def get(*args: Any, **kwargs: Any) -> Any:
+        request = httpx.Request("GET", "https://openrouter.ai/api/v1/models")
+        if failure == "transport":
+            raise httpx.ConnectError("offline", request=request)
+        return httpx.Response(503, request=request)
+
+    monkeypatch.setattr(_advisor.httpx, "get", get)
+    module = importlib.import_module(f"maf_cachebench.{module_name}")
+    args = module.build_parser().parse_args(["openrouter:model"])
+    with pytest.raises(SystemExit, match="(?s)Could not fetch pricing.*Pass --price-input"):
+        module._resolve_pricing(args, "openrouter", "model")
+
+
+@pytest.mark.parametrize("name", ["summarization", "token_budget_summarize"])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_replay_rejects_unconfigured_summarizers_before_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    dry_run: bool,
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unconfigured summarizers must fail before setup")
+
+    monkeypatch.setattr(_cli, "build_tokenizer", unexpected)
+    argv = ["--strategies", f"none,{name}"]
+    if dry_run:
+        argv += ["--dry-run", "--summarizer-provider", "azure"]
+    with pytest.raises(SystemExit, match="--summarizer-provider|--dry-run"):
+        await _cli.run_benchmark(_cli.build_parser().parse_args(argv))
+
+
+@pytest.mark.parametrize(
+    "name", ["tool_summary_anchored", "user_summary_anchored", "tool_and_user_summary_anchored"]
+)
+async def test_replay_rejects_live_middleware_strategies(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Live-only strategies must fail before replay setup")
+
+    monkeypatch.setattr(_cli, "build_tokenizer", unexpected)
+    with pytest.raises(SystemExit, match="strategy"):
+        await _cli.run_benchmark(_cli.build_parser().parse_args(["--strategies", f"none,{name}"]))
+
+
+async def test_replay_dry_run_ignores_unused_summarizer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Dry runs must not construct provider clients")
+
+    monkeypatch.setattr(_cli, "build_provider", unexpected)
+    args = _cli.build_parser().parse_args(
+        [
+            "--dry-run",
+            "--strategies",
+            "none",
+            "--sizes",
+            "small",
+            "--summarizer-provider",
+            "azure:model",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+    assert await _cli.run_benchmark(args) == 0
+
+
+async def test_replay_resolves_summarizer_model_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from maf_cachebench._tokenizers import build_tokenizer
+
+    seen: list[tuple[str, str | None]] = []
+
+    def build(provider: str, **kwargs: Any) -> Any:
+        seen.append((provider, kwargs.get("model")))
+        return SimpleNamespace(client=object())
+
+    monkeypatch.setattr(_cli, "build_provider", build)
+    args = _cli.build_parser().parse_args(["--summarizer-provider", "azure:summarizer-model"])
+    args.run_id = "selector"
+    assert await _cli._run_matrix(
+        args,
+        tokenizer=build_tokenizer("estimator"),
+        providers=[],
+        sizes=[],
+        strategies=[],
+        on_record=None,
+    ) == ([], [])
+    assert seen == [("azure", "summarizer-model")]

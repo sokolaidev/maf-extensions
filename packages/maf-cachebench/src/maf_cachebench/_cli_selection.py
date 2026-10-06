@@ -3,6 +3,15 @@
 from ._strategies import forces_records, needs_summarizer, strategy_names
 
 
+def replay_strategy_names() -> list[str]:
+    """Return strategies that do not require live-agent middleware."""
+    return [
+        name
+        for name in strategy_names()
+        if not forces_records([name]) and name != "user_summary_anchored"
+    ]
+
+
 def standalone_strategy_names() -> list[str]:
     """Return strategies the advisor, recall and summary commands can execute."""
     return [

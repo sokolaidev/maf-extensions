@@ -412,9 +412,13 @@ def fetch_openrouter_pricing(model: str, *, timeout: float = 30.0) -> ModelPrici
 
     Raises:
         KeyError: If the slug is not in the catalogue.
+        OSError: If the catalogue request fails.
     """
-    response = httpx.get("https://openrouter.ai/api/v1/models", timeout=timeout)
-    response.raise_for_status()
+    try:
+        response = httpx.get("https://openrouter.ai/api/v1/models", timeout=timeout)
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        raise OSError(f"OpenRouter catalogue request failed: {error}") from error
     catalogue = cast("dict[str, Any]", response.json())
     for entry in cast("list[dict[str, Any]]", catalogue["data"]):
         if entry["id"] != model:

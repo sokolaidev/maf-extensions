@@ -13,6 +13,7 @@ from ._advisor import ModelPricing, Verdict, advise, fetch_openrouter_pricing
 from ._cli_selection import select_standalone_strategies, standalone_strategy_names
 from ._metrics import summarize_cell
 from ._providers import (
+    ProviderRuntime,
     build_provider,
     parse_provider_selector,
     prompt_cache_key_options,
@@ -126,16 +127,10 @@ def _resolve_pricing(args: argparse.Namespace, provider: str, model: str) -> Mod
 
 
 async def _measure(
-    args: argparse.Namespace, provider: str, model_override: str | None
+    args: argparse.Namespace, provider: str, runtime: ProviderRuntime
 ) -> list[CellSummary]:
     """Replay every selected strategy against the model and summarize each cell."""
     tokenizer = build_tokenizer(args.tokenizer)
-    runtime = build_provider(
-        provider,
-        temperature=None if args.no_temperature else 0.0,
-        response_max_tokens=args.response_max_tokens,
-        model=model_override,
-    )
     run_id = time.strftime("%Y%m%d-%H%M%S")
     summaries: list[CellSummary] = []
     stream: Any = None
@@ -262,9 +257,19 @@ async def run_advice(args: argparse.Namespace) -> int:
     if args.repeats <= 0:
         raise SystemExit("--repeats must be greater than 0.")
 
-    summaries = await _measure(args, provider, model_override)
-    model = summaries[0].cell.model if summaries else (model_override or provider)
-    pricing = _resolve_pricing(args, provider, model)
+    pricing = None
+    if provider != "openrouter" or args.price_input is not None:
+        pricing = _resolve_pricing(args, provider, model_override or provider)
+    runtime = build_provider(
+        provider,
+        temperature=None if args.no_temperature else 0.0,
+        response_max_tokens=args.response_max_tokens,
+        model=model_override,
+    )
+    model = runtime.model
+    if pricing is None:
+        pricing = _resolve_pricing(args, provider, model)
+    summaries = await _measure(args, provider, runtime)
     try:
         verdict = advise(summaries, pricing)
     except ValueError as error:
