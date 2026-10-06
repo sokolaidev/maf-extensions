@@ -65,3 +65,12 @@ test('a rerun of an older monitor beats creation order', async () => {
   assert.equal(latest.id, 100);
   assert.equal(latest.conclusion, 'failure');
 });
+
+test('same-second attempts cannot be ordered by creation ID', async () => {
+  const common = {event: 'schedule', head_branch: 'main', path: '.github/workflows/container-image-monitor.yml', head_repository: {full_name: 'sokolaidev/maf-extensions'}, status: 'completed', updated_at: '2026-01-02T00:00:00Z'};
+  global.fetch = async () => ({ok: true, json: async () => ({total_count: 2, workflow_runs: [
+    {...common, id: 200, run_attempt: 1, conclusion: 'success'},
+    {...common, id: 100, run_attempt: 2, conclusion: 'failure'},
+  ]})});
+  await assert.rejects(latestMonitor(), /ambiguous update times/);
+});

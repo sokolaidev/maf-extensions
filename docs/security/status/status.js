@@ -55,6 +55,7 @@ async function latestMonitor() {
   }
   runs.sort((a, b) => date(b.updated_at) - date(a.updated_at) || b.id - a.id || b.run_attempt - a.run_attempt);
   assert(runs.length > 0, "No authoritative monitoring attempt exists");
+  assert(runs.length === 1 || date(runs[0].updated_at) !== date(runs[1].updated_at), "Latest monitor attempts have ambiguous update times");
   const r = runs[0];
   return {id: r.id, run_attempt: r.run_attempt, status: r.status, conclusion: r.conclusion, updated_at: r.updated_at};
 }

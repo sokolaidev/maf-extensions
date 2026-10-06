@@ -109,6 +109,11 @@ def test_rerun_of_old_workflow_is_not_hidden_by_creation_order(current):
     assert report(CANDIDATE, at="2026-01-01T01:01:00Z")["monitoringStatus"] == "unavailable"
 
 
+def test_same_second_old_rerun_cannot_hide_behind_newer_run_id(current):
+    current["runs"].append(run(190, 2) | {"conclusion": "failure"})
+    assert report(CANDIDATE, at=AT)["monitoringStatus"] == "unavailable"
+
+
 def test_same_run_new_attempt_requires_new_monitor_record(current):
     current["runs"][0]["run_attempt"] = 2
     assert report(CANDIDATE, at=AT)["monitoringStatus"] == "unavailable"

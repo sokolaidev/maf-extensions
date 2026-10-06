@@ -28,6 +28,7 @@ def latest_monitor(github: GitHub) -> dict[str, Any]:
     """Include reruns of old workflows; creation order alone does not identify the latest attempt."""
     latest: dict[str, Any] | None = None
     latest_order: tuple[Any, int, int] | None = None
+    latest_attempts: set[tuple[int, int]] = set()
     received = 0
     for page in range(1, 10_001):
         document = decode(
@@ -58,6 +59,10 @@ def latest_monitor(github: GitHub) -> dict[str, Any]:
                 positive_id(run.get("id")),
                 positive_id(run.get("run_attempt")),
             )
+            if latest_order is None or order[0] > latest_order[0]:
+                latest_attempts = {order[1:]}
+            elif order[0] == latest_order[0]:
+                latest_attempts.add(order[1:])
             if latest_order is None or order > latest_order:
                 latest_order, latest = order, run
         if len(runs) < 100:
@@ -68,6 +73,8 @@ def latest_monitor(github: GitHub) -> dict[str, Any]:
         raise ValueError("Monitor history exceeded its pagination bound")
     if latest is None:
         raise ValueError("No authoritative monitoring attempt exists")
+    if len(latest_attempts) != 1:
+        raise ValueError("Latest monitor attempts have ambiguous update times")
     return {
         field: latest.get(field)
         for field in ("id", "run_attempt", "status", "conclusion", "updated_at")
