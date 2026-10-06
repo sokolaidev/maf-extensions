@@ -418,18 +418,14 @@ USER_SUMMARY_MARKER: Final[str] = "[earlier turns in this conversation, compacte
 
 #: Prefix of the ``message_id`` given to every summary this strategy inserts.
 #:
-#: The identification is doubled deliberately: the id is what the framework's own trace
-#: metadata is keyed on, and the marker above is what survives a round trip through a store
-#: that assigns its own ids. Either one alone has a failure mode in which the strategy stops
-#: recognising its own output: the recompacting mode then accumulates summaries instead of
-#: replacing them, and the boundary modes re-read a boundary as though it were a turn.
+#: For the framework's trace metadata, which is keyed on ids. It does not identify a summary:
+#: a store may assign its own ids, so :func:`_is_summary` reads :data:`USER_SUMMARY_MARKER`.
 SUMMARY_ID_PREFIX: Final[str] = "user_summary_"
 
 #: Prefix of the ``message_id`` given to the summary a fold inserts.
 #:
-#: Under :data:`SUMMARY_ID_PREFIX`, so :func:`_is_summary` recognises a fold's output as a
-#: boundary by the same test as any other summary, and numbered by fold rather than by pass so
-#: that an id can never collide with an ordinary summary's.
+#: Under :data:`SUMMARY_ID_PREFIX`, and numbered by fold rather than by pass so that an id can
+#: never collide with an ordinary summary's.
 FOLD_ID_PREFIX: Final[str] = f"{SUMMARY_ID_PREFIX}fold_"
 
 #: Reason recorded on the turns this strategy supersedes.
@@ -517,14 +513,11 @@ def _mark_summarized_by(message: Message, summary_id: str) -> None:
 def _is_summary(message: Message) -> bool:
     """Return whether ``message`` is a summary this strategy wrote.
 
-    Two tests rather than one. The id is what the framework's summary annotations key on and is
-    the cheaper check, but a message id is assigned by whoever stores the conversation and a
-    round trip is free to replace it; the marker travels inside the text and cannot be lost
-    without losing the message. Getting this wrong in the false direction is not a crash, which
-    is why it is worth doubling: the recompacting mode simply stops recognising its own output,
-    treats every pass as new material, and accumulates summaries it believes are turns; the
-    boundary modes lose the boundary and re-read it as a turn. The marker counts only at the
-    start of the text, where the strategy writes it: a user turn quoting it is still a turn.
+    Read from the text alone. A message id is assigned by whoever stores the conversation, so a
+    round trip is free to replace it and an ordinary turn may arrive with an id that looks like
+    ours; the marker travels inside the text and cannot be lost without losing the message. It
+    counts only at the start of the text, where the strategy writes it: a user turn quoting it
+    is still a turn.
 
     This is also the whole of how a boundary is identified. The preserved mark is the
     boundary's protection, not its identity -- see the module docstring for why the two are
@@ -536,8 +529,6 @@ def _is_summary(message: Message) -> bool:
     Returns:
         True when this strategy wrote it.
     """
-    if message.message_id and message.message_id.startswith(SUMMARY_ID_PREFIX):
-        return True
     return (message.text or "").lstrip().startswith(USER_SUMMARY_MARKER)
 
 

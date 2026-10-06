@@ -314,6 +314,13 @@ def test_a_user_turn_quoting_the_marker_is_not_a_summary() -> None:
     assert _usersummary._is_summary(written)
 
 
+def test_a_user_turn_with_a_summary_like_id_is_not_a_summary() -> None:
+    """A store may assign any id, so identity is read from the text alone."""
+    turn = Message(role="user", contents=["An ordinary question."], message_id="user_summary_5")
+
+    assert not _usersummary._is_summary(turn)
+
+
 async def test_it_compacts_user_turns_and_leaves_tool_results_and_assistant_messages_alone() -> (
     None
 ):

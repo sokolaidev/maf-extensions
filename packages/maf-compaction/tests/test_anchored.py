@@ -18,6 +18,7 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
+from maf_compaction import _anchored as anchored_module
 from maf_compaction._anchored import (
     DEFAULT_KEEP_TOKENS,
     DEFAULT_MIN_GAIN_FRACTION,
@@ -648,6 +649,27 @@ def test_a_slice_sparser_than_the_whole_still_fills_its_budget() -> None:
 
     assert _DigitsAreDense().count_tokens(text[:head]) >= 90
     assert _DigitsAreDense().count_tokens(text[:head]) <= 100
+
+
+def test_shortening_that_would_grow_a_result_leaves_it_alone() -> None:
+    """Under a tiny budget the marker alone outweighs a short result, which then stays whole."""
+    strategy = AnchoredCompactionStrategy(max_input_tokens=8_000, tokenizer=TOKENIZER)
+    short = "abcdefgh"
+
+    assert strategy._shorten(short, 0) == short
+
+
+def test_an_ordinary_message_with_a_marker_like_id_is_not_a_note() -> None:
+    """An id is the store's to assign, so the note's own text must match as well."""
+    real = Message(role="assistant", contents=["Looked it up."], message_id="anchored_7")
+    note = Message(
+        role="assistant",
+        contents=["[compacted: an earlier tool call and its result]"],
+        message_id="anchored_7",
+    )
+
+    assert not anchored_module._is_marker(real)
+    assert anchored_module._is_marker(note)
 
 
 # region preservation

@@ -212,7 +212,11 @@ from agent_framework._compaction import (
     included_token_count,
 )
 
-from ._anchored import DEFAULT_MIN_GAIN_FRACTION, EXCLUDE_REASON, MARKER_ID_PREFIX
+from ._anchored import (
+    DEFAULT_MIN_GAIN_FRACTION,
+    EXCLUDE_REASON,
+    _is_marker,  # pyright: ignore[reportPrivateUsage]
+)
 from ._toolsummary import (
     RecordDecisions,
     ToolResultAnchoredSummarizationCompactionStrategy,
@@ -399,7 +403,7 @@ def _responses(messages: list[Message]) -> int:
         1
         for message in messages
         if message.role == "assistant"
-        and not (message.message_id or "").startswith(MARKER_ID_PREFIX)
+        and not _is_marker(message)
         and not _is_written_record(message)
     )
 

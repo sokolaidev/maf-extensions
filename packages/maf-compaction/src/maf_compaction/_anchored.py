@@ -171,8 +171,16 @@ DEFAULT_MIN_GAIN_FRACTION: Final[float] = 0.29
 
 
 def _is_marker(message: Message) -> bool:
-    """Return whether ``message`` is a note this strategy left in place of a dropped group."""
-    return bool(message.message_id and message.message_id.startswith(MARKER_ID_PREFIX))
+    """Return whether ``message`` is a note this strategy left in place of a dropped group.
+
+    Both the id and the text must match: an id is assigned by whoever stores the conversation,
+    so a prefix alone could claim an ordinary message.
+    """
+    return bool(
+        message.message_id
+        and message.message_id.startswith(MARKER_ID_PREFIX)
+        and message.text in _NOTES.values()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -524,7 +532,11 @@ class AnchoredCompactionStrategy:
         tail_chars = self._fit(text, budget - head_budget, from_end=True)
         head, tail = text[:head_chars], text[len(text) - tail_chars :]
         removed = len(text) - head_chars - tail_chars
-        return f"{head}\n[{REMOVAL_MARKER}: {removed:,} characters]\n{tail}"
+        shortened = f"{head}\n[{REMOVAL_MARKER}: {removed:,} characters]\n{tail}"
+        # The marker has a cost of its own, which a tiny budget or result can exceed.
+        if self.tokenizer.count_tokens(shortened) >= self.tokenizer.count_tokens(text):
+            return text
+        return shortened
 
     def _fit(self, text: str, tokens: int, *, from_end: bool) -> int:
         """Return how many characters from one end of ``text`` are worth about ``tokens``.
