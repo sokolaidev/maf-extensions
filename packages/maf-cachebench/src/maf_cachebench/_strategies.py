@@ -43,6 +43,7 @@ strategy ever fires and the benchmark would measure nothing.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
@@ -108,7 +109,7 @@ _MIN_AUTO_WINDOW_TOKENS: Final[int] = 4_096
 class StrategyOptions:
     """CLI-settable parameters shared by the strategy builders.
 
-    Strategy constructors validate their ranges during preflight.
+    ``build_strategy`` validates shared budgets; constructors validate strategy-specific ranges.
     """
 
     tokenizer: TokenizerProtocol
@@ -732,7 +733,24 @@ def build_strategy(name: str, options: StrategyOptions) -> CompactionStrategy | 
 
     Raises:
         KeyError: If ``name`` is not a known strategy.
+        ValueError: If shared budgets are invalid.
     """
     if name not in STRATEGY_BUILDERS:
         raise KeyError(f"Unknown strategy {name!r}. Known strategies: {sorted(STRATEGY_BUILDERS)}")
+    if (
+        not math.isfinite(options.max_context_window_tokens)
+        or options.max_context_window_tokens <= 0
+    ):
+        raise ValueError("max_context_window_tokens must be finite and positive")
+    if not math.isfinite(options.max_output_tokens) or not (
+        0 <= options.max_output_tokens < options.max_context_window_tokens
+    ):
+        raise ValueError(
+            "max_output_tokens must be non-negative and below max_context_window_tokens"
+        )
+    if (
+        not math.isfinite(options.token_budget_fraction)
+        or not 0 < options.token_budget_fraction <= 1
+    ):
+        raise ValueError("token_budget_fraction must be finite and in (0, 1]")
     return STRATEGY_BUILDERS[name](options)

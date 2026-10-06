@@ -1002,3 +1002,46 @@ def test_aggregation_requires_every_turn_cache_report(cached: int | None) -> Non
     assert summary.reports_cache_tokens is (cached is not None)
     assert (summary.cache_hit_ratio is not None) is (cached is not None)
     assert (summary.cache_realization is not None) is (cached is not None)
+
+
+@pytest.mark.parametrize("name", strategy_names())
+@pytest.mark.parametrize(
+    "window,output,fraction",
+    [
+        (0, 0, 0.5),
+        (-1, 0, 0.5),
+        (100, -1, 0.5),
+        (100, 100, 0.5),
+        (100, 101, 0.5),
+        (100, 10, 0),
+        (100, 10, -0.1),
+        (100, 10, 1.1),
+        (100, 10, float("nan")),
+        (100, 10, float("inf")),
+    ],
+)
+def test_strategy_builders_reject_invalid_shared_budgets(
+    name: str, window: int, output: int, fraction: float
+) -> None:
+    options = StrategyOptions(
+        tokenizer=TOKENIZER,
+        max_context_window_tokens=window,
+        max_output_tokens=output,
+        token_budget_fraction=fraction,
+    )
+    with pytest.raises(
+        ValueError, match="max_context_window_tokens|max_output_tokens|token_budget_fraction"
+    ):
+        build_strategy(name, options)
+
+
+@pytest.mark.parametrize("fraction", [0.01, 1.0])
+def test_strategy_shared_budget_boundaries_remain_valid(fraction: float) -> None:
+    options = StrategyOptions(
+        tokenizer=TOKENIZER,
+        max_context_window_tokens=100,
+        max_output_tokens=0,
+        token_budget_fraction=fraction,
+    )
+    assert build_strategy("none", options) is None
+    assert options.composed_budget_tokens == int(100 * fraction)

@@ -385,7 +385,13 @@ async def run_benchmark(args: argparse.Namespace) -> int:
         if args.summarizer_provider is None:
             raise SystemExit("Summarization strategies require --summarizer-provider.")
 
-    args.run_id = args.run_id or new_run_id()
+    if args.run_id is not None and (
+        not args.run_id
+        or args.run_id in {".", ".."}
+        or any(char in '<>:"/\\|?*' or ord(char) < 32 for char in args.run_id)
+    ):
+        raise SystemExit("--run-id must be a filename stem without paths or reserved characters.")
+    args.run_id = args.run_id if args.run_id is not None else new_run_id()
     tokenizer = build_tokenizer(args.tokenizer)
     _print_preflight(providers, sizes, strategies, args.repeats)
 

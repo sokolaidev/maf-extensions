@@ -858,3 +858,64 @@ async def test_replay_summarizer_preserves_provider_options(
         "extra_body": {**original["extra_body"], "trace": True},
     }
     assert defaults == original
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "../result",
+        "..\\result",
+        "/absolute",
+        "C:\\result",
+        "C:result",
+        "\\\\server\\share",
+        "nested/result",
+        "nested\\result",
+        "bad:stream",
+        "",
+        ".",
+        "..",
+        "bad\x00id",
+    ],
+)
+async def test_replay_rejects_unsafe_run_id_before_setup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run_id: str
+) -> None:
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid run IDs must fail before setup")
+
+    monkeypatch.setattr(_cli, "build_tokenizer", unexpected)
+    monkeypatch.setattr(_cli, "build_provider", unexpected)
+    out = tmp_path / "out"
+    args = _cli.build_parser().parse_args(
+        ["--run-id", run_id, "--out", str(out), "--strategies", "none"]
+    )
+    with pytest.raises(SystemExit, match="--run-id"):
+        await _cli.run_benchmark(args)
+    assert not out.exists()
+
+
+async def test_replay_safe_run_id_keeps_both_outputs_under_out(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    args = _cli.build_parser().parse_args(
+        [
+            "--run-id",
+            "trial-1.2_ok",
+            "--out",
+            str(out),
+            "--dry-run",
+            "--providers",
+            "azure",
+            "--strategies",
+            "none",
+            "--sizes",
+            "small",
+            "--repeats",
+            "1",
+        ]
+    )
+    assert await _cli.run_benchmark(args) == 0
+    assert {p.name for p in out.iterdir()} == {
+        "trial-1.2_ok-records.jsonl",
+        "trial-1.2_ok-summary.csv",
+    }
