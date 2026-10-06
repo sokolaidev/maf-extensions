@@ -1319,7 +1319,7 @@ wheels = [
 
 [[package]]
 name = "maf-compaction"
-version = "0.0.0"
+version = "0.1.0"
 source = { editable = "packages/maf-compaction" }
 dependencies = [
     { name = "agent-framework-core" },
