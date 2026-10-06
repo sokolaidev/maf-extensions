@@ -47,11 +47,8 @@ __all__ = ["ASSUMED_REPLY_TOKENS", "MAX_FILL_FRACTION", "FillPlan", "plan_fill"]
 ASSUMED_REPLY_TOKENS: Final[int] = 150
 """Tokens assumed for each reply the model writes during seeding.
 
-The one term in the estimate that cannot be computed, because the replies are the model's.
-150 is what this workload was measured averaging. It matters less than it looks: on a
-40-turn seed it is about 6,000 tokens, so a reply that is half or double this moves the
-achieved fill by a few points -- which is exactly why :func:`plan_fill` records the target and
-the runner reports the deviation instead of assuming the target was hit.
+Model replies cannot be sized in advance. The planner uses this allowance and the runner
+reports achieved fill separately from the target.
 """
 
 MAX_FILL_FRACTION: Final[float] = 10.0
@@ -230,20 +227,9 @@ def _solve_tool_result_tokens(
 ) -> int:
     """Solve for the per-result size that makes tool text ``tool_share`` of the target.
 
-    Stating the size absolutely makes the workload shrink relative to the context as the
-    window grows, and that silently disabled a strategy: ``AnchoredCompactionStrategy``
-    shortens each banded result to a share of the ceiling, so at 3,500-token results its
-    allowance was about 2,900 tokens at a 60,000 window and about 5,900 at 120,000 -- larger
-    than the results, so it planned nothing and its rows measured a strategy that never ran.
-    Deriving the size from the target instead keeps the payload a fixed share of what
-    surrounds it, which is what makes two window sizes comparable cells.
-
-    The share covers *every* tool result, including the code-free ones ``filler_tool_turns``
-    adds. Those occupy context and are counted by exactly the strategies this measures --
-    the anchored allowance divides by the tool groups in the band, bearing or not -- so a
-    share that excluded them would understate the payload by whatever they cost. The
-    consequence to know is that adding asides divides one budget over more results rather
-    than adding to it.
+    Scaling payload with the target preserves workload proportions across context windows.
+    The share includes code-free tool results, so adding those divides the same payload budget
+    over more results.
 
     Args:
         measure: Sizes one candidate conversation at minimum filler, returning its estimated
@@ -410,10 +396,8 @@ def plan_fill(
             reply_tokens=reply_tokens,
         )
 
-    # The extra lookups and the code-free asides are placed *inside* the filler sections, one
-    # per section iteration, so too few filler turns silently drops them: 16 tool turns asked
-    # for with the default 6 filler turns yielded 9, and the payload was quietly a different
-    # payload. The floor here is what it takes to place every one of them.
+    # Each filler iteration places one extra lookup and one code-free aside per section.
+    # The floor must leave enough iterations to place every requested result.
     per_section = max(tool_turns - _SECTIONS, filler_tool_turns, 0)
     minimum_groups = max(ceil(per_section / _SECTIONS), 1)
 

@@ -104,26 +104,9 @@ _DEFAULT_STRATEGIES = (
 #: is being read as.
 FILL_TOLERANCE: Final[float] = 0.05
 
-#: Share of the fill target that is tool-result text when ``--tool-share`` is not given.
-#:
-#: 0.6 rather than the 0 this CLI shipped with, and that is a deliberate break. 0 selects the
-#: fixed path, where ``--tool-result-tokens`` pins each result at an absolute size and only the
-#: filler grows to reach the target -- so the tool payload stayed near 22,000 tokens whether
-#: the window was 60,000 or 300,000, while the conversation the strategy pays cache costs
-#: across grew without limit. That caps what a strategy that compacts tool results and nothing
-#: else can possibly save, and the cap tightens as the window widens, which reads in a window
-#: sweep as the strategy degrading. Measured on ``tool_summary_anchored`` at a fixed
-#: 3,500-token payload across 60,000, 100,000 and 170,000-token windows, the removed share fell
-#: 28.8%, 22.6% and 17.0% of the control's snapshot while its seeding-phase cache hit rate fell
-#: 88.0%, 87.5% and 76.2% against a control climbing from 96% to 98%. Deriving the payload from
-#: the fill target instead keeps the workload's proportions as the window moves, so two windows
-#: are one cell at two scales.
-#:
-#: 0.6 and 0.8 are the levels this project has treated as realistic payloads; 0.6 is the
-#: conservative one and so the one that becomes the default. The cost is comparability: every
-#: cell measured before this used the fixed path, ``tool_share`` is part of the cell key, and
-#: the two will not pool. That is the intended outcome -- they are different workloads -- but
-#: it means a sweep spanning the change has to state which side each cell came from.
+#: Default tool-result share of the fill target. Scaling payload with the window preserves
+#: workload proportions; zero instead keeps an absolute per-result size. The cell key
+#: distinguishes those workloads so their measurements cannot pool.
 DEFAULT_TOOL_SHARE: Final[float] = 0.6
 
 
@@ -1209,8 +1192,7 @@ def _seed_spread(samples: Sequence[Sequence[float]]) -> float:
     """Return the points between the least and most correct seed.
 
     Compaction's own reliability. A different seed is a different conversation, so this is
-    where "the strategy cleared a retention boundary this time and not last time" shows up:
-    measured at 78 points for one strategy while the uncompacted control moved 7.
+    where variation in retained context across seeds appears.
 
     Args:
         samples: One group of per-repeat correctness readings per seed.
@@ -1284,10 +1266,7 @@ def _measured(values: Sequence[float | None]) -> list[float] | None:
 class CellStats:
     """One strategy's cell, aggregated over its seeds and their probe repeats.
 
-    Every figure here is a mean over the cell rather than one chosen run. The table used to
-    show the median-*cost* seed on every column, which is a defensible choice for cost and an
-    arbitrary draw for accuracy: with a two-valued accuracy distribution it reported whichever
-    of the two values happened to sit on the median cost.
+    Cost and accuracy aggregate all seeds rather than selecting one representative seed.
     """
 
     strategy: str
@@ -1521,9 +1500,7 @@ def _control_message_gap(cells: Sequence[CellStats], control: str = "none") -> i
 
     When it does, the control ran a shorter conversation than everything it is the baseline
     for, and every ``vs none`` in the cell is a comparison between two different workloads.
-    Measured at 120,000/0.86 before :class:`IdentifiedHistoryProvider`: the control peaked at
-    82 messages where every strategy row peaked at 109, and ``anchored``, inert at that cell,
-    finished with a snapshot 5.4% larger than the baseline it should have matched.
+    Message identity must preserve repeated turns equally in the control and strategy rows.
 
     Compared against the *minimum* rather than every row, because a strategy is free to sit
     above the turn list and two of them do. The reading assumes the cell measured at least one
@@ -1704,10 +1681,7 @@ def _to_joint(stats: CellStats, *, split: bool = True) -> JointOutcome:
     )
 
 
-#: Correctness range, in points, above which the accuracy column cannot rank anything.
-#: Measured on the uncompacted control at 60,000 tokens: 78 points under the harness's own
-#: default narration guidance, 9 with narration suppressed and 15 with it demanded. A control
-#: that swings by more than this is choosing between two behaviours, not measuring one.
+#: Correctness range, in points, above which retrieval variability prevents ranking.
 MAX_USABLE_CORRECTNESS_RANGE: Final[float] = 20.0
 
 
@@ -2048,13 +2022,7 @@ def _runner_up_note(verdict: JointVerdict, spread: dict[str, float]) -> list[str
 
 
 def _stability_note(verdict: JointVerdict, spread: dict[str, float], repeats: int) -> list[str]:
-    """Return a warning when the recommendation's margin is inside the measured noise.
-
-    A ranking is only worth reporting if the gap between the options is larger than the gap
-    between repeats of the same option. Live cost was measured swinging about 20% on
-    identical configuration, mostly from reply length, which is wider than most of the
-    differences between strategies.
-    """
+    """Warn when repeat variability exceeds the recommendation's margin."""
     if repeats < 2:
         return [
             "",
@@ -2095,8 +2063,7 @@ def _flags(
     """
     flags: list[str] = []
     # A row that gathered a different set of facts than the control is not comparable to
-    # it on either axis: it has a different denominator for correctness and a different
-    # token volume for cost. Measured at 25% more input for runs that fetched every tool.
+    # it on either axis: correctness denominators and token volumes both differ.
     if control is not None and round(stats.nofetch) != round(control.nofetch):
         flags.append("FETCH")
     # The same objection, one level up: this row *is* the control, and the conversation it ran
@@ -4113,11 +4080,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         filler_tool_turns=args.filler_tool_turns,
     )
     planted_groups = len(probe.tool_lookups)
-    # Every tool-oriented strategy keeps the last `retained` groups verbatim. With no more
-    # groups than that, it evicts nothing, changes no tokens, and scores a perfect result for
-    # having done nothing at all -- which reads as the best row in the table. Measured: at 3
-    # groups against a retention of 4, tool_result and selective_tool_call were exact no-ops
-    # while carrying 55% of the planted facts.
+    # A tool strategy is inert when its retained suffix already covers every planted group.
     tool_strategies_inert = planted_groups <= retained
     if needs_summarizer(strategies) and args.summarizer_provider is None and not args.dry_run:
         raise SystemExit("Summarization strategies require --summarizer-provider.")

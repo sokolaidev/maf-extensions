@@ -5,11 +5,8 @@ cache already covers most of each request loses more to the broken prefix than i
 from the shorter prompt. Which way it falls is a property of the model, so the only
 reliable way to know is to price both options against that model directly.
 
-This module runs a strategy sweep for a single model, converts the measured token usage
-into money, and returns a verdict. It deliberately refuses to give one when the repeats
-disagree by more than the gap between the options — several providers were measured
-swinging two- to fourfold on equivalent replay workloads, and a confident recommendation drawn
-from a single sample of that would be worse than no recommendation.
+This module runs a strategy sweep for one model, prices its token usage, and returns a verdict.
+It withholds recommendations when repeat variability is wider than the gap between options.
 """
 
 from __future__ import annotations
@@ -362,8 +359,7 @@ def advise(
     compacted = [entry for entry in collected if entry.strategy != baseline]
     contender = min(compacted, key=lambda entry: entry.median) if compacted else base
 
-    # Noise first: several providers were measured swinging 2-4x on equivalent replay workloads,
-    # and ranking those on a median of two samples would manufacture false precision.
+    # A cost gap smaller than repeat variability cannot support a ranking.
     worst_spread = max(base.spread, contender.spread)
     single_sample = min(len(base.costs), len(contender.costs)) < 2
     saving = (base.median - contender.median) / base.median if base.median > 0 else 0.0

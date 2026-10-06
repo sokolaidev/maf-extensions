@@ -1,16 +1,6 @@
-"""Measure whether a provider's prompt cache engages consistently.
+"""Measure prompt-cache consistency by sending byte-identical input repeatedly.
 
-The live benchmark reports a cost spread between repeats of the same strategy. On Chat
-Completions routes that spread sat around 10%; on the Foundry Responses route it reached
-121%, which is wider than the differences between the strategies being compared and makes
-the cost ranking meaningless there.
-
-Output length cannot explain a gap that size, so the suspect is the cache itself: if a
-provider serves a cache hit on one call and misses on the next for byte-identical input,
-cost swings by the full discount, which is 10x on these models.
-
-This probe removes every other variable. One prompt, built once, sent unchanged N times in
-sequence. Anything that moves is the provider.
+Repeated warm observations reveal cache variation independently of prompt changes.
 
 Usage:
     python probe_cache_stability.py foundry:gpt-5.4-mini
@@ -70,6 +60,10 @@ async def run(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
+    if args.calls < 3:
+        raise SystemExit("--calls must be at least 3 to measure two warm observations.")
+    if args.prompt_tokens <= 0:
+        raise SystemExit("--prompt-tokens must be positive.")
     provider, model_override = parse_provider_selector(args.provider)
     runtime = build_provider(
         provider,

@@ -65,18 +65,8 @@ _FIRST_QUESTION: Final[str] = (
 def combined_question(lookups: Mapping[str, tuple[str, ...]]) -> str:
     """Return the closing question that asks for every planted value at once.
 
-    Deliberately harder than the per-scope questions, and reported separately from them.
-    Values are scattered through a long conversation, so answering needs the model to work
-    through it rather than answer from what is nearby -- and a compaction record, if there is
-    one, is where they have been gathered.
-
-    **It states its counts**, exactly as the per-scope questions do. The earlier wording asked
-    for "every code returned by every deployment lookup", which a model reads as *the* return
-    code of each lookup: across 240 recorded control samples, 226 were either every value or
-    exactly eleven -- five non-tool facts plus one code per lookup. That is a model answering a
-    different question correctly, scored as a recall failure, and it made `acc2` a measure of
-    the phrasing rather than of what compaction preserved. The per-scope questions were fixed
-    this way for the same reason; this one was missed.
+    Explicit totals and per-scope counts disambiguate complete enumeration from one code per
+    lookup. This combined retrieval task is scored separately from the per-scope questions.
 
     Args:
         lookups: Codes per scope, including any code-free filler scopes, which are ignored.
@@ -272,10 +262,8 @@ class RecallScenario:
     """Turn index mapped to the scope that turn asks for.
 
     A live run forces that exact tool on that exact turn. Left to itself, a model may ignore
-    the instruction, or call a scope it has already looked up: measured at 3 of 6 scopes
-    reached, and one model calling the same scope twice while skipping another. Either
-    changes how many facts exist to score and how many tokens the run carries, neither of
-    which is about compaction.
+    the instruction or revisit a scope, changing both the available facts and token volume
+    independently of compaction.
     """
     tool_lookups: Mapping[str, tuple[str, ...]] = field(default_factory=dict[str, tuple[str, ...]])
     """Scope label to ``(region_code, fallback_host)``, for driving a real tool.
@@ -377,10 +365,8 @@ def build_recall_scenario(
             configuration a typical caller gets -- and ``"suppressed"`` forbids it. The
             middle one is the only setting under which the framework's own guidance is
             the sole driver of narration.
-        tool_result_tokens: Approximate size of each tool result, **in tokens**. Sized in
-            tokens rather than characters: the earlier 600-*character* body came to about
-            76 tokens, so tool output was under 2% of the prompt and tool-oriented
-            compaction had nothing worth evicting.
+        tool_result_tokens: Approximate size of each tool result in tokens, so tool output
+            remains a material share of the workload.
         tool_turns: How many tool-call groups to plant. Must exceed a strategy's
             ``keep_last_tool_call_groups`` or tool-oriented compaction never fires and
             those strategies score a perfect result for doing nothing.
@@ -574,8 +560,6 @@ def build_recall_scenario(
 
     # An early lookup, before any filler: its results sit alongside the requirements in
     # the oldest part of the history, so a strategy that trims by age loses them too.
-    # Without it every tool result was recent and the tool column read 4/4 regardless of
-    # strategy, which measured nothing.
     turns.append(_tool_turn("early", 39, 0))
 
     # Extra lookups beyond the early/mid/late anchors, spread through the filler so that a

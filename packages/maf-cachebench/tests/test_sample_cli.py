@@ -352,7 +352,8 @@ async def test_stability_requires_warm_observations(
     monkeypatch.setitem(
         run.__globals__, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
     )
-    pending = iter(reports)
+    call_count = max(3, len(reports))
+    pending = iter([*reports, *([None] * (call_count - len(reports)))])
 
     async def respond(messages: Any) -> CallOutcome:
         cached = next(pending)
@@ -361,10 +362,36 @@ async def test_stability_requires_warm_observations(
         return CallOutcome(input_tokens=100, cached_tokens=cached, latency_ms=1)
 
     monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
-    args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(len(reports))])
+    args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(call_count)])
     assert await run(args) == 0
     output = capsys.readouterr().out
     assert ("\nSTEADY:" in output) is steady
     assert ("Not enough usable calls" in output) is not steady
     if steady:
         assert "warm calls (excluding the first): 2" in output
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("--calls", "-1"),
+        ("--calls", "0"),
+        ("--calls", "1"),
+        ("--calls", "2"),
+        ("--prompt-tokens", "0"),
+        ("--prompt-tokens", "-1"),
+    ],
+)
+async def test_stability_invalid_configuration_fails_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str, value: str
+) -> None:
+    namespace = runpy.run_path(str(SAMPLES / "probe_cache_stability.py"))
+    run = namespace["run"]
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid measurements must fail before provider setup")
+
+    monkeypatch.setitem(run.__globals__, "build_provider", unexpected)
+    args = namespace["build_parser"]().parse_args(["mistral", option, value])
+    with pytest.raises(SystemExit, match=option):
+        await run(args)

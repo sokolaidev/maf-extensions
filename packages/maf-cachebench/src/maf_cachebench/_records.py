@@ -502,9 +502,8 @@ class WorkloadSettings:
     force_tool_calls: bool
     """Whether each lookup turn pinned ``tool_choice`` to the function it wanted.
 
-    Off, the model gathers its own facts and often fewer of them: measured at 3 of 6 scopes
-    reached and a 33% input swing between identical runs on one model. A cell that let the model
-    choose is not measuring the same conversation as one that did not.
+    Off, the model chooses which facts to gather. Those choices change the conversation
+    and must remain distinct from a workload with pinned tool calls.
     """
     retrieval_guidance: bool
     """Whether the instructions carried the clause telling the model to quote every identifier.
@@ -622,12 +621,9 @@ class StrategySettings:
     user_min_band_share: float
     """Share of the prompt the band had to be worth before ``user_summary_anchored`` acted.
 
-    The hysteresis, and the field that decides what a row of that strategy means. At ``0.0`` the
-    strategy compacts on every pass past its trigger -- one summarizer call and one rewritten
-    prefix per turn, measured at ``USERCOMPACT:31`` (double-counted, about fifteen passes) with a
-    seeding-phase cache hit rate of 77% against the control's 95% -- and above it
-    the passes are bounded by how fast the band regrows. Two runs either side of that are not
-    one cell, which is why it is here and not only in the strategy.
+    At zero, the strategy can compact on every pass past its trigger. Positive values
+    require the band to regrow before another pass. This changes summarizer work and cache
+    reuse, so the setting is part of cell identity.
 
     ``0.0`` on a record written before schema 10, and that is a measurement rather than a
     default: those runs had no such floor, which is the same thing as a floor of zero. See

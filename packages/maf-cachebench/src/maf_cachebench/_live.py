@@ -143,21 +143,8 @@ AGENT_KINDS: Final[tuple[str, ...]] = ("plain", "harness")
 #: what separates the model's own enumeration variance from compaction's.
 DEFAULT_PROBE_REPEATS: Final[int] = 3
 
-#: How many times the one combined question is put to the same snapshot.
-#:
-#: Its own count, independent of :data:`DEFAULT_PROBE_REPEATS`, because the two accuracy
-#: measures are averages over different numbers of questions. ``acc1`` averages every scoped
-#: question per repeat -- seven of them in the cells recorded so far, one per tool lookup plus
-#: the requirements -- while ``acc2`` is one question, so at one probe repeat it was a single
-#: sample per seed against seven, which is why it was the noisier of the two. The runs that
-#: matter use ``--probe-repeats 1``, the per-scope repeat spread having measured 0 to 2
-#: points, and this keeps the combined question sampled while that is true.
-#:
-#: Five rather than three, because three was measured to be too few. Asked of a byte-identical
-#: restored snapshot the combined question is close to pass or fail: one attempt in fifteen
-#: collapsed from 100% to 21% on the uncompacted control, and ``rep2+-`` read 12 to 16 points
-#: on four of six rows. Two runs of one cell reported the control at 37% and at 95%. Nothing
-#: about the context differs between those attempts, so the sampling has to absorb it.
+#: Independent sampling count for the combined question. Each attempt is one answer,
+#: whereas a per-scope repeat averages several answers; the two need separate counts.
 DEFAULT_COMBINED_REPEATS: Final[int] = 5
 
 #: Default size of each tool result, in tokens. Set high on purpose: in a real agent
@@ -207,19 +194,8 @@ RATE_LIMIT_MAX_DELAY: Final[float] = 60.0
 #: a run that spent its wall clock here says so instead of looking merely slow.
 RATE_LIMIT_MAX_WAIT: Final[float] = 300.0
 
-#: Attempts one call makes against a dropped connection before the turn is failed.
-#:
-#: Five, and they are the operative bound: the schedule below spends about 15 seconds over the
-#: four re-sends, well inside the wait budget, so what ends a turn is running out of attempts
-#: rather than running out of clock. A cell of 30 seed records was lost outright to
-#: ``APIConnectionError`` with every row ``ERR`` and no turns completed, and three cells of an
-#: earlier sweep went the same way, so the first fifteen seconds of a network blip are the
-#: whole point of this.
-#:
-#: Cheaper to spend than the throttling attempts above: a request the transport never delivered
-#: is a request the provider never billed. That is an argument for retrying promptly, not for
-#: retrying forever -- a 5xx counts as transient here too, and one of those may well have been
-#: billed for the work it failed at.
+#: Bound retries after transient connection failures. The schedule spends about 15 seconds
+#: over four re-sends; failed server responses may still have incurred provider charges.
 CONNECTION_ATTEMPTS: Final[int] = 5
 
 #: First backoff in seconds, doubled per attempt: 1, 2, 4, 8.
@@ -323,12 +299,8 @@ assistant prose, which lets a strategy delete the original and still appear loss
 Retrieval guidance only changes *whether the model looks* for what is already there; it
 cannot resurrect a fact compaction removed. Only the first kind can mask damage.
 
-It is not, however, what made the closing answer stable. That was the reply cap. Measured on
-the uncompacted control asking for all 53 codes at once: without this clause a 900-token cap
-scored 33% with 36 facts present but unlisted, and raising the cap to 4,000 scored 100% with
-no clause at all. The guidance had been compensating for a truncated answer by pushing codes
-ahead of prose. At an adequate cap it changes nothing here, and it is kept for continuity with
-the runs already measured rather than because it is doing work.
+The closing reply cap must also leave enough room to enumerate all requested values;
+retrieval guidance cannot compensate for truncating the answer.
 
 The "say so plainly" clause guards the other direction: a model that invents a plausible
 code would score as recall without the fact ever being in context.
@@ -906,9 +878,7 @@ class LiveOutcome:
     def messages_left(self) -> int:
         """Messages in a probe's prompt: the snapshot as compaction left it, plus the question.
 
-        Stable across probes by construction, since each one is asked from a restored copy of
-        the same snapshot. Before the snapshot existed this was the last of a chain of closing
-        turns and drifted downwards through the scoring.
+        Stable across probes because each reads a restored copy of the same snapshot.
         """
         return self.calls[-1].messages_sent if self.calls else 0
 
@@ -1067,17 +1037,10 @@ def _count(strategy: Any, attribute: str) -> int:
 
 
 def wants_client_side_history(client: Any, *, allow_server_history: bool = False) -> bool:
-    """Return whether ``store=False`` must be forced so compaction can act.
+    """Return whether ``store=False`` is required for client-side compaction.
 
-    Clients on the Responses API keep the conversation server-side. When they do, MAF skips
-    ``HistoryProvider.before_run`` entirely -- the comment in the framework is explicit that
-    "the service owns loading; the providers are write-only sinks" -- and the agent sends
-    only the new turn. A compaction strategy then has nothing to compact, and every setting
-    silently measures the same thing.
-
-    Measured on Foundry before this was forced: a 16-turn conversation reported a one-message
-    prompt on every row, while the service billed 82,708 input tokens for history the client
-    never sent.
+    Responses clients with server-owned history bypass ``HistoryProvider.before_run``.
+    Compaction requires the client to load and send that history.
 
     Args:
         client: The chat client under test.
@@ -1105,9 +1068,7 @@ def make_lookup_tool(
         lookups: Scope label mapped to the verifiable codes it carries.
         filler_tokens: Approximate size of each result, **in tokens**. This is the only thing
             that decides how much context tool output occupies, and therefore whether
-            tool-oriented compaction has anything worth evicting. At the ~76 tokens a
-            600-character default produced, six results came to under 2% of a 28,000-token
-            prompt and ``tool_result`` could move only 1.2% of it.
+            tool-oriented compaction has enough material to affect the workload.
 
     Returns:
         A callable suitable for passing to ``Agent(tools=...)``.
@@ -1184,10 +1145,8 @@ def make_scope_tools(
 
     A single ``lookup_deployment(scope)`` tool leaves the choice of scope to the model, and
     ``tool_choice="required"`` cannot constrain an argument -- only which function is called.
-    Measured on one model: forcing a call raised tool use from 4 to 7 calls per run but it
-    still reached only 3 of 6 scopes, calling one twice and skipping another. Splitting the
-    tool per scope makes ``required_function_name`` sufficient to pin exactly which fact the
-    turn gathers.
+    A separate function per scope lets ``required_function_name`` pin exactly which facts
+    each turn gathers.
 
     Args:
         lookups: Scope label mapped to the verifiable codes it carries.
@@ -1268,30 +1227,11 @@ def _spread_codes(codes: Sequence[str], body: str, *, labelled: bool) -> str:
 
 
 class IdentifiedHistoryProvider(InMemoryHistoryProvider):
-    """Issue every stored message an id, so the control keeps the conversation it ran.
+    """Assign stored messages IDs so repeated turns remain distinct in every strategy row.
 
-    ``filter_new_messages`` identifies a message by its ``message_id`` and falls back to
-    ``(role, serialized contents)`` when there is none. Compaction assigns ids to everything it
-    annotates, so a row carrying a strategy is always identified the first way. The control has
-    no strategy and therefore no ids, and is identified the second way -- so its byte-identical
-    replies to filler turns collide and the later ones are dropped from the stored history.
-
-    Measured at 120,000/0.86: the control peaked at 82 messages where every strategy row peaked
-    at 109 on the same turn list, and ``anchored``, which planned nothing at that cell, ended
-    with a snapshot 5.4% larger than the baseline it was supposed to equal. Two rows that both
-    did nothing are not the same conversation, so every ``vs none`` figure taken then is biased
-    in the control's favour.
-
-    Fixed here rather than in the framework because the framework's behaviour is the contract
-    and not the defect: an application whose messages carry ids gets exact identity, and one
-    whose messages do not gets a content hash that cannot tell a repeated turn from a resent
-    one. This makes the benchmark the first kind of application on every row instead of only
-    on the rows a strategy happened to annotate.
-
-    The ids are issued at the point the history receives a message, which is the last moment
-    before identity is decided and the only one every row passes through. They are never sent
-    to the provider -- :func:`serialize_message` excludes them -- so no prompt, token count or
-    cache prefix moves.
+    The framework otherwise falls back to content identity and can deduplicate identical filler
+    replies. Assign IDs when history receives each message; serialization excludes them, so they
+    do not change provider prompts or cache prefixes.
     """
 
     def __init__(self) -> None:
@@ -1372,9 +1312,7 @@ def build_live_agent(
     if kind not in AGENT_KINDS:
         raise ValueError(f"Unknown agent kind {kind!r}. Available: {', '.join(AGENT_KINDS)}")
 
-    # Built before the branch and handed to both kinds, because the defect it exists to
-    # prevent is not a property of either: whichever agent the cell is measured on, the
-    # control is the row whose replies repeat and so the row that loses them.
+    # Both agent kinds need message IDs to preserve repeated control replies.
     history = IdentifiedHistoryProvider()
     if kind == "harness":
         # The harness resolves both phases itself from the strategies handed in, so it gets
@@ -1467,8 +1405,7 @@ def serialize_history(agent: Agent[Any], state: Mapping[str, Any]) -> str:
 
     The stored list is not the prompt. ``InMemoryHistoryProvider`` keeps excluded messages in
     state so that a strategy can still reconsider them, so serializing it without projecting
-    reports that every strategy preserved every fact. That was measured, and it is why the
-    projection here is not optional.
+    would count facts that the model never receives. Projection is therefore required.
 
     Args:
         agent: The agent whose providers say where the history lives.
@@ -1528,10 +1465,8 @@ def snapshot_state(session: AgentSession) -> dict[str, Any]:
     so a snapshot sharing those objects would be silently rewritten by the first probe and
     every later probe would start somewhere else.
 
-    Cheap enough to take on every turn, which is what the retry path does. ``deepcopy``
-    returns immutable strings as themselves, so the copy rebuilds the message objects around
-    the payloads rather than the payloads: measured at 6ms for a 232-message, 230,000-token
-    conversation, against a call that spends tens of seconds sending it.
+    ``deepcopy`` preserves immutable strings while copying the mutable message objects
+    around them, so later history updates cannot alter the snapshot.
 
     Args:
         session: The session to snapshot.
@@ -1548,8 +1483,7 @@ def snapshot_decisions(strategy: Any) -> Any | None:
     A strategy's decisions are conversation state that the session does not hold: the
     composed chain's wait for a record, the record half's outstanding ask and the groups it
     has settled. Restoring the session without them re-enters the conversation with the
-    decisions a discarded re-entry advanced -- measured as a probe that saw the snapshot once
-    and a compacted conversation eleven times, on the same row.
+    decisions advanced by an attempt whose session state has been discarded.
 
     Args:
         strategy: The strategy under test, or None for the control.
@@ -1779,31 +1713,24 @@ async def run_live(
         force_tool_calls: Set ``tool_choice='required'`` on the turns that ask for a
             lookup. Without it a model that ignores the instruction gathers fewer facts
             and carries fewer tokens, which moves both axes for reasons unrelated to
-            compaction: measured at 3 of 6 scopes reached and a 33% input swing between
-            identical runs on one model, against 6 of 6 and 8% on another.
+            compaction.
         retrieval_guidance: Append the clause telling the model to quote every identifier it
             is asked for. Dropping it measures the model's own willingness to enumerate,
             which is a different thing from what compaction left behind.
         fact_placement: Where the verifiable codes sit inside each tool result. ``"spread"``
-            distributes them; ``"head"`` reproduces the earlier runs, in which every code sat
-            inside the first 4,096 characters and so survived head-truncating compaction
-            unconditionally.
+            distributes them; ``"head"`` places them in the first 4,096 characters, where
+            head-preserving compaction can retain them without keeping the rest of the result.
         allow_server_history: Leave a Responses-API client in charge of the conversation,
             accepting that no compaction runs. Off by default, and forced here rather than
-            left to the caller: a calibration probe that forgot it reported every narration
-            mode as stable, because the service was feeding the model a history the client
-            had never compacted.
+            left to the caller, so every default run measures client-side compaction.
         probe_repeats: How many times each per-scope closing question is asked, each time
             from the restored snapshot. Several, because accuracy is two-valued often enough
-            that one reading is a draw rather than a measurement: one strategy scored 52, 52,
-            52 and 22 on runs that preserved exactly the same 27 facts. Repeating the question
-            against unchanged material is what separates that from compaction's own spread.
+            that one reading cannot distinguish retrieval variance from compaction damage.
+            Each repetition reads unchanged material.
         combined_repeats: How many times the combined question is asked, in exactly the same
             way and from the same restored snapshot. Counted separately because one reading of
             ``acc1`` averages every scoped question while one reading of ``acc2`` is one answer,
-            so the two need different numbers of attempts to be equally settled -- and the runs
-            that matter set ``probe_repeats`` to 1, the per-scope repeat spread having measured
-            0 to 2 points.
+            so their sampling counts are independent.
         answer_max_tokens: Cap put on the closing questions' own calls, and on no others.
             ``None`` leaves the run's ordinary cap in place on those too.
 
@@ -1837,10 +1764,8 @@ async def run_live(
             compacting almost nothing; this is what buys the compaction back.
         repeat_records: Let the size trigger ask for a further record once the agent has done
             tool work no existing record accounts for, used only by ``tool_summary_anchored``.
-            On by default: off, the row compacts once and then grows past three times its
-            window on every seed measured. On, records accumulate and every one of them is
-            preserved: on a model whose one record is already complete that is duplication,
-            measured as a small negative shrink.
+            On by default. Turning it off permits only one size-triggered record. Repeated
+            records are all retained, so redundant records can increase prompt size.
             It governs the size trigger alone; ``max_groups_before_record`` is a caller asking
             for repeats outright and keeps forcing them either way.
         sleep: How the backoff between re-sent attempts is taken, throttled and disconnected
@@ -2053,14 +1978,8 @@ async def run_live(
             The agent response, or None when the turn could not be sent at all.
         """
         nonlocal error, forced
-        # ``agent.run`` is not idempotent, so every retry below starts from here rather than
-        # from wherever the failed attempt stopped. A 429 that lands inside the tool-calling
-        # loop leaves the session holding an assistant function call whose result never
-        # arrived -- history is persisted per model call, so the call is durable and the
-        # result that was still in flight is not -- and re-sending against that state is
-        # refused outright: "No tool output found for function call". Measured live at 7
-        # occurrences in one cell, every one on a throttled row and including the uncompacted
-        # control, so the retry that exists to save seeds was destroying them instead.
+        # Agent runs can persist incomplete tool exchanges before failing. Restore both
+        # session and strategy state before retrying, so no unmatched tool call survives.
         before = snapshot_state(session)
         before_decisions = snapshot_decisions(strategy)
         # Allow one correction per runtime option, plus tool_choice and max_tokens, then success.
@@ -2077,17 +1996,13 @@ async def run_live(
                 turn_options["max_tokens"] = max_tokens
             if "tool_choice" not in dropped:
                 if turn_index in forced:
-                    # Name the function, not just "required". Requiring *a* call still lets
-                    # the model pick the scope, and it picks wrong: measured reaching 3 of 6
-                    # scopes while calling one of them twice.
+                    # Requiring a function by name pins the scope as well as the call.
                     turn_options["tool_choice"] = {
                         "mode": "required",
                         "required_function_name": f"lookup_{forced[turn_index]}",
                     }
                 elif force_tool_calls:
-                    # Every other turn is closed to tools. Pinning only the wanted calls
-                    # still leaves the model free to make unwanted ones: measured at 12 calls
-                    # against the 6 asked for, on one repeat in three.
+                    # Forbid extra tool work outside the scripted lookup turns.
                     turn_options["tool_choice"] = "none"
             try:
                 return await _attempt(text, turn_options, before, before_decisions)

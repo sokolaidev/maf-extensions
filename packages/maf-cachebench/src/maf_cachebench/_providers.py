@@ -306,10 +306,7 @@ PROVIDER_SPECS: Final[dict[str, ProviderSpec]] = {
     "mistral": ProviderSpec(
         name="mistral",
         cache_reporting="yes",
-        # Measured on mistral-large-latest: caching engages with no prompt_cache_key at all,
-        # so the key is optional here rather than the switch.
-        # Engagement is intermittent though — 1 of 3 identical-prefix calls hit, with and
-        # without a key — so single-repeat Mistral runs are noise. Use --repeats.
+        # The cache key is optional; repeated measurements must establish cache stability.
         cache_key_mode="optional",
         env_vars=("MISTRAL_API_KEY", "MISTRAL_CHAT_MODEL"),
         notes=(

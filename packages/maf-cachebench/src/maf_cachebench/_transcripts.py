@@ -153,12 +153,7 @@ def build_transcript(
         raise ValueError("turns must be greater than 0.")
 
     resolved_tokenizer = tokenizer or CharacterEstimatorTokenizer()
-    # The salt is hashed to a fixed width so that every cell's system anchor is exactly the
-    # same length. A raw salt embeds the provider and strategy names verbatim, and those
-    # differ in length — which shifts the transcript's token count, which shifts the
-    # budget-derived compaction thresholds, which changes how much a strategy retains.
-    # Measured: "openrouter" cells kept 663 fewer tokens under truncation than "mistral"
-    # cells purely from the name length, breaking cross-provider comparability.
+    # Fixed-width salts keep anchor size and derived compaction budgets comparable across cells.
     fixed_salt = hashlib.sha256(salt.encode("utf-8")).hexdigest()[:16]
     system = Message(
         role="system",

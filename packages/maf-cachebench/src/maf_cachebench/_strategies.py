@@ -95,13 +95,8 @@ __all__ = [
 # window when the caller does not pass one. Below 1.0 so that compaction is guaranteed to
 # trigger part-way through every preset.
 _AUTO_WINDOW_FRACTION: Final[float] = 0.6
-# The floor has to leave the system anchor inside even the most aggressive phase's budget.
-# ContextWindowCompactionStrategy evicts tool results at 0.5 of the input budget, so a
-# window that puts half the budget below the anchor's size drives the composed budget
-# strategy's strict pass -- `token_budget_fallback_strict`, which is where the framework's
-# only strict eviction lives -- into evicting the anchor itself. Measured on the `small`
-# preset at a 2,048 floor, where the prompt collapsed to 47 tokens on turn 1. That destroys
-# the stable prefix whose cacheability is the entire subject of the benchmark.
+# The minimum window must retain the system anchor under the strictest eviction budget,
+# preserving the stable prefix whose cacheability the benchmark measures.
 _MIN_AUTO_WINDOW_TOKENS: Final[int] = 4_096
 
 
