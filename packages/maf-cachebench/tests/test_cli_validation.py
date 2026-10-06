@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from maf_cachebench import _advise_cli, _cli, _recall_cli, _summary_cli
+from maf_cachebench import ModelPricing, _advise_cli, _cli, _recall_cli, _summary_cli
 from maf_cachebench._strategies import STRATEGIES_FORCING_RECORDS, STRATEGIES_NEEDING_SUMMARIZER
 
 pytestmark = pytest.mark.anyio
@@ -171,7 +171,7 @@ async def test_advice_resolves_default_catalogue_model_before_measurement(
     def catalogue(model: str) -> Any:
         assert model == "resolved-model"
         events.append("pricing")
-        return _advise_cli.ModelPricing(1, 0.1)
+        return ModelPricing(1, 0.1)
 
     async def measure(args: Any, provider: str, configured: Any) -> Any:
         assert configured is runtime
@@ -197,15 +197,13 @@ def test_catalogue_failures_have_actionable_cli_errors(
 
     import httpx
 
-    from maf_cachebench import _advisor
-
     def get(*args: Any, **kwargs: Any) -> Any:
         request = httpx.Request("GET", "https://openrouter.ai/api/v1/models")
         if failure == "transport":
             raise httpx.ConnectError("offline", request=request)
         return httpx.Response(503, request=request)
 
-    monkeypatch.setattr(_advisor.httpx, "get", get)
+    monkeypatch.setattr(httpx, "get", get)
     module = importlib.import_module(f"maf_cachebench.{module_name}")
     args = module.build_parser().parse_args(["openrouter:model"])
     with pytest.raises(SystemExit, match="(?s)Could not fetch pricing.*Pass --price-input"):
