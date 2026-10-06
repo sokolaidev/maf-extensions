@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 
 __all__ = [
     "PROVIDER_SPECS",
     "CacheKeyMode",
+    "ConfiguredClient",
     "ProviderRuntime",
     "ProviderSpec",
     "build_provider",
@@ -46,6 +48,28 @@ class ProviderRuntime:
     client: Any
     model: str
     options: dict[str, Any] = field(default_factory=dict[str, Any])
+
+
+class ConfiguredClient:
+    """Forward client calls with provider defaults, allowing per-call option overrides."""
+
+    def __init__(self, inner: Any, options: Mapping[str, Any]) -> None:
+        self.inner = inner
+        self.options = deepcopy(dict(options))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def get_response(self, *args: Any, **kwargs: Any) -> Any:
+        options = deepcopy(self.options)
+        overrides = dict(kwargs.pop("options", None) or {})
+        if "extra_body" in options and "extra_body" in overrides:
+            overrides["extra_body"] = {
+                **options["extra_body"],
+                **overrides["extra_body"],
+            }
+        options.update(overrides)
+        return await self.inner.get_response(*args, options=options, **kwargs)
 
 
 @dataclass(frozen=True, slots=True)

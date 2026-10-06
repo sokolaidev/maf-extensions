@@ -16,7 +16,7 @@ sometimes overlooks a fact even when everything is in front of it.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import fmean
 from typing import TYPE_CHECKING, Final
 
@@ -53,6 +53,8 @@ class JointOutcome:
     Empty for the replay paths, which read a cell once.
     """
 
+    cache_reported: bool = True
+
     @property
     def correctness(self) -> float:
         """Share of correctness checks passed, averaged over every reading that was taken."""
@@ -63,7 +65,7 @@ class JointOutcome:
     @property
     def hit_rate(self) -> float | None:
         """Share of input tokens served from the provider's cache."""
-        if self.input_tokens <= 0:
+        if not self.cache_reported or self.input_tokens <= 0:
             return None
         return self.cached_tokens / self.input_tokens
 
@@ -116,6 +118,31 @@ MEANINGFUL_BASELINE: Final[float] = 0.25
 
 
 def recommend(
+    outcomes: list[JointOutcome],
+    *,
+    baseline: str = "none",
+    min_correctness: float = DEFAULT_MIN_CORRECTNESS,
+    baseline_admissible: bool = True,
+) -> JointVerdict:
+    """Recommend by cost and correctness, disclosing incomplete cache telemetry."""
+    verdict = _recommend(
+        outcomes,
+        baseline=baseline,
+        min_correctness=min_correctness,
+        baseline_admissible=baseline_admissible,
+    )
+    if any(not outcome.cache_reported for outcome in outcomes):
+        verdict = replace(
+            verdict,
+            rationale=(
+                "Low confidence: cache telemetry is incomplete; unreported cache reads are "
+                "priced as uncached. " + verdict.rationale
+            ),
+        )
+    return verdict
+
+
+def _recommend(
     outcomes: list[JointOutcome],
     *,
     baseline: str = "none",

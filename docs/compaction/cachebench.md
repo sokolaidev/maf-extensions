@@ -169,7 +169,7 @@ These are separate because a seeding reply is appended to the history and re-sen
 
 Sizing `--max-output-tokens` too low also inflates the budget and can push a trigger above what the service will accept, which disables compaction with no warning.
 
-Provider cache-read counts are bounded per request between zero and that request's input count before aggregation and pricing. An over-reported cache count cannot offset another request's fresh input.
+Provider cache-read counts are bounded per request between zero and that request's input count before aggregation and pricing. An over-reported cache count cannot offset another request's fresh input. Missing cache telemetry is retained separately from reported zero, including summarizer requests. Live tables show unavailable hit rates as `n/a`, and recommendations disclose low confidence when any compared row has incomplete cache telemetry. Unreported reads are conservatively priced as uncached; older JSONL records retain unknown cache status and their stored costs. Summarizer requests retain the selected provider's temperature, output cap, routing, and usage-reporting options.
 
 ### Tuning the strategies
 

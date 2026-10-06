@@ -256,7 +256,9 @@ __all__ = [
 #: tokens of the calls billed above it, for the run and for its probes. On the version 5
 #: argument: before it no run priced a tier, so the cell fields read back as ``None`` and the
 #: token counts as zero -- every call was billed at the one rate, which is what those say.
-SCHEMA_VERSION: Final[int] = 21
+#: Version 22 records whether every agent and summarizer call reported cache reads.
+#: Older records retain unknown telemetry and their original stored costs.
+SCHEMA_VERSION: Final[int] = 22
 
 #: Versions this reader accepts, which is not only the current one.
 #:
@@ -347,7 +349,7 @@ SCHEMA_VERSION: Final[int] = 21
 #:
 #: Version 20 joins on the same argument: it priced no long-context tier, so the tier reads back
 #: as absent and its token counts as zero.
-_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 21), SCHEMA_VERSION})
+_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 22), SCHEMA_VERSION})
 
 #: The parameters that make two records the same cell, and so aggregable into one row.
 #:
@@ -1394,6 +1396,8 @@ class SeedRecord:
     """The same three counts for the probe phase alone, so the seeding half can be priced apart."""
     probe_long_cached_tokens: int = 0
     probe_long_output_tokens: int = 0
+    cache_reported: bool | None = None
+    """Whether every call reported cache reads; unknown on records before schema 22."""
     error: str | None = None
     schema: int = SCHEMA_VERSION
 
@@ -1419,6 +1423,8 @@ class SeedRecord:
         compaction did to the cache is :attr:`seeding_hit_rate`; this mixes it with the
         instrument's own draw, and is kept because every earlier write-up quotes it.
         """
+        if self.cache_reported is not True:
+            return None
         return self.cached_tokens / self.input_tokens if self.input_tokens > 0 else None
 
     @property
@@ -1458,7 +1464,7 @@ class SeedRecord:
             The share, or None when the phases were never counted apart or nothing was billed.
         """
         billed, cached = self.seeding_input_tokens, self.seeding_cached_tokens
-        if billed is None or cached is None or billed <= 0:
+        if self.cache_reported is not True or billed is None or cached is None or billed <= 0:
             return None
         return cached / billed
 
@@ -1475,7 +1481,8 @@ class SeedRecord:
             The share, or None when the phases were never counted apart or nothing was billed.
         """
         if (
-            self.probe_input_tokens is None
+            self.cache_reported is not True
+            or self.probe_input_tokens is None
             or self.probe_cached_tokens is None
             or self.probe_input_tokens <= 0
         ):
@@ -1493,7 +1500,11 @@ class SeedRecord:
             One share per probe, None for a probe that billed nothing; or None on a record
             written before the per-probe counts existed.
         """
-        if self.probe_input_samples is None or self.probe_cached_samples is None:
+        if (
+            self.cache_reported is not True
+            or self.probe_input_samples is None
+            or self.probe_cached_samples is None
+        ):
             return None
         return tuple(
             cached / billed if billed > 0 else None

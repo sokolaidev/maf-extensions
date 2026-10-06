@@ -257,7 +257,11 @@ class StubChatClient(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], Bas
         self.seen: list[int] = []
         self.options_seen: list[dict[str, Any]] = []
         self.tool_turns = set(tool_turns)
-        self.usage = usage if usage is not None else UsageDetails(input_token_count=100)
+        self.usage = (
+            usage
+            if usage is not None
+            else UsageDetails(input_token_count=100, cache_read_input_token_count=0)
+        )
         self.reply = reply
         self.obey_tool_choice = obey_tool_choice
         self.finish_reason = finish_reason
@@ -5990,7 +5994,8 @@ async def test_the_table_prints_the_seeding_and_probe_hit_rates_apart_and_first(
     per-seed pairs under the table show which seeds drew which value.
     """
     outcome, scenario = await _probed(
-        StubChatClient(usage=UsageDetails(input_token_count=1_000)), repeats=1
+        StubChatClient(usage=UsageDetails(input_token_count=1_000, cache_read_input_token_count=0)),
+        repeats=1,
     )
     base = _record(outcome, scenario)
     # Run 47's composed row, seeds 1 and 2, to the token: the same seeding half either side of
@@ -6052,7 +6057,8 @@ async def test_a_row_that_cannot_split_shows_its_whole_run_hit_rate_alone() -> N
     new one still has the one number both printed.
     """
     outcome, scenario = await _probed(
-        StubChatClient(usage=UsageDetails(input_token_count=1_000)), repeats=1
+        StubChatClient(usage=UsageDetails(input_token_count=1_000, cache_read_input_token_count=0)),
+        repeats=1,
     )
     record = _record(outcome, scenario)
     unsplit = _phase_cell(record, strategy="truncation", cost=0.5, probe_input=None)
@@ -6135,8 +6141,9 @@ async def test_rows_whose_seeds_agree_on_facts_print_no_per_seed_block() -> None
     assert "per-sample acc2, one group per seed:" in table, "the neighbouring blocks are unaffected"
 
 
+@pytest.mark.parametrize("reported", [True, False])
 async def test_the_cross_cell_report_carries_both_hit_rates(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], reported: bool
 ) -> None:
     """A row compared on cache anywhere is shown its seeding half, with the probe half beside it.
 
@@ -6150,6 +6157,7 @@ async def test_the_cross_cell_report_carries_both_hit_rates(
         replace(
             record,
             cached_tokens=record.input_tokens // 2,
+            cache_reported=reported,
             probe_input_tokens=100,
             probe_cached_tokens=25,
         )
@@ -6169,8 +6177,9 @@ async def test_the_cross_cell_report_carries_both_hit_rates(
         < columns.index("acc1")
     )
     expected = (records[0].seeding_cached_tokens or 0) / (records[0].seeding_input_tokens or 1)
-    assert f"{expected:.1%}" in section
-    assert "25.0%" in section, "the probe half of the arm that recorded one"
+    assert (f"{expected:.1%}" in section) is reported
+    assert ("25.0%" in section) is reported
+    assert ("Low confidence: cache telemetry" in section) is not reported
 
 
 def test_the_archived_cells_split_their_hit_rates_as_computed_by_hand() -> None:
@@ -6211,15 +6220,18 @@ def test_the_archived_cells_split_their_hit_rates_as_computed_by_hand() -> None:
         "98.8%",
         "99.3%",
     ]
-    assert all(len(record.probe_hit_samples or []) == 12 for record in composed), (
+    assert all(len(record.probe_cached_samples or []) == 12 for record in composed), (
         "one sample per probe"
     )
 
+    assert all(record.cache_reported is None and record.hit_rate is None for record in composed)
     cell = _aggregate("tool_and_user_summary_anchored", composed)
+    assert cell.hit_rate is None
     assert _rate(cell.seeding_cached_tokens, cell.seeding_input_tokens) == "89.5%"
-    assert fmean(record.seeding_hit_rate or 0 for record in composed) == pytest.approx(
-        0.8945, abs=0.0005
-    )
+    assert fmean(
+        (record.seeding_cached_tokens or 0) / (record.seeding_input_tokens or 1)
+        for record in composed
+    ) == pytest.approx(0.8945, abs=0.0005)
 
 
 async def test_a_cheap_lossy_row_ranks_below_a_dearer_faithful_one() -> None:
@@ -8993,7 +9005,8 @@ async def _priced_records(
         The records.
     """
     outcome, scenario = await _probed(
-        StubChatClient(usage=UsageDetails(input_token_count=1_000)), repeats=1
+        StubChatClient(usage=UsageDetails(input_token_count=1_000, cache_read_input_token_count=0)),
+        repeats=1,
     )
     base = _record(outcome, scenario)
     return [
@@ -10284,3 +10297,77 @@ async def test_live_salts_isolate_same_second_commands(monkeypatch: pytest.Monke
         assert await run_live_comparison(args) == 0
     assert len(salts) == 2
     assert len(set(salts)) == 2
+
+
+@pytest.mark.parametrize("cached", [None, 0, 40])
+@pytest.mark.parametrize("summarizer", [False, True])
+async def test_live_cache_reporting_survives_records_and_verdict(
+    cached: int | None, summarizer: bool, tmp_path: Path
+) -> None:
+    usage: dict[str, Any] = {"input_token_count": 100}
+    if cached is not None:
+        usage["cache_read_input_token_count"] = cached
+    client = StubChatClient(usage=cast(Any, usage))
+    meter = MeteredClient(client)
+    if summarizer:
+        await meter.get_response([Message("user", ["summary"])])
+    scenario = _probe_scenario()
+    outcome = await run_live(
+        ProviderRuntime(client=StubChatClient() if summarizer else client, model="stub"),
+        strategy_name="none",
+        options=replace(_options(), summarizer=cast(Any, meter) if summarizer else None),
+        scenario=scenario,
+    )
+    reported = cached is not None
+    assert outcome.cache_reported is reported
+    record = _record(outcome, scenario)
+    path = _written(tmp_path / "cache.jsonl", [record])
+    restored = read_seed_records(path)[0]
+    assert restored.cache_reported is reported
+    assert restored.cost == record.cost
+    stats = _aggregate("none", [restored])
+    joint = _to_joint(stats)
+    assert stats.cache_reported is reported
+    assert (stats.hit_rate is not None) is reported
+    assert (stats.seeding_hit_rate is not None) is reported
+    assert (stats.probe_hit_rate is not None) is reported
+    assert joint.cache_reported is reported
+    assert (joint.hit_rate is not None) is reported
+    assert (restored.hit_rate is not None) is reported
+    assert (restored.seeding_hit_rate is not None) is reported
+    assert (restored.probe_hit_rate is not None) is reported
+    assert (restored.probe_hit_samples is not None) is reported
+    assert ("Low confidence: cache telemetry" in recommend([joint]).rationale) is not reported
+    if not reported:
+        assert _row(stats, stats, False, 60_000).count("n/a") >= 3
+    legacy = restored.to_dict()
+    legacy.pop("cache_reported")
+    legacy["schema"] = 21
+    old = SeedRecord.from_dict(legacy)
+    assert old.cache_reported is None
+    assert old.hit_rate is None
+    assert old.cost == restored.cost
+
+
+async def test_live_summarizer_preserves_provider_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_cachebench import _live_cli
+
+    built = _stub_provider(monkeypatch)
+    original = run_live
+    observed: list[dict[str, Any]] = []
+
+    async def run(*args: Any, **kwargs: Any) -> LiveOutcome:
+        meter = kwargs["options"].summarizer
+        assert meter is not None
+        await meter.get_response([Message("user", ["summary"])])
+        observed.append(dict(built[1].client.options_seen[-1]))
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(_live_cli, "run_live", run)
+    args = build_parser().parse_args(
+        _live_argv("--summarizer-provider", "azure", "--strategies", "none", "--repeats", "1")
+    )
+    assert await run_live_comparison(args) == 0
+    assert observed
+    assert observed[0]["max_tokens"] == 1024
+    assert observed[0]["temperature"] == 0.0

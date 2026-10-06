@@ -54,7 +54,7 @@ from ._live import (
     unretrieved_facts,
     wants_client_side_history,
 )
-from ._providers import build_provider, parse_provider_selector, provider_names
+from ._providers import ConfiguredClient, build_provider, parse_provider_selector, provider_names
 from ._recall import COMBINED_SCOPE, RecallScenario, RecallScore
 from ._records import (
     CellParams,
@@ -1167,6 +1167,7 @@ def _seed_record(
         dropped_options=outcome.dropped_options,
         answer=outcome.answer,
         error=outcome.error,
+        cache_reported=outcome.cache_reported,
     )
 
 
@@ -1384,6 +1385,11 @@ class CellStats:
     """Per-sample ``acc2``: one tuple per seed, one value per combined attempt."""
 
     @property
+    def cache_reported(self) -> bool:
+        """Whether every seed reported cache usage for every call."""
+        return all(record.cache_reported is True for record in self.records)
+
+    @property
     def hit_rate(self) -> float | None:
         """Share of input tokens served from the provider's cache, over the whole run.
 
@@ -1392,6 +1398,8 @@ class CellStats:
         it always was, and the two halves below are pooled the same way so that this is
         exactly their token-weighted mix.
         """
+        if not self.cache_reported:
+            return None
         return self.cached_tokens / self.input_tokens if self.input_tokens > 0 else None
 
     @property
@@ -1401,7 +1409,8 @@ class CellStats:
         None when the row cannot split its phases, or when the seeding half billed nothing.
         """
         if (
-            self.seeding_input_tokens is None
+            not self.cache_reported
+            or self.seeding_input_tokens is None
             or self.seeding_cached_tokens is None
             or self.seeding_input_tokens <= 0
         ):
@@ -1415,7 +1424,8 @@ class CellStats:
         None when the row cannot split its phases, or when the probe half billed nothing.
         """
         if (
-            self.probe_input_tokens is None
+            not self.cache_reported
+            or self.probe_input_tokens is None
             or self.probe_cached_tokens is None
             or self.probe_input_tokens <= 0
         ):
@@ -1689,6 +1699,7 @@ def _to_joint(stats: CellStats, *, split: bool = True) -> JointOutcome:
             error=stats.records[0].error,
         ),
         correctness_samples=tuple(value for seed in stats.samples for value in seed),
+        cache_reported=stats.cache_reported,
     )
 
 
@@ -2168,12 +2179,12 @@ def _money(value: float | None) -> str:
     return "?" if value is None else "$" + format(value, ".4f")
 
 
-def _rate(cached: float | None, billed: float | None) -> str:
+def _rate(cached: float | None, billed: float | None, *, reported: bool = True) -> str:
     """Return a cache hit rate, or ``?`` when the records behind it never measured it.
 
     The money convention applied to the cache columns: ``?`` is a record that counted its
-    phases in one total, ``n/a`` a phase that billed nothing, and the two are different
-    statements. One decimal rather than none, because the probe half takes values a whole
+    phases in one total; ``n/a`` means absent cache telemetry or a phase that billed nothing.
+    One decimal rather than none, because the probe half takes values a whole
     percent cannot separate -- 33.3% is four probes of twelve and 99.6% is all of them, and
     a seeding half that moved by a point is a finding at five seeds.
 
@@ -2186,7 +2197,7 @@ def _rate(cached: float | None, billed: float | None) -> str:
     """
     if cached is None or billed is None:
         return "?"
-    return "n/a" if billed <= 0 else f"{cached / billed:.1%}"
+    return "n/a" if not reported or billed <= 0 else f"{cached / billed:.1%}"
 
 
 def _hit_pairs(records: Sequence[SeedRecord]) -> str:
@@ -2203,11 +2214,13 @@ def _hit_pairs(records: Sequence[SeedRecord]) -> str:
     Returns:
         One bracketed ``seeding/probe`` pair per seed, in the shape the acc blocks use.
     """
-    return "  ".join(
-        f"[{_rate(record.seeding_cached_tokens, record.seeding_input_tokens)}"
-        f"/{_rate(record.probe_cached_tokens, record.probe_input_tokens)}]"
-        for record in records
-    )
+    pairs: list[str] = []
+    for record in records:
+        reported = record.cache_reported is True
+        seed = _rate(record.seeding_cached_tokens, record.seeding_input_tokens, reported=reported)
+        probe = _rate(record.probe_cached_tokens, record.probe_input_tokens, reported=reported)
+        pairs.append(f"[{seed}/{probe}]")
+    return "  ".join(pairs)
 
 
 def _probe_groups(records: Sequence[SeedRecord]) -> str:
@@ -2281,9 +2294,15 @@ def _row(
     # probe half beside it, because a whole-run figure is unreadable without knowing which
     # of its two values the instrument drew; and the whole-run figure last, kept for the
     # reason run$ is.
-    seed_hit = _rate(stats.seeding_cached_tokens, stats.seeding_input_tokens)
-    probe_hit = _rate(stats.probe_cached_tokens, stats.probe_input_tokens)
-    run_hit = _rate(stats.cached_tokens, stats.input_tokens)
+    seed_hit = _rate(
+        stats.seeding_cached_tokens,
+        stats.seeding_input_tokens,
+        reported=stats.cache_reported is True,
+    )
+    probe_hit = _rate(
+        stats.probe_cached_tokens, stats.probe_input_tokens, reported=stats.cache_reported is True
+    )
+    run_hit = _rate(stats.cached_tokens, stats.input_tokens, reported=stats.cache_reported is True)
     flags = _flags(stats, control, message_gap=message_gap)
     # ``DQ`` is the dq column crossing zero and nothing else, not "excluded from the ranking",
     # which is a wider set: a row that failed a turn is excluded too, and under one name a table
@@ -3557,10 +3576,16 @@ def _combination_row(combination: _Combination, names: Sequence[str], *, mixed: 
     control = "*" if stats.strategy == "none" else " "
     # Both halves, on the rule the per-cell table follows: a row compared on cache at all is
     # shown its seeding half, and the probe half beside it so that nobody reaches for run hit%.
+    seed = _rate(
+        stats.seeding_cached_tokens, stats.seeding_input_tokens, reported=stats.cache_reported
+    )
+    probe = _rate(
+        stats.probe_cached_tokens, stats.probe_input_tokens, reported=stats.cache_reported
+    )
     return (
         f"    {stats.strategy:<28}{_money(stats.seeding_cost):>9}{combination.spread:>8.0%} "
-        f"{_rate(stats.seeding_cached_tokens, stats.seeding_input_tokens):>10}"
-        f"{_rate(stats.probe_cached_tokens, stats.probe_input_tokens):>12} "
+        f"{seed:>10}"
+        f"{probe:>12} "
         f"{stats.correctness:>6.0%}{control}{combination.relative:>8.0%}{len(stats.records):>7}  "
         f"{_settings_label(combination.cell, names, mixed=mixed)}"
     )
@@ -3823,6 +3848,11 @@ def _workload_section(groups: Sequence[_CellGroup]) -> list[str]:
             "of each cell's control"
         ),
     ]
+    if any(not cell.cache_reported for _, cells, _, _ in groups for cell in cells):
+        lines.append(
+            "  Low confidence: cache telemetry is incomplete; "
+            "unreported reads are priced as uncached."
+        )
     lines += [f"    set aside: {reason}" for reason in aside]
     return lines + (_workload_ranking(combinations) if combinations else [])
 
@@ -4216,7 +4246,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 "The summarizer must use the same provider and model as the agent: "
                 "this benchmark records one set of prices for both."
             )
-        summarizer_client = summarizer_runtime.client
+        summarizer_client = ConfiguredClient(summarizer_runtime.client, summarizer_runtime.options)
         # The model the provider settled on, not the selector that was typed. A run naming only
         # a provider records which model summarized for it, which is the difference between two
         # cells whose summarizing rows disagree.

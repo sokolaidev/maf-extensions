@@ -358,6 +358,7 @@ class ModelCall:
     input_tokens: int
     cached_tokens: int
     output_tokens: int
+    cache_reported: bool = True
 
     @property
     def fresh_tokens(self) -> int:
@@ -413,6 +414,7 @@ class UsageRecorder(ChatMiddleware):
                     usage.get("input_token_count") or 0, usage.get("cache_read_input_token_count")
                 ),
                 output_tokens=usage.get("output_token_count") or 0,
+                cache_reported=usage.get("cache_read_input_token_count") is not None,
             )
         )
 
@@ -424,6 +426,7 @@ class SummarizerUsage:
     input_tokens: int
     cached_tokens: int
     output_tokens: int
+    cache_reported: bool = True
 
 
 class MeteredClient:
@@ -496,6 +499,7 @@ class MeteredClient:
                     usage.get("input_token_count") or 0, usage.get("cache_read_input_token_count")
                 ),
                 output_tokens=usage.get("output_token_count") or 0,
+                cache_reported=usage.get("cache_read_input_token_count") is not None,
             )
         )
         self.input_tokens += usage.get("input_token_count") or 0
@@ -823,6 +827,11 @@ class LiveOutcome:
     summarizer_usage: tuple[SummarizerUsage, ...] = ()
     error: str | None = None
     replies: tuple[str, ...] = field(default_factory=tuple[str, ...])
+
+    @property
+    def cache_reported(self) -> bool:
+        """Whether every billed call reported cache usage, including the summarizer."""
+        return all(call.cache_reported for call in (*self.calls, *self.summarizer_usage))
 
     @property
     def summarizer_input_tokens(self) -> int:

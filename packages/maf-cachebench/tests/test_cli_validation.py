@@ -276,7 +276,7 @@ async def test_replay_resolves_summarizer_model_selector(monkeypatch: pytest.Mon
 
     def build(provider: str, **kwargs: Any) -> Any:
         seen.append((provider, kwargs.get("model")))
-        return SimpleNamespace(client=object())
+        return SimpleNamespace(client=object(), options={})
 
     monkeypatch.setattr(_cli, "build_provider", build)
     args = _cli.build_parser().parse_args(["--summarizer-provider", "azure:summarizer-model"])
@@ -471,10 +471,10 @@ async def test_live_duplicate_strategies_fail_before_setup(monkeypatch: pytest.M
         )
 
 
-@pytest.mark.parametrize("cached,normalized", [(-50, 0), (400, 100), (50, 50)])
+@pytest.mark.parametrize("cached,normalized", [(None, 0), (-50, 0), (400, 100), (50, 50)])
 async def test_summary_bounds_cache_per_call(
     monkeypatch: pytest.MonkeyPatch,
-    cached: int,
+    cached: int | None,
     normalized: int,
 ) -> None:
     from types import SimpleNamespace
@@ -499,6 +499,7 @@ async def test_summary_bounds_cache_per_call(
     expected = normalized * ((calls + 1) // 2)
     assert calls > 1
     assert outcome.cached_tokens == expected
+    assert outcome.cache_reported is (cached is not None)
     assert outcome.cost == pytest.approx(((calls * 100 - expected) + expected * 0.1) / 1_000_000)
 
 
@@ -794,3 +795,66 @@ async def test_measurement_salts_isolate_same_second_calls(
             else:
                 await module._measure(args, "azure", SimpleNamespace(model="stub"))
     assert len(set(salts)) == 2
+
+
+async def test_replay_summarizer_preserves_provider_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from copy import deepcopy
+
+    from maf_cachebench import ProviderRuntime
+
+    defaults = {
+        "temperature": 0.0,
+        "max_tokens": 512,
+        "extra_body": {"provider": {"only": ["pinned"]}, "usage": {"include": True}},
+    }
+    original = deepcopy(defaults)
+    observed: list[dict[str, Any]] = []
+
+    class Client:
+        async def get_response(self, *args: Any, **kwargs: Any) -> None:
+            observed.append(deepcopy(kwargs["options"]))
+            kwargs["options"].clear()
+
+    monkeypatch.setattr(
+        _cli, "build_provider", lambda *a, **k: ProviderRuntime(Client(), "stub", defaults)
+    )
+
+    def strategy(name: str, options: Any) -> Any:
+        return options.summarizer
+
+    async def cell(**kwargs: Any) -> list[Any]:
+        client = kwargs["strategy"]
+        await client.get_response([])
+        await client.get_response([], options={"max_tokens": 256, "extra_body": {"trace": True}})
+        return []
+
+    monkeypatch.setattr(_cli, "build_strategy", strategy)
+    monkeypatch.setattr(_cli, "run_cell", cell)
+    args = _cli.build_parser().parse_args(
+        [
+            "--providers",
+            "azure",
+            "--summarizer-provider",
+            "openrouter:model",
+            "--strategies",
+            "summarization",
+            "--sizes",
+            "small",
+            "--repeats",
+            "1",
+            "--tokenizer",
+            "estimator",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+    assert await _cli.run_benchmark(args) == 0
+    assert observed[0] == original
+    assert observed[1] == {
+        **original,
+        "max_tokens": 256,
+        "extra_body": {**original["extra_body"], "trace": True},
+    }
+    assert defaults == original

@@ -160,8 +160,12 @@ async def _measure(
     )
     final = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
 
+    cache_reported = True
+
     async def measured(caller: ProviderCaller, messages: list[Message]) -> CallOutcome:
+        nonlocal cache_reported
         outcome = await caller(messages)
+        cache_reported = cache_reported and outcome.cached_tokens is not None
         if outcome.error or not outcome.input_tokens or outcome.input_tokens < 0:
             reason = outcome.error or "provider omitted positive input usage"
             raise SystemExit(f"Cannot measure {strategy_name!r}: {reason}.")
@@ -198,6 +202,7 @@ async def _measure(
         cost=cost,
         input_tokens=input_tokens,
         cached_tokens=cached_tokens,
+        cache_reported=cache_reported,
         messages_left=len(projected),
         messages_total=len(history),
         score=RecallScore(

@@ -20,6 +20,7 @@ from ._cli_selection import (
 from ._metrics import summarize_cell
 from ._providers import (
     PROVIDER_SPECS,
+    ConfiguredClient,
     ProviderRuntime,
     build_provider,
     parse_provider_selector,
@@ -248,12 +249,13 @@ async def _run_matrix(
     summarizer: Any = None
     if args.summarizer_provider is not None and not args.dry_run:
         summarizer_provider, summarizer_model = parse_provider_selector(args.summarizer_provider)
-        summarizer = build_provider(
+        summarizer_runtime = build_provider(
             summarizer_provider,
             temperature=None if args.no_temperature else args.temperature,
             response_max_tokens=512,
             model=summarizer_model,
-        ).client
+        )
+        summarizer = ConfiguredClient(summarizer_runtime.client, summarizer_runtime.options)
 
     all_records: list[TurnRecord] = []
     summaries: list[CellSummary] = []
