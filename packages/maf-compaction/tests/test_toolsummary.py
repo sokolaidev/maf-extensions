@@ -19,7 +19,7 @@ import pytest
 from agent_framework import AgentSession, CharacterEstimatorTokenizer, ChatContext, Message
 from agent_framework._compaction import included_token_count, project_included_messages
 
-from maf_compaction._anchored import REMOVAL_MARKER
+from maf_compaction._anchored import REMOVAL_MARKER, AnchoredCompactionStrategy
 from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from maf_compaction._toolsummary import (
     DEFAULT_COVERAGE_SHARE,
@@ -453,13 +453,17 @@ async def test_a_fallback_that_changed_nothing_is_not_counted_as_one() -> None:
     """
     calls = 0
 
-    async def inert(messages: list[Message]) -> bool:
-        nonlocal calls
-        calls += 1
-        return False
+    class _Inert(AnchoredCompactionStrategy):
+        async def compact_to(self, messages: list[Message], *, ceiling: int) -> bool:
+            nonlocal calls
+            calls += 1
+            return False
 
     strategy = _strategy(
-        max_input_tokens=500, trigger_fraction=0.1, fallback_fraction=0.9, fallback=inert
+        max_input_tokens=500,
+        trigger_fraction=0.1,
+        fallback_fraction=0.9,
+        fallback=_Inert(max_input_tokens=500, tokenizer=TOKENIZER),
     )
     messages = _conversation(tool_turns=6, record=_covering_record(2))
 
@@ -948,7 +952,19 @@ def test_the_value_rule_finds_what_cannot_be_reconstructed_and_leaves_prose_alon
     space and the quotes, and bare ``id:AB-1`` is not separated at all. And ``=`` is read from
     the right, so a value whose only ``=`` is trailing padding keeps its whole self.
     """
-    assert _distinctive_tokens(text) == expected
+    # The cases are written lowercased; which tokens are found does not depend on case.
+    assert {token.lower() for token in _distinctive_tokens(text)} == expected
+
+
+async def test_a_record_that_changes_a_values_case_does_not_cover_it() -> None:
+    """A case-sensitive identifier quoted in another case is another value, so the group stays."""
+    verbatim, lowered = _strategy(max_input_tokens=16_000), _strategy(max_input_tokens=16_000)
+
+    await verbatim(_conversation(tool_turns=6, record=_covering_record(6)))
+    await lowered(_conversation(tool_turns=6, record=_covering_record(6).lower()))
+
+    assert verbatim.groups_kept_uncovered == 0, "the premise: quoted verbatim, it covers"
+    assert lowered.groups_kept_uncovered == 6
 
 
 # region protecting the record from the strategy behind it
@@ -1698,6 +1714,41 @@ async def test_a_forced_call_that_fails_is_forced_again_and_leaves_the_tool_disa
     retried = await _run(middleware, big)
     assert retried["tool_choice"]["required_function_name"] == RECALL_TOOL_NAME
     assert middleware.forced_calls == 1
+
+
+async def test_a_permission_the_forced_call_left_unused_does_not_reach_the_next_call() -> None:
+    """Armed through the forced call's exit, where the tool runs, and withdrawn on the next entry."""
+    gate = RecallGate()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=1_000,
+        tokenizer=TOKENIZER,
+        arm=gate.arm,
+        disarm=gate.disarm,
+        trigger_fraction=0.1,
+    )
+    big = _conversation(tool_turns=8)
+    await _run(middleware, big)
+    await _run(middleware, big)
+    assert middleware.forced_calls == 1
+    assert gate._armed, "the function layer runs the tool after the forced call returns"
+
+    await _run(middleware, big)
+
+    assert gate.take() is False, "the forced response wrote no record, so nothing may now"
+
+
+def test_a_fallback_that_ignores_preservation_is_refused() -> None:
+    """Only an anchored strategy honours the marks that keep the record out of its reach."""
+
+    class _Framework:
+        async def __call__(self, messages: list[Message]) -> bool:
+            return False
+
+    fallback: Any = _Framework()
+    with pytest.raises(TypeError, match="AnchoredCompactionStrategy"):
+        ToolResultAnchoredSummarizationCompactionStrategy(
+            max_input_tokens=1_000, tokenizer=TOKENIZER, fallback=fallback
+        )
 
 
 async def test_the_middleware_stops_once_a_record_exists() -> None:

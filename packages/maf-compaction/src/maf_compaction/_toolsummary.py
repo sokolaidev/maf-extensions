@@ -179,7 +179,7 @@ from ._preserve import (
 )
 
 if TYPE_CHECKING:
-    from agent_framework import CompactionStrategy, TokenizerProtocol
+    from agent_framework import TokenizerProtocol
 
 __all__ = [
     "CONSOLIDATE_EXCLUDE_REASON",
@@ -612,11 +612,13 @@ def _group_result_text(messages: Sequence[Message], group: dict[str, Any]) -> st
     return "\n".join(parts)
 
 
-def _tokens(text: str) -> list[str]:
+def _tokens(text: str, *, fold_case: bool = True) -> list[str]:
     """Split ``text`` into the words a record and a tool result can be compared through.
 
     **The rule.** Break on whitespace and on :data:`_SEPARATORS`; strip punctuation from both
-    ends of each piece; keep only what follows the last remaining ``=``; lowercase it. Order is
+    ends of each piece; keep only what follows the last remaining ``=``; lowercase it unless
+    ``fold_case`` is off. Values are compared with their case, since a case-sensitive identifier
+    quoted in another case is a different value; tool names are compared without it. Order is
     preserved and duplicates are kept, because the tool-name test counts mentions rather than
     merely looking for them.
 
@@ -653,8 +655,11 @@ def _tokens(text: str) -> list[str]:
     Args:
         text: The text to read.
 
+    Keyword Args:
+        fold_case: Lowercase each token.
+
     Returns:
-        The tokens, lowercased, in order, duplicates included.
+        The tokens, in order, duplicates included.
     """
     found: list[str] = []
     for piece in text.translate(_SEPARATOR_TABLE).split():
@@ -663,7 +668,7 @@ def _tokens(text: str) -> list[str]:
         if equals:
             token = value
         if token:
-            found.append(token.lower())
+            found.append(token.lower() if fold_case else token)
     return found
 
 
@@ -698,11 +703,11 @@ def _distinctive_tokens(text: str) -> set[str]:
         text: Tool result text to read.
 
     Returns:
-        The distinctive tokens, lowercased, without duplicates.
+        The distinctive tokens, case kept, without duplicates.
     """
     return {
         token
-        for token in _tokens(text)
+        for token in _tokens(text, fold_case=False)
         if len(token) >= _MIN_DISTINCTIVE_LENGTH and any(character.isdigit() for character in token)
     }
 
@@ -1141,6 +1146,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             :data:`DEFAULT_COVERAGE_SHARE` for where the default sits and why. Zero means any
             group holding a distinctive value at all counts as covered, which restores the
             behaviour this check replaced and is there so the two can be run side by side.
+        fallback: What runs when no record arrives in time, or one does not free enough. It
+            must be an :class:`~._anchored.AnchoredCompactionStrategy`, or a subclass: those
+            honour :mod:`._preserve`, which is what keeps the record and the groups it did not
+            cover out of the fallback's reach. ``None`` builds one from the arguments above.
     """
 
     def __init__(
@@ -1153,7 +1162,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         fallback_fraction: float = DEFAULT_FALLBACK_FRACTION,
         coverage_share: float = DEFAULT_COVERAGE_SHARE,
-        fallback: CompactionStrategy | None = None,
+        fallback: AnchoredCompactionStrategy | None = None,
     ) -> None:
         """Validate and store the configuration.
 
@@ -1161,6 +1170,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             ValueError: If a bound is out of range, or the two thresholds are the wrong way
                 around -- a fallback at or below the trigger would fire before the model had
                 any chance to answer, and the recording step would never happen at all.
+            TypeError: If ``fallback`` is not an anchored strategy, which would ignore the
+                preserved marks and could trim the record.
         """
         if max_input_tokens <= 0:
             raise ValueError("max_input_tokens must be positive.")
@@ -1184,6 +1195,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self.trigger_fraction = trigger_fraction
         self.fallback_fraction = fallback_fraction
         self.coverage_share = coverage_share
+        # Typing does not stop an untyped caller passing one of the framework's strategies.
+        if fallback is not None and not isinstance(fallback, AnchoredCompactionStrategy):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(
+                "fallback must be an AnchoredCompactionStrategy: another strategy does not honour "
+                "the preserved marks that protect the record and the groups it did not cover."
+            )
         self.fallback = fallback or AnchoredCompactionStrategy(
             max_input_tokens=max_input_tokens,
             tokenizer=tokenizer,
@@ -1586,7 +1603,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         if _hold_unrecorded(messages):
             self._fallbacks_held_after_record += 1
-        if ceiling is not None and isinstance(self.fallback, AnchoredCompactionStrategy):
+        if ceiling is not None:
             shortened = await self.fallback.compact_to(messages, ceiling=ceiling)
         else:
             shortened = await self.fallback(messages)
@@ -1615,7 +1632,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any group was shed.
         """
-        if not message_ids or not isinstance(self.fallback, AnchoredCompactionStrategy):
+        if not message_ids:
             return False
         return self.fallback.shed_again(messages, message_ids)
 
@@ -1769,9 +1786,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         )
         # Tokenised once, and kept in both shapes the two rules need: a set for "is this value
         # in the record", a count for "is this name mentioned as often as it was called".
-        record_tokens = _tokens(record)
-        quoted = set(record_tokens)
-        mentions = Counter(record_tokens)
+        quoted = set(_tokens(record, fold_case=False))
+        mentions = Counter(_tokens(record))
 
         candidates: list[tuple[dict[str, Any], set[str], set[str]]] = []
         for position, group in enumerate(groups):
@@ -1913,11 +1929,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """Return whether one group's contents demonstrably survive in the record.
 
         Args:
-            quoted: Every token the record contains, lowercased.
+            quoted: Every token the record contains, case kept.
 
         Keyword Args:
             names: The functions called inside the group.
-            values: The distinctive tokens its results contained, lowercased.
+            values: The distinctive tokens its results contained, case kept.
             named: Function names the record mentions as often as they are called.
 
         Returns:
@@ -1957,8 +1973,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         arm: Called immediately before the forced request, arming the recall tool for one
             call. The tool is inert otherwise, which is what stops the model producing a
             record on its own initiative -- it cannot be hidden, only disabled.
-        disarm: Called when the forced request fails and by :meth:`forget_pending`, so a
-            permission no forced call used cannot license an unpinned one. Pass
+        disarm: Called on entry to every unpinned call, when the forced request fails, and by
+            :meth:`forget_pending`, so a permission no forced call used cannot license an
+            unpinned one. Pass
             :meth:`RecallGate.disarm`; ``None`` leaves such a permission armed.
         trigger_fraction: Fraction of the ceiling at which the record is forced. Comfortably
             below the strategy's fallback threshold, because the decision is made one call
@@ -2207,6 +2224,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._bind_session(context)
         forced_this_call = self._force_next
         reforced_this_call = forced_this_call and self._reforce_next
+        if not forced_this_call and self.disarm is not None:
+            # Not at the forced call's exit: the function layer runs the recall tool after this
+            # middleware returns. By the next call it has, so a permission still armed was never
+            # used -- the forced response carried no valid call -- and must not reach this one.
+            self.disarm()
         if forced_this_call:
             # Replaced rather than mutated: options may be shared with the caller's own dict,
             # and pinning a tool choice into it would outlive this call.
