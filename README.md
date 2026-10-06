@@ -4,7 +4,7 @@
 
 Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramework), maintained by [SOKOLAI BV](https://www.sokol.ai). **Not affiliated with or endorsed by Microsoft.** Everything here is experimental (0.x): each package warns on import, and every release before 1.0.0 may include breaking changes.
 
-[![Image security](https://img.shields.io/github/actions/workflow/status/sokolaidev/maf-extensions/image-security.yml?branch=main&label=image%20security)](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) — [scope and failure policy](docs/security/container-images.md)
+[![Daily image security](https://img.shields.io/github/actions/workflow/status/sokolaidev/maf-extensions/image-security.yml?branch=main&event=schedule&label=daily%20image%20security)](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml?query=event%3Aschedule) — [scope and failure policy](docs/security/container-images.md)
 
 See the [security documentation](docs/security/README.md) for release-specific scan results, artifact verification, tested configurations and remaining gaps, and the [security policy](SECURITY.md) for private reporting and supported versions.
 
