@@ -644,8 +644,8 @@ class _Remembered(NamedTuple):
     and a tool turn's second call comes between them. Nothing else this strategy asks for can
     intervene -- a fold is reached only through a declined band, which is a pass that asks for
     nothing. The composed row breaks that last premise: its last-resort chain may ask for a
-    fold on the same pass the band was summarised on, so its builder keeps two -- see
-    ``remembered_requests``.
+    fold on the same pass the band was summarised on, so it requires two outside the recompacting
+    mode -- see ``remembered_requests``.
     """
 
     prompt: str
@@ -697,8 +697,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             for replay on the other list the live path runs this on. One, the default, is what
             every row of this strategy has run with and is enough for it: a pass makes at most
             one request. The composed row makes two on a pass that is over its ceiling -- the
-            band, then the fold its last-resort chain asks for -- and its builder asks for two,
-            so the second list replays both rather than paying for both again. See
+            band, then the fold its last-resort chain asks for -- and refuses fewer than two
+            outside the recompacting mode, so the second list replays both rather than paying
+            for both again. See
             :class:`_Remembered`.
     """
 

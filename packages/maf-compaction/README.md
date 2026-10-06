@@ -126,7 +126,7 @@ agent = create_harness_agent(
 
 The summarising strategies, `RecallGate` and `ToolResultRecallMiddleware` keep one conversation's decisions on the instance, so build this stack, and the agent that holds it, once per session. The middleware raises if a second session reaches it.
 
-The composed strategy takes a record half and a user-turn half built the same way; `find_nested_strategy` finds the record half inside it for the middleware's `reforce`, and `record_text` reads the record the model wrote.
+The composed strategy takes a record half and a user-turn half built the same way, the user half with `remembered_requests=2` unless it runs in the recompacting mode; `find_nested_strategy` finds the record half inside it for the middleware's `reforce`, and `record_text` reads the record the model wrote.
 
 ## When to use it
 

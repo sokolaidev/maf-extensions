@@ -222,7 +222,7 @@ from ._toolsummary import (
     find_record_index,
     record_body,
 )
-from ._usersummary import UserTurnAnchoredSummarizationCompactionStrategy
+from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -499,7 +499,9 @@ class ChainDecisions:
     started, which record it is keyed to, the response it is quiet through, and the record it
     declined to wait behind. Re-entering a conversation from a snapshot without putting these
     back lets the wait expire on the first re-entry and act on every one after, which is a
-    different prompt from the first re-entry's -- the drift the harness counts.
+    different prompt from the first re-entry's. The chain's other decisions -- kept merges and
+    rewrites, shed ids, refusals -- are keyed by the records' content, so every re-entry from
+    one snapshot replays them alike, and they are not part of this value.
     """
 
     wait_since: int | None
@@ -524,7 +526,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             :attr:`repeat_records` off this one to switch the middleware's repeats on.
         user_turns: The user-band summarising strategy, summarizer client included. Its client
             also writes the chain's merged and rewritten records; see the module docstring for
-            why. The builder for this row runs it in the boundary mode.
+            why. In the boundary or fold mode it must remember two requests, because a pass can
+            ask for a band and then the chain's fold, and the store pass replays both.
         user_trigger_fraction: Fraction of the shared ceiling the user half is judged at *inside
             this composition*. None, the default, means ``tool_results.trigger_fraction``: one
             line for both halves, moving with whatever the record row's trigger was swept to.
@@ -542,7 +545,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     Raises:
         ValueError: If the two phases measure against different ceilings, if an explicit
             ``user_trigger_fraction`` is outside ``(0.0, 1.0]``, or if ``harder_attempts`` is
-            negative, or if ``chain_gain_fraction`` is outside ``[0.0, 1.0)``. Each phase's
+            negative, or if ``chain_gain_fraction`` is outside ``[0.0, 1.0)``, or if a user half
+            outside the recompacting mode remembers fewer than two requests. Each phase's
             trigger is a fraction of its own ``max_input_tokens``, and one shared line is a line
             only while the two fractions are fractions of one number;
             the chain's budget is that number too. A fraction of zero would fire the user half on
@@ -574,6 +578,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("user_trigger_fraction must be in (0.0, 1.0].")
         if harder_attempts < 0:
             raise ValueError("harder_attempts must be >= 0.")
+        if user_turns.summary_mode != SUMMARY_MODE_RECOMPACT and user_turns.remembered_requests < 2:
+            raise ValueError(
+                f"user_turns in the {user_turns.summary_mode!r} mode must have "
+                "remembered_requests >= 2: one pass can ask for a band and a fold, and the store "
+                "pass must replay both rather than summarise again."
+            )
         # One is refused as well as anything above it: a firing asked to remove everything behind
         # its earliest edit would be asked to empty the prompt from there on.
         if not 0.0 <= chain_gain_fraction < 1.0:
@@ -1231,8 +1241,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         **Not asked again on records it was refused on.** A refused merge leaves the records as
         they were, and if step c is refused too they are still as they were when the prompt next
-        goes over the budget -- possibly passes later, long after the request was made
-        go. The same records give the same transcript, and a merge refused on it is skipped. A new
+        goes over the budget -- possibly passes later, long after the request was made. The same
+        records give the same transcript, and a merge refused on it is skipped. A new
         record, or a kept rewrite, changes the transcript and the merge is asked for again.
         """
         groups = consolidatable_record_groups(messages)

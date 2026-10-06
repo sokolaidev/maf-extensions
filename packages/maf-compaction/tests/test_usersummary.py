@@ -793,7 +793,7 @@ async def test_a_conversation_that_keeps_growing_compacts_a_bounded_number_of_ti
     )
     assert unbounded.user_compactions >= 25, (
         "without the share the strategy fires on very nearly every pass over the trigger, which "
-        "is the behaviour measured live and the thing this test exists to keep out"
+        "is what this test exists to keep out"
     )
     assert 2 <= hysteretic.user_compactions <= 8, (
         f"bounded and small, and neither once per turn nor never: {hysteretic.user_compactions} "

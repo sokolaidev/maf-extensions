@@ -1709,9 +1709,7 @@ async def test_a_single_record_is_attributed_exactly_once() -> None:
     """The transition must be tracked on the instance, not re-read from each prompt.
 
     Before the pipeline runs, context.messages holds only the new turn, so a pre-call check
-    reports "no record" every time and every later call counts as another one. That produced
-    RECVOLUNTEERED:18 for a single record in a live run, which turned an attribution into
-    noise at exactly the moment it was needed.
+    reports "no record" every time and every later call would count as another one.
     """
     _armings.clear()
     middleware = ToolResultRecallMiddleware(

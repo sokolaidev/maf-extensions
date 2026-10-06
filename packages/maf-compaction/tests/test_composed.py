@@ -93,6 +93,7 @@ from maf_compaction._usersummary import (
     FOLD_ID_PREFIX,
     SUMMARY_MODE_BOUNDARY,
     SUMMARY_MODE_FOLD,
+    SUMMARY_MODE_RECOMPACT,
     USER_SUMMARY_MARKER,
     UserTurnAnchoredSummarizationCompactionStrategy,
 )
@@ -370,6 +371,8 @@ def _user_phase(
     ceiling: int = _COMPACTING_CEILING, summarizer: Any = None, **kwargs: Any
 ) -> UserTurnAnchoredSummarizationCompactionStrategy:
     """Return the user-band half, configured as its own row configures it."""
+    if kwargs.get("summary_mode", DEFAULT_SUMMARY_MODE) != SUMMARY_MODE_RECOMPACT:
+        kwargs.setdefault("remembered_requests", 2)
     return UserTurnAnchoredSummarizationCompactionStrategy(
         max_input_tokens=ceiling, tokenizer=TOKENIZER, client=summarizer or _Summarizer(), **kwargs
     )
@@ -907,6 +910,14 @@ def test_a_user_trigger_fraction_outside_the_unit_interval_is_refused() -> None:
         _composed(user_trigger_fraction=0.0)
     with pytest.raises(ValueError, match="user_trigger_fraction"):
         _composed(user_trigger_fraction=1.5)
+
+
+@pytest.mark.parametrize("mode", [SUMMARY_MODE_BOUNDARY, SUMMARY_MODE_FOLD])
+def test_a_user_half_that_cannot_replay_a_band_and_a_fold_is_refused(mode: str) -> None:
+    """Outside the recompacting mode one pass can ask for two summaries, so both must replay."""
+    with pytest.raises(ValueError, match="remembered_requests >= 2"):
+        _composed(user_turns=_user_phase(summary_mode=mode, remembered_requests=1))
+    _composed(user_turns=_user_phase(summary_mode=SUMMARY_MODE_RECOMPACT, remembered_requests=1))
 
 
 def test_a_negative_number_of_harder_attempts_is_refused() -> None:
@@ -1694,6 +1705,7 @@ def _chain_composed(
             client=summarizer,
             trigger_fraction=0.01,
             summary_mode=SUMMARY_MODE_BOUNDARY,
+            remembered_requests=2,
         ),
         **kwargs,
     )
@@ -2000,6 +2012,7 @@ async def test_the_fallback_runs_only_at_the_end_on_the_composed_row_and_straigh
             client=summarizer,
             trigger_fraction=0.01,
             summary_mode=SUMMARY_MODE_BOUNDARY,
+            remembered_requests=2,
         ),
     )
     await composed(_chain_conversation())
@@ -3050,9 +3063,8 @@ async def test_a_new_record_reading_as_one_already_rewritten_takes_the_rewrite_w
 def test_the_chains_wait_is_taken_and_put_back_with_the_record_halfs_decisions() -> None:
     """The wait for a record is kept on the instance, and a snapshot re-entry has to restore it.
 
-    Measured live: a seeding that ended inside the wait had the wait expire on the first probe,
-    which saw the full prompt, and act on every probe after, which saw the compacted one -- eleven
-    of twelve probes drifting from the snapshot on a row whose facts and cost were otherwise fine.
+    Restoring a snapshot must restore the wait state, so every re-entry from it sees the same
+    prompt rather than the first seeing the full one and the rest a compacted one.
     """
     chain = _composed()
     chain._wait_since = 7
