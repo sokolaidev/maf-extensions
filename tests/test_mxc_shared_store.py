@@ -459,6 +459,16 @@ def test_corrupt_state_refuses_without_fresh_fallback(tmp_path, corruption):
         assert row(db)["status"] == "committed"
 
 
+@pytest.mark.parametrize("result", [None, "not a blob", 1.5, 8])
+def test_non_blob_saved_result_refuses_retry(tmp_path, result):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock()) as db:
+        publish(db, tmp_path / "a", result=b"\0" * 8)
+        db.db.execute("UPDATE calls SET result=?", (result,))
+        with pytest.raises(store.Refused, match="result"):
+            db.begin("a", b"code")
+        assert row(db)["status"] == "committed"
+
+
 @pytest.mark.parametrize("grace", [0, 3])
 def test_exact_outer_deadline_is_terminal(tmp_path, grace):
     clock = Clock()

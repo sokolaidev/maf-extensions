@@ -395,7 +395,9 @@ class SharedStore:
                     self._expire(call_id)
                     expired = True
                 else:
-                    result = bytes(row["result"])
+                    result = row["result"]
+                    if not isinstance(result, bytes):
+                        raise Refused("saved result is not a BLOB")
                     if (
                         len(result) != row["result_charge"]
                         or len(result) > self.limits.result_bytes
