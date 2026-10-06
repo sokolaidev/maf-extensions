@@ -172,7 +172,6 @@ from agent_framework._compaction import (
 from ._anchored import AnchoredCompactionStrategy
 from ._preserve import (
     PRESERVE_REASON_KEY,
-    any_preserved,
     is_preserved,
     removable_whole,
     set_preserved,
@@ -727,13 +726,27 @@ def _is_recall_group(messages: Sequence[Message], group: dict[str, Any]) -> bool
         group: One span from :func:`group_messages`.
 
     Returns:
-        True when the span contains a call to the recall tool, or a record this package wrote.
+        True when the span contains a call to the recall tool, the result of one -- a call and
+        its result can land in separate spans when another message sits between them -- or a
+        record this package wrote.
     """
     if RECALL_TOOL_NAME in _called_function_names(messages, group):
         return True
-    return any(
-        _is_written_record(message)
-        for message in messages[group["start_index"] : group["end_index"] + 1]
+    members = messages[group["start_index"] : group["end_index"] + 1]
+    if any(_is_written_record(message) for message in members):
+        return True
+    result_ids = {
+        content.call_id
+        for message in members
+        for content in message.contents
+        if content.type == "function_result" and content.call_id
+    }
+    return bool(result_ids) and any(
+        content.type == "function_call"
+        and content.name == RECALL_TOOL_NAME
+        and content.call_id in result_ids
+        for message in messages
+        for content in message.contents
     )
 
 
@@ -933,10 +946,12 @@ def _hold_unrecorded(messages: list[Message]) -> int:
     default -- and either that frees enough or the prompt stays over the ceiling. A shortened
     tool group is the one outcome ruled out, because it is the one nobody sees.
 
-    A group something already protects is left under its mark: a layer-one or layer-two hold
+    A message something already protects is left under its mark: a layer-one or layer-two hold
     keeps the reason that says which layer holds it, and a record or another strategy's claim
-    is not this strategy's to relabel. A group the fallback has already shed whole is skipped,
-    since it is not in the prompt to protect.
+    is not this strategy's to relabel. The group's other members are held all the same, since
+    the fallback shortens result by result and one protected call would not cover its result.
+    A group the fallback has already shed whole is skipped, since it is not in the prompt to
+    protect.
 
     Args:
         messages: The conversation, whose messages are annotated in place.
@@ -952,15 +967,13 @@ def _hold_unrecorded(messages: list[Message]) -> int:
         members = messages[group["start_index"] : group["end_index"] + 1]
         if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
             continue
-        if any_preserved(members):
-            held += any(
-                message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON_UNRECORDED
-                for message in members
-            )
-            continue
         for message in members:
-            set_preserved(message, preserved=True, reason=PRESERVE_REASON_UNRECORDED)
-        held += 1
+            if not is_preserved(message):
+                set_preserved(message, preserved=True, reason=PRESERVE_REASON_UNRECORDED)
+        held += any(
+            message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON_UNRECORDED
+            for message in members
+        )
     return held
 
 

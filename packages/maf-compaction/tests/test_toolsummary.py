@@ -36,7 +36,9 @@ from maf_compaction._toolsummary import (
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     _distinctive_tokens,
+    _hold_unrecorded,
     _Reforce,
+    active_record_groups,
     find_record_index,
     make_recall_tool,
 )
@@ -1735,6 +1737,33 @@ async def test_a_permission_the_forced_call_left_unused_does_not_reach_the_next_
     await _run(middleware, big)
 
     assert gate.take() is False, "the forced response wrote no record, so nothing may now"
+
+
+def test_a_record_whose_result_is_split_from_its_call_is_still_protected() -> None:
+    """A message between the call and its result puts them in two spans; both are the record."""
+    call, result = _record_messages("CODE-0 CODE-1")
+    messages = _conversation(tool_turns=2)
+    messages += [call, Message(role="user", contents=["interjection"]), result]
+
+    spans = [(group["start_index"], group["end_index"]) for group in active_record_groups(messages)]
+
+    assert find_record_index(messages) == len(messages) - 1
+    assert (len(messages) - 1, len(messages) - 1) in spans
+
+
+def test_the_unrecorded_hold_covers_a_group_only_partly_preserved() -> None:
+    """The fallback shortens result by result, so a protected call does not cover its result."""
+    messages = _conversation(tool_turns=2)
+    set_preserved(
+        next(m for m in messages if m.message_id == "a_call_1"), preserved=True, reason="other"
+    )
+
+    _hold_unrecorded(messages)
+
+    result = next(m for m in messages if m.message_id == "t_res_1")
+    assert is_preserved(result)
+    call = next(m for m in messages if m.message_id == "a_call_1")
+    assert call.additional_properties[PRESERVE_REASON_KEY] == "other", "and its mark is kept"
 
 
 def test_a_fallback_that_ignores_preservation_is_refused() -> None:

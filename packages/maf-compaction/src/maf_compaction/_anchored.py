@@ -105,10 +105,11 @@ DEFAULT_KEEP_TOKENS: Final[int] = 150
 #: plus the one code per result that fell inside the surviving head fragment.
 DEFAULT_BAND_SHARE: Final[float] = 0.25
 
-#: Refinement passes when converting a token budget into a character offset. Two is enough:
-#: the first estimate uses the text's own measured ratio, so it is already close, and each
-#: pass only shrinks. Bounded because the tokenizer is called on large strings.
-_FIT_PASSES: Final[int] = 2
+#: Refinement passes when converting a token budget into a character offset. The first estimate
+#: uses the text's own measured ratio, which is close when density is even and can be far under
+#: when the slice is sparser than the whole, so passes correct in both directions. Bounded
+#: because the tokenizer is called on every candidate slice.
+_FIT_PASSES: Final[int] = 4
 
 #: Marks where a tool result was cut. It serves two purposes: a model shown a truncated
 #: document with no sign of truncation answers as though it had seen all of it, and the
@@ -542,19 +543,25 @@ class AnchoredCompactionStrategy:
             from_end: Measure a suffix rather than a prefix.
 
         Returns:
-            A character count whose slice is at or just under ``tokens``.
+            The largest character count tried whose slice is at or under ``tokens``.
         """
         total = max(self.tokenizer.count_tokens(text), 1)
         chars = min(int(len(text) * tokens / total), len(text))
+        best = 0
         for _ in range(_FIT_PASSES):
             if chars <= 0:
-                return 0
+                break
             piece = text[-chars:] if from_end else text[:chars]
             counted = self.tokenizer.count_tokens(piece)
             if counted <= tokens:
-                return chars
-            chars = int(chars * tokens / max(counted, 1))
-        return max(chars, 0)
+                best = max(best, chars)
+                if counted == tokens or chars == len(text):
+                    break
+            following = min(int(chars * tokens / max(counted, 1)), len(text))
+            if following == chars:
+                break
+            chars = following
+        return best
 
     def _shed(self, messages: list[Message], kind: str, *, ceiling: int) -> bool:
         """Exclude whole groups of one kind from the band, oldest first, until the ceiling is met.

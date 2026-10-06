@@ -634,6 +634,22 @@ def test_a_result_quoting_the_marker_is_still_shortened() -> None:
     assert strategy._shorten(shortened, 100) == shortened, "and its own output stays put"
 
 
+def test_a_slice_sparser_than_the_whole_still_fills_its_budget() -> None:
+    """The first estimate uses the whole text's density; a sparse end is grown back to budget."""
+
+    class _DigitsAreDense:
+        def count_tokens(self, text: str) -> int:
+            return sum(1 if character.isdigit() else 0 for character in text) + len(text) // 10
+
+    strategy = AnchoredCompactionStrategy(max_input_tokens=8_000, tokenizer=_DigitsAreDense())
+    text = "a" * 1_000 + "9" * 1_000 + "a" * 1_000
+
+    head = strategy._fit(text, 100, from_end=False)
+
+    assert _DigitsAreDense().count_tokens(text[:head]) >= 90
+    assert _DigitsAreDense().count_tokens(text[:head]) <= 100
+
+
 # region preservation
 
 
