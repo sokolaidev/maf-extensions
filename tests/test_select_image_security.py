@@ -180,8 +180,8 @@ def test_malformed_or_deleted_metadata_cannot_skip_scans(repository):
 def test_workflow_always_reports_selection_and_checks():
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
     triggers = workflow.get("on", workflow.get(True))
-    assert triggers["pull_request"] is None
-    assert triggers["push"] == {"branches": ["main"]}
+    assert "pull_request" not in triggers
+    assert "push" not in triggers
     assert "schedule" in triggers and "workflow_dispatch" in triggers
     assert "github.event_name" in workflow["concurrency"]["group"]
     jobs = workflow["jobs"]
