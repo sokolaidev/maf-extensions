@@ -24,15 +24,19 @@ def _triggers() -> dict[str, str]:
     bodies = {
         "sessions_insert": (
             "AFTER INSERT ON sessions",
-            f"INSERT INTO logical_usage VALUES(NEW.id,{SESSION_METADATA}); "
-            f"UPDATE logical_usage SET charge=charge+{SESSION_METADATA} WHERE session=''; "
-            "SELECT CASE WHEN changes()!=1 THEN RAISE(ABORT,'missing logical total') END;",
+            (
+                f"INSERT INTO logical_usage VALUES(NEW.id,{SESSION_METADATA}); "
+                f"UPDATE logical_usage SET charge=charge+{SESSION_METADATA} WHERE session=''; "
+                "SELECT CASE WHEN changes()!=1 THEN RAISE(ABORT,'missing logical total') END;"
+            ),
         ),
         "sessions_delete": (
             "AFTER DELETE ON sessions",
-            f"UPDATE logical_usage SET charge=charge-{SESSION_METADATA} WHERE session=''; "
-            "SELECT CASE WHEN changes()!=1 THEN RAISE(ABORT,'missing logical total') END; "
-            "DELETE FROM logical_usage WHERE session=OLD.id;",
+            (
+                f"UPDATE logical_usage SET charge=charge-{SESSION_METADATA} WHERE session=''; "
+                "SELECT CASE WHEN changes()!=1 THEN RAISE(ABORT,'missing logical total') END; "
+                "DELETE FROM logical_usage WHERE session=OLD.id;"
+            ),
         ),
     }
     for table, key in (
