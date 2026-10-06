@@ -9,7 +9,7 @@
 #     "maf-sandbox-acas",
 #     "maf-sandbox-docker",
 #     "maf-sandbox-terraform",
-#     "maf-sandbox>=0.47",
+#     "maf-sandbox>=0.48",
 # ]
 # ///
 

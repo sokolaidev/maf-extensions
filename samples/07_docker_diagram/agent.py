@@ -37,7 +37,7 @@ through `maf_sandbox_docker_sbx`, which clears the router's default `microvm` fl
 #     "azure-identity",
 #     "maf-sandbox-docker",
 #     "maf-sandbox-docker-sbx>=0.2.0",
-#     "maf-sandbox>=0.47",
+#     "maf-sandbox>=0.48",
 # ]
 # ///
 
