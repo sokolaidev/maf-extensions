@@ -218,6 +218,8 @@ Release reruns recover the original retained OCI artifact. Missing or expired by
 
 The preparation index binds the reports displayed for approval. If a same-bytes refresh is required, originals are retained as `approval-<filename>` while the unprefixed files contain the publication assessment; the final signed evidence index covers both sets. Durable evidence assets are bounded below GitHub's 2 GiB per-file limit and streamed during upload/download. Actions artifacts are working copies retained for 30 days, not the permanent evidence store.
 
+Grype's database validity, source, schema and build time are read from `descriptor.db.status`; provider provenance remains available in the retained raw report. A failed preparation uploads any available JSON reports as a separate `failed-preparation-<run>-<attempt>` diagnostic artifact. These reports do not provide a resumable candidate or permit approval and publication.
+
 The Pages badge says **security evidence: view report**. A static cached SVG cannot reliably establish that a monitor has not failed since its generation. The report verifies the deployed snapshot's exact hash, immutable release ancestry, source tag and latest monitor attempt against GitHub at view time; it shows the verification time, recalculates scan age locally, and provides an explicit refresh button. Stale deployments, API rate limits and retrieval failures show unavailable status. Its aggregate clean statement also requires completed evidence delivery for every active image. This page does not replace cryptographic consumer verification.
 
 ### Hosted acceptance still required
@@ -243,6 +245,10 @@ On 2026-10-06, [Pages deployment attempt 2](https://github.com/sokolaidev/maf-ex
 The Docker identity checks currently require the classic image store's configuration-based image ID. A local Docker Desktop 29.8.2 containerd-store probe reported a manifest-based `.Id` and was refused after reload. Containerd-store preparation and consumer execution remain unqualified; do not bypass the identity checks to use that store.
 
 A local diagram round-trip with Docker 29.1.3's classic store and Skopeo 1.13.3 validated retained manifest `sha256:e01231004215763982e422162543320a9a9f92c9baa02b6eeae762e42c56e483` and configuration `sha256:3a146d64e1a44c209212678bfa943547995e0e1eb1fbf435e5e370da90b396cb`, with unchanged filesystem layers. Loading uses a temporary Docker archive and the Docker CLI in both preparation and promotion, avoiding Skopeo's older daemon API. This was a local conversion check, not a release candidate or vulnerability assessment; its offline runtime check was blocked by the nested daemon's cgroup configuration.
+
+After [#1766](https://github.com/sokolaidev/maf-extensions/pull/1766) merged, [the next hosted preparation](https://github.com/sokolaidev/maf-extensions/actions/runs/37522447807) from `31df6df6cfd5b9e94292adab2c3e411024554826` completed OCI reload and the offline diagram runtime probe, then stopped while parsing database metadata from Grype 0.120.0. The scanner's nested `descriptor.db.status` shape was reproduced locally and is now validated directly. No accepted assessment, approval, reservation, publication or signing resulted from that run; fresh hosted preparation remains required.
+
+The corrected parser accepted a local diagram assessment at `2026-10-06T20:07:17Z`: configuration `sha256:91df4b4bc2de0102f904139809606e47798b9f3a5a66139910cb95b2e1364a5c`, 62 components inventoried with Syft 1.54.0, and no High/Critical findings from Grype 0.120.0. The database reported `valid: true`, schema `v6.1.10` and build time `2026-10-06T06:32:14Z`; its distribution URL identified checksum `sha256:1535cef8f13c12f3b7cdfc652722bb59d99fab934d0ac80d810a0462466d97cb`. This local image is not the failed hosted candidate and does not establish release completion.
 
 | Decision | State | Tracking |
 |---|---|---|

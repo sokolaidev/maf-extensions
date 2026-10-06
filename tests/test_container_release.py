@@ -205,12 +205,13 @@ def scan():
         "source": {"type": "image", "target": {"imageID": candidate()["imageId"]}},
         "descriptor": {
             "db": {
-                "valid": True,
-                "schemaVersion": "6.1.4",
-                "from": "https://grype.anchore.io/databases/example.tar.zst",
-                "error": None,
-                "built": AT,
-                "checksum": EVIDENCE,
+                "status": {
+                    "valid": True,
+                    "schemaVersion": "v6.1.10",
+                    "from": "https://grype.anchore.io/databases/example.tar.zst",
+                    "built": AT,
+                },
+                "providers": {"wolfi": {"captured": AT, "input": "xxh64:130aeb09c153f524"}},
             }
         },
         "matches": [],
@@ -224,6 +225,29 @@ def test_unfixed_high_finding_fails_assessment():
         {"vulnerability": {"id": "CVE-example", "severity": "High", "fix": {"state": "not-fixed"}}}
     ]
     assert scan_result(report, candidate()["imageId"], AT)["outcome"] == "vulnerable"
+
+
+def test_nested_grype_database_status_is_preserved_in_assessment():
+    report = scan()
+    result = scan_result(report, candidate()["imageId"], AT)
+    assert result["outcome"] == "clean"
+    assert result["database"] == report["descriptor"]["db"]["status"]
+
+
+@pytest.mark.parametrize("database", [None, [], {}, {"status": None}, {"status": []}])
+def test_missing_or_malformed_grype_database_status_is_rejected(database):
+    report = scan()
+    report["descriptor"]["db"] = database
+    with pytest.raises(ValueError, match="database is unavailable or invalid"):
+        scan_result(report, candidate()["imageId"], AT)
+
+
+def test_flat_valid_flag_cannot_override_nested_invalid_status():
+    report = scan()
+    report["descriptor"]["db"]["valid"] = True
+    report["descriptor"]["db"]["status"]["valid"] = False
+    with pytest.raises(ValueError, match="database is unavailable or invalid"):
+        scan_result(report, candidate()["imageId"], AT)
 
 
 @pytest.mark.parametrize("state", ["fixed", "not-fixed", "wont-fix", "unknown", "future-state"])
@@ -249,7 +273,13 @@ def test_findings_retain_normalized_fix_availability(state):
 @pytest.mark.parametrize(
     "change",
     [
-        lambda r: r["descriptor"]["db"].update(valid=False),
+        lambda r: r["descriptor"]["db"]["status"].update(valid=False),
+        lambda r: r["descriptor"]["db"]["status"].update(valid="true"),
+        lambda r: r["descriptor"]["db"]["status"].update(error="checksum mismatch"),
+        lambda r: r["descriptor"]["db"]["status"].pop("built"),
+        lambda r: r["descriptor"]["db"]["status"].pop("schemaVersion"),
+        lambda r: r["descriptor"]["db"]["status"].pop("from"),
+        lambda r: r["descriptor"]["db"]["status"].update(built=LATER),
         lambda r: r.update(ignoredMatches=[{}]),
         lambda r: r["source"]["target"].update(imageID=DIGEST),
     ],
