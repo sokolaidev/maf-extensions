@@ -365,11 +365,10 @@ def test_band_share_is_validated() -> None:
 
 
 async def test_a_collapse_below_the_floor_leaves_the_conversation_untouched() -> None:
-    """The measured failure, refused.
+    """An edit worth less than the cache it breaks is refused.
 
-    At a 60,000-token window and 0.86 fill the unfloored row held a lower prompt-cache hit rate
-    than the uncompacted control on every one of five seeds, 89-93% against 91-95%. The
-    geometry is reproduced here -- a band budget nearly as large as the result it is trimming
+    Without the floor, a 60,000-token window at 0.86 fill holds a lower prompt-cache hit rate
+    than no compaction at all, 89-93% against 91-95%. The geometry is reproduced here -- a band budget nearly as large as the result it is trimming
     -- and the only correct action is none at all. Not a smaller edit: none, because the cache
     is spent on editing at a position rather than on how much was edited there.
     """

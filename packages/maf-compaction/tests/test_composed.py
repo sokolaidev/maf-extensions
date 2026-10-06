@@ -5,18 +5,13 @@ each part. What is tested here is what composing adds, most of which fails silen
 than loudly.
 
 **The user half is judged after the record half, and stays idle when the record half was
-enough.** This reverses what this file used to pin. It used to assert that both halves are
-judged against the size the pass *began* with, so the user half fired even when the record
-phase had already taken the prompt under the shared line. The row's design now makes the user
-half the second line of defence -- its edits break the cached prefix -- so the headline test
-is the opposite one: on a ceiling whose shared line sits between the conversation's size and
-the size the record phase leaves, the user half stays idle, and handing it the pass-entry size
-is what that test is written to fail on. A second test pins the size it *is* handed.
+enough.** The user half is the second line of defence -- its edits break the cached prefix --
+so on a ceiling whose shared line sits between the conversation's size and the size the record
+phase leaves, the user half stays idle; handing it the pass-entry size is what that test is
+written to fail on. A second test pins the size it *is* handed.
 
-**The starvation counter is gone, and the tests that read it now read ``USERUNDER``.** They
-used to assert that a user half held under its line by the record half was a defect worth its
-own number. Under this design it is the row working, and it is counted as the ordinary "under
-the line" it is.
+**A user half held under its line by the record half is the row working**, and is counted as
+the ordinary ``USERUNDER``.
 
 **The chain runs in order, only while over the budget, and keeps a replacement only if it is
 smaller.** Each step is driven on a fixture sized so that step is the one that brings the
@@ -568,18 +563,12 @@ _OWN_LINE_CEILING = 25_000
 async def test_a_split_row_whose_record_half_holds_the_prompt_down_reports_the_user_half_as_under() -> (
     None
 ):
-    """The run this file used to call starvation, now read as what it is.
+    """A record half that holds the prompt under the user line leaves the user half under it.
 
-    Measured live on the row as it first shipped: the record phase fires at 0.6, the user phase
-    at 0.8, the record phase removes the tool payload while the prompt is in the 60s and holds
-    it there, and the user half never acts. This file used to count that as a defect with a
-    number of its own, ``USERSTARVED``. The row now judges its user half after the record half
-    on purpose -- user compaction breaks the cached prefix, and a record half that was enough is
-    a record half that spared it -- so the same run is asserted to report the user half as under
-    its line on every pass, and nothing more.
-
-    Changed from ``test_two_lines_still_let_the_record_phase_hold_the_prompt_under_the_user_one``,
-    which asserted the starvation count.
+    With the record phase at 0.6 and the user phase at 0.8, the record phase removes the tool
+    payload and holds the prompt there, so the user half never acts. User compaction breaks the
+    cached prefix, so that is the row working: every pass reports the user half as under its
+    line, and nothing more.
     """
     strategy = _split_composed(_GROWING_CEILING)
 
@@ -605,8 +594,6 @@ async def test_a_composed_row_whose_user_half_did_nothing_always_says_why() -> N
     tell it from a band too small or a summarizer that failed is that each pass lands in exactly
     one of the user half's outcomes. Asserted on the aligned row over the growing run, where the
     record half keeps the prompt under the shared line throughout.
-
-    Changed: the starvation assertions this test carried are gone with the counter.
     """
     strategy = _composed(_GROWING_CEILING)
 
@@ -631,7 +618,7 @@ async def test_the_reasons_a_composed_user_half_is_silent_read_differently() -> 
 
     They ask for different responses -- nothing, lower ``min_band_share``, look at the
     summarizer -- and a row that reported one number for all of them would send a reader to the
-    wrong knob. Changed: this used to be four reasons, and the fourth, starvation, is retired.
+    wrong knob.
     """
     never = _composed(_IDLE_CEILING)
     declined = _composed(
@@ -732,13 +719,8 @@ async def test_the_user_half_stays_idle_when_the_record_phase_alone_brings_the_p
     The shared line here is 16,800. The conversation is 18,937 and the record phase leaves
     16,613, so a user half asked "is the prompt over the line?" *after* the record phase has
     acted answers no, and stays idle: tool compaction was enough, and a user pass would have
-    broken the cached prefix for nothing. That is the design.
-
-    **This test used to assert the opposite**, as
-    ``test_both_halves_act_when_only_the_size_the_pass_began_with_clears_the_shared_line``: that
-    the user half fires here because it is judged against the size the pass began with. Written
-    now to fail on that: hand the user phase the entry size and it compacts a band on a prompt
-    already under the line.
+    broken the cached prefix for nothing. Hand the user phase the entry size instead and it
+    compacts a band on a prompt already under the line, which this test fails on.
     """
     strategy = _composed(_SHARED_LINE_CEILING)
     messages = _conversation()
@@ -836,8 +818,7 @@ async def test_the_composed_row_leaves_less_behind_than_either_half_alone_only_w
     At the compacting ceiling all three rows act and the composed row beats both. At the
     headline ceiling the record half alone brings the prompt under the shared line, so the
     composed row leaves exactly what the record row leaves: it declined to spend a user pass it
-    did not need. Changed: this used to assert the composed row beat both rows at the headline
-    ceiling too, which was pass-entry judging buying a smaller prompt with a broken prefix.
+    did not need.
     """
     composed_low, tool_low, user_low = await _sizes_at(_COMPACTING_CEILING)
     composed_high, tool_high, user_high = await _sizes_at(_SHARED_LINE_CEILING)
@@ -864,8 +845,7 @@ async def test_a_half_run_as_its_own_row_reads_its_own_trigger_before_and_after_
     composed one, and every archived number for them was produced by a strategy reading its own
     ``trigger_fraction`` off the conversation in front of it. So the same instance is run as its
     own row, then as a phase, then as its own row again, on a ceiling where the two readings give
-    opposite answers. Changed: the ceiling moved from the headline one, where the composed row's
-    user half now stays idle as well and the test would no longer distinguish anything.
+    opposite answers.
     """
     user_phase = _user_phase(_OWN_LINE_CEILING)
     record_phase = _record_phase(_OWN_LINE_CEILING)
@@ -944,7 +924,7 @@ def test_the_composed_row_asks_its_middleware_to_repeat_and_the_record_row_does_
     reports ``repeat_records`` and ``run_live`` reads it -- the wiring is asserted in
     ``test_live``. What is asserted here is that the request is the composed row's and not the
     record strategy's: a record strategy reporting it would switch repeats on for the standalone
-    ``tool_summary_anchored`` row, whose default is off.
+    ``tool_summary_anchored`` row too.
     """
     strategy = _composed()
 
@@ -982,8 +962,7 @@ async def test_the_record_phase_runs_before_the_user_phase_and_without_its_fallb
 
     The record phase first, because a user phase that ran first would hand the middleware a
     prompt already below the line that asks for a record at all. And it is asked *not* to run
-    its fallback: on this row the fallback is the end of the chain. Changed: the spy now also
-    records the ``fallback_after_record`` it was handed.
+    its fallback: on this row the fallback is the end of the chain.
     """
     order: list[str] = []
     fallback_flags: list[bool] = []
@@ -1030,13 +1009,11 @@ async def test_the_record_phase_runs_before_the_user_phase_and_without_its_fallb
 
 
 async def test_a_split_rows_user_half_is_judged_after_the_record_phase_too() -> None:
-    """The ceiling the old order argument was made on, read under the new judging.
+    """A split row's user line is read against what the record phase left, not the entry size.
 
     0.8 of this ceiling, 17,600, sits between the conversation's 18,937 and the 16,613 the record
     phase leaves; 0.6 of it, 13,200, sits under both. A split row's user half, judged after the
-    record phase against 17,600, stays idle; the aligned row's, against 13,200, compacts. Changed
-    from ``test_even_two_lines_do_not_starve_a_half_within_one_pass``, which asserted that both
-    rows' user halves fired here because both were judged against the entry size.
+    record phase against 17,600, stays idle; the aligned row's, against 13,200, compacts.
     """
     split = _split_composed(_NARROW_CEILING)
     split_messages = _conversation()
@@ -1057,11 +1034,8 @@ async def test_a_split_rows_user_half_is_judged_after_the_record_phase_too() -> 
 
 
 async def test_an_idle_pass_touches_nothing_and_asks_nothing() -> None:
-    """On a ceiling nothing crosses, neither half acts and the chain does not run.
-
-    Changed from ``test_a_user_half_that_would_not_have_fired_anyway_is_not_counted_as_starved``:
-    the starvation half of it is retired, and what is left worth asserting is that an idle pass
-    spends no summarizer call.
+    """On a ceiling nothing crosses, neither half acts, the chain does not run, and no summarizer
+    call is spent.
     """
     summarizer = _Summarizer()
     strategy = _composed(
@@ -1089,9 +1063,8 @@ async def test_the_user_half_waits_for_a_record_that_is_due_and_acts_once_the_wa
 
     Before a record exists the record phase removes nothing: it asks, and the record arrives on a
     later call. A user half judged on that first pass would act at once, and if its summary took
-    the prompt under the line the middleware would never ask -- the defect a live run measured
-    on five seeds of five. So it holds, and the hold is bounded in model responses: two, the
-    deciding call's own and the pinned call's. A second pass over the same point in the
+    the prompt under the line the middleware would never ask. So it holds, and the hold is
+    bounded in model responses: two, the deciding call's own and the pinned call's. A second pass over the same point in the
     conversation -- the store after the copies -- is not a response and does not move the bound.
     The live-path tests in ``test_live`` drive the same rule through the middleware; this one
     pins the count.
@@ -1427,7 +1400,7 @@ async def test_the_composed_row_holds_the_tool_groups_behind_its_record_when_its
 ):
     """The post-record hold runs inside the composed row too, now at the end of the chain.
 
-    Run 51's shape: tool groups sitting after the record, covered by no record, and a ceiling
+    Tool groups sitting after the record, covered by no record, and a ceiling
     the record phase cannot reach, so the chain gets to its fallback. Those groups are held
     under the record half's third reason and come through whole.
     """
@@ -1508,7 +1481,7 @@ class _RatioSummarizer:
 async def test_a_fold_in_the_user_half_leaves_the_record_where_it_was() -> None:
     """A fold rewrites the prefix at the oldest summary's position, and the record sits behind it.
 
-    A hand-assembled composition in the fold mode, which the builder no longer produces -- the
+    A hand-assembled composition in the fold mode, which the builder does not produce -- the
     row runs in ``boundary`` and folds only through its chain -- but which a caller may still
     assemble, and whose fold must not disturb the record half's preserved message.
     """
@@ -2143,8 +2116,7 @@ async def test_the_other_list_replays_the_merge_rather_than_paying_for_it_again(
 
     The second view is not asked anything: the merge the first kept is put back on it, so the
     model is sent one merged record, the store holds that one, and the summarizer is asked once.
-    Counted once as a merge, where the replay used to count a second, and once as a decision
-    kept.
+    Counted once as a merge and once as a decision kept; the replay counts no second merge.
     """
     summarizer = _RoutingSummarizer(merge=_short_record)
     budget = await _post_record_size() - 500
@@ -2164,11 +2136,9 @@ async def test_the_other_list_replays_the_merge_rather_than_paying_for_it_again(
 async def _idle_passes(
     strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 ) -> None:
-    """Run two passes under the budget, which was long enough for the replay memo to let go.
+    """Run two passes under the budget, where the chain does not run.
 
-    The memo, gone from schema 19, kept a request for one pass beyond the last that asked it,
-    and the chain does not run on a pass under the budget, so these are the passes that used to
-    make a refused request new again: run 61's wasted rewrites were asked across gaps like this.
+    A refused request must stay refused across a gap like this one.
     """
     for _ in range(2):
         await strategy([Message(role="user", contents=["Idle."], message_id="idle")])
@@ -2181,12 +2151,11 @@ def _change_record(messages: list[Message], call_id: str, indices: list[int]) ->
 
 
 async def test_a_refused_merge_is_not_asked_again_on_the_same_records_until_they_change() -> None:
-    """Step a remembers a refusal by the records' content, past the replay memo, until they change.
+    """Step a remembers a refusal by the records' content, across idle passes, until they change.
 
-    Refused on the first pass. Asked for again on the same records after two idle passes, it used
-    to be paid for again, because the memo that replayed it had let it go; now it is skipped, and
-    the chain goes on to the fold as after a refusal. Once a record's content changes the records
-    are new and the merge is asked for.
+    Refused on the first pass. Asked for again on the same records after two idle passes, it is
+    skipped, and the chain goes on to the fold as after a refusal. Once a record's content
+    changes the records are new and the merge is asked for.
     """
     summarizer = _RoutingSummarizer()
     strategy = _chain_composed(summarizer, harder_attempts=0)
@@ -2214,8 +2183,8 @@ async def test_a_refused_rewrite_is_not_asked_again_until_the_record_changes_and
 ):
     """Step c remembers a refusal by the record's content, and a skipped step c still leads to d.
 
-    Every attempt is refused on the first pass. On a later pass over the same record, past the
-    replay memo, neither attempt is asked -- both are skipped -- and the fallback runs, exactly
+    Every attempt is refused on the first pass. On a later pass over the same record, after idle
+    passes, neither attempt is asked -- both are skipped -- and the fallback runs, exactly
     as it did after the refusals. Once the record changes, both attempts are asked again.
     """
     summarizer = _RoutingSummarizer()
@@ -2678,7 +2647,7 @@ def _excluded_ids(messages: list[Message]) -> set[str]:
 
 
 async def test_a_record_is_not_merged_on_the_call_that_carries_its_result_in() -> None:
-    """Run 60's crash at the site that caused it: step a merging a record the call carried in.
+    """Step a never merges a record whose result the current call carried in.
 
     The chain fixture's two records, stopped where the second one's result arrives -- the call
     right after the one that wrote it. A merge there excludes the record's call on a copy of the
@@ -2850,10 +2819,8 @@ async def test_what_the_chain_changes_on_a_calls_copies_is_what_the_store_ends_u
     """A merge, a fold, a rewrite or a shed made on the copies is put on the store, under the budget.
 
     The store here fits the budget once the record phase has run, so the chain never starts on
-    it. Before schema 19 it therefore kept the unmerged records, the unfolded summaries, the
-    unrewritten record or the unshed narration -- whatever the copies had just been sent
-    without -- and the next call was sent it again. The store must now send exactly what the
-    copies sent, less the carried-in turn, and nothing is asked of the summarizer for it.
+    it. The store must still send exactly what the copies sent, less the carried-in turn, and
+    nothing is asked of the summarizer for it.
     """
     summarizer = _RoutingSummarizer(**_KEPT_ON_BOTH[step])
     budget = await _post_record_size() + 100

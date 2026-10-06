@@ -343,8 +343,8 @@ class AnchoredCompactionStrategy:
             The middle groups, oldest first. Empty when the conversation is still short
             enough that the anchors cover all of it.
         """
-        # Notes left by an earlier pass are skipped before the anchors are counted. They sit
-        # where a real group used to, so counting them would shift the head and tail by one
+        # Notes left by an earlier pass are skipped before the anchors are counted. Each one
+        # stands in for a removed group, so counting them would shift the head and tail by one
         # per note and hand a different band back on every pass -- which would make the
         # strategy's own output change what it does next, the exact instability it exists to
         # remove.
@@ -452,15 +452,12 @@ class AnchoredCompactionStrategy:
         that, so the retention grows with the window rather than becoming a rounding error
         against it, and each result's share is a number its own position fixes for good.
 
-        Dividing that share by the band's *current* width instead is what this replaces, and
-        it was not a scaling choice but a bug. A result is trimmed once -- :meth:`_shorten`
-        recognises its own marker and leaves a trimmed result alone -- so it froze at whatever
-        width happened to be in force on the turn the trim fired. At one ceiling and one
-        configuration that is 29,488 tokens for a result caught while alone in the band and
-        4,914 for one caught sixth, six times the retention for no reason but arrival order,
-        and it is the mechanism behind a reversal between two measured cells. It also
-        contradicts this module's first design constraint outright: a decision that moves with
-        the band's width is a decision that depends on the conversation's current size.
+        The share must not depend on the band's *current* width. A result is trimmed once --
+        :meth:`_shorten` recognises its own marker and leaves a trimmed result alone -- so a
+        width-based share would freeze at whatever width was in force on the turn the trim
+        fired, giving retention by arrival order. It would also break this module's first
+        design constraint: a decision that moves with the band's width depends on the
+        conversation's current size.
 
         The price is that the band is no longer bounded by ``band_share`` alone. It is now
         bounded by ``band_share`` times the ceiling times the harmonic number of its tool
@@ -468,18 +465,18 @@ class AnchoredCompactionStrategy:
         less than the one before. That is unavoidable rather than chosen: a budget that never
         trims what the width-based rule left alone must be at least
         ``band_share * ceiling / (position + 1)`` for every position, because that is the
-        widest the old rule ever was at that position, and those terms sum without limit. So
+        widest a width-based rule is at that position, and those terms sum without limit. So
         the alternatives are a bounded band that starts editing where this strategy is
-        currently and correctly idle, or an unbounded one that does not, and the second is
+        correctly idle, or an unbounded one that does not, and the second is
         worth more: an edit that saves less than the cache it invalidates is a loss, whereas
         the residual here lands on the shed step that already exists for it.
 
         Rejected on that reasoning: a geometric split summing to ``band_share`` exactly, which
-        bounds the band but hands every group after the first less than it gets today, so the
+        bounds the band but hands every group after the first less than it gets here, so the
         strategy would begin paying for edits at windows where everything already fits; and a
         flat per-result budget, which does the same at one end, goes inert at the other, and
-        throws away the retention's scaling with the window -- itself a fix for a measured
-        recall failure, 32 planted facts of 53 against 11.
+        throws away the retention's scaling with the window, which measured 32 planted facts
+        of 53 recalled against 11 without it.
 
         Args:
             band_position: This result's place among the band's tool groups, counted from the

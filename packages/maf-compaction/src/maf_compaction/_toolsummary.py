@@ -119,10 +119,8 @@ cannot see.
 **The record is protected from the fallback, and had to be.** When a record does not free
 enough, whatever remains goes to ``fallback``, which defaults to
 :class:`~._anchored.AnchoredCompactionStrategy` -- and that strategy shortens and sheds tool
-results, of which the record is one. Nothing in it recognised a record, so the record was
-trimmed like any other bulk: a live seed's record of four lookups reached the answering prompt
-carrying two, 16,617 tokens gone with only three messages removed. Every deletion phase 2
-performs is licensed by the record, so trimming the record afterwards destroys the sole
+results, of which the record is one, and it must not treat the record as bulk. Every deletion
+phase 2 performs is licensed by the record, so trimming the record afterwards destroys the sole
 surviving copy of what was already deleted. Both halves therefore agree through
 :mod:`._preserve`: this strategy marks every record it observes, and the anchored strategy
 skips preserved messages in each of its three removal paths.
@@ -376,13 +374,9 @@ DEFAULT_RECORD_TARGET_TOKENS: Final[int] = 2_000
 #: strategy dropping groups before anything had been recorded, or have the middleware recording
 #: what nothing was yet willing to drop.
 #:
-#: **0.6, and it was briefly 0.8.** Every measured run of this strategy used 0.6. 0.8 was
-#: reasoned to and never run, and the reasoning does not survive the project's own data.
-#:
-#: The argument for moving it was that 0.6 of the input budget is 58% of a 60,000-token window,
-#: so a record is forced part-way through a conversation that might have ended without ever
-#: needing compaction. That is arithmetic about when the trigger fires, not evidence that firing
-#: there hurt anything: no run has reported a cost for it, and no run has used the alternative.
+#: **0.6, which every measured run of this strategy used.** 0.6 of the input budget is 58% of a
+#: 60,000-token window, so a record may be forced in a conversation that would have ended
+#: without compaction. No run has reported a cost for that.
 #:
 #: What *is* measured runs the other way. **The record degrades with the bulk it is asked to
 #: read.** At 8,000-token tool results the record carried 53 of 53 facts; at 16,000 it carried
@@ -402,16 +396,15 @@ DEFAULT_TRIGGER_FRACTION: Final[float] = 0.6
 #: Fraction of the ceiling at which the strategy stops waiting for a record and compacts
 #: without one.
 #:
-#: **0.9, and it was briefly 0.95.** It moves with the trigger, and back with it. A record
+#: **0.9, and it moves with the trigger.** A record
 #: arrives one call late by construction: the middleware can only read the history on the way
 #: *out* of a call and can only pin the *next* one, so the conversation grows by a whole turn
 #: between the ask and the answer -- see :meth:`ToolResultRecallMiddleware.process`. The gap
 #: between the two lines has to be wide enough for that turn to land in, and at a 0.6 trigger
 #: it is three tenths of the ceiling, which is several turns rather than one.
 #:
-#: 0.95 was set to widen that gap under a 0.8 trigger, against a scenario -- the strategy
-#: compacting without a record while the record is still in flight -- that has never been
-#: observed: no measured run carries a ``FALLBACK`` flag at all.
+#: A wider gap buys nothing measured: compacting without a record while the record is still in
+#: flight has never been observed, and no measured run carries a ``FALLBACK`` flag.
 #:
 #: It cannot simply be raised to 1.0. Past this line the fallback still has to bring the
 #: conversation under the ceiling, and a fallback given no headroom has nothing to work in.
@@ -1236,7 +1229,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         A different event from :attr:`fallbacks_used`, which counts the passes that gave up
         waiting for a record that never arrived. This counts the passes where one did arrive
         and did not free enough, so the fallback ran behind it and shortened whatever was
-        still in the prompt -- which, since the coverage check went in, is exactly the groups
+        still in the prompt -- which, under the coverage check, is exactly the groups
         the record failed to carry and this strategy had just declined to delete.
 
         Kept apart from ``fallbacks_used`` because the two ask for opposite responses: no
@@ -1244,9 +1237,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         enough is a ceiling, a bound, or a record too partial to be worth its size. What the
         two mean for the *row* is the same, and is why this is reported at all: a non-zero
         value says part of what that row measured is the fallback strategy rather than this
-        one. Nothing said so until it was counted -- a seed reporting four uncovered groups
-        was measured losing the same facts as the control, three messages shorter and 16,617
-        tokens lighter, which is shortening rather than deletion and had no flag anywhere.
+        one. Shortening leaves no other trace in a row, so without this count it would read
+        as this strategy's deletion.
 
         Counted per pass, like ``fallbacks_used`` and unlike :attr:`groups_kept_uncovered`:
         each pass shortens whatever is in the prompt at the time rather than taking a second
@@ -1254,11 +1246,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 
         **Effects, not attempts.** Only a fallback that reported having changed something is
         counted. A fallback with nothing left to shed returns False and touches nothing, and
-        counting the call rather than its answer made ``RECFALLBACK:5`` mean anything between
-        five losses and none -- an unreadable number on a flag whose entire purpose is to say
-        that part of a row was measured by another strategy.
+        counting the call would let ``RECFALLBACK:5`` mean anything between five losses and
+        none.
 
-        **What it can take is now narrower than the paragraphs above describe.** Every tool
+        **What it can take is narrower than that.** Every tool
         group no record covers is held before this fallback runs -- see
         :attr:`fallbacks_held_after_record` -- so on the default fallback a counted pass is one
         that shed assistant narration, not one that shortened a tool result.
@@ -1271,12 +1262,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 
         The rule behind it: once a record exists, the fallback may not shorten or shed a tool
         group no record covers -- whether it sits in front of the record, where the coverage
-        check already holds it, or after it, where nothing did. It was reached on a live seed.
-        With four uncovered groups preserved in front of the record the prompt stayed near the
-        ceiling, the fallback fired thirty-three times, and it shortened the one tool group
-        after the record that sat inside its band until all eight of its codes were gone; the
-        row finished 5,000 tokens under the limit, not ``DQ``, eight facts short, and reported
-        nothing. :data:`PRESERVE_REASON_UNRECORDED` is the hold that closes it.
+        check already holds it, or after it. With uncovered groups held in front of the record
+        the prompt can stay near the ceiling, and a fallback firing repeatedly would otherwise
+        shorten a group after the record until none of its values remained, with no flag.
+        :data:`PRESERVE_REASON_UNRECORDED` is that hold.
 
         Counts attempts, where :attr:`fallbacks_after_record` counts effects, because the two
         answer different questions. This one says the fallback was needed and was held back;
@@ -2014,9 +2003,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             :meth:`ToolResultAnchoredSummarizationCompactionStrategy.take_reforce`, and the
             bound on how often it can say yes lives on that side; ``None`` leaves the strategy
             to preserve those groups without asking. Independent of ``repeat_records`` on
-            purpose: that flag is off because a repeat on a complete record can only cost, and
-            this asks only on a measured shortfall, so it cannot fire on the case the flag
-            protects. :attr:`reforced_calls` counts the calls it pinned.
+            purpose: that flag is switched off where a repeat on a complete record can only
+            cost, and this asks only on a measured shortfall, so it cannot fire on the case the
+            flag protects. :attr:`reforced_calls` counts the calls it pinned.
     """
 
     def __init__(
@@ -2182,8 +2171,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         The outstanding ask is also what makes the attribution honest. A record surfaces on the
         call *after* the one that was pinned, so crediting the call it became visible on would
-        report every forced record as volunteered -- and, before this, the count was right only
-        because the second forced call was there to be credited.
+        report every forced record as volunteered.
 
         Whether the *next* call is pinned is the whole of the decision, and it is taken in
         :meth:`_record_due`, which is the one place the rule is written down.
@@ -2199,11 +2187,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             # and pinning a tool choice into it would outlive this call.
             # The tool is offered on this call and no other. Registering it on the agent
             # would put its schema in every request, and its description reads as sensible
-            # hygiene right after a lookup -- which is exactly what happened: the model called
-            # it unprompted on the unpinned follow-up call, and the run then measured the
-            # model's initiative rather than this middleware. Options replace the tool list
-            # rather than adding to it, so offering it here also hides everything else, which
-            # is harmless on a call whose only purpose is to make this one call.
+            # hygiene right after a lookup, so a model calls it unprompted and the record
+            # reflects the model's initiative rather than this middleware. Options replace the
+            # tool list rather than adding to it, so offering it here also hides everything
+            # else, which is harmless on a call whose only purpose is to make this one call.
             self.arm()
             options: dict[str, Any] = {
                 **dict(context.options or {}),
@@ -2242,8 +2229,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         record_index = find_record_index(messages) if messages else None
         # The transition is tracked on the instance, not read from the messages on the way in.
         # Before the pipeline runs, context.messages holds only the new turn, so a pre-call
-        # check reports "no record" on every call and every later call counts as a fresh one --
-        # which is how an 18 appeared here for a single record.
+        # check reports "no record" on every call and every later call counts as a fresh one.
         if record_index is not None and not self._seen_record:
             self._seen_record = True
             # Attributed to the ask, not to the call the record became visible on: a forced
@@ -2280,16 +2266,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         - the size trigger asks for the *first* record as soon as the prompt passes
           ``trigger_fraction`` of the ceiling;
         - it asks again only when ``pending`` is at least one -- and not at all when
-          ``repeat_records`` is off, which is what every run up to 63 did.
+          ``repeat_records`` is off.
 
         **Why the second record needs ``pending`` and the first does not.** The size that fires
         the trigger does not go away once a record exists: the record is *added* to the
         conversation, and it is preserved, so the prompt is if anything larger afterwards. A
         repeat reading size alone would therefore stay true for the rest of the run and pin
-        every remaining call. That is the regression to watch for: a conversation
-        sitting above the trigger with nothing recorded since its last record is *settled* --
-        there is nothing a second record could carry that the first does not -- and must be
-        left alone until the agent does more tool work.
+        every remaining call. A conversation sitting above the trigger with nothing recorded
+        since its last record is *settled* -- there is nothing a second record could carry that
+        the first does not -- and must be left alone until the agent does more tool work.
 
         Args:
             messages: The loaded conversation, already grouped and token-annotated.

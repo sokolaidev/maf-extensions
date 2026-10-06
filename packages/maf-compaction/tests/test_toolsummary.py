@@ -268,12 +268,9 @@ def _rendered(messages: list[Message]) -> str:
 #: conversation measures 17,011 tokens, 17,137 with a record, which is 78% of this -- between
 #: the 60% trigger and the 90% give-up line, and not close to either.
 #:
-#: **Recompute it whenever a default moves, and check the margin rather than the sign.** This
-#: was 22,000, went to 19,000 while the thresholds were briefly 0.8 and 0.95, and comes back
-#: with them. 19,000 is not merely a different number at 0.6/0.9: it puts the fixture at 90.2%,
-#: which is *past* the give-up line, so the tests here would have measured the fallback
-#: strategy. The failure in the other direction is quieter and worse -- a fixture below the
-#: trigger asserts against a strategy that returned without doing anything, and passes.
+#: **Recompute it whenever a default moves, and check the margin rather than the sign.** A
+#: fixture past the give-up line measures the fallback strategy; a fixture below the trigger
+#: asserts against a strategy that returned without doing anything, and passes.
 _WAITING_CEILING = 22_000
 
 
@@ -416,27 +413,15 @@ async def test_a_record_that_does_not_free_enough_still_falls_back() -> None:
 async def test_a_fallback_taken_behind_a_record_is_counted_apart_from_one_taken_without_one() -> (
     None
 ):
-    """A pass that anchored on a record and fell back anyway used to report no fallback at all.
+    """A pass that anchors on a record and falls back anyway reports that fallback.
 
-    Only the give-up path incremented a counter, and it is not the path taken here: this one
-    finds a record, drops what the record covers, sees the prompt still over the ceiling, and
-    hands the rest to the fallback. So the row is measuring the fallback strategy over part of
-    its material while its flags column says nothing at all.
+    This pass finds a record, drops what the record covers, sees the prompt still over the
+    ceiling, and hands the rest to the fallback, so part of the row is measured by another
+    strategy and the flags column must say so. The count is separate from ``fallbacks_used``:
+    no record ever arrived is a different event from one that arrived and did not free enough.
 
-    Measured on a live seed reporting UNCOVERED:4: it lost the same facts as the control while
-    sitting three messages shorter and 16,617 tokens lighter, which is shortening rather than
-    deletion. The count is separate from ``fallbacks_used`` because the two events differ --
-    no record ever arrived, against one that arrived and did not free enough -- and joined to
-    it in meaning, because either says part of the row belongs to another strategy.
-
-    **What the fallback may work on has since narrowed, and this fixture moved with it.** The
-    groups the coverage check declines to delete are now held out of the fallback's reach, so a
-    conversation whose only removable material was those groups gives the fallback nothing and
-    the count stays at zero -- which is the fix, not a regression. The bulk here therefore sits
-    *after* the record, where no record was ever asked to cover it, and the two uncovered groups
-    in front of the record are asserted intact. Since then the tool groups behind the record
-    are held too -- no record covers them either -- so what the fallback takes there is the
-    narration between them, and every tool result is asserted intact.
+    The fallback may not touch groups the coverage check kept or tool groups behind the record,
+    so the bulk here is narration *after* the record, and every tool result is asserted intact.
     """
     strategy = _strategy(max_input_tokens=500, trigger_fraction=0.1, fallback_fraction=0.9)
     messages = _conversation(tool_turns=4, record=_covering_record(2))
@@ -463,11 +448,8 @@ async def test_a_fallback_taken_behind_a_record_is_counted_apart_from_one_taken_
 async def test_a_fallback_that_changed_nothing_is_not_counted_as_one() -> None:
     """The flag says another strategy shortened part of this row, so a no-op must not raise it.
 
-    The count was taken before the await and regardless of its answer, so it counted attempts.
-    A fallback with nothing left to shed returns False and touches nothing, and archived rows
-    carry ``RECFALLBACK:5`` and ``RECFALLBACK:6`` -- numbers that, counted that way, are
-    somewhere between five or six losses and none at all. A flag whose whole purpose is to say
-    "part of this row was measured by a different strategy" cannot be readable as either.
+    A fallback with nothing left to shed returns False and touches nothing; the count follows
+    that answer, so it counts losses rather than attempts.
     """
     calls = 0
 
@@ -495,12 +477,9 @@ async def test_a_partial_record_leaves_the_groups_it_never_named_in_place() -> N
     """A record covering two groups of six may not delete the other four.
 
     This is the measured shape of gpt-5.6-luna: asked to record everything from six tool
-    groups, it wrote about two. The strategy used to exclude all six anyway, on the stated
-    assumption that a record replaces whatever precedes it, so four groups were deleted with
-    nothing preserving them and nothing reporting it -- the loss then arrived in the scores as
-    compaction damage rather than as an instrument that had stopped early. Raising the response
-    cap, raising the stated target and rewriting the prompt were each measured and each changed
-    nothing, which is why the check has to live in the strategy.
+    groups, it wrote about two. A record does not replace whatever precedes it, only what it
+    names, and the unnamed groups are kept and counted. Neither the response cap nor the prompt
+    changed the shortfall, so the check lives in the strategy.
     """
     strategy = _strategy(max_input_tokens=16_000)
     messages = _conversation(tool_turns=6, record=_covering_record(2))
@@ -524,10 +503,8 @@ async def test_the_uncovered_count_describes_the_conversation_now_rather_than_it
     """A shortfall a later record made good must stop being reported as a shortfall.
 
     The count is read as "this row is carrying groups a complete record would have replaced",
-    and that is a statement about the prompt at the end of the run. Accumulated across passes it
-    said something else: a run whose second record covered everything the first had missed, and
-    which therefore finished carrying nothing extra at all, still reported ``UNCOVERED:6``. Two
-    opposite outcomes with the same number is worse than no number.
+    and that is a statement about the prompt at the end of the run, not a total across passes:
+    a second record that covers what the first missed takes the count back to zero.
     """
     strategy = _strategy(max_input_tokens=14_000)
     messages = _conversation(tool_turns=6, record="the lookups all completed.")
@@ -547,7 +524,7 @@ async def test_a_complete_record_still_drops_every_group_it_covers() -> None:
     gpt-5.4-mini writes records that name every tool they cover, and on those the coverage
     check costs nothing: it is meant to be silent whenever the record did what it was asked.
     A check that also held back complete records would trade a rare silent loss for a constant
-    one, which is the regression this pins.
+    one.
     """
     strategy = _strategy()
     messages = _conversation(tool_turns=8, record=_covering_record(8))
@@ -711,17 +688,12 @@ def _bulk_of(index: int) -> str:
 
 
 async def test_a_record_quoting_a_groups_values_covers_it_though_it_never_names_the_tool() -> None:
-    """The luna case, which the rule this replaces got exactly backwards.
+    """Coverage is read from the values a record quotes, not from the tool's name.
 
     Asked to record six tool groups, gpt-5.6-luna writes prose: *"extra0 deployment lookup
-    returned codes: AB-123456, ..."*. Every identifier is there. The string ``lookup_extra0``
-    is not, and the tool-name rule therefore refused to drop a group whose entire content the
-    record was carrying. The same rule scored ``UNCOVERED:4`` against gpt-5.4-mini, whose
-    records are complete, and its compaction fell from a 20% reduction to 5-6% in exchange for
-    nothing at all -- a check that penalises the model that complied.
-
-    ``RECALL_VALUES_DESCRIPTION`` leads with "Quote verbatim any value that cannot be
-    reconstructed or guessed", and that is what is tested now.
+    returned codes: AB-123456, ..."*. Every identifier is there and ``lookup_extra0`` is not,
+    so the group counts as covered. ``RECALL_VALUES_DESCRIPTION`` leads with "Quote verbatim any
+    value that cannot be reconstructed or guessed", and that is what is tested.
     """
     strategy = _strategy(max_input_tokens=16_000)
     record = " ".join(_prose_record(index) for index in range(2))
@@ -793,14 +765,12 @@ async def test_a_group_with_no_values_to_quote_falls_back_to_the_tool_name() -> 
 
 
 async def test_a_record_quoting_bare_values_covers_a_result_that_labelled_them() -> None:
-    """The live shape, which every fixture here used to avoid.
+    """The live shape: labelled values in the result, bare values in the record.
 
     A tool result renders its values as ``code_N=VALUE``; a record quotes them plainly, because
     that is what "quote verbatim any value that cannot be reconstructed" asks for and what every
-    measured record does. Those two have to meet, and for a while they did not: the whole
-    ``code_1=TL-BA44A9`` was read as one token, so the only record that could ever cover a group
-    was one that had copied the benchmark's own label format. Every UNCOVERED figure the project
-    published was measuring formatting compliance rather than preservation.
+    measured record does. ``code_1=TL-BA44A9`` must yield ``TL-BA44A9`` as its own token, or
+    coverage would measure formatting compliance rather than preservation.
     """
     strategy = _strategy(max_input_tokens=5_000)
     messages = _conversation(
@@ -863,10 +833,10 @@ async def test_a_value_that_is_only_a_substring_of_the_record_does_not_count_as_
 async def test_a_tool_name_that_is_only_a_prefix_of_a_mentioned_one_is_not_a_mention(
     tool_name: str, record: str
 ) -> None:
-    """The name fallback had the same defect as the value rule, and prefixes are the norm.
+    """A tool name counts as mentioned only as a whole name, and shared prefixes are the norm.
 
-    ``record.count("get")`` is satisfied by ``get_status``, so a record that discusses a
-    different tool entirely licensed deleting the groups of this one. Tool names share prefixes
+    A substring count of ``get`` is satisfied by ``get_status``, which would let a record about
+    a different tool license deleting the groups of this one. Tool names share prefixes
     as a matter of course -- ``read_file`` and ``read_file_lines``, ``get`` and ``get_status``
     -- so this is what a real toolset looks like rather than a contrived collision. The record
     here even satisfies the *count*: it mentions the longer name once per group.
@@ -1000,19 +970,13 @@ _RECORD_PADDING = " ".join(
 
 
 async def test_the_record_survives_a_fallback_that_shortens_and_sheds_everything_else() -> None:
-    """The headline regression: the strategy used to destroy the one thing it exists to produce.
+    """The fallback never shortens or sheds the record, the one thing the strategy exists to keep.
 
     Phase 2 deletes tool groups *because* the record replaced them. When the record does not
     free enough on its own, what remains goes to ``fallback`` -- by default
     ``AnchoredCompactionStrategy``, which shortens tool results and then sheds whole tool
-    groups. The record is a tool result. Nothing in that strategy had ever heard of one, so it
-    trimmed the record like any other bulk, and every deletion the record had licensed lost its
-    only surviving copy.
-
-    Measured on a live seed: a record holding four lookups' worth of values, thirty-two
-    identifiers, reached the prompt the questions were answered from carrying two. 16,617
-    tokens gone while three messages left, which is shortening rather than deletion, and no
-    counter in the run was looking at anything but message counts.
+    groups. The record is a tool result, and it is the only surviving copy of everything it
+    licensed deleting, so it is held out of the fallback's reach.
 
     The fixture puts the record early enough to sit in the fallback's middle band -- the only
     place it can be touched -- and then squeezes the ceiling until the fallback runs hard.
@@ -1150,13 +1114,8 @@ def _chained(**kwargs: Any) -> ToolResultAnchoredSummarizationCompactionStrategy
 async def test_a_partial_record_asks_for_another_record_and_holds_what_it_missed() -> None:
     """Layer one: the pass that finds the shortfall asks for another record, and asks once.
 
-    The coverage check keeps the groups a record failed to cover, and until now that was all
-    it did: the fallback that runs when the prompt is still over the ceiling could shorten them
-    in place like any other group. The four archived rows that carried ``UNCOVERED:4`` beside
-    ``RECFALLBACK`` and lost a fact were the brief for closing that gap; they are since
-    attributed to a counting defect that ran the fallback on prompts under the ceiling, so they
-    are not a measure of how often the gap is reached -- the gap itself is what this tests.
-    What the check kept has to be out of the fallback's reach from the same pass, because the
+    The coverage check keeps the groups a record failed to cover, and what it kept has to be
+    out of the fallback's reach from the same pass, because the
     ask made here is answered two passes later and the fallback can run in between -- a group
     shortened while its record is in flight is a group that record can no longer quote. The
     ask itself is one-shot, like the gate on the other side of the middleware.
@@ -1222,11 +1181,8 @@ async def test_a_re_force_that_covers_the_rest_prevents_any_preservation() -> No
     """The re-force fixing the shortfall: the held groups are released and dropped, nothing settles.
 
     This is the measured case on gpt-5.6-luna, whose record covers two of six groups and whose
-    second covers the rest -- run 40's repeat arm and run 41's read ``UNCOVERED:0`` on every
-    seed. A held group has to stay a candidate for the record it was held for, or the hold
-    would be a permanent floor: the first version of the preserved-skip in ``_drop_before``
-    treated every mark alike, and would have left these four in the prompt for good with a
-    complete account of them sitting one message later.
+    second covers the rest. A held group has to stay a candidate for the record it was held
+    for, or the hold would be a permanent floor beside a complete account of it.
     """
     strategy = _chained()
     messages = _conversation(tool_turns=6, record=_covering_record(2))
@@ -1260,10 +1216,8 @@ async def test_a_re_force_that_fails_leads_to_preservation_and_the_fallback_cann
     results stay intact to the last character. What is left is a prompt over the ceiling,
     which is the accepted consequence: the row reads ``DQ`` instead of losing a fact.
 
-    That material is narration. It used to be the tool groups behind the records, and this test
-    asserted the first of them shed -- which was run 51's loss written down as the expected
-    behaviour: a group after the record is covered by no record, and shedding it loses its
-    facts as surely as shedding a held one. The fallback now finds those groups held too.
+    That material is narration, not tool groups: a group after the record is covered by no
+    record, so the fallback finds it held too.
     """
     strategy = _strategy(max_input_tokens=500, trigger_fraction=0.1, fallback_fraction=0.9)
     messages = _conversation(tool_turns=6, record=_covering_record(2))
@@ -1311,7 +1265,7 @@ def _held_unrecorded(messages: list[Message]) -> set[str]:
 async def _settled_behind_two_records(
     max_input_tokens: int,
 ) -> tuple[ToolResultAnchoredSummarizationCompactionStrategy, list[Message]]:
-    """Return a strategy and conversation in run 51's state: four uncovered groups preserved for good.
+    """Return a strategy and conversation with four uncovered groups preserved for good.
 
     The first record covers two of six lookups, the re-forced one covers none, and layer two
     has settled the four it left. What a test appends behind that is what the post-record
@@ -1331,19 +1285,12 @@ async def _settled_behind_two_records(
 
 
 async def test_the_fallback_behind_a_record_may_not_shorten_a_tool_group_after_it() -> None:
-    """Run 51: layer two held, and the group after the record was eroded instead.
+    """No record covers a tool group after the newest one, so the fallback may not erode it.
 
-    gpt-5.6-luna, 120,000-token window, seed 1: four uncovered lookups in front of the record
-    were preserved and survived, and that kept the prompt near the ceiling, so the fallback
-    fired thirty-three times and shortened the one tool group after the record that sat inside
-    its band -- Mid -- until its eight codes were gone. Late survived only because the fallback
-    keeps a fixed tail. No record covers a group after the newest one, and nothing protected
-    it. The row finished under the limit: no ``DQ``, eight facts lost, no flag.
-
-    This is that shape: four preserved groups, three lookups behind the records, and a prompt
-    over the ceiling. The anchored fallback's tail is four groups, so lookup 6 sits just behind
-    it -- the group that used to be shortened, then shed. With nothing but tool groups behind
-    the records there is nothing the fallback may take, so it takes nothing: every result keeps
+    Four preserved groups, three lookups behind the records, and a prompt over the ceiling.
+    The anchored fallback's tail is four groups, so lookup 6 sits just inside its band. With
+    nothing but tool groups behind the records there is nothing the fallback may take, so it
+    takes nothing: every result keeps
     every character, the prompt stays over the ceiling where the caller can see it, and the
     rule that held the fallback back says so. Repeated passes change nothing and end, because
     the fallback's shed loop stops on "nothing moved" rather than on "it fits".
@@ -1389,8 +1336,7 @@ async def test_narration_is_all_the_fallback_behind_a_record_may_take_and_can_be
     Two uncovered groups in front of the record, four lookups behind it, and narration after
     two of those inside the fallback's band. The ceiling sits between the prompt with that
     narration and the prompt without it, so shedding narration alone fits the row: no tool
-    result is shortened -- the fallback used to collapse results before shedding anything --
-    and no tool group is shed.
+    result is shortened and no tool group is shed.
     """
     strategy = _strategy(max_input_tokens=14_000, trigger_fraction=0.1, fallback_fraction=0.9)
     messages = _conversation(tool_turns=4, record=_covering_record(2))
@@ -1783,15 +1729,12 @@ async def test_a_single_record_is_attributed_exactly_once() -> None:
 
 
 async def test_one_trigger_event_forces_exactly_one_call() -> None:
-    """One ask, one record. It was one ask and two, in every run this project has taken.
+    """One ask, one record.
 
     The decision is made on the way out of a call and applied to the next, so the exit of a
     *forced* call reads a history that predates the record it just asked for: the condition that
-    fired still reads as true and the next call is pinned as well. Reproduced in a real pipeline
-    at ``records_in_conversation=2`` with repeats switched off, four to five with them on, and
-    visible in every archived row as ``FORCED:2, RECFORCED:1``. Each surplus record is an agent
-    turn, a broken prefix, a permanent addition to the floor under the prompt, and one seeding
-    turn robbed of its own pinned lookup.
+    fired still reads as true. Each surplus record is an agent turn, a broken prefix, and a
+    permanent addition to the floor under the prompt.
 
     So a forced call decides nothing, and the call after it -- the first that can see the
     record -- decides on what is actually there.
@@ -2250,12 +2193,9 @@ def _repeating(**kwargs: Any) -> ToolResultRecallMiddleware:
 
     The ceiling is small and the trigger low, so size alone is above the line throughout. That
     is the point: every test below is about what happens once size has stopped being the
-    interesting variable, which is the state the single-record gate used to hide.
+    interesting variable.
 
-    Repeats are asked for by name, because the constructor's default is off: run 40 measured
-    them costing shrink on a model whose records were already complete, so a caller that says
-    nothing gets the behaviour that cannot hurt. The tests below are about what the repeating
-    trigger does, so they have to say so.
+    Repeats are asked for by name, so these tests do not depend on the constructor's default.
 
     Keyword Args:
         kwargs: Overrides, so a test can turn repeats off again or add a group bound.
@@ -2270,10 +2210,9 @@ def _repeating(**kwargs: Any) -> ToolResultRecallMiddleware:
 
 
 async def test_no_record_is_forced_while_nothing_new_has_been_recorded_since_the_last_one() -> None:
-    """The every-call regression, given its own test because un-gating the trigger invites it.
+    """A settled conversation is not forced on every call, however far above the trigger it sits.
 
-    The size trigger used to be gated on there being no record at all, and the gate was not
-    caution: the size that fired it does not go away when a record arrives, because the record
+    The size that fires the trigger does not go away when a record arrives, because the record
     is *added* to the conversation and then preserved, so the prompt is if anything larger
     afterwards. Re-arm on size alone and every remaining call in the run is pinned to the
     recall tool -- an agent turn each, a broken prefix each, and a conversation of records
@@ -2451,12 +2390,7 @@ def test_the_default_thresholds_leave_a_whole_turn_for_the_record_to_arrive_in()
     ask, so a run cannot move one and not the other.
 
     **These are the values every archived run used, and that is the point of pinning them.** A
-    row is only comparable with the archive if it was taken under the same configuration, and
-    both defaults were briefly moved -- to 0.8 and 0.95 -- on reasoning rather than measurement,
-    which would have made the next run a fourth variant rather than a comparison. This test
-    previously asserted 0.8 while quoting "0.6 fired at 58% of a 60,000-token window" as though
-    it were a finding; it was arithmetic about where the line falls, and no run had ever used
-    the value it was defending.
+    row is only comparable with the archive if it was taken under the same configuration.
     """
     strategy = ToolResultAnchoredSummarizationCompactionStrategy(
         max_input_tokens=1_000, tokenizer=TOKENIZER

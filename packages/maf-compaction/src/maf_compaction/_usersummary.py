@@ -681,8 +681,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             a cached prefix for nothing. See :data:`DEFAULT_USER_TRIGGER_FRACTION`.
         min_band_share: Share of the included prompt the band must be worth before a pass may
             run. This is the hysteresis: without it the strategy fires once per turn for the
-            rest of a run that stays above the trigger. ``0.0`` restores that behaviour, which
-            is what every run before this one measured. See :data:`DEFAULT_MIN_BAND_SHARE`.
+            rest of a run that stays above the trigger. ``0.0`` disables it. See
+            :data:`DEFAULT_MIN_BAND_SHARE`.
         summary_mode: What a pass does with the summary the previous pass left behind: one of
             :data:`SUMMARY_MODES`. The recompacting default re-reads and replaces it; the
             boundary mode leaves it standing and compacts only what is newer; the fold mode does
@@ -954,9 +954,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """Passes over the trigger where the band was not worth what a pass costs.
 
         The hysteresis counter, and the price of having one. Every pass counted here is a pass
-        the old behaviour would have spent: a summarizer call, a rewritten prefix billed from
-        the summary's position to the end of the conversation, and a few hundred tokens freed.
-        Thirty of them is what the live run in the module docstring measured.
+        ``min_band_share=0.0`` would have spent: a summarizer call, a rewritten prefix billed
+        from the summary's position to the end of the conversation, and a few hundred tokens
+        freed.
 
         It is one number for three refusals, because they are one statement -- there was not
         enough here to be worth a pass. The band was empty (the anchors cover the conversation,

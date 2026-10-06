@@ -296,8 +296,8 @@ def test_the_defaults_are_one_turn_at_each_end_a_late_trigger_and_a_tenth_of_the
 
     They are defaults rather than derivations, and a change to any of them changes what every
     archived row means, so moving one should have to move this line too. The band share is the
-    one that changes how *often* the strategy acts rather than when, and the one whose absence
-    was measured as thirty passes in a run where the design expected one or two.
+    one that changes how *often* the strategy acts rather than when: without it the strategy
+    fires once per turn over the trigger.
     """
     assert (DEFAULT_KEEP_HEAD_USER_TURNS, DEFAULT_KEEP_TAIL_USER_TURNS) == (1, 1)
     assert DEFAULT_USER_TRIGGER_FRACTION == 0.8
@@ -603,7 +603,7 @@ async def test_the_replacement_is_a_user_message() -> None:
 async def test_a_preserved_user_turn_is_never_summarised() -> None:
     """``_preserve`` means no strategy may shorten, drop or shed a message, and this drops.
 
-    The mark exists because one strategy was measured destroying another's output. Superseding
+    The mark exists so one strategy cannot destroy another's output. Superseding
     a preserved turn is the same loss by a politer route: the message stops being sent, and
     what stands in its place is a paraphrase written by a different model.
     """
@@ -622,13 +622,10 @@ async def test_a_preserved_user_turn_is_never_summarised() -> None:
 async def test_a_preserved_head_turn_stays_the_head_and_the_summary_is_still_recompacted() -> None:
     """The anchors are positions in the prompt, and a mark another party sets does not move them.
 
-    Counting the head over the unprotected turns only, which is what ``_band`` used to do, lands
-    it on the head's neighbour once the head is preserved -- and after a first pass in the
-    recompacting mode that neighbour is the strategy's own summary. Measured on the old rule:
-    the summary was held as the head on every later pass and never re-read, a second summary
-    was written beside it and recompacted in its place from then on, and the conversation
-    carried two standing summaries for the rest of the run in the one mode whose point is that
-    it carries one. So the case is driven for two more passes, and what is asserted is the
+    Counting the head over the unprotected turns only would land it on the head's neighbour once
+    the head is preserved -- and after a first pass in the recompacting mode that neighbour is
+    the strategy's own summary, which would then be held as the head and never re-read, leaving
+    two standing summaries in the one mode whose point is that it carries one. So the case is driven for two more passes, and what is asserted is the
     mode's own promise: one standing summary, the earlier one superseded by it, with the head
     turn verbatim and unexcluded throughout and the tail still the tail.
     """
@@ -714,9 +711,9 @@ def test_a_configuration_outside_its_range_is_refused_by_the_constructor(
 #: 1,000 against 4,000, so the user half is a fifth of the conversation and the band between the
 #: anchors about a fifth of the prompt. That ratio is the whole point of the fixture: the
 #: even-sized conversation above hands this strategy half the prompt, where one pass takes the
-#: prompt so far under the trigger that nothing else can be measured, while the live run that
-#: produced the defect had its band at 28% of the prompt and the rest in assistant replies and
-#: tool payload the strategy may not touch.
+#: prompt so far under the trigger that nothing else can be measured, while a live conversation
+#: can have its band at 28% of the prompt and the rest in assistant replies and tool payload the
+#: strategy may not touch.
 _THIN_USER_CHARS = 1_000
 
 #: Characters in an assistant reply of the lopsided fixture. See ``_THIN_USER_CHARS``.
@@ -751,11 +748,10 @@ async def _grow_and_compact(
 ) -> list[tuple[int, int, bool]]:
     """Run one pass per turn over a conversation that never stops growing.
 
-    This is the shape a live run has and the shape no test here had: the strategy is called once
-    per agent turn on a conversation one turn longer each time, rather than once on a
-    conversation that is already long. Both defects this module has had were differences between
-    those two -- a rule that is right for one pass and wrong for the hundredth -- so the driver
-    is written out once and shared.
+    This is the shape a live run has: the strategy is called once per agent turn on a
+    conversation one turn longer each time, rather than once on a conversation that is already
+    long. A rule can be right for one pass and wrong for the hundredth, so the driver is written
+    out once and shared.
 
     Args:
         strategy: The strategy under test, called once per turn.
@@ -774,13 +770,11 @@ async def _grow_and_compact(
 
 
 async def test_a_conversation_that_keeps_growing_compacts_a_bounded_number_of_times() -> None:
-    """The defect this module was measured with, and the test that has to fail if it comes back.
+    """Past the trigger the strategy must not compact on every turn.
 
-    Live, at a 170,000-token window on gpt-5.6-luna, this strategy reported ``USERCOMPACT:31``
-    with ``USERREPLACED:2`` and took the cache hit rate from the control's 95% down to 53%. It
-    had compacted on every turn: past the trigger the prompt does not shrink to the size of the
-    band, so the condition stays true, and every new turn satisfies the "something here is not
-    my own summary" rule that was supposed to re-arm it on new material only.
+    Past the trigger the prompt does not shrink to the size of the band, so the trigger stays
+    true, and every new turn satisfies the "something here is not my own summary" rule. Only the
+    band share stops a pass per turn, each of which breaks the cached prefix.
 
     Both arms below run the same forty-turn conversation one turn at a time, and differ in one
     number. The bounded arm is asserted against the unbounded one rather than against a
@@ -835,12 +829,11 @@ async def test_the_prompt_has_to_grow_between_two_compactions_by_the_factor_the_
 
 
 async def test_a_share_of_zero_is_the_behaviour_every_archived_row_was_measured_with() -> None:
-    """The old code path stays reachable, because the comparison needs it.
+    """A share of zero runs without hysteresis, because the comparison needs it.
 
-    Every ``user_summary_anchored`` row on disk was produced without a band share, and a record
-    written before this reads the setting back as ``0.0`` for exactly that reason. If zero did
-    not reproduce the old behaviour that reading would be a lie, and the A/B that justifies the
-    default could not be run at all.
+    A ``user_summary_anchored`` row recorded without a band share reads the setting back as
+    ``0.0``. If zero did not reproduce that behaviour the reading would be a lie, and the A/B
+    that justifies the default could not be run at all.
     """
     strategy = _strategy(min_band_share=0.0)
     messages = _conversation(8)
@@ -1148,9 +1141,8 @@ async def _grow_in_mode(
 def test_the_default_mode_is_the_recompacting_one_until_a_run_has_measured_the_arms() -> None:
     """The default does not move until a run has measured both arms, which is this package's rule.
 
-    A live run is measuring the recompacting mode as this is written, and flipping the default
-    under it would invalidate the comparison the boundary mode exists to be measured in. So the
-    default is pinned, and pinned to the *literal* rather than to whichever mode reads best in
+    Flipping the default before then would invalidate the comparison the boundary mode exists to
+    be measured in. So the default is pinned, and pinned to the *literal* rather than to whichever mode reads best in
     the module docstring, because reading best is not the same as having been measured.
     """
     assert DEFAULT_SUMMARY_MODE == SUMMARY_MODE_RECOMPACT
@@ -1851,9 +1843,9 @@ async def test_the_same_band_presented_twice_is_summarised_once_and_replayed_the
 
     The harness runs a strategy inside the model call on the copies the history provider loaded
     and again after the turn on what it stored, and the copies' flags never reach the store: the
-    after-turn pass finds the band the in-call pass already replaced. Run 48 measured the result
-    on every seed of every mode -- two summarizer calls and ``USERCOMPACT:2`` for one standing
-    summary, and two different summaries sent at one position on consecutive calls. Two views of
+    after-turn pass finds the band the in-call pass already replaced. A second summarizer call
+    there would spend a call and send a different summary at one position on consecutive calls.
+    Two views of
     one list stand in for the two lists here, with a summarizer whose answers differ so that a
     second call would show as different bytes rather than pass by coincidence.
     """
