@@ -350,3 +350,59 @@ def test_failed_identity_persistence_stops_helper_without_header(tmp_path, monke
         host.execute(tmp_path / "helper", tmp_path / "startup", tmp_path, b"code", 100, refuse)
     assert children[0].poll() is not None
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("supervisor", ["shared", "direct"])
+def test_relative_helper_and_startup_are_bound_before_changing_child_directory(
+    tmp_path, monkeypatch, supervisor
+):
+    real_popen = subprocess.Popen
+    launches = []
+    helper = tmp_path / "build" / "helper.py"
+    helper.parent.mkdir()
+    helper.write_text(
+        "import json, sys\nfrom pathlib import Path\n"
+        "assert sys.stdin.buffer.read(8) == b'MXCOWN1\\n'\n"
+        "startup, candidate, code, report = map(Path, sys.argv[2:6])\n"
+        "assert startup.joinpath('index.json').read_bytes() == b'checkpoint'\n"
+        "assert code.read_bytes() == b'code'\n"
+        "candidate.mkdir()\ncandidate.joinpath('index.json').write_bytes(b'checkpoint')\n"
+        "report.with_suffix('.output').write_bytes(b'ok')\n"
+        "report.write_text(json.dumps({'captured':True,'output':{'limit_bytes':100,'retained_bytes':2,'omitted_bytes':0,'omitted_bytes_saturated':False,'truncated':False}}))\n",
+        encoding="utf-8",
+    )
+    startup = tmp_path / "startup"
+    startup.mkdir()
+    (startup / "index.json").write_bytes(b"checkpoint")
+
+    def spawn(command, **kwargs):
+        launches.append(command)
+        return real_popen([sys.executable, *command], **kwargs)
+
+    monkeypatch.setattr(host.subprocess, "Popen", spawn)
+    monkeypatch.chdir(tmp_path)
+    if supervisor == "direct":
+        Path("work").mkdir()
+        result = host.execute(Path("build/helper.py"), Path("startup"), Path("work"), b"code", 100)
+        assert b"b2s=" in result
+    else:
+        budget = replace(SCRATCH, bytes=4 * store.CHUNK, store_bytes=8 * store.CHUNK, entries=2048)
+        with store.SharedStore(Path("db"), "one", PROFILE, LIMITS) as db:
+            result = shared.call(
+                db, "a", b"code", Path("build/helper.py"), Path("startup"), budget, 100
+            )
+            assert (
+                shared.call(db, "a", b"code", Path("missing"), Path("missing"), budget, 100)
+                == result
+            )
+            assert len(launches) == 1
+            assert (
+                shared.call(db, "b", b"code", Path("build/helper.py"), Path("missing"), budget, 100)
+                == result
+            )
+            assert len(launches) == 2
+            assert scratch_usage(db) == 0
+            assert not list((db.root / "scratch").iterdir())
+    assert all(
+        Path(command[0]).is_absolute() and Path(command[2]).is_absolute() for command in launches
+    )

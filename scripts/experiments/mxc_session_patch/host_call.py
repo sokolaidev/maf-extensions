@@ -120,6 +120,7 @@ def execute(
         or any(type(value) is not int or value <= 0 for value in checkpoint_limits)
     ):
         raise Refused("invalid bounded checkpoint configuration")
+    helper, startup, work = (path.resolve() for path in (helper, startup, work))
     request = work / "code.py"
     request.write_bytes(code)
     report = work / "native.json"
