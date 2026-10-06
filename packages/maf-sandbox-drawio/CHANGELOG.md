@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.2...maf-sandbox-drawio-v0.4.3) (2026-10-06)
+
+
+### Fixes
+
+* require MAF 1.20 for session-bound tool approvals ([#1718](https://github.com/sokolaidev/maf-extensions/issues/1718)) ([c18ecbc](https://github.com/sokolaidev/maf-extensions/commit/c18ecbcc94fc3236729ffef74b4590707daa26a8))
+* require maf-sandbox 0.48.0 in the dependents, and admit the 0.48 line ([#1747](https://github.com/sokolaidev/maf-extensions/issues/1747)) ([0926d2f](https://github.com/sokolaidev/maf-extensions/commit/0926d2f4a6944e2755a82ce187ef219ee227192b))
+
 ## [0.4.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.1...maf-sandbox-drawio-v0.4.2) (2026-10-05)
 
 
