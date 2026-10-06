@@ -120,6 +120,25 @@ def test_abandonment_burns_version_and_does_not_hide_exposure():
         abandon(completed(), "bicep/0.1.0", "upload failed", LATER)
 
 
+@pytest.mark.parametrize("release_version", ["0.0.0", "0.0.1", "0.0.999"])
+@pytest.mark.parametrize("abandoned", [False, True])
+def test_existing_reservation_cannot_remove_the_image_version_floor(release_version, abandoned):
+    history = reserve(empty_catalogue(), candidate(), AT)
+    if abandoned:
+        history = abandon(history, "bicep/0.1.0", "retained bytes expired", LATER)
+    with pytest.raises(ValueError, match="0.1.0"):
+        reserve(history, candidate(release_version, "456"), LATER)
+    with pytest.raises(ValueError, match="0.1.0"):
+        version(release_version)
+
+
+def test_abandoned_first_version_can_advance_to_a_new_patch():
+    history = abandon(reserve(empty_catalogue(), candidate(), AT), "bicep/0.1.0", "expired", LATER)
+    following = candidate("0.1.1", "456")
+    result = complete(reserve(history, following, LATER), following, EVIDENCE, LATER)
+    assert result["current"]["bicep"] == "bicep/0.1.1"
+
+
 def test_completed_evidence_cannot_change_on_retry():
     with pytest.raises(ValueError, match="immutable"):
         complete(completed(), candidate(), DIGEST, LATER)

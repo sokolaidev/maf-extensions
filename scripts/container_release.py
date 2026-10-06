@@ -114,13 +114,16 @@ def profiles() -> tuple[str, ...]:
 
 
 def version(value: Any) -> tuple[int, int, int]:
-    """Accept stable SemVer release numbers without aliases or build suffixes."""
+    """Accept stable image SemVer numbers at or above the initial 0.1.0 release."""
     if not isinstance(value, str) or not re.fullmatch(
         r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", value
     ):
         raise ValueError("Expected a stable image SemVer")
     major, minor, patch = value.split(".")
-    return int(major), int(minor), int(patch)
+    parsed = int(major), int(minor), int(patch)
+    if parsed < (0, 1, 0):
+        raise ValueError("Image release versions must be at least 0.1.0")
+    return parsed
 
 
 def validate_identity(candidate: dict[str, Any]) -> None:
