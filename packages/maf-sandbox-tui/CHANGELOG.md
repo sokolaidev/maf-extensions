@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-tui-v0.3.5...maf-sandbox-tui-v0.3.6) (2026-10-06)
+
+
+### Fixes
+
+* require maf-sandbox 0.48.0 in the dependents, and admit the 0.48 line ([#1747](https://github.com/sokolaidev/maf-extensions/issues/1747)) ([0926d2f](https://github.com/sokolaidev/maf-extensions/commit/0926d2f4a6944e2755a82ce187ef219ee227192b))
+
 ## [0.3.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-tui-v0.3.4...maf-sandbox-tui-v0.3.5) (2026-10-04)
 
 
