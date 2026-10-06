@@ -772,6 +772,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 require(
                     owner_file.read_bytes() == owner_before, "Recovery changed retained ownership"
                 )
+                # Rebuild the Gateway catalog after discovery failed against the stopped service.
+                gateway_process.kill()
+                gateway_process.wait(timeout=30)
+                gateway_process = gateway()
+                gateway_ready(gateway_process)
                 recovered_sessions = [turn(index)[0] for index in range(2)]
                 require(
                     len(set(recovered_sessions)) == 2
@@ -780,6 +785,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 report["startup_cleanup_refusal"].update(
                     fault_removed=True,
+                    gateway_recovery="explicit-idle-process-restart",
                     retained_owner=True,
                     recovery_before_readiness=True,
                     fresh_sessions=2,
