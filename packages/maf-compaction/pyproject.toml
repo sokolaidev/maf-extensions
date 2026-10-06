@@ -1,6 +1,6 @@
 [project]
 name = "maf-compaction"
-version = "0.0.0"
+version = "0.1.0"
 description = "Prompt-cache-aware compaction strategies for Microsoft Agent Framework: anchored trimming, tool-result records and user-turn summaries that keep the cached prefix intact."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
