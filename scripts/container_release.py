@@ -542,9 +542,11 @@ def scan_result(report: dict[str, Any], image_id: str, at: str) -> dict[str, Any
     if source.get("type") != "image" or source.get("target", {}).get("imageID") != image_id:
         raise ValueError("Vulnerability report identifies another image")
     descriptor = report.get("descriptor", {})
-    database = descriptor.get("db", {})
+    metadata = descriptor.get("db")
+    database = metadata.get("status") if isinstance(metadata, dict) else None
     if (
-        database.get("valid") is not True
+        not isinstance(database, dict)
+        or database.get("valid") is not True
         or bool(database.get("error"))
         or not database.get("built")
         or not database.get("schemaVersion")

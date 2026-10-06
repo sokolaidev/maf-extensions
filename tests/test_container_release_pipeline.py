@@ -58,7 +58,15 @@ def scan_report():
     return {
         "source": {"type": "image", "target": {"imageID": CANDIDATE["imageId"]}},
         "descriptor": {
-            "db": {"valid": True, "built": AT, "from": "test-db", "schemaVersion": "6.1.4"}
+            "db": {
+                "status": {
+                    "valid": True,
+                    "built": AT,
+                    "from": "test-db",
+                    "schemaVersion": "v6.1.10",
+                },
+                "providers": {},
+            }
         },
         "matches": [],
     }
@@ -525,6 +533,28 @@ def test_uncertain_artifact_listing_does_not_abandon_version(monkeypatch):
     monkeypatch.setattr(GitHub, "request", request)
     with pytest.raises(TimeoutError):
         dispatcher.retained_available("123")
+
+
+def test_failed_preparation_reports_cannot_resume_publication(monkeypatch):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/container-image-release.yml").read_text())
+    step = next(
+        s
+        for s in workflow["jobs"]["prepare"]["steps"]
+        if s.get("name") == "Retain failed preparation reports"
+    )
+    assert step["if"] == "failure() && steps.candidate.outcome == 'failure'"
+    assert step["with"]["path"] == "${{ runner.temp }}/candidate/*.json"
+    name = (
+        step["with"]["name"]
+        .replace("${{ github.run_id }}", "123")
+        .replace("${{ github.run_attempt }}", "1")
+    )
+    monkeypatch.setattr(
+        GitHub,
+        "request",
+        lambda *args: encode({"total_count": 1, "artifacts": [{"name": name, "expired": False}]}),
+    )
+    assert not dispatcher.retained_available("123")
 
 
 def test_qualification_authenticates_before_pull_or_execution(monkeypatch, tmp_path):
