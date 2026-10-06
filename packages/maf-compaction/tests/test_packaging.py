@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
+import subprocess
 import sys
 import tomllib
 import warnings
@@ -39,8 +41,9 @@ def _declared_import_names() -> set[str] | None:
     project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
     names: set[str] = set()
     for requirement in project["dependencies"]:
-        distribution = requirement.split(">")[0].split("<")[0].split("=")[0].split("[")[0]
-        names.add(distribution.strip().replace("-", "_"))
+        match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+        if match:
+            names.add(re.sub(r"[-.]+", "_", match.group(1)).lower())
     # agent-framework-core installs the `agent_framework` package.
     if "agent_framework_core" in names:
         names.add("agent_framework")
@@ -71,6 +74,19 @@ class TestExperimentalWarning:
                 stacklevel=1,
             )
         assert caught == []
+
+
+class TestImportSurvivesDashWError:
+    """`python -W error` must not turn the notice into a failed import."""
+
+    def test_import_exits_zero_under_dash_w_error(self):
+        result = subprocess.run(
+            [sys.executable, "-W", "error", "-c", "import maf_compaction"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
 
 
 class TestOnlyDeclaredDependencies:

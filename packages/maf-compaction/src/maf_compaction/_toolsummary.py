@@ -1585,12 +1585,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         result. See :attr:`fallbacks_held_after_record`.
 
         ``ceiling`` is the composed row's: its chain compacts to a target below the input budget
-        rather than to the budget, and hands the target down here. It reaches a fallback that is
-        an :class:`~._anchored.AnchoredCompactionStrategy` -- the one this strategy builds, or
-        one its caller builds for it -- through
-        :meth:`~._anchored.AnchoredCompactionStrategy.compact_to`; any other fallback is run as
-        it is and compacts to its own ceiling. None, the default, is the fallback's own ceiling,
-        which is every caller but that chain.
+        rather than to the budget, and hands the target down here, to the fallback's
+        :meth:`~._anchored.AnchoredCompactionStrategy.compact_to`. None, the default, is the
+        fallback's own ceiling, which is every caller but that chain.
 
         Args:
             messages: The conversation, mutated in place, with a record in it.
@@ -1621,9 +1618,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         this hands to. Nothing is held first, as :meth:`fall_back_after_record` holds every
         unrecorded tool group: the ids handed in are of what that fallback shed with the holds
         in place, which is narration, and a group is shed here only if all of its messages are
-        among them. Not counted as a fallback: nothing is decided here, only repeated. A
-        fallback that is not an :class:`~._anchored.AnchoredCompactionStrategy` sheds nothing
-        this way.
+        among them. Not counted as a fallback: nothing is decided here, only repeated.
 
         Args:
             messages: The conversation, mutated in place.
@@ -1717,7 +1712,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         value that cannot be reconstructed or guessed" -- applied to what the group's tool
         *results* contained. :func:`_distinctive_tokens` finds those values and states the rule
         and its blind spots; a group is covered when the record quotes at least
-        ``coverage_share`` of them, case-insensitively. That also dissolves the repeated-name
+        ``coverage_share`` of them, with their case: an identifier quoted in another case is
+        another value, and the group stays. That also dissolves the repeated-name
         ambiguity the count rule below was built for: two calls to one tool return two different
         sets of values, and a record quoting both has demonstrably accounted for both.
 
