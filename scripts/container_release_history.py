@@ -89,13 +89,21 @@ class GitHub:
                     else "Content-Type: application/json",
                 ]
             )
-        result = subprocess.run(
-            command,
-            input=payload if isinstance(payload, bytes) else None,
-            capture_output=True,
-            check=True,
-            timeout=600,
-        )
+        if isinstance(payload, bytes):
+            # gh cannot infer the length of a piped release asset.
+            command.extend(["-H", f"Content-Length: {len(payload)}"])
+        try:
+            result = subprocess.run(
+                command,
+                input=payload if isinstance(payload, bytes) else None,
+                capture_output=True,
+                check=True,
+                timeout=600,
+            )
+        except subprocess.CalledProcessError as error:
+            if error.stderr:
+                error.add_note(error.stderr.decode("utf-8", errors="replace")[:4096])
+            raise
         if len(result.stdout) > MAX_BYTES:
             raise ValueError("GitHub response exceeds the history size limit")
         return result.stdout

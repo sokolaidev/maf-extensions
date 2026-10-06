@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
+import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -389,3 +393,69 @@ def test_release_creation_is_draft_and_never_changes_latest(monkeypatch):
     assert body["draft"] is True and body["prerelease"] is True
     assert body["make_latest"] == "false"
     assert body["target_commitish"] == SOURCE
+
+
+@pytest.mark.parametrize("file_payload", [False, True], ids=["stdin", "file"])
+def test_release_upload_sends_exact_body_with_content_length(
+    monkeypatch, tmp_path: Path, file_payload: bool
+):
+    if shutil.which("gh") is None:
+        pytest.skip("GitHub CLI is required for the local HTTP transport check")
+    monkeypatch.setenv("GH_TOKEN", "local-test-token")
+    monkeypatch.delenv("GH_DEBUG", raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    body = '{"name":"caf\u00e9"}\n'.encode()
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            size = self.headers.get("Content-Length")
+            if size is None:
+                self.send_error(411, "Length Required")
+                return
+            received.append((self.rfile.read(int(size)), self.headers.get("Content-Type")))
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format: str, *args: object):
+            pass
+
+    payload: bytes | Path = body
+    if file_payload:
+        payload = tmp_path / "catalogue.json"
+        payload.write_bytes(body)
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            result = GitHub().request(
+                f"http://127.0.0.1:{server.server_port}/assets?name=catalogue.json",
+                method="POST",
+                payload=payload,
+                upload=True,
+            )
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+    assert result == b"{}"
+    assert received == [(body, "application/octet-stream")]
+
+
+def test_failed_github_request_retains_cli_diagnostic_without_retry(monkeypatch):
+    calls = []
+    error = subprocess.CalledProcessError(
+        1, ["gh", "api"], stderr=b"gh: Length Required (HTTP 411)"
+    )
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        raise error
+
+    monkeypatch.setattr("container_release_history.subprocess.run", run)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        GitHub().upload(1, b"{}")
+    assert caught.value is error
+    assert error.__notes__ == ["gh: Length Required (HTTP 411)"]
+    assert len(calls) == 1
