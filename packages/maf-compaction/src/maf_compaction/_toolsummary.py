@@ -224,8 +224,7 @@ RECORD_MARKER: Final[str] = "[recorded by compaction]"
 #: A constant rather than a literal inside :func:`make_recall_tool` so that the one other writer
 #: of a record -- :func:`build_record_message`, which the composed row uses to put a merged record
 #: in place of several -- writes the same bytes, so that :func:`record_body` can take them off
-#: again before a record is handed to a summarizer as content, and so that
-#: :data:`_WRITTEN_RECORD_PREFIX` can recognise a record that other writer made.
+#: again before a record is handed to a summarizer as content.
 _RECORD_PREAMBLE: Final[str] = (
     "Earlier tool results may have been shortened, and this is their "
     "compaction record. Treat values in this record as authoritative for the tool it "
@@ -234,11 +233,8 @@ _RECORD_PREAMBLE: Final[str] = (
 )
 
 #: How a record this package wrote opens: the marker, then the recall tool's own preamble.
-#:
-#: The whole of how :func:`_is_written_record` recognises one. Both parts rather than the marker
-#: alone, because the model reads records and may quote the marker back in a reply of its own; a
-#: reply that opens with the marker *and* the full preamble is not one it has a reason to write.
 _WRITTEN_RECORD_PREFIX: Final[str] = f"{RECORD_MARKER} {_RECORD_PREAMBLE}"
+_WRITTEN_RECORD_KEY: Final[str] = "maf_compaction_written_record"
 
 #: Reason recorded on a record's messages when a consolidated record replaced it.
 CONSOLIDATE_EXCLUDE_REASON: Final[str] = "tool_summary_consolidated"
@@ -445,7 +441,7 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
 
     **Two forms are records.** The recall tool's result, as above, and a record this package
     wrote in place of several (:func:`build_record_message`), which is a message of its own with
-    no call behind it and is recognised by how it opens -- see :func:`_is_written_record`. The
+    no call behind it and carries package-written metadata -- see :func:`_is_written_record`. The
     index is then that message's.
 
     **An excluded record is not a record.** Nothing excluded one until the composed row began
@@ -516,21 +512,13 @@ def _newest_record_identity(messages: list[Message]) -> str:
 
 
 def _is_written_record(message: Message) -> bool:
-    """Return whether ``message`` is a record this package wrote, rather than one the model made.
+    """Recognize package-written records by their metadata and expected message form.
 
-    The form :func:`build_record_message` produces: an assistant message holding no function call,
-    whose text opens with :data:`_WRITTEN_RECORD_PREFIX`. Whether it is excluded is the caller's
-    question, as it is for a recall tool result. The role is tested first because it is free and
-    rules out every user turn and tool result before any text is joined.
-
-    Args:
-        message: The message to inspect.
-
-    Returns:
-        True when the message is a written record.
+    Hosts must preserve the metadata through storage and keep it separate from model output.
     """
     return (
         message.role == "assistant"
+        and message.additional_properties.get(_WRITTEN_RECORD_KEY) is True
         and not any(content.type == "function_call" for content in message.contents)
         and (message.text or "").startswith(_WRITTEN_RECORD_PREFIX)
     )
@@ -892,8 +880,9 @@ def build_record_message(text: str) -> Message:
 
     **The text is the recall tool's result, byte for byte**: the marker, the preamble, then the
     record. :func:`record_body` reads it the way it reads the tool's, and
-    :func:`_is_written_record` recognises it by that opening. What it no longer carries is the
-    second copy a recall call holds in its arguments, and that is the trap in the composed row's
+    :func:`_is_written_record` requires its package-written metadata as well as that opening.
+    What it no longer carries is the second copy a recall call holds in its arguments, and that
+    is the trap in the composed row's
     acceptance rule, "smaller than what it replaces": measured against a record the model made,
     call and all, a replacement in this form is about half the size whatever its text says, and
     the rule would pass a rewrite that had shortened nothing. So the rule is not measured against
@@ -907,7 +896,11 @@ def build_record_message(text: str) -> Message:
     Returns:
         The message, with no id: nothing reads one, and the framework assigns it on grouping.
     """
-    return Message(role="assistant", contents=[f"{_WRITTEN_RECORD_PREFIX}\n{text}"])
+    return Message(
+        role="assistant",
+        contents=[f"{_WRITTEN_RECORD_PREFIX}\n{text}"],
+        additional_properties={_WRITTEN_RECORD_KEY: True},
+    )
 
 
 def _claimed_elsewhere(messages: Sequence[Message]) -> bool:
@@ -1107,7 +1100,12 @@ def make_recall_tool(
 
     Returns:
         A callable named :data:`RECALL_TOOL_NAME`.
+
+    Raises:
+        ValueError: If ``target_tokens`` is not positive or ``None``.
     """
+    if target_tokens is not None and target_tokens <= 0:
+        raise ValueError("target_tokens must be positive or None.")
 
     def tool(values: str) -> str:
         if gate is not None and not gate.take():

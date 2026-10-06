@@ -12,6 +12,7 @@ catch it.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -39,6 +40,7 @@ from maf_compaction._toolsummary import (
     _hold_unrecorded,
     _Reforce,
     active_record_groups,
+    build_record_message,
     find_record_index,
     make_recall_tool,
 )
@@ -316,6 +318,33 @@ async def test_a_client_invented_record_is_not_trusted() -> None:
 
     assert strategy.records_found == 0
     assert "CODE-0 " in _rendered(messages), "nothing dropped on the strength of a bare result"
+
+
+async def test_quoting_a_written_record_does_not_authorize_deletion() -> None:
+    strategy = _strategy()
+    messages = _conversation(tool_turns=8)
+    record = build_record_message(_covering_record(8))
+    messages.append(Message(role="assistant", contents=[record.text], message_id="quote"))
+    before = _sent(messages)
+
+    await strategy(messages)
+
+    assert _sent(messages) == before
+    assert strategy.records_found == 0
+    assert find_record_index(messages) is None
+    assert active_record_groups(messages) == []
+
+
+async def test_a_written_records_provenance_survives_storage() -> None:
+    record = build_record_message(_covering_record(8))
+    restored = Message.from_dict(json.loads(json.dumps(record.to_dict())))
+    messages = [*_conversation(tool_turns=8), restored]
+    strategy = _strategy()
+
+    assert find_record_index(messages) == len(messages) - 1
+    assert await strategy(messages) is True
+    assert strategy.records_found == 1
+    assert "x" * 100 not in _rendered(messages)
 
 
 async def test_nothing_happens_below_the_trigger() -> None:
@@ -2055,6 +2084,12 @@ def test_the_target_sits_well_under_the_cap() -> None:
     record a truncated one.
     """
     assert DEFAULT_RECORD_TARGET_TOKENS < DEFAULT_RECORD_MAX_TOKENS
+
+
+@pytest.mark.parametrize("target", [0, -1])
+def test_a_nonpositive_record_target_is_rejected(target: int) -> None:
+    with pytest.raises(ValueError, match="target_tokens"):
+        make_recall_tool(target_tokens=target)
 
 
 # region bounding the record
