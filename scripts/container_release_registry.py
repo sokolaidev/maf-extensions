@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import re
 import shutil
@@ -35,7 +34,7 @@ from container_release import (
 )
 from container_release_history import History
 from container_release_oci import INDEX, MANIFEST, validate_layout, verify_registry_manifest
-from prepare_container_release import assess, run
+from prepare_container_release import assess, load_retained, run
 
 LIMIT = 8 * 1024 * 1024
 MANIFEST_TYPES = ", ".join(
@@ -171,12 +170,7 @@ def promote(directory: Path, history: History | None = None) -> dict[str, Any]:
         raise ValueError("Retained bytes differ from the reserved candidate")
     verified_manifest = (directory / "manifest.json").read_bytes()
     verify_registry_manifest(verified_manifest, candidate)
-    run(["skopeo", "copy", f"oci:{layout}:candidate", "docker-daemon:maf-release:retained"])
-    inspect = json.loads(
-        run(["docker", "image", "inspect", "maf-release:retained"], capture_output=True).stdout
-    )
-    if inspect[0]["Id"] != candidate["imageId"]:
-        raise ValueError("Loaded image differs from retained candidate")
+    load_retained(layout, candidate["imageId"])
     fresh_assessment(directory, candidate)
     latest = (history or History()).head()
     if latest is None or key(candidate) not in latest.catalogue["releases"]:

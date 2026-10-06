@@ -25,7 +25,7 @@ from container_release import (
     version,
     write,
 )
-from container_release_oci import validate_layout
+from container_release_oci import blob, validate_layout
 from image_security_evidence import record, verify_inventory
 
 
@@ -115,8 +115,31 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     return result
 
 
+def load_retained(layout: Path, image_id: str) -> None:
+    """Load OCI bytes through Docker's CLI and require the same configuration identity."""
+    with tempfile.TemporaryDirectory(prefix="maf-image-load-") as temporary:
+        archive = Path(temporary) / "image.tar"
+        # Skopeo's daemon transport can lag Docker's minimum API version.
+        run(
+            [
+                "skopeo",
+                "copy",
+                "--format",
+                "v2s2",
+                f"oci:{layout}:candidate",
+                f"docker-archive:{archive}:maf-release:retained",
+            ]
+        )
+        run(["docker", "load", "--input", str(archive)])
+    details = json.loads(
+        run(["docker", "image", "inspect", "maf-release:retained"], capture_output=True).stdout
+    )
+    if len(details) != 1 or details[0]["Id"] != image_id:
+        raise ValueError("Loaded image differs from retained candidate")
+
+
 def retain(image_id: str, output: Path) -> dict[str, str]:
-    """Create the OCI bytes once; later promotion must preserve these manifest digests."""
+    """Convert once to OCI and reload its configuration for assessment."""
     layout = output / "oci"
     if layout.exists():
         raise ValueError("Candidate output already contains retained OCI bytes")
@@ -133,7 +156,11 @@ def retain(image_id: str, output: Path) -> dict[str, str]:
                 f"oci:{layout}:candidate",
             ]
         )
-    identity = validate_layout(layout, image_id)
+    descriptor = read(layout / "index.json")["manifests"][0]
+    retained_id = read(blob(layout, descriptor))["config"]["digest"]
+    identity = validate_layout(layout, retained_id)
+    # OCI conversion rewrites configuration bytes; assess the reloaded retained image.
+    load_retained(layout, retained_id)
     source = layout / "blobs" / "sha256" / identity["registryDigest"].removeprefix("sha256:")
     shutil.copyfile(source, output / "manifest.json")
     return identity
@@ -157,6 +184,11 @@ def prepare(
         command.extend(["--label", f"{name}={value}"])
     run([*command, "-"], input="FROM maf-image-scan:target\n")
     details = json.loads(run(["docker", "image", "inspect", target], capture_output=True).stdout)
+    built_id = record(details, revision, profile)["local_image_id"]
+    identity = retain(built_id, output)
+    details = json.loads(
+        run(["docker", "image", "inspect", identity["imageId"]], capture_output=True).stdout
+    )
     local = record(details, revision, profile)
     image_id = local["local_image_id"]
     if any(
@@ -171,9 +203,9 @@ def prepare(
             "version": release_version,
             "attemptId": attempt,
             "imageRepository": f"{PREFIX}/{profile}",
+            "builtImageId": built_id,
         },
     )
-    identity = retain(image_id, output)
     candidate = identity | {
         "profile": profile,
         "version": release_version,

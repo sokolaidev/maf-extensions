@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import prepare_container_release as preparation  # noqa: E402
 from container_release import (  # noqa: E402
     abandon,
     assessment_status,
@@ -286,6 +288,79 @@ def test_retained_layout_binds_manifest_to_scanned_configuration(tmp_path):
     assert validate_layout(tmp_path, config["digest"])["registryDigest"] == image["digest"]
     with pytest.raises(ValueError, match="assessed configuration"):
         validate_layout(tmp_path, DIGEST)
+
+
+@pytest.mark.parametrize("wrong_load", [False, True])
+def test_retention_uses_converted_configuration_and_checks_reload(
+    tmp_path, monkeypatch, wrong_load
+):
+    config, image, _ = layout(tmp_path / "converted")
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[:4] == ["skopeo", "copy", "--format", "oci"]:
+            (tmp_path / "converted").rename(tmp_path / "oci")
+        loaded_id = DIGEST if wrong_load else config["digest"]
+        return subprocess.CompletedProcess(command, 0, json.dumps([{"Id": loaded_id}]))
+
+    monkeypatch.setattr(preparation, "run", run)
+    if wrong_load:
+        with pytest.raises(ValueError, match="Loaded image differs"):
+            preparation.retain(DIGEST, tmp_path)
+        assert not (tmp_path / "manifest.json").exists()
+    else:
+        result = preparation.retain(DIGEST, tmp_path)
+        assert result["imageId"] == config["digest"] != DIGEST
+        assert result["registryDigest"] == image["digest"]
+        assert read(tmp_path / "manifest.json")["config"]["digest"] == result["imageId"]
+    assert commands[0][:3] == ["docker", "save", "--output"]
+    assert commands[0][-1] == DIGEST
+    assert commands[2][:4] == ["skopeo", "copy", "--format", "v2s2"]
+    assert commands[3][:3] == ["docker", "load", "--input"]
+
+
+def test_preparation_scans_and_tests_reloaded_image(tmp_path, monkeypatch):
+    output = tmp_path / "candidate"
+    retained_id = "sha256:" + "c" * 64
+    revision = "d" * 40
+    inspected = []
+    assessed = []
+    checked = []
+
+    def run(command, **kwargs):
+        if command[:3] != ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, "")
+        inspected.append(command[-1])
+        details = {
+            "Id": retained_id if command[-1] == retained_id else DIGEST,
+            "Os": "linux",
+            "Architecture": "amd64",
+            "Config": {"Labels": preparation.labels("diagram", "0.1.0", revision)},
+        }
+        return subprocess.CompletedProcess(command, 0, json.dumps([details]))
+
+    def retain(image_id, directory):
+        assert image_id == DIGEST
+        return {
+            "imageId": retained_id,
+            "registryDigest": EVIDENCE,
+            "assessedManifestDigest": EVIDENCE,
+        }
+
+    monkeypatch.setattr(preparation, "run", run)
+    monkeypatch.setattr(preparation, "require_source", lambda revision: None)
+    monkeypatch.setattr(preparation, "retain", retain)
+    monkeypatch.setattr(
+        preparation, "check", lambda profile, image, directory: checked.append(image)
+    )
+    monkeypatch.setattr(preparation, "assess", lambda directory, image: assessed.append(image))
+    result = preparation.prepare("diagram", "0.1.0", revision, "123", output)
+    assert inspected == ["maf-image-release:candidate", retained_id]
+    assert assessed == checked == [retained_id]
+    assert result["imageId"] == retained_id
+    assert read(output / "build.json")["local_image_id"] == retained_id
+    assert read(output / "build.json")["builtImageId"] == DIGEST
 
 
 def test_changed_layer_cannot_be_promoted(tmp_path):
