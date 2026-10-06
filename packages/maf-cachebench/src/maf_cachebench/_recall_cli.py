@@ -170,7 +170,7 @@ def _render(rows: list[tuple[str, int, RecallScore]], *, show_answers: bool) -> 
         "            (* marks a perfect score; recall cannot fall when an answer is confidently",
         "            wrong)",
         (
-            "retracted  = the answer states the superseded decision â€” confidently wrong, not "
+            "retracted  = the answer states the superseded decision — confidently wrong, not "
             "merely incomplete"
         ),
     ]

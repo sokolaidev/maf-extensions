@@ -257,7 +257,7 @@ class StubChatClient(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], Bas
         self.seen: list[int] = []
         self.options_seen: list[dict[str, Any]] = []
         self.tool_turns = set(tool_turns)
-        self.usage = usage
+        self.usage = usage if usage is not None else UsageDetails(input_token_count=100)
         self.reply = reply
         self.obey_tool_choice = obey_tool_choice
         self.finish_reason = finish_reason
@@ -10198,3 +10198,66 @@ async def test_summarizer_meter_bounds_cache_per_call(cached: int, normalized: i
     await meter.get_response([])
     assert meter.cached_tokens == normalized
     assert [usage.cached_tokens for usage in meter.usage] == [normalized, 0]
+
+
+@pytest.mark.parametrize("reported", [None, 0, -1, 100])
+@pytest.mark.parametrize("summarizer", [False, True])
+async def test_live_incomplete_usage_is_recorded_and_excluded(
+    reported: int | None, summarizer: bool
+) -> None:
+    class Intermittent(StubChatClient):
+        def _inner_get_response(
+            self, *, messages: Any, stream: Any, options: Any, **kwargs: Any
+        ) -> Any:
+            index = len(self.seen)
+            pending = super()._inner_get_response(
+                messages=messages, stream=stream, options=options, **kwargs
+            )
+
+            async def respond() -> ChatResponse[Any]:
+                response = await pending
+                usage: dict[str, Any] = {"input_token_count": 100}
+                if index == 1:
+                    usage = {} if reported is None else {"input_token_count": reported}
+                return ChatResponse(messages=response.messages, usage_details=cast(Any, usage))
+
+            return respond()
+
+    client = Intermittent()
+    meter = MeteredClient(client)
+    if summarizer:
+        await meter.get_response([Message("user", ["first"])])
+        await meter.get_response([Message("user", ["second"])])
+    scenario = _probe_scenario()
+    outcome = await run_live(
+        ProviderRuntime(client=StubChatClient() if summarizer else client, model="stub"),
+        strategy_name="none",
+        options=replace(_options(), summarizer=cast(Any, meter) if summarizer else None),
+        scenario=scenario,
+    )
+    record = _record(outcome, scenario)
+    if reported == 100:
+        assert outcome.error is None
+        assert not _excluded_cells([_aggregate("none", [record])])[0]
+    else:
+        assert outcome.error is not None and "Incomplete pricing" in outcome.error
+        assert record.error == outcome.error
+        assert outcome.turns_completed == outcome.turns_total
+        assert _excluded_cells([_aggregate("none", [record])])[0] == {"none"}
+
+
+async def test_failed_summarizer_cannot_enter_live_verdict() -> None:
+    from maf_cachebench._live_cli import _verdict_outcomes
+
+    outcome, scenario = await _probed(StubChatClient(), repeats=1)
+    record = _record(outcome, scenario)
+    cells = [
+        _aggregate("none", [record]),
+        _aggregate(
+            "summarization", [replace(record, strategy="summarization", summarizer_failures=1)]
+        ),
+    ]
+    excluded = _excluded_cells(cells)
+    assert excluded[0] == {"summarization"}
+    ranked, _ = _verdict_outcomes(cells, *excluded, split=True)
+    assert [row.strategy for row in ranked] == ["none"]

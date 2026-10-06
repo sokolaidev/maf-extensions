@@ -682,3 +682,39 @@ def test_default_tokenizer_needs_no_optional_dependency(
     assert tokenizer.count_tokens("A short prompt") > 0
     with pytest.raises(RuntimeError, match="requires the tiktoken package"):
         build_tokenizer("tiktoken")
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "inf"])
+async def test_replay_rejects_invalid_cache_ratio_before_output(tmp_path: Path, value: str) -> None:
+    output = tmp_path / "records"
+    args = _cli.build_parser().parse_args(
+        ["--dry-run", f"--cache-read-ratio={value}", "--out", str(output)]
+    )
+    with pytest.raises(SystemExit, match="--cache-read-ratio must be finite and non-negative"):
+        await _cli.run_benchmark(args)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+async def test_live_rejects_nonpositive_long_threshold_before_setup(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from maf_cachebench import _live_cli
+
+    def unexpected(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid threshold must fail before setup")
+
+    monkeypatch.setattr(_live_cli, "build_tokenizer", unexpected)
+    args = _live_cli.build_parser().parse_args(
+        [
+            "azure",
+            "--price-input",
+            "1",
+            "--price-long-input",
+            "2",
+            "--long-context-threshold",
+            value,
+        ]
+    )
+    with pytest.raises(SystemExit, match="--long-context-threshold must be greater than 0"):
+        await _live_cli.run_live_comparison(args)

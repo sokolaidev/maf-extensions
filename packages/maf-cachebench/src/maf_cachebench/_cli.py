@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -356,6 +357,8 @@ async def run_benchmark(args: argparse.Namespace) -> int:
     Returns:
         A process exit code.
     """
+    if not math.isfinite(args.cache_read_ratio) or args.cache_read_ratio < 0:
+        raise SystemExit("--cache-read-ratio must be finite and non-negative.")
     providers = _split(args.providers)
     strategies = _split(args.strategies)
     sizes = _split(args.sizes)

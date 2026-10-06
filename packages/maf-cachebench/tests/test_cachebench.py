@@ -322,7 +322,7 @@ def test_summary_ratios() -> None:
     assert summary.fresh_input_tokens == 1200
     assert summary.cache_hit_ratio == pytest.approx(0.4)
     assert summary.local_reusable_ratio == pytest.approx(0.8)
-    # hit 0.4 over reuse 0.8 â€” a quotient of fractions, so the local estimator's
+    # hit 0.4 over reuse 0.8 — a quotient of fractions, so the local estimator's
     # inflated token counts cancel instead of halving the result.
     assert summary.cache_realization == pytest.approx(0.5)
     assert summary.prefix_breaks == 1
@@ -476,7 +476,7 @@ def test_auto_window_floor_keeps_the_system_anchor_inside_the_eviction_budget() 
 def test_unsupported_option_is_extracted_from_a_wrapped_provider_error() -> None:
     # Verbatim from Foundry/gpt-5.6-luna. The framework wraps provider errors in an
     # exception whose args are a tuple, so str() repr's the payload and the quotes around
-    # the parameter name arrive backslash-escaped â€” which silently defeated the first
+    # the parameter name arrive backslash-escaped — which silently defeated the first
     # version of this matcher and cost a full 120-call re-run.
     wrapped = Exception(
         "<class 'FoundryChatClient'> service failed to complete the prompt: Error code: 400 - "

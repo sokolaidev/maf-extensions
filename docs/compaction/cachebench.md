@@ -58,6 +58,8 @@ OLLAMA_MODEL
 
 **Pin `OPENROUTER_PROVIDER_ORDER` if you use OpenRouter.** It dispatches to an upstream provider that can change between requests, and a different upstream is a different cache; without the pin you are measuring the router. Setting it also disables fallbacks.
 
+Live records with missing or non-positive input usage, failed calls, or failed summarizers are excluded from recommendations. Cache-read ratios must be finite and non-negative, and long-context thresholds must be positive.
+
 Advisor and summary selections must include the `none` baseline before measurement. Recall-based CLIs reject negative filler counts or sizes and counts below the scenario minimum instead of silently changing the archived workload.
 
 Under `cachebench` (replay), a provider that fails to construct is skipped with a warning rather than aborting the sweep, so one missing credential does not cost you every other provider's cells. If no cells run, the command exits with failure and writes no summary table. Duplicate selections and unknown summarizer providers are rejected before setup; different resolved models on one provider remain valid. All selected providers are resolved before any cell runs, so aliases of the same provider/model pair cannot share a cache namespace.

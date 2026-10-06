@@ -2176,6 +2176,12 @@ async def run_live(
                 break
             questions_done += 1
 
+    usage_missing = any(call.input_tokens <= 0 for call in recorder.calls) or (
+        summarizer is not None and any(call.input_tokens <= 0 for call in summarizer.usage)
+    )
+    if usage_missing and error is None:
+        error = "Incomplete pricing: missing or non-positive input usage."
+
     return LiveOutcome(
         strategy=strategy_name,
         calls=tuple(recorder.calls),

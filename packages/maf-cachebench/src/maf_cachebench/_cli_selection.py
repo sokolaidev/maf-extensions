@@ -71,6 +71,9 @@ def validate_pricing_options(args: argparse.Namespace) -> None:
         value = getattr(args, name, None)
         if value is not None and (not math.isfinite(value) or value < 0):
             raise SystemExit(f"--{name.replace('_', '-')} must be finite and non-negative.")
+    threshold = getattr(args, "long_context_threshold", None)
+    if threshold is not None and threshold <= 0:
+        raise SystemExit("--long-context-threshold must be greater than 0.")
     if args.price_input is None:
         for name in ("price_cached", "price_output", "price_cache_write"):
             if getattr(args, name, None) is not None:

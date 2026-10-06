@@ -7,7 +7,7 @@ reliable way to know is to price both options against that model directly.
 
 This module runs a strategy sweep for a single model, converts the measured token usage
 into money, and returns a verdict. It deliberately refuses to give one when the repeats
-disagree by more than the gap between the options â€” several providers were measured
+disagree by more than the gap between the options — several providers were measured
 swinging two- to fourfold on equivalent replay workloads, and a confident recommendation drawn
 from a single sample of that would be worse than no recommendation.
 """
@@ -72,6 +72,8 @@ class ModelPricing:
     """The rates a request above :attr:`long_context_threshold` is billed at, ``None`` for none."""
 
     def __post_init__(self) -> None:
+        if self.long_context_threshold is not None and self.long_context_threshold <= 0:
+            raise ValueError("long_context_threshold must be greater than 0.")
         for name in (
             "input_per_million",
             "cached_read_per_million",
@@ -353,7 +355,7 @@ def advise(
     best = ranked[0]
 
     # The comparison that decides the verdict is baseline versus the cheapest *compacted*
-    # option â€” not baseline versus the overall cheapest. When the baseline already wins,
+    # option — not baseline versus the overall cheapest. When the baseline already wins,
     # those are the same entry and their difference is zero, which would otherwise be
     # reported as "every option ties with not compacting" even though the alternatives
     # might be 50% dearer.
@@ -449,7 +451,7 @@ def fetch_openrouter_pricing(model: str, *, timeout: float = 30.0) -> ModelPrici
             continue
         pricing = cast("dict[str, Any]", entry.get("pricing") or {})
         input_price = float(pricing.get("prompt") or 0.0) * 1_000_000
-        # A missing input_cache_read means the model advertises no cache discount at all â€”
+        # A missing input_cache_read means the model advertises no cache discount at all —
         # 142 of OpenRouter's 417 paid models are in that position. Reading the absent field
         # as zero would price cache reads as free, inventing a 100% discount for exactly the
         # models that have none, and biasing the verdict against compacting them.

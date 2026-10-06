@@ -299,3 +299,26 @@ def test_a_stamp_and_a_nested_payload_settle_together() -> None:
     assert ReasoningStampTokenizer(ESTIMATOR).count_tokens(_serialize_message(message)) == (
         ESTIMATOR.count_tokens(_serialize_message(twin)) + 300
     )
+
+
+@pytest.mark.parametrize("reasoning", [False, True])
+def test_encrypted_application_metadata_remains_counted(reasoning: bool) -> None:
+    content = (
+        Content.from_text_reasoning(text="thinking")
+        if reasoning
+        else Content.from_text(text="tool data")
+    )
+    content.additional_properties["application"] = {"encrypted_content": _blob()}
+    message = Message("assistant", [content])
+    text = _serialize_message(message)
+    assert ReasoningStampTokenizer(ESTIMATOR).count_tokens(text) == ESTIMATOR.count_tokens(text)
+
+
+def test_foundry_shaped_metadata_on_nonreasoning_content_remains_counted() -> None:
+    content = Content.from_text(text="tool data")
+    content.additional_properties["__foundry_reasoning_replay_item__"] = {
+        "type": "reasoning",
+        "encrypted_content": _blob(),
+    }
+    text = _serialize_message(Message("assistant", [content]))
+    assert ReasoningStampTokenizer(ESTIMATOR).count_tokens(text) == ESTIMATOR.count_tokens(text)

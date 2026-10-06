@@ -1563,7 +1563,12 @@ def _excluded_cells(
     incomplete = {
         cell.strategy
         for cell in cells
-        if any(record.turns_completed < record.turns_total for record in cell.records)
+        if any(
+            record.turns_completed < record.turns_total
+            or record.error is not None
+            or record.summarizer_failures > 0
+            for record in cell.records
+        )
     }
     oversized = {cell.strategy for cell in cells if cell.disqualified > 0}
     diverged = {control} if _control_message_gap(cells, control) is not None else set[str]()
@@ -3292,7 +3297,7 @@ def _exclusion_notes(
     if incomplete:
         lines += [
             "",
-            f"Excluded from the verdict ({len(incomplete)} did not finish): "
+            f"Excluded from the verdict ({len(incomplete)} failed or incomplete): "
             + ", ".join(sorted(incomplete)),
         ]
     if oversized:

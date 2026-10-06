@@ -62,7 +62,7 @@ class TiktokenTokenizer:
 class ReasoningStampTokenizer:
     """Count serialized messages with replayed reasoning at its stamped token count.
 
-    Remove reasoning stamps and nested ``encrypted_content`` from content properties
+    Remove reasoning stamps and the Foundry reasoning replay payload from content properties
     before counting text, then add the stamped totals. Clear-text replay content stays
     counted; strings without either marker or without a message's ``contents`` list
     pass through unchanged.
@@ -130,27 +130,18 @@ def _settle_for_count(text: str) -> tuple[str | None, int]:
             changed = True
             if isinstance(stamp, int) and not isinstance(stamp, bool):
                 declared += max(stamp, 0)
-        if _drop_opaque(typed):
+        replay = typed.get("__foundry_reasoning_replay_item__")
+        if (
+            cast("dict[str, Any]", entry).get("type") == "text_reasoning"
+            and isinstance(replay, dict)
+            and cast("dict[str, Any]", replay).get("type") == "reasoning"
+            and _OPAQUE_KEY in replay
+        ):
+            cast("dict[str, Any]", replay).pop(_OPAQUE_KEY)
             changed = True
     if not changed:
         return None, 0
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str), declared
-
-
-def _drop_opaque(value: Any) -> bool:
-    """Remove every ``encrypted_content`` member below ``value`` in place; say whether any went."""
-    dropped = False
-    if isinstance(value, dict):
-        entries = cast("dict[str, Any]", value)
-        if _OPAQUE_KEY in entries:
-            del entries[_OPAQUE_KEY]
-            dropped = True
-        for item in entries.values():
-            dropped = _drop_opaque(item) or dropped
-    elif isinstance(value, list):
-        for item in cast("list[Any]", value):
-            dropped = _drop_opaque(item) or dropped
-    return dropped
 
 
 def stamp_reasoning_tokens(messages: Iterable[Message], reasoning_tokens: int) -> bool:

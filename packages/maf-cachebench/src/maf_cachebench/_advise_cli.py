@@ -232,7 +232,7 @@ def _render(verdict: Verdict, pricing: ModelPricing, model: str) -> str:
         lines.append("Cost cannot separate these strategies on this model.")
     elif verdict.recommended == verdict.baseline.strategy:
         lines.append(
-            "Compaction does not pay for itself here â€” keep it off except as an overflow guard."
+            "Compaction does not pay for itself here — keep it off except as an overflow guard."
         )
     else:
         lines.append(
