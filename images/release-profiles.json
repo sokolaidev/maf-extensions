@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux/amd64",
+  "registryPrefix": "ghcr.io/sokolaidev/maf-extensions",
+  "profiles": [
+    "bicep",
+    "bicep-prepared",
+    "sbx-bicep",
+    "diagram",
+    "drawio-sandbox",
+    "drawio-export",
+    "terraform-random",
+    "opentofu-random",
+    "terraform-prepared",
+    "opentofu-prepared",
+    "hyperlight",
+    "egress-proxy"
+  ]
+}

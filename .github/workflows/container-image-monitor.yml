@@ -1,0 +1,162 @@
+name: Container image monitor
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Container image release]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-image-monitor
+  queue: max
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  begin:
+    if: github.repository == 'sokolaidev/maf-extensions' && github.ref == 'refs/heads/main' && vars.CONTAINER_IMAGE_MONITOR_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: container-security-catalogue
+      queue: max
+      cancel-in-progress: false
+    outputs:
+      has_targets: ${{ steps.begin.outputs.has_targets }}
+      matrix: ${{ steps.begin.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Record the running attempt before scanners start
+        id: begin
+        run: uv run --locked python scripts/container_release_monitor.py begin --directory "$RUNNER_TEMP/monitor"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: monitor-plan
+          path: ${{ runner.temp }}/monitor/plan.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  scan:
+    needs: begin
+    if: needs.begin.outputs.has_targets == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.begin.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: monitor-plan
+          path: ${{ runner.temp }}/monitor
+      - name: Install pinned scanners
+        run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
+      - name: Assess every planned digest including unfixed findings
+        env:
+          BATCH: ${{ matrix.batch }}
+        run: uv run --locked python scripts/container_release_monitor.py scan --directory "$RUNNER_TEMP/monitor" --batch "$BATCH"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: monitor-reports-${{ matrix.batch }}
+          path: ${{ runner.temp }}/monitor/reports/
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
+
+  finish:
+    needs: [begin, scan]
+    if: always() && needs.begin.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    concurrency:
+      group: container-security-catalogue
+      queue: max
+      cancel-in-progress: false
+    outputs:
+      attention: ${{ steps.finish.outputs.attention }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: monitor-plan
+          path: ${{ runner.temp }}/monitor
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: monitor-reports-*
+          path: ${{ runner.temp }}/monitor/reports
+          merge-multiple: true
+      - name: Retain evidence and commit outcomes including missing workers
+        id: finish
+        run: uv run --locked python scripts/container_release_monitor.py finish --directory "$RUNNER_TEMP/monitor"
+
+  result:
+    needs: [begin, scan, finish]
+    if: always() && needs.begin.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail visibly when assessment or durable delivery needs attention
+        env:
+          BEGIN: ${{ needs.begin.result }}
+          SCAN: ${{ needs.scan.result }}
+          FINISH: ${{ needs.finish.result }}
+          ATTENTION: ${{ needs.finish.outputs.attention }}
+        run: |
+          test "$BEGIN" = success
+          test "$SCAN" = success || test "$SCAN" = skipped
+          test "$FINISH" = success
+          test "$ATTENTION" = false
+
+  report-failure:
+    needs: [begin, scan, finish, result]
+    if: always() && (needs.begin.result == 'failure' || needs.scan.result == 'failure' || needs.finish.result == 'failure' || needs.result.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Open or notify the published-image monitoring tracker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- container-image-monitor-failure-tracker -->'
+          --title 'Published container image monitoring needs attention'
+          --reproduce 'Inspect the linked attempt and immutable image-monitor evidence release. Re-run all jobs or dispatch container-image-monitor.yml from main; a failed-jobs-only rerun cannot reuse an earlier scan plan.'
+          --expected 'Every actively monitored exact digest receives a complete fresh assessment with no High or Critical findings, including unfixed findings, and its reports are durably retained before the catalogue records the outcome.'
+          --context 'Package versions below describe the monitoring checkout, not compatibility with the affected images. Use the catalogue and retained scan evidence for exact image digests, release state, scanner failures and findings.'
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-drawio maf-sandbox-hyperlight

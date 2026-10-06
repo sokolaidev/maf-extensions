@@ -194,6 +194,14 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
                 "maf-sandbox-drawio",
                 "maf-sandbox-hyperlight",
             },
+            "container-image-monitor.yml": {
+                "maf-sandbox",
+                "maf-sandbox-docker",
+                "maf-sandbox-bicep",
+                "maf-sandbox-terraform",
+                "maf-sandbox-drawio",
+                "maf-sandbox-hyperlight",
+            },
         }[name]
         for metadata in (ROOT / "packages").glob("*/pyproject.toml"):
             project = tomllib.loads(metadata.read_text(encoding="utf-8"))["project"]
