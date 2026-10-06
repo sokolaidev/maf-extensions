@@ -1,16 +1,7 @@
-"""Per-seed results, written when they exist rather than when the cell ends.
+"""Append each seed's scored result immediately so completed work survives interruption.
 
-A cell is five strategies times ``--repeats`` seeds and runs for hours, and its table was
-printed only once every one of them had finished. So anything that stopped the process in
-between threw away every seed that had already completed and already been paid for. That is
-not hypothetical: the 60,000/0.86 cell ran all fifteen strategy-seeds over three and a half
-hours, died before printing, and left nothing at all behind.
-
-A seed's result is therefore appended here the moment it is scored. The record carries the
-scored numbers rather than a reference to the objects that produced them, because those
-objects are what the run cannot keep: the scenario is salted per seed and dies with the
-process, and re-scoring later would need it. What is stored is what the table reads, so a
-table rebuilt from the file is the same aggregation over the same inputs as the live one.
+Records retain the inputs used by the report, allowing the same aggregation without
+recreating the salted scenario.
 """
 
 from __future__ import annotations

@@ -3964,6 +3964,9 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         raise SystemExit(
             "A provider is required, unless --from-jsonl is rebuilding a table from a results file."
         )
+    for name in ("repeats", "probe_repeats", "combined_repeats"):
+        if getattr(args, name) <= 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be greater than 0.")
     provider, model_override = parse_provider_selector(args.provider)
     if provider not in provider_names():
         raise SystemExit(f"Unknown provider {provider!r}. Available: {', '.join(provider_names())}")

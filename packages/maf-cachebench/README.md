@@ -36,7 +36,7 @@ A provider is selected as `provider` or `provider:model`, so two models on one p
 | Provider | Variables |
 |---|---|
 | `azure` | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_CHAT_COMPLETION_MODEL` |
-| `azure-responses` | the same variables, through the Responses API |
+| `azure-responses` | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_RESPONSES_MODEL`, and a working `DefaultAzureCredential` (Entra authentication) |
 | `foundry` | `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_MODEL`, and a working `DefaultAzureCredential` |
 | `openrouter` | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`; pin `OPENROUTER_PROVIDER_ORDER`, or you measure the router |
 | `mistral` | `MISTRAL_API_KEY`, `MISTRAL_CHAT_MODEL` |

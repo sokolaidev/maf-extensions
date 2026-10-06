@@ -833,3 +833,30 @@ def test_outputs_round_trip(tmp_path: Path) -> None:
     header = summary_path.read_text(encoding="utf-8").splitlines()[0]
     assert "cache_hit_ratio" in header
     assert "effective_input_tokens" in header
+
+
+@pytest.mark.parametrize("turns", [1, 3])
+@pytest.mark.parametrize("tool_call_every", [0, 1])
+async def test_final_prompt_estimate_matches_last_replay_request(
+    turns: int, tool_call_every: int
+) -> None:
+    transcript = build_transcript(
+        name="t",
+        turns=turns,
+        salt="s",
+        tool_call_every=tool_call_every,
+        assistant_tokens=3000,
+    )
+    sent: list[list[Message]] = []
+
+    async def capture(messages: Sequence[Message]) -> CallOutcome:
+        sent.append(list(messages))
+        return CallOutcome(latency_ms=1.0)
+
+    await run_cell(
+        cell=_cell(), transcript=transcript, strategy=None, tokenizer=TOKENIZER, caller=capture
+    )
+    final_text = "".join(
+        str(content.text or "") for message in sent[-1] for content in message.contents
+    )
+    assert transcript.approx_final_prompt_tokens == TOKENIZER.count_tokens(final_text)

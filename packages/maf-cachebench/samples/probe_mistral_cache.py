@@ -1,4 +1,7 @@
-"""Probe whether a Mistral deployment reports prompt-cache hits, and how steadily."""
+"""Compare a Mistral deployment's cache hits with and without a prompt cache key.
+
+Set MISTRAL_API_KEY and optionally pass the model name as the first argument.
+"""
 
 import json
 import os
@@ -6,21 +9,6 @@ import sys
 import time
 
 import httpx
-
-"""Probe whether Mistral prompt caching engages, and whether prompt_cache_key is the switch.
-
-La Plateforme's caching is documented as opt-in: requests sharing a prefix only get the
-cached portion (billed at 10% of input) when they carry the same `prompt_cache_key`. That
-claim is exactly what cachebench's Mistral provider depends on, so it is worth confirming
-directly rather than inferring from a flat 0% hit rate.
-
-The probe runs the same prefix twice: once with no key, once with a fixed key. If the
-documented behavior holds, only the second round reports
-`usage.prompt_tokens_details.cached_tokens`.
-
-    MISTRAL_API_KEY=... python probe_mistral_cache.py                     # mistral-small-latest
-    MISTRAL_API_KEY=... python probe_mistral_cache.py mistral-large-latest
-"""
 
 API_KEY = os.environ.get("MISTRAL_API_KEY")
 MODEL = (
@@ -93,9 +81,7 @@ def main() -> int:
     print(f"  cached_tokens reported without a key: {without}")
     print(f"  cached_tokens reported with a key:    {with_key}")
     if with_key and not without:
-        print(
-            "  -> caching is opt-in; prompt_cache_key is the switch (cachebench is correct to send it)"
-        )
+        print("  -> cache hits appeared only with a key; pass --prompt-cache-key to cachebench")
     elif with_key and without:
         print("  -> caching is automatic; the key is harmless but not required")
     elif not with_key and not without:

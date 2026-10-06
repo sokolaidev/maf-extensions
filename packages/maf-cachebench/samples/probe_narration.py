@@ -165,10 +165,10 @@ async def _measure(
         # Every probe repeat is its own reading of one snapshot, so each is a sample here.
         # A configuration whose repeats disagree is unusable whether the disagreement came
         # from a fresh conversation or from asking the same one twice.
-        for repeat, outcomes in enumerate(score_samples(outcome, scenario), start=1):
+        for sample_index, outcomes in enumerate(score_samples(outcome, scenario), start=1):
             score = RecallScore(
                 outcomes=outcomes,
-                answer=chr(10).join(outcome.sample(repeat)[1]),
+                answer=chr(10).join(outcome.sample(sample_index)[1]),
                 messages_left=outcome.messages_left,
                 messages_total=outcome.messages_peak,
                 contradictions=scenario.contradictions,

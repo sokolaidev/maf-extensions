@@ -1,14 +1,6 @@
-"""Token counters used for compaction budgets and the local prefix oracle.
+"""Token counters for compaction budgets and the local prefix oracle.
 
-The default ``CharacterEstimatorTokenizer`` assumes 4 chars/token over serialized JSON,
-which runs roughly 2x a real BPE count for this benchmark's content. That is harmless when
-comparing strategies at small sizes, but at 100k-plus prompts it moves a compaction
-threshold by six figures -- so large runs should count real tokens.
-
-Whichever counter a run selects, :func:`build_tokenizer` hands it back inside
-:class:`ReasoningStampTokenizer`, so that the reasoning a provider bills on every replay of
-an encrypted payload is counted at the size the provider reports rather than at zero. That
-class documents the accounting.
+``build_tokenizer`` wraps the selected text counter with replayed-reasoning accounting.
 """
 
 from __future__ import annotations
@@ -68,51 +60,12 @@ class TiktokenTokenizer:
 
 
 class ReasoningStampTokenizer:
-    """Count a serialized message as the provider bills it, replayed reasoning included.
+    """Count serialized messages with replayed reasoning at its stamped token count.
 
-    **What the framework counts.** ``agent_framework._compaction._serialize_message`` is what
-    every compaction strategy hands the tokenizer, and it excludes the opaque reasoning payload
-    a provider returns with ``protected_data`` (an encrypted Responses item, an Anthropic
-    signature) while keeping any clear-text reasoning the provider replays as text. So a
-    replayed encrypted reasoning item counts as zero. The provider does not bill it at zero:
-    it bills the decrypted reasoning, about 300 tokens per assistant call on gpt-5.6-luna.
-    Nothing on the message says how many that is -- the count arrives on the response's usage
-    as ``reasoning_output_token_count``, not on the content -- so on a conversation with ~38
-    assistant calls in the prompt the framework's count runs about 11k tokens, roughly 19%,
-    under what the provider bills, and every threshold in this package is a fraction of that
-    count: a trigger labelled 0.80 fires near 0.99 of billed.
-
-    **What this does.** A run stamps each response's reasoning count on the content carrying
-    its payload (:func:`stamp_reasoning_tokens`). The framework keeps ``additional_properties``
-    in the string it counts, so the stamp travels with the message. When the string carries a
-    stamp this wrapper parses it once, removes every stamp from the ``contents`` entries, counts
-    the re-serialized message with the wrapped tokenizer -- the same call ``_serialize_message``
-    makes (``ensure_ascii=False, sort_keys=True, default=str``) -- and adds the stamps' total.
-    The stamp itself is never counted and the replayed reasoning is counted at what the provider
-    reports; the residual is the framing the provider puts around a replayed item, a few tokens
-    per call. A string with no stamp, or one that is not a serialized message with a
-    ``contents`` list, goes to the wrapped tokenizer unchanged, so every message on a model
-    that does not reason, and every user, tool and plain assistant message on one that does,
-    counts exactly as the framework would count it alone.
-
-    **The payload the framework misses.** The framework excludes ``protected_data`` and the
-    ``encrypted_content`` member at the top level of a content's ``additional_properties``, and
-    nothing below that. The Foundry client keeps a copy of the whole replayed reasoning item
-    under one key of those properties, ``__foundry_reasoning_replay_item__``, with the encrypted
-    payload inside it, so on gpt-5.6-luna every assistant message is counted with its base64
-    payload again: a reply of 416 visible characters serialized to 2,214 and counted at 1,128
-    o200k tokens against about 110 billed, measured 5 October 2026 on agent-framework-core
-    1.20.0 and agent-framework-foundry 1.14.0. Every compaction threshold in this package is a
-    fraction of that count, so the anchored rows shed assistant turns one after another on a
-    prompt a fifth under the window. This wrapper therefore also drops every ``encrypted_content``
-    member at any depth under a content's ``additional_properties`` before counting, which is
-    the framework's own rule applied where the framework does not apply it. Clear-text members
-    of the replayed item -- its summary and content lists -- stay counted, as the framework
-    counts them.
-
-    **Cost.** A message without a stamp pays one substring scan and the wrapped count of the
-    original string object. A message with one pays a ``json.loads`` and a ``json.dumps`` on
-    top, a few microseconds beside tiktoken's hundreds for the same string.
+    Remove reasoning stamps and nested ``encrypted_content`` from content properties
+    before counting text, then add the stamped totals. Clear-text replay content stays
+    counted; strings without either marker or without a message's ``contents`` list
+    pass through unchanged.
     """
 
     def __init__(self, base: TokenizerProtocol) -> None:
@@ -131,7 +84,7 @@ class ReasoningStampTokenizer:
 
         Returns:
             The wrapped tokenizer's count of the re-serialized message plus the stamped
-            reasoning token counts; or its count of ``text`` itself when there is no stamp.
+            reasoning token counts; unchanged when there are no stamps or opaque payloads.
         """
         if _STAMP_MARKER not in text and _OPAQUE_MARKER not in text:
             return self.base.count_tokens(text)

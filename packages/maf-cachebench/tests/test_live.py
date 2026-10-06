@@ -8273,13 +8273,7 @@ async def test_the_record_repeat_setting_reaches_the_run_that_installs_the_middl
 async def test_every_finished_seed_is_on_disk_before_the_cell_is(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A cell killed partway must leave behind every seed it had already completed.
-
-    This is the whole reason the file exists. The 60,000/0.86 cell ran all fifteen
-    strategy-seeds over three and a half hours, died before printing its table, and left
-    nothing at all -- work that had already been paid for. Writing when the cell ends cannot
-    survive that, so a record is written and closed as each seed is scored.
-    """
+    """A cell killed partway must retain every completed seed on disk."""
     _stub_provider(monkeypatch)
     path = tmp_path / "results.jsonl"
     live = run_live
@@ -10025,3 +10019,21 @@ async def test_a_strategys_carried_decisions_are_restored_before_every_probe(
     )
     assert deciding.restored == len(outcome.probes)
     assert len({probe.prompt_text.rsplit(chr(10), 1)[0] for probe in outcome.probes}) == 1
+
+
+@pytest.mark.parametrize("option", ["--repeats", "--probe-repeats", "--combined-repeats"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_live_cli_rejects_nonpositive_repeats_before_setup(
+    monkeypatch: pytest.MonkeyPatch, option: str, value: str, dry_run: bool
+) -> None:
+    def unexpected_setup(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Invalid repeats must be rejected before tokenizer/provider setup or pricing")
+
+    for name in ("build_tokenizer", "build_provider", "_resolve_pricing"):
+        monkeypatch.setattr(f"maf_cachebench._live_cli.{name}", unexpected_setup)
+    argv = ["azure", option, value]
+    if dry_run:
+        argv.append("--dry-run")
+    with pytest.raises(SystemExit, match=f"{option} must be greater than 0"):
+        await run_live_comparison(build_parser().parse_args(argv))

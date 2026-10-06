@@ -182,10 +182,11 @@ def recommend(
 
     if not eligible:
         chosen = base
+        saving = (base.cost - cheapest_overall.cost) / base.cost if base.cost > 0 else 0.0
         rationale = (
             f"No compaction strategy retained {min_correctness:.0%} of the control's correctness. "
             f"The cheapest, {cheapest_overall.strategy!r}, saves "
-            f"{(base.cost - cheapest_overall.cost) / base.cost:.0%} but answers at "
+            f"{saving:.0%} but answers at "
             f"{relative_correctness(cheapest_overall, base):.0%} of the control. Compact only "
             f"to avoid "
             "overflowing the context window, not to save money."

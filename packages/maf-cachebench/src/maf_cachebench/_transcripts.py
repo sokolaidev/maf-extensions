@@ -256,7 +256,8 @@ def build_transcript(
 
     all_messages = (
         system,
-        *(message for turn in scripted for message in (*turn.request, *turn.reply)),
+        *(message for turn in scripted[:-1] for message in (*turn.request, *turn.reply)),
+        *scripted[-1].request,
     )
     approx_tokens = resolved_tokenizer.count_tokens(
         "".join(str(content.text or "") for message in all_messages for content in message.contents)

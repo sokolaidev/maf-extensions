@@ -213,6 +213,8 @@ def _render(verdict: JointVerdict, pricing: ModelPricing, model: str, *, show_an
         cost_delta = (
             "-"
             if outcome.strategy == base.strategy
+            else "n/a"
+            if base.cost <= 0
             else f"{(outcome.cost - base.cost) / base.cost:+.0%}"
         )
         rel = (

@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from maf_cachebench import JointOutcome, PlantedFact, RecallScore, recommend, score_answer
+from maf_cachebench._advisor import ModelPricing
 from maf_cachebench._summary import relative_correctness
+from maf_cachebench._summary_cli import _render
 
 FACTS = tuple(PlantedFact(f"F{i}", "requirement", 1, "") for i in range(10))
 
@@ -101,3 +103,31 @@ def test_verdict_is_withheld_when_the_control_itself_fails() -> None:
 
     assert verdict.recommended == "none"
     assert "not a usable reference" in verdict.rationale
+
+
+@pytest.mark.parametrize("baseline_cost", [0.0, -1.0])
+@pytest.mark.parametrize("recalled", [5, 10])
+def test_nonpositive_baseline_cost_has_no_saving(baseline_cost: float, recalled: int) -> None:
+    verdict = recommend(
+        [
+            _outcome("none", cost=baseline_cost, recalled=10),
+            _outcome("truncation", cost=0.0, recalled=recalled),
+        ]
+    )
+    assert verdict.recommended == "none"
+    assert verdict.saving_fraction == 0.0
+    if recalled == 5:
+        assert "saves 0%" in verdict.rationale
+
+
+@pytest.mark.parametrize("baseline_cost", [0.0, -1.0])
+def test_render_nonpositive_baseline_cost_as_unavailable(baseline_cost: float) -> None:
+    verdict = recommend(
+        [
+            _outcome("none", cost=baseline_cost, recalled=10),
+            _outcome("truncation", cost=0.0, recalled=10),
+        ]
+    )
+    text = _render(verdict, ModelPricing(1.0, 0.1), "stub", show_answers=False)
+    row = next(line for line in text.splitlines() if line.startswith("truncation"))
+    assert row.split()[3] == "n/a"

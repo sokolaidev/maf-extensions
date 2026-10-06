@@ -37,6 +37,9 @@ A provider is selected as `provider` or `provider:model`. The model rides in the
 AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_CHAT_COMPLETION_MODEL
 #   optional: AZURE_OPENAI_API_VERSION, AZURE_OPENAI_MODEL (fallback for the model name)
 
+# azure-responses — Responses API on the resource endpoint, with DefaultAzureCredential
+AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_RESPONSES_MODEL
+
 # foundry — also needs a working DefaultAzureCredential (`az login`, or a managed identity
 #   when deployed). A project endpoint on its own is rejected by the client.
 FOUNDRY_PROJECT_ENDPOINT, FOUNDRY_MODEL
