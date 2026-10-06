@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from threading import Event
+from typing import Any, cast
 
 import pytest
 from agent_framework import (
@@ -197,7 +198,11 @@ def test_restoration_finishes_before_concurrent_binding_is_published():
     assert records == [a.provenance]
     assert a.provenance.integrity_of("notes.txt") is SourceIntegrity.UNTRUSTED
     assert a.provenance.integrity_of("host.txt") is SourceIntegrity.TRUSTED
-    listing = asyncio.run(a.caller_context().list_files(a.store))
+
+    async def list_restored():
+        return await a.caller_context().list_files(a.store)
+
+    listing = asyncio.run(list_restored())
     assert listing[0].integrity is SourceIntegrity.UNTRUSTED
 
 
@@ -232,7 +237,7 @@ def test_restoration_rejects_invalid_or_shared_records_and_ambiguous_floor():
         )
     invalid = ScopedFileStores(
         lambda scope, thread: InMemoryAgentFileStore(),
-        provenance_factory=lambda scope, thread, store: None,
+        provenance_factory=lambda scope, thread, store: cast("Any", None),
     )
     with pytest.raises(ValueError, match="distinct provenance"):
         invalid.bind(scope="tenant", thread_id="thread")
