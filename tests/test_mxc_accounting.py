@@ -254,6 +254,21 @@ def test_audit_and_reopen_refuse_corrupt_accounting_without_repair(tmp_path, cor
         store.SharedStore(root, "one", PROFILE, LIMITS)
 
 
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_missing_ledger_refuses_audit_and_reopen_without_repair(tmp_path, upgrade):
+    root = tmp_path / "db"
+    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+        db.begin("a", b"code")
+        db.db.execute("DROP TABLE logical_usage")
+        before = (root / "shared.sqlite").read_bytes()
+        with pytest.raises(store.Refused, match="missing logical accounting table"):
+            db.audit_usage()
+        assert (root / "shared.sqlite").read_bytes() == before
+    with pytest.raises(store.Refused, match="missing logical accounting table"):
+        store.SharedStore(root, "one", PROFILE, LIMITS, upgrade_accounting=upgrade)
+    assert (root / "shared.sqlite").read_bytes() == before
+
+
 @pytest.mark.parametrize(
     ("table", "column"),
     [

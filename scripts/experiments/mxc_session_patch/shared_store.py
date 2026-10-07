@@ -185,10 +185,10 @@ class SharedStore:
                     except sqlite3.DatabaseError as error:
                         raise Refused("unsupported or corrupt store format") from error
                     upgrading = row is not None and row[0] == 3 and upgrade_accounting
+                    if row is not None and row[0] == 3 and not upgrade_accounting:
+                        raise Refused("format 3 requires explicit upgrade")
                     if row is None or (row[0] != VERSION and not upgrading):
-                        raise Refused(
-                            "unsupported or corrupt store format; explicit upgrade required"
-                        )
+                        raise Refused("unsupported or corrupt store format")
                 self.db.execute("PRAGMA journal_mode=DELETE")
                 self.db.execute("PRAGMA synchronous=FULL")
                 self.db.execute("PRAGMA foreign_keys=ON")

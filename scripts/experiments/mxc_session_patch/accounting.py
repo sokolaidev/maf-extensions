@@ -129,6 +129,13 @@ def initialize(db: sqlite3.Connection) -> None:
 
 def audit(db: sqlite3.Connection) -> None:
     """Refuse inconsistent totals or trigger definitions; never repair them implicitly."""
+    if (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='logical_usage'"
+        ).fetchone()
+        is None
+    ):
+        raise Refused("missing logical accounting table")
     definitions = dict(
         db.execute(
             "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'logical_%'"
