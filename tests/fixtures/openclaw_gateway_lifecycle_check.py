@@ -404,7 +404,7 @@ def verify_retirement(
     responses = [
         r for r in evidence if r.get("event") == "response" and r.get("method") == "DELETE"
     ]
-    settled = [r for r in evidence if r.get("event") == "settled" and r.get("method") == "DELETE"]
+    settled = [r for r in evidence if r.get("event") == "retired"]
     require(
         len(deletes) == len(responses) == len(settled) == 1,
         "Missing unique targeted DELETE request, acceptance or settlement",
@@ -423,8 +423,10 @@ def verify_retirement(
         < observed.get("requested_ns", 0)
         <= deletion.get("time_ns", 0)
         < response.get("time_ns", 0)
-        <= end.get("time_ns", 0)
         < observed.get("acknowledged_ns", 0)
+        <= observed.get("observed_ns", 0)
+        and response.get("time_ns", 0) <= end.get("time_ns", 0) < observed.get("observed_ns", 0)
+        and end.get("completed") is True
         and response.get("status") == 200
         and end.get("session_registered") is False
         and end.get("sessions") == 1
@@ -1249,6 +1251,14 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         and deleted.get("key") == targets[index]["key"],
                         "Gateway did not acknowledge deletion of the selected session",
                     )
+                    wait_for(
+                        lambda: any(
+                            r.get("event") == "retired" and r.get("session") == sessions[index]
+                            for r in records(transport)[before_delete:]
+                        ),
+                        "Selected MCP registration did not finish retiring",
+                        30,
+                    )
                     absent = not docker("ps", "-aq", "--filter", f"id={container}")
                     observation = {
                         "requested_ns": requested_ns,
@@ -1265,6 +1275,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         and owned() == [container]
                         and "bicep" in docker("top", container, "-eo", "pid,comm"),
                     }
+                    observation["observed_ns"] = time.time_ns()
                     evidence = records(transport)[before_delete:]
                     retirement_reports[label] = verify_retirement(
                         evidence,

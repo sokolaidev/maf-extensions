@@ -133,6 +133,11 @@ class ObserveHTTP:
         drop = False
         withheld = bytearray()
         original_status = None
+        retiring_record = (
+            self.app.sessions.get(session.decode("ascii"))
+            if method == "DELETE" and session is not None
+            else None
+        )
         if method == "DELETE":
             self.record(event="delete_requested", exchange=exchange, session=sid)
 
@@ -224,17 +229,26 @@ class ObserveHTTP:
                 # Raise outside the SDK handler so its error response is withheld too.
                 raise RuntimeError("Qualification intentionally withheld the tool result")
         finally:
-            retirement = {}
-            if method == "DELETE" and session is not None:
-                active = self.app.service.active
-                retirement = {
-                    "session_registered": session.decode("ascii") in self.app.sessions,
-                    "active_session": digest(active[0].session_id.encode().hex())
-                    if active
-                    else None,
-                }
+            if retiring_record is not None and retiring_record.retiring is not None:
+
+                def retired(task):
+                    active = self.app.service.active
+                    self.record(
+                        event="retired",
+                        exchange=exchange,
+                        session=sid,
+                        completed=not task.cancelled() and task.exception() is None,
+                        session_registered=session.decode("ascii") in self.app.sessions,
+                        sessions=len(self.app.sessions),
+                        active=active is not None,
+                        active_session=digest(active[0].session_id.encode().hex())
+                        if active
+                        else None,
+                        poisoned=self.app.service.poisoned,
+                    )
+
+                retiring_record.retiring.add_done_callback(retired)
             self.record(
-                **retirement,
                 event="settled",
                 exchange=exchange,
                 method=method,

@@ -1385,9 +1385,9 @@ def retirement_evidence(active):
         dict(common, event="response", method="DELETE", status=200, time_ns=6),
         dict(
             common,
-            event="settled",
-            method="DELETE",
-            time_ns=7,
+            event="retired",
+            time_ns=9,
+            completed=True,
             session_registered=False,
             sessions=1,
             poisoned=False,
@@ -1421,6 +1421,7 @@ def retirement_evidence(active):
     observed = {
         "requested_ns": 2,
         "acknowledged_ns": 8,
+        "observed_ns": 10,
         "deleted": True,
         "same_gateway": True,
         "same_service": True,
@@ -1481,6 +1482,7 @@ def test_retirement_rejects_missing_process_and_container_proof(active, field):
 @pytest.mark.parametrize(
     "field,value",
     [
+        ("completed", False),
         ("session_registered", True),
         ("sessions", 2),
         ("poisoned", True),
@@ -1547,13 +1549,22 @@ def test_delete_observer_records_actual_registration_and_active_session(tmp_path
     context = SimpleNamespace(session_id="active")
 
     class App:
-        sessions = {"idle": None, "active": None}
+        sessions = {
+            "idle": SimpleNamespace(retiring=None),
+            "active": SimpleNamespace(retiring=None),
+        }
         service = SimpleNamespace(active=(context, None), poisoned=False)
 
         async def __call__(self, scope, receive, send):
-            self.sessions.pop("active" if active else "idle")
-            if active:
-                self.service.active = None
+            selected = "active" if active else "idle"
+
+            async def retire():
+                await asyncio.sleep(0)
+                self.sessions.pop(selected)
+                if active:
+                    self.service.active = None
+
+            self.sessions[selected].retiring = asyncio.create_task(retire())
             await send({"type": "http.response.start", "status": 200})
             await send({"type": "http.response.body", "body": b""})
 
@@ -1563,8 +1574,8 @@ def test_delete_observer_records_actual_registration_and_active_session(tmp_path
     async def noop(*args):
         return {}
 
-    asyncio.run(
-        app(
+    async def scenario():
+        await app(
             {
                 "type": "http",
                 "method": "DELETE",
@@ -1573,9 +1584,15 @@ def test_delete_observer_records_actual_registration_and_active_session(tmp_path
             noop,
             noop,
         )
-    )
+        rows = checker.records(path)
+        assert rows[-1]["event"] == "settled" and rows[-1]["sessions"] == 2
+        record = app.app.sessions["active" if active else "idle"]
+        await record.retiring
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
     rows = checker.records(path)
-    assert [r["event"] for r in rows] == ["delete_requested", "response", "settled"]
+    assert [r["event"] for r in rows] == ["delete_requested", "response", "settled", "retired"]
     assert len({r["exchange"] for r in rows}) == 1
     assert rows[-1]["session_registered"] is False and rows[-1]["sessions"] == 1
     assert rows[-1]["active_session"] == (None if active else observer.digest(b"active".hex()))
