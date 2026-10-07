@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from .host_call import bounded_result_size, execute
@@ -18,6 +19,7 @@ def call(
     startup: Path,
     scratch: ScratchLimits,
     output_limit: int,
+    boundary: Callable[[str], None] = lambda _: None,
 ) -> bytes:
     """Publish before returning; failed calls retain reservations for explicit recovery."""
     if len(code) > 65536 or type(output_limit) is not int or not 0 < output_limit <= CHUNK:
@@ -47,6 +49,7 @@ def call(
         before_start=lambda child: journal.arm(call_id, child),
         checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
     )
-    store.commit(call_id, work / "candidate", result)
-    journal.reclaim(call_id)
+    store.commit(call_id, work / "candidate", result, boundary)
+    journal.reclaim(call_id, boundary)
+    boundary("before_ack")
     return result
