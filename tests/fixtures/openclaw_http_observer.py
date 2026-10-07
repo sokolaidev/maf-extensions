@@ -133,6 +133,8 @@ class ObserveHTTP:
         drop = False
         withheld = bytearray()
         original_status = None
+        if method == "DELETE":
+            self.record(event="delete_requested", exchange=exchange, session=sid)
 
         async def read():
             nonlocal observed, drop
@@ -222,7 +224,17 @@ class ObserveHTTP:
                 # Raise outside the SDK handler so its error response is withheld too.
                 raise RuntimeError("Qualification intentionally withheld the tool result")
         finally:
+            retirement = {}
+            if method == "DELETE" and session is not None:
+                active = self.app.service.active
+                retirement = {
+                    "session_registered": session.decode("ascii") in self.app.sessions,
+                    "active_session": digest(active[0].session_id.encode().hex())
+                    if active
+                    else None,
+                }
             self.record(
+                **retirement,
                 event="settled",
                 exchange=exchange,
                 method=method,
