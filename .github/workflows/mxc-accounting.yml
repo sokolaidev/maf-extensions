@@ -1,0 +1,41 @@
+name: MXC accounting scaling
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/mxc-accounting.yml'
+      - 'scripts/experiments/mxc_session_patch/accounting*.py'
+      - 'scripts/experiments/mxc_session_patch/shared_store.py'
+      - 'tests/test_mxc_accounting.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Admission accounting (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Measure retained-history admission and audits
+        shell: bash
+        run: >-
+          uv run --no-project --python 3.12 python
+          -m scripts.experiments.mxc_session_patch.accounting_benchmark
+          --history 0 1000 10000 --samples 50
+          --output "$RUNNER_TEMP/mxc-accounting.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mxc-accounting-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mxc-accounting.json
+          if-no-files-found: error
+          retention-days: 14

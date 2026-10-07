@@ -740,15 +740,19 @@ with SharedStore(Path(sys.argv[1]), 'one', {'runtime':'pinned','policy':'closed'
             assert db.begin("b", b"new") is None
 
 
-@pytest.mark.parametrize("version", [1, 2])
-def test_previous_experimental_format_requires_explicit_migration(tmp_path, version):
+@pytest.mark.parametrize("version", [1, 2, 5, "corrupt", 2.5, None])
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_unsupported_format_is_refused_without_upgrade_instruction(tmp_path, version, upgrade):
     root = tmp_path / "db"
     with store.SharedStore(root, "one", PROFILE, LIMITS, Clock()) as db:
         publish(db, tmp_path / "a")
-        db.db.execute("UPDATE settings SET version=?", (version,))
+        if version is None:
+            db.db.execute("DELETE FROM settings")
+        else:
+            db.db.execute("UPDATE settings SET version=?", (version,))
     before = (root / "shared.sqlite").read_bytes()
-    with pytest.raises(store.Refused, match="format"):
-        store.SharedStore(root, "one", PROFILE, LIMITS, Clock())
+    with pytest.raises(store.Refused, match="^unsupported or corrupt store format$"):
+        store.SharedStore(root, "one", PROFILE, LIMITS, Clock(), upgrade_accounting=upgrade)
     assert (root / "shared.sqlite").read_bytes() == before
 
 
