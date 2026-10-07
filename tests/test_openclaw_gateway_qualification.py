@@ -1621,3 +1621,45 @@ def test_deleted_turn_requires_pinned_gateway_abort_projection():
         )
         == 500
     )
+
+
+@pytest.mark.parametrize("method", ["DELETE", "GET", "POST"])
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_observer_preserves_non_ascii_session_rejection(
+    tmp_path, monkeypatch, method, authenticated
+):
+    monkeypatch.syspath_prepend(str(FIXTURES.parents[1] / "samples/experimental/openclaw_bicep"))
+    workload_http = importlib.import_module("workload_http")
+
+    service = SimpleNamespace(ready=True, poisoned=False, active=None)
+    token = "a" * 64
+    app = workload_http.WorkloadHTTP(service, token, 8765)
+    path = tmp_path / "audit"
+    observed = observer.ObserveHTTP(app, path)
+    headers = [(b"host", app.host), (b"mcp-session-id", b"bad-\xff")]
+    if authenticated:
+        headers.append((b"authorization", app.authorization))
+    scope = {"type": "http", "method": method, "path": "/mcp", "headers": headers}
+
+    async def scenario():
+        async def receive():
+            raise AssertionError("Rejected headers must not read the body")
+
+        responses = []
+        for handler in [app, observed]:
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+
+            await handler(scope, receive, send)
+            responses.append(messages)
+        assert responses[0] == responses[1]
+        assert responses[1][0]["status"] == (404 if authenticated else 401)
+        assert app.sessions == {} and service.active is None and not service.poisoned
+
+    asyncio.run(scenario())
+    rows = checker.records(path)
+    assert rows[-1]["event"] == "settled"
+    assert not any(row["event"] == "retired" for row in rows)
+    assert all(row.get("session") == observer.digest(b"bad-\xff".hex()) for row in rows)

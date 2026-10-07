@@ -134,7 +134,7 @@ class ObserveHTTP:
         withheld = bytearray()
         original_status = None
         retiring_record = (
-            self.app.sessions.get(session.decode("ascii"))
+            self.app.sessions.get(session.decode("ascii", errors="replace"))
             if method == "DELETE" and session is not None
             else None
         )
@@ -239,7 +239,8 @@ class ObserveHTTP:
                         exchange=exchange,
                         session=sid,
                         completed=not task.cancelled() and task.exception() is None,
-                        session_registered=session.decode("ascii") in self.app.sessions,
+                        session_registered=session.decode("ascii", errors="replace")
+                        in self.app.sessions,
                         sessions=len(self.app.sessions),
                         active=active is not None,
                         active_session=digest(active[0].session_id.encode().hex())
