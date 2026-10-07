@@ -33,6 +33,7 @@ on:
       - "maf-sandbox-tui-v*"
       - "maf-sandbox-wslc-v*"
       - "maf-compaction-v*"
+      - "maf-cachebench-v*"
   # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
   workflow_dispatch:
     inputs:
@@ -56,6 +57,7 @@ on:
           - maf-sandbox-tui
           - maf-sandbox-wslc
           - maf-compaction
+          - maf-cachebench
       target:
         description: "Registry"
         required: true

@@ -1,0 +1,152 @@
+"""Measure prompt-cache consistency by sending byte-identical input repeatedly.
+
+Repeated warm observations reveal cache variation independently of prompt changes.
+
+Usage:
+    python probe_cache_stability.py foundry:gpt-5.4-mini
+    python probe_cache_stability.py openrouter:openai/gpt-5.6-luna --calls 12
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import statistics
+from collections.abc import Sequence
+
+from agent_framework import Message
+
+from maf_cachebench import (
+    ProviderCaller,
+    build_provider,
+    parse_provider_selector,
+    prompt_cache_key_options,
+)
+from maf_cachebench._run_identity import new_run_id
+from maf_cachebench._transcripts import TRUE_CHARS_PER_TOKEN, filler_text
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser.
+
+    Returns:
+        A parser for the cache-stability probe.
+    """
+    parser = argparse.ArgumentParser(
+        description="Send one identical prompt repeatedly and watch the cache."
+    )
+    parser.add_argument("provider", help="Provider or provider:model.")
+    parser.add_argument(
+        "--calls", type=int, default=10, help="Identical calls to make. Default 10."
+    )
+    parser.add_argument(
+        "--prompt-tokens",
+        type=int,
+        default=8_000,
+        help="Prompt size in tokens. Well above Azure's 1,024-token minimum cacheable size.",
+    )
+    parser.add_argument(
+        "--no-temperature", action="store_true", help="Omit temperature for models that reject it."
+    )
+    return parser
+
+
+async def run(args: argparse.Namespace) -> int:
+    """Send the same prompt repeatedly and report how steady the cache is.
+
+    Args:
+        args: Parsed command line arguments.
+
+    Returns:
+        A process exit code.
+    """
+    if args.calls < 3:
+        raise SystemExit("--calls must be at least 3 to measure two warm observations.")
+    if args.prompt_tokens <= 0:
+        raise SystemExit("--prompt-tokens must be positive.")
+    provider, model_override = parse_provider_selector(args.provider)
+    runtime = build_provider(
+        provider,
+        temperature=None if args.no_temperature else 0.0,
+        response_max_tokens=16,
+        model=model_override,
+    )
+    # Responses-API clients keep history server-side; pin it off so every call is judged on
+    # the prompt it carries rather than on a conversation the service is holding for us.
+    namespace = new_run_id()
+    extra = dict(prompt_cache_key_options(provider, namespace))
+    if getattr(runtime.client, "STORES_BY_DEFAULT", False):
+        extra["store"] = False
+    caller = ProviderCaller(runtime, extra_options=extra, request_timeout=300.0)
+
+    body = filler_text(11, int(args.prompt_tokens * TRUE_CHARS_PER_TOKEN))
+    messages = [
+        Message(
+            role="system",
+            contents=[f"Probe {namespace}. You are a terse assistant. Reply with one word."],
+        ),
+        Message(role="user", contents=[f"{body}\n\nReply with the single word: acknowledged."]),
+    ]
+
+    print(
+        f"model: {runtime.model}   prompt: ~{args.prompt_tokens:,} tokens   calls: {args.calls}\n"
+    )
+    print(f"{'call':>5}{'input':>9}{'cached':>9}{'hit%':>7}{'ms':>8}")
+    hits: list[tuple[int, float]] = []
+    priming_call: int | None = None
+    for index in range(1, args.calls + 1):
+        outcome = await caller(messages)
+        if outcome.error:
+            print(f"{index:>5}  ERROR {outcome.error[:60]}")
+            continue
+        if priming_call is None:
+            priming_call = index
+        got = outcome.input_tokens
+        cached = outcome.cached_tokens
+        if got is None or got <= 0 or cached is None:
+            input_text = f"{got:,}" if got is not None and got > 0 else "n/a"
+            cached_text = f"{cached:,}" if cached is not None else "n/a"
+            print(f"{index:>5}{input_text:>9}{cached_text:>9}{'n/a':>7}{outcome.latency_ms:>8.0f}")
+            continue
+        hit = cached / got
+        hits.append((index, hit))
+        print(f"{index:>5}{got:>9,}{cached:>9,}{hit:>6.0%}{outcome.latency_ms:>8.0f}")
+
+    warm = [hit for index, hit in hits if priming_call is not None and index > priming_call]
+    if len(warm) < 2:
+        print("\nNot enough usable calls to judge stability.")
+        return 1
+
+    # A successful response can prime the cache even when its usage is unreported.
+    lo, hi = min(warm), max(warm)
+    print(f"\nwarm calls (after priming): {len(warm)}")
+    print(f"hit rate  min {lo:.0%}   median {statistics.median(warm):.0%}   max {hi:.0%}")
+    print(f"spread    {hi - lo:.0%} of the prompt")
+    misses = sum(1 for value in warm if value < 0.5)
+    if misses:
+        print(
+            f"\nINTERMITTENT: {misses} of {len(warm)} warm calls served under half the prompt from cache."
+        )
+        print("Cost measured on this route swings by the full cache discount, so a cost ranking")
+        print("between strategies is not meaningful here no matter how many repeats are run.")
+    elif hi - lo > 0.1:
+        print(f"\nUNSTEADY: warm hit rate moved {hi - lo:.0%} on byte-identical input.")
+    else:
+        print("\nSTEADY: the cache engaged consistently. Cost differences here can be trusted.")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Parse arguments and run the probe.
+
+    Args:
+        argv: Argument vector. Defaults to ``sys.argv[1:]``.
+
+    Returns:
+        A process exit code.
+    """
+    return asyncio.run(run(build_parser().parse_args(argv)))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

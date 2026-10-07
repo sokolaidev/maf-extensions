@@ -80,7 +80,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | User-turn summaries in three modes, bounded by the band share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Composition judged after the record phase, with the chain working to a target | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Chain decisions kept across both lists and restorable by a harness | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
-| The benchmark that produced the measurements | Pending | untracked — arrives as `maf-cachebench` |
+| The benchmark that produced the measurements | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Separating the three user-summary modes by measurement | Not started | untracked |
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |

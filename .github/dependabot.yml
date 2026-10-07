@@ -30,11 +30,17 @@ updates:
         dependency-type: "all"
       - dependency-name: "agent-framework-openai"
         dependency-type: "all"
+      - dependency-name: "agent-framework-foundry"
+        dependency-type: "all"
+      - dependency-name: "agent-framework-mistral"
+        dependency-type: "all"
+      - dependency-name: "agent-framework-ollama"
+        dependency-type: "all"
     commit-message:
       prefix: "chore"
       include: "scope"
-    # Two distributions, so two is every proposal this can have open at once.
-    open-pull-requests-limit: 2
+    # Five distributions, so five is every proposal this can have open at once.
+    open-pull-requests-limit: 5
 
   # Every `uses:` is a commit with its version in a trailing comment, and this moves both, one
   # pull request per action. Ungrouped: a group limited to minor and patch also takes the majors

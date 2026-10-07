@@ -42,6 +42,7 @@ _PACKAGES = {
     "maf-sandbox-wslc": "maf_sandbox_wslc",
     "maf-sandbox-bubblewrap": "maf_sandbox_bubblewrap",
     "maf-compaction": "maf_compaction",
+    "maf-cachebench": "maf_cachebench",
 }
 
 _SARIF = json.dumps(
@@ -874,6 +875,17 @@ def _smoke_maf_compaction() -> str:
     return "record strategy built over an anchored fallback, recall tool minted"
 
 
+def _smoke_maf_cachebench() -> str:
+    from maf_cachebench import TRANSCRIPT_PRESETS, build_strategy, provider_names, strategy_names
+
+    names = strategy_names()
+    assert "none" in names and "tool_and_user_summary_anchored" in names, names
+    assert "mid" in TRANSCRIPT_PRESETS
+    assert "azure" in provider_names()
+    assert callable(build_strategy)
+    return f"{len(names)} strategies registered, {len(TRANSCRIPT_PRESETS)} transcript presets"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -890,6 +902,7 @@ _SMOKES = {
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
     "maf-sandbox-bubblewrap": _smoke_maf_sandbox_bubblewrap,
     "maf-compaction": _smoke_maf_compaction,
+    "maf-cachebench": _smoke_maf_cachebench,
 }
 
 

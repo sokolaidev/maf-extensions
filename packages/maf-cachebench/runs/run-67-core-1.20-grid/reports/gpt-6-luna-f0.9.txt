@@ -1,0 +1,490 @@
+100 seed records from 5 files, in 1 cell(s).
+
+Cell: azure-responses:gpt-6-luna  agent harness  window 120,000  fill 90%  payload 10,631x6 at share 60%  probes 1  combined 5
+  seeds present: anchored 5/1, anchored_min_gain 5/1, anchored_no_assistant 5/1, context_window 5/1, context_window_aggressive 5/1, context_window_lazy 5/1, none 5/1, selective_tool_call 5/1, sliding_window 5/1, summarization 5/1, token_budget_fallback 5/1, token_budget_summarize 5/1, token_budget_tools_first 5/1, token_budget_truncate_first 5/1, token_budget_window_first 5/1, tool_and_user_summary_anchored 5/1, tool_result 5/1, tool_summary_anchored 5/1, truncation 5/1, user_summary_anchored 5/1
+
+Model: gpt-6-luna   agent: harness   probe repeats: 1 (acc1), 5 (acc2)
+Pricing: $0.10/M in, $0.010/M cached, $0.50/M out, $0.125/M cache write (charged on every uncached input token); a request over 272,000 input tokens bills whole at $0.20/M in, $0.020/M cached, $0.75/M out, $0.250/M cache write (charged on every uncached input token)
+Ranking: 5 of 20 rows kept at least 90% of the control's acc1 and are ranked first, cheapest seed$ first; the rest follow below the line.
+
+strategy                         msgs   tok left/peak  snap%  calls          in  seed hit%  probe hit%  run hit%       out  seed in$    seed$   probe$     run$ seed$+-   summ$  vs none$    facts  lost nofetch ignored     acc1  seed+-  rep+-  acc2  rep2+-  vs none   dq     flags
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+anchored_min_gain               67/67 105,307/105,307    88%     45   3,094,987      94.1%       99.8%     96.4%    19,808   $0.0307  $0.0343  $0.0193  $0.0536     12%       -       -6%    53/53     0       0       0    100%      0pp    0pp  100%     0pp     100%   0%NO:temp,NOGAIN:65
+tool_and_user_summary_anchored    62/70   65,243/71,771    54%     46   2,259,982      90.7%       99.5%     93.7%    19,440   $0.0306  $0.0353  $0.0133  $0.0486      6%       -       -3%    53/53     0       0       0    100%      0pp    0pp  100%     0pp     100%   0%NO:temp,FORCED:1,REC:1,RECFORCED:1,RECORDS:1,USERUNDER:58,USERUNDER:77,USERUNDER:83,USERUNDER:85,USERWAIT:28,USERWAIT:3,USERWAIT:9
+tool_summary_anchored           63/71   65,216/72,083    54%     47   2,304,723      91.0%       99.6%     93.9%    18,945   $0.0310  $0.0357  $0.0130  $0.0487      9%       -       -2%    53/53     0       0       0    100%      0pp    0pp  100%     0pp     100%   0%NO:temp,FORCED:1,REC:1,RECFORCED:1,RECORDS:1
+none                            67/67 108,102/108,102    90%     45   3,174,851      94.1%       99.7%     96.4%    22,167   $0.0315  $0.0364  $0.0195  $0.0559      7%       -         -    53/53     0       0       0    100%*     0pp    0pp  100%     0pp        -   0%   NO:temp
+user_summary_anchored           45/68   76,023/89,677    63%     45   2,615,680      90.1%       99.6%     93.4%    18,805   $0.0364  $0.0436  $0.0156  $0.0592      8% $0.0039      +20%    53/53     0       0       1     99%      7pp    0pp  100%     0pp      99%   0%NO:temp,USERCOMPACT:1,USERREPLACED:22,USERREPLACED:23,USERREPLACED:24,USERREPLAY:1,USERSUMMARIES:1,USERSUMMTOKENS:146,USERSUMMTOKENS:155,USERSUMMTOKENS:158,USERSUMMTOKENS:174,USERUNDER:83
+-------------------------------------------------------------------------------------------------------------------------- below 90% of the control's acc1 ---------------------------------------------------------------------------------------------------------------------------
+token_budget_window_first       28/67   36,194/56,307    31%     45   1,339,948      86.1%       89.6%     87.2%    14,870   $0.0236  $0.0268  $0.0138  $0.0405     24%       -      -26%    16/53    37       0       0     31%     24pp    0pp   29%     0pp      31%   0%   NO:temp
+context_window_aggressive       42/67   51,690/56,286    43%     45   1,745,723      85.3%       99.5%     90.3%    19,946   $0.0303  $0.0337  $0.0131  $0.0468      4%       -       -8%    24/53    29       0       0     46%     20pp    0pp   45%     0pp      46%   0%   NO:temp
+anchored                        67/67   97,395/97,395    81%     45   2,892,881      92.0%       99.7%     95.1%    27,391   $0.0332  $0.0374  $0.0216  $0.0590      8%       -       +3%    47/53     6       0       1     88%     17pp    0pp   89%     2pp      88%   0%   NO:temp
+anchored_no_assistant           67/67   97,428/97,428    81%     45   2,900,004      92.0%       99.7%     95.1%    30,181   $0.0332  $0.0375  $0.0230  $0.0605     11%       -       +3%    47/53     6       0       0     89%     15pp    0pp   89%     2pp      89%   0%   NO:temp
+truncation                      48/67   67,695/89,767    56%     45   2,467,762      90.3%       99.5%     93.4%    23,392   $0.0349  $0.0397  $0.0155  $0.0552      4%       -       +9%    31/53    22       0       0     59%     15pp    0pp   58%     0pp      59%   0%   NO:temp
+token_budget_summarize          28/68   36,387/56,135    30%     45   1,347,611      86.2%       89.4%     87.2%    16,220   $0.0236  $0.0440  $0.0149  $0.0589     44% $0.0175      +21%    28/53    25       0       5     46%     15pp    0pp   54%     0pp      46%   0%   NO:temp
+sliding_window                   7/67   13,515/24,892    12%     45     505,179       1.1%       33.2%     11.4%     9,657   $0.0425  $0.0447  $0.0167  $0.0614      1%       -      +23%     8/53    45       0       0     17%      0pp    0pp   15%     0pp      17%   0%NO:temp,DRIFT:60
+token_budget_tools_first        35/67   45,416/56,724    38%     45   1,853,301      79.7%       59.8%     73.9%    16,033   $0.0436  $0.0467  $0.0356  $0.0823      4%       -      +28%    19/53    34       0       0     36%      6pp    0pp   35%     0pp      36%   0%   NO:temp
+token_budget_truncate_first     35/67   45,363/56,776    38%     45   1,854,379      79.2%       99.5%     85.2%    16,422   $0.0445  $0.0473  $0.0112  $0.0584     31%       -      +30%    18/53    35       0       0     35%      0pp    0pp   34%     0pp      35%   0%   NO:temp
+context_window_lazy             65/69   84,305/84,305    70%     45   2,734,002      86.0%       99.7%     91.1%    23,977   $0.0450  $0.0483  $0.0191  $0.0674     10%       -      +33%    42/53    11       0       0     79%     26pp    0pp   79%     1pp      79%   0%   NO:temp
+context_window                  65/69   84,606/84,606    70%     45   2,741,138      86.0%       99.7%     91.1%    24,771   $0.0451  $0.0486  $0.0194  $0.0680      9%       -      +33%    42/53    11       0       0     80%     26pp    0pp   79%     5pp      80%   0%   NO:temp
+tool_result                     65/69   84,929/84,929    70%     45   2,740,842      85.9%       99.6%     91.0%    23,970   $0.0451  $0.0488  $0.0190  $0.0677      8%       -      +34%    39/53    14       0       0     74%      0pp    0pp   74%     0pp      74%   0%   NO:temp
+selective_tool_call             63/67   84,271/84,271    70%     45   2,745,443      86.0%       99.7%     91.0%    23,942   $0.0452  $0.0491  $0.0186  $0.0677      6%       -      +35%    44/53     9       0       0     84%     30pp    0pp   83%     0pp      84%   0%   NO:temp
+token_budget_fallback           42/67   52,345/57,190    43%     45   2,005,540      64.4%       99.3%     75.3%    22,373   $0.0702  $0.0739  $0.0143  $0.0881     20%       -     +103%    23/53    30       0       0     45%     20pp    0pp   44%     0pp      45%   0%   NO:temp
+summarization                    8/91   14,120/15,974    12%     45     512,789       1.1%       33.2%     11.7%    14,161   $0.0425  $0.0896  $0.0191  $0.1087     13% $0.0444     +146%    47/53     6       0       8     75%     61pp    0pp   90%     0pp      75%   0%   NO:temp
+
+msgs      = messages in a probe's prompt, out of the most any call carried. Every probe
+            is asked from the same restored snapshot, so this no longer drifts downwards
+            through the questions the way it did when they were ordinary turns
+snap%     = the snapshot every question was asked from, as a share of the tried context
+            window. This is how hard compaction acted: the control sits at the fill the
+            cell was sized to, and a strategy below it removed that difference
+tok       = billed tokens in that same prompt, and at the peak. Watch this rather than
+            msgs: a strategy that rewrites content in place removes tokens without
+            removing messages, and msgs cannot see it
+calls     = model calls, seeding and probes together
+in        = input tokens billed across the whole run
+seed hit%  = share of the conversation's input tokens served from the provider's cache:
+            seeding only, the probes taken out. This is what compaction did to the cache,
+            and the number to quote for it -- a deployed agent continues its conversation
+            and has no probe phase. Compaction breaks the cached prefix by construction,
+            so this is what it gives up to save tokens
+probe hit% = the same share over the probes: the instrument. Every probe re-sends the
+            snapshot from a restored copy, so this measures whether the provider served
+            that snapshot to a prompt it had already seen, and on the archived luna cells
+            from 100,000 tokens up it took one of two values and nothing between: about
+            99%, or 33.3%. 33.3% is four of twelve probes served whole and eight served
+            cold. The only four with a byte-identical predecessor are repeats two to five
+            of the combined question, so it is those four hitting each other and nothing
+            else -- the provider served the prefix to an identical prompt and not to a
+            sibling that merely shared it. Which value a seed draws goes with whether the
+            strategy was still acting on the store as seeding ended: a row at rest by then
+            drew high on every seed, a summarizer that fires every turn drew 33.3% on
+            every seed, and the rows between drew by the seed. A low value is a fact about
+            the instrument and a warning about run hit%, not a cost: seed$, seed hit%,
+            retention and accuracy never read it, and nothing is withdrawn by it. The
+            per-probe block under the table shows which probes hit, where the record can
+run hit%   = seeding and probes together, cached over input across the whole run: what
+            hit% was before the split. Here because it is the number every earlier
+            write-up quotes, not because it says what compaction did. The probes are a
+            third of a seed's input on the archived cells, so two seeds of one row read
+            73.5% and 88.8% here with seeding halves of 85.7% and 85.0%, and a row whose
+            seeds all drew low sits eight to thirteen points under its seeding half
+out       = output tokens billed across the whole run. Its own column because a total
+            driven by how much the model wrote is a different finding from one driven
+            by how much context it was sent, and one number cannot show which
+seed in$  = the prompt side of seed$: uncached and cached together, with output, the
+            summarizer and the probes all left out. The low-variance view of what
+            compaction changes: on a clean five-seed control the total moved 38% while
+            the input side moved 13%, because output is priced 57x a cache read and the
+            model's verbosity swamps the axis compaction acts on
+seed$     = what the conversation cost: seeding, plus the strategy's own summarizer
+            calls, and nothing else. The workload, and what the ranking, the verdict and
+            vs none$ are all taken on. This is the money a deployed agent moves
+probe$    = what the probing cost: the instrument. Every probe is asked from the restored
+            snapshot, so each one re-sends the whole snapshot, and a strategy that
+            compacted hard collects that discount once per probe -- twelve times over on
+            a phase no deployed agent has, since an agent continues the conversation
+            rather than being interrogated from a frozen state. Folded into the ranking
+            it turned one cell's -14.1% into -3.5% and flipped the sign on two others
+run$      = seed$ + probe$: what the run was actually billed. Here because it is the
+            number every earlier write-up quotes, not because it ranks anything
+seed$+-   = spread between the cheapest and dearest seed, on seed$. A gap smaller than
+            this is not a result. 0% with one seed means stability is unknown, not that
+            it is stable. Taken on seed$ rather than run$ because probing is the steadier
+            half -- one snapshot, the same questions -- so a spread on the total
+            understates how far the ranked half moved
+summ$     = what this strategy's own summarization calls cost, of seed$
+vs none$  = seed$ against the uncompacted control's seed$: what compaction moved on the
+            workload. '?' means the comparison is unavailable -- either a row could not
+            separate its probing from its seeding (NOSPLIT), or the control did not run
+            the strategies' conversation (MSGS) and there is nothing to compare against,
+            or the control exceeded the tried limit (DQ). Then not compacting is not an
+            option a model of this size allows, so there is no affordable baseline and
+            every row reads '?': a saving against a run that could not happen is not one
+'?'       = in any money or cache column, the records behind this row never measured
+            that quantity. Records written before schema 4 counted their calls in one
+            total, and no arithmetic over what they stored can separate the phases --
+            pricing twelve probes at the final prompt's size is a model of the run, not
+            the run. Those rows carry NOSPLIT, show run$ and run hit% alone, and are
+            ranked on run$
+facts     = planted facts surviving compaction into the snapshot: recall's ceiling.
+            Scored against the snapshot, which is exactly the context every probe was
+            answered from. Scored against a closing prompt instead, this was circular:
+            each answer re-listed codes into the history, so a code compaction had
+            destroyed came back because the model had recited it two questions earlier.
+            A mean over seeds, and where the seeds disagree it is a value no seed took:
+            the record row's retention is a draw between every fact and a whole group's
+            worth fewer, so 50/53 there is four seeds at 53 and one at 37. A row whose
+            seeds disagree gets a per-seed line under the table, in the acc blocks'
+            shape; a row whose seeds agree does not, because the column already says
+            what every seed did
+lost      = compaction removed it, so the model could not use it  <- the damage
+nofetch   = the agent never called that tool, so the fact never entered the history at
+            all. Not compaction damage: an uncompacted run shows these too
+ignored   = still in the snapshot but unused: the model's failing, not compaction's
+acc1      = the scoped questions -- requirements plus one per tool lookup. Mean share of
+            checks passed across every probe repeat of every seed, each reply scored only
+            against the values its own question asked for. A star marks the uncompacted
+            control, which is ordered by the same rule as every other row and can
+            therefore land below the line -- unless it exceeded the tried limit, when it
+            is not ranked at all and is printed apart, under the ranked rows, as a
+            reference for what the whole conversation cost and retained
+seed+-    = points between the least and most correct seed, on acc1. Different
+            conversations, so this is compaction's own reliability: whether it cleared a
+            retention boundary this time and not last time
+rep+-     = points between the least and most correct acc1 repeat *within* one seed,
+            averaged over seeds. Identical facts in identical positions, so this is the
+            model's willingness to enumerate and nothing else. The two used to arrive as
+            one number, and a strategy scoring 52, 52, 52 and 22 with exactly 27 facts
+            preserved every time read the same as one that lost different facts each time
+acc2      = the one combined question: share of all planted values present in its answer,
+            where the model is asked for everything at once, meaned over every attempt of
+            every seed. The same run measured a second way, not a second run -- one
+            question against acc1's seven, from a context the values are scattered
+            through. Asked from the snapshot like every other probe, so it is no longer
+            penalised for having been asked last, and asked --combined-repeats times
+            rather than --probe-repeats, since one answer is a whole reading of it
+rep2+-    = the same within-seed spread for acc2, over its own attempts. Read it beside
+            rep+-: at --probe-repeats 1 that column is 0pp by construction and this one
+            is the only within-seed variance the cell measures
+vs none   = acc1 against the uncompacted control's acc1, which is also what the ranking
+            and the verdict are judged on. Read it together with vs none$ on the left or
+            not at all -- cheaper and less correct is not a saving. Still computed when
+            the control exceeded the tried limit: its acc1 is the only reading of what the
+            whole conversation held, so the bar stays anchored on it, though it was
+            measured on a prompt no model of this size would accept
+dq        = share of this cell's seeds that sent a prompt larger than the tried limit.
+            The limit is simulated, so it is enforced here or not at all. A cell that
+            disqualifies at all is excluded from the ranking rather than starred: a row
+            a model that size would have refused is not an option and not a price for
+            anything. A disqualified control keeps one role, the acc1 anchor above
+flags     = DQ the dq column above is not zero, so this row sent a prompt a model of
+            this size would have refused. EXCL out of the ranking for the other reason:
+            it did not finish its turns. The two used to share the name DQ, which is how
+            a table came to show rows flagged DQ beside a dq of 0%. ERR failed turn,
+            THROTTLED:<n> calls re-sent after the provider refused them for rate
+            reasons; the seconds spent waiting are printed below the table, and they
+            matter because a cached prefix that expired during a wait is a miss the seed
+            hit% column charges to compaction. RECONNECTED:<n> calls re-sent because the
+            request never came back with an answer -- the connection dropped, or the
+            provider answered 5xx. Counted apart from THROTTLED because the waits are
+            seconds rather than a quota window, so this row's cached prefix is very
+            likely intact; without the retry it would not be a row at all, but a seed
+            that ended at the turn it happened on. DRIFT:<n> probes whose prompt was
+            not the snapshot verbatim, because the strategy acted again on the
+            restored state.
+            Those probes saw slightly less than survival was scored against, so a row
+            carrying this overstates what reached the model. S<n> summarizer failures,
+            <n>/<n>t turns
+            completed, REC:<n> whether the model ever wrote a record at all -- it
+            saturates at 1 and answers compliance, not quantity. RECORDS:<n> how many
+            records the conversation ended up carrying, which is a different question
+            and became one when the size trigger was allowed to ask more than once.
+            Every record is preserved: it may be neither shortened nor dropped, by this
+            strategy or by the fallback behind it, and nothing merges them -- an older
+            record is the sole account of the groups behind it, so a merge would rewrite
+            the evidence rather than the bulk. So each one raises a floor under the
+            prompt that no later pass can lower, and a row above 1 here is a row whose
+            money columns are partly that floor rather than the workload. Runs up to
+            39 were single-record by construction and carry no such number; the default
+            reproduces them and --record-repeats is what asks for more. FORCED:<n>
+            times it asked for
+            one, TRUNCATED:<n> forced calls the provider cut at --record-max-tokens, so
+            that record may cover only part of what it was asked to preserve and the
+            missing part is scored as compaction damage. UNCOVERED:<n> tool-call groups
+            the record never named, which the strategy therefore refused to delete. This
+            is the coverage check holding the row back. Alone it is a cost rather than a
+            loss: those groups are still in the prompt, so the row paid for tokens a
+            complete record would have replaced and lost nothing -- five archived
+            records carry it alone and every one held every fact. Beside RECFALLBACK it
+            is the opposite. The check keeps an uncovered group but does not preserve
+            it, so the fallback that runs when the prompt is still over the ceiling may
+            shorten it in place or shed it whole like any other group in its band, and
+            the four record rows in the archive that lost a fact all read UNCOVERED:4
+            beside RECFALLBACK, while no record carrying either flag alone has lost
+            one; three carrying both held, all at 60,000 tokens. Read the flag alone as
+            a cost and the pair as where a loss can happen. Read the count as
+            how far the model fell short of what the recall tool asked for -- the record
+            is required to group its content by the tool that produced it, so a tool it
+            never names is a tool it did not account for. Before the check existed those
+            groups were deleted anyway and the facts in them arrived in acc1 as
+            compaction damage, with nothing in any column saying where they went. A row
+            with UNCOVERED alone is not measuring this strategy working; it is measuring
+            it declining to guess, and a row with both is measuring the fallback
+            deciding for it -- on a row written before schema 13; since then the check
+            holds the group, see REFORCED and PRESERVED. The archived losses that
+            reading rested on have been re-attributed, and that is stated under REFORCED.
+            USERCOMPACT:<n> passes where user_summary_anchored replaced a band of the
+            user's own turns with one summary of them, and USERREPLACED:<n> how many
+            turns the most recent of those passes stood in for. Read them together: the
+            second is how much of the conversation the newest summary is carrying instead
+            of verbatim, which is what moved snap%, and the first is what it cost to get
+            there, because every pass re-bills the prompt from its own edit to the end.
+            USERREPLAY:<n> passes that replaced the same band with the summary already in
+            hand: the live path runs the strategy twice per crossing, inside the model
+            call on the loaded copies and after the turn on the store, and the second
+            pass replays the first's answer instead of asking again, so it costs no
+            summarizer call and no new break. One per crossing is the ordinary reading,
+            two on a turn that called a tool. Before it existed both passes counted as
+            USERCOMPACT, so an archived USERCOMPACT:2 is one compaction.
+            Where that edit lands is --user-summary-mode. In the recompact mode the
+            strategy re-reads its own earlier summary, so every pass rewrites a message
+            just behind the head and USERCOMPACT above 1 is that happening; in the
+            boundary and fold modes the earlier summary stands and the edit lands only on
+            the turns newer than it. USERSUMMARIES:<n> summaries the conversation was
+            carrying at the strategy's last reading, and USERSUMMTOKENS:<n> the tokens
+            they occupy: the boundary mode's floor, one summary per pass that no later
+            pass can lower, which is RECORDS:<n>'s accumulation on the user half. Reads 1
+            in the recompact mode after any pass. USERFOLD:<n> passes of the fold mode
+            that collapsed every standing summary into one, each a rewrite of the prefix
+            from the oldest summary's position -- the break the recompact mode pays on
+            every pass, paid here only when the standing summaries had grown to
+            --user-min-band-share of what is behind them. A run that folded twice and
+            one that never folded differ by two of those breaks and a floor lowered
+            twice, and only this flag separates them.
+            A row with USERCOMPACT:0 never fired and is the uncompacted control
+            under another name -- and exactly one of the next three flags says why.
+            USERUNDER:<n> passes where the prompt never reached
+            --user-trigger-fraction, so the band was not even read. USERHELD:<n>
+            passes where it did and the band was not worth a pass under
+            --user-min-band-share: empty, holding nothing but the strategy's own
+            earlier summary, or too small a share of the prompt to pay for the
+            prefix a pass rewrites -- and, in the fold mode, the standing summaries
+            were not worth a fold either. That flag is the hysteresis working, and a row
+            with USERHELD and no USERCOMPACT is one whose band never cleared the
+            share -- a setting to change, not a strategy that failed. Before the
+            share existed this row fired on most turns: USERCOMPACT:31 (double-counted)
+            with USERREPLACED:2 and a seeding-phase hit rate of 77% where the control
+            held 95%.
+            USERSUMMFAIL:<n> passes where the summarizer raised or returned
+            nothing, so the band was left exactly as it was found and those passes
+            are the control too. USERSTARVED:<n> (retired at schema 16; only on
+            older records) passes of tool_and_user_summary_anchored where the record
+            half's removals kept the prompt under the user half's trigger. From schema
+            16 that row judges its user half after the record half on purpose, so the
+            user half staying idle because tool compaction was enough is the design
+            working, and USERUNDER counts it.
+            USERWAIT:<n> passes where tool_and_user_summary_anchored held its user half
+            back although the prompt was over the line, because the record half had
+            tool work a record was due for. The record half compacts in two steps --
+            it asks, and drops what the record covers on a later call -- and the user
+            half in one, so a user half judged on the asking pass acted first and, by
+            taking the prompt under the line, stopped the record ever being asked for:
+            RECORDS:0 beside USERCOMPACT:1 on every seed, before schema 17. The wait is
+            bounded at two model responses, the deciding call's and the pinned call's,
+            and is never begun at the record half's give-up line. Per pass, so one wait
+            reads several. Beside a RECORDS that grew it is the wait ending in a record,
+            and any USERCOMPACT then acted on what the record left; with no record it
+            ran out, and the USERCOMPACT after it is the user half acting anyway.
+            tool_and_user_summary_anchored's last-resort chain, which starts only when
+            the prompt is over the input budget after both halves and, from schema 19,
+            then works down to a target below it (--chain-gain-fraction), reads in order:
+            RECMERGE:<n> passes that merged the records into one, and RECMERGEREJ:<n>
+            merges refused as no smaller than the records; USERMERGE:<n> passes that
+            folded the user summaries into one, and USERMERGEREJ:<n> folds refused;
+            RECHARDER:<n> harder rewrites of the record tried, up to
+            --record-harder-attempts per pass, and RECHARDERREJ:<n> of them refused;
+            RECHARDERSKIP:<n> attempts not made because the same record was already
+            refused at them, and RECMERGESKIP:<n> merges not asked for on records a merge
+            was refused on: a refusal stands until the record changes, from schema 18;
+            RECSUMMFAIL:<n> merges or rewrites the summarizer did not answer;
+            LASTFALLBACK:<n> passes that reached the record half's fallback, which on
+            this row runs there and nowhere else and may drop narration only. Every
+            replacement is kept on size alone -- non-empty and smaller than what it
+            replaces -- and never checked against content, so what a merge lost is
+            read in facts and acc1, not here. LASTFALLBACK beside DQ is the chain
+            exhausted: the intended loud failure. CHAINTARGET:<n> passes the chain
+            started on and brought down to its target, and CHAINSHORT:<n> passes every
+            step left above it; CHAINKEPT:<n> passes that put back a merge, rewrite, fold
+            or shed the chain had made on the live path's other list, which from schema
+            19 is kept on both, so RECMERGE and USERMERGE count each decision once.
+            REFORCED:<n> calls the recall middleware pinned at the strategy's own request,
+            because the standing record left tool groups uncovered: layer one of the
+            answer to the gap UNCOVERED beside RECFALLBACK names, where the fallback could
+            shorten or shed the very groups the coverage check had kept. The gap is real
+            whenever the fallback genuinely fires behind a partial record; what is
+            withdrawn is the frequency the two entries above put on it. Their four
+            archived losses are since attributed to the framework's compaction counter
+            charging gpt-5.6-luna's encrypted reasoning payload as prompt text -- a local
+            count 1.2 to 1.45 times the billed size, a fallback firing at 0.61 to 0.64 of
+            the billed ceiling where gpt-5.4-mini fires at 0.93 to 0.95 -- so on all four
+            the true prompt was under the ceiling and the fallback should not have run.
+            How often a genuine firing reaches the gap has not been measured.
+            The groups are held out of the fallback's reach from the pass that finds them,
+            another record is asked for while they are still whole, and the ask repeats
+            only while each record covers at least one of them. PRESERVED:<n> uncovered
+            groups the strategy has preserved for good because asking stopped helping --
+            the re-forced record covered none of them, or none came: layer two. Read the
+            three together. REFORCED without PRESERVED is the re-force clearing the
+            shortfall; REFORCED with PRESERVED equal to UNCOVERED is the re-force failing
+            and the preservation standing in; UNCOVERED larger than PRESERVED is the
+            difference still waiting on an ask when the run ended. A preserved group still
+            counts against the ceiling and cannot be shed, so PRESERVED beside DQ is the
+            row failing loudly where a row written before schema 13 could lose the
+            group's values quietly; that is the intended reading, not a defect in the
+            flag. From schema 13 on, UNCOVERED beside RECFALLBACK no longer means the
+            fallback may have shortened those groups: it ran behind the record, over
+            material other than the held groups. That is not the same as the pair
+            losing nothing. Layer two protects only what sits in front of the record,
+            and until schema 15 the other material included every tool group after it,
+            which no record covers: run 51 seed 1 read PRESERVED:4 and RECFALLBACK:33,
+            finished 5,000 tokens under the limit with no DQ, and had shortened the one
+            lookup after the record inside the fallback's band until all eight of its
+            codes were gone. RECHELD:<n> post-record fallback passes that ran with every
+            tool group no record covers held out of reach, wherever it sat, so the
+            fallback could take narration and nothing else (schema 15 on). It counts
+            attempts, where RECFALLBACK counts effects: RECHELD with no RECFALLBACK is a
+            fallback that found nothing it was allowed to take, which beside DQ is the
+            rule standing between it and a quiet loss; RECHELD with RECFALLBACK and no
+            DQ is narration having been enough; no RECHELD on a record row is a fallback
+            that never had to act. From schema 15 the fallback behind a record cannot
+            shorten or shed a tool group no record covers: the row fits on narration or
+            reads DQ. What a record row can still lose is what a record's coverage share
+            let it drop, which is the record's doing and not the fallback's.
+            FALLBACK:<n> times it gave up
+            and compacted another way. A row with
+            FALLBACK is measuring that other strategy, not the one named.
+            RECFALLBACK:<n> passes where a record did exist, was anchored on, and the
+            row still fell back: what the record freed left the prompt over the ceiling.
+            Counted apart from FALLBACK because the two say different things about the
+            model -- FALLBACK is a model that never wrote a record, this is a model that
+            wrote one that did not go far enough -- but read them the same way, because
+            a non-zero value here means part of what this row measured is the fallback
+            strategy and not the one named. It is the quieter of the two: the fallback
+            shortens tool results in place, so the row keeps its message count and loses
+            its values, and beside UNCOVERED it is shortening or shedding exactly the
+            groups the coverage check had just declined to delete, which is the only way
+            a record row in the archive has lost a fact: four times in the 58 records of
+            runs 41 to 48, every one at UNCOVERED:4 -- a reading since withdrawn, see
+            REFORCED below. Uncounted until a seed reporting
+            UNCOVERED:4 was measured losing the control's facts three messages shorter
+            and 16,617 tokens lighter, with no flag anywhere saying so. From schema 15
+            the fallback here may shed narration only -- see RECHELD -- so RECFALLBACK
+            no longer means a tool result was shortened. NO:<opt> the
+            provider rejected that option so it was dropped; a run that dropped
+            tool_choice chose its own tool calls and is not comparable with one that did
+            not. FETCH this row gathered a different set of facts than the control.
+            MSGS:<+-n> this row is the control and its conversation was n messages away
+            from the leanest strategy row's on the same turn list. Compaction only adds
+            to the stored history, so the control has to match that row and cannot come
+            in under it; when it does, every vs none$ in the cell compares two different
+            workloads, and the control is excluded so that none of them is ranked.
+            NOSPLIT this row cannot say what its probing cost, so its money columns are
+            the invoice rather than the workload, and its only cache figure is run hit%,
+            which mixes the probes in
+
+per-sample acc1, one group per seed:
+  anchored_min_gain           [100%]  [100%]  [100%]  [100%]  [100%]
+  tool_and_user_summary_anchored[100%]  [100%]  [100%]  [100%]  [100%]
+  tool_summary_anchored       [100%]  [100%]  [100%]  [100%]  [100%]
+  none                        [100%]  [100%]  [100%]  [100%]  [100%]
+  user_summary_anchored       [100%]  [100%]  [100%]  [93%]  [100%]
+  token_budget_window_first   [20%]  [35%]  [17%]  [41%]  [41%]
+  context_window_aggressive   [41%]  [56%]  [35%]  [56%]  [44%]
+  anchored                    [100%]  [87%]  [83%]  [83%]  [87%]
+  anchored_no_assistant       [87%]  [87%]  [85%]  [87%]  [100%]
+  truncation                  [57%]  [56%]  [56%]  [70%]  [56%]
+  token_budget_summarize      [56%]  [41%]  [41%]  [41%]  [50%]
+  sliding_window              [17%]  [17%]  [17%]  [17%]  [17%]
+  token_budget_tools_first    [35%]  [35%]  [35%]  [41%]  [35%]
+  token_budget_truncate_first [35%]  [35%]  [35%]  [35%]  [35%]
+  context_window_lazy         [74%]  [100%]  [74%]  [74%]  [74%]
+  context_window              [100%]  [74%]  [74%]  [74%]  [78%]
+  tool_result                 [74%]  [74%]  [74%]  [74%]  [74%]
+  selective_tool_call         [70%]  [78%]  [100%]  [70%]  [100%]
+  token_budget_fallback       [43%]  [41%]  [35%]  [50%]  [56%]
+  summarization               [83%]  [65%]  [100%]  [39%]  [87%]
+
+per-sample acc2, one group per seed:
+  anchored_min_gain           [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]
+  tool_and_user_summary_anchored[100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]
+  tool_summary_anchored       [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]
+  none                        [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]
+  user_summary_anchored       [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100%]
+  token_budget_window_first   [19% 19% 19% 19% 19%]  [34% 34% 34% 34% 34%]  [15% 15% 15% 15% 15%]  [40% 40% 40% 40% 40%]  [40% 40% 40% 40% 40%]
+  context_window_aggressive   [40% 40% 40% 40% 40%]  [55% 55% 55% 55% 55%]  [34% 34% 34% 34% 34%]  [55% 55% 55% 55% 55%]  [43% 43% 43% 43% 43%]
+  anchored                    [100% 100% 100% 100% 100%]  [85% 87% 83% 87% 87%]  [87% 87% 87% 83% 87%]  [85% 87% 87% 87% 87%]  [87% 87% 87% 87% 87%]
+  anchored_no_assistant       [87% 83% 87% 87% 83%]  [87% 87% 85% 87% 87%]  [87% 85% 83% 83% 85%]  [87% 87% 87% 87% 87%]  [100% 100% 100% 100% 100%]
+  truncation                  [57% 57% 57% 57% 57%]  [55% 55% 55% 55% 55%]  [55% 55% 55% 55% 55%]  [70% 70% 70% 70% 70%]  [55% 55% 55% 55% 55%]
+  token_budget_summarize      [55% 55% 55% 55% 55%]  [40% 40% 40% 40% 40%]  [40% 40% 40% 40% 40%]  [40% 40% 40% 40% 40%]  [94% 94% 94% 94% 94%]
+  sliding_window              [15% 15% 15% 15% 15%]  [15% 15% 15% 15% 15%]  [15% 15% 15% 15% 15%]  [15% 15% 15% 15% 15%]  [15% 15% 15% 15% 15%]
+  token_budget_tools_first    [34% 34% 34% 34% 34%]  [34% 34% 34% 34% 34%]  [34% 34% 34% 34% 34%]  [40% 40% 40% 40% 40%]  [34% 34% 34% 34% 34%]
+  token_budget_truncate_first [34% 34% 34% 34% 34%]  [34% 34% 34% 34% 34%]  [34% 34% 34% 34% 34%]  [34% 34% 34% 34% 34%]  [34% 34% 34% 34% 34%]
+  context_window_lazy         [74% 74% 74% 74% 74%]  [100% 100% 100% 100% 100%]  [74% 74% 74% 74% 74%]  [74% 74% 74% 74% 74%]  [74% 74% 77% 74% 74%]
+  context_window              [100% 100% 100% 100% 100%]  [74% 74% 74% 74% 74%]  [74% 74% 74% 74% 74%]  [74% 74% 62% 74% 74%]  [77% 77% 77% 64% 77%]
+  tool_result                 [74% 74% 74% 74% 74%]  [74% 74% 74% 74% 74%]  [74% 74% 74% 74% 74%]  [74% 74% 74% 74% 74%]  [74% 74% 74% 74% 74%]
+  selective_tool_call         [70% 70% 70% 70% 70%]  [77% 77% 77% 77% 77%]  [100% 100% 100% 100% 100%]  [70% 70% 70% 70% 70%]  [100% 100% 100% 100% 100%]
+  token_budget_fallback       [42% 42% 42% 42% 42%]  [40% 40% 40% 40% 40%]  [34% 34% 34% 34% 34%]  [49% 49% 49% 49% 49%]  [55% 55% 55% 55% 55%]
+  summarization               [98% 100% 98% 100% 98%]  [64% 64% 64% 64% 64%]  [100% 100% 100% 100% 100%]  [98% 98% 98% 98% 98%]  [87% 87% 87% 87% 87%]
+
+per-seed facts, one reading per seed, rows whose seeds disagree only:
+  token_budget_window_first   [10 18 8 21 21] of 53
+  context_window_aggressive   [21 29 18 29 23] of 53
+  anchored                    [53 46 46 46 46] of 53
+  anchored_no_assistant       [46 46 46 46 53] of 53
+  truncation                  [29 29 29 37 29] of 53
+  token_budget_summarize      [29 21 21 21 50] of 53
+  token_budget_tools_first    [18 18 18 21 18] of 53
+  context_window_lazy         [39 53 39 39 39] of 53
+  context_window              [53 39 39 39 41] of 53
+  selective_tool_call         [37 41 53 37 53] of 53
+  token_budget_fallback       [22 21 18 26 29] of 53
+  summarization               [52 34 53 52 46] of 53
+
+per-seed cache hit, seeding/probe, one pair per seed:
+  anchored_min_gain           [94.1%/99.7%]  [94.1%/99.8%]  [94.1%/99.8%]  [94.1%/99.8%]  [94.1%/99.7%]
+  tool_and_user_summary_anchored[90.5%/99.0%]  [91.2%/99.6%]  [90.6%/99.5%]  [90.6%/99.5%]  [90.6%/99.6%]
+  tool_summary_anchored       [91.0%/99.6%]  [91.2%/99.5%]  [90.6%/99.6%]  [91.2%/99.5%]  [90.7%/99.6%]
+  none                        [94.1%/99.7%]  [94.1%/99.7%]  [94.1%/99.7%]  [94.1%/99.8%]  [94.1%/99.8%]
+  user_summary_anchored       [90.3%/99.7%]  [90.3%/99.5%]  [90.0%/99.6%]  [90.1%/99.6%]  [90.0%/99.5%]
+  token_budget_window_first   [85.4%/33.2%]  [86.5%/99.6%]  [85.7%/33.2%]  [86.4%/99.5%]  [86.4%/99.6%]
+  context_window_aggressive   [85.2%/99.5%]  [85.2%/99.5%]  [85.5%/99.6%]  [85.2%/99.5%]  [85.2%/99.7%]
+  anchored                    [92.0%/99.7%]  [92.0%/99.7%]  [92.0%/99.7%]  [92.0%/99.7%]  [92.0%/99.7%]
+  anchored_no_assistant       [92.0%/99.6%]  [91.9%/99.7%]  [92.1%/99.7%]  [92.0%/99.7%]  [92.0%/99.6%]
+  truncation                  [90.2%/99.6%]  [90.3%/99.6%]  [90.4%/99.6%]  [90.4%/99.6%]  [90.4%/99.4%]
+  token_budget_summarize      [85.8%/33.2%]  [86.4%/99.6%]  [86.5%/99.6%]  [86.5%/99.6%]  [85.8%/33.2%]
+  sliding_window              [1.3%/33.2%]  [1.1%/33.2%]  [1.0%/33.2%]  [1.1%/33.2%]  [1.0%/33.2%]
+  token_budget_tools_first    [80.1%/33.3%]  [80.1%/99.7%]  [79.5%/99.6%]  [79.4%/33.3%]  [79.4%/33.3%]
+  token_budget_truncate_first [76.6%/99.6%]  [79.4%/99.6%]  [76.0%/99.5%]  [80.1%/99.5%]  [83.7%/99.6%]
+  context_window_lazy         [86.0%/99.8%]  [86.1%/99.7%]  [85.9%/99.7%]  [86.0%/99.8%]  [86.0%/99.7%]
+  context_window              [86.0%/99.8%]  [85.9%/99.6%]  [86.0%/99.7%]  [85.9%/99.7%]  [86.0%/99.8%]
+  tool_result                 [85.9%/99.7%]  [86.0%/99.8%]  [85.9%/99.7%]  [85.8%/99.5%]  [85.9%/99.6%]
+  selective_tool_call         [86.1%/99.6%]  [85.9%/99.7%]  [86.1%/99.7%]  [86.0%/99.6%]  [86.0%/99.6%]
+  token_budget_fallback       [59.7%/98.7%]  [67.4%/99.5%]  [67.8%/99.4%]  [63.6%/99.6%]  [63.5%/99.5%]
+  summarization               [1.2%/33.2%]  [1.2%/33.2%]  [1.2%/33.2%]  [1.0%/33.2%]  [1.1%/33.2%]
+
+per-probe cache hit, one group per seed, probes in the order asked:
+  anchored_min_gain           [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]
+  tool_and_user_summary_anchored[99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  tool_summary_anchored       [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]
+  none                        [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]
+  user_summary_anchored       [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  token_budget_window_first   [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  context_window_aggressive   [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]
+  anchored                    [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]
+  anchored_no_assistant       [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  truncation                  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  token_budget_summarize      [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]
+  sliding_window              [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]
+  token_budget_tools_first    [0% 0% 0% 0% 0% 0% 0% 0% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [99% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [0% 0% 0% 0% 0% 0% 0% 0% 100% 100% 100% 100%]  [0% 0% 0% 0% 0% 0% 0% 0% 100% 100% 100% 100%]
+  token_budget_truncate_first [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]
+  context_window_lazy         [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]
+  context_window              [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]
+  tool_result                 [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  selective_tool_call         [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]  [100% 100% 100% 100% 100% 100% 100% 99% 100% 100% 100% 100%]
+  token_budget_fallback       [98% 98% 98% 98% 98% 98% 98% 98% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]  [99% 99% 99% 99% 99% 99% 99% 99% 100% 100% 100% 100%]
+  summarization               [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]  [0% 0% 0% 0% 0% 0% 0% 0% 99% 99% 99% 99%]
+
+Fill: 107,746 tokens seeded against a target of 108,000 (90% of 120,000), -0.2%. Payload 70,135 tokens, of which 64,797 is tool results.
+Tool share: 64,797 tokens of tool results is 60.1% of what was seeded, against 60% requested, +0.2%. Each result was built to ~10,631 tokens.
+
+Cost: seed$ is the conversation and probe$ is the instrument, priced apart. The ranking,
+the verdict and vs none$ are all on seed$, because every probe re-sends the whole snapshot
+and a strategy that compacted hard would otherwise collect that discount once per probe.
+Cache: seed hit% and probe hit% split the same tokens the same way. Quote seed hit% for
+what compaction did; probe hit% is the instrument's own draw and says nothing about the
+workload, and run hit% mixes the two.
+
+VERDICT: anchored_min_gain
+'anchored_min_gain' is 6% cheaper than not compacting while answering at 100% of the control. 4 of 19 strategies cleared the correctness bar.
+
+NOT SUPPORTED: repeats of one strategy varied by 12%, wider than the 6% gap this recommendation rests on. Treat the cost ranking as unresolved.

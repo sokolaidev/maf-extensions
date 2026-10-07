@@ -82,6 +82,7 @@ class TestTheGate:
         """
         found = sorted(path.name for path in packages_with_pyright())
         assert found == [
+            "maf-cachebench",
             "maf-compaction",
             "maf-sandbox",
             "maf-sandbox-acas",
