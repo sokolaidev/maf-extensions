@@ -31,7 +31,7 @@ from openclaw_gateway_http_check import (
 )
 from openclaw_http_observer import resolve_image
 
-LIFECYCLE_DISPATCHES = 21
+LIFECYCLE_DISPATCHES = 26
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -227,6 +227,132 @@ def verify_cleanup_refusal(
     }
 
 
+def verify_completed_cleanup(
+    evidence: list[dict[str, Any]],
+    projected: dict[str, Any],
+    config_digest: str,
+    image: str,
+) -> dict[str, Any]:
+    """Require completed binding work followed by refusal and a failed Gateway result."""
+    events = [
+        "request",
+        "binding_started",
+        "binding_completed",
+        "completed_cleanup_refused",
+        "response",
+        "settled",
+    ]
+    calls = requests(evidence)
+    require(len(calls) == 1, "Completed cleanup call missing or replayed")
+    call = calls[0]
+    selected = [call]
+    for event in events[1:]:
+        rows = [
+            r
+            for r in evidence
+            if r.get("event") == event
+            and (event not in {"response", "settled"} or r.get("exchange") == call.get("exchange"))
+        ]
+        require(len(rows) == 1, "Missing unique completed-cleanup evidence")
+        selected.extend(rows)
+    require(
+        bool(call.get("boot"))
+        and bool(call.get("session"))
+        and bool(call.get("exchange"))
+        and all(
+            r.get("boot") == call["boot"] and r.get("session") == call["session"] for r in selected
+        )
+        and all(
+            0 < a.get("time_ns", 0) < b.get("time_ns", 0) for a, b in zip(selected, selected[1:])
+        ),
+        "Completed cleanup evidence has wrong identity or ordering",
+    )
+    completed, fault, response, settled = selected[2:]
+    verify_outcome(
+        {"result": {"content": [{}], "details": {"structuredContent": completed}}},
+        "valid",
+        config_digest,
+        image,
+    )
+    require(
+        fault.get("resource") == "bicep-docker"
+        and fault.get("owner_empty") is True
+        and response.get("status") == 200
+        and settled.get("active") is False
+        and settled.get("poisoned") is True,
+        "Completed cleanup did not fail closed after the binding sweep",
+    )
+    result = projected.get("result", {})
+    details = result.get("details", {})
+    structured = details.get("structuredContent", {})
+    require(
+        details.get("status") == "error"
+        and len(result.get("content", [])) == 1
+        and structured.get("completed") is False
+        and structured.get("verdict", "missing") is None
+        and structured.get("status") == "cleanup_failed"
+        and structured.get("cleanup") == "failed"
+        and all(
+            structured.get(k) == completed[k] for k in ("source_sha256", "config_sha256", "image")
+        ),
+        "Gateway cleanup failure preserved success or lost the input identity",
+    )
+    return {
+        "binding_completed": True,
+        "success_suppressed": True,
+        "cleanup": "failed",
+        "poisoned": True,
+        "dispatches": 1,
+        "owner_empty_after_binding": True,
+    }
+
+
+def verify_poisoned_turns(
+    evidence: list[dict[str, Any]],
+    projections: list[dict[str, Any]],
+    sessions: list[str],
+    boot: str,
+) -> None:
+    """Require both existing sessions to be refused without executing either binding."""
+    calls = requests(evidence)
+    require(
+        len(sessions) == len(set(sessions)) == len(calls) == len(projections) == 2,
+        "Missing both poisoned-session probes",
+    )
+    require(
+        [r.get("session") for r in calls] == sessions
+        and all(r.get("boot") == boot for r in calls)
+        and not any(
+            r.get("event") in {"binding_started", "binding_completed", "completed_cleanup_refused"}
+            for r in evidence
+        ),
+        "Poisoned service executed work or changed session identity",
+    )
+    for call, projection in zip(calls, projections):
+        result = projection.get("result", {})
+        require(
+            result.get("details", {}).get("status") == "error"
+            and "structuredContent" not in result.get("details", {})
+            and result.get("content")
+            == [{"type": "text", "text": "Service or session is unavailable."}],
+            "Poisoned session returned a workload outcome",
+        )
+        settled = [
+            r
+            for r in evidence
+            if r.get("event") == "settled" and r.get("exchange") == call.get("exchange")
+        ]
+        require(
+            len(settled) == 1
+            and settled[0].get("boot") == boot
+            and settled[0].get("session") == call.get("session")
+            and settled[0].get("active") is False
+            and settled[0].get("poisoned") is True
+            and settled[0].get("time_ns", 0) > call.get("time_ns", 0),
+            "Poisoned probe did not settle without active work",
+        )
+
+
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -277,6 +403,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     crash_file = root / "crash-service"
     drop_file = root / "drop-result"
     refusal_file = root / "refuse-cleanup"
+    completed_refusal_file = root / "refuse-completed-cleanup"
     owner_file = root / "owner" / "owner"
     image = resolve_image(args.image)
     digest = hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
@@ -334,6 +461,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     str(crash_file),
                     "--refuse-cleanup-file",
                     str(refusal_file),
+                    "--refuse-completed-cleanup-file",
+                    str(completed_refusal_file),
                 ],
             )
 
@@ -809,6 +938,138 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 # Failed qualification must not leave its deliberately orphaned compiler behind.
                 if crashed_container and docker("ps", "-aq", "--filter", f"id={crashed_container}"):
                     docker("rm", "-f", crashed_container)
+            before_completed = len(records(transport))
+            completed_refusal_file.touch()
+            failed_connection, failed_turn = begin_turn(0, "valid")
+            try:
+                response = failed_connection.getresponse()
+                response.read()
+                require(response.status == 200, "Gateway did not settle cleanup failure")
+            finally:
+                failed_connection.close()
+            completed_evidence = records(transport)[before_completed:]
+            failed_projection = projected_result(records(provider), failed_turn, "valid")
+            report["completed_call_cleanup"] = verify_completed_cleanup(
+                completed_evidence,
+                failed_projection,
+                digest,
+                image,
+            )
+            expected_calls += 1
+            require(
+                requests(completed_evidence)[0]["session"] == recovered_sessions[0],
+                "Completed cleanup affected another session",
+            )
+            require(
+                not owned() and owner_file.read_bytes() == owner_before,
+                "Completed cleanup changed ownership or left resources",
+            )
+            completed_refusal_file.unlink()
+            before_poisoned = len(records(transport))
+            poisoned_projections = []
+            for index in range(2):
+                blocked_connection, blocked_turn = begin_turn(index, "valid")
+                try:
+                    response = blocked_connection.getresponse()
+                    response.read()
+                    require(response.status == 200, "Gateway did not settle poisoned turn")
+                finally:
+                    blocked_connection.close()
+                poisoned_projections.append(
+                    projected_result(records(provider), blocked_turn, "valid")
+                )
+            poisoned_evidence = records(transport)[before_poisoned:]
+            verify_poisoned_turns(
+                poisoned_evidence, poisoned_projections, recovered_sessions, startup["boot"]
+            )
+            expected_calls += 2
+            verify_dispatch_count(records(transport), expected_calls)
+            probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
+            try:
+                probe.request("GET", "/ready", headers={"Authorization": "Bearer " + service_token})
+                response = probe.getresponse()
+                response.read()
+                require(response.status == 503, "Poisoned service advertised readiness")
+            finally:
+                probe.close()
+            require(
+                not owned()
+                and owner_file.read_bytes() == owner_before
+                and docker("ps", "-q", "--filter", f"id={sentinel}"),
+                "Poisoned service changed ownership or unrelated resources",
+            )
+            stop_file.touch()
+            require(
+                service_process.wait(timeout=90) == 1, "Poisoned observer did not report failure"
+            )
+            shutdown = [
+                r for r in records(transport)[before_completed:] if r.get("event") == "shutdown"
+            ]
+            require(
+                len(shutdown) == 1
+                and shutdown[0].get("boot") == startup["boot"]
+                and shutdown[0].get("poisoned") is True
+                and shutdown[0].get("active") is False
+                and shutdown[0].get("sessions") == 0,
+                "Poisoned service did not drain sessions",
+            )
+            before_clean_restart = len(records(transport))
+            service_process = service()
+            service_ready(service_process)
+            new_start = [
+                r for r in records(transport)[before_clean_restart:] if r.get("event") == "startup"
+            ]
+            new_ready = [
+                r
+                for r in records(transport)[before_clean_restart:]
+                if r.get("event") == "startup_ready"
+            ]
+            require(
+                len(new_start) == len(new_ready) == 1
+                and new_start[0]["boot"] != startup["boot"]
+                and new_start[0]["source_hashes"] == startup["source_hashes"]
+                and new_start[0]["versions"] == startup["versions"]
+                and new_ready[0].get("boot") == new_start[0]["boot"]
+                and new_ready[0].get("owner_empty") is True
+                and owner_file.read_bytes() == owner_before
+                and not owned(),
+                "Completed-call recovery changed identity or advertised readiness before cleanup",
+            )
+            gateway_process.kill()
+            gateway_process.wait(timeout=30)
+            gateway_process = gateway()
+            gateway_ready(gateway_process)
+            final_sessions = [turn(index)[0] for index in range(2)]
+            require(
+                len(set(final_sessions)) == 2
+                and not set(final_sessions)
+                & set(recovered_sessions + after_restart + restarted + fresh + old),
+                "Completed-call recovery reused stale MCP sessions",
+            )
+            report["completed_call_cleanup"].update(
+                fault_removed_before_probes=True,
+                gateway_turns_refused=2,
+                readiness_status=503,
+                retained_owner=True,
+                poisoned_shutdown_exit=1,
+                fresh_sessions=2,
+                gateway_recovery="explicit-idle-process-restart",
+            )
+            (root / "completed-cleanup.json").write_text(
+                json.dumps(
+                    {
+                        "transport": completed_evidence,
+                        "projected": failed_projection,
+                        "poisoned_transport": poisoned_evidence,
+                        "poisoned_projections": poisoned_projections,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            print(
+                "Completed-call cleanup refusal suppressed success; both sessions stayed blocked until restart",
+                flush=True,
+            )
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
             report["other_owner_preserved"] = True
             report["total_dispatches"] = verify_dispatch_count(
@@ -816,7 +1077,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             )
             report["remaining"] = [
                 "active Gateway runtime disposal",
-                "cleanup failure after a completed call and remaining interruption cases",
+                "Docker cleanup/daemon failures and remaining interruption cases",
+                "automatic Gateway discovery recovery",
                 "full real-host transport/MAF matrix",
             ]
         finally:
@@ -835,11 +1097,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         require(not owned(), "Owner resources remain after fixture shutdown")
         final = [r for r in records(transport) if r.get("event") == "shutdown"]
         require(
-            len(final) == 2
-            and all(
-                r.get("sessions") == 0 and r.get("active") is False and r.get("poisoned") is False
-                for r in final
-            ),
+            len(final) == 3
+            and [r.get("poisoned") for r in final] == [False, True, False]
+            and all(r.get("sessions") == 0 and r.get("active") is False for r in final),
             "Final service shutdown was not clean",
         )
         verify_dispatch_count(records(transport), LIFECYCLE_DISPATCHES)

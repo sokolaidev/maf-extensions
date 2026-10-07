@@ -287,7 +287,7 @@ The executed service, provider, baseline checker and Docker helper retained the 
 | Work | State | Tracking |
 |---|---|---|
 | Bicep host qualification | One-session stdio and bounded two-session HTTP Gateway paths qualified with a deterministic provider; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
-| Multiple Gateway sessions | Two-session HTTP outcomes, Gateway-abort cancellation, bounded reload/restart, withheld-result behavior, active-service crash reconciliation and startup cleanup refusal qualified on recorded candidates; recovery after refused startup includes an explicit Gateway restart. Automatic discovery recovery, completed-call cleanup failure, selective retirement and the remaining matrix stay open | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Multiple Gateway sessions | Two-session HTTP outcomes, Gateway-abort cancellation, bounded reload/restart, withheld-result behavior, active-service crash reconciliation, startup cleanup refusal and post-completion resource cleanup refusal qualified on recorded candidates; recovery after refusal includes explicit service/Gateway restarts. Automatic discovery recovery, actual Docker cleanup failures, selective retirement and the remaining matrix stay open | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
 
 
 ## Startup cleanup refusal and explicit Gateway recovery (2026-10-06)
@@ -318,3 +318,44 @@ The changed fixtures were executed with LF bytes, identical to the committed Git
 | `openclaw_http_observer.py` | `01e87632aed5aa1e9dac1f71cb5870505f279f3e4b3639e2dbb66d16d6ba17fe` |
 
 [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open. Cleanup failure after a completed call, automatic Gateway discovery recovery after an unavailable service, selective active/idle runtime retirement, registry saturation/churn and the remaining transport/MAF combinations still need evidence. Host/daemon crashes, actual-model retry decisions, an independent watchdog and unattended operation remain unqualified.
+
+
+## Completed-call cleanup confirmation: next bounded case (2026-10-07)
+
+The next qualification slice targets the shared resource check after the real Bicep binding has returned a completed valid result with confirmed inner cleanup. The observer records that result's identities, then an opt-in `--refuse-completed-cleanup-file` makes the resource check return false. Docker scope inspection remains independent: this selected fault does not manufacture a retained container or simulate a Docker removal/daemon failure. The service must suppress success, report `cleanup_failed` with `cleanup: failed`, refuse readiness and refuse new work in both existing Gateway sessions, including after removal of the fault control. The expected recovery is an explicit service restart with the same owner followed by an idle Gateway process restart and two newly submitted valid calls. It does not claim automatic discovery recovery.
+
+The checker requires one binding execution for the failed call, no binding executions for either poisoned-session probe and exactly 26 MCP tool dispatches across the full baseline and lifecycle sequence. The latter includes two error-only poisoned-session probes. It checks the recorded poisoned shutdown separately from clean shutdowns, preserves the unrelated owner, and retains `complete_matrix: false`. Candidate-specific live results will be recorded separately after execution; this paragraph specifies the case and is not live evidence.
+
+A regression using the real HTTP composition confirmed that a resource-level refusal could set `status: cleanup_failed` while retaining `cleanup: confirmed` when the validator itself was not poisoned. The binding failure projection now treats `cleanup_failed` as failed cleanup independently of the validator's state. The regression covers the inner sweep, outer sweep and resource-only refusal, checking suppressed completion/verdict, error semantics, readiness and subsequent admission.
+
+
+## Completed-call cleanup refusal and explicit recovery (2026-10-07)
+
+The extended lifecycle checker passed on clean candidate `87f352ed885a89c0bfa02e88ada13931007bf18c`, repeating the two-session baseline and every preceding lifecycle case with the same pinned OpenClaw 2026.9.7, published Python dependencies, compiler configuration and prepared image recorded above. The successful report SHA-256 is `195e8cdddb3506cf73dc179f7d1b4c73b1a70be470abfe605507679300ff0ecb`; private `completed-cleanup.json` evidence SHA-256 is `7966223e99712bd51ddf459e51c1fc7a8608e1514724b19aadb34397821ff503`. The report retains `complete_matrix: false`.
+
+| Check | Observed result |
+|---|---|
+| Completed work before refusal | The unchanged binding execution returned a completed valid result with confirmed inner cleanup and matching source/configuration/image identities; the observer recorded it before refusing the shared resource check |
+| Fault boundary | The observer returned false without calling the shared resource cleanup; an independent Docker query found the owned scope empty after the binding sweep. This is a cleanup confirmation failure, not an observed Docker removal failure |
+| Returned result | Gateway projected one content item with error status and a structured `cleanup_failed` result: `completed: false`, null verdict and `cleanup: failed`, retaining the submitted source/configuration/image identities |
+| Sticky admission | After the supervisor removed the fault file, both existing MCP sessions received the service-unavailable tool error without a structured workload result; neither executed the binding, and authenticated readiness returned HTTP 503 |
+| Poisoned shutdown | Normal service shutdown drained both sessions and the active slot; the observer retained the poisoned state and exited with status 1 rather than reporting clean service health |
+| Explicit recovery | Restart with identical owner-file bytes, sources and dependencies found an empty owned scope at ASGI startup completion and became ready; an explicit idle Gateway restart gave both logical sessions fresh MCP sessions and valid newly submitted results |
+| No replay and isolation | Exactly 26 MCP tool dispatches through final shutdown, including the two refused probes; the unrelated sentinel survived. Independent post-execution inspection found zero owned containers and fixture processes |
+
+The opt-in observer flag is `--refuse-completed-cleanup-file`. The fault requires a real completed valid binding result and the same call still holding service admission. It records only allowlisted result identities and pseudonymous transport correlation, returns the binding result unchanged, and refuses at the subsequent resource check. With the file absent, it delegates to the actual resource cleanup. The resulting service poison persists after file removal. The Bicep failure projection fix is in the executed `server.py`; the shared service and HTTP implementation are unchanged.
+
+Reproduce using the lifecycle command above with a fresh private root. Retain `completed-cleanup.json` together with the existing report, startup-refusal/recovery evidence and provider/transport logs. The checker now requires 26 dispatches, one completed binding result for the fault, no binding execution for either poisoned probe, one poisoned shutdown between two clean shutdowns and a final empty owned scope. The 21-dispatch records above remain historical evidence for their named candidates. Private logs, credentials and owner/session/container identities are not committed.
+
+The three changed Python sources were executed with LF bytes identical to the Git files at this candidate. Other source hashes remain those recorded for the preceding execution.
+
+| Changed source | Executed and Git-LF SHA-256 |
+|---|---|
+| `server.py` | `6fd855751df41e3f841bda44a26a53841b0aa12c760398153a3ed6a903c281d5` |
+| `openclaw_gateway_lifecycle_check.py` | `a7b97bc3fde11b6a18111920d1759d7f70453e660c285f11b21a4d3eade913b3` |
+| `openclaw_http_observer.py` | `dd8f2009a921388cc2422d11b0a80b16dc10430c4e9aa0fbbf366598bd292461` |
+
+This selected post-completion confirmation fault does not establish retained-container recovery after a Docker removal failure. Actual Docker cleanup/daemon failures, automatic Gateway discovery recovery, selective active/idle runtime retirement, registry saturation/churn and the remaining transport/MAF combinations still require evidence. Host crashes, actual-model retry decisions, an independent watchdog and unattended operation remain unqualified. [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) stays open.
+
+
+Local verification passed the full gate (15,469 tests passed, 908 skipped), the focused qualification/HTTP/prototype suite (353 passed, four opt-in live cases skipped), and all four of those opt-in Docker cases in a separate execution. The live selection reported 22 passes because it also includes 18 offline setup/cleanup variants. The live cases cover HTTP MAF cancellation/owned recovery, the published-dependency HTTP smoke, stdio compiler outcomes and active-compiler cancellation/owned recovery. Workspace checks and the published-dependency service remain separate evidence classes. Final documentation checks passed 224 structure tests, Markdown examples, all 20 sample dependency-floor checks and 226 live tracker references. These are local results; hosted CI is recorded on the delivering PR.

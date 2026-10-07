@@ -518,7 +518,9 @@ async def http_application(image: str, config: str, scope: str, token: str, port
         validator = holder["validator"]
         answer = validator._answer(snapshot(arguments))
         answer.update(status=status, diagnostics="Validation did not complete.")
-        answer["cleanup"] = "failed" if validator.poisoned else "confirmed"
+        answer["cleanup"] = (
+            "failed" if status == "cleanup_failed" or validator.poisoned else "confirmed"
+        )
         return mcp_result(answer)
 
     # Use the existing FastMCP signature to preserve the advertised Bicep input schema.

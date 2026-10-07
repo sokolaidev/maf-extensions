@@ -229,6 +229,7 @@ class ObserveHTTP:
                 session=sid,
                 sessions=len(self.app.sessions),
                 active=self.app.service.active is not None,
+                poisoned=self.app.service.poisoned,
             )
 
 
@@ -257,6 +258,75 @@ def refuse_owned_cleanup(observer: ObserveHTTP, fault: Path) -> None:
     observer.app.service.resources[resource.name] = replace(resource, cleanup=cleanup)
 
 
+def refuse_completed_cleanup(observer: ObserveHTTP, fault: Path) -> None:
+    """Refuse the resource check only after the real binding returned a completed result."""
+    service = observer.app.service
+    binding = service.bindings["bicep_validate"]
+    resource = service.resources["bicep-docker"]
+    completed_context = None
+
+    async def execute(arguments, context):
+        nonlocal completed_context
+        observer.record(event="binding_started", session=digest(context.session_id.encode().hex()))
+        result = await binding.execute(arguments, context)
+        if fault.exists():
+            structured = result.structuredContent or {}
+            if (
+                result.isError
+                or structured.get("completed") is not True
+                or structured.get("cleanup") != "confirmed"
+                or structured.get("status") != "ok"
+                or structured.get("verdict") != "valid"
+            ):
+                raise RuntimeError("Cleanup fault requires a completed valid binding result")
+            completed_context = context
+            observer.record(
+                event="binding_completed",
+                session=digest(context.session_id.encode().hex()),
+                **{
+                    key: structured[key]
+                    for key in (
+                        "completed",
+                        "verdict",
+                        "status",
+                        "cleanup",
+                        "source_sha256",
+                        "config_sha256",
+                        "image",
+                    )
+                },
+            )
+        return result
+
+    async def cleanup() -> bool:
+        if not fault.exists():
+            return await resource.cleanup()
+        if (
+            completed_context is None
+            or service.active is None
+            or service.active[0] != completed_context
+            or not service.ready
+        ):
+            raise RuntimeError("Cleanup fault requires the completed call to retain admission")
+        owned = subprocess.check_output(
+            ["docker", "ps", "-aq", "--filter", f"label=maf-sandbox.scope={observer.owned_scope}"],
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.PIPE,
+            timeout=15,
+        ).split()
+        observer.record(
+            event="completed_cleanup_refused",
+            session=digest(completed_context.session_id.encode().hex()),
+            resource=resource.name,
+            owner_empty=not owned,
+        )
+        return False
+
+    service.bindings[binding.tool.name] = replace(binding, execute=execute)
+    service.resources[resource.name] = replace(resource, cleanup=cleanup)
+
+
 def crash_active_service(observer: ObserveHTTP) -> None:
     """Exit without cleanup only while this fixture supervises an unfinished call."""
     active = observer.app.service.active
@@ -283,6 +353,7 @@ if __name__ == "__main__":
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--crash-file", type=Path)
     parser.add_argument("--refuse-cleanup-file", type=Path)
+    parser.add_argument("--refuse-completed-cleanup-file", type=Path)
     parser.add_argument("--drop-result-file", type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
@@ -321,6 +392,8 @@ if __name__ == "__main__":
             )
             if args.refuse_cleanup_file is not None:
                 refuse_owned_cleanup(observer, args.refuse_cleanup_file)
+            if args.refuse_completed_cleanup_file is not None:
+                refuse_completed_cleanup(observer, args.refuse_completed_cleanup_file)
             host = transport.server(app)
             host.config.app = observer
 
