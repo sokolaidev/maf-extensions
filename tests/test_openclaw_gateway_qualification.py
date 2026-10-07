@@ -170,7 +170,7 @@ def test_observer_preserves_chunked_messages_and_redacts(tmp_path, payload):
 
     class App:
         sessions = {"private-session": None}
-        service = SimpleNamespace(active=None)
+        service = SimpleNamespace(active=None, poisoned=False)
 
         async def __call__(self, scope, receive, send):
             for expected in original:
@@ -335,7 +335,7 @@ def test_pinned_gateway_busy_projection():
 def test_observer_correlates_interleaved_cancellation_responses(tmp_path):
     class App:
         sessions = {"private-session": None}
-        service = SimpleNamespace(active=None)
+        service = SimpleNamespace(active=None, poisoned=False)
 
         async def __call__(self, scope, receive, send):
             message = await receive()
@@ -475,7 +475,7 @@ def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_trans
 
     class App:
         sessions = {"private-session": None}
-        service = SimpleNamespace(active=None)
+        service = SimpleNamespace(active=None, poisoned=False)
 
         async def __call__(self, scope, receive, send):
             await receive()
@@ -1100,3 +1100,277 @@ def test_observer_records_failed_startup_without_retaining_exception_payload(tmp
         assert "private exception text" not in app.evidence.read_text()
 
     asyncio.run(app({"type": "lifespan"}, unused, send))
+
+
+def completed_cleanup_evidence():
+    common = {"boot": "boot", "session": "session"}
+    complete = projected()["result"]["details"]["structuredContent"]
+    return [
+        dict(common, event="request", method="tools/call", exchange="exchange", time_ns=1),
+        dict(common, event="binding_started", time_ns=2),
+        dict(common, event="binding_completed", time_ns=3, **complete),
+        dict(
+            common,
+            event="completed_cleanup_refused",
+            resource="bicep-docker",
+            owner_empty=True,
+            time_ns=4,
+        ),
+        dict(common, event="response", exchange="exchange", status=200, time_ns=5),
+        dict(common, event="settled", exchange="exchange", active=False, poisoned=True, time_ns=6),
+    ]
+
+
+def completed_cleanup_projection():
+    value = projected()
+    value["result"]["details"]["status"] = "error"
+    value["result"]["details"]["structuredContent"].update(
+        completed=False,
+        verdict=None,
+        status="cleanup_failed",
+        cleanup="failed",
+    )
+    return value
+
+
+def test_completed_cleanup_requires_success_before_refusal_and_failed_projection():
+    assert (
+        lifecycle.verify_completed_cleanup(
+            completed_cleanup_evidence(),
+            completed_cleanup_projection(),
+            "config",
+            "image",
+        )["success_suppressed"]
+        is True
+    )
+
+
+@pytest.mark.parametrize("index", range(6))
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "boot", "session", "time"])
+def test_completed_cleanup_rejects_incomplete_uncorrelated_or_reordered_evidence(index, mutation):
+    evidence = completed_cleanup_evidence()
+    if mutation == "missing":
+        evidence.pop(index)
+    elif mutation == "duplicate":
+        evidence.append(dict(evidence[index]))
+    else:
+        evidence[index]["time_ns" if mutation == "time" else mutation] = (
+            0 if mutation == "time" else "other"
+        )
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_completed_cleanup(
+            evidence, completed_cleanup_projection(), "config", "image"
+        )
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "exchange", ""),
+        (2, "completed", False),
+        (2, "verdict", "invalid"),
+        (2, "cleanup", "failed"),
+        (2, "source_sha256", "other"),
+        (2, "config_sha256", "other"),
+        (2, "image", "other"),
+        (3, "resource", "other"),
+        (3, "owner_empty", False),
+        (4, "status", 500),
+        (4, "exchange", "other"),
+        (5, "exchange", "other"),
+        (5, "active", True),
+        (5, "poisoned", False),
+    ],
+)
+def test_completed_cleanup_rejects_wrong_result_or_resource_state(index, field, value):
+    evidence = completed_cleanup_evidence()
+    evidence[index][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_completed_cleanup(
+            evidence, completed_cleanup_projection(), "config", "image"
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", True),
+        ("verdict", "valid"),
+        ("status", "ok"),
+        ("cleanup", "confirmed"),
+        ("source_sha256", "other"),
+        ("config_sha256", "other"),
+        ("image", "other"),
+        ("details-status", "ok"),
+        ("content", []),
+        ("content", [{}, {}]),
+    ],
+)
+def test_completed_cleanup_rejects_success_leaks_and_lost_identity(field, value):
+    projection = completed_cleanup_projection()
+    if field == "details-status":
+        projection["result"]["details"]["status"] = value
+    elif field == "content":
+        projection["result"][field] = value
+    else:
+        projection["result"]["details"]["structuredContent"][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_completed_cleanup(
+            completed_cleanup_evidence(), projection, "config", "image"
+        )
+
+
+def poisoned_turn_evidence():
+    evidence = []
+    for index, session in enumerate(["a", "b"]):
+        common = {"boot": "boot", "session": session, "exchange": session}
+        evidence.extend(
+            [
+                dict(common, event="request", method="tools/call", time_ns=index * 2 + 1),
+                dict(common, event="settled", time_ns=index * 2 + 2, active=False, poisoned=True),
+            ]
+        )
+    projections = [
+        {
+            "result": {
+                "content": [{"type": "text", "text": "Service or session is unavailable."}],
+                "details": {"status": "error"},
+            }
+        }
+        for _ in range(2)
+    ]
+    return evidence, projections
+
+
+def test_both_sessions_remain_poisoned_without_binding_execution():
+    evidence, projections = poisoned_turn_evidence()
+    lifecycle.verify_poisoned_turns(evidence, projections, ["a", "b"], "boot")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-call",
+        "replay",
+        "wrong-session",
+        "wrong-boot",
+        "missing-settle",
+        "active",
+        "unpoisoned",
+        "stale-settle",
+        "binding_started",
+        "binding_completed",
+        "completed_cleanup_refused",
+        "missing-result",
+        "success",
+        "structured",
+        "wrong-error",
+    ],
+)
+def test_poisoned_probes_reject_missing_refusals_or_accidental_work(mutation):
+    evidence, projections = poisoned_turn_evidence()
+    if mutation == "missing-call":
+        evidence.pop(0)
+    elif mutation == "replay":
+        evidence.append(dict(evidence[0]))
+    elif mutation == "missing-settle":
+        evidence.pop(1)
+    elif mutation in {"wrong-session", "wrong-boot"}:
+        evidence[0][mutation.removeprefix("wrong-")] = "other"
+    elif mutation in {"active", "unpoisoned", "stale-settle"}:
+        key, value = {
+            "active": ("active", True),
+            "unpoisoned": ("poisoned", False),
+            "stale-settle": ("time_ns", 0),
+        }[mutation]
+        evidence[1][key] = value
+    elif mutation in {"binding_started", "binding_completed", "completed_cleanup_refused"}:
+        evidence.append({"event": mutation})
+    elif mutation == "missing-result":
+        projections.pop()
+    elif mutation == "success":
+        projections[0]["result"]["details"]["status"] = "ok"
+    elif mutation == "structured":
+        projections[0]["result"]["details"]["structuredContent"] = {}
+    else:
+        projections[0]["result"]["content"][0]["text"] = "other"
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_poisoned_turns(evidence, projections, ["a", "b"], "boot")
+
+
+@pytest.mark.parametrize("completed", [True, False])
+def test_completed_cleanup_fault_preserves_result_and_delegates_after_removal(
+    tmp_path, monkeypatch, completed
+):
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Binding:
+        tool: object
+        execute: object
+
+    @dataclass(frozen=True)
+    class Resource:
+        name: str
+        cleanup: object
+
+    calls = []
+    result = SimpleNamespace(
+        isError=False, structuredContent=projected()["result"]["details"]["structuredContent"]
+    )
+    result.structuredContent["completed"] = completed
+
+    async def execute(arguments, context):
+        calls.append("execute")
+        return result
+
+    async def cleanup():
+        calls.append("cleanup")
+        return True
+
+    service = SimpleNamespace(
+        bindings={"bicep_validate": Binding(SimpleNamespace(name="bicep_validate"), execute)},
+        resources={"bicep-docker": Resource("bicep-docker", cleanup)},
+        active=None,
+        ready=True,
+    )
+    app = observer.ObserveHTTP(
+        SimpleNamespace(service=service), tmp_path / "audit", owned_scope="owner"
+    )
+    fault = tmp_path / "fault"
+    observer.refuse_completed_cleanup(app, fault)
+
+    def inspect(command, **kwargs):
+        assert command[-1] == "label=maf-sandbox.scope=owner"
+        return ""
+
+    monkeypatch.setattr(observer.subprocess, "check_output", inspect)
+
+    async def scenario():
+        resource = service.resources["bicep-docker"]
+        binding = service.bindings["bicep_validate"]
+        assert await resource.cleanup()
+        fault.touch()
+        with pytest.raises(RuntimeError, match="retain admission"):
+            await resource.cleanup()
+        context = SimpleNamespace(session_id="session")
+        service.active = (context, None)
+        if completed:
+            assert await binding.execute({}, context) is result
+            assert await resource.cleanup() is False
+            assert calls == ["cleanup", "execute"]
+            assert [r["event"] for r in checker.records(app.evidence)] == [
+                "binding_started",
+                "binding_completed",
+                "completed_cleanup_refused",
+            ]
+        else:
+            with pytest.raises(RuntimeError, match="completed valid"):
+                await binding.execute({}, context)
+            with pytest.raises(RuntimeError, match="retain admission"):
+                await resource.cleanup()
+        fault.unlink()
+        assert await resource.cleanup()
+        assert calls[-1] == "cleanup"
+
+    asyncio.run(scenario())

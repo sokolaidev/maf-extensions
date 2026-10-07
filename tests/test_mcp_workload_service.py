@@ -1138,7 +1138,8 @@ def test_delete_can_retire_session_before_initialized_notification():
     asyncio.run(scenario())
 
 
-def test_bicep_cleanup_retry_preserves_global_poison(monkeypatch):
+@pytest.mark.parametrize("failed_purge", [2, 3, None])
+def test_bicep_cleanup_retry_preserves_global_poison(monkeypatch, failed_purge):
     from types import SimpleNamespace
 
     from agent_framework import Content
@@ -1152,8 +1153,8 @@ def test_bicep_cleanup_retry_preserves_global_poison(monkeypatch):
 
     async def purge(scope, thread):
         purges.append((scope, thread))
-        if len(purges) == 2:
-            raise RuntimeError("First call cleanup failed")
+        if len(purges) == failed_purge:
+            raise RuntimeError("Call cleanup failed")
         return ScopePurge()
 
     async def create(config):
@@ -1175,16 +1176,29 @@ def test_bicep_cleanup_retry_preserves_global_poison(monkeypatch):
         )
         async with running(composition.service) as (app, client, server):
             sid = await initialize(client)
+            resource = app.service.resources["bicep-docker"]
+            if failed_purge is None:
+
+                async def unconfirmed():
+                    return False
+
+                app.service.resources[resource.name] = replace(resource, cleanup=unconfirmed)
             args = {"files": [{"path": "main.bicep", "content": "output x int = 1"}]}
             first = await call(client, sid, "bicep_validate", args)
-            assert first.json()["result"]["structuredContent"]["status"] == "cleanup_failed"
-            assert len(purges) == 3
+            assert first.json()["result"]["isError"] is True
+            structured = first.json()["result"]["structuredContent"]
+            assert structured["status"] == "cleanup_failed"
+            assert structured["cleanup"] == "failed"
+            assert structured["completed"] is False and structured["verdict"] is None
+            assert len(purges) == (2 if failed_purge is None else 3)
             assert app.service.poisoned
             ready = await client.get("/ready")
             assert ready.status_code == 503
             second = await call(client, sid, "bicep_validate", args)
             assert second.json()["result"]["isError"]
             assert len(executions) == 1
+            if failed_purge is None:
+                app.service.resources[resource.name] = resource
 
     asyncio.run(scenario())
 
