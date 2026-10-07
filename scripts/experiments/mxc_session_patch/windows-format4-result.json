@@ -1,0 +1,206 @@
+{
+  "status": "qualified",
+  "platform": "Windows",
+  "architecture": "AMD64",
+  "source_commit": "e0881bb1898fc006a0fbed9d45c531490887f291",
+  "run_id": "37682974926",
+  "run_attempt": "1",
+  "pins": {
+    "host_base": "388ea8ebd88639a062f7a87f477db2930605a307",
+    "runtime_base": "2b4790d1626e2645dd1f00469311424be8cb2f94",
+    "mxc_base": "86fb3d2abaf9c431556692037bff881830b543a5",
+    "prerequisite_sha256": "657f885494a141517076bc3fb98be86b03cace8641e9fba46c86c28ff85a79ef",
+    "patches": {
+      "host": {
+        "sha256": "5a3c065fc604015557101005f94010c6c27d3422057bc9cc400231b4a8ab3428",
+        "files": {
+          "src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs": {
+            "before": null,
+            "after": "832148dbdc096b86b04929aeae920ab5eab6c44d8e712bfc4703206956a786d0"
+          },
+          "src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs": {
+            "before": "1bdbf4d53bea8b401846131b77af4223db87d006ba888de2e92fa452bc410b9f",
+            "after": "cd692f6a08d0ebd7f079f5c285dbde93682632a00a48e4753ecad3bf7ebb7dea"
+          },
+          "src/hyperlight_host/src/sandbox/snapshot/file/mod.rs": {
+            "before": "39f4518444d126ae49b108f0bd2608532adf2e51fc51899624e266721aefc261",
+            "after": "12179bfe468716067177f25f84716f1e4e98adbd23635a8922d4e4bd68bb4761"
+          }
+        }
+      },
+      "runtime": {
+        "sha256": "ffd23ce77006507f6d2fab60c4905bbcbc7b6373cc0371062201facfc30be289",
+        "files": {
+          "src/lib.rs": {
+            "before": "928c36065f7afb9bcd5a328476933a2c18cf789cadef344dfa0378877b958b71",
+            "after": "54aa93501703139888711dd07ab0ac34aba3a55f0721cc86a58348e106ef5e4f"
+          },
+          "src/output_capture.rs": {
+            "before": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40",
+            "after": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40"
+          }
+        }
+      },
+      "session": {
+        "sha256": "7cb9145cdcd18e988c312554e2da5ff1aab9fe00096368c85960b4a5f44daff4",
+        "files": {
+          "src/backends/hyperlight/common/src/session_preview.rs": {
+            "before": "f014bf5de86616681fae6ed26c3932e64637e83d8734bee07c36846ad6d46117",
+            "after": "b3999252ce171f00de4319ff9c34fcf90c760f8fea8880d83e6069ee09042887"
+          },
+          "src/backends/hyperlight/common/Cargo.toml": {
+            "before": "851bdc43a420d6af2897139ea606a36cd07d40a1898349fdd9797ca89f6c758f",
+            "after": "851bdc43a420d6af2897139ea606a36cd07d40a1898349fdd9797ca89f6c758f"
+          }
+        }
+      }
+    }
+  },
+  "hypervisor": "WHP",
+  "helper_sha256": "1163d00007adea175dc498cadfd10b0611a331788127637baf9001aa92993419",
+  "durability": {
+    "format": 4,
+    "helper_sha256": "1163d00007adea175dc498cadfd10b0611a331788127637baf9001aa92993419",
+    "platform": "Windows",
+    "python": "3.12.10",
+    "sqlite": "3.49.1",
+    "source_commit": "e0881bb1898fc006a0fbed9d45c531490887f291",
+    "run_id": "37682974926",
+    "run_attempt": "1",
+    "boundaries": [
+      {
+        "boundary": "before_commit",
+        "committed": false,
+        "before": {
+          "": 3065242825,
+          "one": 3065238729
+        },
+        "after": {
+          "": 915389641,
+          "one": 915385545
+        }
+      },
+      {
+        "boundary": "after_commit",
+        "committed": true,
+        "before": {
+          "": 1830752658,
+          "one": 1830748562
+        },
+        "after": {
+          "": 1830752658,
+          "one": 1830748562
+        }
+      },
+      {
+        "boundary": "before_ack",
+        "committed": true,
+        "before": {
+          "": 2746115675,
+          "one": 2746111579
+        },
+        "after": {
+          "": 2746115675,
+          "one": 2746111579
+        }
+      },
+      {
+        "boundary": "before_cleanup_intent",
+        "committed": true,
+        "before": {
+          "": 3661478692,
+          "one": 3661474596
+        },
+        "after": {
+          "": 3661478692,
+          "one": 3661474596
+        }
+      },
+      {
+        "boundary": "after_cleanup_intent",
+        "committed": true,
+        "before": {
+          "": 4576841709,
+          "one": 4576837613
+        },
+        "after": {
+          "": 4576841709,
+          "one": 4576837613
+        }
+      },
+      {
+        "boundary": "after_scratch_removal",
+        "committed": true,
+        "before": {
+          "": 5492204726,
+          "one": 5492200630
+        },
+        "after": {
+          "": 5492204726,
+          "one": 5492200630
+        }
+      },
+      {
+        "boundary": "before_cleanup_release",
+        "committed": true,
+        "before": {
+          "": 6407567743,
+          "one": 6407563647
+        },
+        "after": {
+          "": 6407567743,
+          "one": 6407563647
+        }
+      },
+      {
+        "boundary": "after_cleanup_release",
+        "committed": true,
+        "before": {
+          "": 7322930760,
+          "one": 7322926664
+        },
+        "after": {
+          "": 7322930760,
+          "one": 7322926664
+        }
+      }
+    ],
+    "quota_controls": {
+      "session": {
+        "refused_before_launch": true,
+        "replay_sha256": "dc7694120f43b4a863fe6b1646f5f469235979129075f1e26eaf1b61466c657d"
+      },
+      "store": {
+        "refused_before_launch": true,
+        "replay_sha256": "dc7694120f43b4a863fe6b1646f5f469235979129075f1e26eaf1b61466c657d"
+      }
+    },
+    "collected_checkpoints": 8,
+    "replay_after_collection": true,
+    "qualified": true
+  },
+  "bounded_export": {
+    "helper_sha256": "1163d00007adea175dc498cadfd10b0611a331788127637baf9001aa92993419",
+    "bounded_export": {
+      "bytes": {
+        "written_bytes": 0,
+        "written_files": 0,
+        "byte_limit": 1,
+        "file_limit": 128
+      },
+      "files": {
+        "written_bytes": 915275776,
+        "written_files": 1,
+        "byte_limit": 2147483648,
+        "file_limit": 1
+      }
+    },
+    "same_machine_restart_replay": true,
+    "failed_exports_preserve_checkpoint": true,
+    "interrupted_calls_refuse_reexecution": true,
+    "scratch_reclaimed": true,
+    "collected_checkpoint_preserves_delivery": true,
+    "max_result_bytes": 2097152
+  },
+  "overlays_removed": true
+}
