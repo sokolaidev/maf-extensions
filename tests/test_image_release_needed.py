@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -603,6 +604,80 @@ def test_unchanged_newer_observation_prevents_delayed_intermediate_scan(reporter
     tracker.main()
     assert client.items == saved
     assert len(client.items) == 1
+
+
+def test_issue_created_between_pages_does_not_duplicate_a_release_request(reporter, monkeypatch):
+    client, _ = reporter
+    tracker.main()
+    client.items[0]["number"] = 101
+    issues = [{"number": number, "body": ""} for number in range(1, 201)]
+    issues[100] = copy.deepcopy(client.items[0])
+
+    def request(endpoint):
+        query = parse_qs(urlsplit(endpoint).query)
+        page = int(query["page"][0])
+        if page == 2:
+            issues.append({"number": 201, "body": ""})
+        ordered = sorted(
+            issues, key=lambda item: item["number"], reverse=query.get("direction") != ["asc"]
+        )
+        return encode(ordered[(page - 1) * 100 : page * 100])
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr(client, "pages", lambda endpoint: GitHub.pages(client, endpoint))
+    tracker.main()
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("filename", ["file*.txt", "file?.txt", "file[1].txt"])
+def test_source_commit_uses_literal_changed_filenames(reporter, monkeypatch, tmp_path, filename):
+    client, current = reporter
+    current["observed"] = None
+
+    def git(root, *args):
+        return subprocess.check_output(["git", *args], cwd=root).decode("utf-8")
+
+    def object_id(*args, data):
+        return subprocess.check_output(["git", *args], input=data, cwd=tmp_path).decode().strip()
+
+    def tree(literal, other):
+        entries = []
+        for name, content in sorted([(filename, literal), ("file1.txt", other)]):
+            blob = object_id("hash-object", "-w", "--stdin", data=content)
+            entries.append(f"100644 blob {blob}\t{name}\0")
+        value = object_id("mktree", "-z", data="".join(entries).encode())
+        for name in ("diagram-sandbox", "images"):
+            value = object_id("mktree", "-z", data=f"040000 tree {value}\t{name}\0".encode())
+        return value
+
+    git(tmp_path, "init")
+    parent = []
+    revisions = []
+    for literal, other in [(b"old", b"new"), (b"new", b"old"), (b"new", b"new")]:
+        revision = git(
+            tmp_path,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit-tree",
+            tree(literal, other),
+            *parent,
+            "-m",
+            "test",
+        ).strip()
+        revisions.append(revision)
+        parent = ["-p", revision]
+    git(tmp_path, "update-ref", "HEAD", revisions[-1])
+    path = f"images/diagram-sandbox/{filename}"
+    assert git(tmp_path, "diff", "--name-only", "-z", revisions[0], revisions[-1]) == path + "\0"
+    monkeypatch.setattr(tracker, "ROOT", tmp_path)
+    monkeypatch.setattr(tracker, "git", git)
+    monkeypatch.setattr(tracker, "changed_inputs", lambda *_: [path])
+    tracker.main()
+    match = tracker.STATE.search(client.items[0]["body"])
+    assert match is not None
+    assert json.loads(match[1])["reasons"]["source"]["commit"] == revisions[1]
 
 
 @pytest.mark.parametrize("author", ["outside-contributor", "other-bot[bot]"])

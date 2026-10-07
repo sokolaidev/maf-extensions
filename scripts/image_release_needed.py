@@ -494,7 +494,7 @@ def main() -> None:
     if snapshot is None:
         print("No completed image releases; no replacement requests to reconcile.")
         return
-    issues = client.pages(f"repos/{REPOSITORY}/issues?state=all")
+    issues = client.pages(f"repos/{REPOSITORY}/issues?state=all&sort=created&direction=asc")
     source = git(ROOT, "rev-parse", "HEAD").strip()
     with tempfile.TemporaryDirectory(prefix="maf-release-requests-") as temporary:
         root = Path(temporary)
@@ -532,7 +532,9 @@ def main() -> None:
             if candidate and changed_inputs(ROOT, candidate["source"], source, profile):
                 candidate = None
             required_source = (
-                git(ROOT, "log", "-1", "--format=%H", source, "--", *changed).strip()
+                git(
+                    ROOT, "--literal-pathspecs", "log", "-1", "--format=%H", source, "--", *changed
+                ).strip()
                 if changed
                 else source
             )
