@@ -25,6 +25,7 @@ import re
 import subprocess
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,14 @@ class ObserveHTTP:
                         timeout=15,
                     ).split()
                     self.record(event="startup_ready", owner_empty=not owned)
+                if message["type"] == "lifespan.startup.failed":
+                    self.record(
+                        event="startup_failed",
+                        ready=self.app.service.ready,
+                        poisoned=self.app.service.poisoned,
+                        active=self.app.service.active is not None,
+                        sessions=len(self.app.sessions),
+                    )
                 await send(message)
 
             await self.app(scope, receive, lifetime)
@@ -223,6 +232,31 @@ class ObserveHTTP:
             )
 
 
+def refuse_owned_cleanup(observer: ObserveHTTP, fault: Path) -> None:
+    """Inject unconfirmed cleanup for one exact retained orphan in this fixture only."""
+    resource = observer.app.service.resources["bicep-docker"]
+
+    async def cleanup() -> bool:
+        if not fault.exists():
+            return await resource.cleanup()
+        container = fault.read_text(encoding="ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{12}(?:[0-9a-f]{52})?", container) is None:
+            raise RuntimeError("Cleanup fault requires an exact container identity")
+        owned = subprocess.check_output(
+            ["docker", "ps", "-aq", "--filter", f"label=maf-sandbox.scope={observer.owned_scope}"],
+            text=True,
+            encoding="utf-8",
+            stderr=subprocess.PIPE,
+            timeout=15,
+        ).split()
+        if owned != [container]:
+            raise RuntimeError("Cleanup fault does not match the retained orphan")
+        observer.record(event="cleanup_refused", resource=resource.name, container=container)
+        return False
+
+    observer.app.service.resources[resource.name] = replace(resource, cleanup=cleanup)
+
+
 def crash_active_service(observer: ObserveHTTP) -> None:
     """Exit without cleanup only while this fixture supervises an unfinished call."""
     active = observer.app.service.active
@@ -248,6 +282,7 @@ if __name__ == "__main__":
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--crash-file", type=Path)
+    parser.add_argument("--refuse-cleanup-file", type=Path)
     parser.add_argument("--drop-result-file", type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
@@ -284,6 +319,8 @@ if __name__ == "__main__":
                     )
                 },
             )
+            if args.refuse_cleanup_file is not None:
+                refuse_owned_cleanup(observer, args.refuse_cleanup_file)
             host = transport.server(app)
             host.config.app = observer
 
