@@ -1440,7 +1440,7 @@ wheels = [
 
 [[package]]
 name = "maf-cachebench"
-version = "0.0.0"
+version = "0.1.0"
 source = { editable = "packages/maf-cachebench" }
 dependencies = [
     { name = "agent-framework-core" },
