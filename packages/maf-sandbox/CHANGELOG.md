@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.49.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.48.0...maf-sandbox-v0.49.0) (2026-10-07)
+
+
+### Features
+
+* adopt MAF provenance and guidance with scoped store bindings ([#1749](https://github.com/sokolaidev/maf-extensions/issues/1749)) ([cc20dd8](https://github.com/sokolaidev/maf-extensions/commit/cc20dd89b9e31e9d527446cd84e9cd674878d602))
+
 ## [0.48.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.47.2...maf-sandbox-v0.48.0) (2026-10-05)
 
 
