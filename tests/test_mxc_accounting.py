@@ -254,6 +254,37 @@ def test_audit_and_reopen_refuse_corrupt_accounting_without_repair(tmp_path, cor
         store.SharedStore(root, "one", PROFILE, LIMITS)
 
 
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("sessions", "id"),
+        ("calls", "session"),
+        ("calls", "id"),
+        ("reservations", "session"),
+        ("reservations", "call"),
+    ],
+)
+@pytest.mark.parametrize("change", ["null", "rename", "unchanged"])
+def test_accounted_identities_are_immutable(tmp_path, table, column, change):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS) as db:
+        if table != "sessions":
+            db.begin("a", b"code")
+        before = list(db.db.execute(f"SELECT * FROM {table}"))
+        totals = list(db.db.execute("SELECT * FROM logical_usage ORDER BY session"))
+        original = db.db.execute(f"SELECT {column} FROM {table}").fetchone()[0]
+        value = {"null": None, "rename": "other", "unchanged": original}[change]
+        statement = f"UPDATE {table} SET {column}=?"
+        if change == "unchanged":
+            db.db.execute(statement, (value,))
+        else:
+            with pytest.raises(sqlite3.IntegrityError, match="accounted identity is immutable"):
+                db.db.execute(statement, (value,))
+        assert list(db.db.execute(f"SELECT * FROM {table}")) == before
+        assert list(db.db.execute("SELECT * FROM logical_usage ORDER BY session")) == totals
+        db.audit_usage()
+        reconcile(db)
+
+
 @pytest.mark.parametrize("value", [-1, 1.5, "invalid", 2**63 - 1])
 def test_invalid_source_charge_cannot_partially_update_totals(tmp_path, value):
     with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS) as db:

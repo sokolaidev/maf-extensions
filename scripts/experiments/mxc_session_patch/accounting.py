@@ -44,7 +44,7 @@ def _triggers() -> dict[str, str]:
         ("calls", "session,id"),
         ("reservations", "session,call"),
     ):
-        changed = " OR ".join(f"OLD.{column}!=NEW.{column}" for column in key.split(","))
+        changed = " OR ".join(f"OLD.{column} IS NOT NEW.{column}" for column in key.split(","))
         bodies[f"{table}_identity"] = (
             f"BEFORE UPDATE OF {key} ON {table} WHEN {changed}",
             "SELECT RAISE(ABORT,'accounted identity is immutable');",
