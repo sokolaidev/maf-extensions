@@ -205,6 +205,10 @@ def test_correct_requires_both_full_recall_and_no_retraction() -> None:
 def test_scenario_supplies_the_pipeline_contradiction() -> None:
     scenario = build_recall_scenario(salt="s", filler_turns=3, filler_tokens=50)
     assert any(entry.superseded == "batch pipeline" for entry in scenario.contradictions)
+    opening = scenario.transcript.turns[0].request[0].text
+    assert "use the batch pipeline" in opening
+    correction = next(fact for fact in scenario.facts if fact.marker == "streaming pipeline")
+    assert correction.turn > 1
 
 
 def test_correctness_score_is_graded_not_binary() -> None:

@@ -363,12 +363,12 @@ async def test_stability_requires_warm_observations(
 
     monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
     args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(call_count)])
-    assert await run(args) == 0
+    assert await run(args) == (0 if steady else 1)
     output = capsys.readouterr().out
     assert ("\nSTEADY:" in output) is steady
     assert ("Not enough usable calls" in output) is not steady
     if steady:
-        assert "warm calls (excluding the first): 2" in output
+        assert "warm calls (after priming): 2" in output
 
 
 @pytest.mark.parametrize(
@@ -426,10 +426,14 @@ async def test_stability_keeps_all_warm_calls_after_unreported_first_call(
     )
     monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
     args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(len(warm_hits) + 1)])
-    assert await run(args) == 0
+    usable_hits = warm_hits[1:] if first_error else warm_hits
+    assert await run(args) == (0 if len(usable_hits) >= 2 else 1)
     output = capsys.readouterr().out
-    assert f"warm calls (excluding the first): {len(warm_hits)}" in output
-    assert ("INTERMITTENT:" in output) is (10 in warm_hits)
+    if len(usable_hits) >= 2:
+        assert f"warm calls (after priming): {len(usable_hits)}" in output
+        assert ("INTERMITTENT:" in output) is (10 in usable_hits)
+    else:
+        assert "Not enough usable calls" in output
 
 
 @pytest.mark.parametrize(
@@ -491,13 +495,13 @@ async def test_stability_requires_positive_reported_input(
     )
     monkeypatch.setitem(run.__globals__, "ProviderCaller", lambda *a, **k: respond)
     args = namespace["build_parser"]().parse_args(["mistral", "--calls", str(valid_warm_calls + 2)])
-    assert await run(args) == 0
-    output = capsys.readouterr().out
     usable = valid_warm_calls + (input_tokens == 100)
+    assert await run(args) == (0 if usable >= 2 else 1)
+    output = capsys.readouterr().out
     if usable < 2:
         assert "Not enough usable calls" in output
     else:
-        assert f"warm calls (excluding the first): {usable}" in output
+        assert f"warm calls (after priming): {usable}" in output
         assert "STEADY:" in output
     assert "INTERMITTENT:" not in output
     if input_tokens != 100:

@@ -26,6 +26,7 @@ case "$MODEL" in
     ;;
   *) echo "unknown model $MODEL" >&2; exit 2 ;;
 esac
+status=0
 for job in "$@"; do
   f="${job%%:*}"; s="${job##*:}"
   echo "$(date -Is) START $MODEL f$f s$s stream=$STREAM" >> "$S/run67/progress.txt"
@@ -40,5 +41,8 @@ for job in "$@"; do
     --results-jsonl "$OUT/f${f}-s${s}.jsonl" \
     $PRICES ${DRY:-} \
     > "$OUT/f${f}-s${s}${DRY:+-dry}.log" 2>&1
-  echo "$(date -Is) DONE $MODEL f$f s$s${DRY:+ dry} exit=$?" >> "$S/run67/progress.txt"
+  rc=$?
+  echo "$(date -Is) DONE $MODEL f$f s$s${DRY:+ dry} exit=$rc" >> "$S/run67/progress.txt"
+  if [ "$rc" -ne 0 ]; then status=$rc; fi
 done
+exit "$status"

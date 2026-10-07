@@ -93,11 +93,14 @@ async def run(args: argparse.Namespace) -> int:
     )
     print(f"{'call':>5}{'input':>9}{'cached':>9}{'hit%':>7}{'ms':>8}")
     hits: list[tuple[int, float]] = []
+    priming_call: int | None = None
     for index in range(1, args.calls + 1):
         outcome = await caller(messages)
         if outcome.error:
             print(f"{index:>5}  ERROR {outcome.error[:60]}")
             continue
+        if priming_call is None:
+            priming_call = index
         got = outcome.input_tokens
         cached = outcome.cached_tokens
         if got is None or got <= 0 or cached is None:
@@ -109,15 +112,14 @@ async def run(args: argparse.Namespace) -> int:
         hits.append((index, hit))
         print(f"{index:>5}{got:>9,}{cached:>9,}{hit:>6.0%}{outcome.latency_ms:>8.0f}")
 
-    warm = [hit for index, hit in hits if index > 1]
+    warm = [hit for index, hit in hits if priming_call is not None and index > priming_call]
     if len(warm) < 2:
         print("\nNot enough usable calls to judge stability.")
-        return 0
+        return 1
 
-    # The first call cannot hit a cache that nothing has written yet, so it is reported but
-    # excluded: counting it as a miss would make every provider look intermittent.
+    # A successful response can prime the cache even when its usage is unreported.
     lo, hi = min(warm), max(warm)
-    print(f"\nwarm calls (excluding the first): {len(warm)}")
+    print(f"\nwarm calls (after priming): {len(warm)}")
     print(f"hit rate  min {lo:.0%}   median {statistics.median(warm):.0%}   max {hi:.0%}")
     print(f"spread    {hi - lo:.0%} of the prompt")
     misses = sum(1 for value in warm if value < 0.5)

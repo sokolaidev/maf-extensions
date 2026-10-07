@@ -399,7 +399,9 @@ class ProviderCaller:
         """Send ``messages``, retrying on throttling, and return the usage measurements."""
         last_error: BaseException | None = None
         rate_retries = 0
-        for _ in range(self.max_retries + len(self.options) + 1):
+        extra = self.options.get("extra_body")
+        nested_count = len(cast("Mapping[str, Any]", extra)) if isinstance(extra, Mapping) else 0
+        for _ in range(self.max_retries + len(self.options) + nested_count + 1):
             started = time.perf_counter()
             try:
                 # Options travel as a single ``options`` mapping, not as **kwargs: the

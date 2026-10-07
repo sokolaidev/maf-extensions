@@ -511,6 +511,7 @@ def build_recall_scenario(
                     role="user",
                     contents=[
                         (
+                            "For the deployment, use the batch pipeline. "
                             f"Two hard requirements for the final report. "
                             f"Requirement {requirement_markers[0]}: every section must be "
                             f"numbered. Requirement {requirement_markers[1]}: the report must "

@@ -1140,3 +1140,29 @@ async def test_replay_removes_rejected_options_without_mutating_runtime(location
     assert outcome.error is None
     assert client.calls == 2
     assert options == original
+
+
+@pytest.mark.parametrize("rate_failures", [0, 3])
+async def test_replay_allows_every_nested_option_correction(rate_failures: int) -> None:
+    from typing import Any
+
+    class Client:
+        calls = 0
+
+        async def get_response(self, messages: Any, *, options: dict[str, Any]) -> Any:
+            self.calls += 1
+            if self.calls <= rate_failures:
+                raise _Throttled()
+            for name in ("temperature", "max_tokens", "prompt_cache_key"):
+                if name in options.get("extra_body", {}):
+                    raise ValueError(f"Unsupported parameter: '{name}'")
+            return SimpleNamespace(usage_details={"input_token_count": 7}, text="ok")
+
+    options = {"extra_body": {"temperature": 0, "max_tokens": 16, "prompt_cache_key": "k"}}
+    client = Client()
+    result = await ProviderCaller(
+        ProviderRuntime(client, "stub", options), max_retries=rate_failures, retry_base_delay=0
+    )(())
+    assert result.error is None
+    assert client.calls == rate_failures + 4
+    assert len(options["extra_body"]) == 3
