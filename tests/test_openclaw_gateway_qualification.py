@@ -1596,3 +1596,28 @@ def test_delete_observer_records_actual_registration_and_active_session(tmp_path
     assert len({r["exchange"] for r in rows}) == 1
     assert rows[-1]["session_registered"] is False and rows[-1]["sessions"] == 1
     assert rows[-1]["active_session"] == (None if active else observer.digest(b"active".hex()))
+
+
+@pytest.mark.parametrize(
+    "status,payload",
+    [
+        (200, {"error": {"message": "internal error", "type": "api_error"}}),
+        (500, {"choices": []}),
+        (503, {"error": {"message": "internal error", "type": "api_error"}}),
+        (500, {"error": {"message": "different error", "type": "api_error"}}),
+        (500, {"error": {"message": "internal error", "type": "different"}}),
+        (500, None),
+    ],
+)
+def test_deleted_turn_rejects_success_or_unrelated_gateway_errors(status, payload):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_deleted_turn(status, payload)
+
+
+def test_deleted_turn_requires_pinned_gateway_abort_projection():
+    assert (
+        lifecycle.verify_deleted_turn(
+            500, {"error": {"message": "internal error", "type": "api_error"}}
+        )
+        == 500
+    )

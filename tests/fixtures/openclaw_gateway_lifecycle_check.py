@@ -469,6 +469,15 @@ def verify_retirement(
     }
 
 
+def verify_deleted_turn(status: int, payload: Any) -> int:
+    """Pin the Gateway's non-streaming response to a session-deletion abort."""
+    require(
+        status == 500 and payload == {"error": {"message": "internal error", "type": "api_error"}},
+        "Deleted active turn did not return the pinned Gateway abort error",
+    )
+    return status
+
+
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -1322,8 +1331,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                             "Idle deletion or replacement disturbed the active compiler",
                         )
                 response = pending.getresponse()
-                response.read()
-                require(response.status == 200, "Gateway did not settle the deleted active turn")
+                retirement_reports["aborted_turn_http_status"] = verify_deleted_turn(
+                    response.status, json.loads(response.read())
+                )
                 require(
                     not any(
                         r.get("turn") == retirement_turn and "tool_result" in r
