@@ -41,7 +41,17 @@ def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
             raise ValueError("Invalid comparison commit")
     output = git(root, "diff", "--name-only", "--no-renames", "-z", base, head, "--")
     paths = [path for path in output.split("\0") if path]
-    ignored = metadata_only(root, base, head, paths)
+    try:
+        ignored = metadata_only(root, base, head, paths)
+    except (
+        subprocess.CalledProcessError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ):
+        ignored = set()
     result = []
     for path in paths:
         if path in ignored or path.startswith(("tests/", ".github/")):

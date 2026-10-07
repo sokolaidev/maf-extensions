@@ -459,6 +459,33 @@ def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_pa
     assert not result["resolved"]
 
 
+@pytest.mark.parametrize("path", ["packages/maf-sandbox/pyproject.toml", "uv.lock"])
+@pytest.mark.parametrize("change", ["added", "deleted", "malformed"])
+def test_unclassifiable_metadata_remains_a_release_input(tmp_path, path, change):
+    tracker.git(tmp_path, "init")
+    valid = '[project]\nname = "maf-sandbox"\nversion = "1.0.0"\n'
+    files = {"README.md": "baseline"}
+    if change != "added":
+        files[path] = valid
+    base = commit(tmp_path, files)
+    if change == "deleted":
+        (tmp_path / path).unlink()
+        head = commit(tmp_path, {})
+    else:
+        head = commit(tmp_path, {path: valid if change == "added" else "[invalid"})
+    changed = tracker.changed_inputs(tmp_path, base, head, "diagram")
+    assert changed == [path]
+    previous = desired(changed=changed)
+    assert not desired(record=replacement(), changed=changed, previous=previous)["resolved"]
+
+
+def test_missing_comparison_history_still_refuses_reconciliation(tmp_path):
+    tracker.git(tmp_path, "init")
+    head = commit(tmp_path, {"README.md": "baseline"})
+    with pytest.raises(subprocess.CalledProcessError):
+        tracker.changed_inputs(tmp_path, "0" * 40, head, "diagram")
+
+
 def test_git_helper_preserves_output_whitespace(tmp_path):
     tracker.git(tmp_path, "init")
     tracker.git(tmp_path, "config", "test.value", " value \t")
