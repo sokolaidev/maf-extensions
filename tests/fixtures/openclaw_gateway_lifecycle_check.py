@@ -1187,6 +1187,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 flush=True,
             )
 
+            assert gateway_process is not None and service_process is not None
+
             def rpc(method, params):
                 operation = subprocess.run(
                     [

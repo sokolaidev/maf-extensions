@@ -230,6 +230,7 @@ class ObserveHTTP:
                 raise RuntimeError("Qualification intentionally withheld the tool result")
         finally:
             if retiring_record is not None and retiring_record.retiring is not None:
+                assert session is not None
 
                 def retired(task):
                     active = self.app.service.active
