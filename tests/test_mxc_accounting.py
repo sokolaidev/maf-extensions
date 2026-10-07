@@ -269,6 +269,28 @@ def test_missing_ledger_refuses_audit_and_reopen_without_repair(tmp_path, upgrad
     assert (root / "shared.sqlite").read_bytes() == before
 
 
+@pytest.mark.parametrize("corruption", ["missing_charge", "missing_session", "source_quota"])
+def test_malformed_accounting_schema_is_refused_without_repair(tmp_path, corruption):
+    root = tmp_path / "db"
+    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+        db.begin("a", b"code")
+        if corruption == "source_quota":
+            db.db.execute("ALTER TABLE settings RENAME COLUMN quota TO broken")
+        else:
+            db.db.execute("DROP TABLE logical_usage")
+            column = "session TEXT" if corruption == "missing_charge" else "charge INTEGER"
+            db.db.execute(f"CREATE TABLE logical_usage({column})")
+        before = (root / "shared.sqlite").read_bytes()
+        with pytest.raises(store.Refused, match="cannot audit logical accounting") as error:
+            db.audit_usage()
+        assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
+        assert (root / "shared.sqlite").read_bytes() == before
+    with pytest.raises(store.Refused, match="cannot audit logical accounting") as error:
+        store.SharedStore(root, "one", PROFILE, LIMITS)
+    assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
+    assert (root / "shared.sqlite").read_bytes() == before
+
+
 @pytest.mark.parametrize(
     ("table", "column"),
     [
