@@ -1,6 +1,6 @@
 [project]
 name = "maf-cachebench"
-version = "0.0.0"
+version = "0.1.0"
 description = "Benchmark for Microsoft Agent Framework compaction strategies: what each one costs in prompt-cache hits and what it loses, measured on a replayed conversation or a live agent."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
