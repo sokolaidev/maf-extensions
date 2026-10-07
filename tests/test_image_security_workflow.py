@@ -55,6 +55,7 @@ def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_pa
             "GITHUB_SERVER_URL": "https://github.com",
             "GITHUB_REPOSITORY": "sokolaidev/maf-extensions",
             "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "2",
             "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary),
         },
@@ -65,6 +66,8 @@ def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_pa
     assert output.read_text() == f"image_id={evidence['local_image_id']}\n"
     assert evidence["local_image_id"] == IMAGE_ID
     assert evidence["source_commit"] == revision
+    assert evidence["run_id"] == "123"
+    assert evidence["run_attempt"] == "2"
     assert "not a registry manifest digest" in summary.read_text()
     assert evidence["run_url"] == "https://github.com/sokolaidev/maf-extensions/actions/runs/123"
 

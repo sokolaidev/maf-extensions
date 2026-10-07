@@ -41,6 +41,7 @@ IMAGE_INPUTS = {
     "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/": ("egress-proxy",),
 }
 SCRIPT_INPUTS = {
+    "scripts/terraform_dependencies.py": ("terraform-prepared", "opentofu-prepared"),
     "scripts/build_bicep_prepared_image.py": ("bicep-prepared",),
     "scripts/bicep_dependencies.py": ("bicep-prepared",),
     "scripts/build_hyperlight_aks_image.py": ("hyperlight",),
@@ -166,6 +167,14 @@ def main() -> None:
     parser.add_argument("--head", default=os.environ.get("GITHUB_SHA", ""))
     args = parser.parse_args()
     profiles, reason = select(Path(__file__).resolve().parents[1], args.event, args.base, args.head)
+    requested = os.environ.get("SELECTED_PROFILE", "all")
+    if args.event == "workflow_dispatch" and requested != "all":
+        if requested not in PROFILES:
+            raise ValueError("Unknown manually selected image profile")
+        profiles, reason = (
+            [requested],
+            "Manually selected profile; other profiles were not scanned.",
+        )
     output = f"profiles={json.dumps(profiles)}\nscan={str(bool(profiles)).lower()}\n"
     print(output, end="")
     if target := os.environ.get("GITHUB_OUTPUT"):

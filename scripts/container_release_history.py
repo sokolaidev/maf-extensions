@@ -111,8 +111,9 @@ class GitHub:
     def pages(self, endpoint: str) -> list[dict[str, Any]]:
         """Read every API page; incomplete pagination cannot establish the latest record."""
         values: list[dict[str, Any]] = []
+        separator = "&" if "?" in endpoint else "?"
         for page in range(1, 10_001):
-            batch = decode(self.request(f"{endpoint}?per_page=100&page={page}"))
+            batch = decode(self.request(f"{endpoint}{separator}per_page=100&page={page}"))
             if not isinstance(batch, list) or any(not isinstance(item, dict) for item in batch):
                 raise ValueError("Unexpected GitHub list response")
             values.extend(batch)

@@ -1,0 +1,58 @@
+name: Image release tracking
+
+on:
+  workflow_run:
+    workflows: [Image security, Container image monitor, Container image release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: image-release-needed
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: >-
+      github.repository == 'sokolaidev/maf-extensions' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: container-security-catalogue
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Reconcile per-profile release requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: uv run --locked python scripts/image_release_needed.py
+      - name: Report unavailable release tracking
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- image-release-tracking-failure -->'
+          --title 'Image release tracking is unavailable'
+          --reproduce 'Inspect this run and rerun Image release tracking on main after restoring evidence access.'
+          --expected 'Verified release evidence and complete issue retrieval allow one deduplicated release request per affected profile. Missing evidence must not close an existing request.'
+          --packages maf-sandbox
