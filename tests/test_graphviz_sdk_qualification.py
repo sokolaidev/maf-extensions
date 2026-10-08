@@ -23,19 +23,31 @@ qualification = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(qualification)
 
 
-def png():
-    def chunk(kind, value):
-        return (
-            struct.pack(">I", len(value))
-            + kind
-            + value
-            + struct.pack(">I", zlib.crc32(kind + value))
-        )
+def chunk(kind, value):
+    return (
+        struct.pack(">I", len(value)) + kind + value + struct.pack(">I", zlib.crc32(kind + value))
+    )
+
+
+def png(
+    *,
+    pixels=b"\0\xff\0\0",
+    width=1,
+    height=1,
+    depth=8,
+    color=2,
+    compression=0,
+    filtering=0,
+    interlace=0,
+):
 
     return (
         b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(b"\0\xff\0\0"))
+        + chunk(
+            b"IHDR",
+            struct.pack(">IIBBBBB", width, height, depth, color, compression, filtering, interlace),
+        )
+        + chunk(b"IDAT", zlib.compress(pixels))
         + chunk(b"IEND", b"")
     )
 
@@ -232,3 +244,57 @@ def test_monitoring_is_reported_separately_from_verified_identity(monkeypatch, s
         lambda *a, **k: SimpleNamespace(stdout=json.dumps(verified)),
     )
     assert qualification.verify_release(Path("policy"), Path("evidence")) == verified
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"pixels": b"\0"},
+        {"pixels": b"\0\xff\0\0extra"},
+        {"height": 2},
+        {"pixels": b"\x05\xff\0\0"},
+        {"depth": 16},
+        {"color": 3},
+        {"compression": 1},
+        {"filtering": 1},
+        {"interlace": 1},
+        {"width": 16 * 1024 * 1024},
+    ],
+)
+def test_png_refuses_invalid_or_unsupported_scanlines(change):
+    with pytest.raises(ValueError):
+        qualification.png_details(png(**change))
+
+
+@pytest.mark.parametrize("color,channels", [(2, 3), (6, 4)])
+@pytest.mark.parametrize("filter_byte", range(5))
+def test_png_accepts_complete_rgb_and_rgba_scanlines(color, channels, filter_byte):
+    row = bytes([filter_byte]) + bytes(2 * channels)
+    details = qualification.png_details(png(width=2, height=3, color=color, pixels=row * 3))
+    assert (details["width"], details["height"]) == (2, 3)
+
+
+@pytest.mark.parametrize("layout", ["header-after-data", "unknown-critical", "separated-data"])
+def test_png_refuses_invalid_chunk_layout(layout):
+    original = png()
+    signature, header, image_data, end = (
+        original[:8],
+        original[8:33],
+        original[33:-12],
+        original[-12:],
+    )
+    if layout == "header-after-data":
+        malformed = signature + image_data + header + end
+    elif layout == "unknown-critical":
+        malformed = signature + header + chunk(b"ABCD", b"") + image_data + end
+    else:
+        malformed = (
+            signature
+            + header
+            + image_data
+            + chunk(b"tEXt", b"key\0value")
+            + chunk(b"IDAT", b"")
+            + end
+        )
+    with pytest.raises(ValueError):
+        qualification.png_details(malformed)

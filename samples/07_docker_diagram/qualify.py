@@ -89,24 +89,42 @@ def installed_packages() -> dict[str, str]:
 
 
 def png_details(data: bytes) -> dict[str, Any]:
-    """Check PNG chunk integrity and retain dimensions and a content digest."""
+    """Validate bounded, noninterlaced 8-bit RGB/RGBA scanlines for the fixed render probe."""
     require(data.startswith(b"\x89PNG\r\n\x1a\n"), "Output is not PNG")
     offset, chunks, dimensions = 8, [], None
     compressed = bytearray()
+    stride = expected_size = 0
     while offset < len(data):
         require(offset + 12 <= len(data), "Truncated PNG chunk")
         size = struct.unpack_from(">I", data, offset)[0]
         end = offset + 12 + size
         require(end <= len(data), "Truncated PNG payload")
         kind = data[offset + 4 : offset + 8]
+        require(bool(chunks) or kind == b"IHDR", "PNG must start with IHDR")
+        require(
+            kind[0] & 32 != 0 or kind in {b"IHDR", b"IDAT", b"IEND"},
+            "Unsupported critical PNG chunk",
+        )
         payload = data[offset + 8 : end - 4]
         crc = struct.unpack_from(">I", data, end - 4)[0]
         require(zlib.crc32(kind + payload) == crc, "PNG checksum mismatch")
         if kind == b"IHDR":
             require(not chunks and size == 13, "Invalid PNG header")
-            dimensions = struct.unpack_from(">II", payload)
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB", payload
+            )
+            dimensions = (width, height)
             require(all(dimensions), "Empty PNG dimensions")
+            require(
+                depth == 8 and color in {2, 6} and compression == filtering == interlace == 0,
+                "Probe requires noninterlaced 8-bit RGB or RGBA PNG",
+            )
+            stride = 1 + width * (3 if color == 2 else 4)
+            expected_size = stride * height
+            # The fixed three-node graph cannot reasonably need more than this output budget.
+            require(expected_size <= 16 * 1024 * 1024, "PNG raster exceeds probe budget")
         if kind == b"IDAT":
+            require(b"IDAT" not in chunks or chunks[-1] == b"IDAT", "Nonconsecutive PNG data")
             compressed.extend(payload)
         chunks.append(kind)
         offset = end
@@ -116,9 +134,18 @@ def png_details(data: bytes) -> dict[str, Any]:
     require(dimensions is not None and chunks[-1:] == [b"IEND"], "Incomplete PNG")
     require(bool(compressed), "PNG contains no pixels")
     inflater = zlib.decompressobj()
-    # The fixed three-node graph cannot reasonably need more than this output budget.
-    pixels = inflater.decompress(bytes(compressed), 16 * 1024 * 1024)
-    require(bool(pixels) and inflater.eof and not inflater.unused_data, "Invalid PNG pixels")
+    pixels = inflater.decompress(bytes(compressed), expected_size + 1)
+    require(
+        len(pixels) == expected_size
+        and inflater.eof
+        and not inflater.unused_data
+        and not inflater.unconsumed_tail,
+        "PNG raster does not match IHDR",
+    )
+    require(
+        all(pixels[start] <= 4 for start in range(0, len(pixels), stride)),
+        "Invalid PNG scanline filter",
+    )
     if dimensions is None:
         raise ValueError("Missing PNG dimensions")
     return {
