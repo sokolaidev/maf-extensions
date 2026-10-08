@@ -1,0 +1,86 @@
+--- a/src/mxc-sdk/Cargo.toml
++++ b/src/mxc-sdk/Cargo.toml
+@@ -29,6 +29,7 @@
+ [features]
+ default = []
+ maf-session-preview = ["hyperlight"]
++maf-output-preview = ["maf-session-preview"]
+ wslc = ["link-wslcsdk", "dep:libloading", "dep:tar"]
+ link-wslcsdk = ["dep:zip"]
+ isolation_session = ["dep:windows-collections", "dep:windows-future"]
+--- a/src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs
++++ b/src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs
+@@ -46,6 +46,8 @@
+     guest: Option<AppSandbox>,
+     state: State,
+     candidate: Option<Candidate>,
++    #[cfg(feature = "maf-output-preview")]
++    output: Option<hyperlight_unikraft::CapturedOutput>,
+ }
+ impl Session {
+     /// Restore an explicitly selected, trusted snapshot without mounts or networking.
+@@ -57,7 +59,28 @@
+             guest: Some(guest),
+             state: State::Ready,
+             candidate: None,
++            #[cfg(feature = "maf-output-preview")]
++            output: None,
+         })
++    }
++
++    /// Restore with host-owned bounded console capture, including the resume phase.
++    #[cfg(feature = "maf-output-preview")]
++    pub fn restore_bounded(snapshot: &Path, limit: usize) -> Result<Self, Error> {
++        let guest = SandboxBuilder::from_snapshot_dir(snapshot)
++            .and_then(|builder| builder.bounded_output(limit).boot())
++            .map_err(|e| Error::Native(e.to_string()))?;
++        Ok(Self {
++            guest: Some(guest),
++            state: State::Ready,
++            candidate: None,
++            output: None,
++        })
++    }
++
++    #[cfg(feature = "maf-output-preview")]
++    pub fn take_output(&mut self) -> Option<hyperlight_unikraft::CapturedOutput> {
++        self.output.take()
+     }
+ 
+     pub fn state(&self) -> State {
+@@ -74,7 +97,17 @@
+         }
+         self.state = State::RecoveryRequired;
+         let mut guest = self.guest.take().ok_or(Error::InvalidState(self.state))?;
++        #[cfg(feature = "maf-output-preview")]
++        {
++            self.output = None;
++            let _ = guest.take_captured_output();
++        }
+         let outcome = run_with_deadline(&mut guest, code, timeout);
++        #[cfg(feature = "maf-output-preview")]
++        {
++            self.output = Some(guest.take_captured_output());
++        }
++        #[cfg(not(feature = "maf-output-preview"))]
+         let _ = guest.drain_output();
+         match outcome {
+             Ok(0) => {
+@@ -143,6 +176,8 @@
+             guest: None,
+             state: State::Prepared,
+             candidate: Some(token.clone()),
++            #[cfg(feature = "maf-output-preview")]
++            output: None,
+         };
+         assert!(matches!(
+             session.confirm_commit(&foreign),
+@@ -162,6 +197,8 @@
+             guest: None,
+             state: State::Uncommitted,
+             candidate: None,
++            #[cfg(feature = "maf-output-preview")]
++            output: None,
+         };
+         assert!(matches!(
+             session.execute("pass", Duration::from_secs(1)),

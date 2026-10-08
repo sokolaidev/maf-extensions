@@ -1,0 +1,304 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -15,6 +15,9 @@
+ //! assert!(output.contains("hello"));
+ //! # Ok::<(), hyperlight_unikraft::Error>(())
+ //! ```
++
++mod output_capture;
++pub use output_capture::CapturedOutput;
+ 
+ use std::fmt::Write as _;
+ use std::fs::File;
+@@ -762,7 +765,7 @@
+     /// Host filesystem mounts.
+     mounts: Vec<Mount>,
+     /// Captured guest stdout — accumulated by the HostPrint callback.
+-    output: Arc<Mutex<String>>,
++    output: Arc<Mutex<output_capture::Capture>>,
+     /// NUL-separated KEY=VALUE pairs for guest env vars.
+     env_str: Arc<Mutex<String>>,
+     /// The guest's `/etc/resolv.conf`, written by the kernel at boot and on
+@@ -811,7 +814,7 @@
+             initrd_base,
+             initrd_size,
+             mounts,
+-            output: Arc::new(Mutex::new(String::new())),
++            output: Arc::new(Mutex::new(output_capture::Capture::default())),
+             env_str: Arc::new(Mutex::new(String::new())),
+             resolv_conf: Arc::new(Mutex::new(String::new())),
+             net,
+@@ -894,7 +897,7 @@
+ 
+     /// Drain captured guest output, clearing the buffer.
+     pub fn drain_output(&self) -> String {
+-        self.output.lock().unwrap().split_off(0)
++        self.output.lock().unwrap().take().text
+     }
+ 
+     /// Register host functions on any [`Registerable`] target.
+@@ -913,9 +916,10 @@
+                 let _profile = prof.host("HostPrint");
+                 use std::io::Write;
+                 let len = msg.len() as i32;
+-                print!("{msg}");
+-                let _ = std::io::stdout().flush();
+-                output.lock().unwrap().push_str(&msg);
++                output_capture::capture_message(&output, &msg, |msg| {
++                    print!("{msg}");
++                    let _ = std::io::stdout().flush();
++                });
+                 Ok(len)
+             },
+         )?;
+@@ -1649,11 +1653,18 @@
+     listen_ports: Option<ListenPorts>,
+     env_vars: Vec<(String, String)>,
+     resolv_conf: Option<String>,
++    output_limit: Option<usize>,
+     host_functions: std::collections::BTreeMap<String, HostFunction>,
+     profile: Option<bool>,
+ }
+ 
+ impl SandboxBuilder {
++    /// Bound retained console bytes before boot/resume and disable stdout mirroring.
++    pub fn bounded_output(mut self, limit: usize) -> Self {
++        self.output_limit = Some(limit);
++        self
++    }
++
+     /// A builder with no source and every setting at its default.
+     fn empty() -> Self {
+         Self {
+@@ -1667,6 +1678,7 @@
+             listen_ports: None,
+             env_vars: Vec::new(),
+             resolv_conf: None,
++            output_limit: None,
+             host_functions: std::collections::BTreeMap::new(),
+             profile: None,
+         }
+@@ -1850,6 +1862,7 @@
+             listen_ports,
+             env_vars,
+             resolv_conf,
++            output_limit,
+             host_functions,
+             profile,
+         } = self;
+@@ -1888,6 +1901,9 @@
+                 }
+                 cfg.profile
+                     .record("boot: sandbox from snapshot", started.elapsed());
++                if let Some(limit) = output_limit {
++                    *cfg.output.lock().unwrap() = output_capture::Capture::bounded(limit);
++                }
+                 cfg.set_env_vars(&env_refs);
+                 // Read by the resume entry below, which rewrites the file.
+                 if let Some(rc) = &resolv_conf {
+@@ -1936,6 +1952,9 @@
+                 // Before the boot: the kernel fetches the environment once
+                 // on its way to main(), so an entry-point program starts
+                 // with these; a driver refreshes them on every call anyway.
++                if let Some(limit) = output_limit {
++                    *cfg.output.lock().unwrap() = output_capture::Capture::bounded(limit);
++                }
+                 cfg.set_env_vars(&env_refs);
+                 // Likewise fetched once the rootfs is mounted, before main().
+                 if let Some(rc) = &resolv_conf {
+@@ -2429,6 +2448,11 @@
+         self.config.has_driver()
+     }
+ 
++    /// Take the retained prefix and omission metadata, starting a new budget.
++    pub fn take_captured_output(&self) -> CapturedOutput {
++        self.config.output.lock().unwrap().take()
++    }
++
+     /// Take the guest output captured so far.
+     pub fn drain_output(&self) -> String {
+         self.config.drain_output()
+--- /dev/null
++++ b/src/output_capture.rs
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: Apache-2.0
++//! Host-owned console retention; the guest cannot reset the byte budget.
++
++/// A retained UTF-8 prefix of messages received by HostPrint.
++#[derive(Debug, Default)]
++pub struct CapturedOutput {
++    pub text: String,
++    pub omitted_bytes: u64,
++    pub omitted_bytes_saturated: bool,
++}
++impl CapturedOutput {
++    pub fn truncated(&self) -> bool {
++        self.omitted_bytes != 0
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct Capture {
++    limit: Option<usize>,
++    result: CapturedOutput,
++}
++impl Capture {
++    pub(crate) fn bounded(limit: usize) -> Self {
++        Self {
++            limit: Some(limit),
++            result: CapturedOutput::default(),
++        }
++    }
++    pub(crate) fn mirrored(&self) -> bool {
++        self.limit.is_none()
++    }
++    pub(crate) fn push(&mut self, message: &str) {
++        let mut retained = message.len();
++        if let Some(limit) = self.limit {
++            retained = if self.result.truncated() {
++                0
++            } else {
++                message.len().min(limit - self.result.text.len())
++            };
++            while !message.is_char_boundary(retained) {
++                retained -= 1;
++            }
++            let omitted = (message.len() - retained) as u64;
++            let (total, overflow) = self.result.omitted_bytes.overflowing_add(omitted);
++            self.result.omitted_bytes = if overflow { u64::MAX } else { total };
++            self.result.omitted_bytes_saturated |= overflow;
++            let needed = self.result.text.len() + retained;
++            let capacity = self.result.text.capacity();
++            if needed > capacity {
++                // Amortize small writes without reserving beyond the host budget.
++                let target = needed.max(capacity.saturating_mul(2)).min(limit);
++                self.result
++                    .text
++                    .reserve_exact(target - self.result.text.len());
++            }
++        }
++        self.result.text.push_str(&message[..retained]);
++    }
++    pub(crate) fn take(&mut self) -> CapturedOutput {
++        std::mem::take(&mut self.result)
++    }
++}
++
++pub(crate) fn capture_message(
++    output: &std::sync::Mutex<Capture>,
++    message: &str,
++    mirror: impl FnOnce(&str),
++) {
++    let mirrored = output.lock().unwrap().mirrored();
++    if mirrored {
++        mirror(message);
++    }
++    output.lock().unwrap().push(message);
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn exact_limit_is_not_truncated_and_flood_stays_bounded() {
++        let mut capture = Capture::bounded(1024);
++        capture.push(&"x".repeat(1024));
++        assert!(!capture.result.truncated());
++        for _ in 0..10000 {
++            capture.push(&"y".repeat(4096));
++        }
++        assert_eq!(capture.result.text, "x".repeat(1024));
++        assert_eq!(capture.result.text.capacity(), 1024);
++        assert_eq!(capture.result.omitted_bytes, 40960000);
++        assert!(!capture.mirrored());
++    }
++    #[test]
++    fn utf8_boundary_keeps_a_prefix_and_reset_starts_a_new_budget() {
++        let mut capture = Capture::bounded(3);
++        capture.push("a€");
++        capture.push("b");
++        let first = capture.take();
++        assert_eq!(first.text, "a");
++        assert_eq!(first.omitted_bytes, 4);
++        capture.push("€");
++        let second = capture.take();
++        assert_eq!(second.text, "€");
++        assert!(!second.truncated());
++    }
++    #[test]
++    fn zero_budget_and_empty_messages() {
++        let mut capture = Capture::bounded(0);
++        capture.push("");
++        assert!(!capture.result.truncated());
++        capture.push("\0x");
++        assert_eq!(capture.result.text, "");
++        assert_eq!(capture.result.omitted_bytes, 2);
++    }
++    #[test]
++    fn omitted_counter_saturates_without_reopening_capture() {
++        let mut capture = Capture::bounded(8);
++        capture.result.omitted_bytes = u64::MAX;
++        capture.push("x");
++        assert!(capture.result.omitted_bytes_saturated);
++        assert_eq!(capture.result.omitted_bytes, u64::MAX);
++        assert_eq!(capture.result.text, "");
++    }
++    #[test]
++    fn default_preserves_unbounded_mirrored_behavior() {
++        let mut capture = Capture::default();
++        capture.push("abc");
++        assert!(capture.mirrored());
++        assert_eq!(capture.take().text, "abc");
++    }
++
++    fn small_message_growth(mut capture: Capture) -> usize {
++        let mut changes = 0;
++        for _ in 0..1025 {
++            let before = capture.result.text.capacity();
++            capture.push("x");
++            changes += usize::from(capture.result.text.capacity() != before);
++            if let Some(limit) = capture.limit {
++                assert!(capture.result.text.capacity() <= limit);
++            }
++        }
++        assert_eq!(capture.result.text, "x".repeat(1025));
++        changes
++    }
++    #[test]
++    fn bounded_small_messages_use_capped_amortized_growth() {
++        assert!(small_message_growth(Capture::bounded(1025)) <= 16);
++    }
++    #[test]
++    fn legacy_small_messages_keep_amortized_growth() {
++        assert!(small_message_growth(Capture::default()) <= 16);
++    }
++
++    #[test]
++    fn mirroring_runs_without_holding_capture_lock() {
++        let output = std::sync::Mutex::new(Capture::default());
++        capture_message(&output, "abc", |message| {
++            assert_eq!(message, "abc");
++            assert!(output.try_lock().is_ok());
++        });
++        assert_eq!(output.lock().unwrap().take().text, "abc");
++    }
++    #[test]
++    fn mirror_panic_does_not_poison_capture() {
++        let output = std::sync::Mutex::new(Capture::default());
++        let result = std::panic::catch_unwind(|| {
++            capture_message(&output, "lost", |_| panic!("stdout failed"));
++        });
++        assert!(result.is_err());
++        assert!(!output.is_poisoned());
++        capture_message(&output, "next", |_| {});
++        assert_eq!(output.lock().unwrap().take().text, "next");
++    }
++    #[test]
++    fn bounded_capture_does_not_mirror() {
++        let output = std::sync::Mutex::new(Capture::bounded(2));
++        capture_message(&output, "abcd", |_| panic!("unexpected mirroring"));
++        let captured = output.lock().unwrap().take();
++        assert_eq!(captured.text, "ab");
++        assert_eq!(captured.omitted_bytes, 2);
++    }
++}
