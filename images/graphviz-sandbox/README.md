@@ -19,7 +19,7 @@ Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Sele
 
 ## Verify before pulling and running
 
-Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below pins release 0.1.0 from [source `e2c45419`](https://github.com/sokolaidev/maf-extensions/tree/e2c454192438496bbbd25ebf258b1f2a2756ffb7) and [publication run 37820584534](https://github.com/sokolaidev/maf-extensions/actions/runs/37820584534). Review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
+Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below selects release 0.1.0 and pins its image digests and [source `e2c45419`](https://github.com/sokolaidev/maf-extensions/tree/e2c454192438496bbbd25ebf258b1f2a2756ffb7). Inspect [publication run 37820584534](https://github.com/sokolaidev/maf-extensions/actions/runs/37820584534) and review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
 
 ```json
 {
@@ -35,6 +35,8 @@ Use a reviewed checkout of this repository for the verifier. From its root, crea
 ```
 
 The registry digest identifies the single runnable manifest; `imageId` identifies its configuration and is not a pull reference. Keep the policy in your application's reviewed configuration.
+
+`attemptId` records the originating workflow run for manual inspection. The verifier requires a positive numeric string but does not compare it with authenticated evidence. `releaseIdentityVerified: true` therefore does not authenticate this run ID; changing only `attemptId` can still pass verification.
 
 With GitHub CLI authenticated for the public repository, download all assets from the selected immutable evidence release into a new directory. The Bash commands below use Python 3.12+ as `python3`:
 
