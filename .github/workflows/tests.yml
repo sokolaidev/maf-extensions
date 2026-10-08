@@ -707,6 +707,7 @@ jobs:
             ${{ runner.temp }}/mxc-files/files/*/native.stdout
             ${{ runner.temp }}/mxc-files/files/*/native.stderr
             ${{ runner.temp }}/mxc-files/files/*/native.stderr.bin
+            ${{ runner.temp }}/mxc-files/files/*/collected-chart.png
             ${{ runner.temp }}/mxc-files/durability/result.json
             ${{ runner.temp }}/mxc-files/durability/*.log
             ${{ runner.temp }}/mxc-files/durability/quota-*/*.log

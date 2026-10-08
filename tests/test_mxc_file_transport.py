@@ -134,3 +134,37 @@ def test_maximum_file_envelope_fits_explicit_store_ceiling():
     req = model.Request(b"pass", (), (), model.FileLimits(artifact_bytes=64 * 1024**2))
     assert transport.result_limit(req) <= storage.MAX_SHARED_RESULT
     assert storage.Limits(10**9, 10**9).result_bytes == 2 * 1024**2
+
+
+@pytest.mark.parametrize(
+    "old,new,replace,valid",
+    [
+        ("keep", "keep", False, False),
+        ("keep", "keep", True, True),
+        ("KEEP", "keep", True, False),
+        ("Straße", "STRASSE", True, False),
+        ("é", "é", True, True),
+        ("e\u0301", "é", True, False),
+        ("dir/file", "dir", True, False),
+        ("file", "file/child", True, False),
+        ("keep", "new", False, True),
+    ],
+)
+def test_restored_upload_authority_uses_portable_exact_names(tmp_path, old, new, replace, valid):
+    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    req = model.Request(
+        b"pass", (model.Input(new, b"", "session", replace),), (), model.FileLimits()
+    )
+    (tmp_path / "workspace.json").write_text(
+        json.dumps({"files": [{"name": "session/" + old}]}), encoding="utf-8"
+    )
+    assert transport.uploads_valid(tmp_path, req) is valid
+
+
+def test_prepare_keeps_replacement_refusal_inside_identified_helper(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    base = tmp_path / "base"
+    base.mkdir()
+    transport.prepare(work, request(), True, base)
+    assert json.loads((work / "request.json").read_text())["uploads_valid"] is False

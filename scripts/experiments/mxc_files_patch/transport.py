@@ -9,6 +9,7 @@ import os
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict
@@ -32,10 +33,14 @@ def result_limit(request: Request) -> int:
     return 4 * ((2 * STREAM_LIMIT + request.limits.artifact_bytes + 2) // 3) + 4 * CHUNK
 
 
-def prepare(work: Path, request: Request, restoring: bool) -> None:
+def prepare(work: Path, request: Request, restoring: bool, base: Path) -> None:
     """Stage only host-selected bytes under fixed private host filenames."""
     metadata = json.loads(request.identity())
-    metadata.update(token=uuid.uuid4().hex, restoring=restoring)
+    metadata.update(
+        token=uuid.uuid4().hex,
+        restoring=restoring,
+        uploads_valid=not restoring or uploads_valid(base, request),
+    )
     offset = 0
     inputs = []
     with (work / "inputs.bin").open("xb") as stream:
@@ -66,6 +71,36 @@ def _bounded(path: Path, limit: int) -> bytes:
     if len(data) > limit:
         raise Refused("native file exceeds allowance")
     return data
+
+
+def uploads_valid(base: Path, request: Request) -> bool:
+    """Validate portable upload identity against the restored session namespace."""
+    try:
+        meta = json.loads(
+            _bounded(base / "workspace.json", CONTROL_LIMIT), object_pairs_hook=unique
+        )
+        if not isinstance(meta, dict) or not isinstance(meta.get("files"), list):
+            return False
+        if len(meta["files"]) > request.workspace.files:
+            return False
+        names = []
+        for item in meta["files"]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                return False
+            name = item["name"]
+            if name.startswith("session/"):
+                names.append(name.removeprefix("session/"))
+        for upload in request.inputs:
+            key = upload.name.casefold()
+            for name in names:
+                existing = unicodedata.normalize("NFC", name).casefold()
+                if existing == key and (name != upload.name or not upload.replace):
+                    return False
+                if existing.startswith(key + "/") or key.startswith(existing + "/"):
+                    return False
+        return True
+    except (OSError, ValueError, UnicodeError, Refused):
+        return False
 
 
 def _integer(value: object, maximum: int) -> bool:
@@ -178,7 +213,7 @@ def execute(
     helper, startup, work = (path.resolve() for path in (helper, startup, work))
     request = work / "code.py"
     request.write_bytes(code)
-    prepare(work, file_request, restoring)
+    prepare(work, file_request, restoring, startup)
     report = work / "native.json"
     if any(work.glob("native*")) or (work / "candidate").exists():
         raise Refused("native destinations must be fresh")

@@ -72,6 +72,7 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
             if expected is None:
                 if key.endswith(".png"):
                     assert actual[key].startswith(b"\x89PNG\r\n\x1a\n"), name
+                    (work / "collected-chart.png").write_bytes(actual[key])
                 else:
                     assert len(actual[key]) == 65537, name
             else:
@@ -120,6 +121,13 @@ print('ok')""",
         "replacement-refused",
         "print('ok')",
         inputs=(Input("keep", b"new", "session"),),
+        restore=saved,
+        refused=True,
+    )
+    check(
+        "replacement-case-alias",
+        "print('ok')",
+        inputs=(Input("KEEP", b"new", "session", True),),
         restore=saved,
         refused=True,
     )

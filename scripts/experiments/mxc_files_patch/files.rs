@@ -52,6 +52,7 @@ pub fn run(args: &[String]) -> Result<bool> {
     owner::watch();
     let work = Path::new(&args[4]).parent().ok_or("request has no directory")?;
     let request: Value = serde_json::from_slice(&bounded(&work.join("request.json"), META)?)?;
+    if request["uploads_valid"].as_bool() != Some(true) { return Err("upload conflicts with retained namespace".into()); }
     let token = text(&request,"token")?;
     if token.len() != 32 || !token.bytes().all(|c| c.is_ascii_hexdigit()) { return Err("invalid call token".into()); }
     let byte_limit = number(&request["workspace"],"bytes",1024*1024*1024)?;
@@ -91,8 +92,12 @@ pub fn run(args: &[String]) -> Result<bool> {
     let mut code = format!("import os\nguest_call_path={}\nguest_session_path='/workspace/session'\nos.chdir(guest_call_path)\n", serde_json::to_string(&format!("/workspace/{call_root}"))?);
     code.push_str(&String::from_utf8(bounded(Path::new(&args[4]),65536)?)?);
     write(&Path::new(&args[5]).with_extension("ready"), b"ready\n")?;
-    sandbox.execute(&code)?;
+    let execution = sandbox.execute(&code);
     let (stdout,stderr,streams) = sandbox.take_streams()?;
+    let report = Path::new(&args[5]);
+    write(&report.with_extension("stdout.bin"),&stdout)?;
+    write(&report.with_extension("stderr.bin"),&stderr)?;
+    execution?;
     let mut w = shared.lock().unwrap();
     if !w.ready() { return Err("incomplete or malformed file transfer".into()); }
     let selected = request["artifacts"].as_array().ok_or("invalid artifacts")?;
@@ -120,8 +125,6 @@ pub fn run(args: &[String]) -> Result<bool> {
         write(&Path::new(&args[3]).join("workspace.bin"),&bytes)?;
     }
     sandbox.close();
-    let report = Path::new(&args[5]);
-    write(&report.with_extension("stdout.bin"),&stdout)?; write(&report.with_extension("stderr.bin"),&stderr)?;
     write(&report.with_extension("artifacts.bin"),&payload)?;
     let control = serde_json::to_vec(&json!({"format":"mxc-files-result-v1","completed":true,"checkpoint":checkpoint,
         "limit_bytes":1048576,"streams":streams,"artifacts":artifacts,"workspace_bytes":retained_bytes,"workspace_files":retained_files}))?;
