@@ -6,12 +6,14 @@ import re
 import sqlite3
 import stat
 import subprocess
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .host_store import Refused
-from .process_identity import Identity, capture, stopped
+from .process_identity import Identity, capture, stopped, terminate
 
 if TYPE_CHECKING:
     from .shared_store import SharedStore
@@ -144,6 +146,48 @@ class NativeJournal:
             )
             boundary("before_cleanup_release")
         boundary("after_cleanup_release")
+
+    def delete(self, boundary: Callable[[str], None] = lambda _: None) -> None:
+        """Retire before stopping recorded helpers; preserve retries and unresolved charges."""
+        self.store.retire(boundary)
+        calls = self.store.db.execute(
+            "SELECT call,identity FROM launches WHERE session=? ORDER BY call",
+            (self.store.session,),
+        ).fetchall()
+        for row in calls:
+            if row["identity"] is None:
+                raise Refused("unidentified launch requires explicit reconciliation")
+            terminate(Identity.decode(row["identity"]))
+            boundary("after_helper_termination")
+            self.reclaim(row["call"], boundary)
+        if self.store.db.execute(
+            "SELECT 1 FROM reservations WHERE session=?", (self.store.session,)
+        ).fetchone():
+            raise Refused("outstanding reservation requires explicit recovery")
+
+    @contextmanager
+    def deletion(
+        self,
+        requested: threading.Event | None,
+        boundary: Callable[[str], None] = lambda _: None,
+    ) -> Iterator[Callable[[], None]]:
+        """Observe a host request on the owner thread; cleanup follows transport shutdown."""
+        observed = False
+
+        def check() -> None:
+            nonlocal observed
+            if observed or (requested is not None and requested.is_set()):
+                observed = True
+                self.store.retire(boundary)
+                raise Refused("session deletion requested")
+
+        try:
+            check()
+            yield check
+            check()
+        finally:
+            if observed or (requested is not None and requested.is_set()):
+                self.delete(boundary)
 
     def _inventory(
         self, path: Path, byte_limit: int, entry_limit: int

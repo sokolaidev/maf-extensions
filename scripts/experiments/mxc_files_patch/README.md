@@ -12,11 +12,17 @@ Guest paths name entries in a virtual service, never host paths. The service ref
 
 The helper validates all artifacts while the guest is stopped. It copies their bytes, reclaims call files, and captures retained workspace files alongside VM state. The format-4 store publishes that checkpoint and the result envelope atomically before acknowledgment. Matching retries return identical artifact bytes without a helper; failure preserves the previous committed state. Workspace limits do not bound all guest-private filesystems or total process memory.
 
+## Session deletion
+
+The experimental shared-call supervisors accept a host-owned `threading.Event` through `delete=`. The owner thread observes it before admission, during native execution, before publication and before acknowledgment. Observation durably retires the session before interrupting execution. A request committed after the call result preserves that result for retry; deletion never changes the selected retry window. The event is in-process notification, not a durable cross-process request queue: a request lost before retirement must be resubmitted by the host.
+
+`NativeJournal.delete()` resumes deletion while holding the session ownership lock, including after restart. It stops a recorded helper through a creation-checked Windows process handle or Linux pidfd, waits for confirmed termination, and then reclaims its private scratch through the existing cleanup journal. A missing/corrupt identity, unavailable process evidence, unknown scratch entry or failed termination keeps unresolved capacity charged. This method does not terminate arbitrary descendants or fence another machine. Checkpoint collection remains a separate bounded operation; completed results and call identities survive it. These are experimental host controls, not a production backend API.
+
 ## Run on GitHub
 
 Dispatch `tests.yml` at the candidate branch with `mxc_files=true`. The Linux job builds the pinned combined kernel and retains its source, builder and toolchain identity. Linux/KVM and Windows/WHP jobs consume the same kernel artifact, build the helper with the retained dependency lock, and run native file and recovery probes. No local Rust build is required. The [qualified candidate record](../../../docs/sandbox/research/mxc-backend.md#qualified-file-candidate) links the retained reports and [example chart](example-chart.png).
 
-A native job reports `qualified` only after file probes, Python-state controls, the eight-boundary crash matrix, failed-artifact recovery and overlay removal pass. The artifact includes bounded failure diagnostics and the collected CSV chart. Compilation or a successful job with opt-in steps skipped is not native qualification.
+A native job reports `qualified` only after file probes, Python-state controls, the eight-boundary crash matrix, failed-artifact recovery, active deletion/restart controls and overlay removal pass. The artifact includes bounded failure diagnostics and the collected CSV chart. Compilation or a successful job with opt-in steps skipped is not native qualification.
 
 ## Remove the profile
 

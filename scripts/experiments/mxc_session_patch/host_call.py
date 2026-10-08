@@ -128,6 +128,7 @@ def execute(
     output_limit: int | None = None,
     before_start: Callable[[subprocess.Popen[bytes]], None] = lambda _: None,
     checkpoint_limits: tuple[int, int] | None = None,
+    check_active: Callable[[], None] = lambda: None,
 ) -> bytes:
     """Supervise one helper; opt-in capture keeps payload separate from native control."""
     if checkpoint_limits is not None and (
@@ -165,6 +166,7 @@ def execute(
         assert child.stdin is not None
         try:
             before_start(child)
+            check_active()
             child.stdin.write(b"MXCOWN1\n")
             child.stdin.flush()
         except BaseException:
@@ -189,6 +191,7 @@ def execute(
         deadline = time.monotonic() + 90
         try:
             while child.poll() is None:
+                check_active()
                 if overflow.is_set() or time.monotonic() >= deadline:
                     raise Refused("native output limit or deadline exceeded")
                 time.sleep(0.02)

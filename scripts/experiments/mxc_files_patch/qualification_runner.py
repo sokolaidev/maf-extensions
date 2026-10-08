@@ -113,6 +113,7 @@ def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
     for module, flag, directory in (
         ("native_probe", "--root", "files"),
         ("durability_probe", "--state-dir", "durability"),
+        ("deletion_probe", "--state-dir", "deletion"),
     ):
         run(
             root,

@@ -7,6 +7,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -485,3 +487,207 @@ def test_serialized_output_exact_bound_can_publish(tmp_path, monkeypatch, output
             )
             == envelope
         )
+
+
+def test_delete_stops_recorded_helper_and_preserves_completed_retry(tmp_path, child):
+    root = tmp_path / "db"
+    candidate = tmp_path / "previous"
+    candidate.mkdir()
+    (candidate / "index.json").write_bytes(b"previous")
+    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+        db.begin("previous", b"previous")
+        db.commit("previous", candidate, b"saved")
+        _, work = launch(db, child)
+    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+        journal = native.NativeJournal(db)
+        journal.delete()
+        child.wait(timeout=10)
+        assert not work.exists()
+        assert scratch_usage(db) == 0
+        assert db.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+        assert db.collect_checkpoints() == 1
+        assert db.begin("previous", b"previous") == b"saved"
+        with pytest.raises(store.Refused, match="retired"):
+            db.begin("new", b"new")
+        with pytest.raises(store.Refused, match="retired"):
+            db.commit("a", candidate, b"late")
+        journal.delete()
+
+
+def test_termination_never_signals_mismatched_creation_identity(child):
+    original = identity.capture(child.pid)
+    identity.terminate(replace(original, created=str(int(original.created) + 1)))
+    assert child.poll() is None
+    identity.terminate(original)
+    child.wait(timeout=10)
+    identity.terminate(original)
+
+
+@pytest.mark.parametrize("damage", ["unknown", "foreign", "unavailable"])
+def test_delete_keeps_uncertain_launch_charged(tmp_path, child, monkeypatch, damage):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS) as db:
+        journal, work = launch(db, child)
+        charged = db.usage()
+        if damage == "unknown":
+            db.db.execute("UPDATE launches SET identity=NULL,state='prepared'")
+        elif damage == "foreign":
+            original = identity.capture(child.pid)
+            db.db.execute(
+                "UPDATE launches SET identity=?",
+                (replace(original, machine="different-machine").encode(),),
+            )
+        else:
+
+            def refuse(_):
+                raise store.Refused("termination unavailable")
+
+            monkeypatch.setattr(native, "terminate", refuse)
+        with pytest.raises(store.Refused):
+            journal.delete()
+        assert db._owner()["state"] == "retired"
+        assert child.poll() is None
+        assert work.exists()
+        assert scratch_usage(db) == SCRATCH.bytes
+        assert db.usage() == charged
+
+
+@pytest.mark.parametrize("family", ["mxc_session_patch", "mxc_streams_patch", "mxc_files_patch"])
+def test_requested_deletion_interrupts_owned_transport(tmp_path, monkeypatch, family):
+    module = importlib.import_module(f"scripts.experiments.{family}.shared_call")
+    request = b"code"
+    if family == "mxc_files_patch":
+        requests = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+        request = requests.Request(b"code", (), (), requests.FileLimits())
+    limits = replace(
+        LIMITS, session_quota=200_000_000, store_quota=400_000_000, result_bytes=32_000_000
+    )
+    budget = store.ScratchLimits(100_000_000, 10000, 200_000_000)
+    requested = threading.Event()
+    started = tmp_path / "started"
+    real_popen = subprocess.Popen
+    children = []
+    code = (
+        "import sys,time; from pathlib import Path; "
+        "assert sys.stdin.buffer.read(8) == b'MXCOWN1\\n'; "
+        f"Path({str(started)!r}).touch(); time.sleep(60)"
+    )
+
+    def spawn(*args, **kwargs):
+        child = real_popen([sys.executable, "-c", code], **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+
+    def request_deletion():
+        deadline = time.monotonic() + 10
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        requested.set()
+
+    notifier = threading.Thread(target=request_deletion)
+    notifier.start()
+    try:
+        with store.SharedStore(tmp_path / "db", "one", PROFILE, limits) as db:
+            args = (100,) if family == "mxc_session_patch" else ()
+            with pytest.raises(store.Refused, match="deletion requested"):
+                module.call(
+                    db,
+                    "a",
+                    request,
+                    tmp_path / "helper",
+                    tmp_path / "startup",
+                    budget,
+                    *args,
+                    delete=requested,
+                )
+            assert started.exists()
+            assert children[0].poll() is not None
+            assert db._owner()["state"] == "retired"
+            assert scratch_usage(db) == 0
+            assert not list((db.root / "scratch").iterdir())
+            assert db.db.execute("SELECT status FROM calls").fetchone()[0] == "interrupted"
+    finally:
+        notifier.join(timeout=15)
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        "after_retire_commit",
+        "after_helper_termination",
+        "after_cleanup_intent",
+        "after_scratch_removal",
+        "before_cleanup_release",
+    ],
+)
+def test_delete_resumes_after_interrupted_boundary(tmp_path, child, point):
+    root = tmp_path / "db"
+    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+        journal, work = launch(db, child)
+
+        def crash(boundary):
+            if boundary == point:
+                raise RuntimeError("interrupted deletion")
+
+        with pytest.raises(RuntimeError, match="interrupted deletion"):
+            journal.delete(crash)
+    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+        native.NativeJournal(db).delete()
+        child.wait(timeout=10)
+        assert not work.exists()
+        assert scratch_usage(db) == 0
+        assert db._owner()["state"] == "retired"
+
+
+def test_preexisting_deletion_request_prevents_admission(tmp_path):
+    requested = threading.Event()
+    requested.set()
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS) as db:
+        with pytest.raises(store.Refused, match="deletion requested"):
+            shared.call(
+                db,
+                "a",
+                b"code",
+                tmp_path / "missing",
+                tmp_path / "missing",
+                SCRATCH,
+                100,
+                delete=requested,
+            )
+        assert db._owner()["state"] == "retired"
+        assert db.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
+
+
+def test_deletion_after_commit_preserves_lost_acknowledgment(tmp_path, child):
+    requested = threading.Event()
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS) as db:
+        journal, work = launch(db, child)
+        child.kill()
+        child.wait(timeout=10)
+        candidate = work / "candidate"
+        candidate.mkdir()
+        (candidate / "index.json").write_bytes(b"snapshot")
+        with pytest.raises(store.Refused, match="deletion requested"):
+            with journal.deletion(requested):
+                db.commit(
+                    "a",
+                    candidate,
+                    b"saved",
+                    lambda point: requested.set() if point == "after_commit" else None,
+                )
+        assert db._owner()["state"] == "retired"
+        assert not work.exists()
+        assert db.collect_checkpoints() == 1
+        assert db.begin("a", b"code") == b"saved"
+
+
+def test_deletion_does_not_stop_another_sessions_helper(tmp_path, child):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS) as db:
+        journal, work = launch(db, child)
+        with store.SharedStore(tmp_path / "db", "two", PROFILE, LIMITS) as other:
+            native.NativeJournal(other).delete()
+        assert child.poll() is None
+        assert work.exists()
+        assert scratch_usage(db) == SCRATCH.bytes
+        journal.delete()
