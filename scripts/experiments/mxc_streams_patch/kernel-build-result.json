@@ -1,0 +1,38 @@
+{
+  "status": "built-not-qualified",
+  "source_commit": "a92b193d6103a03047229d43d5e1a391132ea250",
+  "run_id": "37769914334",
+  "run_attempt": "1",
+  "pins": {
+    "runtime_base": "8f636e00cdf29e6c33ba0f578482c595d7827cf6",
+    "submodules": {
+      "kernel/unikraft": "978c8a7d3ac33aa06cef870aead0182c89974002",
+      "kernel/app-elfloader": "fee57d0fa7e636b36e59096dad932f6201b41486",
+      "kernel/libs/libelf": "c03d4ceb22a2b9e9799238f9c277a14284d313ad"
+    },
+    "files": {
+      "lib/posix-tty/Config.uk": {
+        "before": "4b7010be8dd99e33cfec7b829bb4079421ffbdea1cf41ac4ab446e4e93a13e08",
+        "after": "9f5649ddc5f816ffc24b2cbf48ce61afb812c0ac63e029a24b2cc8c0db96d1c9"
+      },
+      "lib/posix-tty/Makefile.uk": {
+        "before": "caa68f12291e00494b938c7afab99a423d9d4d22e05a282961cbf5ec83dd9aec",
+        "after": "545ca33b16c6f30ab31991f298d839d945378f654e5eb98ed921b63c9cefdae1"
+      },
+      "lib/posix-tty/tty.c": {
+        "before": "85f8ddc58ae84a650fe292e001d7d9a6840b7cf9ccea95e2d02862d946bdd146",
+        "after": "f825edc446bbd6b5686230dcbe7a66d6ad9762f0586670085db82d8e2e1474c6"
+      },
+      "lib/posix-tty/hl-streams.c": {
+        "before": null,
+        "after": "78337da386cb0ee9efaefdd5604cf9a1196665d761592f4d97a2dbc836ef37f6"
+      }
+    },
+    "patch_sha256": "9da719fec8ef16855b1a5e66d418795361a70d758d60431c0f0a37059da94a68"
+  },
+  "kernel_sha256": "b25f0b8143f41a98fbb70a1cc0ee2fcab035b91b6f36b8e99f55b66b8f2d746d",
+  "kernel_bytes": 873448,
+  "toolchain_sha256": "9353fa3ea48c74625ebcf4fb1d5d5aba3b8f80f97c72b43bdcc706a6933977d4",
+  "builder_image_id": "sha256:8fdcc97519abf3d46ceb003a5c4d351cb1f642cc9e1f720d25f0370a594ec2c8",
+  "overlay_removed": true
+}
