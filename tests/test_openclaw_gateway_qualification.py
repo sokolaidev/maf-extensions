@@ -2672,3 +2672,67 @@ def test_default_expiry_observer_never_writes_policy_or_timestamps(tmp_path, thr
         assert events[1]["from_sweeper"] is through_sweeper
 
     asyncio.run(run())
+
+
+def default_idle_control():
+    return [
+        {
+            "event": "request",
+            "method": "notifications/cancelled",
+            "boot": "boot",
+            "session": "idle",
+            "exchange": "control",
+            "target": "old-request",
+            "time_ns": 50,
+        },
+        {
+            "event": "response",
+            "method": "POST",
+            "boot": "boot",
+            "session": "idle",
+            "exchange": "control",
+            "status": 202,
+            "time_ns": 51,
+        },
+        {
+            "event": "settled",
+            "method": "POST",
+            "boot": "boot",
+            "session": "idle",
+            "exchange": "control",
+            "time_ns": 52,
+        },
+    ]
+
+
+def test_default_expiry_accounts_for_accepted_control_traffic_without_new_work():
+    result = lifecycle.verify_default_idle_expiry(
+        [*default_idle_evidence(), *default_idle_control()], "boot", "idle", "active"
+    )
+    assert result["idle_control_notifications"] == 1
+    assert result["keepalive_calls"] == 7
+
+
+@pytest.mark.parametrize(
+    "stage,field,value",
+    [
+        (0, "session", "active"),
+        (0, "target", None),
+        (0, "time_ns", 1),
+        (1, "session", "active"),
+        (1, "status", 404),
+        (1, "exchange", "other"),
+        (1, "method", "GET"),
+        (2, "session", "active"),
+        (2, "exchange", "other"),
+        (2, "method", "GET"),
+        (2, "time_ns", 9001),
+    ],
+)
+def test_default_expiry_rejects_uncorrelated_or_active_session_control(stage, field, value):
+    controls = default_idle_control()
+    controls[stage][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(
+            [*default_idle_evidence(), *controls], "boot", "idle", "active"
+        )

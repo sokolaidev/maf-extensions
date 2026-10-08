@@ -845,8 +845,36 @@ def verify_default_idle_expiry(evidence, boot, expired, survivor) -> dict[str, A
     messages = [r for r in evidence if r.get("event") == "request"]
     calls = [r for r in messages if r.get("method") == "tools/call"]
     bindings = [r for r in evidence if r.get("event") == "binding_started"]
+    controls = [r for r in messages if r.get("method") == "notifications/cancelled"]
+    for control in controls:
+        replies = [
+            r
+            for r in evidence
+            if r.get("event") == "response" and r.get("exchange") == control.get("exchange")
+        ]
+        ends = [
+            r
+            for r in evidence
+            if r.get("event") == "settled" and r.get("exchange") == control.get("exchange")
+        ]
+        require(len(replies) == len(ends) == 1, "Idle control notification lacks unique settlement")
+        reply, settled = replies[0], ends[0]
+        require(
+            bool(control.get("exchange"))
+            and bool(control.get("target"))
+            and control.get("session") == reply.get("session") == settled.get("session") == expired
+            and reply.get("method") == settled.get("method") == "POST"
+            and reply.get("status") == 202
+            and armed["time_ns"]
+            < control.get("time_ns", 0)
+            < reply.get("time_ns", 0)
+            <= settled.get("time_ns", 0)
+            < start["time_ns"],
+            "Idle control notification was not accepted for the otherwise idle session",
+        )
     require(
-        len(calls) == len(messages) == len(bindings) == DEFAULT_IDLE_KEEPALIVES
+        len(calls) == len(bindings) == DEFAULT_IDLE_KEEPALIVES
+        and len(messages) == len(calls) + len(controls)
         and len({r.get("exchange") for r in calls}) == DEFAULT_IDLE_KEEPALIVES
         and all(
             r.get("session") == survivor
@@ -862,6 +890,7 @@ def verify_default_idle_expiry(evidence, boot, expired, survivor) -> dict[str, A
         "observation_seconds": elapsed,
         "threshold_modified": False,
         "keepalive_calls": len(calls),
+        "idle_control_notifications": len(controls),
         "expired_sdk_task_finished": True,
         "remaining_adapter_records": 1,
     }
@@ -1411,7 +1440,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     require(turn(0)[0] == sessions[0], "Keepalive replaced the surviving session")
                     snapshot_registry(sessions, boot, owner_before)
                     print(
-                        f"Default idle wait: {index + 1}/{DEFAULT_IDLE_KEEPALIVES} A calls completed; B untouched",
+                        f"Default idle wait: {index + 1}/{DEFAULT_IDLE_KEEPALIVES} A calls completed; no B workload",
                         flush=True,
                     )
                 wait_for(
