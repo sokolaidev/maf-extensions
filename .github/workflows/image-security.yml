@@ -9,7 +9,7 @@ on:
         description: Image profile to check (all for full coverage)
         type: choice
         default: all
-        options: [all, bicep, bicep-prepared, sbx-bicep, diagram, drawio-sandbox, drawio-export, terraform-random, opentofu-random, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
+        options: [all, bicep, bicep-prepared, sbx-bicep, graphviz, drawio-sandbox, drawio-export, terraform-random, opentofu-random, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
 
 permissions:
   contents: read

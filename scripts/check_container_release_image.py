@@ -41,7 +41,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             command[-1] += (
                 "; test -s /opt/maf-bicep/dependencies.json; test -d /opt/maf-bicep/cache"
             )
-    elif profile in {"diagram", "drawio-sandbox"}:
+    elif profile in {"graphviz", "drawio-sandbox"}:
         command = [
             "sh",
             "-ec",

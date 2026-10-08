@@ -128,6 +128,21 @@ def append_reservation(history, operation="123/reserve", candidate=CANDIDATE, at
     )
 
 
+def test_fresh_namespace_ignores_experimental_history_and_starts_at_one():
+    gh = FakeGitHub()
+    old = gh.create("security-history-000000000008", SOURCE)
+    gh.entries[old["id"]].update(draft=False, immutable=True)
+    retained = copy.deepcopy(gh.entries[old["id"]])
+    history = History(gh)
+    assert history.head() is None
+    committed = append_reservation(history, candidate=CANDIDATE | {"profile": "graphviz"})
+    assert committed.number == 1
+    assert committed.document["ancestors"] == []
+    assert gh.entries[committed.release_id]["tag_name"] == "security-history-v2-000000000001"
+    assert set(committed.catalogue["releases"]) == {"graphviz/0.1.0"}
+    assert gh.entries[old["id"]] == retained
+
+
 def test_reservation_is_durable_and_retry_does_not_create_another_release():
     gh = FakeGitHub()
     history = History(gh)
@@ -240,7 +255,7 @@ def test_stale_draft_cannot_replace_newer_committed_state():
     gh.failure = "before-publish"
     with pytest.raises(TimeoutError):
         append_reservation(history)
-    other = CANDIDATE | {"profile": "diagram", "attemptId": "124"}
+    other = CANDIDATE | {"profile": "graphviz", "attemptId": "124"}
     current = append_reservation(history, "124/reserve", other)
     with pytest.raises(ValueError, match="Retry differs"):
         append_reservation(history)
@@ -254,10 +269,10 @@ def test_unrelated_orphan_draft_is_retained_but_not_published():
     gh.failure = "before-publish"
     with pytest.raises(TimeoutError):
         append_reservation(history)
-    other = CANDIDATE | {"profile": "diagram", "attemptId": "124"}
+    other = CANDIDATE | {"profile": "graphviz", "attemptId": "124"}
     current = append_reservation(history, "124/reserve", other)
     assert current.number == 2
-    assert set(current.catalogue["releases"]) == {"diagram/0.1.0"}
+    assert set(current.catalogue["releases"]) == {"graphviz/0.1.0"}
     assert gh.entries[1]["draft"] is True
 
 
@@ -267,7 +282,7 @@ def test_late_publication_of_skipped_draft_is_detected_as_a_fork():
     gh.failure = "before-publish"
     with pytest.raises(TimeoutError):
         append_reservation(history)
-    append_reservation(history, "124/reserve", CANDIDATE | {"profile": "diagram"})
+    append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
     gh.publish(1)
     with pytest.raises(ValueError, match="fork"):
         history.head()
@@ -277,7 +292,7 @@ def test_missing_old_predecessor_is_detected_without_downloading_old_assets():
     gh = FakeGitHub()
     history = History(gh)
     append_reservation(history)
-    append_reservation(history, "124/reserve", CANDIDATE | {"profile": "diagram"})
+    append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
     append_reservation(history, "125/reserve", CANDIDATE | {"profile": "drawio-export"})
     gh.downloads = 0
     history.head()
@@ -298,7 +313,7 @@ def test_changed_head_between_upload_and_commit_refuses_publication(monkeypatch)
         original(release_id, raw)
         if not called:
             called = True
-            append_reservation(history, "124/reserve", CANDIDATE | {"profile": "diagram"})
+            append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
 
     monkeypatch.setattr(gh, "upload", race)
     with pytest.raises(ValueError, match="head changed"):

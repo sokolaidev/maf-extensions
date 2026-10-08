@@ -44,7 +44,7 @@ from diagram_kind import diagram_sandbox_spec, make_diagram_tools  # noqa: E402
 #: transcribed, so a sample that moves it does not leave this suite asserting the old one.
 _WORK_DIR = diagram_sandbox_spec().work_dir
 
-_IMAGE = "diagram-sandbox:test"
+_IMAGE = "graphviz-sandbox:test"
 _DOT = "digraph { ingest -> transform -> load }"
 
 

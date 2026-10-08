@@ -13,8 +13,8 @@ case "$1" in
     docker build --pull --platform linux/amd64 -t maf-image-scan:base images/bicep-sandbox
     docker build --platform linux/amd64 --build-arg BASE=maf-image-scan:base -t maf-image-scan:target images/sbx-template
     ;;
-  diagram)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/diagram-sandbox
+  graphviz)
+    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/graphviz-sandbox
     docker run --rm --network none maf-image-scan:target sh -ec 'printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
   drawio-sandbox)

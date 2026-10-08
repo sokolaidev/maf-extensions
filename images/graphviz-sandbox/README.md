@@ -1,6 +1,6 @@
-# Diagram container image
+# Graphviz container image
 
-Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/diagram`. The image contains Graphviz, DejaVu fonts and their runtime libraries on a digest-pinned Wolfi base. It contains no agent application or Python runtime; you supply the DOT source and run `dot`.
+Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/graphviz`. The image contains Graphviz, DejaVu fonts and their runtime libraries on a digest-pinned Wolfi base. It contains no agent application or Python runtime; you supply the DOT source and run `dot`.
 
 | Consumer question | Contract |
 |---|---|
@@ -9,21 +9,21 @@ Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/diagram
 | Input and output | DOT file or standard input; `dot -Tpng -o /output/diagram.png` writes a PNG. The release packaging probe exercises PNG; other Graphviz formats need your own validation. |
 | Host dependencies | A Linux-container Docker engine for rendering. Python 3.12+ and GitHub CLI with `gh attestation verify` for the repository's release verifier. |
 | Agent integration | [Docker diagram sample](../../samples/07_docker_diagram/) and its local `make_diagram_tools` implementation. This image does not install the host SDK or configure a model. |
-| Release evidence | [Public status report](https://sokolaidev.github.io/maf-extensions/) and immutable GitHub Releases named `image-diagram-v<VERSION>`. Image versions are independent of Python package versions. |
+| Release evidence | [Public status report](https://sokolaidev.github.io/maf-extensions/) and immutable GitHub Releases named `image-graphviz-v<VERSION>`. Image versions are independent of Python package versions. |
 
 ## Select a completed release
 
-Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `diagram` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
+Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `graphviz` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-**Availability at 2026-10-08:** [publication attempt 2](https://github.com/sokolaidev/maf-extensions/actions/runs/37682254043/attempts/2) passed anonymous pull and offline PNG qualification but stopped while creating the evidence Release, and `image-diagram-v0.1.0` evidence is not published. There is no completed release recommended here yet. The following release-consumption steps apply once completion and evidence delivery succeed; local builds remain available below.
+**Availability:** The first `graphviz` release has not been published. Until it completes the protected release gate, use the local-build instructions below.
 
 ## Verify before pulling and running
 
-Use a reviewed checkout of this repository for the verifier. From its root, create `diagram-policy.json` with the identity you have independently selected from the release record and reviewed source/workflow. Replace every placeholder; do not generate your acceptance policy by blindly copying the candidate's claims.
+Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json` with the identity you have independently selected from the release record and reviewed source/workflow. Replace every placeholder; do not generate your acceptance policy by blindly copying the candidate's claims.
 
 ```json
 {
-  "profile": "diagram",
+  "profile": "graphviz",
   "version": "<VERSION>",
   "sourceCommit": "<40-character source commit>",
   "sourceRef": "refs/heads/main",
@@ -40,16 +40,16 @@ With GitHub CLI authenticated for the public repository, download all assets fro
 
 ```bash
 set -eu
-VERSION="$(python3 -c 'import json; print(json.load(open("diagram-policy.json"))["version"])')"
-EVIDENCE="diagram-evidence-$VERSION"
+VERSION="$(python3 -c 'import json; print(json.load(open("graphviz-policy.json"))["version"])')"
+EVIDENCE="graphviz-evidence-$VERSION"
 mkdir "$EVIDENCE"
-gh release download "image-diagram-v$VERSION" \
+gh release download "image-graphviz-v$VERSION" \
   --repo sokolaidev/maf-extensions --dir "$EVIDENCE"
 python3 scripts/verify_container_release.py \
-  --policy diagram-policy.json --evidence "$EVIDENCE" --bundles
+  --policy graphviz-policy.json --evidence "$EVIDENCE" --bundles
 ```
 
-Require successful verification and `releaseIdentityVerified: true`. This verifies provenance, the SPDX inventory, signed release completion and indexed evidence against the selected source and digest. It does not execute the diagram image. Missing completion evidence is a refusal, even when provenance and SBOM signatures are valid.
+Require successful verification and `releaseIdentityVerified: true`. This verifies provenance, the SPDX inventory, signed release completion and indexed evidence against the selected source and digest. It does not execute the Graphviz image. Missing completion evidence is a refusal, even when provenance and SBOM signatures are valid.
 
 The verifier reports current monitoring separately. Identity success does not mean the latest scan is clean: inspect monitoring status and assessment age, and apply your application's vulnerability policy. Stale, unavailable, failing or retired monitoring is not a clean result. The [release contract](../../docs/security/container-image-releases.md) explains verification and monitoring in detail.
 
@@ -59,7 +59,7 @@ After verification, derive the pull reference from the same policy. This example
 
 ```bash
 set -eu
-IMAGE="$(python3 -c 'import json; p=json.load(open("diagram-policy.json")); print("ghcr.io/sokolaidev/maf-extensions/diagram@" + p["registryDigest"])')"
+IMAGE="$(python3 -c 'import json; p=json.load(open("graphviz-policy.json")); print("ghcr.io/sokolaidev/maf-extensions/graphviz@" + p["registryDigest"])')"
 docker pull --platform linux/amd64 "$IMAGE"
 mkdir -p diagram-input diagram-output
 printf 'digraph { consumer -> renderer -> png }\n' > diagram-input/diagram.dot
@@ -85,7 +85,7 @@ For the [Docker diagram sample](../../samples/07_docker_diagram/), set `DIAGRAM_
 From the repository root:
 
 ```bash
-docker build --platform linux/amd64 -t diagram-sandbox:local images/diagram-sandbox
+docker build --platform linux/amd64 -t graphviz-sandbox:local images/graphviz-sandbox
 ```
 
 The sample can use this local tag. A local build has no suite release-completion attestation and is not interchangeable with a published digest. It may contain different package versions even when built from the same Dockerfile: the Wolfi base is pinned, but `apk upgrade` and `apk add` use a rolling package repository.

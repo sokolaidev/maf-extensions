@@ -16,7 +16,7 @@ on:
           - bicep
           - bicep-prepared
           - sbx-bicep
-          - diagram
+          - graphviz
           - drawio-sandbox
           - drawio-export
           - terraform-random

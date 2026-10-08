@@ -71,10 +71,10 @@ The run prints `Reclaim failures this turn: N` from that handler's own count, an
 ## Prerequisites
 
 - **A Docker-compatible engine, reachable through the `docker` client.** Docker Desktop (macOS, Linux, Windows with WSL 2) or Docker Engine (Linux). `docker version` confirms the client can reach a running daemon.
-- **The `diagram-sandbox` image, built locally.** It uses a digest-pinned Wolfi base with Graphviz — see [`images/diagram-sandbox`](../../images/diagram-sandbox/). Build it once, from the repository root so the build context is that directory:
+- **The `graphviz-sandbox` image, built locally.** It uses a digest-pinned Wolfi base with Graphviz — see [`images/graphviz-sandbox`](../../images/graphviz-sandbox/). Build it once, from the repository root so the build context is that directory:
 
   ```bash
-  docker build -t diagram-sandbox:local images/diagram-sandbox
+  docker build -t graphviz-sandbox:local images/graphviz-sandbox
   ```
 
 - **An Azure OpenAI deployment.** No key: the sample authenticates with `DefaultAzureCredential`, so an `az login` session — or a federated credential in CI — is enough. The model has to write DOT and call one tool; that is the whole demand on it. Samples 02 and 04 are the ones that keep the key-and-base-URL client, because a local server (Ollama, vLLM, LM Studio) is the case that needs it.
@@ -95,7 +95,7 @@ There is **no workload package** to install — the kind is `diagram_kind.py`, r
 
 | Variable | What it is |
 |---|---|
-| `DIAGRAM_SANDBOX_IMAGE` | The image built above — for example `diagram-sandbox:local`. An unqualified single-name tag: Docker resolves it to its official `docker.io/library/` namespace, which no third party can publish to, so if you skip the build the backend's pull fails cleanly rather than fetching a different image. Build it first and it runs from this machine. (To pin it to the local daemon regardless, qualify it — `localhost/diagram-sandbox:local` — and tag the build to match.) |
+| `DIAGRAM_SANDBOX_IMAGE` | The image built above — for example `graphviz-sandbox:local`. An unqualified single-name tag: Docker resolves it to its official `docker.io/library/` namespace, which no third party can publish to, so if you skip the build the backend's pull fails cleanly rather than fetching a different image. Build it first and it runs from this machine. (To pin it to the local daemon regardless, qualify it — `localhost/graphviz-sandbox:local` — and tag the build to match.) |
 | `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
 | `SAMPLE_BACKEND` | Optional. `docker` (the default) or `docker-sbx`; see [On Docker Sandboxes](#on-docker-sandboxes) |
@@ -133,7 +133,7 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 ## What has and has not been run against a live backend
 
-**Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
+**Run live**, on 2026-08-11: Docker Engine 29.5.3 with the image then named `diagram-sandbox` (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
 
 **Run live again**, on 2026-08-26, on the Azure OpenAI wiring the rest of the set uses and on the call-directory shape above: Docker Engine 29.7.2, `gpt-5.4-mini`, `maf-sandbox 0.24.0` and `maf-sandbox-docker 0.8.1`. A 353×59 PNG landed and `scripts/check_live_diagram_sample.py` passed on that transcript. **That run predates the block a reader resolves today**: the floor has since moved to `maf-sandbox>=0.25`, not for anything this sample uses — `guest_call_path()`, `outputs_named_at_call_time` and `DeclaredOutput.name` were all in 0.24.0 — but because the sample set moved together. Nothing here has been re-run against 0.25.
 
@@ -143,13 +143,13 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 ## On Docker Sandboxes
 
-`SAMPLE_BACKEND=docker-sbx` renders in a Docker Sandboxes microVM on this machine, through [`maf-sandbox-docker-sbx`](../../packages/maf-sandbox-docker-sbx/README.md). That backend is `MICROVM`, so the router keeps its default floor. It needs `sbx` installed and signed in, with SSH agent forwarding off and no MCP server registered; the backend's README says how. The `diagram-sandbox` image already has what the backend needs, so it loads as it is built:
+`SAMPLE_BACKEND=docker-sbx` renders in a Docker Sandboxes microVM on this machine, through [`maf-sandbox-docker-sbx`](../../packages/maf-sandbox-docker-sbx/README.md). That backend is `MICROVM`, so the router keeps its default floor. It needs `sbx` installed and signed in, with SSH agent forwarding off and no MCP server registered; the backend's README says how. The `graphviz-sandbox` image already has what the backend needs, so it loads as it is built:
 
 ```bash
-docker build -t diagram-sandbox:local images/diagram-sandbox
-docker save -o diagram-sandbox.tar diagram-sandbox:local
-sbx template load diagram-sandbox.tar
-SAMPLE_BACKEND=docker-sbx DIAGRAM_SANDBOX_IMAGE=diagram-sandbox:local uv run samples/07_docker_diagram/agent.py
+docker build -t graphviz-sandbox:local images/graphviz-sandbox
+docker save -o graphviz-sandbox.tar graphviz-sandbox:local
+sbx template load graphviz-sandbox.tar
+SAMPLE_BACKEND=docker-sbx DIAGRAM_SANDBOX_IMAGE=graphviz-sandbox:local uv run samples/07_docker_diagram/agent.py
 ```
 
 `verify-live.yml` runs this variant as its own job, against the same check, after each release of `maf-sandbox` or `maf-sandbox-docker-sbx`.
@@ -158,7 +158,7 @@ SAMPLE_BACKEND=docker-sbx DIAGRAM_SANDBOX_IMAGE=diagram-sandbox:local uv run sam
 
 **`Cannot connect to the Docker daemon`** — the client is installed but no daemon is reachable. Start Docker Desktop (or your engine) and confirm with `docker version`, which reports both a Client and a Server section when the daemon is up.
 
-**`Error: ... image ... not found` / the render never happens** — `DIAGRAM_SANDBOX_IMAGE` names an image that is not on this machine. Build it (see prerequisites); the backend pulls an absent image before creating the container, and a single-name tag like `diagram-sandbox:local` resolves to Docker's official `library/` namespace, where this name is not published — so that pull fails rather than fetching something else, and the fix is to build the image locally.
+**`Error: ... image ... not found` / the render never happens** — `DIAGRAM_SANDBOX_IMAGE` names an image that is not on this machine. Build it (see prerequisites); the backend pulls an absent image before creating the container, and a single-name tag like `graphviz-sandbox:local` resolves to Docker's official `library/` namespace, where this name is not published — so that pull fails rather than fetching something else, and the fix is to build the image locally.
 
 **`SandboxBackendNotPermitted` at startup** — the router was constructed without `min_isolation=Isolation.CONTAINER`. `DockerSandboxBackend` declares `Isolation.CONTAINER`, below the router's default `MICROVM` floor, and raises at construction rather than at first call.
 

@@ -24,7 +24,7 @@ from container_release import (
     write,
 )
 
-TAG = "security-history-"
+TAG = "security-history-v2-"
 ASSET = "catalogue.json"
 MAX_BYTES = 32 * 1024 * 1024
 MAX_SEQUENCE = 999_999_999_999
