@@ -1,6 +1,6 @@
 # MXC 1.0 migration experiment
 
-This is the separately pinned candidate for [spike #1780](https://github.com/sokolaidev/maf-extensions/issues/1780). The [research record](../../../docs/sandbox/research/mxc-backend.md#mxc-10-migration-spike) owns the adoption decision. The [0.9 experiment](../mxc_session_patch/HOST_PUBLICATION.md) and its reports remain unchanged.
+This is the separately pinned candidate for [spike #1780](https://github.com/sokolaidev/maf-extensions/issues/1780). The [research record](../../../docs/sandbox/research/mxc-backend.md#mxc-10-migration-spike) owns the adoption recommendation. The [0.9 experiment](../mxc_session_patch/HOST_PUBLICATION.md) and its reports remain unchanged.
 
 `manifest.json` pins MXC 1.0.0, Unikraft 0.17.0, Hyperlight host/common 0.17.0 and each affected file before/after the session, output and storage layers. `rootfs.json` pins the matching Linux/amd64 agent image and extracted initrd. `Cargo.lock` is the candidate dependency graph. There is no package release or production adapter in this experiment.
 
@@ -16,4 +16,11 @@ Dispatch `tests.yml` on the candidate branch with `mxc_v1=resolve-lock` to prepa
 
 The native mode independently checks KVM or WHP, builds the new helper, runs collector/budget unit tests, prepares the verified rootfs, and runs the existing rich-state, bounded-output, bounded-export and format-4 durability controls. It then builds the old pinned helper and produces an old checkpoint. The new helper must refuse that incompatible checkpoint without changing it; the old helper must still restore it. All layers must be removable afterward. A failed stage retains an `unqualified` result and diagnostics.
 
-Artifacts contain reports, logs and the resolved lockfile for 14 days, excluding guest snapshots and SQLite stores. Successful reports will be retained here with exact source/run identities. Native evidence is pending. Process crashes are not physical reboot or power-loss tests, and independently passing on two platforms does not establish checkpoint portability between them.
+Artifacts contain reports, logs and the resolved lockfile for 14 days, excluding guest snapshots and SQLite stores. The retained reports below come from [run 37752153210](https://github.com/sokolaidev/maf-extensions/actions/runs/37752153210), source `da064543023d2b95ae06735d2746f520caa4eb61`; later documentation/report commits do not change the tested harness.
+
+| Platform | Migration controls | Rich Python state | Outcome |
+|---|---|---|---|
+| Linux/KVM | [Report](linux-result.json) | [Report](linux-native-result.json) | Qualified |
+| Windows/WHP | Pending | Pending | Unqualified until the job completes |
+
+Linux refused the old `k5e9192dfed5c8dbb-c1` snapshot under the new `k485adb2bab362516-c3` runtime without changing the checkpoint; the old-pin helper then restored its state. Existing persistent sessions require their exact old helper/profile assets. The experiment does not convert guest snapshots or silently substitute fresh state. Process crashes are not physical reboot or power-loss tests, and independently passing on two platforms does not establish checkpoint portability between them.
