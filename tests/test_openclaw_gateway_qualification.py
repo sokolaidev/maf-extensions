@@ -2502,6 +2502,7 @@ def default_idle_evidence():
                     "session": "active",
                     "time_ns": 100 + index,
                     "exchange": f"call-{index}",
+                    "request": f"request-{index}",
                 },
                 {
                     "event": "binding_started",
@@ -2709,14 +2710,14 @@ def test_default_expiry_accounts_for_accepted_control_traffic_without_new_work()
     result = lifecycle.verify_default_idle_expiry(
         [*default_idle_evidence(), *default_idle_control()], "boot", "idle", "active"
     )
-    assert result["idle_control_notifications"] == 1
+    assert result["control_notifications"] == 1
     assert result["keepalive_calls"] == 7
 
 
 @pytest.mark.parametrize(
     "stage,field,value",
     [
-        (0, "session", "active"),
+        (0, "session", "unrelated"),
         (0, "target", None),
         (0, "time_ns", 1),
         (1, "session", "active"),
@@ -2732,6 +2733,21 @@ def test_default_expiry_accounts_for_accepted_control_traffic_without_new_work()
 def test_default_expiry_rejects_uncorrelated_or_active_session_control(stage, field, value):
     controls = default_idle_control()
     controls[stage][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(
+            [*default_idle_evidence(), *controls], "boot", "idle", "active"
+        )
+
+
+def test_default_expiry_accepts_survivor_control_without_cancelling_observed_work():
+    controls = default_idle_control()
+    for record in controls:
+        record["session"] = "active"
+    result = lifecycle.verify_default_idle_expiry(
+        [*default_idle_evidence(), *controls], "boot", "idle", "active"
+    )
+    assert result["control_notifications"] == 1
+    controls[0]["target"] = "request-0"
     with pytest.raises(RuntimeError):
         lifecycle.verify_default_idle_expiry(
             [*default_idle_evidence(), *controls], "boot", "idle", "active"

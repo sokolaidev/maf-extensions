@@ -862,7 +862,13 @@ def verify_default_idle_expiry(evidence, boot, expired, survivor) -> dict[str, A
         require(
             bool(control.get("exchange"))
             and bool(control.get("target"))
-            and control.get("session") == reply.get("session") == settled.get("session") == expired
+            and control.get("session") == reply.get("session") == settled.get("session")
+            and control.get("session") in {expired, survivor}
+            and not any(
+                call.get("session") == control.get("session")
+                and call.get("request") == control.get("target")
+                for call in calls
+            )
             and reply.get("method") == settled.get("method") == "POST"
             and reply.get("status") == 202
             and armed["time_ns"]
@@ -870,7 +876,7 @@ def verify_default_idle_expiry(evidence, boot, expired, survivor) -> dict[str, A
             < reply.get("time_ns", 0)
             <= settled.get("time_ns", 0)
             < start["time_ns"],
-            "Idle control notification was not accepted for the otherwise idle session",
+            "Control notification was not accepted or targeted an observed workload call",
         )
     require(
         len(calls) == len(bindings) == DEFAULT_IDLE_KEEPALIVES
@@ -890,7 +896,7 @@ def verify_default_idle_expiry(evidence, boot, expired, survivor) -> dict[str, A
         "observation_seconds": elapsed,
         "threshold_modified": False,
         "keepalive_calls": len(calls),
-        "idle_control_notifications": len(controls),
+        "control_notifications": len(controls),
         "expired_sdk_task_finished": True,
         "remaining_adapter_records": 1,
     }
