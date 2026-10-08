@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.3...maf-sandbox-drawio-v0.4.4) (2026-10-08)
+
+
+### Documentation
+
+* **drawio:** release the palette image-style fix from [#1769](https://github.com/sokolaidev/maf-extensions/issues/1769) and document which palette styles export ([#1788](https://github.com/sokolaidev/maf-extensions/issues/1788)) ([345ebd8](https://github.com/sokolaidev/maf-extensions/commit/345ebd8ea770007e4c0b3b434d8104141e8c51a6))
+
 ## [0.4.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.2...maf-sandbox-drawio-v0.4.3) (2026-10-06)
 
 
