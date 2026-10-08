@@ -1,6 +1,6 @@
 # MXC native output boundary
 
-> Proposal for [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668): preserve bounded stdout/stderr bytes and keep native completion independent of guest output. Extending the removable bundle into the runtime and embedded kernel is pending a host-maintainer decision. No implementation or runtime qualification is claimed here.
+> Research for [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668): preserve bounded stdout/stderr bytes and keep native completion independent of guest output. The original proposal and investigation below describe the 0.9 experiment. Work on a separate MXC 1.0 kernel profile is now authorized and in progress; native byte-stream qualification is still pending.
 > The later accepted bounded-console policy is recorded in the [MXC design](../backends/mxc.md#bounded-console-capture).
 
 ## Source findings
@@ -63,3 +63,15 @@ Do not treat the three-layer patch as the only possible solution. Preserve the e
 4. Evaluate the newer structured result API independently for result transport. It can reduce custom transport work but cannot replace stdout/stderr fidelity or the host's checkpoint publication protocol.
 
 A kernel patch remains a candidate after those comparisons, with new snapshots and both-platform qualification required. No upstream issue/comment/PR was sent during this investigation, and the pending extension decision has not been treated as approved.
+
+## MXC 1.0 implementation in progress (2026-10-08)
+
+Merged [#1784](https://github.com/sokolaidev/maf-extensions/pull/1784) supplies the qualified MXC 1.0 session, bounded-console and storage baseline. The new experiment extends that baseline with a separately removable kernel layer in [`mxc_streams_patch`](../../../scripts/experiments/mxc_streams_patch/). It pins MXC `7bf210247986cb73b1b314df60c2f1109c479c0b`, runtime `8f636e00cdf29e6c33ba0f578482c595d7827cf6`, and Unikraft `978c8a7d3ac33aa06cef870aead0182c89974002`. The patch metadata also pins the elfloader and libelf submodules and checks every affected source file before applying or removing the layer.
+
+The opt-in kernel configuration gives stdout and stderr separate file objects, including their `/dev` entries. Each write carries a stream ID and raw bytes through a dedicated `MafWriteBytes` callback in chunks of at most 4096 bytes. This avoids the serial console's string conversion, newline rewriting and fixed-message truncation. Descriptor duplication and program redirection still select the destination file object. Kernel diagnostics retain the existing console. These are source-level implementation properties; native tests have not yet established the end-to-end behavior.
+
+The GitHub Linux build retains the kernel hash, source identities, builder image identity and installed toolchain package list. The upstream builder uses a tagged base image and unversioned package installation, so these records identify the observed build rather than promise reproducible bytes across future builds. Both native host qualifications must consume the same resulting kernel artifact. A successful build is reported as `built-not-qualified`.
+
+The output policy for the new separate-stream profile is pending a host-maintainer decision. The recommendation is one MiB per stream, retaining a prefix and reporting omitted bytes while execution continues. The alternatives under discussion are retaining the existing one-MiB combined budget, or retiring the session on per-stream overflow. The earlier fail-and-retire proposal above is not an accepted decision. Malformed transport must remain a latched failure independently of the selected overflow policy.
+
+The existing experiment's stored-result cap is two MiB. Two full one-MiB streams plus metadata or base64 encoding do not fit within that cap. A separate-stream result envelope and its reservation/accounting bounds must be settled before claiming durable result replay for this profile. Existing console capture, result envelopes and historical evidence remain unchanged. The runtime callback, native control validation and both-platform behavioral qualification remain outstanding; #1668 remains open.

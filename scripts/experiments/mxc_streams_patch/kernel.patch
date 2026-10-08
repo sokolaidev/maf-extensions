@@ -14,12 +14,13 @@
  	select LIBPOSIX_TTY_PSEUDO
 --- a/lib/posix-tty/Makefile.uk
 +++ b/lib/posix-tty/Makefile.uk
-@@ -5,3 +5,5 @@
+@@ -5,3 +5,6 @@
  
  LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_STDIO) += $(LIBPOSIX_TTY_BASE)/tty.c
  LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_SERIAL) += $(LIBPOSIX_TTY_BASE)/serial.c
 +
 +LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES) += $(LIBPOSIX_TTY_BASE)/hl-streams.c
++LIBPOSIX_TTY_CINCLUDES-$(CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES) += -I$(CONFIG_UK_BASE)/plat/hyperlight/include
 --- a/lib/posix-tty/tty.c
 +++ b/lib/posix-tty/tty.c
 @@ -9,6 +9,11 @@

@@ -12,7 +12,7 @@
     },
     "lib/posix-tty/Makefile.uk": {
       "before": "caa68f12291e00494b938c7afab99a423d9d4d22e05a282961cbf5ec83dd9aec",
-      "after": "daaadf3073af2e79ffaeba6001998931dcf7395011128be74fd9a992b434ea52"
+      "after": "545ca33b16c6f30ab31991f298d839d945378f654e5eb98ed921b63c9cefdae1"
     },
     "lib/posix-tty/tty.c": {
       "before": "85f8ddc58ae84a650fe292e001d7d9a6840b7cf9ccea95e2d02862d946bdd146",
@@ -23,5 +23,5 @@
       "after": "78337da386cb0ee9efaefdd5604cf9a1196665d761592f4d97a2dbc836ef37f6"
     }
   },
-  "patch_sha256": "f5e0605901129fcd7d4e4bc90510e857ceb251f84e7e3daf7a5041b61f9e46a6"
+  "patch_sha256": "9da719fec8ef16855b1a5e66d418795361a70d758d60431c0f0a37059da94a68"
 }
