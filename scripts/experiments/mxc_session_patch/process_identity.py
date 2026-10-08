@@ -103,11 +103,11 @@ def _windows_process(pid: int, terminate_created: str | None = None) -> tuple[st
         if terminate_created == created and status == 258:
             kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
             kernel.TerminateProcess.restype = wintypes.BOOL
-            if (
-                not kernel.TerminateProcess(handle, 1)
-                and kernel.WaitForSingleObject(handle, 0) != 0
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
+            if not kernel.TerminateProcess(handle, 1):
+                error = ctypes.get_last_error()
+                if error != 5:
+                    raise ctypes.WinError(error)
+            # Exit is asynchronous; access denied can mean termination is already underway.
             if kernel.WaitForSingleObject(handle, 15000) != 0:
                 raise Refused("helper termination is unconfirmed")
             status = 0

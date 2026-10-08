@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -691,3 +692,38 @@ def test_deletion_does_not_stop_another_sessions_helper(tmp_path, child):
         assert work.exists()
         assert scratch_usage(db) == SCRATCH.bytes
         journal.delete()
+
+
+@pytest.mark.parametrize("completion", [0, 258, 0xFFFFFFFF])
+def test_windows_termination_requires_signaled_handle_after_access_denied(monkeypatch, completion):
+    waits = []
+    closed = []
+
+    def process_times(handle, created, *_):
+        value = identity.ctypes.cast(
+            created, identity.ctypes.POINTER(identity.ctypes.wintypes.FILETIME)
+        )
+        value.contents.dwLowDateTime = 42
+        return True
+
+    def wait(handle, timeout):
+        waits.append(timeout)
+        return 258 if timeout == 0 else completion
+
+    kernel = SimpleNamespace(
+        OpenProcess=lambda *_: 1,
+        GetProcessTimes=process_times,
+        WaitForSingleObject=wait,
+        CloseHandle=lambda handle: closed.append(handle),
+        TerminateProcess=lambda *_: False,
+    )
+    monkeypatch.setattr(identity.sys, "platform", "win32")
+    monkeypatch.setattr(identity.ctypes, "WinDLL", lambda *a, **kw: kernel, raising=False)
+    monkeypatch.setattr(identity.ctypes, "get_last_error", lambda: 5, raising=False)
+    if completion == 0:
+        assert identity._windows_process(123, "42") == ("42", True)
+    else:
+        with pytest.raises(store.Refused, match="unconfirmed"):
+            identity._windows_process(123, "42")
+    assert waits == [0, 15000]
+    assert closed == [1]
