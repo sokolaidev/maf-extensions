@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -92,6 +93,17 @@ class GitHub:
         if isinstance(payload, bytes):
             # gh cannot infer the length of a piped release asset.
             command.extend(["-H", f"Content-Length: {len(payload)}"])
+        environment = os.environ.copy()
+        release_token = environment.pop("CONTAINER_RELEASE_TOKEN", "")
+        release_write = (method == "POST" and endpoint == f"repos/{REPOSITORY}/releases") or (
+            method == "PATCH"
+            and re.fullmatch(rf"repos/{REPOSITORY}/releases/[1-9][0-9]*", endpoint) is not None
+        )
+        if release_write:
+            if not release_token and environment.get("GITHUB_ACTIONS") == "true":
+                raise ValueError("Release metadata writes require the container release App token")
+            if release_token:
+                environment["GH_TOKEN"] = release_token
         try:
             result = subprocess.run(
                 command,
@@ -99,6 +111,7 @@ class GitHub:
                 capture_output=True,
                 check=True,
                 timeout=600,
+                env=environment,
             )
         except subprocess.CalledProcessError as error:
             if error.stderr:

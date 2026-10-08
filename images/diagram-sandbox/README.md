@@ -15,7 +15,7 @@ Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/diagram
 
 Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `diagram` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-**Availability at 2026-10-08:** [the first publication attempt](https://github.com/sokolaidev/maf-extensions/actions/runs/37682254043) stopped during anonymous registry qualification, and `image-diagram-v0.1.0` evidence is not published. There is no completed release recommended here yet. The following release-consumption steps apply once completion and evidence delivery succeed; local builds remain available below.
+**Availability at 2026-10-08:** [publication attempt 2](https://github.com/sokolaidev/maf-extensions/actions/runs/37682254043/attempts/2) passed anonymous pull and offline PNG qualification but stopped while creating the evidence Release, and `image-diagram-v0.1.0` evidence is not published. There is no completed release recommended here yet. The following release-consumption steps apply once completion and evidence delivery succeed; local builds remain available below.
 
 ## Verify before pulling and running
 

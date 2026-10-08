@@ -1,0 +1,103 @@
+name: Container image storage recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Original failed container-image-release workflow run ID
+        required: true
+        type: string
+      stage:
+        description: Complete storage before original signing, or deliver original completion
+        required: true
+        type: choice
+        options: [complete, deliver]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: container-image-publication
+  queue: max
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  inspect:
+    if: github.repository == 'sokolaidev/maf-extensions' && github.ref == 'refs/heads/main' && vars.CONTAINER_IMAGE_RELEASES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      artifact_id: ${{ steps.selection.outputs.artifact_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Select original evidence and display the recovery identity
+        id: selection
+        env:
+          ORIGINAL_RUN: ${{ inputs.run_id }}
+          STAGE: ${{ inputs.stage }}
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/recover_container_release.py inspect \
+            --run-id "$ORIGINAL_RUN" --stage "$STAGE" --selection "$RUNNER_TEMP/selection.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: storage-recovery-selection
+          path: ${{ runner.temp }}/selection.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  write:
+    needs: inspect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: container-release
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: container-security-catalogue
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: storage-recovery-selection
+          path: ${{ runner.temp }}/selection
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.inspect.outputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/evidence
+          merge-multiple: true
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
+      - name: Revalidate and commit original evidence without rebuilding or signing
+        env:
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+        run: |
+          uv run --locked python scripts/recover_container_release.py write \
+            --selection "$RUNNER_TEMP/selection/selection.json" --directory "$RUNNER_TEMP/evidence"

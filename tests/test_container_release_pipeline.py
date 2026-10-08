@@ -573,8 +573,9 @@ def test_qualification_authenticates_before_pull_or_execution(monkeypatch, tmp_p
     assert events == ["verify"]
 
 
+@pytest.mark.parametrize("recovery_writer", [False, True])
 def test_completion_is_committed_only_after_durable_evidence_and_retry_keeps_identity(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, recovery_writer
 ):
     history = MemoryHistory()
     stored = {}
@@ -585,6 +586,7 @@ def test_completion_is_committed_only_after_durable_evidence_and_retry_keeps_ide
             return None
 
         def ensure(self, tag, source):
+            assert source == CANDIDATE["sourceCommit"]
             return {"id": 1}
 
         def retain(self, release, directory, files):
@@ -630,10 +632,13 @@ def test_completion_is_committed_only_after_durable_evidence_and_retry_keeps_ide
             "identity": {"candidateIdentityVerified": True},
         },
     )
-    publisher.retain_and_complete(initial)
+    if recovery_writer:
+        publisher.complete_candidate(initial, CANDIDATE, source="d" * 40, run_id="789", attempt="1")
+    else:
+        publisher.retain_and_complete(initial)
     completed = copy.deepcopy(history.catalogue)
     assert events == ["retained"]
-    assert history.calls == ["123/1/complete"]
+    assert history.calls == ["789/1/complete" if recovery_writer else "123/1/complete"]
     assert completed["releases"]["bicep/0.1.0"]["delivery"] == "pending"
     retry = tmp_path / "retry"
     write(retry / "candidate.json", CANDIDATE)
@@ -774,3 +779,49 @@ def test_page_status_boundary_in_node():
         capture_output=True,
         text=True,
     )
+
+
+def test_recovery_delivery_keeps_original_evidence_source_and_new_writer_identity(
+    monkeypatch, tmp_path
+):
+    history = MemoryHistory()
+    write(tmp_path / "evidence-index.json", {})
+    write(tmp_path / "completion.jsonl", {})
+    evidence_hash = digest(tmp_path / "evidence-index.json")
+    history.catalogue = complete(history.catalogue, CANDIDATE, evidence_hash, LATER)
+    calls = []
+    original_append = history.append
+
+    def append(transform, **kwargs):
+        assert kwargs["source"] == "d" * 40
+        return original_append(transform, **kwargs)
+
+    class Storage:
+        github = SimpleNamespace(assets=lambda _id: [])
+
+        def ensure(self, tag, source):
+            assert source == CANDIDATE["sourceCommit"]
+            return {"id": 1}
+
+        def retain(self, release, directory, files):
+            assert "completion.jsonl" in files
+            calls.append("retained")
+
+        def publish(self, release, source):
+            assert source == CANDIDATE["sourceCommit"]
+            calls.append("published")
+
+    def verify(expected, directory, *, bundles):
+        assert expected == CANDIDATE | {"evidenceIndexSha256": evidence_hash}
+        assert bundles
+        calls.append("verified")
+
+    monkeypatch.setattr(history, "append", append)
+    monkeypatch.setattr(publisher, "History", lambda: history)
+    monkeypatch.setattr(publisher, "Evidence", Storage)
+    monkeypatch.setattr(publisher, "verify_identity", verify)
+    monkeypatch.setattr(publisher, "now", lambda: DONE)
+    publisher.deliver_candidate(tmp_path, CANDIDATE, source="d" * 40, run_id="789", attempt="1")
+    assert calls == ["verified", "retained", "published"]
+    assert history.calls == ["789/1/deliver"]
+    assert history.catalogue["releases"]["bicep/0.1.0"]["delivery"] == "complete"

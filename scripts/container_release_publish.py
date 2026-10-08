@@ -147,6 +147,13 @@ def retain_and_complete(directory: Path) -> Path:
     """Retain indexed evidence before committing completion; resume committed releases unchanged."""
     candidate = selected(directory)
     source, run_id, attempt = context()
+    return complete_candidate(directory, candidate, source=source, run_id=run_id, attempt=attempt)
+
+
+def complete_candidate(
+    directory: Path, candidate: dict[str, Any], *, source: str, run_id: str, attempt: str
+) -> Path:
+    """Commit authenticated qualification using the current writer's source and operation."""
     history = History()
     head = history.head()
     if head is None or key(candidate) not in head.catalogue["releases"]:
@@ -172,7 +179,7 @@ def retain_and_complete(directory: Path) -> Path:
         qualified = read(directory / "qualification.json")
         if (
             qualified.get("candidate") != candidate
-            or qualified.get("runId") != run_id
+            or qualified.get("runId") != candidate["attemptId"]
             or qualified.get("anonymousPullVerified") is not True
             or qualified.get("identity", {}).get("candidateIdentityVerified") is not True
         ):
@@ -191,7 +198,7 @@ def retain_and_complete(directory: Path) -> Path:
         write(directory / "evidence-index.json", files)
         evidence_hash = digest(directory / "evidence-index.json")
         verify_evidence(directory, evidence_hash)
-        release = evidence.ensure(image_tag(candidate), source)
+        release = evidence.ensure(image_tag(candidate), candidate["sourceCommit"])
         # Upload the index last: its presence is the durable recovery checkpoint.
         evidence.retain(release, directory, indexed_files(directory))
         at = now()
@@ -217,11 +224,18 @@ def deliver(directory: Path) -> None:
     """Verify and freeze completion evidence before marking its delivery complete."""
     candidate = selected(directory)
     source, run_id, attempt = context()
+    deliver_candidate(directory, candidate, source=source, run_id=run_id, attempt=attempt)
+
+
+def deliver_candidate(
+    directory: Path, candidate: dict[str, Any], *, source: str, run_id: str, attempt: str
+) -> None:
+    """Publish authenticated completion while retaining the original candidate's source."""
     record = committed(candidate)
     if digest(directory / "evidence-index.json") != record["evidenceIndexSha256"]:
         raise ValueError("Delivery index differs from committed completion")
     evidence = Evidence()
-    release = evidence.ensure(image_tag(candidate), source)
+    release = evidence.ensure(image_tag(candidate), candidate["sourceCommit"])
     existing = [
         a for a in evidence.github.assets(release["id"]) if a.get("name") == "completion.jsonl"
     ]
@@ -236,7 +250,7 @@ def deliver(directory: Path) -> None:
     )
     files = indexed_files(directory) | {"completion.jsonl": digest(directory / "completion.jsonl")}
     evidence.retain(release, directory, files)
-    evidence.publish(release, source)
+    evidence.publish(release, candidate["sourceCommit"])
 
     def delivered(catalogue: dict[str, Any]) -> dict[str, Any]:
         result = copy.deepcopy(catalogue)
