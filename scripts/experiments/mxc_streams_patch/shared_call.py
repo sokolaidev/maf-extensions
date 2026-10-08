@@ -12,7 +12,7 @@ from scripts.experiments.mxc_session_patch.shared_store import (
     ScratchLimits,
     SharedStore,
 )
-from scripts.experiments.mxc_streams_patch.transport import RESULT_LIMIT, execute
+from scripts.experiments.mxc_streams_patch.transport import CONTROL_LIMIT, RESULT_LIMIT, execute
 
 
 def call(
@@ -30,7 +30,7 @@ def call(
     existing = store.db.execute(
         "SELECT 1 FROM calls WHERE session=? AND id=?", (store.session, call_id)
     ).fetchone()
-    minimum_bytes = 2 * store.limits.checkpoint_bytes + 4 * CHUNK + len(code) + 1024
+    minimum_bytes = 2 * store.limits.checkpoint_bytes + 4 * CHUNK + len(code) + 2 * CONTROL_LIMIT
     minimum_entries = 2 * store.limits.files * (PATH_BYTES // 2 + 1) + 16
     if existing is None and store.limits.result_bytes < RESULT_LIMIT:
         raise Refused("result allowance must cover both encoded byte streams")

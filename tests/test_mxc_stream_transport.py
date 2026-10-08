@@ -145,3 +145,33 @@ def test_insufficient_result_allowance_refuses_before_launch_or_reservation(tmp_
             )
         assert store.usage() == before
         assert store.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
+
+
+def test_scratch_reserves_both_payloads_diagnostics_and_control_before_launch(
+    tmp_path, monkeypatch
+):
+    limits = storage.Limits(
+        10**8, 10**8, checkpoint_bytes=1024, files=2, result_bytes=transport.RESULT_LIMIT
+    )
+    minimum = (
+        2 * limits.checkpoint_bytes
+        + 4 * transport.STREAM_LIMIT
+        + len(b"pass")
+        + 2 * transport.CONTROL_LIMIT
+    )
+    monkeypatch.setattr(shared, "execute", lambda *a, **kw: pytest.fail("must not launch"))
+    with storage.SharedStore(
+        tmp_path / "store", "session", {"format": transport.FORMAT}, limits
+    ) as store:
+        before = store.usage()
+        with pytest.raises(transport.Refused, match="scratch allowance"):
+            shared.call(
+                store,
+                "one",
+                b"pass",
+                tmp_path / "absent",
+                tmp_path / "absent",
+                storage.ScratchLimits(minimum - 1, 2000, 2 * minimum),
+            )
+        assert store.usage() == before
+        assert store.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
