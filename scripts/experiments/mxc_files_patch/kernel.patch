@@ -1,0 +1,393 @@
+--- a/lib/posix-tty/Config.uk
++++ b/lib/posix-tty/Config.uk
+@@ -65,6 +65,12 @@
+ 	bool "Serial: platform-specific serial output"
+ 	select LIBPOSIX_TTY_SERIAL
+ 
++config LIBPOSIX_TTY_STDOUT_HL_BYTES
++	bool "Hyperlight: separate byte streams (experimental)"
++	select LIBDEVFS_DEV_STDOUT if LIBDEVFS
++	depends on PLAT_HYPERLIGHT
++	select LIBPOSIX_TTY_SERIAL
++
+ config LIBPOSIX_TTY_STDOUT_NULL
+ 	bool "NULL file: discard output"
+ 	select LIBPOSIX_TTY_PSEUDO
+--- a/lib/posix-tty/Makefile.uk
++++ b/lib/posix-tty/Makefile.uk
+@@ -5,3 +5,6 @@
+ 
+ LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_STDIO) += $(LIBPOSIX_TTY_BASE)/tty.c
+ LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_SERIAL) += $(LIBPOSIX_TTY_BASE)/serial.c
++
++LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES) += $(LIBPOSIX_TTY_BASE)/hl-streams.c
++LIBPOSIX_TTY_CINCLUDES-$(CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES) += -I$(CONFIG_UK_BASE)/plat/hyperlight/include
+--- a/lib/posix-tty/tty.c
++++ b/lib/posix-tty/tty.c
+@@ -9,6 +9,11 @@
+ #include <uk/posix-fd.h>
+ #include <uk/posix-fdtab.h>
+ #include <uk/posix-serialfile.h>
++
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++extern const struct uk_file uk_file_hl_stdout;
++extern const struct uk_file uk_file_hl_stderr;
++#endif
+ 
+ #if CONFIG_LIBPOSIX_TTY_PSEUDO
+ #include <uk/file-pseudo.h>
+@@ -82,6 +87,7 @@
+ {
+ 	const struct uk_file *in;
+ 	const struct uk_file *out;
++	const struct uk_file *err;
+ 	const char *in_fname;
+ 	const char *out_fname;
+ 	size_t in_fnamelen;
+@@ -112,6 +118,10 @@
+ 	out = &uk_file_serial;
+ 	out_fname = STDOUT_FNAME_SERIAL;
+ 	out_fnamelen = STDOUT_FNAME_LEN_SERIAL;
++#elif CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	out = &uk_file_hl_stdout;
++	out_fname = "stdout:hyperlight";
++	out_fnamelen = sizeof("stdout:hyperlight") - 1;
+ #else /* !CONFIG_LIBPOSIX_TTY_STDOUT_* */
+ #error Nonexistent stdout file
+ #endif /* !CONFIG_LIBPOSIX_TTY_STDOUT_* */
+@@ -130,14 +140,21 @@
+ 		return (r < 0) ? r : -EBADF;
+ 	}
+ 
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	err = &uk_file_hl_stderr;
++	r = uk_fdtab_open_named(err, O_WRONLY | UKFD_O_NOSEEK,
++				"stderr:hyperlight", sizeof("stderr:hyperlight") - 1);
++#else
++	err = out;
+ 	r = uk_sys_dup2(1, 2);
++#endif
+ 	if (unlikely(r != 2)) {
+ 		uk_pr_err("Failed to allocate fd for stderr: %d\n", r);
+ 		return (r < 0) ? r : -EBADF;
+ 	}
+ 
+ #if CONFIG_LIBPOSIX_TTY_DEVFS
+-	return init_posix_tty_devfs(in, out, out);
++	return init_posix_tty_devfs(in, out, err);
+ #else /* !CONFIG_LIBPOSIX_TTY_DEVFS */
+ 	return 0;
+ #endif /* !CONFIG_LIBPOSIX_TTY_DEVFS */
+--- /dev/null
++++ b/lib/posix-tty/hl-streams.c
+@@ -0,0 +1,87 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/* Opt-in byte streams; kernel diagnostics keep the platform console. */
++#include <limits.h>
++#include <sys/stat.h>
++#include <uk/file.h>
++#include <uk/file/nops.h>
++#include <uk/posix-fd.h>
++#include <uk/posix-serialfile.h>
++#include <hyperlight/hcall.h>
++
++#define CHUNK_BYTES 4096
++static const char STREAM_VOLID[] = "hl_stream";
++
++static ssize_t stream_write(const struct uk_file *f,
++			   const struct iovec *iov, size_t iovcnt,
++			   size_t off, long flags __unused)
++{
++	ssize_t total = 0;
++
++	if (off)
++		return -ESPIPE;
++	for (size_t i = 0; i < iovcnt; i++) {
++		const __u8 *data = iov[i].iov_base;
++		size_t left = iov[i].iov_len;
++
++		if ((!data && left) || left > (size_t)(SSIZE_MAX - total))
++			return total ? total : -EINVAL;
++		while (left) {
++			__u32 count = left < CHUNK_BYTES ? left : CHUNK_BYTES;
++			struct hl_param args[] = {
++				{ .type = HL_PV_HLUINT, .u32_val = (uintptr_t)f->node },
++				{ .type = HL_PV_HLVECBYTES, .vec = { data, count } },
++			};
++			__s32 accepted;
++
++			if (hl_hcall_int("MafWriteBytes", args, 2, &accepted) ||
++			    accepted != (__s32)count)
++				return total ? total : -EIO;
++			data += count;
++			left -= count;
++			total += count;
++		}
++	}
++	return total;
++}
++
++static int stream_getstat(const struct uk_file *f, unsigned int mask,
++			  struct uk_statx *arg)
++{
++	int rc = uk_file_serial.ops->getstat(&uk_file_serial, mask, arg);
++
++	if (!rc)
++		arg->stx_ino = (uintptr_t)f->node;
++	return rc;
++}
++
++static int stream_ctl(const struct uk_file *f __unused, int fam, int req,
++			uintptr_t arg1, uintptr_t arg2, uintptr_t arg3)
++{
++	/* Preserve the driver's terminal detection without console rewriting. */
++	return uk_file_serial.ops->ctl(&uk_file_serial, fam, req, arg1, arg2, arg3);
++}
++
++static const struct uk_file_ops stream_ops = {
++	.read = uk_file_nop_read,
++	.write = stream_write,
++	.mem = uk_file_nop_mem,
++	.getstat = stream_getstat,
++	.setstat = uk_file_nop_setstat,
++	.ctl = stream_ctl,
++};
++
++static uk_file_refcnt out_ref = UK_FILE_REFCNT_INITIALIZER(out_ref);
++static uk_file_refcnt err_ref = UK_FILE_REFCNT_INITIALIZER(err_ref);
++static struct uk_file_state out_state = UK_FILE_STATE_EVENTS_INITIALIZER(
++	out_state, UKFD_POLLOUT);
++static struct uk_file_state err_state = UK_FILE_STATE_EVENTS_INITIALIZER(
++	err_state, UKFD_POLLOUT);
++
++const struct uk_file uk_file_hl_stdout = {
++	.vol = STREAM_VOLID, .node = (void *)1, .ops = &stream_ops,
++	.refcnt = &out_ref, .state = &out_state, ._release = uk_file_static_release
++};
++const struct uk_file uk_file_hl_stderr = {
++	.vol = STREAM_VOLID, .node = (void *)2, .ops = &stream_ops,
++	.refcnt = &err_ref, .state = &err_state, ._release = uk_file_static_release
++};
+--- a/lib/devfs/stdout.c
++++ b/lib/devfs/stdout.c
+@@ -40,10 +40,16 @@
+ #include <vfscore/uio.h>
+ #include <devfs/device.h>
+ #include <uk/console.h>
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++#include <uk/file.h>
++extern const struct uk_file uk_file_hl_stdout;
++extern const struct uk_file uk_file_hl_stderr;
++#endif
+ 
+ #ifdef CONFIG_LIBDEVFS_DEV_STDOUT
+ #define DEV_STDOUT_NAME "stdout"
+ 
++#if !CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
+ /* TODO: Some consoles require both a newline and a carriage return to
+  * go to the start of the next line. This kind of behavior should be in
+  * a single place in posix-tty. We keep this workaround until we have feature
+@@ -95,11 +101,40 @@
+ 	return 0;
+ }
+ 
++#endif
++
+ /* One function for stderr and stdout */
+ static int dev_stdout_write(struct device *dev __unused, struct uio *uio,
+ 			    int flags __unused)
+ {
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	const struct uk_file *file = !strcmp(dev->name, "stderr") ?
++		&uk_file_hl_stderr : &uk_file_hl_stdout;
++
++	while (uio->uio_resid && uio->uio_iovcnt) {
++		struct iovec *iov = uio->uio_iov;
++		struct iovec part = *iov;
++		ssize_t written;
++
++		if (!iov->iov_len) {
++			uio->uio_iov++;
++			uio->uio_iovcnt--;
++			continue;
++		}
++		if (part.iov_len > uio->uio_resid)
++			part.iov_len = uio->uio_resid;
++		written = file->ops->write(file, &part, 1, 0, 0);
++		if (written <= 0)
++			return written < 0 ? -written : EIO;
++		iov->iov_base = (char *)iov->iov_base + written;
++		iov->iov_len -= written;
++		uio->uio_resid -= written;
++		uio->uio_offset += written;
++	}
++	return 0;
++#else
+ 	return vfscore_uioforeach(__write_fn, NULL, uio->uio_resid, uio);
++#endif
+ }
+ 
+ static int dev_stdout_read(struct device *dev __unused, struct uio *uio,
+@@ -138,6 +173,11 @@
+ 			  DEV_STDOUT_NAME, rc);
+ 		return -rc;
+ 	}
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	rc = device_create(&drv_stdout, "stderr", D_CHR, NULL);
++	if (rc)
++		return -rc;
++#endif
+ #endif /* LIBDEVFS_DEV_STDOUT */
+ 
+ 	return 0;
+--- a/lib/hostfs/hostfs_vnops.c
++++ b/lib/hostfs/hostfs_vnops.c
+@@ -160,13 +160,16 @@
+ /* ── create ───────────────────────────────────────────────────────── */
+ 
+ static int
+-hostfs_create(struct vnode *dvp, const char *name, mode_t mode __unused)
++hostfs_create(struct vnode *dvp, const char *name, mode_t mode)
+ {
+ 	struct hostfs_node *dnp = dvp->v_data;
+ 	char path[1024];
+ 
+ 	if (hostfs_stale(dnp))
+ 		return ESTALE;
++
++	if ((mode & S_IFMT) && !S_ISREG(mode))
++		return EPERM;
+ 
+ 	build_path(path, sizeof(path), dnp, name);
+ 
+@@ -283,72 +286,64 @@
+ static int
+ hostfs_write(struct vnode *vp, struct uio *uio, int ioflag)
+ {
+-	struct hostfs_node *np = vp->v_data;
+-	int append = (ioflag & IO_APPEND) ? 1 : 0;
+-
+-	if (hostfs_stale(np))
+-		return ESTALE;
+-
+-	while (uio->uio_resid > 0) {
+-		__u8 *wbuf = hostfs_io.wbuf;
+-		size_t want = (size_t)uio->uio_resid;
+-
+-		if (want > hostfs_io.chunk)
+-			want = hostfs_io.chunk;
+-
+-		/* Gather from uio into wbuf. */
+-		size_t filled = 0;
+-
+-		while (filled < want && uio->uio_iovcnt > 0) {
+-			struct iovec *iov = uio->uio_iov;
+-			size_t chunk = want - filled;
+-
+-			if (chunk > iov->iov_len)
+-				chunk = iov->iov_len;
+-
+-			memcpy(wbuf + filled, iov->iov_base, chunk);
+-			filled += chunk;
+-
+-			iov->iov_base = (char *)iov->iov_base + chunk;
+-			iov->iov_len -= chunk;
+-
+-			if (iov->iov_len == 0) {
+-				uio->uio_iov++;
+-				uio->uio_iovcnt--;
+-			}
+-		}
+-
+-		struct hl_param p[5];
+-		__s32 ret;
+-
+-		p[0].type = HL_PV_HLINT;
+-		p[0].i32_val = np->hf_mount_idx;
+-		p[1].type = HL_PV_HLSTRING;
+-		p[1].str.ptr = np->hf_path;
+-		p[1].str.len = strlen(np->hf_path);
+-		p[2].type = HL_PV_HLULONG;
+-		p[2].u64_val = uio->uio_offset;
+-		p[3].type = HL_PV_HLINT;
+-		p[3].i32_val = append;
+-		p[4].type = HL_PV_HLVECBYTES;
+-		p[4].vec.ptr = wbuf;
+-		p[4].vec.len = filled;
+-
+-		if (hl_hcall_int("fs_write_bytes", p, 5, &ret) < 0)
+-			return EIO;
+-
+-		if (ret < 0)
+-			return -ret;
+-
+-		uio->uio_resid -= filled;
+-		uio->uio_offset += filled;
+-	}
+-
+-	/* Update vnode size. */
+-	if (uio->uio_offset > vp->v_size)
+-		vp->v_size = uio->uio_offset;
+-
+-	return 0;
++    struct hostfs_node *np = vp->v_data;
++    struct hl_param begin[5];
++    __s32 token, ret;
++    size_t total = uio->uio_resid, sent = 0;
++    int error = EIO;
++    if (hostfs_stale(np))
++        return ESTALE;
++    if (uio->uio_iovcnt < 0 || uio->uio_iovcnt > 1024)
++        return EINVAL;
++    begin[0].type = HL_PV_HLINT; begin[0].i32_val = np->hf_mount_idx;
++    begin[1].type = HL_PV_HLSTRING;
++    begin[1].str.ptr = np->hf_path; begin[1].str.len = strlen(np->hf_path);
++    begin[2].type = HL_PV_HLULONG; begin[2].u64_val = uio->uio_offset;
++    begin[3].type = HL_PV_HLINT; begin[3].i32_val = (ioflag & IO_APPEND) ? 1 : 0;
++    begin[4].type = HL_PV_HLULONG; begin[4].u64_val = total;
++    if (hl_hcall_int("MafFsWriteBegin", begin, 5, &token) < 0)
++        return EIO;
++    if (token < 0)
++        return -token;
++    int index = 0;
++    size_t within = 0;
++    while (sent < total) {
++        size_t want = MIN(total - sent, hostfs_io.chunk), filled = 0;
++        while (filled < want && index < uio->uio_iovcnt) {
++            const struct iovec *iov = &uio->uio_iov[index];
++            size_t amount = MIN(want - filled, iov->iov_len - within);
++            memcpy(hostfs_io.wbuf + filled, (char *)iov->iov_base + within, amount);
++            filled += amount; within += amount;
++            if (within == iov->iov_len) { index++; within = 0; }
++        }
++        if (filled != want) { error = EINVAL; goto abort; }
++        struct hl_param part[3];
++        part[0].type = HL_PV_HLINT; part[0].i32_val = token;
++        part[1].type = HL_PV_HLULONG; part[1].u64_val = sent;
++        part[2].type = HL_PV_HLVECBYTES;
++        part[2].vec.ptr = hostfs_io.wbuf; part[2].vec.len = filled;
++        if (hl_hcall_int("MafFsWritePart", part, 3, &ret) < 0)
++            goto abort;
++        if (ret < 0) { error = -ret; goto abort; }
++        sent += filled;
++    }
++    struct hl_param commit;
++    commit.type = HL_PV_HLINT; commit.i32_val = token;
++    if (hl_hcall_int("MafFsWriteCommit", &commit, 1, &ret) < 0)
++        goto abort;
++    if (ret < 0) { error = -ret; goto abort; }
++    uio->uio_resid -= total;
++    uio->uio_offset += total;
++    if (uio->uio_offset > vp->v_size)
++        vp->v_size = uio->uio_offset;
++    return 0;
++abort:
++    {
++        struct hl_param cancel;
++        cancel.type = HL_PV_HLINT; cancel.i32_val = token;
++        hl_hcall_int("MafFsWriteAbort", &cancel, 1, &ret);
++    }
++    return error;
+ }
+ 
+ /* ── readdir ──────────────────────────────────────────────────────── */

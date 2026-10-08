@@ -20,8 +20,13 @@ finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
 
-@pytest.fixture
-def kernel(tmp_path, monkeypatch):
+@pytest.fixture(params=("mxc_streams_patch", "mxc_files_patch"))
+def kernel(tmp_path, monkeypatch, request):
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "patch",
+        importlib.import_module(f"scripts.experiments.{request.param}.kernel_patch"),
+    )
     source = tmp_path / "runtime"
     assets = tmp_path / "assets"
     assets.mkdir()

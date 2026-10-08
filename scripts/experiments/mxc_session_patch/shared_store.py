@@ -30,7 +30,7 @@ from .host_store import (
 )
 from .private_root import check_file, prepare
 
-MAX_SHARED_RESULT = 3 * CHUNK
+MAX_SHARED_RESULT = 92 * CHUNK
 VERSION = 4
 PATH_BYTES = 512
 FILE_METADATA = PATH_BYTES + 256

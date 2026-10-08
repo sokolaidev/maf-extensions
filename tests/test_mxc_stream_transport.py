@@ -68,7 +68,7 @@ def test_full_independent_binary_streams_fit_reserved_result_and_survive_reopen(
         store.audit_usage()
     assert storage.Limits(10**8, 10**8).result_bytes == 2 * transport.STREAM_LIMIT
     with pytest.raises(transport.Refused):
-        replace(limits, result_bytes=transport.RESULT_LIMIT + 1)
+        replace(limits, result_bytes=storage.MAX_SHARED_RESULT + 1)
 
 
 @pytest.mark.parametrize(

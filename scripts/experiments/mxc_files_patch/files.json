@@ -1,0 +1,30 @@
+{
+  "layers": {
+    "runtime": {
+      "sha256": "ce55dde5c7a5ba6c8e3f0b08f11a357260e38723641ecb3ae340df3c21c4f4b3",
+      "files": {
+        "src/lib.rs": {
+          "before": "b9b920639c99414938585aee420ce030e2614785f39d2a082fff0f93d55127dd",
+          "after": "e5c0b7a672edb88f678eb93d480b120c210f7ebbf03d5c6dac59a2b70188c484"
+        },
+        "src/workspace.rs": {
+          "before": null,
+          "after": "066107db9624d4cfdf55801943f3f4ac691249e7ca86f80b0f0426d9806d2207"
+        },
+        "src/workspace_io.rs": {
+          "before": null,
+          "after": "004f54393419fecbc2b27c9ce6d71fbfa6392b7e54d53bd09eaee8c9142f2ba4"
+        }
+      }
+    },
+    "session": {
+      "sha256": "200f12d4bbbe87fc1040323b4af1f447c85d211a48219d49da66444a092de512",
+      "files": {
+        "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+          "before": "163c4bd9b4c1a1b2bc2813109be9c24b0f0c4deb414e1ad96ba690333f8eeada",
+          "after": "43dacc1831231c0bb81e651c87a3a78d7605a3448f88b5c356097e5bf85589e8"
+        }
+      }
+    }
+  }
+}
