@@ -119,7 +119,7 @@ def test_release_with_image_change_selects_that_image(repository):
     [
         ("images/bicep-sandbox/Dockerfile", ["bicep", "bicep-prepared", "sbx-bicep"]),
         ("images/sbx-template/Dockerfile", ["sbx-bicep"]),
-        ("images/diagram-sandbox/Dockerfile", ["diagram"]),
+        ("images/graphviz-sandbox/Dockerfile", ["graphviz"]),
         ("images/drawio-sandbox/render.py", ["drawio-sandbox"]),
         ("images/drawio-export/export.py", ["drawio-export"]),
         ("images/terraform-sandbox/install.py", list(PROFILES[6:10])),
@@ -154,9 +154,9 @@ def test_deleted_image_input_and_new_profile_both_select_scans(repository):
     root, _ = repository
     base = commit(root, {"images/drawio-export/old.py": "old"})
     head = commit(
-        root, {"images/drawio-export/old.py": None, "images/diagram-sandbox/new.py": "new"}
+        root, {"images/drawio-export/old.py": None, "images/graphviz-sandbox/new.py": "new"}
     )
-    assert select(root, "push", base, head)[0] == ["diagram", "drawio-export"]
+    assert select(root, "push", base, head)[0] == ["graphviz", "drawio-export"]
 
 
 @pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])

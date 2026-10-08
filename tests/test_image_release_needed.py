@@ -21,7 +21,7 @@ pytestmark = pytest.mark.workflow
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "a" * 40
 RECORD = {
-    "profile": "diagram",
+    "profile": "graphviz",
     "version": "0.1.0",
     "registryDigest": "sha256:" + "b" * 64,
     "imageId": "sha256:" + "c" * 64,
@@ -124,7 +124,7 @@ def test_unfixed_published_vulnerability_opens_request_without_candidate():
 def test_vulnerable_candidate_marks_release_request_blocked():
     result = desired(observed=candidate(outcome="vulnerable"))
     assert result["status"] == "Blocked on candidate remediation"
-    assert "CVE-2026-1234" in tracker.body("diagram", result)
+    assert "CVE-2026-1234" in tracker.body("graphviz", result)
 
 
 @pytest.mark.parametrize("outcome", ["unavailable", "running"])
@@ -157,14 +157,14 @@ def test_clean_monitor_does_not_reopen_resolved_historical_finding():
 
 
 def test_passing_scan_cannot_close_issue_without_replacement():
-    previous = desired(changed=["images/diagram-sandbox/Dockerfile"])
+    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
     result = desired(observed=candidate(version="1"), previous=previous)
     assert not result["resolved"]
     assert "source" in result["reasons"]
 
 
 def test_replacement_must_address_component_and_source_reasons():
-    previous = desired(changed=["images/diagram-sandbox/Dockerfile"], observed=candidate())
+    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"], observed=candidate())
     unresolved = desired(record=replacement(), previous=previous)
     assert not unresolved["resolved"]
     assert "components" in unresolved["reasons"]
@@ -200,18 +200,18 @@ def test_delayed_candidate_cannot_rewind_newer_inventory_or_findings():
 def test_equal_timestamp_candidate_cannot_replace_persisted_state(first, second):
     client = Issues()
     previous = desired(observed=candidate(outcome=first))
-    tracker.reconcile(client, "diagram", previous, None)
+    tracker.reconcile(client, "graphviz", previous, None)
     match = tracker.STATE.search(client.items[0]["body"])
     assert match is not None
     saved = json.loads(match[1])
     result = desired(observed=candidate(version="3", outcome=second), previous=saved)
-    tracker.reconcile(client, "diagram", result, client.items[0])
+    tracker.reconcile(client, "graphviz", result, client.items[0])
     assert result == saved
     assert len(client.calls) == 1
 
 
 def test_new_vulnerability_prevents_closure_after_replacement():
-    previous = desired(changed=["images/diagram-sandbox/Dockerfile"])
+    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
     record = replacement() | {
         "latestAttempt": {
             "outcome": "vulnerable",
@@ -265,32 +265,32 @@ class Issues(GitHub):
 def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments():
     client = Issues()
     state = desired(observed=candidate())
-    tracker.reconcile(client, "diagram", state, None)
+    tracker.reconcile(client, "graphviz", state, None)
     again = desired(observed=candidate(evidence="run/2"), previous=state)
-    tracker.reconcile(client, "diagram", again, client.items[0])
+    tracker.reconcile(client, "graphviz", again, client.items[0])
     assert len(client.items) == len(client.calls) == 1
     changed = desired(
         observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
     )
-    tracker.reconcile(client, "diagram", changed, client.items[0])
+    tracker.reconcile(client, "graphviz", changed, client.items[0])
     assert len(client.calls) == 2
     assert client.calls[-1][1] == "PATCH"
 
 
 def test_closure_and_closed_issue_reuse_are_idempotent():
     client = Issues()
-    state = desired(changed=["images/diagram-sandbox/Dockerfile"])
-    tracker.reconcile(client, "diagram", state, None)
+    state = desired(changed=["images/graphviz-sandbox/Dockerfile"])
+    tracker.reconcile(client, "graphviz", state, None)
     resolved = desired(record=replacement(), previous=state)
-    tracker.reconcile(client, "diagram", resolved, client.items[0])
-    tracker.reconcile(client, "diagram", resolved, client.items[0])
+    tracker.reconcile(client, "graphviz", resolved, client.items[0])
+    tracker.reconcile(client, "graphviz", resolved, client.items[0])
     assert len(client.calls) == 2
     assert client.items[0]["state"] == "closed"
     assert client.items[0]["state_reason"] == "completed"
     newer = desired(
         record=replacement(), observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z")
     )
-    tracker.reconcile(client, "diagram", newer, client.items[0])
+    tracker.reconcile(client, "graphviz", newer, client.items[0])
     assert client.items[0]["state"] == "open"
     assert len(client.items) == 1
 
@@ -299,15 +299,15 @@ def test_missing_issue_state_refuses_mutation():
     client = Issues()
     with pytest.raises(ValueError, match="recoverable"):
         tracker.reconcile(
-            client, "diagram", desired(observed=candidate()), {"body": "edited", "number": 1}
+            client, "graphviz", desired(observed=candidate()), {"body": "edited", "number": 1}
         )
     assert not client.calls
 
 
 @pytest.mark.parametrize("ending", ["-->", "--!>"])
 def test_issue_state_cannot_break_its_html_comment(ending):
-    result = desired(changed=[f"images/diagram-sandbox/{ending}file"])
-    match = tracker.STATE.search(tracker.body("diagram", result))
+    result = desired(changed=[f"images/graphviz-sandbox/{ending}file"])
+    match = tracker.STATE.search(tracker.body("graphviz", result))
     assert match is not None
     assert ending not in match[1]
     assert json.loads(match[1]) == result
@@ -327,7 +327,7 @@ def test_baseline_requires_immutable_published_evidence(monkeypatch, tmp_path, d
     monkeypatch.setattr(
         tracker.Evidence, "fetch", lambda *_: {"draft": draft, "immutable": immutable}
     )
-    monkeypatch.setattr(tracker, "image_tag", lambda _: "image-diagram-v0.1.0")
+    monkeypatch.setattr(tracker, "image_tag", lambda _: "image-graphviz-v0.1.0")
     with pytest.raises(ValueError, match="immutable"):
         tracker.baseline(GitHub(), RECORD, tmp_path)
 
@@ -336,9 +336,9 @@ def test_baseline_checks_signatures_before_consuming_inventory(monkeypatch, tmp_
     monkeypatch.setattr(
         tracker.Evidence,
         "fetch",
-        lambda *_: {"draft": False, "immutable": True, "tag_name": "image-diagram-v0.1.0"},
+        lambda *_: {"draft": False, "immutable": True, "tag_name": "image-graphviz-v0.1.0"},
     )
-    monkeypatch.setattr(tracker, "image_tag", lambda _: "image-diagram-v0.1.0")
+    monkeypatch.setattr(tracker, "image_tag", lambda _: "image-graphviz-v0.1.0")
     monkeypatch.setattr(GitHub, "tag_commit", lambda *_: SOURCE)
 
     def invalid(*_args, **_kwargs):
@@ -400,7 +400,7 @@ def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependenc
     base = commit(
         tmp_path,
         {
-            "images/diagram-sandbox/Dockerfile": "FROM base\n",
+            "images/graphviz-sandbox/Dockerfile": "FROM base\n",
             "scripts/terraform_dependencies.py": "v1",
         },
     )
@@ -411,17 +411,17 @@ def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependenc
             "tests/test_image_release_needed.py": "new",
         },
     )
-    assert tracker.changed_inputs(tmp_path, base, tooling, "diagram") == []
-    payload = commit(tmp_path, {"images/diagram-sandbox/Dockerfile": "FROM newer\n"})
-    assert tracker.changed_inputs(tmp_path, base, payload, "diagram") == [
-        "images/diagram-sandbox/Dockerfile"
+    assert tracker.changed_inputs(tmp_path, base, tooling, "graphviz") == []
+    payload = commit(tmp_path, {"images/graphviz-sandbox/Dockerfile": "FROM newer\n"})
+    assert tracker.changed_inputs(tmp_path, base, payload, "graphviz") == [
+        "images/graphviz-sandbox/Dockerfile"
     ]
     assert tracker.changed_inputs(tmp_path, base, payload, "bicep") == []
     prepared = commit(tmp_path, {"scripts/terraform_dependencies.py": "v2"})
     assert "scripts/terraform_dependencies.py" in tracker.changed_inputs(
         tmp_path, payload, prepared, "terraform-prepared"
     )
-    assert tracker.changed_inputs(tmp_path, payload, prepared, "diagram") == []
+    assert tracker.changed_inputs(tmp_path, payload, prepared, "graphviz") == []
 
 
 @pytest.mark.parametrize(
@@ -437,7 +437,7 @@ def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_pa
 
     blob = object_id("hash-object", "-w", "--stdin", data=b"changed input")
     tree = object_id("mktree", "-z", data=f"100644 blob {blob}\t{filename}\0".encode())
-    for directory in ("diagram-sandbox", "images"):
+    for directory in ("graphviz-sandbox", "images"):
         tree = object_id("mktree", "-z", data=f"040000 tree {tree}\t{directory}\0".encode())
     head = tracker.git(
         tmp_path,
@@ -452,8 +452,8 @@ def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_pa
         "-m",
         "input change",
     ).strip()
-    path = f"images/diagram-sandbox/{filename}"
-    changed = tracker.changed_inputs(tmp_path, base, head, "diagram")
+    path = f"images/graphviz-sandbox/{filename}"
+    changed = tracker.changed_inputs(tmp_path, base, head, "graphviz")
     assert changed == [path]
     previous = desired(changed=[path])
     result = desired(record=replacement(), changed=changed, previous=previous)
@@ -474,7 +474,7 @@ def test_unclassifiable_metadata_remains_a_release_input(tmp_path, path, change)
         head = commit(tmp_path, {})
     else:
         head = commit(tmp_path, {path: valid if change == "added" else "[invalid"})
-    changed = tracker.changed_inputs(tmp_path, base, head, "diagram")
+    changed = tracker.changed_inputs(tmp_path, base, head, "graphviz")
     assert changed == [path]
     previous = desired(changed=changed)
     assert not desired(record=replacement(), changed=changed, previous=previous)["resolved"]
@@ -484,7 +484,7 @@ def test_missing_comparison_history_still_refuses_reconciliation(tmp_path):
     tracker.git(tmp_path, "init")
     head = commit(tmp_path, {"README.md": "baseline"})
     with pytest.raises(subprocess.CalledProcessError):
-        tracker.changed_inputs(tmp_path, "0" * 40, head, "diagram")
+        tracker.changed_inputs(tmp_path, "0" * 40, head, "graphviz")
 
 
 def test_git_helper_preserves_output_whitespace(tmp_path):
@@ -521,7 +521,7 @@ def test_ci_has_no_automatic_image_builds_and_tracker_cannot_publish():
 def test_manual_scan_selects_one_profile(monkeypatch, tmp_path):
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    monkeypatch.setenv("SELECTED_PROFILE", "diagram")
+    monkeypatch.setenv("SELECTED_PROFILE", "graphviz")
     subprocess.run(
         [
             sys.executable,
@@ -533,7 +533,7 @@ def test_manual_scan_selects_one_profile(monkeypatch, tmp_path):
     )
     assert json.loads(
         dict(line.split("=", 1) for line in output.read_text().splitlines())["profiles"]
-    ) == ["diagram"]
+    ) == ["graphviz"]
 
 
 @pytest.fixture
@@ -549,8 +549,8 @@ def reporter(monkeypatch):
         return SimpleNamespace(
             reference="stable",
             catalogue={
-                "current": {"diagram": "diagram/current"},
-                "releases": {"diagram/current": current["record"]},
+                "current": {"graphviz": "graphviz/current"},
+                "releases": {"graphviz/current": current["record"]},
             },
         )
 
@@ -561,7 +561,7 @@ def reporter(monkeypatch):
     monkeypatch.setattr(
         tracker,
         "candidates",
-        lambda *_: {"diagram": current["observed"]} if current["observed"] else {},
+        lambda *_: {"graphviz": current["observed"]} if current["observed"] else {},
     )
     monkeypatch.setattr(tracker, "changed_inputs", lambda *_: [])
     monkeypatch.setattr(tracker, "git", lambda *_: SOURCE)
@@ -570,6 +570,38 @@ def reporter(monkeypatch):
     monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     return client, current
+
+
+def test_renamed_profile_requests_first_release_then_uses_its_own_baseline(reporter, monkeypatch):
+    client, current = reporter
+    current["observed"] = None
+    legacy = RECORD | {"profile": "diagram", "sourceCommit": "f" * 40}
+    catalogue = {"current": {"diagram": "diagram/0.1.0"}, "releases": {"diagram/0.1.0": legacy}}
+    monkeypatch.setattr(
+        tracker.History,
+        "head",
+        lambda _: SimpleNamespace(reference="stable", catalogue=catalogue),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "changed_inputs",
+        lambda root, base, head, profile: (
+            ["images/graphviz-sandbox/Dockerfile"] if base == legacy["sourceCommit"] else []
+        ),
+    )
+    tracker.main()
+    assert len(client.items) == 1
+    assert client.items[0]["title"] == "Image release needed: graphviz"
+    assert "diagram:0.1.0" in client.items[0]["body"]
+    assert client.items[0]["state"] == "open"
+    catalogue["current"]["graphviz"] = "graphviz/0.1.0"
+    catalogue["releases"]["graphviz/0.1.0"] = replacement() | {"version": "0.1.0"}
+    tracker.main()
+    assert client.items[0]["state"] == "closed"
+    assert "graphviz:0.1.0" in client.items[0]["body"]
+    tracker.main()
+    assert len(client.items) == 1
+    assert catalogue["releases"]["diagram/0.1.0"] == legacy
 
 
 def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):
@@ -646,7 +678,7 @@ def test_source_commit_uses_literal_changed_filenames(reporter, monkeypatch, tmp
             blob = object_id("hash-object", "-w", "--stdin", data=content)
             entries.append(f"100644 blob {blob}\t{name}\0")
         value = object_id("mktree", "-z", data="".join(entries).encode())
-        for name in ("diagram-sandbox", "images"):
+        for name in ("graphviz-sandbox", "images"):
             value = object_id("mktree", "-z", data=f"040000 tree {value}\t{name}\0".encode())
         return value
 
@@ -669,7 +701,7 @@ def test_source_commit_uses_literal_changed_filenames(reporter, monkeypatch, tmp
         revisions.append(revision)
         parent = ["-p", revision]
     git(tmp_path, "update-ref", "HEAD", revisions[-1])
-    path = f"images/diagram-sandbox/{filename}"
+    path = f"images/graphviz-sandbox/{filename}"
     assert git(tmp_path, "diff", "--name-only", "-z", revisions[0], revisions[-1]) == path + "\0"
     monkeypatch.setattr(tracker, "ROOT", tmp_path)
     monkeypatch.setattr(tracker, "git", git)
@@ -688,7 +720,7 @@ def test_unowned_marker_issue_is_never_used_or_modified(reporter, author):
         "number": 100,
         "state": "open",
         "user": {"login": author, "type": "Bot"},
-        "body": tracker.body("diagram", state),
+        "body": tracker.body("graphviz", state),
     }
     client.items.append(forged)
     tracker.main()
@@ -737,8 +769,8 @@ def test_concurrent_release_completion_refuses_issue_mutation(reporter, monkeypa
         return SimpleNamespace(
             reference=str(count),
             catalogue={
-                "current": {"diagram": "diagram/current"},
-                "releases": {"diagram/current": current["record"]},
+                "current": {"graphviz": "graphviz/current"},
+                "releases": {"graphviz/current": current["record"]},
             },
         )
 
@@ -770,13 +802,13 @@ def scan_artifact(monkeypatch):
         "updated_at": "2026-01-02T00:00:00Z",
     }
     artifact = {
-        "name": "image-security-diagram",
+        "name": "image-security-graphviz",
         "expired": False,
         "created_at": "2026-01-01T23:59:30Z",
     }
     files = {
         "build.json": {
-            "profile": "diagram",
+            "profile": "graphviz",
             "source_commit": SOURCE,
             "local_image_id": RECORD["imageId"],
             "run_id": "123",
@@ -828,7 +860,7 @@ def profile_job(run, **updates):
         "id": run["id"],
         "run_id": run["id"],
         "run_attempt": 1,
-        "name": "Image security (diagram)",
+        "name": "Image security (graphviz)",
         "status": "completed",
         "started_at": "2026-01-01T23:59:00Z",
         "completed_at": run["updated_at"],
@@ -863,15 +895,15 @@ def test_partial_rerun_does_not_refresh_retained_profile_evidence(
     if newer_scan:
         assert result == {}
     else:
-        assert result["diagram"]["observedAt"] == producer["completed_at"]
-        assert result["diagram"]["evidence"].endswith("/attempts/1")
+        assert result["graphviz"]["observedAt"] == producer["completed_at"]
+        assert result["graphviz"]["evidence"].endswith("/attempts/1")
 
 
 def test_paths_and_component_names_cannot_escape_issue_code_spans():
-    path = "images/diagram-sandbox/a` @unexpected **bold**.txt"
+    path = "images/graphviz-sandbox/a` @unexpected **bold**.txt"
     observed = candidate()
     observed["components"][0][1] = "a` @unexpected **bold**"
-    text = tracker.body("diagram", desired(changed=[path], observed=observed))
+    text = tracker.body("graphviz", desired(changed=[path], observed=observed))
     assert f"`` {path} ``" in text
     assert "`` a` @unexpected **bold** 2 ``" in text
 
@@ -921,8 +953,8 @@ def test_failed_rerun_of_same_profile_supersedes_its_retained_artifact(
 
 def test_candidate_reports_are_validated_against_source_and_image(scan_artifact, tmp_path):
     result = tracker.candidates(GitHub(), "123", tmp_path)
-    assert result["diagram"]["assessment"]["outcome"] == "clean"
-    assert result["diagram"]["components"] == [["apk", "graphviz", "2", ""]]
+    assert result["graphviz"]["assessment"]["outcome"] == "clean"
+    assert result["graphviz"]["components"] == [["apk", "graphviz", "2", ""]]
 
 
 @pytest.mark.parametrize("file", ["grype.json", "sbom.syft.json", "build.json"])
@@ -959,7 +991,7 @@ def test_no_issue_observation_still_prevents_older_scan_creating_request(
 ):
     run, artifact, files = scan_artifact
     run["updated_at"] = "2026-01-04T00:00:00Z"
-    observed = tracker.candidates(GitHub(), "123", tmp_path / "newer")["diagram"]
+    observed = tracker.candidates(GitHub(), "123", tmp_path / "newer")["graphviz"]
     released = RELEASED | {"components": observed["components"]}
     assert optional_desired(observed=observed, released=released) is None
     newer = copy.deepcopy(run)
@@ -983,22 +1015,22 @@ def test_no_issue_observation_still_prevents_older_scan_creating_request(
 
     monkeypatch.setattr(GitHub, "request", request)
     older = tracker.candidates(GitHub(), "122", tmp_path / "older")
-    assert optional_desired(observed=older.get("diagram"), released=released) is None
+    assert optional_desired(observed=older.get("graphviz"), released=released) is None
 
 
 @pytest.mark.parametrize(
     "updates,profile,expected",
     [
-        ({}, "diagram", {"diagram"}),
-        ({"updated_at": "2026-01-02T00:00:00Z"}, "diagram", {"diagram"}),
-        ({"updated_at": "2026-01-01T00:00:00Z"}, "diagram", set()),
-        ({"conclusion": "failure"}, "diagram", {"diagram"}),
+        ({}, "graphviz", {"graphviz"}),
+        ({"updated_at": "2026-01-02T00:00:00Z"}, "graphviz", {"graphviz"}),
+        ({"updated_at": "2026-01-01T00:00:00Z"}, "graphviz", set()),
+        ({"conclusion": "failure"}, "graphviz", {"graphviz"}),
         ({}, "bicep", {"bicep"}),
-        ({"head_branch": "topic"}, "diagram", set()),
-        ({"head_repository": {"full_name": "other/repo"}}, "diagram", set()),
-        ({"status": "in_progress"}, "diagram", set()),
-        ({"event": "pull_request"}, "diagram", set()),
-        ({"path": ".github/workflows/other.yml"}, "diagram", set()),
+        ({"head_branch": "topic"}, "graphviz", set()),
+        ({"head_repository": {"full_name": "other/repo"}}, "graphviz", set()),
+        ({"status": "in_progress"}, "graphviz", set()),
+        ({"event": "pull_request"}, "graphviz", set()),
+        ({"path": ".github/workflows/other.yml"}, "graphviz", set()),
     ],
 )
 def test_scan_history_supersession_is_scoped_to_trusted_completed_profiles(
@@ -1077,7 +1109,7 @@ def test_failed_profile_without_artifact_supersedes_older_scan(
                     "jobs": [
                         {
                             "id": 77,
-                            "name": "Image security (diagram)",
+                            "name": "Image security (graphviz)",
                             "completed_at": newer["updated_at"],
                             "steps": [{"name": failed_step, "conclusion": "failure"}],
                         }
@@ -1090,7 +1122,7 @@ def test_failed_profile_without_artifact_supersedes_older_scan(
 
     monkeypatch.setattr(GitHub, "request", request)
     observed = tracker.candidates(GitHub(), "123", tmp_path)
-    assert optional_desired(observed=observed.get("diagram")) is None
+    assert optional_desired(observed=observed.get("graphviz")) is None
 
 
 @pytest.mark.parametrize("damage", ["none", "missing", "duplicate", "changed-count", "empty"])
@@ -1120,7 +1152,7 @@ def test_profile_job_history_is_complete_across_all_attempts(scan_artifact, monk
     if damage == "none":
         assert tracker.newer_profiles(
             GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES}
-        ) == {"diagram"}
+        ) == {"graphviz"}
     else:
         with pytest.raises(ValueError, match="history"):
             tracker.newer_profiles(GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES})

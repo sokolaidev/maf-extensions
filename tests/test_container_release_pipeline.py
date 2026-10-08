@@ -99,6 +99,21 @@ def monitor_context(monkeypatch):
     return history
 
 
+def test_monitor_preserves_both_legacy_and_graphviz_targets(tmp_path, monitor_context):
+    catalogue = empty_catalogue()
+    for profile in ("diagram", "graphviz"):
+        candidate = CANDIDATE | {"profile": profile}
+        catalogue = complete(reserve(catalogue, candidate, AT), candidate, candidate["imageId"], AT)
+    monitor_context.catalogue = catalogue
+    monitor.begin(tmp_path)
+    assert [
+        target["candidate"]["profile"] for target in read(tmp_path / "plan.json")["targets"]
+    ] == [
+        "diagram",
+        "graphviz",
+    ]
+
+
 def test_unexpected_public_digest_is_reserved_before_scanning_and_survives_tag_movement(
     monkeypatch, tmp_path, monitor_context
 ):
@@ -465,8 +480,9 @@ def test_registry_absence_does_not_confuse_authentication_or_server_errors(
 )
 @pytest.mark.parametrize("reference", ["0.1.0", "sha256:" + "d" * 64])
 @pytest.mark.parametrize("authenticated", [False, True])
+@pytest.mark.parametrize("profile", ["bicep", "graphviz", "diagram"])
 def test_registry_negotiation_retains_existing_manifest_bytes(
-    monkeypatch, media_type, reference, authenticated
+    monkeypatch, media_type, reference, authenticated, profile
 ):
     raw = encode({"schemaVersion": 2, "mediaType": media_type})
     monkeypatch.setenv("GITHUB_ACTOR", "publisher")
@@ -474,6 +490,7 @@ def test_registry_negotiation_retains_existing_manifest_bytes(
 
     def request(url, headers):
         if "/token?" in url:
+            assert f"repository%3Asokolaidev%2Fmaf-extensions%2F{profile}%3A" in url
             return b'{"token":"scoped"}'
         if media_type not in headers["Accept"].split(", "):
             raise urllib.error.HTTPError(
@@ -483,10 +500,11 @@ def test_registry_negotiation_retains_existing_manifest_bytes(
                 {},
                 io.BytesIO(encode({"errors": [{"code": "MANIFEST_UNKNOWN"}]})),
             )
+        assert f"/maf-extensions/{profile}/manifests/" in url
         return raw
 
     monkeypatch.setattr(registry, "request", request)
-    assert registry.manifest("bicep", reference, authenticated=authenticated) == raw
+    assert registry.manifest(profile, reference, authenticated=authenticated) == raw
 
 
 def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkeypatch, tmp_path):

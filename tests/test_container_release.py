@@ -66,6 +66,21 @@ def test_release_scope_matches_every_candidate_scan():
     assert set(profiles()) == scanned
 
 
+def test_graphviz_release_preserves_the_legacy_diagram_identity():
+    legacy = candidate() | {"profile": "diagram"}
+    catalogue = complete(reserve(empty_catalogue(), legacy, AT), legacy, EVIDENCE, AT)
+    graphviz = candidate(run="456") | {"profile": "graphviz"}
+    updated = complete(reserve(catalogue, graphviz, LATER), graphviz, EVIDENCE, LATER)
+    assert updated["releases"]["diagram/0.1.0"] == catalogue["releases"]["diagram/0.1.0"]
+    assert updated["current"] == {"diagram": "diagram/0.1.0", "graphviz": "graphviz/0.1.0"}
+
+
+def test_legacy_diagram_cannot_prepare_a_new_release(tmp_path):
+    with pytest.raises(ValueError, match="Unrecognized release profile"):
+        preparation.prepare("diagram", "0.1.0", "a" * 40, "123", tmp_path / "candidate")
+    assert not (tmp_path / "candidate").exists()
+
+
 @pytest.mark.parametrize(
     "invalid", ["latest", "0.01.0", "1.0", "1.0.0-rc1", "1.0.0+other", None, True]
 )
@@ -366,7 +381,7 @@ def test_preparation_scans_and_tests_reloaded_image(tmp_path, monkeypatch):
             "Id": retained_id if command[-1] == retained_id else DIGEST,
             "Os": "linux",
             "Architecture": "amd64",
-            "Config": {"Labels": preparation.labels("diagram", "0.1.0", revision)},
+            "Config": {"Labels": preparation.labels("graphviz", "0.1.0", revision)},
         }
         return subprocess.CompletedProcess(command, 0, json.dumps([details]))
 
@@ -385,7 +400,7 @@ def test_preparation_scans_and_tests_reloaded_image(tmp_path, monkeypatch):
         preparation, "check", lambda profile, image, directory: checked.append(image)
     )
     monkeypatch.setattr(preparation, "assess", lambda directory, image: assessed.append(image))
-    result = preparation.prepare("diagram", "0.1.0", revision, "123", output)
+    result = preparation.prepare("graphviz", "0.1.0", revision, "123", output)
     assert inspected == ["maf-image-release:candidate", retained_id]
     assert assessed == checked == [retained_id]
     assert result["imageId"] == retained_id

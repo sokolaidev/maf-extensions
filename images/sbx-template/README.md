@@ -15,6 +15,6 @@ docker save -o bicep-sandbox-sbx.tar bicep-sandbox:sbx
 sbx template load bicep-sandbox-sbx.tar
 ```
 
-Then pass `bicep-sandbox:sbx` as the image. A base that already meets the requirements, such as [`diagram-sandbox`](../diagram-sandbox/), loads without this layer.
+Then pass `bicep-sandbox:sbx` as the image. A base that already meets the requirements, such as [`graphviz-sandbox`](../graphviz-sandbox/), loads without this layer.
 
 Removing `/maf-sandbox` also removes whatever the base kept there. For `bicep-sandbox` that is its fallback `bicepconfig.json`. The Bicep kind stages its own configuration into every call, so nothing that uses the kind reads the fallback.

@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from container_release import REPOSITORY, ROOT, read, scan_result, timestamp
+from container_release import PROFILE_RENAMES, REPOSITORY, ROOT, read, scan_result, timestamp
 from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
 from image_security_evidence import verify_inventory
@@ -360,6 +360,7 @@ def desired(
         state["status"] = "Blocked on remediation; no passing replacement assessed"
     if not reasons and not previous:
         return None
+    state["currentProfile"] = record["profile"]
     state["currentVersion"] = record["version"]
     state["currentDigest"] = record["registryDigest"]
     state["releaseEvidence"] = released["evidence"]
@@ -416,10 +417,11 @@ def body(profile: str, state: dict[str, Any]) -> str:
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
     )
+    current_release = f"{state.get('currentProfile', profile)}:{state['currentVersion']}"
     text = (
         f"{MARKER}{profile} -->\n<!-- image-release-state\n{state_json}\n-->\n\n"
         "**Is your feature request related to a problem? Please describe.**\n\n"
-        f"Profile: {as_code(profile)}. Current release: {as_code(state['currentVersion'])} at {as_code(state['currentDigest'])}.\n\n"
+        f"Profile: {as_code(profile)}. Current release: {as_code(current_release)} at {as_code(state['currentDigest'])}.\n\n"
         + "\n\n".join(details)
         + "\n\n**Describe the solution you'd like**\n\n"
         + (
@@ -500,7 +502,12 @@ def main() -> None:
         root = Path(temporary)
         observed = candidates(client, os.environ.get("TRIGGER_RUN_ID", ""), root / "candidates")
         plans = []
-        for profile, name in snapshot.catalogue["current"].items():
+        current = snapshot.catalogue["current"]
+        baselines = {new: current[old] for old, new in PROFILE_RENAMES.items() if old in current}
+        baselines.update(
+            {profile: name for profile, name in current.items() if profile in PROFILES}
+        )
+        for profile, name in baselines.items():
             matches = [
                 i
                 for i in issues

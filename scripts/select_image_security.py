@@ -15,7 +15,7 @@ PROFILES = (
     "bicep",
     "bicep-prepared",
     "sbx-bicep",
-    "diagram",
+    "graphviz",
     "drawio-sandbox",
     "drawio-export",
     "terraform-random",
@@ -28,7 +28,7 @@ PROFILES = (
 IMAGE_INPUTS = {
     "images/bicep-sandbox/": ("bicep", "bicep-prepared", "sbx-bicep"),
     "images/sbx-template/": ("sbx-bicep",),
-    "images/diagram-sandbox/": ("diagram",),
+    "images/graphviz-sandbox/": ("graphviz",),
     "images/drawio-sandbox/": ("drawio-sandbox",),
     "images/drawio-export/": ("drawio-export",),
     "images/terraform-sandbox/": (

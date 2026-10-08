@@ -17,7 +17,7 @@ from container_release import ROOT, now, profiles, read, require_digest, write
 def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
     """Qualify packaging without network access; this does not establish live deployment support."""
     require_digest(image_id)
-    if profile not in profiles():
+    if profile not in profiles(include_legacy=True):
         raise ValueError("Unknown image profile")
     if profile == "hyperlight":
         from container_release import digest
@@ -41,7 +41,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             command[-1] += (
                 "; test -s /opt/maf-bicep/dependencies.json; test -d /opt/maf-bicep/cache"
             )
-    elif profile in {"diagram", "drawio-sandbox"}:
+    elif profile in {"graphviz", "diagram", "drawio-sandbox"}:
         command = [
             "sh",
             "-ec",

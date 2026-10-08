@@ -89,7 +89,7 @@ TASK = (
 # does not leave a tracked file behind.
 OUTPUT_DIR = Path(__file__).parent / "out"
 
-#: The image is a local reference (for example `diagram-sandbox:local`); the sample builds it and
+#: The image is a local reference (for example `graphviz-sandbox:local`); the sample builds it and
 #: the backend runs what is on this machine. See the README on why an unqualified tag is safe here.
 #: On `docker-sbx` it names a template loaded with `sbx template load`.
 SANDBOX_VARS = ("DIAGRAM_SANDBOX_IMAGE",)

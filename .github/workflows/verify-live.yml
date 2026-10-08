@@ -882,7 +882,7 @@ jobs:
       # Graphviz on a Debian base, built from this repository like sample-05's guest. Nothing
       # pushes it anywhere: the backend runs what is on the machine.
       - name: Build the sandbox image
-        run: docker build -t diagram-sandbox:local images/diagram-sandbox
+        run: docker build -t graphviz-sandbox:local images/graphviz-sandbox
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -898,7 +898,7 @@ jobs:
 
       - name: Run sample 07 and assert a rendered PNG came back out
         env:
-          DIAGRAM_SANDBOX_IMAGE: diagram-sandbox:local
+          DIAGRAM_SANDBOX_IMAGE: graphviz-sandbox:local
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
@@ -994,9 +994,9 @@ jobs:
       - name: Build the sandbox image and load it as an sbx template
         run: |
           set -euo pipefail
-          docker build -t diagram-sandbox:local images/diagram-sandbox
-          docker save -o "$RUNNER_TEMP/diagram-sandbox.tar" diagram-sandbox:local
-          sbx template load "$RUNNER_TEMP/diagram-sandbox.tar"
+          docker build -t graphviz-sandbox:local images/graphviz-sandbox
+          docker save -o "$RUNNER_TEMP/graphviz-sandbox.tar" graphviz-sandbox:local
+          sbx template load "$RUNNER_TEMP/graphviz-sandbox.tar"
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -1010,7 +1010,7 @@ jobs:
       - name: Run sample 07 on docker-sbx and assert a rendered PNG came back out
         env:
           SAMPLE_BACKEND: docker-sbx
-          DIAGRAM_SANDBOX_IMAGE: diagram-sandbox:local
+          DIAGRAM_SANDBOX_IMAGE: graphviz-sandbox:local
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |

@@ -29,7 +29,7 @@ The inventory must contain components and identify the exact built image. Lower-
 | `bicep` | Base Bicep sandbox |
 | `bicep-prepared` | Bicep with the repository's prepared AVM cache |
 | `sbx-bicep` | The `sbx` template applied to the base Bicep image |
-| `diagram` | Graphviz diagram sandbox |
+| `graphviz` | Graphviz DOT rendering sandbox |
 | `drawio-sandbox` | Python/Graphviz Draw.io sandbox |
 | `drawio-export` | Draw.io Desktop export runtime |
 | `terraform-random` | Terraform with its random-provider profile |

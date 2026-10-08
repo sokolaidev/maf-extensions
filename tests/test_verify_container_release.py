@@ -128,8 +128,9 @@ def mock_verifier(monkeypatch, results, failed=None):
     return calls
 
 
-def test_all_three_attestations_are_verified_separately(tmp_path, monkeypatch):
-    expected, results = evidence(tmp_path)
+@pytest.mark.parametrize("profile", ["bicep", "graphviz", "diagram"])
+def test_all_three_attestations_are_verified_separately(tmp_path, monkeypatch, profile):
+    expected, results = evidence(tmp_path, profile=profile)
     calls = mock_verifier(monkeypatch, results)
     result = verify(expected, tmp_path)
     assert calls == [PROVENANCE, PROVENANCE, SPDX, SPDX, COMPLETION]
