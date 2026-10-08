@@ -36,8 +36,11 @@ from openclaw_http_observer import resolve_image
 
 REGISTRY_LIMIT = 8
 CHURN_CYCLES = 3
-REGISTRY_DISPATCHES = REGISTRY_LIMIT + CHURN_CYCLES + (REGISTRY_LIMIT - 1)
-LIFECYCLE_DISPATCHES = 30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1)
+DISCOVERY_COOLDOWN_SECONDS = 35
+REGISTRY_DISPATCHES = REGISTRY_LIMIT + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
+LIFECYCLE_DISPATCHES = (
+    30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
+)
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -633,6 +636,73 @@ def verify_catalog_refusal(status, payload, evidence, observed) -> dict[str, Any
         "free_slots": 1,
         "mcp_initialization_attempts": 0,
     }
+
+
+def verify_discovery_refresh(evidence, boot: str, previous: set[str], after_ns: int) -> str:
+    """Require one fresh MCP connection and tool listing without replaying workload calls."""
+    messages = [r for r in evidence if r.get("event") == "request"]
+    require(
+        bool(boot)
+        and all(r.get("boot") == boot for r in evidence)
+        and all(
+            r.get("method")
+            in {"initialize", "tools/list", "notifications/initialized", "notifications/cancelled"}
+            for r in messages
+        )
+        and not any(
+            r.get("event") in {"binding_started", "retired", "delete_requested"} for r in evidence
+        ),
+        "Discovery refresh dispatched work or changed unrelated sessions",
+    )
+    fresh = None
+    preceding_ns = after_ns
+    exchanges = set()
+    for method in ("initialize", "tools/list"):
+        matched = [r for r in messages if r.get("method") == method]
+        require(len(matched) == 1, "Missing unique discovery request")
+        request = matched[0]
+        exchange = request.get("exchange")
+        require(bool(exchange) and exchange not in exchanges, "Discovery reused an exchange")
+        exchanges.add(exchange)
+        responses = [
+            r for r in evidence if r.get("event") == "response" and r.get("exchange") == exchange
+        ]
+        settled = [
+            r for r in evidence if r.get("event") == "settled" and r.get("exchange") == exchange
+        ]
+        require(len(responses) == len(settled) == 1, "Missing unique discovery response/settlement")
+        response, end = responses[0], settled[0]
+        require(
+            preceding_ns
+            <= request.get("time_ns", 0)
+            < response.get("time_ns", 0)
+            <= end.get("time_ns", 0)
+            and response.get("method") == end.get("method") == "POST"
+            and response.get("status") == 200
+            and end.get("sessions") == REGISTRY_LIMIT
+            and end.get("active") is False
+            and end.get("poisoned") is False,
+            "Discovery response is not a successful idle exchange",
+        )
+        if method == "initialize":
+            fresh = response.get("session")
+            require(
+                isinstance(fresh, str)
+                and bool(fresh)
+                and fresh not in previous
+                and request.get("session") is None
+                and end.get("session") is None,
+                "Discovery did not establish a fresh MCP identity",
+            )
+        else:
+            require(
+                request.get("session") == response.get("session") == end.get("session") == fresh,
+                "Tool listing is not owned by the fresh MCP session",
+            )
+        preceding_ns = end["time_ns"]
+    if not isinstance(fresh, str):
+        raise RuntimeError("Discovery has no session identity")
+    return fresh
 
 
 def verify_final_shutdown(evidence, case: str, exit_code: int | None) -> None:
@@ -1709,11 +1779,108 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             )
             registry_reports.append(inspect_registry(registry_sessions[1:]))
             verify_dispatch_count(records(transport), expected_calls)
+            print("Waiting through the pinned cross-runtime startup cooldown", flush=True)
+            dormant_start = len(records(transport))
+            time.sleep(DISCOVERY_COOLDOWN_SECONDS)
+            dormant_evidence = records(transport)[dormant_start:]
+            require(
+                all(r.get("boot") == registry_boot for r in dormant_evidence)
+                and not any(
+                    r.get("event") in {"binding_started", "retired", "delete_requested"}
+                    or r.get("event") == "request"
+                    and r.get("method") not in {"notifications/cancelled"}
+                    for r in dormant_evidence
+                ),
+                "Gateway retried discovery or work without a new turn during cooldown",
+            )
+            registry_reports.append(inspect_registry(registry_sessions[1:]))
+            before_refresh = len(records(transport))
+            refresh_ns = time.time_ns()
+            refresh_log_start = (root / "gateway.log").stat().st_size
+            refresh_connection, refresh_turn = begin_turn(0, "valid")
+            try:
+                response = refresh_connection.getresponse()
+                refresh_payload = json.loads(response.read())
+                require(
+                    response.status == 500
+                    and refresh_payload
+                    == {"error": {"message": "internal error", "type": "api_error"}},
+                    "Refresh-triggering turn did not return the stale-catalog error",
+                )
+            finally:
+                refresh_connection.close()
+            refresh_log = (
+                (root / "gateway.log")
+                .read_bytes()[refresh_log_start:]
+                .decode("utf-8", errors="replace")
+            )
+            require(
+                "No callable tools remain after resolving explicit tool allowlist" in refresh_log
+                and ("sessionKey=agent:main:openai-user:" + names[0]) in refresh_log
+                and "[openai-compat] chat completion failed:" in refresh_log
+                and not any(r.get("turn") == refresh_turn for r in records(provider)),
+                "Refresh-triggering turn reached the provider or lacks a catalog error",
+            )
+
+            def refreshed():
+                evidence = records(transport)[before_refresh:]
+                listings = {
+                    r.get("exchange")
+                    for r in evidence
+                    if r.get("event") == "request" and r.get("method") == "tools/list"
+                }
+                return any(
+                    r.get("event") == "settled" and r.get("exchange") in listings for r in evidence
+                )
+
+            wait_for(refreshed, "Gateway did not refresh discovery after cooldown", 30)
+            fresh = verify_discovery_refresh(
+                records(transport)[before_refresh:],
+                registry_boot,
+                set(registry_sessions) | retired_sessions,
+                refresh_ns,
+            )
+            registry_sessions[0] = fresh
+            registry_reports.append(inspect_registry(registry_sessions))
+            verify_dispatch_count(records(transport), expected_calls)
+            require(turn(0)[0] == fresh, "New work did not use the recovered MCP session")
+            for index in range(1, REGISTRY_LIMIT):
+                require(
+                    turn(index)[0] == registry_sessions[index],
+                    "Discovery recovery replaced an unaffected MCP session",
+                )
+            require(
+                not any(
+                    r.get("turn") in {overflow_turn, probe_turn, refresh_turn}
+                    for r in records(provider)
+                ),
+                "A refused turn was replayed after discovery recovery",
+            )
+            registry_reports.append(inspect_registry(registry_sessions))
+            discovery_recovery = {
+                "cooldown_wait_seconds": DISCOVERY_COOLDOWN_SECONDS,
+                "refresh_trigger_status": 500,
+                "refresh_trigger_provider_seen": False,
+                "initialization_attempts": 1,
+                "tool_listings": 1,
+                "new_turn_completed": True,
+                "surviving_sessions_reused_after_refusal": REGISTRY_LIMIT - 1,
+                "refused_turns_replayed": False,
+                "gateway_sources": {
+                    name: hashlib.sha256((args.openclaw / "dist" / name).read_bytes()).hexdigest()
+                    for name in (
+                        "agents/agent-bundle-mcp-runtime.js",
+                        "agent-bundle-mcp-manager-api-CCU0OWCp.mjs",
+                        "builtin-openclaw-dCw2mRD9.mjs",
+                    )
+                },
+            }
             report["registry_churn"] = {
                 "limit": REGISTRY_LIMIT,
                 "cycles": CHURN_CYCLES,
                 "overflow": overflow,
                 "post_refusal_recovery": catalog_refusal,
+                "delayed_discovery_recovery": discovery_recovery,
                 "snapshots": registry_reports,
                 "surviving_sessions_reused": REGISTRY_LIMIT - 1,
                 "same_gateway_and_service": True,
@@ -1731,7 +1898,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 encoding="utf-8",
             )
             print(
-                "Three churn cycles reclaimed SDK/adapter state; capacity refusal blocked subsequent Gateway discovery despite a free slot",
+                "Gateway discovery recovered after cooldown and a refresh-triggering turn; new work and seven surviving sessions succeeded",
                 flush=True,
             )
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
@@ -1740,7 +1907,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             report["remaining"] = [
                 "other Gateway retirement triggers, idle expiry and prolonged/concurrent churn",
                 "Docker cleanup/daemon failures and remaining interruption cases",
-                "automatic Gateway discovery recovery",
+                "other Gateway discovery recovery cases, including startup unavailability",
                 "full real-host transport/MAF matrix",
             ]
         finally:
