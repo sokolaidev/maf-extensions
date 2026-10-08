@@ -292,3 +292,43 @@ Persisted expiry requires an explicit clock contract across restarts. The implem
 | Collection | Shared chunks and active readers remain pinned; corrupt root refuses deletion; interrupted batches recover; replacement of corrupt historical chunks remains transactional |
 | Storage bounds | Incompressible data, metadata/tombstone growth, scratch duplication, journal overhead, filesystem exhaustion and physical reclamation measured separately from logical usage |
 | Compatibility | Old format refuses without mutation; no invented historic expiry; unsupported remote store refuses rather than starting fresh |
+
+## Bounded file-plane design follow-up (#1670)
+
+On 2026-10-08, following the merge of [#1786](https://github.com/sokolaidev/maf-extensions/pull/1786), implementation planning started for [#1670](https://github.com/sokolaidev/maf-extensions/issues/1670). The baseline is suite commit `894d4b07d503cc1a99f163ef42c1cdada67281e8`, MXC `7bf210247986cb73b1b314df60c2f1109c479c0b` and hyperlight-unikraft `8f636e00cdf29e6c33ba0f578482c595d7827cf6`. This section records source inspection and proposed acceptance criteria; no file-plane native qualification or production capability is established.
+
+### Mechanisms and constraints
+
+The qualified session overlay restores without mounts. Guest-private files, including the existing open-file state probe, travel in VM memory. The pinned runtime separately provides [host-directory mounts](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/8f636e00cdf29e6c33ba0f578482c595d7827cf6/src/hostfs.rs) backed by `cap_std::fs::Dir`, with read-only flags and chunked operations. That confines host path access but does not itself reserve aggregate file bytes or count, include mounted contents in the VM checkpoint, or retain immutable artifact deliveries. The write callback accepts an offset and bytes; the truncate callback calls `set_len` without an aggregate storage allowance. Read chunking is not a write quota.
+
+The hostfs protocol reopens paths on each read/write chunk. Its own source identifies handle-based operations as future work. Guest vnode open and close are no-ops in the pinned kernel's `lib/hostfs/hostfs_vnops.c`. Consequently, a mounted-workspace design must qualify retained open descriptors, rename/unlink/recreate and restore behavior explicitly; the existing guest-private open-file probe does not establish those properties for a mount.
+
+The runtime's [AppSandbox boundary contract](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/8f636e00cdf29e6c33ba0f578482c595d7827cf6/src/lib.rs) says the vCPU is halted and guest threads are blocked between entries. This gives a potential consistency boundary for host-managed workspace capture. Entering the VM again to run an artifact-reading script can schedule other guest work, so serialization of host calls alone does not prove a stable artifact view. Guest-produced filenames and bytes remain untrusted; guest text cannot authorize publication.
+
+### Proposed implementation boundary
+
+Keep the new experiment separate from the qualified streams profile and place any native extension behind its existing backend wrapper. Evaluate a bounded host-managed workspace with limits enforced before every growth operation, an immutable exported workspace inventory and a checkpoint that binds that inventory. A memory-backed file service could avoid exposing host directories and make write bounds explicit, but it would require a removable runtime extension and native filesystem-semantic tests. An ordinary writable mount without that accounting and recovery work is insufficient.
+
+Reserve input staging, the live workspace, the exported candidate and retained delivery artifacts before guest execution. Bind the complete request identity to code, input names and bytes, selected output names and relevant policy. A retry with changed inputs or artifact selection must refuse, while a matching committed retry must deliver identical bytes without starting the helper. Publish the result, artifacts and corresponding recoverable file state atomically using the existing format-4 ownership and cleanup rules; preserve the previous checkpoint on any capture or publication failure.
+
+The maintainer selected availability within a requested lifecycle. The owning design now records host-selected input lifetime, independently of whether Python state persists. The maintainer selected call and session lifecycles for the first version, aligning with the existing suite model. Explicit host release and time-based input expiry are deferred. A session-scoped input survives restart, while a call-scoped input is reclaimed before durable success. The maintainer selected call lifetime when the host omits a lifecycle; session retention requires an explicit host choice. The maintainer also selected refusal for an upload targeting an existing session filename unless the host explicitly requests replacement. The replacement choice must be included in request identity so a retry cannot change overwrite authority. The maintainer selected writable uploaded inputs by default within their requested lifecycle; this does not grant host uploads implicit replacement authority. These are selected requirements, not implemented or qualified behavior. Guest code can copy input bytes into Python objects or other guest state, so deleting the original file does not erase those copies; the sandbox lifetime remains the boundary for that state. Result artifacts retain their separate delivery promise.
+
+### Host request contract
+
+The initial [request module](../../../scripts/experiments/mxc_files_patch/request.py) validates immutable input byte snapshots, relative portable names, count and byte allowances, and host-selected call/session lifetime and replacement permission. It rejects duplicate, case-colliding and file/parent-colliding names. The canonical retry identity includes code and input hashes, names, lifecycles, replacement authority, selected artifacts and transfer limits. Offline tests exercise exact and exceeded bounds and changed-request refusal after reopening the existing SQLite store.
+
+This module does not yet transfer files, enforce guest writes, apply replacement, collect artifacts or publish a file-aware checkpoint. Its transfer ceilings do not reserve runtime memory or extend the existing result-envelope capacity. Native workspace bounds and artifact storage admission remain implementation work. The pending artifact-failure decision is whether any missing, unsafe or oversized requested artifact refuses the entire call while preserving the prior checkpoint, or permits an execution commit with explicit artifact failures.
+
+### Qualification gates
+
+| Area | Required evidence on Linux/KVM and Windows/WHP |
+|---|---|
+| Inputs | Empty and arbitrary bytes, nested names, exact and exceeded count/byte limits, changed-request retry refusal, no guest launch after admission refusal |
+| Confinement | Absolute paths, traversal, alternate separators, duplicate or colliding names, parent swaps, symlinks, hard links, special files and host reparse points where applicable |
+| Workspace | Growth through write, append, truncate and sparse offsets; file/directory count; rename/unlink/recreate; retained descriptors; restart with consistent names and contents |
+| Artifact capture | Host-selected bounded names; missing/oversized outputs; mutation during capture; background writers; exact byte equality with the committed file state |
+| Delivery | Lost acknowledgment, matching retry after later calls and checkpoint collection, expiry and forgiveness, quota pressure without premature artifact eviction |
+| Failure | Helper death, cancellation, timeout, capture/publication failure and all existing publication/cleanup crash boundaries with files included |
+| Workloads | Text analysis and CSV-to-matplotlib output with exact input verification and a validated returned image |
+
+Until these gates pass, the experimental file plane remains unqualified and the production adapter must not advertise FILES_IN or FILES_OUT on its evidence.
