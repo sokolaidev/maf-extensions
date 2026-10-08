@@ -102,17 +102,10 @@ class RawStream:
                 raise RuntimeError("unknown transport event")
 
 
-async def run_case(args, case: str) -> dict:
-    """Measure one single-use sandbox, retaining ownership on any unverified cleanup."""
-    grpc = import_module("grpc")
-    sdk = import_module("openshell.sandbox")
+def fixture_spec(image: str):
+    """Build the pinned experiment's unprivileged, provider-free workload policy."""
     pb = import_module("openshell._proto.openshell_pb2")
-    bindings = import_module("openshell._proto.openshell_pb2_grpc")
-    dm = import_module("openshell._proto.datamodel_pb2")
     policy_pb = import_module("openshell._proto.sandbox_pb2")
-    scope = dm.WorkspaceSelector(workspace="default")
-    name = "s1797-" + uuid.uuid4().hex[:12]
-    client = sdk.SandboxClient(args.endpoint, timeout=20)
     policy = policy_pb.SandboxPolicy(version=1)
     policy.filesystem.read_only.extend(["/usr", "/bin", "/lib", "/lib64", "/etc", "/proc"])
     policy.filesystem.read_write.extend(["/sandbox", "/tmp", "/home/sandbox", "/dev/null"])
@@ -120,8 +113,22 @@ async def run_case(args, case: str) -> dict:
     policy.landlock.compatibility = "hard_requirement"
     policy.process.run_as_user = policy.process.run_as_group = "sandbox"
     spec = pb.SandboxSpec(policy=policy, command=["sleep", "3600"])
-    spec.template.image = args.image
+    spec.template.image = image
     spec.template.labels["spike.issue"] = "1797"
+    return spec
+
+
+async def run_case(args, case: str) -> dict:
+    """Measure one single-use sandbox, retaining ownership on any unverified cleanup."""
+    grpc = import_module("grpc")
+    sdk = import_module("openshell.sandbox")
+    pb = import_module("openshell._proto.openshell_pb2")
+    bindings = import_module("openshell._proto.openshell_pb2_grpc")
+    dm = import_module("openshell._proto.datamodel_pb2")
+    scope = dm.WorkspaceSelector(workspace="default")
+    name = "s1797-" + uuid.uuid4().hex[:12]
+    client = sdk.SandboxClient(args.endpoint, timeout=20)
+    spec = fixture_spec(args.image)
     created = None
     owned = False
     try:
