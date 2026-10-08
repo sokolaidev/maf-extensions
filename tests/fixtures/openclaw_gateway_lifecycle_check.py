@@ -33,7 +33,9 @@ from openclaw_gateway_http_check import (
 )
 from openclaw_http_observer import resolve_image
 
-LIFECYCLE_DISPATCHES = 30
+REGISTRY_LIMIT = 8
+CHURN_CYCLES = 3
+LIFECYCLE_DISPATCHES = 30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1)
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -476,6 +478,126 @@ def verify_deleted_turn(status: int, payload: Any) -> int:
         "Deleted active turn did not return the pinned Gateway abort error",
     )
     return status
+
+
+def verify_registry(snapshot, expected: set[str], boot: str, after_ns: int) -> dict[str, int]:
+    """Require an exact idle registry with only the SDK streams owned by live GET handlers."""
+    sessions = snapshot.get("sessions", [])
+    require(
+        bool(boot)
+        and all(expected)
+        and len(expected) <= REGISTRY_LIMIT
+        and snapshot.get("boot") == boot
+        and snapshot.get("time_ns", 0) > after_ns
+        and snapshot.get("event") == "registry_snapshot"
+        and len(sessions) == len(expected)
+        and {r.get("session") for r in sessions} == expected
+        and snapshot.get("readers") == 0
+        and snapshot.get("active") is False
+        and snapshot.get("poisoned") is False,
+        "Registry does not preserve the exact idle session set",
+    )
+    for record in sessions:
+        require(
+            record.get("initialized") is True
+            and record.get("closing") is False
+            and record.get("sdk_running") is True
+            and record.get("sdk_terminated") is False
+            and record.get("request_ids") == 0
+            and isinstance(record.get("get_active"), bool)
+            and record.get("requests") == int(record["get_active"])
+            and record.get("sdk_streams") == int(record["get_active"]),
+            "Registry retains unfinished requests or inconsistent SDK ownership",
+        )
+    return {"adapter_records": len(sessions), "sdk_tasks": len(sessions)}
+
+
+def verify_registry_refusal(evidence, boot: str) -> dict[str, int]:
+    """Require capacity rejection before any tool dispatch, binding or session retirement."""
+    attempts = [r for r in evidence if r.get("event") == "request"]
+    require(
+        bool(attempts)
+        and all(r.get("method") == "initialize" for r in attempts)
+        and not any(
+            r.get("event") in {"binding_started", "retired", "delete_requested"} for r in evidence
+        ),
+        "Capacity refusal dispatched work or disturbed registered sessions",
+    )
+    exchanges = set()
+    for attempt in attempts:
+        exchange = attempt.get("exchange")
+        require(
+            bool(exchange)
+            and exchange not in exchanges
+            and attempt.get("session") is None
+            and attempt.get("boot") == boot,
+            "Capacity refusal lacks a fresh initialization exchange",
+        )
+        exchanges.add(exchange)
+        responses = [
+            r for r in evidence if r.get("event") == "response" and r.get("exchange") == exchange
+        ]
+        ends = [
+            r for r in evidence if r.get("event") == "settled" and r.get("exchange") == exchange
+        ]
+        require(len(responses) == len(ends) == 1, "Missing unique capacity response and settlement")
+        response, end = responses[0], ends[0]
+        require(
+            all(
+                r.get("boot") == boot and r.get("session") is None and r.get("method") == "POST"
+                for r in [response, end]
+            )
+            and 0 < attempt.get("time_ns", 0) < response.get("time_ns", 0) <= end.get("time_ns", 0)
+            and response.get("status") == 503
+            and end.get("sessions") == REGISTRY_LIMIT
+            and end.get("active") is False
+            and end.get("poisoned") is False,
+            "Initialization was not refused at the unchanged registry limit",
+        )
+    return {"initialization_attempts": len(attempts), "status": 503}
+
+
+def verify_churn_retirement(evidence, boot: str, target: str, requested_ns: int) -> None:
+    """Require one idle deletion to finish draining SDK and adapter state before reuse."""
+    deletes = [r for r in evidence if r.get("event") == "delete_requested"]
+    ends = [r for r in evidence if r.get("event") == "retired"]
+    require(len(deletes) == len(ends) == 1, "Missing unique churn retirement")
+    request, end = deletes[0], ends[0]
+    responses = [
+        r
+        for r in evidence
+        if r.get("event") == "response" and r.get("exchange") == request.get("exchange")
+    ]
+    require(len(responses) == 1, "Missing churn DELETE acceptance")
+    response = responses[0]
+    require(
+        bool(target)
+        and bool(boot)
+        and bool(request.get("exchange"))
+        and all(
+            r.get("session") == target
+            and r.get("boot") == boot
+            and r.get("exchange") == request["exchange"]
+            for r in [request, response, end]
+        )
+        and requested_ns
+        <= request.get("time_ns", 0)
+        < response.get("time_ns", 0)
+        <= end.get("time_ns", 0)
+        and response.get("method") == "DELETE"
+        and response.get("status") == 200
+        and end.get("completed") is True
+        and end.get("session_registered") is False
+        and end.get("sessions") == REGISTRY_LIMIT - 1
+        and end.get("active") is False
+        and end.get("active_session") is None
+        and end.get("poisoned") is False
+        and end.get("sdk_finished") is True
+        and end.get("sdk_terminated") is True
+        and end.get("sdk_streams") == end.get("request_ids") == end.get("requests") == 0
+        and not any(r.get("event") in {"request", "binding_started"} for r in evidence),
+        "Churn retirement did not drain only the selected idle session",
+    )
 
 
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
@@ -1359,13 +1481,143 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 )
             finally:
                 pending.close()
+            registry_start = len(records(transport))
+            registry_boot = records(transport)[-1]["boot"]
+            registry_sessions = [new_active, replacement]
+            registry_reports = []
+
+            def inspect_registry(expected):
+                before = len(records(transport))
+                requested_ns = time.time_ns()
+                require(
+                    ready(service_url.port, "/ready", service_token, service_process),
+                    "Registry service lost readiness",
+                )
+                snapshots = wait_for(
+                    lambda: [
+                        r
+                        for r in records(transport)[before:]
+                        if r.get("event") == "registry_snapshot"
+                    ],
+                    "Missing registry snapshot",
+                    10,
+                )
+                require(len(snapshots) == 1, "Repeated registry snapshot")
+                verified = verify_registry(snapshots[0], set(expected), registry_boot, requested_ns)
+                require(
+                    service_process.poll() is None
+                    and gateway_process.poll() is None
+                    and owner_file.read_bytes() == owner_before
+                    and not owned()
+                    and docker("ps", "-q", "--filter", f"id={sentinel}"),
+                    "Registry churn changed ownership, processes or container isolation",
+                )
+                return verified
+
+            registry_reports.append(inspect_registry(registry_sessions))
+            for _ in range(REGISTRY_LIMIT - 2):
+                names.append("lifecycle-" + uuid.uuid4().hex)
+                session = turn(len(names) - 1)[0]
+                require(
+                    session not in registry_sessions,
+                    "Gateway shared a registry slot across logical sessions",
+                )
+                registry_sessions.append(session)
+                registry_reports.append(inspect_registry(registry_sessions))
+            before_overflow = len(records(transport))
+            names.append("lifecycle-" + uuid.uuid4().hex)
+            overflow_connection, overflow_turn = begin_turn(len(names) - 1, "valid")
+            try:
+                response = overflow_connection.getresponse()
+                payload = json.loads(response.read())
+                require(
+                    response.status == 500
+                    and payload == {"error": {"message": "internal error", "type": "api_error"}},
+                    "Overflow turn did not return the pinned Gateway error",
+                )
+            finally:
+                overflow_connection.close()
+            overflow = verify_registry_refusal(records(transport)[before_overflow:], registry_boot)
+            require(
+                not any(
+                    r.get("turn") == overflow_turn and "tool_result" in r for r in records(provider)
+                ),
+                "Overflow projected a workload result",
+            )
+            verify_dispatch_count(records(transport), expected_calls)
+            registry_reports.append(inspect_registry(registry_sessions))
+            retired_sessions = set()
+            for _ in range(CHURN_CYCLES):
+                target = retirement_target(rpc("sessions.list", {"limit": 50}), names[0])
+                before_delete = len(records(transport))
+                requested_ns = time.time_ns()
+                deleted = rpc("sessions.delete", target)
+                require(
+                    deleted.get("ok") is True
+                    and deleted.get("deleted") is True
+                    and deleted.get("key") == target["key"],
+                    "Gateway did not delete the churn target",
+                )
+                wait_for(
+                    lambda: any(
+                        r.get("event") == "retired" and r.get("session") == registry_sessions[0]
+                        for r in records(transport)[before_delete:]
+                    ),
+                    "Churn retirement did not finish",
+                    30,
+                )
+                verify_churn_retirement(
+                    records(transport)[before_delete:],
+                    registry_boot,
+                    registry_sessions[0],
+                    requested_ns,
+                )
+                retired_sessions.add(registry_sessions[0])
+                registry_reports.append(inspect_registry(registry_sessions[1:]))
+                fresh = turn(0)[0]
+                require(
+                    fresh not in retired_sessions and fresh not in registry_sessions,
+                    "Churn reused a retired or surviving MCP identity",
+                )
+                registry_sessions[0] = fresh
+                registry_reports.append(inspect_registry(registry_sessions))
+            for index in range(1, REGISTRY_LIMIT):
+                require(
+                    turn(index)[0] == registry_sessions[index],
+                    "Registry churn retired a surviving session",
+                )
+            registry_reports.append(inspect_registry(registry_sessions))
+            report["registry_churn"] = {
+                "limit": REGISTRY_LIMIT,
+                "cycles": CHURN_CYCLES,
+                "overflow": overflow,
+                "snapshots": registry_reports,
+                "surviving_sessions_reused": REGISTRY_LIMIT - 1,
+                "same_gateway_and_service": True,
+                "owner_unchanged": True,
+                "owned_scope_empty": True,
+                "other_owner_preserved": True,
+            }
+            (root / "registry-churn.json").write_text(
+                json.dumps(
+                    {
+                        "transport": records(transport)[registry_start:],
+                        "observed": report["registry_churn"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            print(
+                "Eight Gateway sessions filled the registry; overflow refused and three churn cycles reclaimed SDK and adapter state",
+                flush=True,
+            )
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
             report["other_owner_preserved"] = True
             report["total_dispatches"] = verify_dispatch_count(
                 records(transport), LIFECYCLE_DISPATCHES
             )
             report["remaining"] = [
-                "other Gateway runtime retirement triggers and registry saturation/churn",
+                "other Gateway retirement triggers, idle expiry and prolonged/concurrent churn",
                 "Docker cleanup/daemon failures and remaining interruption cases",
                 "automatic Gateway discovery recovery",
                 "full real-host transport/MAF matrix",

@@ -92,6 +92,28 @@ class ObserveHTTP:
                 json.dumps({"time_ns": time.time_ns(), "boot": self.boot, **fields}) + "\n"
             )
 
+    def registry_snapshot(self) -> dict[str, Any]:
+        """Observe adapter ownership and pinned SDK bookkeeping without retaining session IDs."""
+        return {
+            "sessions": [
+                {
+                    "session": digest(sid.encode().hex()),
+                    "initialized": record.initialized,
+                    "closing": record.closing,
+                    "sdk_running": record.task is not None and not record.task.done(),
+                    "sdk_terminated": record.transport.is_terminated,
+                    "sdk_streams": len(record.transport._request_streams),
+                    "request_ids": len(record.ids),
+                    "requests": record.requests,
+                    "get_active": record.get_active,
+                }
+                for sid, record in self.app.sessions.items()
+            ],
+            "readers": self.app.readers,
+            "active": self.app.service.active is not None,
+            "poisoned": self.app.service.poisoned,
+        }
+
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
 
@@ -239,6 +261,14 @@ class ObserveHTTP:
                         exchange=exchange,
                         session=sid,
                         completed=not task.cancelled() and task.exception() is None,
+                        sdk_finished=retiring_record.task is not None
+                        and retiring_record.task.done()
+                        and not retiring_record.task.cancelled()
+                        and retiring_record.task.exception() is None,
+                        sdk_terminated=retiring_record.transport.is_terminated,
+                        sdk_streams=len(retiring_record.transport._request_streams),
+                        request_ids=len(retiring_record.ids),
+                        requests=retiring_record.requests,
                         session_registered=session.decode("ascii", errors="replace")
                         in self.app.sessions,
                         sessions=len(self.app.sessions),
@@ -250,6 +280,10 @@ class ObserveHTTP:
                     )
 
                 retiring_record.retiring.add_done_callback(retired)
+            if scope.get("path") == "/ready" and original_status == 200:
+                self.record(
+                    event="registry_snapshot", exchange=exchange, **self.registry_snapshot()
+                )
             self.record(
                 event="settled",
                 exchange=exchange,

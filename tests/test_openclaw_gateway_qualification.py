@@ -1563,7 +1563,14 @@ def test_delete_observer_records_actual_registration_and_active_session(tmp_path
                 self.sessions.pop(selected)
                 if active:
                     self.service.active = None
+                record.transport.is_terminated = True
 
+            record = self.sessions[selected]
+            record.task = asyncio.get_running_loop().create_future()
+            record.task.set_result(None)
+            record.transport = SimpleNamespace(is_terminated=False, _request_streams={})
+            record.ids = set()
+            record.requests = 0
             self.sessions[selected].retiring = asyncio.create_task(retire())
             await send({"type": "http.response.start", "status": 200})
             await send({"type": "http.response.body", "body": b""})
@@ -1663,3 +1670,268 @@ def test_observer_preserves_non_ascii_session_rejection(
     assert rows[-1]["event"] == "settled"
     assert not any(row["event"] == "retired" for row in rows)
     assert all(row.get("session") == observer.digest(b"bad-\xff".hex()) for row in rows)
+
+
+def registry_snapshot():
+    return {
+        "event": "registry_snapshot",
+        "boot": "boot",
+        "time_ns": 10,
+        "readers": 0,
+        "active": False,
+        "poisoned": False,
+        "sessions": [
+            {
+                "session": str(i),
+                "initialized": True,
+                "closing": False,
+                "sdk_running": True,
+                "sdk_terminated": False,
+                "sdk_streams": 1,
+                "request_ids": 0,
+                "requests": 1,
+                "get_active": True,
+            }
+            for i in range(lifecycle.REGISTRY_LIMIT)
+        ],
+    }
+
+
+def test_registry_requires_exact_idle_adapter_and_sdk_ownership():
+    snapshot = registry_snapshot()
+    expected = {str(i) for i in range(lifecycle.REGISTRY_LIMIT)}
+    assert lifecycle.verify_registry(snapshot, expected, "boot", 1) == {
+        "adapter_records": 8,
+        "sdk_tasks": 8,
+    }
+    snapshot["sessions"][0].update(get_active=False, sdk_streams=0, requests=0)
+    lifecycle.verify_registry(snapshot, expected, "boot", 1)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session", "wrong"),
+        ("initialized", False),
+        ("closing", True),
+        ("sdk_running", False),
+        ("sdk_terminated", True),
+        ("sdk_streams", 2),
+        ("request_ids", 1),
+        ("requests", 2),
+        ("get_active", 1),
+    ],
+)
+def test_registry_rejects_leaked_or_inconsistent_session_state(field, value):
+    snapshot = registry_snapshot()
+    snapshot["sessions"][0][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_registry(snapshot, {str(i) for i in range(8)}, "boot", 1)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("event", "settled"),
+        ("boot", "other"),
+        ("time_ns", 1),
+        ("readers", 1),
+        ("active", True),
+        ("poisoned", True),
+    ],
+)
+def test_registry_rejects_stale_or_unsettled_snapshot(field, value):
+    snapshot = registry_snapshot()
+    snapshot[field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_registry(snapshot, {str(i) for i in range(8)}, "boot", 1)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "extra", "expected_over_limit"])
+def test_registry_rejects_wrong_capacity_and_duplicate_identity(change):
+    snapshot = registry_snapshot()
+    expected = {str(i) for i in range(8)}
+    if change == "missing":
+        snapshot["sessions"].pop()
+    elif change == "duplicate":
+        snapshot["sessions"][0] = dict(snapshot["sessions"][1])
+    else:
+        snapshot["sessions"].append(dict(snapshot["sessions"][0], session="extra"))
+        if change == "expected_over_limit":
+            expected.add("extra")
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_registry(snapshot, expected, "boot", 1)
+
+
+def capacity_evidence():
+    common = {"boot": "boot", "exchange": "init", "session": None}
+    return [
+        dict(common, event="request", method="initialize", time_ns=1),
+        dict(common, event="response", method="POST", status=503, time_ns=2),
+        dict(
+            common,
+            event="settled",
+            method="POST",
+            sessions=8,
+            active=False,
+            poisoned=False,
+            time_ns=3,
+        ),
+    ]
+
+
+def test_capacity_refusal_requires_initialization_503_without_execution():
+    assert lifecycle.verify_registry_refusal(capacity_evidence(), "boot") == {
+        "initialization_attempts": 1,
+        "status": 503,
+    }
+
+
+@pytest.mark.parametrize("index", range(3))
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "boot", "exchange", "session", "time_ns"]
+)
+def test_capacity_refusal_rejects_uncorrelated_or_missing_records(index, mutation):
+    evidence = capacity_evidence()
+    if mutation == "missing":
+        evidence.pop(index)
+    elif mutation == "duplicate":
+        evidence.append(dict(evidence[index]))
+    else:
+        evidence[index][mutation] = 0 if mutation == "time_ns" else "wrong"
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_registry_refusal(evidence, "boot")
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "method", "tools/call"),
+        (1, "status", 200),
+        (1, "method", "GET"),
+        (2, "sessions", 9),
+        (2, "sessions", 7),
+        (2, "active", True),
+        (2, "poisoned", True),
+    ],
+)
+def test_capacity_refusal_rejects_allocation_or_unhealthy_service(index, field, value):
+    evidence = capacity_evidence()
+    evidence[index][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_registry_refusal(evidence, "boot")
+
+
+@pytest.mark.parametrize("event", ["binding_started", "retired", "delete_requested"])
+def test_capacity_refusal_rejects_work_or_retirement(event):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_registry_refusal([*capacity_evidence(), {"event": event}], "boot")
+
+
+def churn_evidence():
+    common = {"boot": "boot", "exchange": "delete", "session": "target"}
+    return [
+        dict(common, event="delete_requested", time_ns=2),
+        dict(common, event="response", method="DELETE", status=200, time_ns=3),
+        dict(
+            common,
+            event="retired",
+            time_ns=4,
+            completed=True,
+            session_registered=False,
+            sessions=7,
+            active=False,
+            active_session=None,
+            poisoned=False,
+            sdk_finished=True,
+            sdk_terminated=True,
+            sdk_streams=0,
+            request_ids=0,
+            requests=0,
+        ),
+    ]
+
+
+def test_churn_retirement_requires_sdk_and_adapter_drain():
+    lifecycle.verify_churn_retirement(churn_evidence(), "boot", "target", 1)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", False),
+        ("session_registered", True),
+        ("sessions", 8),
+        ("sessions", 6),
+        ("active", True),
+        ("active_session", "other"),
+        ("poisoned", True),
+        ("sdk_finished", False),
+        ("sdk_terminated", False),
+        ("sdk_streams", 1),
+        ("request_ids", 1),
+        ("requests", 1),
+        ("time_ns", 1),
+    ],
+)
+def test_churn_retirement_rejects_incomplete_or_cross_session_cleanup(field, value):
+    evidence = churn_evidence()
+    evidence[2][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_churn_retirement(evidence, "boot", "target", 1)
+
+
+@pytest.mark.parametrize("index", range(3))
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "boot", "exchange", "session", "time_ns"]
+)
+def test_churn_retirement_rejects_missing_or_uncorrelated_delete(index, mutation):
+    evidence = churn_evidence()
+    if mutation == "missing":
+        evidence.pop(index)
+    elif mutation == "duplicate":
+        evidence.append(dict(evidence[index]))
+    else:
+        evidence[index][mutation] = 0 if mutation == "time_ns" else "wrong"
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_churn_retirement(evidence, "boot", "target", 1)
+
+
+@pytest.mark.parametrize("event", ["request", "binding_started"])
+def test_idle_churn_rejects_interleaved_dispatch_or_cancellation(event):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_churn_retirement(
+            [*churn_evidence(), {"event": event}], "boot", "target", 1
+        )
+
+
+def test_observer_registry_snapshot_reads_sdk_counts_and_redacts_identity(tmp_path):
+    transport = SimpleNamespace(is_terminated=False, _request_streams={"private-request": object()})
+    record = SimpleNamespace(
+        initialized=True,
+        closing=False,
+        task=SimpleNamespace(done=lambda: False),
+        transport=transport,
+        ids=set(),
+        requests=1,
+        get_active=True,
+    )
+    app = SimpleNamespace(
+        sessions={"private-session": record},
+        readers=0,
+        service=SimpleNamespace(active=None, poisoned=False),
+    )
+    observed = observer.ObserveHTTP(app, tmp_path / "audit")
+    snapshot = observed.registry_snapshot()
+    row = snapshot["sessions"][0]
+    assert row["sdk_running"] and row["sdk_streams"] == row["requests"] == 1
+    assert row["session"] == observer.digest(b"private-session".hex())
+    assert "private-session" not in json.dumps(snapshot) and "private-request" not in json.dumps(
+        snapshot
+    )
+    transport._request_streams.clear()
+    record.task = None
+    record.requests = 0
+    record.get_active = False
+    row = observed.registry_snapshot()["sessions"][0]
+    assert not row["sdk_running"] and row["sdk_streams"] == row["requests"] == 0
