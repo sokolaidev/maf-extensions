@@ -31,7 +31,6 @@ IDENTITY_FIELDS = (
     "attemptId",
 )
 OPTIONAL_IDENTITY_FIELDS = ("buildInputsSha256", "preparationEvidenceSha256")
-PROFILE_RENAMES = {"diagram": "graphviz"}
 
 
 def decode(raw: str | bytes) -> Any:
@@ -94,8 +93,8 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def profiles(*, include_legacy: bool = False) -> tuple[str, ...]:
-    """Load build profiles, optionally including names retained by signed releases."""
+def profiles() -> tuple[str, ...]:
+    """Load the reviewed publication scope."""
     value = read(ROOT / "images/release-profiles.json")
     if (
         value["schemaVersion"] != 1
@@ -111,7 +110,7 @@ def profiles(*, include_legacy: bool = False) -> tuple[str, ...]:
         or len(set(names)) != len(names)
     ):
         raise ValueError("Invalid image profile catalogue")
-    return tuple(names) + (tuple(PROFILE_RENAMES) if include_legacy else ())
+    return tuple(names)
 
 
 def version(value: Any) -> tuple[int, int, int]:
@@ -129,7 +128,7 @@ def version(value: Any) -> tuple[int, int, int]:
 
 def validate_identity(candidate: dict[str, Any]) -> None:
     """Refuse unreviewed scope, mutable references and ambiguous source identities."""
-    if candidate.get("profile") not in profiles(include_legacy=True):
+    if candidate.get("profile") not in profiles():
         raise ValueError("Unrecognized release profile")
     version(candidate.get("version"))
     if not isinstance(candidate.get("sourceCommit"), str) or not re.fullmatch(

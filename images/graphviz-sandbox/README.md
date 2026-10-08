@@ -15,7 +15,7 @@ Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/graphvi
 
 Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `graphviz` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-**Naming transition:** New builds use profile `graphviz` and `ghcr.io/sokolaidev/maf-extensions/graphviz`; its first release has not been published. The existing [signed `diagram:0.1.0` release](https://github.com/sokolaidev/maf-extensions/releases/tag/image-diagram-v0.1.0) remains available at `ghcr.io/sokolaidev/maf-extensions/diagram` with its original digest, source and attestations. Verification and daily monitoring continue to recognize that historical identity. To consume it with the commands below, set the policy profile to `diagram` and select its original release identity; do not relabel its policy as `graphviz`.
+**Availability:** The first `graphviz` release has not been published. Until it completes the protected release gate, use the local-build instructions below.
 
 ## Verify before pulling and running
 
@@ -40,11 +40,10 @@ With GitHub CLI authenticated for the public repository, download all assets fro
 
 ```bash
 set -eu
-PROFILE="$(python3 -c 'import json; print(json.load(open("graphviz-policy.json"))["profile"])')"
 VERSION="$(python3 -c 'import json; print(json.load(open("graphviz-policy.json"))["version"])')"
-EVIDENCE="$PROFILE-evidence-$VERSION"
+EVIDENCE="graphviz-evidence-$VERSION"
 mkdir "$EVIDENCE"
-gh release download "image-$PROFILE-v$VERSION" \
+gh release download "image-graphviz-v$VERSION" \
   --repo sokolaidev/maf-extensions --dir "$EVIDENCE"
 python3 scripts/verify_container_release.py \
   --policy graphviz-policy.json --evidence "$EVIDENCE" --bundles
@@ -60,7 +59,7 @@ After verification, derive the pull reference from the same policy. This example
 
 ```bash
 set -eu
-IMAGE="$(python3 -c 'import json; p=json.load(open("graphviz-policy.json")); print("ghcr.io/sokolaidev/maf-extensions/" + p["profile"] + "@" + p["registryDigest"])')"
+IMAGE="$(python3 -c 'import json; p=json.load(open("graphviz-policy.json")); print("ghcr.io/sokolaidev/maf-extensions/graphviz@" + p["registryDigest"])')"
 docker pull --platform linux/amd64 "$IMAGE"
 mkdir -p diagram-input diagram-output
 printf 'digraph { consumer -> renderer -> png }\n' > diagram-input/diagram.dot

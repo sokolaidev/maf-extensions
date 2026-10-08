@@ -34,14 +34,14 @@ async function monitorRuns(at) {
 }
 
 async function history() {
-  const response = await get(`${API}/git/matching-refs/tags/security-history-`);
+  const response = await get(`${API}/git/matching-refs/tags/security-history-v2-`);
   assert(!response.headers?.get("link"), "Incomplete history reference index");
   const refs = await response.json();
   assert(Array.isArray(refs), "Invalid history reference index");
   const records = refs.map(r => {
-    assert(/^refs\/tags\/security-history-[0-9]{12}$/.test(r.ref), "Invalid history reference");
+    assert(/^refs\/tags\/security-history-v2-[0-9]{12}$/.test(r.ref), "Invalid history reference");
     const tag = r.ref.slice("refs/tags/".length);
-    const sequence = Number(tag.slice("security-history-".length));
+    const sequence = Number(tag.slice("security-history-v2-".length));
     assert(sequence > 0 && ["commit", "tag"].includes(r.object?.type) && /^[a-f0-9]{40}$/.test(r.object?.sha), "Invalid history identity");
     return {sequence, tag, object: r.object};
   }).sort((a, b) => a.sequence - b.sequence);

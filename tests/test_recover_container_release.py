@@ -17,7 +17,7 @@ from container_release_history import encode  # noqa: E402
 
 SOURCE = "a" * 40
 CANDIDATE = {
-    "profile": "diagram",
+    "profile": "graphviz",
     "version": "0.1.0",
     "sourceCommit": SOURCE,
     "sourceRef": "refs/heads/main",
@@ -89,7 +89,7 @@ def original(monkeypatch):
         recovery,
         "History",
         lambda _github: SimpleNamespace(
-            head=lambda: SimpleNamespace(catalogue={"releases": {"diagram/0.1.0": record}})
+            head=lambda: SimpleNamespace(catalogue={"releases": {"graphviz/0.1.0": record}})
         ),
     )
     return SimpleNamespace(run=run, record=record, job=job, artifact=artifact, responses=responses)

@@ -40,7 +40,7 @@ test('history binds exact bytes, ancestry and the actual Git tag', async () => {
   const document = {sequence: 1, sourceCommit: source, ancestors: [], previous: null};
   const raw = JSON.stringify(document);
   const hash = 'sha256:' + require('node:crypto').createHash('sha256').update(raw).digest('hex');
-  const records = [{sequence: 1, sha256: hash, size: raw.length, source, tag: 'security-history-000000000001'}];
+  const records = [{sequence: 1, sha256: hash, size: raw.length, source, tag: 'security-history-v2-000000000001'}];
   global.fetch = async () => ({ok: true, json: async () => ({object: {type: 'commit', sha: source}})});
   assert.deepEqual(await verifySnapshot(raw, records), document);
   global.fetch = async () => ({ok: true, json: async () => ({object: {type: 'commit', sha: 'c'.repeat(40)}})});
@@ -51,7 +51,7 @@ test('history binds exact bytes, ancestry and the actual Git tag', async () => {
 test('failed GitHub request and mutable history cannot leave green evidence', async () => {
   global.fetch = async () => ({ok: false});
   await assert.rejects(history(), /unavailable/);
-  global.fetch = async url => ({ok: true, json: async () => url.includes('matching-refs') ? [{ref: 'refs/tags/security-history-000000000001', object: {type: 'commit', sha: 'a'.repeat(40)}}] : {tag_name: 'security-history-000000000001', draft: false, immutable: false}});
+  global.fetch = async url => ({ok: true, json: async () => url.includes('matching-refs') ? [{ref: 'refs/tags/security-history-v2-000000000001', object: {type: 'commit', sha: 'a'.repeat(40)}}] : {tag_name: 'security-history-v2-000000000001', draft: false, immutable: false}});
   await assert.rejects(history(), /not immutable/);
 });
 
@@ -77,13 +77,13 @@ test('same-second attempts cannot be ordered by creation ID', async () => {
 
 test('browser history lookup has constant request count across years of releases', async () => {
   const source = 'a'.repeat(40);
-  const refs = Array.from({length: 10000}, (_, i) => ({ref: `refs/tags/security-history-${String(i + 1).padStart(12, '0')}`, object: {type: 'commit', sha: source}}));
+  const refs = Array.from({length: 10000}, (_, i) => ({ref: `refs/tags/security-history-v2-${String(i + 1).padStart(12, '0')}`, object: {type: 'commit', sha: source}}));
   const requests = [];
   global.fetch = async url => {
     requests.push(url);
-    if (url.endsWith('/git/matching-refs/tags/security-history-')) return {ok: true, json: async () => refs};
-    assert.ok(url.endsWith('/releases/tags/security-history-000000010000'), url);
-    return {ok: true, json: async () => ({id: 42, tag_name: 'security-history-000000010000', draft: false, immutable: true, target_commitish: source, assets: [{name: 'catalogue.json', state: 'uploaded', digest, size: 100}]})};
+    if (url.endsWith('/git/matching-refs/tags/security-history-v2-')) return {ok: true, json: async () => refs};
+    assert.ok(url.endsWith('/releases/tags/security-history-v2-000000010000'), url);
+    return {ok: true, json: async () => ({id: 42, tag_name: 'security-history-v2-000000010000', draft: false, immutable: true, target_commitish: source, assets: [{name: 'catalogue.json', state: 'uploaded', digest, size: 100}]})};
   };
   const records = await history();
   assert.equal(records.length, 10000);
@@ -134,4 +134,14 @@ test('unexpected digests prevent retirement until independently absent', () => {
   assert.equal(status(abandoned, run, at), 'unavailable');
   entry.absenceProof = {digest: wrong, digestMissing: true, checkedAt: '2026-01-01T01:00:00Z'};
   assert.equal(status(abandoned, run, at), 'no-longer-monitored');
+});
+
+
+test('fresh catalogue lookup excludes the experimental namespace', async () => {
+  global.fetch = async url => {
+    assert.ok(url.endsWith('/git/matching-refs/tags/security-history-v2-'), url);
+    return {ok: true, json: async () => []};
+  };
+  assert.deepEqual(await history(), []);
+  await assert.rejects(verifySnapshot(JSON.stringify({sequence: 8}), []), /no longer authoritative/);
 });

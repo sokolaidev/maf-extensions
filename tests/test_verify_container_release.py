@@ -128,7 +128,7 @@ def mock_verifier(monkeypatch, results, failed=None):
     return calls
 
 
-@pytest.mark.parametrize("profile", ["bicep", "graphviz", "diagram"])
+@pytest.mark.parametrize("profile", ["bicep", "graphviz"])
 def test_all_three_attestations_are_verified_separately(tmp_path, monkeypatch, profile):
     expected, results = evidence(tmp_path, profile=profile)
     calls = mock_verifier(monkeypatch, results)
@@ -225,7 +225,7 @@ def test_any_failed_signature_blocks_identity(tmp_path, monkeypatch, failed):
         ("schemaVersion", 2),
         ("state", "incomplete"),
         ("state", "abandoned"),
-        ("profile", "diagram"),
+        ("profile", "graphviz"),
         ("version", "0.2.0"),
         ("sourceCommit", "d" * 40),
         ("sourceRef", "refs/heads/other"),
@@ -246,7 +246,7 @@ def test_valid_signature_does_not_override_completion_policy(tmp_path, monkeypat
 def test_signed_wrong_subject_cannot_be_substituted(tmp_path, monkeypatch, predicate):
     expected, results = evidence(tmp_path)
     results[predicate][0]["verificationResult"]["statement"]["subject"][0]["name"] = (
-        PREFIX + "/diagram"
+        PREFIX + "/graphviz"
     )
     mock_verifier(monkeypatch, results)
     with pytest.raises(ValueError, match="subject"):

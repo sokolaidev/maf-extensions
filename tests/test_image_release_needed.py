@@ -572,38 +572,6 @@ def reporter(monkeypatch):
     return client, current
 
 
-def test_renamed_profile_requests_first_release_then_uses_its_own_baseline(reporter, monkeypatch):
-    client, current = reporter
-    current["observed"] = None
-    legacy = RECORD | {"profile": "diagram", "sourceCommit": "f" * 40}
-    catalogue = {"current": {"diagram": "diagram/0.1.0"}, "releases": {"diagram/0.1.0": legacy}}
-    monkeypatch.setattr(
-        tracker.History,
-        "head",
-        lambda _: SimpleNamespace(reference="stable", catalogue=catalogue),
-    )
-    monkeypatch.setattr(
-        tracker,
-        "changed_inputs",
-        lambda root, base, head, profile: (
-            ["images/graphviz-sandbox/Dockerfile"] if base == legacy["sourceCommit"] else []
-        ),
-    )
-    tracker.main()
-    assert len(client.items) == 1
-    assert client.items[0]["title"] == "Image release needed: graphviz"
-    assert "diagram:0.1.0" in client.items[0]["body"]
-    assert client.items[0]["state"] == "open"
-    catalogue["current"]["graphviz"] = "graphviz/0.1.0"
-    catalogue["releases"]["graphviz/0.1.0"] = replacement() | {"version": "0.1.0"}
-    tracker.main()
-    assert client.items[0]["state"] == "closed"
-    assert "graphviz:0.1.0" in client.items[0]["body"]
-    tracker.main()
-    assert len(client.items) == 1
-    assert catalogue["releases"]["diagram/0.1.0"] == legacy
-
-
 def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):
     client, current = reporter
     tracker.main()

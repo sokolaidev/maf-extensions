@@ -99,21 +99,6 @@ def monitor_context(monkeypatch):
     return history
 
 
-def test_monitor_preserves_both_legacy_and_graphviz_targets(tmp_path, monitor_context):
-    catalogue = empty_catalogue()
-    for profile in ("diagram", "graphviz"):
-        candidate = CANDIDATE | {"profile": profile}
-        catalogue = complete(reserve(catalogue, candidate, AT), candidate, candidate["imageId"], AT)
-    monitor_context.catalogue = catalogue
-    monitor.begin(tmp_path)
-    assert [
-        target["candidate"]["profile"] for target in read(tmp_path / "plan.json")["targets"]
-    ] == [
-        "diagram",
-        "graphviz",
-    ]
-
-
 def test_unexpected_public_digest_is_reserved_before_scanning_and_survives_tag_movement(
     monkeypatch, tmp_path, monitor_context
 ):
@@ -480,7 +465,7 @@ def test_registry_absence_does_not_confuse_authentication_or_server_errors(
 )
 @pytest.mark.parametrize("reference", ["0.1.0", "sha256:" + "d" * 64])
 @pytest.mark.parametrize("authenticated", [False, True])
-@pytest.mark.parametrize("profile", ["bicep", "graphviz", "diagram"])
+@pytest.mark.parametrize("profile", ["bicep", "graphviz"])
 def test_registry_negotiation_retains_existing_manifest_bytes(
     monkeypatch, media_type, reference, authenticated, profile
 ):

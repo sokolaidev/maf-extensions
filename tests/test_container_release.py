@@ -66,15 +66,6 @@ def test_release_scope_matches_every_candidate_scan():
     assert set(profiles()) == scanned
 
 
-def test_graphviz_release_preserves_the_legacy_diagram_identity():
-    legacy = candidate() | {"profile": "diagram"}
-    catalogue = complete(reserve(empty_catalogue(), legacy, AT), legacy, EVIDENCE, AT)
-    graphviz = candidate(run="456") | {"profile": "graphviz"}
-    updated = complete(reserve(catalogue, graphviz, LATER), graphviz, EVIDENCE, LATER)
-    assert updated["releases"]["diagram/0.1.0"] == catalogue["releases"]["diagram/0.1.0"]
-    assert updated["current"] == {"diagram": "diagram/0.1.0", "graphviz": "graphviz/0.1.0"}
-
-
 def test_legacy_diagram_cannot_prepare_a_new_release(tmp_path):
     with pytest.raises(ValueError, match="Unrecognized release profile"):
         preparation.prepare("diagram", "0.1.0", "a" * 40, "123", tmp_path / "candidate")

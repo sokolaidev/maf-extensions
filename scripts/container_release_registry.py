@@ -68,7 +68,7 @@ def request(url: str, headers: dict[str, str]) -> bytes:
 
 def manifest(profile: str, reference: str, *, authenticated: bool = False) -> bytes | None:
     """Only an explicit MANIFEST_UNKNOWN response establishes a missing tag or digest."""
-    if profile not in profiles(include_legacy=True):
+    if profile not in profiles():
         raise ValueError("Unknown image profile")
     if reference.startswith("sha256:"):
         require_digest(reference)
