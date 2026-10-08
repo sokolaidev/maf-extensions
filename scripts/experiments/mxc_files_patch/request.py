@@ -60,17 +60,34 @@ def _names(values: tuple[str, ...]) -> None:
 class FileLimits:
     """Host-selected transfer bounds below the experiment's fixed safety ceilings."""
 
-    input_files: int
-    input_bytes: int
-    artifact_files: int
-    artifact_bytes: int
-    file_bytes: int
+    input_files: int = 64
+    input_bytes: int = 16 * 1024 * 1024
+    artifact_files: int = 64
+    artifact_bytes: int = 16 * 1024 * 1024
+    file_bytes: int = 16 * 1024 * 1024
 
     def __post_init__(self) -> None:
         for key, value in asdict(self).items():
             ceiling = MAX_FILES if key.endswith("files") else MAX_BYTES
             if type(value) is not int or not 0 < value <= ceiling:
                 raise Refused("file limits must be positive bounded integers")
+
+
+@dataclass(frozen=True)
+class WorkspaceLimits:
+    """Host-selected live file capacity, separate from transfer and checkpoint budgets."""
+
+    files: int = 256
+    bytes: int = 64 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.files) is not int
+            or not 0 < self.files <= MAX_FILES
+            or type(self.bytes) is not int
+            or not 0 < self.bytes <= 1024 * 1024 * 1024
+        ):
+            raise Refused("invalid workspace allowance")
 
 
 @dataclass(frozen=True)
@@ -98,6 +115,7 @@ class Request:
     inputs: tuple[Input, ...]
     artifacts: tuple[str, ...]
     limits: FileLimits
+    workspace: WorkspaceLimits = WorkspaceLimits()
 
     def __post_init__(self) -> None:
         if type(self.code) is not bytes or len(self.code) > MAX_CODE:
@@ -122,6 +140,13 @@ class Request:
             or sum(len(item.data) for item in self.inputs) > self.limits.input_bytes
         ):
             raise Refused("input bytes exceed allowance")
+        if not isinstance(self.workspace, WorkspaceLimits):
+            raise Refused("missing workspace limits")
+        if (
+            len(self.inputs) > self.workspace.files
+            or sum(len(item.data) for item in self.inputs) > self.workspace.bytes
+        ):
+            raise Refused("inputs exceed workspace allowance")
         _names(tuple(item.name for item in self.inputs))
         _names(self.artifacts)
 
@@ -143,5 +168,6 @@ class Request:
             ],
             "artifacts": sorted(self.artifacts),
             "limits": asdict(self.limits),
+            "workspace": asdict(self.workspace),
         }
         return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()

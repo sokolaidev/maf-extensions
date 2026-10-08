@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
     files = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    inventory = importlib.import_module("scripts.experiments.mxc_files_patch.inventory")
     storage = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
@@ -145,6 +146,10 @@ def test_retry_after_reopen_binds_file_content_lifecycle_authority_and_limits(
             replace(file_request, inputs=(replace(file_request.inputs[0], replace=True),)),
             replace(file_request, artifacts=("other.png",)),
             replace(file_request, limits=replace(file_request.limits, artifact_bytes=512)),
+            replace(file_request, workspace=replace(file_request.workspace, files=128)),
+            replace(
+                file_request, workspace=replace(file_request.workspace, bytes=32 * 1024 * 1024)
+            ),
         )
         for changed in changes:
             with pytest.raises(files.Refused, match="different request"):
@@ -162,3 +167,93 @@ def test_inventory_order_does_not_change_retry_identity(file_request):
         artifacts=tuple(reversed(original.artifacts)),
     )
     assert original.identity() == reordered.identity()
+
+
+def test_selected_default_transfer_limits():
+    limits = files.FileLimits()
+    assert limits.input_files == limits.artifact_files == 64
+    assert limits.input_bytes == limits.artifact_bytes == limits.file_bytes == 16 * 1024 * 1024
+    exact_count = tuple(files.Input(str(index), b"") for index in range(64))
+    files.Request(b"pass", exact_count, tuple(str(index) for index in range(64)), limits)
+    with pytest.raises(files.Refused, match="count"):
+        files.Request(b"pass", (*exact_count, files.Input("extra", b"")), (), limits)
+    exact_bytes = files.Input("input", b"x" * limits.input_bytes)
+    files.Request(b"pass", (exact_bytes,), (), limits)
+    with pytest.raises(files.Refused, match="bytes"):
+        files.Request(b"pass", (exact_bytes, files.Input("extra", b"x")), (), limits)
+
+
+def test_selected_workspace_defaults_and_host_configuration():
+    limits = files.WorkspaceLimits()
+    assert limits.files == 256
+    assert limits.bytes == 64 * 1024 * 1024
+    assert files.WorkspaceLimits(files=512, bytes=128 * 1024 * 1024).files == 512
+    for field, value in (
+        ("files", True),
+        ("files", 0),
+        ("files", 1025),
+        ("bytes", -1),
+        ("bytes", 2**64),
+    ):
+        with pytest.raises(files.Refused):
+            replace(limits, **{field: value})
+
+
+def test_inputs_must_fit_workspace_before_staging(file_request):
+    with pytest.raises(files.Refused, match="workspace allowance"):
+        replace(file_request, workspace=files.WorkspaceLimits(files=1, bytes=1))
+
+
+def test_existing_files_and_uploads_share_one_budget(file_request):
+    original = (inventory.Entry("saved", b"abc", "session"),)
+    call = replace(
+        file_request, inputs=(files.Input("new", b"xy"),), workspace=files.WorkspaceLimits(2, 5)
+    )
+    staged = inventory.stage(original, call)
+    assert sum(len(entry.data) for entry in staged) == 5
+    assert original == (inventory.Entry("saved", b"abc", "session"),)
+    for changed in (
+        replace(call, workspace=files.WorkspaceLimits(2, 4)),
+        replace(call, workspace=files.WorkspaceLimits(1, 5)),
+    ):
+        with pytest.raises(files.Refused, match="workspace inventory exceeds"):
+            inventory.stage(original, changed)
+        assert original[0].data == b"abc"
+
+
+def test_replacement_is_explicit_and_changes_only_new_inventory(file_request):
+    original = (inventory.Entry("saved", b"old", "session"),)
+    denied = replace(file_request, inputs=(files.Input("saved", b"new"),))
+    with pytest.raises(files.Refused, match="replacement authority"):
+        inventory.stage(original, denied)
+    allowed = replace(
+        denied,
+        inputs=(files.Input("saved", b"new!", "call", True),),
+        workspace=files.WorkspaceLimits(1, 4),
+    )
+    assert inventory.stage(original, allowed) == (inventory.Entry("saved", b"new!", "call"),)
+    assert original == (inventory.Entry("saved", b"old", "session"),)
+    with pytest.raises(files.Refused, match="inputs exceed workspace"):
+        replace(allowed, inputs=(files.Input("saved", b"oversized", "call", True),))
+
+
+@pytest.mark.parametrize("target", ["SAVED", "saved/child", "parent"])
+def test_replacement_cannot_authorize_aliases_or_directory_collisions(file_request, target):
+    original = (
+        inventory.Entry("saved", b"x", "session"),
+        inventory.Entry("parent/child", b"y", "session"),
+    )
+    call = replace(file_request, inputs=(files.Input(target, b"z", replace=True),))
+    with pytest.raises(files.Refused):
+        inventory.stage(original, call)
+    assert [entry.data for entry in original] == [b"x", b"y"]
+
+
+def test_one_bad_upload_cannot_partially_replace_existing_files(file_request):
+    original = (inventory.Entry("a", b"a", "session"), inventory.Entry("b", b"b", "session"))
+    call = replace(
+        file_request, inputs=(files.Input("a", b"changed", replace=True), files.Input("b", b"new"))
+    )
+    with pytest.raises(files.Refused, match="replacement authority"):
+        inventory.stage(original, call)
+    assert [entry.data for entry in original] == [b"a", b"b"]
