@@ -168,7 +168,10 @@ def qualify(root: Path, report: dict, mode: str) -> None:
         str(root / "images/agent"),
     )
     # MXC uses the stamp to prevent mixing a release's kernel and rootfs.
-    (root / "images/agent/VERSION").write_text("initrd-v0.17.0", encoding="utf-8")
+    (root / "images/agent/VERSION").write_text(
+        "rootfs: ghcr.io/hyperlight-dev/hyperlight-unikraft/agent:initrd-v0.17.0\n",
+        encoding="utf-8",
+    )
     run(
         root,
         "native-state",
