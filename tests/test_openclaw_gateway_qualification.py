@@ -2061,3 +2061,146 @@ def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutatio
         evidence[-1]["active"] = True
     with pytest.raises(RuntimeError, match="Final service shutdown was not clean"):
         lifecycle.verify_final_shutdown(evidence, case, 0)
+
+
+def discovery_refresh_evidence():
+    events = []
+    for offset, method in enumerate(("initialize", "tools/list")):
+        session = None if method == "initialize" else "fresh"
+        events.extend(
+            [
+                {
+                    "event": "request",
+                    "method": method,
+                    "session": session,
+                    "time_ns": 2 + offset * 3,
+                },
+                {
+                    "event": "response",
+                    "method": "POST",
+                    "session": "fresh",
+                    "status": 200,
+                    "time_ns": 3 + offset * 3,
+                },
+                {
+                    "event": "settled",
+                    "method": "POST",
+                    "session": session,
+                    "sessions": 8,
+                    "active": False,
+                    "poisoned": False,
+                    "time_ns": 4 + offset * 3,
+                },
+            ]
+        )
+        for event in events[-3:]:
+            event.update(boot="boot", exchange=method)
+    return events
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "missing_initialize",
+        "duplicate_initialize",
+        "missing_listing",
+        "duplicate_listing",
+        "missing_response",
+        "duplicate_response",
+        "missing_settlement",
+        "duplicate_settlement",
+        "wrong_boot",
+        "wrong_exchange",
+        "reused_exchange",
+        "failed_initialize",
+        "failed_listing",
+        "reused_session",
+        "missing_session",
+        "initialize_session",
+        "listing_session",
+        "settled_session",
+        "early_initialize",
+        "early_listing",
+        "response_order",
+        "settlement_order",
+        "active",
+        "poisoned",
+        "wrong_count",
+        "response_method",
+        "settled_method",
+        "tool_call",
+        "binding",
+        "retirement",
+        "delete",
+    ],
+)
+def test_discovery_refresh_requires_fresh_correlated_idle_exchanges(mutation):
+    evidence = discovery_refresh_evidence()
+    if mutation == "missing_initialize":
+        del evidence[0]
+    elif mutation == "duplicate_initialize":
+        evidence.append(evidence[0].copy())
+    elif mutation == "missing_listing":
+        del evidence[3]
+    elif mutation == "duplicate_listing":
+        evidence.append(evidence[3].copy())
+    elif mutation == "missing_response":
+        del evidence[1]
+    elif mutation == "duplicate_response":
+        evidence.append(evidence[1].copy())
+    elif mutation == "missing_settlement":
+        del evidence[5]
+    elif mutation == "duplicate_settlement":
+        evidence.append(evidence[5].copy())
+    elif mutation == "wrong_boot":
+        evidence[4]["boot"] = "other"
+    elif mutation == "wrong_exchange":
+        evidence[4]["exchange"] = "other"
+    elif mutation == "reused_exchange":
+        for event in evidence[3:]:
+            event["exchange"] = "initialize"
+    elif mutation == "failed_initialize":
+        evidence[1]["status"] = 503
+    elif mutation == "failed_listing":
+        evidence[4]["status"] = 500
+    elif mutation == "reused_session":
+        evidence[1]["session"] = "previous"
+    elif mutation == "missing_session":
+        evidence[1].pop("session")
+    elif mutation == "initialize_session":
+        evidence[0]["session"] = "fresh"
+    elif mutation == "listing_session":
+        evidence[3]["session"] = "other"
+    elif mutation == "settled_session":
+        evidence[5]["session"] = "other"
+    elif mutation == "early_initialize":
+        evidence[0]["time_ns"] = 0
+    elif mutation == "early_listing":
+        evidence[3]["time_ns"] = 2
+    elif mutation == "response_order":
+        evidence[4]["time_ns"] = 4
+    elif mutation == "settlement_order":
+        evidence[5]["time_ns"] = 5
+    elif mutation in {"active", "poisoned"}:
+        evidence[5][mutation] = True
+    elif mutation == "wrong_count":
+        evidence[5]["sessions"] = 7
+    elif mutation == "response_method":
+        evidence[1]["method"] = "GET"
+    elif mutation == "settled_method":
+        evidence[5]["method"] = "GET"
+    elif mutation == "tool_call":
+        evidence.append({"boot": "boot", "event": "request", "method": "tools/call"})
+    elif mutation in {"binding", "retirement", "delete"}:
+        event = {
+            "binding": "binding_started",
+            "retirement": "retired",
+            "delete": "delete_requested",
+        }[mutation]
+        evidence.append({"boot": "boot", "event": event})
+    if mutation is None:
+        assert lifecycle.verify_discovery_refresh(evidence, "boot", {"previous"}, 1) == "fresh"
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_discovery_refresh(evidence, "boot", {"previous"}, 1)
