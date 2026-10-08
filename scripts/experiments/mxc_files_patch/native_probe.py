@@ -91,6 +91,24 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
         }
         return work / "candidate"
 
+    data = bytes(range(256)) * 1024
+    inputs = tuple(Input(f"file-{i:02d}.bin", data) for i in range(64))
+    check(
+        "default-transfer-boundary",
+        "for i in range(64): assert read_file(f'file-{i:02d}.bin') == bytes(range(256))*1024\nprint('ok')",
+        inputs=inputs,
+        artifacts={item.name: item.data for item in inputs},
+    )
+    for name, invalid in (
+        ("input-count-refusal", (*inputs, Input("extra", b""))),
+        ("input-byte-refusal", (*inputs[:-1], Input("last", data + b"!"))),
+    ):
+        try:
+            Request(b"pass", invalid, (), FileLimits())
+        except Refused:
+            report[name] = {"refused_before_helper": True}
+        else:
+            raise AssertionError(f"{name} admitted execution")
     binary = bytes(range(256)) * 257
     saved = check(
         "input-lifecycle",
@@ -201,8 +219,8 @@ print('ok')""",
     for name, code, artifacts, limits in (
         (
             "missing-artifact",
-            "write_file(guest_session_path+'/keep',b'bad')",
-            {"missing": b""},
+            "write_file(guest_session_path+'/keep',b'bad'); write_file('already-present',b'data')",
+            {"already-present": b"data", "missing": b""},
             FileLimits(),
         ),
         (
