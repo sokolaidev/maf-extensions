@@ -167,3 +167,28 @@ SAMPLE_BACKEND=docker-sbx DIAGRAM_SANDBOX_IMAGE=graphviz-sandbox:local uv run sa
 **`dot could not render the diagram (exit 1): ...`** — the model wrote DOT that Graphviz rejected. That is the diagnostic, handed back for the model to fix; it usually self-corrects on the next call. The declared output is `required=False`, so no PNG is produced and none is expected.
 
 **A non-Unicode console (`UnicodeEncodeError` on Windows)** — the model's reply can contain characters like `→` that a legacy Windows code page (cp1252) cannot encode, and `print` then raises. Run under a UTF-8 stdout — WSL, or `set PYTHONIOENCODING=utf-8` — as CI and the other samples' platforms already do.
+
+## Qualify the published image through the SDK
+
+The manual [Graphviz SDK qualification workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/graphviz-sdk-qualification.yml) invokes this sample's decorated `render_diagram` tool directly, without a model or Azure credentials. It installs published `maf-sandbox==0.48.0`, `maf-sandbox-docker==0.27.0` and `agent-framework-core==1.20.0` in a clean environment. Core 0.48.0 satisfies that Docker release's `<0.49` bound; the workspace's core version is not substituted. The workflow runs only when manually dispatched on `main`, retains reports on success or failure for 90 days, and adds no image execution to ordinary PR CI. It does not build or publish an image.
+
+[qualify.py](qualify.py) first verifies the selected release's provenance, SBOM and completion using the existing consumer verifier. [graphviz-policy.json](graphviz-policy.json) pins the independently selected Graphviz 0.1.0 identity from the [consumer guide](../../images/graphviz-sandbox/README.md); review that selection before running. Update the policy and published SDK pins deliberately when qualifying a different combination. The publication attempt number is inspection context, not an authenticated identity field. Current monitoring status is reported separately and does not override successful release identity verification.
+
+The qualification passes only when the real router and Docker backend deliver a PNG through `FILES_OUT`, reject invalid DOT without delivering a PNG, and remove their containers after both calls. It checks PNG chunk checksums and compressed pixel data, observes the digest reference and `network=none` on each acquired container, and checks that the timeout probe has no active interface other than loopback (inactive kernel tunnel devices are permitted). A separate SDK `sleep 30` execution must time out with a one-second limit, return within 20 seconds including disposal, and leave no container. This is a deterministic backend timeout check; it does not test the renderer's timeout-message branch. A final scope purge runs on failure, but cannot turn a failed SDK cleanup check into a pass.
+
+To reproduce on a Linux/amd64 Docker engine, use a reviewed checkout, `uv`, and an authenticated GitHub CLI. The output directory must not already exist. These Bash commands retain the PNG and JSON evidence in a fresh temporary directory:
+
+```bash
+QUALIFICATION_ROOT="$(mktemp -d)"
+gh release download image-graphviz-v0.1.0 --repo sokolaidev/maf-extensions \
+  --dir "$QUALIFICATION_ROOT/evidence"
+uv run --isolated --no-project --python 3.12 samples/07_docker_diagram/qualify.py \
+  --policy samples/07_docker_diagram/graphviz-policy.json \
+  --evidence "$QUALIFICATION_ROOT/evidence" --output "$QUALIFICATION_ROOT/result"
+```
+
+`qualification.json` records the selected image identity, verification and monitoring results, installed package versions, Docker/Python versions, checkout commit and dirty state, harness/sample hashes, container observations and each check's outcome. Source or editable SDK installations are refused. On Windows, use the same `uv run` command and CLI arguments with Docker Desktop in Linux-container mode.
+
+This exercises the sample tool and SDK lifecycle for one image and package combination. It does not call an agent/model, qualify Docker Sandboxes microVMs, test every diagram, or establish production-wide security. The default Docker SDK runs this image as root with a writable root filesystem and drops all capabilities; this qualification records those settings. The separate [hardened Docker CLI example](../../images/graphviz-sandbox/README.md) uses different settings. Retain the report with your own application qualification before adopting the digest.
+
+**Measured locally on 2026-10-09 (Europe/Amsterdam):** Python 3.12.13, the published package versions above, and Docker Desktop 29.8.2 serving Linux/amd64 containers passed all four checks against Graphviz 0.1.0 manifest `sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63`. The sink delivered a 174×251 PNG (13,000 bytes, SHA-256 `379481be23dc0e677a5ec5f5353e0d679ef1a2f50f51a5a9c13fa1f88e34011d`); invalid DOT delivered none. Every observed container used `network=none`; the network probe's only active interface was loopback. The one-second timeout returned after 1.27 seconds including disposal, and no owned containers remained after any check or final cleanup. This is local SDK evidence; the new hosted workflow has not yet run.
