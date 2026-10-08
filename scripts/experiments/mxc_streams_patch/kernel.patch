@@ -1,11 +1,12 @@
 --- a/lib/posix-tty/Config.uk
 +++ b/lib/posix-tty/Config.uk
-@@ -65,6 +65,11 @@
+@@ -65,6 +65,12 @@
  	bool "Serial: platform-specific serial output"
  	select LIBPOSIX_TTY_SERIAL
  
 +config LIBPOSIX_TTY_STDOUT_HL_BYTES
 +	bool "Hyperlight: separate byte streams (experimental)"
++	select LIBDEVFS_DEV_STDOUT if LIBDEVFS
 +	depends on PLAT_HYPERLIGHT
 +	select LIBPOSIX_TTY_SERIAL
 +
@@ -167,3 +168,68 @@
 +	.vol = STREAM_VOLID, .node = (void *)2, .ops = &stream_ops,
 +	.refcnt = &err_ref, .state = &err_state, ._release = uk_file_static_release
 +};
+--- a/lib/devfs/stdout.c
++++ b/lib/devfs/stdout.c
+@@ -40,10 +40,16 @@
+ #include <vfscore/uio.h>
+ #include <devfs/device.h>
+ #include <uk/console.h>
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++#include <uk/file.h>
++extern const struct uk_file uk_file_hl_stdout;
++extern const struct uk_file uk_file_hl_stderr;
++#endif
+ 
+ #ifdef CONFIG_LIBDEVFS_DEV_STDOUT
+ #define DEV_STDOUT_NAME "stdout"
+ 
++#if !CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
+ /* TODO: Some consoles require both a newline and a carriage return to
+  * go to the start of the next line. This kind of behavior should be in
+  * a single place in posix-tty. We keep this workaround until we have feature
+@@ -95,11 +101,33 @@
+ 	return 0;
+ }
+ 
++#else
++static int __stream_write(void *dst, void *src, size_t *cnt)
++{
++	const struct uk_file *file = dst;
++	struct iovec iov = { .iov_base = src, .iov_len = *cnt };
++	ssize_t ret = file->ops->write(file, &iov, 1, 0, 0);
++
++	if (ret < 0)
++		return -ret;
++	*cnt = ret;
++	return 0;
++}
++#endif
++
+ /* One function for stderr and stdout */
+ static int dev_stdout_write(struct device *dev __unused, struct uio *uio,
+ 			    int flags __unused)
+ {
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	const struct uk_file *file = !strcmp(dev->name, "stderr") ?
++		&uk_file_hl_stderr : &uk_file_hl_stdout;
++
++	return vfscore_uioforeach(__stream_write, (void *)file,
++				 uio->uio_resid, uio);
++#else
+ 	return vfscore_uioforeach(__write_fn, NULL, uio->uio_resid, uio);
++#endif
+ }
+ 
+ static int dev_stdout_read(struct device *dev __unused, struct uio *uio,
+@@ -138,6 +166,11 @@
+ 			  DEV_STDOUT_NAME, rc);
+ 		return -rc;
+ 	}
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	rc = device_create(&drv_stdout, "stderr", D_CHR, NULL);
++	if (rc)
++		return -rc;
++#endif
+ #endif /* LIBDEVFS_DEV_STDOUT */
+ 
+ 	return 0;

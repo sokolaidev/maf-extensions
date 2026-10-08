@@ -52,6 +52,12 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
         return work / "candidate"
 
     check("empty", "pass", (b"", b""))
+    check(
+        "flood",
+        "import os\nfor _ in range(4096):\n os.write(1,b'A'*4096); os.write(2,b'B'*4096)",
+        (b"A" * CHUNK, b"B" * CHUNK),
+        (15 * CHUNK, 15 * CHUNK),
+    )
     for size in (4095, 4096, 4097, CHUNK, CHUNK + 1):
         check(
             f"boundary-{size}",
@@ -140,7 +146,14 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
                 assert child.stdin is not None
                 child.stdin.write(b"MXCOWN1\n")
                 child.stdin.flush()
-                time.sleep(2)
+                deadline = time.monotonic() + 30
+                while not (work / "native.ready").exists():
+                    assert child.poll() is None, "owner helper failed before readiness"
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("owner helper did not restore")
+                    time.sleep(0.02)
+                assert (work / "native.ready").read_bytes() == b"ready\n"
+                time.sleep(0.1)
                 assert child.poll() is None
                 if command is None:
                     child.stdin.close()

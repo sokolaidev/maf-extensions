@@ -4,14 +4,14 @@
       "files": {
         "src/lib.rs": {
           "before": "7edd1c09b453d6492c6909f83906e8fdfd45062a108bd17f7f66d5e28830bf2a",
-          "after": "4c31b6b4d3b769d4eb9bf7a05077c3982f20de4d54c1ca476c78d79a24f32eec"
+          "after": "b9b920639c99414938585aee420ce030e2614785f39d2a082fff0f93d55127dd"
         },
         "src/stream_capture.rs": {
           "before": null,
           "after": "56d293e7bd4f2f3353847172378e69bacc4e1b3a07f49d1bcb9b65a4a9cf68bd"
         }
       },
-      "sha256": "4c1febe4ed0aeced56da880426be30efdbd3985fa3752603b92eb2e4ae3a19cb"
+      "sha256": "f448e55de121b5cfc0e03dcc61ff3f8e985af4ad8f1b6b2662c6b363e4809148"
     },
     "session": {
       "files": {

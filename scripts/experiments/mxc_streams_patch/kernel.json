@@ -8,7 +8,7 @@
   "files": {
     "lib/posix-tty/Config.uk": {
       "before": "4b7010be8dd99e33cfec7b829bb4079421ffbdea1cf41ac4ab446e4e93a13e08",
-      "after": "9f5649ddc5f816ffc24b2cbf48ce61afb812c0ac63e029a24b2cc8c0db96d1c9"
+      "after": "5a7e3da6f3c4e981c7d250aacb939feae75f729c59d06cafa7dc2113ad16b287"
     },
     "lib/posix-tty/Makefile.uk": {
       "before": "caa68f12291e00494b938c7afab99a423d9d4d22e05a282961cbf5ec83dd9aec",
@@ -21,7 +21,11 @@
     "lib/posix-tty/hl-streams.c": {
       "before": null,
       "after": "78337da386cb0ee9efaefdd5604cf9a1196665d761592f4d97a2dbc836ef37f6"
+    },
+    "lib/devfs/stdout.c": {
+      "before": "ed8efbfc87d49f03aa0135018a8712885794b6198773271087c439339b3cdc0d",
+      "after": "7e24c91928290baba818b7b908218b6873a21e3f65944ed76c1a87e9af3e54cc"
     }
   },
-  "patch_sha256": "9da719fec8ef16855b1a5e66d418795361a70d758d60431c0f0a37059da94a68"
+  "patch_sha256": "7e22d6860410eba101cbefbfabd84a2d0539e66aed0960df6e45169a79edc17b"
 }

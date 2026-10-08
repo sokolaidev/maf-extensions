@@ -42,14 +42,17 @@
              },
          )?;
  
-@@ -2458,6 +2470,10 @@
+@@ -2457,7 +2469,12 @@
+         self.config.has_driver()
      }
  
-     /// Take the retained prefix and omission metadata, starting a new budget.
+-    /// Take the retained prefix and omission metadata, starting a new budget.
++    /// Take byte prefixes without clearing a latched transport fault.
 +    pub fn take_captured_streams(&self) -> CapturedStreams {
 +        self.config.streams.lock().unwrap().take()
 +    }
 +
++    /// Take the retained console prefix and metadata, starting a new budget.
      pub fn take_captured_output(&self) -> CapturedOutput {
          self.config.output.lock().unwrap().take()
      }

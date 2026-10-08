@@ -16,7 +16,14 @@ pub fn run(args: &[String]) -> Result<bool, Box<dyn Error>> {
     if fs::metadata(&args[4])?.len() > 65536 { return Err("code exceeds probe limit".into()); }
     let code = fs::read_to_string(&args[4])?;
     let mut sandbox = BackendSession::restore_bounded(Path::new(&args[2]), 65536)?;
-    sandbox.execute(&code)?;
+    write_new(&Path::new(&args[5]).with_extension("ready"), b"ready\n")?;
+    if let Err(error) = sandbox.execute(&code) {
+        if let Ok((stdout, stderr, _)) = sandbox.take_streams() {
+            write_new(&Path::new(&args[5]).with_extension("stdout.bin"), &stdout)?;
+            write_new(&Path::new(&args[5]).with_extension("stderr.bin"), &stderr)?;
+        }
+        return Err(error.into());
+    }
     assert!(sandbox.refuses_execution());
     let (stdout, stderr, metadata) = sandbox.take_streams()?;
     let checkpoint = mode == Some("call-streams");

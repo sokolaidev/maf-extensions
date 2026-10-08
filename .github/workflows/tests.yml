@@ -602,6 +602,7 @@ jobs:
             ${{ runner.temp }}/mxc-streams/streams/*/native.json
             ${{ runner.temp }}/mxc-streams/streams/*/native.stdout
             ${{ runner.temp }}/mxc-streams/streams/*/native.stderr
+            ${{ runner.temp }}/mxc-streams/streams/*/native.stderr.bin
             ${{ runner.temp }}/mxc-streams/durability/result.json
             ${{ runner.temp }}/mxc-streams/durability/*.log
             ${{ runner.temp }}/mxc-streams/durability/quota-*/*.log
