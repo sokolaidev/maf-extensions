@@ -1,0 +1,70 @@
+--- a/src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs
++++ b/src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs
+@@ -46,6 +46,7 @@
+     guest: Option<AppSandbox>,
+     state: State,
+     candidate: Option<Candidate>,
++    streams: Option<hyperlight_unikraft::CapturedStreams>,
+     #[cfg(feature = "maf-output-preview")]
+     output: Option<hyperlight_unikraft::CapturedOutput>,
+ }
+@@ -61,6 +62,7 @@
+             candidate: None,
+             #[cfg(feature = "maf-output-preview")]
+             output: None,
++            streams: None,
+         })
+     }
+ 
+@@ -75,12 +77,17 @@
+             state: State::Ready,
+             candidate: None,
+             output: None,
++            streams: None,
+         })
+     }
+ 
+     #[cfg(feature = "maf-output-preview")]
+     pub fn take_output(&mut self) -> Option<hyperlight_unikraft::CapturedOutput> {
+         self.output.take()
++    }
++
++    pub fn take_streams(&mut self) -> Option<hyperlight_unikraft::CapturedStreams> {
++        self.streams.take()
+     }
+ 
+     pub fn state(&self) -> State {
+@@ -102,7 +109,17 @@
+             self.output = None;
+             let _ = guest.take_captured_output();
+         }
++        self.streams = None;
++        if guest.take_captured_streams().faulted {
++            return Err(Error::Native("stream transport failed during resume".into()));
++        }
+         let outcome = run_with_deadline(&mut guest, code, timeout);
++        let streams = guest.take_captured_streams();
++        let faulted = streams.faulted;
++        self.streams = Some(streams);
++        if faulted {
++            return Err(Error::Native("stream transport fault".into()));
++        }
+         #[cfg(feature = "maf-output-preview")]
+         {
+             self.output = Some(guest.take_captured_output());
+@@ -195,6 +212,7 @@
+             candidate: Some(token.clone()),
+             #[cfg(feature = "maf-output-preview")]
+             output: None,
++            streams: None,
+         };
+         assert!(matches!(
+             session.confirm_commit(&foreign),
+@@ -216,6 +234,7 @@
+             candidate: None,
+             #[cfg(feature = "maf-output-preview")]
+             output: None,
++            streams: None,
+         };
+         assert!(matches!(
+             session.execute("pass", Duration::from_secs(1)),

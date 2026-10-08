@@ -1,0 +1,242 @@
+--- a/lib/posix-tty/Config.uk
++++ b/lib/posix-tty/Config.uk
+@@ -65,6 +65,12 @@
+ 	bool "Serial: platform-specific serial output"
+ 	select LIBPOSIX_TTY_SERIAL
+ 
++config LIBPOSIX_TTY_STDOUT_HL_BYTES
++	bool "Hyperlight: separate byte streams (experimental)"
++	select LIBDEVFS_DEV_STDOUT if LIBDEVFS
++	depends on PLAT_HYPERLIGHT
++	select LIBPOSIX_TTY_SERIAL
++
+ config LIBPOSIX_TTY_STDOUT_NULL
+ 	bool "NULL file: discard output"
+ 	select LIBPOSIX_TTY_PSEUDO
+--- a/lib/posix-tty/Makefile.uk
++++ b/lib/posix-tty/Makefile.uk
+@@ -5,3 +5,6 @@
+ 
+ LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_STDIO) += $(LIBPOSIX_TTY_BASE)/tty.c
+ LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_SERIAL) += $(LIBPOSIX_TTY_BASE)/serial.c
++
++LIBPOSIX_TTY_SRCS-$(CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES) += $(LIBPOSIX_TTY_BASE)/hl-streams.c
++LIBPOSIX_TTY_CINCLUDES-$(CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES) += -I$(CONFIG_UK_BASE)/plat/hyperlight/include
+--- a/lib/posix-tty/tty.c
++++ b/lib/posix-tty/tty.c
+@@ -9,6 +9,11 @@
+ #include <uk/posix-fd.h>
+ #include <uk/posix-fdtab.h>
+ #include <uk/posix-serialfile.h>
++
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++extern const struct uk_file uk_file_hl_stdout;
++extern const struct uk_file uk_file_hl_stderr;
++#endif
+ 
+ #if CONFIG_LIBPOSIX_TTY_PSEUDO
+ #include <uk/file-pseudo.h>
+@@ -82,6 +87,7 @@
+ {
+ 	const struct uk_file *in;
+ 	const struct uk_file *out;
++	const struct uk_file *err;
+ 	const char *in_fname;
+ 	const char *out_fname;
+ 	size_t in_fnamelen;
+@@ -112,6 +118,10 @@
+ 	out = &uk_file_serial;
+ 	out_fname = STDOUT_FNAME_SERIAL;
+ 	out_fnamelen = STDOUT_FNAME_LEN_SERIAL;
++#elif CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	out = &uk_file_hl_stdout;
++	out_fname = "stdout:hyperlight";
++	out_fnamelen = sizeof("stdout:hyperlight") - 1;
+ #else /* !CONFIG_LIBPOSIX_TTY_STDOUT_* */
+ #error Nonexistent stdout file
+ #endif /* !CONFIG_LIBPOSIX_TTY_STDOUT_* */
+@@ -130,14 +140,21 @@
+ 		return (r < 0) ? r : -EBADF;
+ 	}
+ 
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	err = &uk_file_hl_stderr;
++	r = uk_fdtab_open_named(err, O_WRONLY | UKFD_O_NOSEEK,
++				"stderr:hyperlight", sizeof("stderr:hyperlight") - 1);
++#else
++	err = out;
+ 	r = uk_sys_dup2(1, 2);
++#endif
+ 	if (unlikely(r != 2)) {
+ 		uk_pr_err("Failed to allocate fd for stderr: %d\n", r);
+ 		return (r < 0) ? r : -EBADF;
+ 	}
+ 
+ #if CONFIG_LIBPOSIX_TTY_DEVFS
+-	return init_posix_tty_devfs(in, out, out);
++	return init_posix_tty_devfs(in, out, err);
+ #else /* !CONFIG_LIBPOSIX_TTY_DEVFS */
+ 	return 0;
+ #endif /* !CONFIG_LIBPOSIX_TTY_DEVFS */
+--- /dev/null
++++ b/lib/posix-tty/hl-streams.c
+@@ -0,0 +1,87 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/* Opt-in byte streams; kernel diagnostics keep the platform console. */
++#include <limits.h>
++#include <sys/stat.h>
++#include <uk/file.h>
++#include <uk/file/nops.h>
++#include <uk/posix-fd.h>
++#include <uk/posix-serialfile.h>
++#include <hyperlight/hcall.h>
++
++#define CHUNK_BYTES 4096
++static const char STREAM_VOLID[] = "hl_stream";
++
++static ssize_t stream_write(const struct uk_file *f,
++			   const struct iovec *iov, size_t iovcnt,
++			   size_t off, long flags __unused)
++{
++	ssize_t total = 0;
++
++	if (off)
++		return -ESPIPE;
++	for (size_t i = 0; i < iovcnt; i++) {
++		const __u8 *data = iov[i].iov_base;
++		size_t left = iov[i].iov_len;
++
++		if ((!data && left) || left > (size_t)(SSIZE_MAX - total))
++			return total ? total : -EINVAL;
++		while (left) {
++			__u32 count = left < CHUNK_BYTES ? left : CHUNK_BYTES;
++			struct hl_param args[] = {
++				{ .type = HL_PV_HLUINT, .u32_val = (uintptr_t)f->node },
++				{ .type = HL_PV_HLVECBYTES, .vec = { data, count } },
++			};
++			__s32 accepted;
++
++			if (hl_hcall_int("MafWriteBytes", args, 2, &accepted) ||
++			    accepted != (__s32)count)
++				return total ? total : -EIO;
++			data += count;
++			left -= count;
++			total += count;
++		}
++	}
++	return total;
++}
++
++static int stream_getstat(const struct uk_file *f, unsigned int mask,
++			  struct uk_statx *arg)
++{
++	int rc = uk_file_serial.ops->getstat(&uk_file_serial, mask, arg);
++
++	if (!rc)
++		arg->stx_ino = (uintptr_t)f->node;
++	return rc;
++}
++
++static int stream_ctl(const struct uk_file *f __unused, int fam, int req,
++			uintptr_t arg1, uintptr_t arg2, uintptr_t arg3)
++{
++	/* Preserve the driver's terminal detection without console rewriting. */
++	return uk_file_serial.ops->ctl(&uk_file_serial, fam, req, arg1, arg2, arg3);
++}
++
++static const struct uk_file_ops stream_ops = {
++	.read = uk_file_nop_read,
++	.write = stream_write,
++	.mem = uk_file_nop_mem,
++	.getstat = stream_getstat,
++	.setstat = uk_file_nop_setstat,
++	.ctl = stream_ctl,
++};
++
++static uk_file_refcnt out_ref = UK_FILE_REFCNT_INITIALIZER(out_ref);
++static uk_file_refcnt err_ref = UK_FILE_REFCNT_INITIALIZER(err_ref);
++static struct uk_file_state out_state = UK_FILE_STATE_EVENTS_INITIALIZER(
++	out_state, UKFD_POLLOUT);
++static struct uk_file_state err_state = UK_FILE_STATE_EVENTS_INITIALIZER(
++	err_state, UKFD_POLLOUT);
++
++const struct uk_file uk_file_hl_stdout = {
++	.vol = STREAM_VOLID, .node = (void *)1, .ops = &stream_ops,
++	.refcnt = &out_ref, .state = &out_state, ._release = uk_file_static_release
++};
++const struct uk_file uk_file_hl_stderr = {
++	.vol = STREAM_VOLID, .node = (void *)2, .ops = &stream_ops,
++	.refcnt = &err_ref, .state = &err_state, ._release = uk_file_static_release
++};
+--- a/lib/devfs/stdout.c
++++ b/lib/devfs/stdout.c
+@@ -40,10 +40,16 @@
+ #include <vfscore/uio.h>
+ #include <devfs/device.h>
+ #include <uk/console.h>
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++#include <uk/file.h>
++extern const struct uk_file uk_file_hl_stdout;
++extern const struct uk_file uk_file_hl_stderr;
++#endif
+ 
+ #ifdef CONFIG_LIBDEVFS_DEV_STDOUT
+ #define DEV_STDOUT_NAME "stdout"
+ 
++#if !CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
+ /* TODO: Some consoles require both a newline and a carriage return to
+  * go to the start of the next line. This kind of behavior should be in
+  * a single place in posix-tty. We keep this workaround until we have feature
+@@ -95,11 +101,40 @@
+ 	return 0;
+ }
+ 
++#endif
++
+ /* One function for stderr and stdout */
+ static int dev_stdout_write(struct device *dev __unused, struct uio *uio,
+ 			    int flags __unused)
+ {
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	const struct uk_file *file = !strcmp(dev->name, "stderr") ?
++		&uk_file_hl_stderr : &uk_file_hl_stdout;
++
++	while (uio->uio_resid && uio->uio_iovcnt) {
++		struct iovec *iov = uio->uio_iov;
++		struct iovec part = *iov;
++		ssize_t written;
++
++		if (!iov->iov_len) {
++			uio->uio_iov++;
++			uio->uio_iovcnt--;
++			continue;
++		}
++		if (part.iov_len > uio->uio_resid)
++			part.iov_len = uio->uio_resid;
++		written = file->ops->write(file, &part, 1, 0, 0);
++		if (written <= 0)
++			return written < 0 ? -written : EIO;
++		iov->iov_base = (char *)iov->iov_base + written;
++		iov->iov_len -= written;
++		uio->uio_resid -= written;
++		uio->uio_offset += written;
++	}
++	return 0;
++#else
+ 	return vfscore_uioforeach(__write_fn, NULL, uio->uio_resid, uio);
++#endif
+ }
+ 
+ static int dev_stdout_read(struct device *dev __unused, struct uio *uio,
+@@ -138,6 +173,11 @@
+ 			  DEV_STDOUT_NAME, rc);
+ 		return -rc;
+ 	}
++#if CONFIG_LIBPOSIX_TTY_STDOUT_HL_BYTES
++	rc = device_create(&drv_stdout, "stderr", D_CHR, NULL);
++	if (rc)
++		return -rc;
++#endif
+ #endif /* LIBDEVFS_DEV_STDOUT */
+ 
+ 	return 0;

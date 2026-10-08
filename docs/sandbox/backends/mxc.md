@@ -34,7 +34,15 @@ Truncation does not fail execution or retire the session. A call that otherwise 
 
 The collector checks the budget before buffering and disables automatic mirroring to process stdout. Its separately pinned runtime/session overlays are removable through the [experiment tooling](../../../scripts/experiments/mxc_session_patch/OUTPUT.md#apply-and-remove-the-overlay). The combined text channel does not provide separate streams, arbitrary binary fidelity, correction of the kernel's silent 4096-byte truncation, or a process-wide memory limit. Omission counters describe only bytes received by HostPrint. The existing two-MiB serialized-result limit still applies independently of the configured console budget.
 
-Qualification covers exact and exceeded budgets, continued execution, UTF-8 boundaries, durable publication and lost acknowledgments. Failed execution and malformed control refuse success. Replacing the overlay requires equivalent behavior and renewed qualification on both platforms. The [upstream capture request](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/140) includes a contribution offer; this accepted collector policy does not authorize the separate kernel proposal in the [historical research record](../research/mxc-native-output.md).
+Qualification covers exact and exceeded budgets, continued execution, UTF-8 boundaries, durable publication and lost acknowledgments. Failed execution and malformed control refuse success. Replacing the overlay requires equivalent behavior and renewed qualification on both platforms. The [upstream capture request](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/140) includes a contribution offer; the separate kernel profile has its own later decision below.
+
+## Separate byte-stream profile
+
+On 2026-10-08 the maintainer selected **1 MiB per stream, truncate and continue** for the new MXC 1.0 kernel profile. stdout and stderr each retain an arbitrary-byte prefix and report omitted bytes with a saturation flag. Guest writes still succeed in full when only retention is truncated; the host resets both budgets between calls. Malformed native frames retire the session instead of producing a successful checkpoint.
+
+The host publishes a bounded control record separately from the two byte payloads and never parses guest output as completion. The experimental format-4 store explicitly reserves three MiB for the base64 result envelope before execution; the previous two-MiB default is unchanged. Checkpoint and result publication remains one transaction, and retries return the saved envelope without executing again. A changed kernel uses a new snapshot identity; existing profiles are not silently upgraded.
+
+Implementation and both-host qualification are tracked in [#1786](https://github.com/sokolaidev/maf-extensions/pull/1786) and the [native-output research record](../research/mxc-native-output.md). This selected policy is not a production-support claim.
 
 ## State and ownership
 
@@ -229,7 +237,7 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 
 | Decision | State | Tracking |
 |---|---|---|
-| Extend MXC for persistent Hyperlight sessions | Selected; removable experimental patch available, supported output/control transport pending | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (open) |
+| Extend MXC for persistent Hyperlight sessions | Removable experimental session and byte-stream patches qualified on both hosts; production adapter remains pending | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (closed) by [#1786](https://github.com/sokolaidev/maf-extensions/pull/1786) (merged) |
 | Interpreter continuity and checkpoint feasibility | Conditional go for experimental integration; production acceptance remains separate | [#1649](https://github.com/sokolaidev/maf-extensions/issues/1649) (closed) by [#1674](https://github.com/sokolaidev/maf-extensions/pull/1674) (merged); [conclusion](../../../scripts/experiments/mxc_session_patch/CONCLUSION.md) |
 | Rich Python through MXC Hyperlight and CodeAct | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Code/text execution plus bounded file inputs and artifacts | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
@@ -239,7 +247,7 @@ Subsequent gates cover bounded execution and output, native memory limits, deadl
 | Checkpoint after every successful persistent call, before acknowledgment | Selected; unimplemented | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Host-configured recovery on another compatible machine | Selected; storage, compatibility and ownership unverified | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
 | Closed networking and conditional enforced allowlisting | Selected; live qualification unrun | [#1648](https://github.com/sokolaidev/maf-extensions/issues/1648) (open) |
-| Bounded native output and control transport | Partial experimental Rust-only bounded console capture with explicit truncation; Windows/WHP and Linux/KVM qualified for this scope. Separate streams and faithful binary output remain unimplemented; [evidence](../../../scripts/experiments/mxc_session_patch/OUTPUT.md) | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (open) |
+| Bounded native output and control transport | Experimental separate stdout/stderr qualified on Linux/KVM and Windows/WHP: byte fidelity, one-MiB per-stream truncation, strict control, failures and durable replay; [evidence](../research/mxc-native-output.md#qualified-byte-stream-candidate) | [#1668](https://github.com/sokolaidev/maf-extensions/issues/1668) (closed) by [#1786](https://github.com/sokolaidev/maf-extensions/pull/1786) (merged) |
 | Native owner-death cleanup | Experimental private-pipe controls passed independently on Windows/WHP and Linux/KVM; arbitrary descendants and distributed fencing remain outside this result | [#1669](https://github.com/sokolaidev/maf-extensions/issues/1669) (closed) by [#1674](https://github.com/sokolaidev/maf-extensions/pull/1674) (merged); [evidence and limits](../../../scripts/experiments/mxc_session_patch/OWNERSHIP.md) |
 | General bounded file input and artifact collection | Unimplemented beyond the fixed CSV/chart probe | [#1670](https://github.com/sokolaidev/maf-extensions/issues/1670) (open) |
 | Compatible-machine recovery and fencing | Unimplemented | [#1671](https://github.com/sokolaidev/maf-extensions/issues/1671) (open) |
