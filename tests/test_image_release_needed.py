@@ -395,6 +395,29 @@ def commit(root, changes):
     return tracker.git(root, "rev-parse", "HEAD").strip()
 
 
+@pytest.mark.parametrize("change", ["added", "modified", "deleted"])
+def test_consumer_guide_alone_does_not_request_a_replacement(tmp_path, change):
+    tracker.git(tmp_path, "init")
+    guide = "images/graphviz-sandbox/README.md"
+    files = {"images/graphviz-sandbox/Dockerfile": "FROM base\n"}
+    if change != "added":
+        files[guide] = "Original instructions"
+    base = commit(tmp_path, files)
+    if change == "deleted":
+        (tmp_path / guide).unlink()
+        head = commit(tmp_path, {})
+    else:
+        head = commit(tmp_path, {guide: "Updated instructions"})
+    changed = tracker.changed_inputs(tmp_path, base, head, "graphviz")
+    assert changed == []
+    assert optional_desired(changed=changed) is None
+    payload = "images/graphviz-sandbox/Dockerfile"
+    mixed = commit(tmp_path, {payload: "FROM newer\n"})
+    changed = tracker.changed_inputs(tmp_path, base, mixed, "graphviz")
+    assert changed == [payload]
+    assert desired(changed=changed)["reasons"]["source"]["paths"] == [payload]
+
+
 def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependencies(tmp_path):
     tracker.git(tmp_path, "init")
     base = commit(
