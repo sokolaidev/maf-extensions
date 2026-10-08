@@ -8,6 +8,14 @@ Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramewo
 
 See the [security documentation](docs/security/README.md) for release-specific scan results, artifact verification, tested configurations and remaining gaps, and the [security policy](SECURITY.md) for private reporting and supported versions.
 
+## Container images
+
+Looking at this README from a GHCR package page? Use the image's consumer guide for its purpose, pull and verification instructions, runtime interface and support boundaries. A visible registry tag does not establish release completion; check the [release status and evidence](https://sokolaidev.github.io/maf-extensions/) before use.
+
+| Image | Purpose | Consumer documentation |
+|---|---|---|
+| `ghcr.io/sokolaidev/maf-extensions/diagram` | Render Graphviz DOT to PNG on Linux/amd64 | [Diagram image guide](https://github.com/sokolaidev/maf-extensions/blob/main/images/diagram-sandbox/README.md) |
+
 ## maf-sandbox
 
 Sandboxed tool execution for agents: validate infrastructure, create diagrams, process files or run generated Python. Workload packages (kinds) describe what a tool needs; the router checks host policy and selects a compatible backend to run it. Backends provide the execution boundary, while the host owns identity, credentials, storage and cleanup policy.

@@ -1,36 +1,99 @@
-# `diagram-sandbox` — the image `render_diagram` runs in
+# Diagram container image
 
-Graphviz and its runtime libraries on a digest-pinned Wolfi base. That is the whole image. It carries no agent code, no Python, and nothing of the host application — the sandbox runs a renderer and nothing else, and *what* to render arrives at run time as a DOT file the tool writes in. The PNG is read back out the same way, through `FILES_OUT`.
+Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/diagram`. The image contains Graphviz, DejaVu fonts and their runtime libraries on a digest-pinned Wolfi base. It contains no agent application or Python runtime; you supply the DOT source and run `dot`.
 
-[`samples/07_docker_diagram`](../../samples/07_docker_diagram/) is the one sample that runs it, and it builds this image with `docker build`. Unlike [`images/bicep-sandbox`](../bicep-sandbox/), there is nothing to push or import: the docker backend runs what is already on the machine.
-
-## What is in it
-
-| | Why |
+| Consumer question | Contract |
 |---|---|
-| `cgr.dev/chainguard/wolfi-base` | A glibc-based container distribution with signed APK packages and a vulnerability feed supported by Grype |
-| `graphviz` and `ttf-dejavu` | Provide `dot`, its rendering libraries and a consistent font family |
+| Platform | Published release profile: `linux/amd64`. Native ARM64 and Windows containers are not qualified. Docker Desktop must use Linux containers. |
+| Interface | Command-line renderer, with no HTTP service or listening port. Invoke `dot` explicitly. |
+| Input and output | DOT file or standard input; `dot -Tpng -o /output/diagram.png` writes a PNG. The release packaging probe exercises PNG; other Graphviz formats need your own validation. |
+| Host dependencies | A Linux-container Docker engine for rendering. Python 3.12+ and GitHub CLI with `gh attestation verify` for the repository's release verifier. |
+| Agent integration | [Docker diagram sample](../../samples/07_docker_diagram/) and its local `make_diagram_tools` implementation. This image does not install the host SDK or configure a model. |
+| Release evidence | [Public status report](https://sokolaidev.github.io/maf-extensions/) and immutable GitHub Releases named `image-diagram-v<VERSION>`. Image versions are independent of Python package versions. |
 
-There is no working-directory `COPY` and no fixed config: the tool writes its DOT source into `/maf-sandbox/work` at run time (the `SandboxSpec`'s `work_dir`), which the backend creates as it writes the first file. `render_diagram` names the output format on the `dot` command line, so the image holds no state of its own between the source going in and the image coming out.
+## Select a completed release
 
-## Build
+Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `diagram` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-From the repository root, so the build context is this directory:
+**Availability at 2026-10-08:** [the first publication attempt](https://github.com/sokolaidev/maf-extensions/actions/runs/37682254043) stopped during anonymous registry qualification, and `image-diagram-v0.1.0` evidence is not published. There is no completed release recommended here yet. The following release-consumption steps apply once completion and evidence delivery succeed; local builds remain available below.
 
-```bash
-docker build -t diagram-sandbox:local images/diagram-sandbox
+## Verify before pulling and running
+
+Use a reviewed checkout of this repository for the verifier. From its root, create `diagram-policy.json` with the identity you have independently selected from the release record and reviewed source/workflow. Replace every placeholder; do not generate your acceptance policy by blindly copying the candidate's claims.
+
+```json
+{
+  "profile": "diagram",
+  "version": "<VERSION>",
+  "sourceCommit": "<40-character source commit>",
+  "sourceRef": "refs/heads/main",
+  "registryDigest": "sha256:<64-character manifest digest>",
+  "assessedManifestDigest": "sha256:<same manifest digest>",
+  "imageId": "sha256:<64-character configuration digest>",
+  "attemptId": "<originating workflow run ID>"
+}
 ```
 
-That is the whole story for the sample — `docker` runs what is already on the machine, so there is nothing to push and nothing to import. Podman takes the same arguments.
+The registry digest identifies the single runnable manifest; `imageId` identifies its configuration and is not a pull reference. Keep the policy in your application's reviewed configuration.
 
-`diagram-sandbox:local` is an unqualified single-name tag, which Docker resolves to its official `docker.io/library/` namespace — a namespace no third party can publish to, so the sample referencing it can only ever get this locally built image or a clean not-found (never someone else's). Qualify it as `localhost/diagram-sandbox:local` if you would rather it never resolve past the local daemon at all; tag the build to match.
+With GitHub CLI authenticated for the public repository, download all assets from the selected immutable evidence release into a new directory. The Bash commands below use Python 3.12+ as `python3`:
 
-That the image is built rather than pulled from a registry is deliberate for a sample: there is no widely trusted minimal Graphviz image to reference, and building one here keeps the sample's guest a thing the reader can read in five lines rather than a third-party tag whose contents they have to take on faith.
+```bash
+set -eu
+VERSION="$(python3 -c 'import json; print(json.load(open("diagram-policy.json"))["version"])')"
+EVIDENCE="diagram-evidence-$VERSION"
+mkdir "$EVIDENCE"
+gh release download "image-diagram-v$VERSION" \
+  --repo sokolaidev/maf-extensions --dir "$EVIDENCE"
+python3 scripts/verify_container_release.py \
+  --policy diagram-policy.json --evidence "$EVIDENCE" --bundles
+```
 
-## What it may reach at run time
+Require successful verification and `releaseIdentityVerified: true`. This verifies provenance, the SPDX inventory, signed release completion and indexed evidence against the selected source and digest. It does not execute the diagram image. Missing completion evidence is a refusal, even when provenance and SBOM signatures are valid.
 
-Nothing. `render_diagram`'s spec sets `egress_allow=()`, so the docker backend runs the container on `--network none`: Graphviz reads the source it was given and writes an image, and reaches no network at all. Build time is a different question and a different machine — `apk` fetches signed Wolfi packages then — but the running sandbox has no egress to fall short of.
+The verifier reports current monitoring separately. Identity success does not mean the latest scan is clean: inspect monitoring status and assessment age, and apply your application's vulnerability policy. Stale, unavailable, failing or retired monitoring is not a clean result. The [release contract](../../docs/security/container-image-releases.md) explains verification and monitoring in detail.
 
-## Reproducibility
+## Render a PNG with Docker
 
-The Wolfi base is pinned by digest. Wolfi is a rolling distribution: the build applies available OS updates, and `apk add graphviz` resolves to the version the repository serves that day. Two builds a month apart are not byte-identical, and a diagram's exact pixels can shift with a Graphviz release. Pin the package versions and repository snapshot as well if you need them to be — this image is sample-grade, chosen so the sample is legible, not so its output is bit-reproducible. A production deployment replaces it with a hardened image you build and own: minimal base, digest-pinned, scanned, rebuilt on your patch cadence, supplied through the same `image`/`image_id` spec fields — nothing else in the sample's wiring changes.
+After verification, derive the pull reference from the same policy. This example is for Bash on a Linux Docker host, with a non-root host user and a local daemon. Docker Desktop users need file sharing enabled for the working directory.
+
+```bash
+set -eu
+IMAGE="$(python3 -c 'import json; p=json.load(open("diagram-policy.json")); print("ghcr.io/sokolaidev/maf-extensions/diagram@" + p["registryDigest"])')"
+docker pull --platform linux/amd64 "$IMAGE"
+mkdir -p diagram-input diagram-output
+printf 'digraph { consumer -> renderer -> png }\n' > diagram-input/diagram.dot
+docker run --rm --platform linux/amd64 \
+  --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --user "$(id -u):$(id -g)" --env XDG_CACHE_HOME=/tmp/cache \
+  --pids-limit 256 --memory 1g --cpus 2 \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --mount "type=bind,src=$(pwd)/diagram-input,dst=/input,readonly" \
+  --mount "type=bind,src=$(pwd)/diagram-output,dst=/output" \
+  --entrypoint dot "$IMAGE" \
+  -Tpng /input/diagram.dot -o /output/diagram.png
+test -s diagram-output/diagram.png
+```
+
+The result is `diagram-output/diagram.png` on the host. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
+
+For the [Docker diagram sample](../../samples/07_docker_diagram/), set `DIAGRAM_SANDBOX_IMAGE` to the verified digest reference instead of its local-build tag and follow the sample's host/model prerequisites with the `docker` backend. Its tool writes under `/maf-sandbox/work`, requests closed egress and returns the rendered PNG through `FILES_OUT`. The image packaging probe does not establish compatibility with every SDK version or the sample's separate `docker-sbx` path; qualify your chosen combination.
+
+## Build locally
+
+From the repository root:
+
+```bash
+docker build --platform linux/amd64 -t diagram-sandbox:local images/diagram-sandbox
+```
+
+The sample can use this local tag. A local build has no suite release-completion attestation and is not interchangeable with a published digest. It may contain different package versions even when built from the same Dockerfile: the Wolfi base is pinned, but `apk upgrade` and `apk add` use a rolling package repository.
+
+## Updates, support and security
+
+Pin the verified manifest digest in application configuration. To update, select and verify a new completed image release, review its SBOM and vulnerability reports, then test your diagrams and application integration before changing the pin. Graphviz and font updates can change layout and pixels; neither rebuilding from source nor upgrading preserves byte-identical output.
+
+The release gate requires an offline PNG packaging probe, an SPDX SBOM, and no High/Critical findings, including unfixed findings, at publication assessment time. Review the retained reports for lower-severity findings and current monitoring for newly disclosed vulnerabilities. A scanner result or signature does not prove absence of malware or backdoors, and a packaging probe does not establish production suitability for your workload.
+
+See the [security policy](../../SECURITY.md) for support and private vulnerability reporting. Use [repository issues](https://github.com/sokolaidev/maf-extensions/issues) for non-sensitive usage problems; include the image digest, platform, Docker version, relevant SDK versions and a minimal non-sensitive DOT example.
