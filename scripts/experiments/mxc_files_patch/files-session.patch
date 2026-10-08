@@ -1,0 +1,27 @@
+--- a/src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs
++++ b/src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs
+@@ -4,6 +4,7 @@
+ //! Temporary, opt-in session primitives for microsoft/mxc#1374.
+ //! Closed networking and no mounts; publication durability belongs to the host.
+ 
++pub use hyperlight_unikraft::workspace::{Workspace, File};
+ use super::{run_with_deadline, AppSandbox, RunError, SandboxBuilder};
+ use std::{
+     fmt, fs,
+@@ -81,6 +82,16 @@
+         })
+     }
+ 
++    /// Restore with a host-owned bounded file service, without a host-directory mount.
++    #[cfg(feature = "maf-output-preview")]
++    pub fn restore_files(snapshot: &Path, workspace: Arc<std::sync::Mutex<hyperlight_unikraft::workspace::Workspace>>) -> Result<Self, Error> {
++        let guest = SandboxBuilder::from_snapshot_dir(snapshot)
++            .and_then(|builder| builder.bounded_output(65536).file_workspace(workspace).boot())
++            .map_err(|e| Error::Native(e.to_string()))?;
++        Ok(Self { guest: Some(guest), state: State::Ready, candidate: None,
++            output: None, streams: None })
++    }
++
+     #[cfg(feature = "maf-output-preview")]
+     pub fn take_output(&mut self) -> Option<hyperlight_unikraft::CapturedOutput> {
+         self.output.take()
