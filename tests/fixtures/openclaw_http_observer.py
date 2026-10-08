@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -389,6 +390,73 @@ def refuse_completed_cleanup(observer: ObserveHTTP, fault: Path) -> None:
     service.resources[resource.name] = replace(resource, cleanup=cleanup)
 
 
+def arm_idle_expiry(observer: ObserveHTTP) -> None:
+    """Shorten only the fixture's idle threshold while the real sweeper retires one session."""
+    app = observer.app
+    original_retire = app.retire
+    original_seconds = app.idle_seconds
+    seconds = 2
+    if original_seconds != 900 or len(app.sessions) != 2 or app.service.active is None:
+        raise RuntimeError(
+            "Idle expiry requires two sessions and active work at the default policy"
+        )
+    observer.record(event="idle_expiry_armed", default_seconds=original_seconds, seconds=seconds)
+
+    def retire(sid):
+        record = app.sessions[sid]
+        active = app.service.active
+        active_record = app.sessions[active[0].session_id] if active else None
+        now = time.monotonic()
+        frame = inspect.currentframe()
+        from_sweeper = (
+            frame is not None
+            and frame.f_back is not None
+            and frame.f_back.f_code is app._expire.__func__.__code__
+        )
+        del frame
+        observer.record(
+            event="idle_expiry_started",
+            from_sweeper=from_sweeper,
+            session=digest(sid.encode().hex()),
+            idle_seconds=now - record.touched,
+            request_ids=len(record.ids),
+            requests=record.requests,
+            get_active=record.get_active,
+            sdk_running=record.task is not None and not record.task.done(),
+            active_session=digest(active[0].session_id.encode().hex()) if active else None,
+            active_idle_seconds=now - active_record.touched if active_record else None,
+        )
+        task = original_retire(sid)
+
+        def finished(task):
+            app.idle_seconds = original_seconds
+            app.retire = original_retire
+            active = app.service.active
+            observer.record(
+                event="idle_expiry_finished",
+                session=digest(sid.encode().hex()),
+                completed=not task.cancelled() and task.exception() is None,
+                sdk_finished=record.task is not None
+                and record.task.done()
+                and not record.task.cancelled()
+                and record.task.exception() is None,
+                sdk_terminated=record.transport.is_terminated,
+                sdk_streams=len(record.transport._request_streams),
+                request_ids=len(record.ids),
+                requests=record.requests,
+                session_registered=sid in app.sessions,
+                active_session=digest(active[0].session_id.encode().hex()) if active else None,
+                restored_seconds=app.idle_seconds,
+                **observer.registry_snapshot(),
+            )
+
+        task.add_done_callback(finished)
+        return task
+
+    app.retire = retire
+    app.idle_seconds = seconds
+
+
 def crash_active_service(observer: ObserveHTTP) -> None:
     """Exit without cleanup only while this fixture supervises an unfinished call."""
     active = observer.app.service.active
@@ -414,6 +482,7 @@ if __name__ == "__main__":
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--crash-file", type=Path)
+    parser.add_argument("--idle-expiry-file", type=Path)
     parser.add_argument("--refuse-cleanup-file", type=Path)
     parser.add_argument("--refuse-completed-cleanup-file", type=Path)
     parser.add_argument("--drop-result-file", type=Path)
@@ -461,6 +530,9 @@ if __name__ == "__main__":
 
             async def stop_requested():
                 while args.stop_file is not None and not args.stop_file.exists():
+                    if args.idle_expiry_file is not None and args.idle_expiry_file.exists():
+                        args.idle_expiry_file.unlink()
+                        arm_idle_expiry(observer)
                     if args.crash_file is not None and args.crash_file.exists():
                         args.crash_file.unlink()
                         crash_active_service(observer)

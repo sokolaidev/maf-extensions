@@ -2028,7 +2028,7 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
     lifecycle.verify_churn_retirement([*churn_evidence(), notification], "boot", "target", 1)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable"])
+@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle"])
 @pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None])
 def test_final_shutdown_requires_zero_process_exit(case, exit_code):
     evidence = [
@@ -2042,7 +2042,7 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
             lifecycle.verify_final_shutdown(evidence, case, exit_code)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable"])
+@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle"])
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "poisoned", "sessions", "active"])
 def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutation):
     evidence = [
@@ -2267,3 +2267,213 @@ def test_startup_discovery_rejects_an_unexpected_extra_registration():
         lifecycle.verify_discovery_refresh(
             discovery_refresh_evidence(), "boot", set(), 1, expected_count=1
         )
+
+
+def idle_expiry_evidence():
+    live = {
+        "session": "active",
+        "initialized": True,
+        "closing": False,
+        "sdk_running": True,
+        "sdk_terminated": False,
+        "request_ids": 1,
+    }
+    evidence = [
+        {
+            "event": "idle_expiry_armed",
+            "time_ns": 2,
+            "boot": "boot",
+            "default_seconds": 900,
+            "seconds": 2,
+        },
+        {
+            "event": "idle_expiry_started",
+            "time_ns": 3,
+            "boot": "boot",
+            "session": "idle",
+            "from_sweeper": True,
+            "idle_seconds": 3,
+            "active_idle_seconds": 3,
+            "active_session": "active",
+            "request_ids": 0,
+            "requests": 1,
+            "get_active": True,
+            "sdk_running": True,
+        },
+        {
+            "event": "idle_expiry_finished",
+            "time_ns": 4,
+            "boot": "boot",
+            "session": "idle",
+            "restored_seconds": 900,
+            "active_session": "active",
+            "completed": True,
+            "sdk_finished": True,
+            "sdk_terminated": True,
+            "session_registered": False,
+            "sdk_streams": 0,
+            "request_ids": 0,
+            "requests": 0,
+            "active": True,
+            "poisoned": False,
+            "sessions": [live],
+        },
+    ]
+    observed = {
+        "requested_ns": 1,
+        "observed_ns": 5,
+        "same_gateway": True,
+        "same_service": True,
+        "owner_unchanged": True,
+        "compiler_survived": True,
+        "sentinel_preserved": True,
+    }
+    return evidence, observed
+
+
+@pytest.mark.parametrize(
+    "stage,field,value",
+    [
+        (0, "boot", "other"),
+        (0, "seconds", 900),
+        (0, "default_seconds", 2),
+        (0, "time_ns", 0),
+        (1, "from_sweeper", False),
+        (1, "session", "active"),
+        (1, "idle_seconds", 1),
+        (1, "active_idle_seconds", 1),
+        (1, "active_idle_seconds", None),
+        (1, "active_session", None),
+        (1, "request_ids", 1),
+        (1, "requests", 2),
+        (1, "get_active", None),
+        (1, "sdk_running", False),
+        (1, "time_ns", 1),
+        (2, "restored_seconds", 2),
+        (2, "active_session", "idle"),
+        (2, "completed", False),
+        (2, "sdk_finished", False),
+        (2, "sdk_terminated", False),
+        (2, "session_registered", True),
+        (2, "sdk_streams", 1),
+        (2, "request_ids", 1),
+        (2, "requests", 1),
+        (2, "active", False),
+        (2, "poisoned", True),
+        (2, "sessions", []),
+        (2, "time_ns", 8),
+    ],
+)
+def test_idle_expiry_rejects_unproven_timer_retirement(stage, field, value):
+    evidence, observed = idle_expiry_evidence()
+    evidence[stage][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_idle_expiry(evidence, "boot", "idle", "active", observed)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("session", "idle"),
+        ("initialized", False),
+        ("closing", True),
+        ("sdk_running", False),
+        ("sdk_terminated", True),
+        ("request_ids", 0),
+    ],
+)
+def test_idle_expiry_requires_live_active_registration(field, value):
+    evidence, observed = idle_expiry_evidence()
+    evidence[2]["sessions"][0][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_idle_expiry(evidence, "boot", "idle", "active", observed)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["same_gateway", "same_service", "owner_unchanged", "compiler_survived", "sentinel_preserved"],
+)
+def test_idle_expiry_requires_independent_survival(field):
+    evidence, observed = idle_expiry_evidence()
+    observed[field] = False
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_idle_expiry(evidence, "boot", "idle", "active", observed)
+
+
+@pytest.mark.parametrize("event", ["request", "delete_requested", "retired", "binding_started"])
+def test_idle_expiry_rejects_client_directed_retirement_and_new_work(event):
+    evidence, observed = idle_expiry_evidence()
+    evidence.append({"event": event, "boot": "boot"})
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_idle_expiry(evidence, "boot", "idle", "active", observed)
+
+
+@pytest.mark.parametrize("stage", range(3))
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_idle_expiry_requires_unique_stages(stage, duplicate):
+    evidence, observed = idle_expiry_evidence()
+    if duplicate:
+        evidence.append(dict(evidence[stage]))
+    else:
+        evidence.pop(stage)
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_idle_expiry(evidence, "boot", "idle", "active", observed)
+
+
+def test_idle_expiry_reports_accelerated_policy_separately():
+    evidence, observed = idle_expiry_evidence()
+    result = lifecycle.verify_idle_expiry(evidence, "boot", "idle", "active", observed)
+    assert result["default_idle_seconds"] == 900
+    assert result["fixture_idle_seconds"] == 2
+    assert result["expired_sdk_task_finished"] is True
+
+
+def test_expiry_observer_preserves_sweeper_and_restores_policy(tmp_path):
+    async def run():
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+        record = SimpleNamespace(
+            touched=observer.time.monotonic() - 3,
+            ids=set(),
+            requests=0,
+            get_active=False,
+            task=task,
+            transport=SimpleNamespace(is_terminated=True, _request_streams={}),
+        )
+        active_record = SimpleNamespace(touched=observer.time.monotonic() - 3)
+
+        class App:
+            idle_seconds = 900
+            sessions = {"idle": record, "active": active_record}
+            service = SimpleNamespace(active=(SimpleNamespace(session_id="active"), task))
+
+            def retire(self, sid):
+                assert self.idle_seconds == 2
+                self.sessions.pop(sid)
+                return task
+
+            async def _expire(self):
+                self.retire("idle")
+
+        app = App()
+        evidence = tmp_path / "idle.jsonl"
+        observed = observer.ObserveHTTP(app, evidence)
+        observed.registry_snapshot = lambda: {"sessions": [], "active": True, "poisoned": False}
+        original = app.retire
+        observer.arm_idle_expiry(observed)
+        assert app.idle_seconds == 2
+        assert len(app.sessions) == 2
+        await app._expire()
+        await asyncio.sleep(0)
+        assert app.idle_seconds == 900
+        assert app.retire == original
+        events = checker.records(evidence)
+        assert [r["event"] for r in events] == [
+            "idle_expiry_armed",
+            "idle_expiry_started",
+            "idle_expiry_finished",
+        ]
+        assert events[1]["from_sweeper"] is True
+        assert events[2]["sdk_finished"] is True
+
+    asyncio.run(run())

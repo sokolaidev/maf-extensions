@@ -38,6 +38,7 @@ REGISTRY_LIMIT = 8
 CHURN_CYCLES = 3
 DISCOVERY_COOLDOWN_SECONDS = 35
 UNAVAILABLE_DISPATCHES = 4
+IDLE_DISPATCHES = 6
 REGISTRY_DISPATCHES = REGISTRY_LIMIT + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
 LIFECYCLE_DISPATCHES = (
     30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
@@ -721,6 +722,82 @@ def gateway_source_hashes(openclaw: Path) -> dict[str, str]:
     }
 
 
+def verify_idle_expiry(evidence, boot, expired, survivor, observed) -> dict[str, Any]:
+    """Require timer retirement to drain only the idle session while active work survives."""
+    stages = []
+    for event in ("idle_expiry_armed", "idle_expiry_started", "idle_expiry_finished"):
+        matches = [r for r in evidence if r.get("event") == event]
+        require(len(matches) == 1, "Missing unique idle expiry stage")
+        stages.append(matches[0])
+    armed, start, end = stages
+    require(
+        bool(boot)
+        and bool(expired)
+        and bool(survivor)
+        and expired != survivor
+        and all(r.get("boot") == boot for r in evidence)
+        and observed.get("requested_ns", 0) > 0
+        and observed["requested_ns"]
+        <= armed.get("time_ns", 0)
+        < start.get("time_ns", 0)
+        <= end.get("time_ns", 0)
+        <= observed.get("observed_ns", 0)
+        and armed.get("default_seconds") == end.get("restored_seconds") == 900
+        and armed.get("seconds") == 2
+        and start.get("session") == end.get("session") == expired
+        and start.get("from_sweeper") is True
+        and start.get("idle_seconds", 0) >= 2
+        and isinstance(start.get("active_idle_seconds"), (int, float))
+        and start["active_idle_seconds"] >= 2
+        and start.get("active_session") == end.get("active_session") == survivor
+        and start.get("request_ids") == 0
+        and isinstance(start.get("get_active"), bool)
+        and start.get("requests") == int(start["get_active"])
+        and start.get("sdk_running") is True
+        and end.get("completed") is True
+        and end.get("sdk_finished") is True
+        and end.get("sdk_terminated") is True
+        and end.get("session_registered") is False
+        and end.get("sdk_streams") == end.get("request_ids") == end.get("requests") == 0
+        and end.get("active") is True
+        and end.get("poisoned") is False
+        and len(end.get("sessions", [])) == 1,
+        "Idle expiry did not preserve the active owner and drain the expired registration",
+    )
+    live = end["sessions"][0]
+    require(
+        live.get("session") == survivor
+        and live.get("initialized") is True
+        and live.get("closing") is False
+        and live.get("sdk_running") is True
+        and live.get("sdk_terminated") is False
+        and live.get("request_ids") == 1
+        and all(
+            observed.get(k) is True
+            for k in (
+                "same_gateway",
+                "same_service",
+                "owner_unchanged",
+                "compiler_survived",
+                "sentinel_preserved",
+            )
+        )
+        and not any(
+            r.get("event") in {"request", "delete_requested", "retired", "binding_started"}
+            for r in evidence
+        ),
+        "Idle expiry disturbed active work or required client-directed retirement",
+    )
+    return {
+        "default_idle_seconds": 900,
+        "fixture_idle_seconds": 2,
+        "expired_adapter_records": 0,
+        "remaining_adapter_records": 1,
+        "expired_sdk_task_finished": True,
+        "active_session_preserved": True,
+    }
+
+
 def verify_unavailable_turn(status: int, payload, observed) -> None:
     """Require a catalog refusal while no service process or listener can execute work."""
     require(
@@ -755,6 +832,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         "lifecycle": LIFECYCLE_DISPATCHES,
         "registry": REGISTRY_DISPATCHES,
         "unavailable": UNAVAILABLE_DISPATCHES,
+        "idle": IDLE_DISPATCHES,
     }
     require(case in counts, "Unknown qualification case")
     dispatches = counts[case]
@@ -805,6 +883,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     provider = root / "provider.jsonl"
     stop_file = root / "stop-service"
     crash_file = root / "crash-service"
+    idle_expiry_file = root / "idle-expiry"
     drop_file = root / "drop-result"
     refusal_file = root / "refuse-cleanup"
     completed_refusal_file = root / "refuse-completed-cleanup"
@@ -867,6 +946,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     str(refusal_file),
                     "--refuse-completed-cleanup-file",
                     str(completed_refusal_file),
+                    *(["--idle-expiry-file", str(idle_expiry_file)] if case == "idle" else []),
                 ],
             )
 
@@ -1219,6 +1299,141 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     "Both sessions recovered discovery and reused their MCP identities without a Gateway restart or replay",
                     flush=True,
                 )
+            elif case == "idle":
+                if service_process is None:
+                    raise RuntimeError("Idle expiry requires a started service")
+                report["environment"] = verify_environment(baseline_args)
+                owner_before = owner_file.read_bytes()
+                sessions = [turn(index)[0] for index in range(2)]
+                require(len(set(sessions)) == 2, "Idle expiry requires distinct MCP sessions")
+                boot = records(transport)[-1]["boot"]
+                snapshot_registry(sessions, boot, owner_before)
+                before_active = len(records(transport))
+                pending, active_turn = begin_turn(0, "cancel")
+                container = None
+                try:
+
+                    def compiling():
+                        candidates = owned()
+                        if len(candidates) == 1 and "bicep" in docker(
+                            "top", candidates[0], "-eo", "pid,comm"
+                        ):
+                            return candidates[0]
+                        return None
+
+                    container = wait_for(compiling, "No compiler before idle expiry", 60)
+                    active_calls = requests(records(transport)[before_active:])
+                    require(
+                        len(active_calls) == 1 and active_calls[0]["session"] == sessions[0],
+                        "Idle expiry has no unique active call",
+                    )
+                    active_call = active_calls[0]
+                    expected_calls += 1
+                    # Both registrations must exceed the fixture threshold before its sweeper runs.
+                    time.sleep(2.5)
+                    before_expiry = len(records(transport))
+                    requested_ns = time.time_ns()
+                    idle_expiry_file.touch()
+                    wait_for(
+                        lambda: any(
+                            r.get("event") == "idle_expiry_finished"
+                            for r in records(transport)[before_expiry:]
+                        ),
+                        "Idle session did not finish expiry",
+                        10,
+                    )
+                    observed = {
+                        "requested_ns": requested_ns,
+                        "same_gateway": gateway_process.poll() is None,
+                        "same_service": service_process.poll() is None,
+                        "owner_unchanged": owner_file.read_bytes() == owner_before,
+                        "compiler_survived": owned() == [container]
+                        and "bicep" in docker("top", container, "-eo", "pid,comm"),
+                        "sentinel_preserved": bool(
+                            docker("ps", "-q", "--filter", f"id={sentinel}")
+                        ),
+                        "observed_ns": time.time_ns(),
+                    }
+                    expiry_evidence = records(transport)[before_expiry:]
+                    report["idle_expiry"] = verify_idle_expiry(
+                        expiry_evidence, boot, sessions[1], sessions[0], observed
+                    )
+                    verify_dispatch_count(records(transport), expected_calls)
+                    require(
+                        pending.sock is not None, "Active Gateway turn ended before explicit abort"
+                    )
+                    abort_ns = time.time_ns()
+                    pending.sock.shutdown(socket.SHUT_RDWR)
+                    pending.close()
+                    wait_for(
+                        lambda: (
+                            matching_cancel(
+                                records(transport)[before_active:], active_call, after_ns=abort_ns
+                            )
+                            and not docker("ps", "-aq", "--filter", f"id={container}")
+                        ),
+                        "Explicit abort did not cancel and remove the exact compiler",
+                        60,
+                    )
+                    require(not owned(), "Owned resources survived explicit abort")
+                    require(turn(0)[0] == sessions[0], "Expiry retired the active session")
+                    before_reconnect = len(records(transport))
+                    fresh = turn(1)[0]
+                    require(fresh not in sessions, "Expired MCP identity was reused")
+                    reconnect = records(transport)[before_reconnect:]
+                    stale = [
+                        r
+                        for r in reconnect
+                        if r.get("event") == "response"
+                        and r.get("status") == 404
+                        and r.get("session") == sessions[1]
+                    ]
+                    initialized = [
+                        r
+                        for r in reconnect
+                        if r.get("event") == "request" and r.get("method") == "initialize"
+                    ]
+                    require(
+                        bool(stale) and len(initialized) == 1,
+                        "Reconnect did not reject the stale identity and initialize once",
+                    )
+                    require(turn(1)[0] == fresh, "Reconnected idle session was not reused")
+                    final_registry = snapshot_registry([sessions[0], fresh], boot, owner_before)
+                    require(
+                        not any(
+                            r.get("turn") == active_turn and "tool_result" in r
+                            for r in records(provider)
+                        ),
+                        "Aborted work was replayed or projected",
+                    )
+                    verify_dispatch_count(records(transport), expected_calls)
+                    report["idle_expiry"].update(
+                        explicit_abort_after_expiry=True,
+                        fresh_session_reused=True,
+                        active_session_reused=True,
+                        stale_session_status=404,
+                        replayed=False,
+                        final_registry=final_registry,
+                        same_gateway_and_service=True,
+                        owner_unchanged=True,
+                    )
+                    (root / "idle-expiry.json").write_text(
+                        json.dumps(
+                            {
+                                "transport": records(transport)[before_active:],
+                                "observed": observed,
+                                "call": active_call,
+                                "abort_ns": abort_ns,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    print(
+                        "Idle expiry drained one session, preserved active work, and reconnected new work without replay",
+                        flush=True,
+                    )
+                finally:
+                    pending.close()
             elif case == "registry":
                 report["environment"] = verify_environment(baseline_args)
                 owner_before = owner_file.read_bytes()
@@ -1869,7 +2084,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 finally:
                     pending.close()
                 registry_pair = (new_active, replacement)
-            if case != "unavailable":
+            if case in {"lifecycle", "registry"}:
                 if registry_pair is None:
                     raise RuntimeError("Registry qualification has no baseline sessions")
                 registry_start = len(records(transport))
@@ -2158,7 +2373,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     (
         root
         / (
-            "startup-report.json"
+            "idle-report.json"
+            if case == "idle"
+            else "startup-report.json"
             if case == "unavailable"
             else "registry-report.json"
             if case == "registry"
@@ -2174,7 +2391,7 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument(
-        "--case", choices=["lifecycle", "registry", "unavailable"], default="lifecycle"
+        "--case", choices=["lifecycle", "registry", "unavailable", "idle"], default="lifecycle"
     )
     print(json.dumps(qualify(parser.parse_args()), indent=2))
 
