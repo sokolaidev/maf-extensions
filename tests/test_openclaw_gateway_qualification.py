@@ -1374,3 +1374,292 @@ def test_completed_cleanup_fault_preserves_result_and_delegates_after_removal(
         assert calls[-1] == "cleanup"
 
     asyncio.run(scenario())
+
+
+def retirement_evidence(active):
+    target, other = ("a", "b") if active else ("b", "a")
+    call = {"boot": "boot", "session": "a", "request": "request", "time_ns": 1}
+    common = {"boot": "boot", "session": target, "exchange": "delete"}
+    evidence = [
+        dict(common, event="delete_requested", time_ns=3),
+        dict(common, event="response", method="DELETE", status=200, time_ns=6),
+        dict(
+            common,
+            event="retired",
+            time_ns=9,
+            completed=True,
+            session_registered=False,
+            sessions=1,
+            poisoned=False,
+            active=not active,
+            active_session=None if active else other,
+        ),
+    ]
+    if active:
+        evidence.extend(
+            [
+                {
+                    "boot": "boot",
+                    "session": target,
+                    "exchange": "cancel",
+                    "event": "request",
+                    "method": "notifications/cancelled",
+                    "target": "request",
+                    "time_ns": 4,
+                },
+                {
+                    "boot": "boot",
+                    "session": target,
+                    "exchange": "cancel",
+                    "event": "response",
+                    "method": "POST",
+                    "status": 202,
+                    "time_ns": 5,
+                },
+            ]
+        )
+    observed = {
+        "requested_ns": 2,
+        "acknowledged_ns": 8,
+        "observed_ns": 10,
+        "deleted": True,
+        "same_gateway": True,
+        "same_service": True,
+        "owner_unchanged": True,
+        "sentinel_preserved": True,
+        "exact_container_absent": active,
+        "compiler_survived": not active,
+    }
+    return evidence, target, other, call, observed
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_selective_retirement_requires_targeted_delete_and_independent_host_evidence(active):
+    evidence, target, other, call, observed = retirement_evidence(active)
+    result = lifecycle.verify_retirement(evidence, target, other, call, observed, active=active)
+    assert result["accepted_cancellation"] is active
+    assert result["other_session_preserved"] is True
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("index", range(3))
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "boot", "session", "exchange", "time_ns"]
+)
+def test_retirement_rejects_missing_stale_or_wrong_session_deletion(active, index, mutation):
+    evidence, target, other, call, observed = retirement_evidence(active)
+    if mutation == "missing":
+        evidence.pop(index)
+    elif mutation == "duplicate":
+        evidence.append(dict(evidence[index]))
+    else:
+        evidence[index][mutation] = 0 if mutation == "time_ns" else "other"
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_retirement(evidence, target, other, call, observed, active=active)
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "deleted",
+        "same_gateway",
+        "same_service",
+        "owner_unchanged",
+        "sentinel_preserved",
+        "exact_container_absent",
+        "compiler_survived",
+    ],
+)
+def test_retirement_rejects_missing_process_and_container_proof(active, field):
+    evidence, target, other, call, observed = retirement_evidence(active)
+    observed[field] = not observed[field]
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_retirement(evidence, target, other, call, observed, active=active)
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", False),
+        ("session_registered", True),
+        ("sessions", 2),
+        ("poisoned", True),
+        ("active_session", "wrong"),
+    ],
+)
+def test_retirement_rejects_surviving_registration_or_cross_session_settlement(
+    active, field, value
+):
+    evidence, target, other, call, observed = retirement_evidence(active)
+    evidence[2][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_retirement(evidence, target, other, call, observed, active=active)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "duplicate", "target", "session", "boot", "exchange", "rejected", "stale"],
+)
+def test_active_retirement_requires_accepted_correlated_cancellation(mutation):
+    evidence, target, other, call, observed = retirement_evidence(True)
+    if mutation == "missing":
+        evidence.pop(3)
+    elif mutation == "duplicate":
+        evidence.append(dict(evidence[3]))
+    elif mutation == "rejected":
+        evidence[4]["status"] = 400
+    else:
+        evidence[3]["time_ns" if mutation == "stale" else mutation] = (
+            1 if mutation == "stale" else "wrong"
+        )
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_retirement(evidence, target, other, call, observed, active=True)
+
+
+def test_idle_retirement_rejects_cancellation_of_the_other_call():
+    evidence, target, other, call, observed = retirement_evidence(False)
+    evidence.append({"event": "request", "method": "notifications/cancelled"})
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_retirement(evidence, target, other, call, observed, active=False)
+
+
+def test_retirement_target_pins_only_the_exact_owned_session():
+    name = "lifecycle-" + "a" * 32
+    row = {"key": "agent:main:openai-user:" + name, "sessionId": "current"}
+    assert lifecycle.retirement_target({"sessions": [row]}, name) == {
+        "key": row["key"],
+        "expectedSessionId": "current",
+        "deleteTranscript": False,
+    }
+    for rows in [[], [row, row], [dict(row, sessionId="")], [dict(row, key="agent:main:main")]]:
+        with pytest.raises(RuntimeError):
+            lifecycle.retirement_target({"sessions": rows}, name)
+    for wrong in ["main", "lifecycle-" + "z" * 32, "lifecycle-" + "a" * 31]:
+        with pytest.raises(RuntimeError):
+            lifecycle.retirement_target(
+                {"sessions": [{"key": "agent:main:openai-user:" + wrong, "sessionId": "current"}]},
+                wrong,
+            )
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_delete_observer_records_actual_registration_and_active_session(tmp_path, active):
+    context = SimpleNamespace(session_id="active")
+
+    class App:
+        sessions = {
+            "idle": SimpleNamespace(retiring=None),
+            "active": SimpleNamespace(retiring=None),
+        }
+        service = SimpleNamespace(active=(context, None), poisoned=False)
+
+        async def __call__(self, scope, receive, send):
+            selected = "active" if active else "idle"
+
+            async def retire():
+                await asyncio.sleep(0)
+                self.sessions.pop(selected)
+                if active:
+                    self.service.active = None
+
+            self.sessions[selected].retiring = asyncio.create_task(retire())
+            await send({"type": "http.response.start", "status": 200})
+            await send({"type": "http.response.body", "body": b""})
+
+    path = tmp_path / "audit"
+    app = observer.ObserveHTTP(App(), path)
+
+    async def noop(*args):
+        return {}
+
+    async def scenario():
+        await app(
+            {
+                "type": "http",
+                "method": "DELETE",
+                "headers": [(b"mcp-session-id", b"active" if active else b"idle")],
+            },
+            noop,
+            noop,
+        )
+        rows = checker.records(path)
+        assert rows[-1]["event"] == "settled" and rows[-1]["sessions"] == 2
+        record = app.app.sessions["active" if active else "idle"]
+        await record.retiring
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    rows = checker.records(path)
+    assert [r["event"] for r in rows] == ["delete_requested", "response", "settled", "retired"]
+    assert len({r["exchange"] for r in rows}) == 1
+    assert rows[-1]["session_registered"] is False and rows[-1]["sessions"] == 1
+    assert rows[-1]["active_session"] == (None if active else observer.digest(b"active".hex()))
+
+
+@pytest.mark.parametrize(
+    "status,payload",
+    [
+        (200, {"error": {"message": "internal error", "type": "api_error"}}),
+        (500, {"choices": []}),
+        (503, {"error": {"message": "internal error", "type": "api_error"}}),
+        (500, {"error": {"message": "different error", "type": "api_error"}}),
+        (500, {"error": {"message": "internal error", "type": "different"}}),
+        (500, None),
+    ],
+)
+def test_deleted_turn_rejects_success_or_unrelated_gateway_errors(status, payload):
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_deleted_turn(status, payload)
+
+
+def test_deleted_turn_requires_pinned_gateway_abort_projection():
+    assert (
+        lifecycle.verify_deleted_turn(
+            500, {"error": {"message": "internal error", "type": "api_error"}}
+        )
+        == 500
+    )
+
+
+@pytest.mark.parametrize("method", ["DELETE", "GET", "POST"])
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_observer_preserves_non_ascii_session_rejection(
+    tmp_path, monkeypatch, method, authenticated
+):
+    monkeypatch.syspath_prepend(str(FIXTURES.parents[1] / "samples/experimental/openclaw_bicep"))
+    workload_http = importlib.import_module("workload_http")
+
+    service = SimpleNamespace(ready=True, poisoned=False, active=None)
+    token = "a" * 64
+    app = workload_http.WorkloadHTTP(service, token, 8765)
+    path = tmp_path / "audit"
+    observed = observer.ObserveHTTP(app, path)
+    headers = [(b"host", app.host), (b"mcp-session-id", b"bad-\xff")]
+    if authenticated:
+        headers.append((b"authorization", app.authorization))
+    scope = {"type": "http", "method": method, "path": "/mcp", "headers": headers}
+
+    async def scenario():
+        async def receive():
+            raise AssertionError("Rejected headers must not read the body")
+
+        responses = []
+        for handler in [app, observed]:
+            messages = []
+
+            async def send(message):
+                messages.append(message)
+
+            await handler(scope, receive, send)
+            responses.append(messages)
+        assert responses[0] == responses[1]
+        assert responses[1][0]["status"] == (404 if authenticated else 401)
+        assert app.sessions == {} and service.active is None and not service.poisoned
+
+    asyncio.run(scenario())
+    rows = checker.records(path)
+    assert rows[-1]["event"] == "settled"
+    assert not any(row["event"] == "retired" for row in rows)
+    assert all(row.get("session") == observer.digest(b"bad-\xff".hex()) for row in rows)

@@ -287,7 +287,7 @@ The executed service, provider, baseline checker and Docker helper retained the 
 | Work | State | Tracking |
 |---|---|---|
 | Bicep host qualification | One-session stdio and bounded two-session HTTP Gateway paths qualified with a deterministic provider; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
-| Multiple Gateway sessions | Two-session HTTP outcomes, Gateway-abort cancellation, bounded reload/restart, withheld-result behavior, active-service crash reconciliation, startup cleanup refusal and post-completion resource cleanup refusal qualified on recorded candidates; recovery after refusal includes explicit service/Gateway restarts. Automatic discovery recovery, actual Docker cleanup failures, selective retirement and the remaining matrix stay open | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Multiple Gateway sessions | Two-session HTTP outcomes, Gateway-abort cancellation, bounded reload/restart, withheld-result behavior, active-service crash reconciliation, startup cleanup refusal, post-completion resource cleanup refusal and selective active/idle session deletion qualified on recorded candidates; recovery after refusal includes explicit service/Gateway restarts. Automatic discovery recovery, actual Docker cleanup failures, other retirement triggers, registry saturation/churn and the remaining matrix stay open | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
 
 
 ## Startup cleanup refusal and explicit Gateway recovery (2026-10-06)
@@ -359,3 +359,43 @@ This selected post-completion confirmation fault does not establish retained-con
 
 
 Local verification passed the full gate (15,469 tests passed, 908 skipped), the focused qualification/HTTP/prototype suite (353 passed, four opt-in live cases skipped), and all four of those opt-in Docker cases in a separate execution. The live selection reported 22 passes because it also includes 18 offline setup/cleanup variants. The live cases cover HTTP MAF cancellation/owned recovery, the published-dependency HTTP smoke, stdio compiler outcomes and active-compiler cancellation/owned recovery. Workspace checks and the published-dependency service remain separate evidence classes. Final documentation checks passed 224 structure tests, Markdown examples, all 20 sample dependency-floor checks and 226 live tracker references. These are local results; hosted CI is recorded on the delivering PR.
+
+
+## Selective Gateway session retirement: bounded design (2026-10-07)
+
+The next case uses the pinned Gateway's public `sessions.delete` RPC, invoked by its own CLI against the isolated loopback configuration. The checker selects exact generated HTTP session keys from `sessions.list` and supplies `expectedSessionId`; it never deletes a default session or operates outside its private Gateway. In OpenClaw 2026.9.7, session deletion drains active work before `cleanupSessionBeforeMutation` requests MCP runtime retirement. This source path motivates the test; it is not runtime evidence.
+
+After the existing 26-dispatch sequence, A begins a long compilation. Deleting idle B must produce an accepted, correlated MCP DELETE and remove only B's server registration while the exact compiler and A's active slot survive, with no cancellation notification. A fresh B session must receive busy without another container. Deleting active A must then produce matching accepted MCP cancellation and a targeted DELETE, remove the exact compiler and A's registration, and preserve B's replacement session for successful later work. A newly submitted call in A must establish a fresh MCP session. The selected sequence requires exactly 30 tool dispatches and no service or Gateway restart during these deletions. Other disposal triggers, registry saturation/churn, automatic discovery recovery and the remaining matrix stay open.
+
+
+## Selective idle and active session deletion: live result (2026-10-07)
+
+The complete lifecycle sequence passed on clean candidate `59bc3e5e50b4ae509a3e62649231520d3eee7500`, using the same pinned OpenClaw 2026.9.7, published Python dependencies, prepared compiler image and configuration recorded above. The report SHA-256 is `ccb2ca8e61ef23635a28194604bc9715d2eb25a559984f10ec7c571c38c3722f`. It records exactly 30 tool dispatches and retains `complete_matrix: false`.
+
+| Check | Observed result |
+|---|---|
+| Idle B deletion | The public `sessions.delete` RPC acknowledged the selected logical session. Its MCP DELETE returned HTTP 200, the registration finished retiring, and only A remained registered. A's exact compiler and active slot survived; no cancellation notification was sent |
+| B reconnects while A runs | B established a fresh MCP session and received busy without creating another container or disturbing A's compiler |
+| Active A deletion | Gateway delivered cancellation for A's exact MCP request/session and received HTTP 202, then sent a targeted DELETE. A's registration finished retiring, its exact compiler container disappeared, and B's replacement registration survived |
+| Aborted HTTP turn | The pinned Gateway returned HTTP 500 with `api_error` / `internal error`; the provider received no projected workload result for that turn. The error alone is not cancellation evidence: the checker separately requires correlated accepted cancellation and exact-container removal |
+| Subsequent work | B completed a valid call using the same replacement MCP session; a new call in A completed using a fresh MCP session |
+| Ownership and shutdown | Both deletions used the same Gateway/service processes and unchanged owner-file bytes. The unrelated sentinel survived, exactly 30 dispatches remained through shutdown, and independent inspection found zero owned containers and fixture processes |
+
+MCP DELETE acceptance and registry removal are separate events. The service retains the registration until active work, SDK processing and HTTP handlers drain. The observer attaches a completion callback to the existing retirement task and records registry/active-slot state after it finishes; it does not change retirement behavior or await cleanup in the HTTP response path. The checker bounds its wait for that event to 30 seconds and verifies the selected session, exchange, process boot, timestamps, completed retirement task and surviving registration. No production service or binding code changed.
+
+Two preceding attempts produced no success report. Candidate `bbe0d8f3` incorrectly expected registration removal at HTTP response completion; the real response still carried the retiring record while asynchronous cleanup continued. Candidate `009d1551` passed both selective retirement checks but incorrectly expected HTTP 200 for the aborted chat turn. Inspection of the pinned Gateway's non-streaming error handler confirmed the generic HTTP 500 projection. Both attempts cleaned up completely. The successful candidate separates acceptance from retirement and pins that abort response while retaining the independent cancellation, resource and no-result checks.
+
+Reproduce with the lifecycle command above and a fresh private root. Retain `retirement-idle.json` (SHA-256 `52feaf828fee67ccc80122ec965c9a8ea5056206426753eafe203abd4ee25b91`) and `retirement-active.json` (SHA-256 `5f7915869ac9d64105be30d0c3a66fd24844e2569af080c5a24af285e5d55bfb`) alongside the lifecycle report and existing private provider/transport evidence. Earlier 21- and 26-dispatch reports remain historical evidence for their named candidates. Credentials, host paths and raw session/container identities remain private.
+
+The changed fixtures' executed LF bytes match Git at the successful candidate; other source identities remain unchanged from the completed-call cleanup execution above.
+
+| Changed source | Executed and Git-LF SHA-256 |
+|---|---|
+| `openclaw_gateway_lifecycle_check.py` | `73694a733849230310b9239c1e820e5086957b4e349a1e4cbb2669e037509195` |
+| `openclaw_http_observer.py` | `e0758505a8d6863fa77904d1a34d5d3b9ed6112b01345f421609733057b2604c` |
+
+This qualifies the selected public session-deletion trigger only. Other Gateway retirement triggers, registry saturation/churn, actual Docker removal/daemon failures, automatic discovery recovery and the remaining real-host transport/MAF combinations stay open in [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676). The provider remains deterministic; actual-model retries, host crashes, an independent watchdog and unattended operation remain unqualified. Separate live MAF/stdio cases were not rerun for this fixtures-and-evidence-only change.
+
+The corrected evidence suite passed 304 tests; final documentation structure/path checks passed 381 tests. Markdown examples and 228 live documentation tracker references passed. These offline checks validate the checker and documentation separately from the real Gateway/Docker execution. Full local gate and hosted CI results are recorded on the delivering PR.
+
+A subsequent observer-only correction decodes session headers with replacement, matching the wrapped HTTP adapter. Offline regressions compare the actual adapter and observed responses for DELETE, GET and POST with a non-ASCII session header: authenticated requests retain HTTP 404 and unauthenticated requests retain HTTP 401, with no registry allocation or retirement event. The focused suite now passes 310 tests. The full live lifecycle was not rerun for this malformed-header correction; the successful live evidence and hashes above remain tied to candidate `59bc3e5e50b4ae509a3e62649231520d3eee7500`.
