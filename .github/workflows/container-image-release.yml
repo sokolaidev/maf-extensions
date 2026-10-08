@@ -60,12 +60,17 @@ jobs:
       - name: Require explicit enablement and protected main
         env:
           ENABLED: ${{ vars.CONTAINER_IMAGE_RELEASES_ENABLED }}
+          RELEASE_APP_CONFIGURED: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID != '' && secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY != '' }}
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
           OPERATION: ${{ inputs.operation }}
           REASON: ${{ inputs.reason }}
         run: |
           test "$ENABLED" = true
+          if [ "$RELEASE_APP_CONFIGURED" != true ]; then
+            echo 'Configure CONTAINER_RELEASE_APP_CLIENT_ID and CONTAINER_RELEASE_APP_PRIVATE_KEY before dispatching.'
+            exit 1
+          fi
           uv run --locked python - <<'PY'
           import os
           import sys
@@ -187,8 +192,20 @@ jobs:
         with:
           name: selected-image
           path: ${{ runner.temp }}/candidate
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
       - name: Commit pre-write registration
         id: reserve
+        env:
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: uv run --locked python scripts/container_release_publish.py reserve --directory "$RUNNER_TEMP/candidate"
 
   promote:
@@ -317,8 +334,20 @@ jobs:
             artifact=qualified-image-evidence
           fi
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir "$RUNNER_TEMP/candidate"
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
       - name: Retain evidence and commit completion before signing
         id: completion
+        env:
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: uv run --locked python scripts/container_release_publish.py complete --directory "$RUNNER_TEMP/candidate"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -400,7 +429,19 @@ jobs:
         with:
           name: completion-delivery
           path: ${{ runner.temp }}/candidate
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
       - name: Verify and publish immutable evidence, then acknowledge delivery
+        env:
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: uv run --locked python scripts/container_release_publish.py deliver --directory "$RUNNER_TEMP/candidate"
       - name: Announce verified delivery
         env:
@@ -427,8 +468,19 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
       - name: Permanently retire an incomplete version
         env:
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
           REASON: ${{ inputs.reason }}
@@ -453,8 +505,19 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Create repository-scoped release-writing token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-workflows: write
       - name: Retire the version whose retained OCI bytes are irrecoverable
         env:
+          CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
         run: |
