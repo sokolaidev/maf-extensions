@@ -1935,3 +1935,44 @@ def test_observer_registry_snapshot_reads_sdk_counts_and_redacts_identity(tmp_pa
     record.get_active = False
     row = observed.registry_snapshot()["sessions"][0]
     assert not row["sdk_running"] and row["sdk_streams"] == row["requests"] == 0
+
+
+@pytest.mark.parametrize("mutation", [None, "host", "dependency", "source", "missing_startup"])
+def test_shared_environment_check_pins_host_dependencies_and_loaded_sources(tmp_path, mutation):
+    host = tmp_path / "host"
+    host.mkdir()
+    (host / "package.json").write_text(
+        json.dumps({"version": "wrong" if mutation == "host" else "2026.9.7"})
+    )
+    repo = FIXTURES.parents[1]
+    versions = {
+        "maf-sandbox": "0.46.0",
+        "maf-sandbox-bicep": "0.22.0",
+        "maf-sandbox-docker": "0.24.4",
+        "mcp": "1.28.1",
+        "agent-framework-core": "1.19.0",
+        "uvicorn": "0.54.0",
+    }
+    startup = {
+        "event": "startup",
+        "versions": versions,
+        "source_hashes": {
+            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in [
+                *sorted((repo / "samples/experimental/openclaw_bicep").glob("*.py")),
+                FIXTURES / "openclaw_http_observer.py",
+            ]
+        },
+    }
+    if mutation == "dependency":
+        versions["mcp"] = "wrong"
+    if mutation == "source":
+        startup["source_hashes"]["openclaw_http_observer.py"] = "wrong"
+    evidence = tmp_path / "transport"
+    evidence.write_text("" if mutation == "missing_startup" else json.dumps(startup) + "\n")
+    args = SimpleNamespace(openclaw=host, transport_evidence=evidence)
+    if mutation is None:
+        assert checker.verify_environment(args) == {"openclaw": "2026.9.7", "versions": versions}
+    else:
+        with pytest.raises(RuntimeError):
+            checker.verify_environment(args)

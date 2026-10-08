@@ -29,12 +29,14 @@ from openclaw_gateway_http_check import (
     require,
     verify_busy,
     verify_dispatch_count,
+    verify_environment,
     verify_outcome,
 )
 from openclaw_http_observer import resolve_image
 
 REGISTRY_LIMIT = 8
 CHURN_CYCLES = 3
+REGISTRY_DISPATCHES = REGISTRY_LIMIT + CHURN_CYCLES + (REGISTRY_LIMIT - 1)
 LIFECYCLE_DISPATCHES = 30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1)
 
 
@@ -601,6 +603,9 @@ def verify_churn_retirement(evidence, boot: str, target: str, requested_ns: int)
 
 
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
+    case = getattr(args, "case", "lifecycle")
+    require(case in {"lifecycle", "registry"}, "Unknown qualification case")
+    dispatches = REGISTRY_DISPATCHES if case == "registry" else LIFECYCLE_DISPATCHES
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[2]
@@ -655,7 +660,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     image = resolve_image(args.image)
     digest = hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
     processes: list[subprocess.Popen] = []
-    report: dict[str, Any] = {"complete_matrix": False, "image": image}
+    report: dict[str, Any] = {"case": case, "complete_matrix": False, "image": image}
     with ExitStack() as stack:
 
         def start(name: str, command: list[str], environment=None):
@@ -830,9 +835,6 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 openclaw=args.openclaw,
                 image=image,
             )
-            report["two_session_baseline"] = check(baseline_args)
-            verify_dispatch_count(records(transport), BASELINE_DISPATCHES)
-            expected_calls = BASELINE_DISPATCHES
             sentinel = docker(
                 "run",
                 "-d",
@@ -846,479 +848,6 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 "-c",
                 "sleep 1800",
             )
-            old = [turn(index)[0] for index in range(2)]
-            require(len(set(old)) == 2, "Lifecycle sessions are not distinct")
-            drop_file.touch()
-            _, report["unknown_outcome"] = turn(0, loss=True)
-            print(
-                "Completed result withheld; Gateway reported transport failure without replay",
-                flush=True,
-            )
-
-            before = len(records(transport))
-            endpoint["requestTimeoutMs"] += 1000
-            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-            wait_for(
-                lambda: all(
-                    any(
-                        r.get("event") == "response"
-                        and r.get("method") == "DELETE"
-                        and r.get("session") == sid
-                        and r.get("status") == 200
-                        for r in records(transport)[before:]
-                    )
-                    for sid in old
-                ),
-                "Reload did not retire both idle MCP sessions",
-            )
-            require(gateway_process.poll() is None, "Configuration reload exited the Gateway")
-            fresh = [turn(index)[0] for index in range(2)]
-            require(
-                not set(fresh) & set(old) and len(set(fresh)) == 2, "Reload reused retired sessions"
-            )
-            report["config_reload"] = {
-                "accepted_deletes": 2,
-                "fresh_sessions": 2,
-                "same_gateway_process": True,
-            }
-            print("Configuration reload retired both sessions and reconnected", flush=True)
-
-            gateway_process.kill()
-            gateway_process.wait(timeout=30)
-            gateway_process = gateway()
-            gateway_ready(gateway_process)
-            restarted = [turn(index)[0] for index in range(2)]
-            require(
-                not set(restarted) & set(fresh + old) and len(set(restarted)) == 2,
-                "Gateway restart reused MCP sessions",
-            )
-            report["gateway_restart"] = {
-                "mode": "idle-process-kill-and-relaunch",
-                "fresh_sessions": 2,
-            }
-            print("Gateway process restart reconnected both logical sessions", flush=True)
-
-            probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
-            try:
-                probe.request(
-                    "POST",
-                    "/mcp",
-                    json.dumps(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "initialize",
-                            "params": {
-                                "protocolVersion": "2025-03-26",
-                                "capabilities": {},
-                                "clientInfo": {"name": "lifecycle-stale-probe", "version": "1"},
-                            },
-                        }
-                    ),
-                    {
-                        "Authorization": "Bearer " + service_token,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json, text/event-stream",
-                    },
-                )
-                response = probe.getresponse()
-                response.read()
-                stale_session = response.getheader("mcp-session-id") or ""
-                require(
-                    response.status == 200 and stale_session,
-                    "Stale-session probe did not initialize",
-                )
-            finally:
-                probe.close()
-            owner_before = owner_file.read_bytes()
-            stop_file.touch()
-            require(service_process.wait(timeout=90) == 0, "Service shutdown failed")
-            shutdown = [r for r in records(transport) if r.get("event") == "shutdown"]
-            require(
-                len(shutdown) == 1
-                and shutdown[0].get("sessions") == 0
-                and shutdown[0].get("active") is False
-                and shutdown[0].get("poisoned") is False,
-                "Service did not drain cleanly",
-            )
-            require(not owned(), "Owned resource survived service shutdown")
-            service_process = service()
-            service_ready(service_process)
-            require(owner_file.read_bytes() == owner_before, "Service changed its recovery owner")
-            probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
-            try:
-                probe.request(
-                    "GET",
-                    "/mcp",
-                    headers={
-                        "Authorization": "Bearer " + service_token,
-                        "mcp-session-id": stale_session,
-                        "Accept": "text/event-stream",
-                    },
-                )
-                response = probe.getresponse()
-                response.read()
-                require(
-                    response.status == 404, "Service accepted a session from its previous process"
-                )
-            finally:
-                probe.close()
-            startups = [r for r in records(transport) if r.get("event") == "startup"]
-            require(
-                len(startups) == 2
-                and startups[0]["boot"] != startups[1]["boot"]
-                and startups[0]["source_hashes"] == startups[1]["source_hashes"]
-                and startups[0]["versions"] == startups[1]["versions"],
-                "Restart changed service code or dependency identity",
-            )
-            after_restart = [turn(index)[0] for index in range(2)]
-            require(
-                not set(after_restart) & set(restarted + fresh + old)
-                and len(set(after_restart)) == 2,
-                "Service restart reused stale sessions",
-            )
-            report["service_restart"] = {
-                "retained_owner": True,
-                "stale_session_status": 404,
-                "clean_shutdown": True,
-                "fresh_sessions": 2,
-            }
-            before_crash = len(records(transport))
-            crash_boot = startups[-1]["boot"]
-            connection, crash_turn = begin_turn(0, "cancel")
-            crashed_container = None
-            try:
-
-                def active_compiler():
-                    candidates = owned()
-                    if len(candidates) == 1 and "bicep" in docker(
-                        "top", candidates[0], "-eo", "pid,comm"
-                    ):
-                        return candidates[0]
-                    return None
-
-                crashed_container = wait_for(active_compiler, "No active compiler before crash", 60)
-                crash_file.touch()
-                require(service_process.wait(timeout=30) == 86, "Service did not exit abruptly")
-                require(
-                    owned() == [crashed_container]
-                    and "bicep" in docker("top", crashed_container, "-eo", "pid,comm"),
-                    "Compiler container did not survive service death",
-                )
-                survivor_observed = time.time_ns()
-                # Freeze the orphan so natural completion cannot masquerade as recovery.
-                docker("pause", crashed_container)
-                response = connection.getresponse()
-                response.read()
-                require(response.status == 200, "Gateway did not settle the crashed turn")
-                projected = projected_result(records(provider), crash_turn, "cancel")
-                crash_evidence = records(transport)[before_crash:]
-                report["active_service_crash"] = verify_crash(crash_evidence, projected)
-                expected_calls += 1
-                verify_dispatch_count(records(transport), expected_calls)
-                require(
-                    requests(crash_evidence)[0]["session"] == after_restart[0]
-                    and requests(crash_evidence)[0]["boot"] == crash_boot,
-                    "Crash affected another session or service process",
-                )
-                require(owner_file.read_bytes() == owner_before, "Crash changed retained ownership")
-                require(
-                    docker("ps", "-q", "--filter", f"id={sentinel}"),
-                    "Crash removed the unrelated owner",
-                )
-                require(
-                    docker("inspect", "--format", "{{.State.Paused}}", crashed_container) == "true"
-                    and owned() == [crashed_container],
-                    "Orphan did not remain frozen until replacement startup",
-                )
-                before_refusal = len(records(transport))
-                refusal_file.write_text(crashed_container, encoding="ascii")
-                service_process = service()
-                exit_code = service_process.wait(timeout=90)
-                refused_startups = [
-                    r for r in records(transport)[before_refusal:] if r.get("event") == "startup"
-                ]
-                require(len(refused_startups) == 1, "Missing refused replacement startup")
-                refused_startup = refused_startups[0]
-                require(
-                    refused_startup["boot"] != crash_boot
-                    and refused_startup["source_hashes"] == startups[-1]["source_hashes"]
-                    and refused_startup["versions"] == startups[-1]["versions"],
-                    "Refused startup changed code or dependencies",
-                )
-                refused_projections = []
-                for index in range(2):
-                    refused_connection, refused_turn = begin_turn(index, "valid")
-                    try:
-                        response = refused_connection.getresponse()
-                        response.read()
-                        require(response.status == 200, "Gateway did not settle refused work")
-                    finally:
-                        refused_connection.close()
-                    refused_projections.append(
-                        projected_result(records(provider), refused_turn, "valid")
-                    )
-                with socket.socket() as probe:
-                    listener_closed = probe.connect_ex(("127.0.0.1", service_url.port)) in {
-                        errno.ECONNREFUSED,
-                        10061,
-                    }
-                refused_observation = {
-                    "boot": refused_startup["boot"],
-                    "container": crashed_container,
-                    "exit_code": exit_code,
-                    "paused": docker("inspect", "--format", "{{.State.Paused}}", crashed_container)
-                    == "true",
-                    "sole_owned": owned() == [crashed_container],
-                    "owner_unchanged": owner_file.read_bytes() == owner_before,
-                    "listener_closed": listener_closed,
-                    "sentinel_preserved": bool(docker("ps", "-q", "--filter", f"id={sentinel}")),
-                    "time_ns": time.time_ns(),
-                }
-                refusal_evidence = records(transport)[before_refusal:]
-                report["startup_cleanup_refusal"] = verify_cleanup_refusal(
-                    refusal_evidence,
-                    refused_startup["boot"],
-                    crashed_container,
-                    refused_observation,
-                    refused_projections,
-                )
-                verify_dispatch_count(records(transport), expected_calls)
-                (root / "cleanup-refusal.json").write_text(
-                    json.dumps({"transport": refusal_evidence, "observed": refused_observation}),
-                    encoding="utf-8",
-                )
-                print(
-                    "Unconfirmed startup cleanup refused readiness and both Gateway turns",
-                    flush=True,
-                )
-                refusal_file.unlink()
-                service_process = service()
-                recovery_evidence = []
-
-                def recovered():
-                    require(service_process.poll() is None, "Replacement service exited")
-                    started = [
-                        r
-                        for r in records(transport)[before_crash:]
-                        if r.get("event") == "startup_ready"
-                    ]
-                    if not started:
-                        return False
-                    require(
-                        len(started) == 1 and started[0].get("owner_empty") is True,
-                        "Replacement advertised readiness before owned cleanup",
-                    )
-                    require(
-                        not docker("ps", "-aq", "--filter", f"id={crashed_container}")
-                        and not owned(),
-                        "Owned resource survived replacement startup",
-                    )
-                    recovery_evidence.extend(started)
-                    recovery_evidence.append(
-                        {
-                            "event": "recovery_observed",
-                            "container": crashed_container,
-                            "absent": True,
-                            "owner_empty": True,
-                            "time_ns": time.time_ns(),
-                        }
-                    )
-                    return True
-
-                wait_for(recovered, "Replacement did not reconcile retained resources")
-                service_ready(service_process)
-                startup = [r for r in records(transport) if r.get("event") == "startup"][-1]
-                require(
-                    startup["boot"] not in {crash_boot, refused_startup["boot"]}
-                    and startup["source_hashes"] == startups[-1]["source_hashes"]
-                    and startup["versions"] == startups[-1]["versions"],
-                    "Crash recovery changed service code or dependency identity",
-                )
-                recovery_evidence[1]["boot"] = startup["boot"]
-                recovery_evidence.append(
-                    {
-                        "event": "ready_observed",
-                        "boot": startup["boot"],
-                        "status": 200,
-                        "time_ns": time.time_ns(),
-                    }
-                )
-                verify_recovery(recovery_evidence, startup["boot"], crashed_container)
-                require(
-                    owner_file.read_bytes() == owner_before, "Recovery changed retained ownership"
-                )
-                # Rebuild the Gateway catalog after discovery failed against the stopped service.
-                gateway_process.kill()
-                gateway_process.wait(timeout=30)
-                gateway_process = gateway()
-                gateway_ready(gateway_process)
-                recovered_sessions = [turn(index)[0] for index in range(2)]
-                require(
-                    len(set(recovered_sessions)) == 2
-                    and not set(recovered_sessions) & set(after_restart + restarted + fresh + old),
-                    "Crash recovery reused previous MCP sessions",
-                )
-                report["startup_cleanup_refusal"].update(
-                    fault_removed=True,
-                    gateway_recovery="explicit-idle-process-restart",
-                    retained_owner=True,
-                    recovery_before_readiness=True,
-                    fresh_sessions=2,
-                )
-                report["active_service_crash"].update(
-                    compiler_survived=True,
-                    survivor_paused_before_recovery=True,
-                    retained_owner=True,
-                    startup_cleanup=True,
-                    cleanup_before_readiness=True,
-                    fresh_sessions=2,
-                    recovery_seconds=(recovery_evidence[1]["time_ns"] - survivor_observed) / 1e9,
-                )
-                (root / "recovery.json").write_text(json.dumps(recovery_evidence), encoding="utf-8")
-                print(
-                    "Active-service crash left a compiler; retained-owner startup removed it",
-                    flush=True,
-                )
-            finally:
-                connection.close()
-                # Failed qualification must not leave its deliberately orphaned compiler behind.
-                if crashed_container and docker("ps", "-aq", "--filter", f"id={crashed_container}"):
-                    docker("rm", "-f", crashed_container)
-            before_completed = len(records(transport))
-            completed_refusal_file.touch()
-            failed_connection, failed_turn = begin_turn(0, "valid")
-            try:
-                response = failed_connection.getresponse()
-                response.read()
-                require(response.status == 200, "Gateway did not settle cleanup failure")
-            finally:
-                failed_connection.close()
-            completed_evidence = records(transport)[before_completed:]
-            failed_projection = projected_result(records(provider), failed_turn, "valid")
-            report["completed_call_cleanup"] = verify_completed_cleanup(
-                completed_evidence,
-                failed_projection,
-                digest,
-                image,
-            )
-            expected_calls += 1
-            require(
-                requests(completed_evidence)[0]["session"] == recovered_sessions[0],
-                "Completed cleanup affected another session",
-            )
-            require(
-                not owned() and owner_file.read_bytes() == owner_before,
-                "Completed cleanup changed ownership or left resources",
-            )
-            completed_refusal_file.unlink()
-            before_poisoned = len(records(transport))
-            poisoned_projections = []
-            for index in range(2):
-                blocked_connection, blocked_turn = begin_turn(index, "valid")
-                try:
-                    response = blocked_connection.getresponse()
-                    response.read()
-                    require(response.status == 200, "Gateway did not settle poisoned turn")
-                finally:
-                    blocked_connection.close()
-                poisoned_projections.append(
-                    projected_result(records(provider), blocked_turn, "valid")
-                )
-            poisoned_evidence = records(transport)[before_poisoned:]
-            verify_poisoned_turns(
-                poisoned_evidence, poisoned_projections, recovered_sessions, startup["boot"]
-            )
-            expected_calls += 2
-            verify_dispatch_count(records(transport), expected_calls)
-            probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
-            try:
-                probe.request("GET", "/ready", headers={"Authorization": "Bearer " + service_token})
-                response = probe.getresponse()
-                response.read()
-                require(response.status == 503, "Poisoned service advertised readiness")
-            finally:
-                probe.close()
-            require(
-                not owned()
-                and owner_file.read_bytes() == owner_before
-                and docker("ps", "-q", "--filter", f"id={sentinel}"),
-                "Poisoned service changed ownership or unrelated resources",
-            )
-            stop_file.touch()
-            require(
-                service_process.wait(timeout=90) == 1, "Poisoned observer did not report failure"
-            )
-            shutdown = [
-                r for r in records(transport)[before_completed:] if r.get("event") == "shutdown"
-            ]
-            require(
-                len(shutdown) == 1
-                and shutdown[0].get("boot") == startup["boot"]
-                and shutdown[0].get("poisoned") is True
-                and shutdown[0].get("active") is False
-                and shutdown[0].get("sessions") == 0,
-                "Poisoned service did not drain sessions",
-            )
-            before_clean_restart = len(records(transport))
-            service_process = service()
-            service_ready(service_process)
-            new_start = [
-                r for r in records(transport)[before_clean_restart:] if r.get("event") == "startup"
-            ]
-            new_ready = [
-                r
-                for r in records(transport)[before_clean_restart:]
-                if r.get("event") == "startup_ready"
-            ]
-            require(
-                len(new_start) == len(new_ready) == 1
-                and new_start[0]["boot"] != startup["boot"]
-                and new_start[0]["source_hashes"] == startup["source_hashes"]
-                and new_start[0]["versions"] == startup["versions"]
-                and new_ready[0].get("boot") == new_start[0]["boot"]
-                and new_ready[0].get("owner_empty") is True
-                and owner_file.read_bytes() == owner_before
-                and not owned(),
-                "Completed-call recovery changed identity or advertised readiness before cleanup",
-            )
-            gateway_process.kill()
-            gateway_process.wait(timeout=30)
-            gateway_process = gateway()
-            gateway_ready(gateway_process)
-            final_sessions = [turn(index)[0] for index in range(2)]
-            require(
-                len(set(final_sessions)) == 2
-                and not set(final_sessions)
-                & set(recovered_sessions + after_restart + restarted + fresh + old),
-                "Completed-call recovery reused stale MCP sessions",
-            )
-            report["completed_call_cleanup"].update(
-                fault_removed_before_probes=True,
-                gateway_turns_refused=2,
-                readiness_status=503,
-                retained_owner=True,
-                poisoned_shutdown_exit=1,
-                fresh_sessions=2,
-                gateway_recovery="explicit-idle-process-restart",
-            )
-            (root / "completed-cleanup.json").write_text(
-                json.dumps(
-                    {
-                        "transport": completed_evidence,
-                        "projected": failed_projection,
-                        "poisoned_transport": poisoned_evidence,
-                        "poisoned_projections": poisoned_projections,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            print(
-                "Completed-call cleanup refusal suppressed success; both sessions stayed blocked until restart",
-                flush=True,
-            )
-
-            assert gateway_process is not None and service_process is not None
 
             def rpc(method, params):
                 operation = subprocess.run(
@@ -1354,133 +883,652 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 require(isinstance(value, dict), "Gateway session RPC returned no object")
                 return value
 
-            targets = [
-                retirement_target(rpc("sessions.list", {"limit": 50}), name) for name in names
-            ]
-            before_retirement = len(records(transport))
-            pending, retirement_turn = begin_turn(0, "cancel")
-            try:
-                container = wait_for(
-                    active_compiler, "No active compiler before selective retirement", 60
+            if case == "registry":
+                report["environment"] = verify_environment(baseline_args)
+                owner_before = owner_file.read_bytes()
+                new_active, replacement = (turn(index)[0] for index in range(2))
+                require(new_active != replacement, "Registry sessions are not distinct")
+            else:
+                report["two_session_baseline"] = check(baseline_args)
+                verify_dispatch_count(records(transport), BASELINE_DISPATCHES)
+                expected_calls = BASELINE_DISPATCHES
+                old = [turn(index)[0] for index in range(2)]
+                require(len(set(old)) == 2, "Lifecycle sessions are not distinct")
+                drop_file.touch()
+                _, report["unknown_outcome"] = turn(0, loss=True)
+                print(
+                    "Completed result withheld; Gateway reported transport failure without replay",
+                    flush=True,
                 )
-                active_calls = requests(records(transport)[before_retirement:])
+
+                before = len(records(transport))
+                endpoint["requestTimeoutMs"] += 1000
+                config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+                wait_for(
+                    lambda: all(
+                        any(
+                            r.get("event") == "response"
+                            and r.get("method") == "DELETE"
+                            and r.get("session") == sid
+                            and r.get("status") == 200
+                            for r in records(transport)[before:]
+                        )
+                        for sid in old
+                    ),
+                    "Reload did not retire both idle MCP sessions",
+                )
+                require(gateway_process.poll() is None, "Configuration reload exited the Gateway")
+                fresh = [turn(index)[0] for index in range(2)]
                 require(
-                    len(active_calls) == 1 and active_calls[0]["session"] == final_sessions[0],
-                    "Retirement did not start in the selected MCP session",
+                    not set(fresh) & set(old) and len(set(fresh)) == 2,
+                    "Reload reused retired sessions",
                 )
-                active_call = active_calls[0]
-                expected_calls += 1
-                retirement_reports = {}
-                sessions = list(final_sessions)
-                replacement = ""
-                for label, index in [("idle", 1), ("active", 0)]:
-                    before_delete = len(records(transport))
-                    requested_ns = time.time_ns()
-                    deleted = rpc("sessions.delete", targets[index])
-                    acknowledged_ns = time.time_ns()
-                    require(
-                        deleted.get("ok") is True
-                        and deleted.get("deleted") is True
-                        and deleted.get("key") == targets[index]["key"],
-                        "Gateway did not acknowledge deletion of the selected session",
-                    )
-                    wait_for(
-                        lambda: any(
-                            r.get("event") == "retired" and r.get("session") == sessions[index]
-                            for r in records(transport)[before_delete:]
+                report["config_reload"] = {
+                    "accepted_deletes": 2,
+                    "fresh_sessions": 2,
+                    "same_gateway_process": True,
+                }
+                print("Configuration reload retired both sessions and reconnected", flush=True)
+
+                gateway_process.kill()
+                gateway_process.wait(timeout=30)
+                gateway_process = gateway()
+                gateway_ready(gateway_process)
+                restarted = [turn(index)[0] for index in range(2)]
+                require(
+                    not set(restarted) & set(fresh + old) and len(set(restarted)) == 2,
+                    "Gateway restart reused MCP sessions",
+                )
+                report["gateway_restart"] = {
+                    "mode": "idle-process-kill-and-relaunch",
+                    "fresh_sessions": 2,
+                }
+                print("Gateway process restart reconnected both logical sessions", flush=True)
+
+                probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
+                try:
+                    probe.request(
+                        "POST",
+                        "/mcp",
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "initialize",
+                                "params": {
+                                    "protocolVersion": "2025-03-26",
+                                    "capabilities": {},
+                                    "clientInfo": {"name": "lifecycle-stale-probe", "version": "1"},
+                                },
+                            }
                         ),
-                        "Selected MCP registration did not finish retiring",
-                        30,
+                        {
+                            "Authorization": "Bearer " + service_token,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json, text/event-stream",
+                        },
                     )
-                    absent = not docker("ps", "-aq", "--filter", f"id={container}")
-                    observation = {
-                        "requested_ns": requested_ns,
-                        "acknowledged_ns": acknowledged_ns,
-                        "deleted": True,
-                        "same_gateway": gateway_process.poll() is None,
-                        "same_service": service_process.poll() is None,
+                    response = probe.getresponse()
+                    response.read()
+                    stale_session = response.getheader("mcp-session-id") or ""
+                    require(
+                        response.status == 200 and stale_session,
+                        "Stale-session probe did not initialize",
+                    )
+                finally:
+                    probe.close()
+                owner_before = owner_file.read_bytes()
+                stop_file.touch()
+                require(service_process.wait(timeout=90) == 0, "Service shutdown failed")
+                shutdown = [r for r in records(transport) if r.get("event") == "shutdown"]
+                require(
+                    len(shutdown) == 1
+                    and shutdown[0].get("sessions") == 0
+                    and shutdown[0].get("active") is False
+                    and shutdown[0].get("poisoned") is False,
+                    "Service did not drain cleanly",
+                )
+                require(not owned(), "Owned resource survived service shutdown")
+                service_process = service()
+                service_ready(service_process)
+                require(
+                    owner_file.read_bytes() == owner_before, "Service changed its recovery owner"
+                )
+                probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
+                try:
+                    probe.request(
+                        "GET",
+                        "/mcp",
+                        headers={
+                            "Authorization": "Bearer " + service_token,
+                            "mcp-session-id": stale_session,
+                            "Accept": "text/event-stream",
+                        },
+                    )
+                    response = probe.getresponse()
+                    response.read()
+                    require(
+                        response.status == 404,
+                        "Service accepted a session from its previous process",
+                    )
+                finally:
+                    probe.close()
+                startups = [r for r in records(transport) if r.get("event") == "startup"]
+                require(
+                    len(startups) == 2
+                    and startups[0]["boot"] != startups[1]["boot"]
+                    and startups[0]["source_hashes"] == startups[1]["source_hashes"]
+                    and startups[0]["versions"] == startups[1]["versions"],
+                    "Restart changed service code or dependency identity",
+                )
+                after_restart = [turn(index)[0] for index in range(2)]
+                require(
+                    not set(after_restart) & set(restarted + fresh + old)
+                    and len(set(after_restart)) == 2,
+                    "Service restart reused stale sessions",
+                )
+                report["service_restart"] = {
+                    "retained_owner": True,
+                    "stale_session_status": 404,
+                    "clean_shutdown": True,
+                    "fresh_sessions": 2,
+                }
+                before_crash = len(records(transport))
+                crash_boot = startups[-1]["boot"]
+                connection, crash_turn = begin_turn(0, "cancel")
+                crashed_container = None
+                try:
+
+                    def active_compiler():
+                        candidates = owned()
+                        if len(candidates) == 1 and "bicep" in docker(
+                            "top", candidates[0], "-eo", "pid,comm"
+                        ):
+                            return candidates[0]
+                        return None
+
+                    crashed_container = wait_for(
+                        active_compiler, "No active compiler before crash", 60
+                    )
+                    crash_file.touch()
+                    require(service_process.wait(timeout=30) == 86, "Service did not exit abruptly")
+                    require(
+                        owned() == [crashed_container]
+                        and "bicep" in docker("top", crashed_container, "-eo", "pid,comm"),
+                        "Compiler container did not survive service death",
+                    )
+                    survivor_observed = time.time_ns()
+                    # Freeze the orphan so natural completion cannot masquerade as recovery.
+                    docker("pause", crashed_container)
+                    response = connection.getresponse()
+                    response.read()
+                    require(response.status == 200, "Gateway did not settle the crashed turn")
+                    projected = projected_result(records(provider), crash_turn, "cancel")
+                    crash_evidence = records(transport)[before_crash:]
+                    report["active_service_crash"] = verify_crash(crash_evidence, projected)
+                    expected_calls += 1
+                    verify_dispatch_count(records(transport), expected_calls)
+                    require(
+                        requests(crash_evidence)[0]["session"] == after_restart[0]
+                        and requests(crash_evidence)[0]["boot"] == crash_boot,
+                        "Crash affected another session or service process",
+                    )
+                    require(
+                        owner_file.read_bytes() == owner_before, "Crash changed retained ownership"
+                    )
+                    require(
+                        docker("ps", "-q", "--filter", f"id={sentinel}"),
+                        "Crash removed the unrelated owner",
+                    )
+                    require(
+                        docker("inspect", "--format", "{{.State.Paused}}", crashed_container)
+                        == "true"
+                        and owned() == [crashed_container],
+                        "Orphan did not remain frozen until replacement startup",
+                    )
+                    before_refusal = len(records(transport))
+                    refusal_file.write_text(crashed_container, encoding="ascii")
+                    service_process = service()
+                    exit_code = service_process.wait(timeout=90)
+                    refused_startups = [
+                        r
+                        for r in records(transport)[before_refusal:]
+                        if r.get("event") == "startup"
+                    ]
+                    require(len(refused_startups) == 1, "Missing refused replacement startup")
+                    refused_startup = refused_startups[0]
+                    require(
+                        refused_startup["boot"] != crash_boot
+                        and refused_startup["source_hashes"] == startups[-1]["source_hashes"]
+                        and refused_startup["versions"] == startups[-1]["versions"],
+                        "Refused startup changed code or dependencies",
+                    )
+                    refused_projections = []
+                    for index in range(2):
+                        refused_connection, refused_turn = begin_turn(index, "valid")
+                        try:
+                            response = refused_connection.getresponse()
+                            response.read()
+                            require(response.status == 200, "Gateway did not settle refused work")
+                        finally:
+                            refused_connection.close()
+                        refused_projections.append(
+                            projected_result(records(provider), refused_turn, "valid")
+                        )
+                    with socket.socket() as probe:
+                        listener_closed = probe.connect_ex(("127.0.0.1", service_url.port)) in {
+                            errno.ECONNREFUSED,
+                            10061,
+                        }
+                    refused_observation = {
+                        "boot": refused_startup["boot"],
+                        "container": crashed_container,
+                        "exit_code": exit_code,
+                        "paused": docker(
+                            "inspect", "--format", "{{.State.Paused}}", crashed_container
+                        )
+                        == "true",
+                        "sole_owned": owned() == [crashed_container],
                         "owner_unchanged": owner_file.read_bytes() == owner_before,
+                        "listener_closed": listener_closed,
                         "sentinel_preserved": bool(
                             docker("ps", "-q", "--filter", f"id={sentinel}")
                         ),
-                        "exact_container_absent": absent,
-                        "compiler_survived": not absent
-                        and owned() == [container]
-                        and "bicep" in docker("top", container, "-eo", "pid,comm"),
+                        "time_ns": time.time_ns(),
                     }
-                    observation["observed_ns"] = time.time_ns()
-                    evidence = records(transport)[before_delete:]
-                    retirement_reports[label] = verify_retirement(
-                        evidence,
-                        sessions[index],
-                        sessions[1 - index],
-                        active_call,
-                        observation,
-                        active=label == "active",
+                    refusal_evidence = records(transport)[before_refusal:]
+                    report["startup_cleanup_refusal"] = verify_cleanup_refusal(
+                        refusal_evidence,
+                        refused_startup["boot"],
+                        crashed_container,
+                        refused_observation,
+                        refused_projections,
                     )
-                    (root / ("retirement-" + label + ".json")).write_text(
+                    verify_dispatch_count(records(transport), expected_calls)
+                    (root / "cleanup-refusal.json").write_text(
                         json.dumps(
-                            {"transport": evidence, "call": active_call, "observed": observation}
+                            {"transport": refusal_evidence, "observed": refused_observation}
                         ),
                         encoding="utf-8",
                     )
-                    if label == "idle":
-                        before_busy = len(records(transport))
-                        busy_connection, busy_turn = begin_turn(1, "valid")
-                        try:
-                            response = busy_connection.getresponse()
-                            response.read()
-                            require(
-                                response.status == 200, "Replacement session did not settle busy"
-                            )
-                        finally:
-                            busy_connection.close()
-                        verify_busy(projected_result(records(provider), busy_turn, "valid"))
-                        busy_calls = requests(records(transport)[before_busy:])
+                    print(
+                        "Unconfirmed startup cleanup refused readiness and both Gateway turns",
+                        flush=True,
+                    )
+                    refusal_file.unlink()
+                    service_process = service()
+                    recovery_evidence = []
+
+                    def recovered():
+                        require(service_process.poll() is None, "Replacement service exited")
+                        started = [
+                            r
+                            for r in records(transport)[before_crash:]
+                            if r.get("event") == "startup_ready"
+                        ]
+                        if not started:
+                            return False
                         require(
-                            len(busy_calls) == 1
-                            and busy_calls[0].get("session")
-                            and busy_calls[0]["session"] not in final_sessions,
-                            "Deleted idle session reused its retired MCP identity",
+                            len(started) == 1 and started[0].get("owner_empty") is True,
+                            "Replacement advertised readiness before owned cleanup",
                         )
-                        replacement = busy_calls[0]["session"]
-                        sessions[1] = replacement
-                        expected_calls += 1
-                        verify_dispatch_count(records(transport), expected_calls)
                         require(
-                            owned() == [container]
-                            and "bicep" in docker("top", container, "-eo", "pid,comm"),
-                            "Idle deletion or replacement disturbed the active compiler",
+                            not docker("ps", "-aq", "--filter", f"id={crashed_container}")
+                            and not owned(),
+                            "Owned resource survived replacement startup",
                         )
-                response = pending.getresponse()
-                retirement_reports["aborted_turn_http_status"] = verify_deleted_turn(
-                    response.status, json.loads(response.read())
+                        recovery_evidence.extend(started)
+                        recovery_evidence.append(
+                            {
+                                "event": "recovery_observed",
+                                "container": crashed_container,
+                                "absent": True,
+                                "owner_empty": True,
+                                "time_ns": time.time_ns(),
+                            }
+                        )
+                        return True
+
+                    wait_for(recovered, "Replacement did not reconcile retained resources")
+                    service_ready(service_process)
+                    startup = [r for r in records(transport) if r.get("event") == "startup"][-1]
+                    require(
+                        startup["boot"] not in {crash_boot, refused_startup["boot"]}
+                        and startup["source_hashes"] == startups[-1]["source_hashes"]
+                        and startup["versions"] == startups[-1]["versions"],
+                        "Crash recovery changed service code or dependency identity",
+                    )
+                    recovery_evidence[1]["boot"] = startup["boot"]
+                    recovery_evidence.append(
+                        {
+                            "event": "ready_observed",
+                            "boot": startup["boot"],
+                            "status": 200,
+                            "time_ns": time.time_ns(),
+                        }
+                    )
+                    verify_recovery(recovery_evidence, startup["boot"], crashed_container)
+                    require(
+                        owner_file.read_bytes() == owner_before,
+                        "Recovery changed retained ownership",
+                    )
+                    # Rebuild the Gateway catalog after discovery failed against the stopped service.
+                    gateway_process.kill()
+                    gateway_process.wait(timeout=30)
+                    gateway_process = gateway()
+                    gateway_ready(gateway_process)
+                    recovered_sessions = [turn(index)[0] for index in range(2)]
+                    require(
+                        len(set(recovered_sessions)) == 2
+                        and not set(recovered_sessions)
+                        & set(after_restart + restarted + fresh + old),
+                        "Crash recovery reused previous MCP sessions",
+                    )
+                    report["startup_cleanup_refusal"].update(
+                        fault_removed=True,
+                        gateway_recovery="explicit-idle-process-restart",
+                        retained_owner=True,
+                        recovery_before_readiness=True,
+                        fresh_sessions=2,
+                    )
+                    report["active_service_crash"].update(
+                        compiler_survived=True,
+                        survivor_paused_before_recovery=True,
+                        retained_owner=True,
+                        startup_cleanup=True,
+                        cleanup_before_readiness=True,
+                        fresh_sessions=2,
+                        recovery_seconds=(recovery_evidence[1]["time_ns"] - survivor_observed)
+                        / 1e9,
+                    )
+                    (root / "recovery.json").write_text(
+                        json.dumps(recovery_evidence), encoding="utf-8"
+                    )
+                    print(
+                        "Active-service crash left a compiler; retained-owner startup removed it",
+                        flush=True,
+                    )
+                finally:
+                    connection.close()
+                    # Failed qualification must not leave its deliberately orphaned compiler behind.
+                    if crashed_container and docker(
+                        "ps", "-aq", "--filter", f"id={crashed_container}"
+                    ):
+                        docker("rm", "-f", crashed_container)
+                before_completed = len(records(transport))
+                completed_refusal_file.touch()
+                failed_connection, failed_turn = begin_turn(0, "valid")
+                try:
+                    response = failed_connection.getresponse()
+                    response.read()
+                    require(response.status == 200, "Gateway did not settle cleanup failure")
+                finally:
+                    failed_connection.close()
+                completed_evidence = records(transport)[before_completed:]
+                failed_projection = projected_result(records(provider), failed_turn, "valid")
+                report["completed_call_cleanup"] = verify_completed_cleanup(
+                    completed_evidence,
+                    failed_projection,
+                    digest,
+                    image,
+                )
+                expected_calls += 1
+                require(
+                    requests(completed_evidence)[0]["session"] == recovered_sessions[0],
+                    "Completed cleanup affected another session",
                 )
                 require(
-                    not any(
-                        r.get("turn") == retirement_turn and "tool_result" in r
-                        for r in records(provider)
+                    not owned() and owner_file.read_bytes() == owner_before,
+                    "Completed cleanup changed ownership or left resources",
+                )
+                completed_refusal_file.unlink()
+                before_poisoned = len(records(transport))
+                poisoned_projections = []
+                for index in range(2):
+                    blocked_connection, blocked_turn = begin_turn(index, "valid")
+                    try:
+                        response = blocked_connection.getresponse()
+                        response.read()
+                        require(response.status == 200, "Gateway did not settle poisoned turn")
+                    finally:
+                        blocked_connection.close()
+                    poisoned_projections.append(
+                        projected_result(records(provider), blocked_turn, "valid")
+                    )
+                poisoned_evidence = records(transport)[before_poisoned:]
+                verify_poisoned_turns(
+                    poisoned_evidence, poisoned_projections, recovered_sessions, startup["boot"]
+                )
+                expected_calls += 2
+                verify_dispatch_count(records(transport), expected_calls)
+                probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
+                try:
+                    probe.request(
+                        "GET", "/ready", headers={"Authorization": "Bearer " + service_token}
+                    )
+                    response = probe.getresponse()
+                    response.read()
+                    require(response.status == 503, "Poisoned service advertised readiness")
+                finally:
+                    probe.close()
+                require(
+                    not owned()
+                    and owner_file.read_bytes() == owner_before
+                    and docker("ps", "-q", "--filter", f"id={sentinel}"),
+                    "Poisoned service changed ownership or unrelated resources",
+                )
+                stop_file.touch()
+                require(
+                    service_process.wait(timeout=90) == 1,
+                    "Poisoned observer did not report failure",
+                )
+                shutdown = [
+                    r for r in records(transport)[before_completed:] if r.get("event") == "shutdown"
+                ]
+                require(
+                    len(shutdown) == 1
+                    and shutdown[0].get("boot") == startup["boot"]
+                    and shutdown[0].get("poisoned") is True
+                    and shutdown[0].get("active") is False
+                    and shutdown[0].get("sessions") == 0,
+                    "Poisoned service did not drain sessions",
+                )
+                before_clean_restart = len(records(transport))
+                service_process = service()
+                service_ready(service_process)
+                new_start = [
+                    r
+                    for r in records(transport)[before_clean_restart:]
+                    if r.get("event") == "startup"
+                ]
+                new_ready = [
+                    r
+                    for r in records(transport)[before_clean_restart:]
+                    if r.get("event") == "startup_ready"
+                ]
+                require(
+                    len(new_start) == len(new_ready) == 1
+                    and new_start[0]["boot"] != startup["boot"]
+                    and new_start[0]["source_hashes"] == startup["source_hashes"]
+                    and new_start[0]["versions"] == startup["versions"]
+                    and new_ready[0].get("boot") == new_start[0]["boot"]
+                    and new_ready[0].get("owner_empty") is True
+                    and owner_file.read_bytes() == owner_before
+                    and not owned(),
+                    "Completed-call recovery changed identity or advertised readiness before cleanup",
+                )
+                gateway_process.kill()
+                gateway_process.wait(timeout=30)
+                gateway_process = gateway()
+                gateway_ready(gateway_process)
+                final_sessions = [turn(index)[0] for index in range(2)]
+                require(
+                    len(set(final_sessions)) == 2
+                    and not set(final_sessions)
+                    & set(recovered_sessions + after_restart + restarted + fresh + old),
+                    "Completed-call recovery reused stale MCP sessions",
+                )
+                report["completed_call_cleanup"].update(
+                    fault_removed_before_probes=True,
+                    gateway_turns_refused=2,
+                    readiness_status=503,
+                    retained_owner=True,
+                    poisoned_shutdown_exit=1,
+                    fresh_sessions=2,
+                    gateway_recovery="explicit-idle-process-restart",
+                )
+                (root / "completed-cleanup.json").write_text(
+                    json.dumps(
+                        {
+                            "transport": completed_evidence,
+                            "projected": failed_projection,
+                            "poisoned_transport": poisoned_evidence,
+                            "poisoned_projections": poisoned_projections,
+                        }
                     ),
-                    "Deleted active turn projected a workload result",
+                    encoding="utf-8",
                 )
-                require(not owned(), "Owned resource survived active-session deletion")
-                require(turn(1)[0] == replacement, "Active deletion retired the other MCP session")
-                new_active = turn(0)[0]
-                require(
-                    new_active not in [*final_sessions, replacement],
-                    "Deleted active session reused a retired MCP identity",
-                )
-                retirement_reports["fresh_calls"] = {
-                    "other_session_reused": True,
-                    "deleted_session_reconnected": True,
-                }
-                report["selective_retirement"] = retirement_reports
                 print(
-                    "Idle and active Gateway session deletion retired only the selected MCP runtimes",
+                    "Completed-call cleanup refusal suppressed success; both sessions stayed blocked until restart",
                     flush=True,
                 )
-            finally:
-                pending.close()
+
+                assert gateway_process is not None and service_process is not None
+
+                targets = [
+                    retirement_target(rpc("sessions.list", {"limit": 50}), name) for name in names
+                ]
+                before_retirement = len(records(transport))
+                pending, retirement_turn = begin_turn(0, "cancel")
+                try:
+                    container = wait_for(
+                        active_compiler, "No active compiler before selective retirement", 60
+                    )
+                    active_calls = requests(records(transport)[before_retirement:])
+                    require(
+                        len(active_calls) == 1 and active_calls[0]["session"] == final_sessions[0],
+                        "Retirement did not start in the selected MCP session",
+                    )
+                    active_call = active_calls[0]
+                    expected_calls += 1
+                    retirement_reports = {}
+                    sessions = list(final_sessions)
+                    replacement = ""
+                    for label, index in [("idle", 1), ("active", 0)]:
+                        before_delete = len(records(transport))
+                        requested_ns = time.time_ns()
+                        deleted = rpc("sessions.delete", targets[index])
+                        acknowledged_ns = time.time_ns()
+                        require(
+                            deleted.get("ok") is True
+                            and deleted.get("deleted") is True
+                            and deleted.get("key") == targets[index]["key"],
+                            "Gateway did not acknowledge deletion of the selected session",
+                        )
+                        wait_for(
+                            lambda: any(
+                                r.get("event") == "retired" and r.get("session") == sessions[index]
+                                for r in records(transport)[before_delete:]
+                            ),
+                            "Selected MCP registration did not finish retiring",
+                            30,
+                        )
+                        absent = not docker("ps", "-aq", "--filter", f"id={container}")
+                        observation = {
+                            "requested_ns": requested_ns,
+                            "acknowledged_ns": acknowledged_ns,
+                            "deleted": True,
+                            "same_gateway": gateway_process.poll() is None,
+                            "same_service": service_process.poll() is None,
+                            "owner_unchanged": owner_file.read_bytes() == owner_before,
+                            "sentinel_preserved": bool(
+                                docker("ps", "-q", "--filter", f"id={sentinel}")
+                            ),
+                            "exact_container_absent": absent,
+                            "compiler_survived": not absent
+                            and owned() == [container]
+                            and "bicep" in docker("top", container, "-eo", "pid,comm"),
+                        }
+                        observation["observed_ns"] = time.time_ns()
+                        evidence = records(transport)[before_delete:]
+                        retirement_reports[label] = verify_retirement(
+                            evidence,
+                            sessions[index],
+                            sessions[1 - index],
+                            active_call,
+                            observation,
+                            active=label == "active",
+                        )
+                        (root / ("retirement-" + label + ".json")).write_text(
+                            json.dumps(
+                                {
+                                    "transport": evidence,
+                                    "call": active_call,
+                                    "observed": observation,
+                                }
+                            ),
+                            encoding="utf-8",
+                        )
+                        if label == "idle":
+                            before_busy = len(records(transport))
+                            busy_connection, busy_turn = begin_turn(1, "valid")
+                            try:
+                                response = busy_connection.getresponse()
+                                response.read()
+                                require(
+                                    response.status == 200,
+                                    "Replacement session did not settle busy",
+                                )
+                            finally:
+                                busy_connection.close()
+                            verify_busy(projected_result(records(provider), busy_turn, "valid"))
+                            busy_calls = requests(records(transport)[before_busy:])
+                            require(
+                                len(busy_calls) == 1
+                                and busy_calls[0].get("session")
+                                and busy_calls[0]["session"] not in final_sessions,
+                                "Deleted idle session reused its retired MCP identity",
+                            )
+                            replacement = busy_calls[0]["session"]
+                            sessions[1] = replacement
+                            expected_calls += 1
+                            verify_dispatch_count(records(transport), expected_calls)
+                            require(
+                                owned() == [container]
+                                and "bicep" in docker("top", container, "-eo", "pid,comm"),
+                                "Idle deletion or replacement disturbed the active compiler",
+                            )
+                    response = pending.getresponse()
+                    retirement_reports["aborted_turn_http_status"] = verify_deleted_turn(
+                        response.status, json.loads(response.read())
+                    )
+                    require(
+                        not any(
+                            r.get("turn") == retirement_turn and "tool_result" in r
+                            for r in records(provider)
+                        ),
+                        "Deleted active turn projected a workload result",
+                    )
+                    require(not owned(), "Owned resource survived active-session deletion")
+                    require(
+                        turn(1)[0] == replacement, "Active deletion retired the other MCP session"
+                    )
+                    new_active = turn(0)[0]
+                    require(
+                        new_active not in [*final_sessions, replacement],
+                        "Deleted active session reused a retired MCP identity",
+                    )
+                    retirement_reports["fresh_calls"] = {
+                        "other_session_reused": True,
+                        "deleted_session_reconnected": True,
+                    }
+                    report["selective_retirement"] = retirement_reports
+                    print(
+                        "Idle and active Gateway session deletion retired only the selected MCP runtimes",
+                        flush=True,
+                    )
+                finally:
+                    pending.close()
             registry_start = len(records(transport))
             registry_boot = records(transport)[-1]["boot"]
             registry_sessions = [new_active, replacement]
@@ -1613,9 +1661,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             )
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
             report["other_owner_preserved"] = True
-            report["total_dispatches"] = verify_dispatch_count(
-                records(transport), LIFECYCLE_DISPATCHES
-            )
+            report["total_dispatches"] = verify_dispatch_count(records(transport), dispatches)
             report["remaining"] = [
                 "other Gateway retirement triggers, idle expiry and prolonged/concurrent churn",
                 "Docker cleanup/daemon failures and remaining interruption cases",
@@ -1638,12 +1684,12 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         require(not owned(), "Owner resources remain after fixture shutdown")
         final = [r for r in records(transport) if r.get("event") == "shutdown"]
         require(
-            len(final) == 3
-            and [r.get("poisoned") for r in final] == [False, True, False]
+            [r.get("poisoned") for r in final]
+            == ([False] if case == "registry" else [False, True, False])
             and all(r.get("sessions") == 0 and r.get("active") is False for r in final),
             "Final service shutdown was not clean",
         )
-        verify_dispatch_count(records(transport), LIFECYCLE_DISPATCHES)
+        verify_dispatch_count(records(transport), dispatches)
         for port in ports:
             with socket.socket() as probe:
                 require(
@@ -1663,7 +1709,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             *sorted(Path(__file__).parent.glob("openclaw_*.py")),
         ]
     }
-    (root / "lifecycle-report.json").write_text(
+    (root / ("registry-report.json" if case == "registry" else "lifecycle-report.json")).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
     return report
@@ -1674,6 +1720,7 @@ def main():
     for name in ("root", "config", "bicep-config", "openclaw"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--case", choices=["lifecycle", "registry"], default="lifecycle")
     print(json.dumps(qualify(parser.parse_args()), indent=2))
 
 
