@@ -24,8 +24,8 @@
     },
     "lib/devfs/stdout.c": {
       "before": "ed8efbfc87d49f03aa0135018a8712885794b6198773271087c439339b3cdc0d",
-      "after": "7e24c91928290baba818b7b908218b6873a21e3f65944ed76c1a87e9af3e54cc"
+      "after": "d5768d27457d208083803f3ac7b3c32c0f1edcfdfd55536a3505087c7964ef9b"
     }
   },
-  "patch_sha256": "7e22d6860410eba101cbefbfabd84a2d0539e66aed0960df6e45169a79edc17b"
+  "patch_sha256": "94b2d0786ad516ee929b1393456e46c73cb8f3f813996f73a4f37a1919c4c435"
 }

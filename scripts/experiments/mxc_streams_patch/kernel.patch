@@ -187,22 +187,10 @@
  /* TODO: Some consoles require both a newline and a carriage return to
   * go to the start of the next line. This kind of behavior should be in
   * a single place in posix-tty. We keep this workaround until we have feature
-@@ -95,11 +101,33 @@
+@@ -95,11 +101,40 @@
  	return 0;
  }
  
-+#else
-+static int __stream_write(void *dst, void *src, size_t *cnt)
-+{
-+	const struct uk_file *file = dst;
-+	struct iovec iov = { .iov_base = src, .iov_len = *cnt };
-+	ssize_t ret = file->ops->write(file, &iov, 1, 0, 0);
-+
-+	if (ret < 0)
-+		return -ret;
-+	*cnt = ret;
-+	return 0;
-+}
 +#endif
 +
  /* One function for stderr and stdout */
@@ -213,15 +201,34 @@
 +	const struct uk_file *file = !strcmp(dev->name, "stderr") ?
 +		&uk_file_hl_stderr : &uk_file_hl_stdout;
 +
-+	return vfscore_uioforeach(__stream_write, (void *)file,
-+				 uio->uio_resid, uio);
++	while (uio->uio_resid && uio->uio_iovcnt) {
++		struct iovec *iov = uio->uio_iov;
++		struct iovec part = *iov;
++		ssize_t written;
++
++		if (!iov->iov_len) {
++			uio->uio_iov++;
++			uio->uio_iovcnt--;
++			continue;
++		}
++		if (part.iov_len > uio->uio_resid)
++			part.iov_len = uio->uio_resid;
++		written = file->ops->write(file, &part, 1, 0, 0);
++		if (written <= 0)
++			return written < 0 ? -written : EIO;
++		iov->iov_base = (char *)iov->iov_base + written;
++		iov->iov_len -= written;
++		uio->uio_resid -= written;
++		uio->uio_offset += written;
++	}
++	return 0;
 +#else
  	return vfscore_uioforeach(__write_fn, NULL, uio->uio_resid, uio);
 +#endif
  }
  
  static int dev_stdout_read(struct device *dev __unused, struct uio *uio,
-@@ -138,6 +166,11 @@
+@@ -138,6 +173,11 @@
  			  DEV_STDOUT_NAME, rc);
  		return -rc;
  	}

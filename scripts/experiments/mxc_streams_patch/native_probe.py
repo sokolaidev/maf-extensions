@@ -88,6 +88,17 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
         (b"out", b"redirectederr"),
     )
     check(
+        "reopened-writev",
+        "import os\na=os.open('/dev/stdout',os.O_WRONLY)\nb=os.open('/dev/stderr',os.O_WRONLY)\nos.writev(a,[b'one',b'\\0',b'two'])\nos.writev(b,[b'err',b'\\xff',b'end'])\nos.write(a,b'next')\nos.close(a)\nos.close(b)",
+        (b"one\0twonext", b"err\xffend"),
+    )
+    check(
+        "reopened-overflow",
+        f"import os\na=os.open('/dev/stdout',os.O_WRONLY)\nb=os.open('/dev/stderr',os.O_WRONLY)\nassert os.write(a,b'A'*{CHUNK + 1})=={CHUNK + 1}\nassert os.write(b,b'B'*{CHUNK + 2})=={CHUNK + 2}\nos.close(a)\nos.close(b)",
+        (b"A" * CHUNK, b"B" * CHUNK),
+        (1, 2),
+    )
+    check(
         "concurrent",
         "import os,threading\na=threading.Thread(target=lambda: [os.write(1,b'A'*4097) for _ in range(10)])\nb=threading.Thread(target=lambda: [os.write(2,b'B'*4097) for _ in range(10)])\na.start(); b.start(); a.join(); b.join()",
         (b"A" * 40970, b"B" * 40970),
