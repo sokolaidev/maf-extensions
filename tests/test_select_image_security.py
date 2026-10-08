@@ -150,6 +150,40 @@ def test_build_input_mapping(path, expected):
     assert list(affected(path)) == expected
 
 
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "images/bicep-sandbox/README.md",
+        "images/sbx-template/README.md",
+        "images/graphviz-sandbox/README.md",
+        "images/drawio-export/README.md",
+        "images/terraform-sandbox/README.md",
+        "images/hyperlight-sandbox/README.md",
+    ],
+)
+def test_consumer_guide_changes_do_not_select_image_builds(repository, event, path):
+    root, base = repository
+    head = commit(root, {path: "Updated consumer instructions"})
+    assert select(root, event, base, head)[0] == []
+
+
+def test_consumer_guide_does_not_hide_image_or_unknown_document_changes(repository):
+    root, base = repository
+    head = commit(
+        root,
+        {
+            "images/graphviz-sandbox/README.md": "Updated instructions",
+            "images/graphviz-sandbox/Dockerfile": "FROM new-base",
+            "images/drawio-export/assets/help.md": "Bundled help",
+        },
+    )
+    assert select(root, "push", base, head)[0] == ["graphviz", "drawio-export"]
+    assert affected("images/new-image/README.md") == PROFILES
+    assert affected("images/graphviz-sandbox/assets/README.md") == ("graphviz",)
+    assert affected("packages/maf-sandbox/README.md") == ("hyperlight",)
+
+
 def test_deleted_image_input_and_new_profile_both_select_scans(repository):
     root, _ = repository
     base = commit(root, {"images/drawio-export/old.py": "old"})

@@ -40,6 +40,15 @@ IMAGE_INPUTS = {
     "images/hyperlight-sandbox/": ("hyperlight",),
     "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/": ("egress-proxy",),
 }
+# These exact consumer guides are not consumed by the image recipes or build helpers.
+CONSUMER_GUIDES = {
+    "images/bicep-sandbox/README.md",
+    "images/sbx-template/README.md",
+    "images/graphviz-sandbox/README.md",
+    "images/drawio-export/README.md",
+    "images/terraform-sandbox/README.md",
+    "images/hyperlight-sandbox/README.md",
+}
 SCRIPT_INPUTS = {
     "scripts/terraform_dependencies.py": ("terraform-prepared", "opentofu-prepared"),
     "scripts/build_bicep_prepared_image.py": ("bicep-prepared",),
@@ -110,6 +119,8 @@ def metadata_only(root: Path, base: str, head: str, paths: list[str]) -> set[str
 
 def affected(path: str) -> tuple[str, ...]:
     """Map known build inputs; shared and unknown image tooling selects every profile."""
+    if path in CONSUMER_GUIDES:
+        return ()
     if path in SHARED_INPUTS:
         return PROFILES
     if path in SCRIPT_INPUTS:
