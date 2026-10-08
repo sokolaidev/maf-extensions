@@ -985,7 +985,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 and owner_file.read_bytes() == owner_bytes
                 and not owned()
                 and docker("ps", "-q", "--filter", f"id={sentinel}"),
-                "Registry churn changed ownership, processes or container isolation",
+                "Registry observation found changed ownership, processes or container isolation",
             )
             return verified
 
