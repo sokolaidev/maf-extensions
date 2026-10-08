@@ -2028,12 +2028,12 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
     lifecycle.verify_churn_retirement([*churn_evidence(), notification], "boot", "target", 1)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle"])
+@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable"])
 @pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None])
 def test_final_shutdown_requires_zero_process_exit(case, exit_code):
     evidence = [
         {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
-        for poisoned in ([False] if case == "registry" else [False, True, False])
+        for poisoned in ([False, True, False] if case == "lifecycle" else [False])
     ]
     if exit_code == 0:
         lifecycle.verify_final_shutdown(evidence, case, exit_code)
@@ -2042,12 +2042,12 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
             lifecycle.verify_final_shutdown(evidence, case, exit_code)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle"])
+@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable"])
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "poisoned", "sessions", "active"])
 def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutation):
     evidence = [
         {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
-        for poisoned in ([False] if case == "registry" else [False, True, False])
+        for poisoned in ([False, True, False] if case == "lifecycle" else [False])
     ]
     if mutation == "missing":
         evidence.pop()
@@ -2204,3 +2204,66 @@ def test_discovery_refresh_requires_fresh_correlated_idle_exchanges(mutation):
     else:
         with pytest.raises(RuntimeError):
             lifecycle.verify_discovery_refresh(evidence, "boot", {"previous"}, 1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "status",
+        "payload",
+        "service_not_started",
+        "port_closed_before",
+        "port_closed_after",
+        "owner_absent",
+        "transport_absent",
+        "provider_seen",
+        "catalog_error",
+    ],
+)
+def test_initially_unavailable_turn_requires_independent_absence_and_no_provider(mutation):
+    status = 500
+    payload = {"error": {"message": "internal error", "type": "api_error"}}
+    observed = {
+        "service_not_started": True,
+        "port_closed_before": True,
+        "port_closed_after": True,
+        "owner_absent": True,
+        "transport_absent": True,
+        "provider_seen": False,
+        "catalog_error": True,
+    }
+    if mutation == "status":
+        status = 200
+    elif mutation == "payload":
+        payload = {}
+    elif mutation:
+        observed[mutation] = not observed[mutation]
+    if mutation is None:
+        lifecycle.verify_unavailable_turn(status, payload, observed)
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_unavailable_turn(status, payload, observed)
+
+
+@pytest.mark.parametrize("count", [1, 2, 8, 0, 9])
+def test_discovery_refresh_pins_expected_registry_count(count):
+    evidence = discovery_refresh_evidence()
+    for event in evidence:
+        if event["event"] == "settled":
+            event["sessions"] = count
+    if 0 < count <= 8:
+        assert (
+            lifecycle.verify_discovery_refresh(evidence, "boot", set(), 1, expected_count=count)
+            == "fresh"
+        )
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_discovery_refresh(evidence, "boot", set(), 1, expected_count=count)
+
+
+def test_startup_discovery_rejects_an_unexpected_extra_registration():
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_discovery_refresh(
+            discovery_refresh_evidence(), "boot", set(), 1, expected_count=1
+        )
