@@ -137,6 +137,27 @@ def qualify(root: Path, report: dict, mode: str) -> None:
     build(root)
     report["helper_sha256"] = digest(helper(root))
     report["lock_sha256"] = digest(ROOT / "Cargo.lock")
+    for name, source in (
+        ("capture", root / "runtime/src/output_capture.rs"),
+        (
+            "storage-budget",
+            root / "host/src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs",
+        ),
+    ):
+        executable = root / (f"{name}-tests.exe" if sys.platform == "win32" else f"{name}-tests")
+        run(
+            root,
+            f"compile-{name}-tests",
+            "rustc",
+            "+1.98.0",
+            "--edition",
+            "2024",
+            "--test",
+            str(source),
+            "-o",
+            str(executable),
+        )
+        run(root, f"{name}-tests", str(executable))
     run(
         root,
         "prepare-agent",

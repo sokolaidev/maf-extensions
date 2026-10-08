@@ -542,7 +542,9 @@ jobs:
       - name: Build and qualify the MXC 1.0 migration
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
         shell: bash
-        run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_v1_patch.qualification_runner --root "$RUNNER_TEMP/mxc-v1" --mode "${{ inputs.mxc_v1 }}"
+        env:
+          MXC_V1_MODE: ${{ inputs.mxc_v1 }}
+        run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_v1_patch.qualification_runner --root "$RUNNER_TEMP/mxc-v1" --mode "$MXC_V1_MODE"
       - name: Retain qualification reports and logs
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
