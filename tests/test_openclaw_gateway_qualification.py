@@ -2026,3 +2026,38 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
     notification = {"boot": "boot", "event": "request", "method": "notifications/cancelled"}
     lifecycle.verify_registry_refusal([*capacity_evidence(), notification], "boot")
     lifecycle.verify_churn_retirement([*churn_evidence(), notification], "boot", "target", 1)
+
+
+@pytest.mark.parametrize("case", ["registry", "lifecycle"])
+@pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None])
+def test_final_shutdown_requires_zero_process_exit(case, exit_code):
+    evidence = [
+        {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
+        for poisoned in ([False] if case == "registry" else [False, True, False])
+    ]
+    if exit_code == 0:
+        lifecycle.verify_final_shutdown(evidence, case, exit_code)
+    else:
+        with pytest.raises(RuntimeError, match="Final service shutdown was not clean"):
+            lifecycle.verify_final_shutdown(evidence, case, exit_code)
+
+
+@pytest.mark.parametrize("case", ["registry", "lifecycle"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "poisoned", "sessions", "active"])
+def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutation):
+    evidence = [
+        {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
+        for poisoned in ([False] if case == "registry" else [False, True, False])
+    ]
+    if mutation == "missing":
+        evidence.pop()
+    elif mutation == "duplicate":
+        evidence.append(evidence[-1].copy())
+    elif mutation == "poisoned":
+        evidence[-1]["poisoned"] = True
+    elif mutation == "sessions":
+        evidence[-1]["sessions"] = 1
+    else:
+        evidence[-1]["active"] = True
+    with pytest.raises(RuntimeError, match="Final service shutdown was not clean"):
+        lifecycle.verify_final_shutdown(evidence, case, 0)

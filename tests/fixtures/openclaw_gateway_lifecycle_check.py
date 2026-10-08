@@ -635,6 +635,18 @@ def verify_catalog_refusal(status, payload, evidence, observed) -> dict[str, Any
     }
 
 
+def verify_final_shutdown(evidence, case: str, exit_code: int | None) -> None:
+    """Require drained service state and successful process exit before reporting cleanup."""
+    final = [r for r in evidence if r.get("event") == "shutdown"]
+    require(
+        exit_code == 0
+        and [r.get("poisoned") for r in final]
+        == ([False] if case == "registry" else [False, True, False])
+        and all(r.get("sessions") == 0 and r.get("active") is False for r in final),
+        "Final service shutdown was not clean",
+    )
+
+
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
     case = getattr(args, "case", "lifecycle")
     require(case in {"lifecycle", "registry"}, "Unknown qualification case")
@@ -1745,12 +1757,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             if sentinel:
                 docker("rm", "-f", sentinel)
         require(not owned(), "Owner resources remain after fixture shutdown")
-        final = [r for r in records(transport) if r.get("event") == "shutdown"]
-        require(
-            [r.get("poisoned") for r in final]
-            == ([False] if case == "registry" else [False, True, False])
-            and all(r.get("sessions") == 0 and r.get("active") is False for r in final),
-            "Final service shutdown was not clean",
+        verify_final_shutdown(
+            records(transport), case, service_process.returncode if service_process else None
         )
         verify_dispatch_count(records(transport), dispatches)
         for port in ports:

@@ -439,3 +439,5 @@ All eight executed Python source hashes match Git bytes at the successful candid
 | `openclaw_http_observer.py` | `80246424d3450df7696245282a387ce0f767020511d475212f9ea5417e122349` |
 
 The full local gate passed 16,915 tests with 909 skipped, plus lint, formatting, package/root type checks, documentation paths and implicit-concatenation checks. Its test collection preceded the final catalog-refusal refinement; the final focused evidence suite then passed 412 tests. These offline results are separate from the real Gateway/Docker run and hosted CI on the delivering PR. Production service and binding code are unchanged.
+
+The final shutdown validator additionally requires the last service process to exit with status zero in both registry and combined modes; drained observer records alone cannot establish process success. Offline regressions reject failed, killed or unfinished process exits even with otherwise clean shutdown evidence. This assertion was added after the recorded live candidate and has not been rerun live; that historical report establishes the recorded drain/resource observations but did not independently assert the final service exit status.
