@@ -15,22 +15,22 @@ Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/graphvi
 
 Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `graphviz` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-**Availability:** The first `graphviz` release has not been published. Until it completes the protected release gate, use the local-build instructions below.
+**Availability:** [Graphviz 0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-graphviz-v0.1.0) is publicly available for Linux/amd64. Its immutable evidence includes provenance, an SPDX SBOM, signed completion and anonymous-pull qualification. Pin `ghcr.io/sokolaidev/maf-extensions/graphviz@sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63`; check the status report for current monitoring before adopting it.
 
 ## Verify before pulling and running
 
-Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json` with the identity you have independently selected from the release record and reviewed source/workflow. Replace every placeholder; do not generate your acceptance policy by blindly copying the candidate's claims.
+Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below pins release 0.1.0 from [source `e2c45419`](https://github.com/sokolaidev/maf-extensions/tree/e2c454192438496bbbd25ebf258b1f2a2756ffb7) and [publication run 37820584534](https://github.com/sokolaidev/maf-extensions/actions/runs/37820584534). Review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
 
 ```json
 {
   "profile": "graphviz",
-  "version": "<VERSION>",
-  "sourceCommit": "<40-character source commit>",
+  "version": "0.1.0",
+  "sourceCommit": "e2c454192438496bbbd25ebf258b1f2a2756ffb7",
   "sourceRef": "refs/heads/main",
-  "registryDigest": "sha256:<64-character manifest digest>",
-  "assessedManifestDigest": "sha256:<same manifest digest>",
-  "imageId": "sha256:<64-character configuration digest>",
-  "attemptId": "<originating workflow run ID>"
+  "registryDigest": "sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63",
+  "assessedManifestDigest": "sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63",
+  "imageId": "sha256:7524f3f2bbd5690ba8dbce77f57d81b1242bbc898554cd3cd37f79bcf08ab9c2",
+  "attemptId": "37820584534"
 }
 ```
 
@@ -76,7 +76,7 @@ docker run --rm --platform linux/amd64 \
 test -s diagram-output/diagram.png
 ```
 
-The result is `diagram-output/diagram.png` on the host. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
+The result is `diagram-output/diagram.png` on the host. On 2026-10-08, this exact Bash example passed for the pinned 0.1.0 digest through WSL with Docker Desktop 29.8.2 in Linux-container mode and UID/GID 1000:1000; the output was a valid 171 by 251 PNG. This checks the documented CLI path, not the separate agent sample or a production deployment. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
 
 For the [Docker diagram sample](../../samples/07_docker_diagram/), set `DIAGRAM_SANDBOX_IMAGE` to the verified digest reference instead of its local-build tag and follow the sample's host/model prerequisites with the `docker` backend. Its tool writes under `/maf-sandbox/work`, requests closed egress and returns the rendered PNG through `FILES_OUT`. The image packaging probe does not establish compatibility with every SDK version or the sample's separate `docker-sbx` path; qualify your chosen combination.
 
