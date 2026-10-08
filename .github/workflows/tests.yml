@@ -28,6 +28,10 @@ on:
   # branch, not for that.
   workflow_dispatch:
     inputs:
+      mxc_stream_kernel:
+        description: "Build the experimental MXC byte-stream kernel from pinned sources"
+        type: boolean
+        default: false
       mxc_v1:
         description: 'MXC 1.0 spike: resolve dependency lock or qualify native migration'
         type: choice
@@ -501,6 +505,35 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  mxc-stream-kernel:
+    name: MXC byte-stream kernel build (Linux)
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - if: github.event_name == 'workflow_dispatch' && inputs.mxc_stream_kernel
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: github.event_name == 'workflow_dispatch' && inputs.mxc_stream_kernel
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - name: Build pinned experimental kernel
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_stream_kernel
+        run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_streams_patch.build_kernel --root "$RUNNER_TEMP/mxc-stream-kernel"
+      - name: Retain kernel identity and diagnostics
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_stream_kernel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mxc-stream-kernel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mxc-stream-kernel/elfloader_hyperlight-x86_64
+            ${{ runner.temp }}/mxc-stream-kernel/kernel-result.json
+            ${{ runner.temp }}/mxc-stream-kernel/*.log
+          retention-days: 14
+          if-no-files-found: error
+
   mxc-v1:
     name: MXC 1.0 migration (${{ matrix.os }})
     needs: changes
@@ -834,7 +867,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
