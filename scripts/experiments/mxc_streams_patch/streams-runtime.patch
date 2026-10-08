@@ -1,0 +1,164 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -16,6 +16,8 @@
+ //! # Ok::<(), hyperlight_unikraft::Error>(())
+ //! ```
+ 
++mod stream_capture;
++pub use stream_capture::{CapturedStreams, Stream, STREAM_LIMIT};
+ mod output_capture;
+ pub use output_capture::CapturedOutput;
+ 
+@@ -766,6 +768,7 @@
+     mounts: Vec<Mount>,
+     /// Captured guest stdout — accumulated by the HostPrint callback.
+     output: Arc<Mutex<output_capture::Capture>>,
++    streams: Arc<Mutex<stream_capture::Capture>>,
+     /// NUL-separated KEY=VALUE pairs for guest env vars.
+     env_str: Arc<Mutex<String>>,
+     /// The guest's `/etc/resolv.conf`, written by the kernel at boot and on
+@@ -814,7 +817,8 @@
+             initrd_base,
+             initrd_size,
+             mounts,
+-            output: Arc::new(Mutex::new(output_capture::Capture::default())),
++            output: Arc::new(Mutex::new(output_capture::Capture::bounded(65536))),
++            streams: Arc::new(Mutex::new(stream_capture::Capture::default())),
+             env_str: Arc::new(Mutex::new(String::new())),
+             resolv_conf: Arc::new(Mutex::new(String::new())),
+             net,
+@@ -921,6 +925,14 @@
+                     let _ = std::io::stdout().flush();
+                 });
+                 Ok(len)
++            },
++        )?;
++
++        let streams = self.streams.clone();
++        target.register_host_function(
++            "MafWriteBytes",
++            move |stream: u32, data: Vec<u8>| -> hyperlight_host::Result<i32> {
++                Ok(streams.lock().unwrap().push(stream, &data))
+             },
+         )?;
+ 
+@@ -2458,6 +2470,10 @@
+     }
+ 
+     /// Take the retained prefix and omission metadata, starting a new budget.
++    pub fn take_captured_streams(&self) -> CapturedStreams {
++        self.config.streams.lock().unwrap().take()
++    }
++
+     pub fn take_captured_output(&self) -> CapturedOutput {
+         self.config.output.lock().unwrap().take()
+     }
+--- /dev/null
++++ b/src/stream_capture.rs
+@@ -0,0 +1,106 @@
++// SPDX-License-Identifier: Apache-2.0
++//! Byte retention is host-owned; draining data cannot clear a transport fault.
++
++pub const STREAM_LIMIT: usize = 1024 * 1024;
++pub const CHUNK_BYTES: usize = 4096;
++
++#[derive(Debug, Default)]
++pub struct Stream {
++    pub bytes: Vec<u8>,
++    pub omitted_bytes: u64,
++    pub omitted_bytes_saturated: bool,
++}
++impl Stream {
++    fn push(&mut self, data: &[u8]) {
++        let keep = data.len().min(STREAM_LIMIT - self.bytes.len());
++        let needed = self.bytes.len() + keep;
++        if needed > self.bytes.capacity() {
++            let target = needed.max(self.bytes.capacity().saturating_mul(2)).min(STREAM_LIMIT);
++            self.bytes.reserve_exact(target - self.bytes.len());
++        }
++        self.bytes.extend_from_slice(&data[..keep]);
++        let (total, overflow) = self.omitted_bytes.overflowing_add((data.len() - keep) as u64);
++        self.omitted_bytes = if overflow { u64::MAX } else { total };
++        self.omitted_bytes_saturated |= overflow;
++    }
++}
++
++#[derive(Debug, Default)]
++pub struct CapturedStreams {
++    pub stdout: Stream,
++    pub stderr: Stream,
++    pub faulted: bool,
++}
++
++#[derive(Default)]
++pub(crate) struct Capture {
++    result: CapturedStreams,
++}
++impl Capture {
++    pub(crate) fn push(&mut self, stream: u32, data: &[u8]) -> i32 {
++        if self.result.faulted || !matches!(stream, 1 | 2) || data.len() > CHUNK_BYTES {
++            self.result.faulted = true;
++            return -1;
++        }
++        if stream == 1 {
++            self.result.stdout.push(data);
++        } else {
++            self.result.stderr.push(data);
++        }
++        // A retention quota does not change the guest write's success.
++        data.len() as i32
++    }
++    pub(crate) fn take(&mut self) -> CapturedStreams {
++        let result = std::mem::take(&mut self.result);
++        self.result.faulted = result.faulted;
++        result
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn independent_binary_prefixes_and_omission_counts() {
++        let mut capture = Capture::default();
++        let block: Vec<_> = (0..=255).cycle().take(CHUNK_BYTES).collect();
++        for _ in 0..STREAM_LIMIT / CHUNK_BYTES {
++            assert_eq!(capture.push(1, &block), CHUNK_BYTES as i32);
++            assert_eq!(capture.push(2, &block), CHUNK_BYTES as i32);
++        }
++        assert_eq!(capture.result.stdout.omitted_bytes, 0);
++        assert_eq!(capture.push(1, b"\0\xff\n"), 3);
++        assert_eq!(capture.result.stdout.bytes, block.repeat(STREAM_LIMIT / CHUNK_BYTES));
++        assert_eq!(capture.result.stdout.omitted_bytes, 3);
++        assert_eq!(capture.result.stderr.omitted_bytes, 0);
++        assert!(capture.result.stdout.bytes.capacity() <= STREAM_LIMIT);
++        assert!(capture.result.stderr.bytes.capacity() <= STREAM_LIMIT);
++        let result = capture.take();
++        assert!(!result.faulted);
++        assert_eq!(capture.push(2, b"next"), 4);
++        assert_eq!(capture.take().stderr.bytes, b"next");
++    }
++
++    #[test]
++    fn malformed_frame_stays_faulted_after_guest_retry_and_host_drain() {
++        for (stream, count) in [(0, 1), (3, 1), (1, CHUNK_BYTES + 1)] {
++            let mut capture = Capture::default();
++            assert_eq!(capture.push(stream, &vec![1; count]), -1);
++            assert!(capture.take().faulted);
++            assert_eq!(capture.push(1, b"valid retry"), -1);
++            let result = capture.take();
++            assert!(result.faulted);
++            assert!(result.stdout.bytes.is_empty());
++        }
++    }
++
++    #[test]
++    fn counters_saturate_without_reopening_retention() {
++        let mut stream = Stream { bytes: vec![0; STREAM_LIMIT], omitted_bytes: u64::MAX, omitted_bytes_saturated: false };
++        stream.push(b"more");
++        assert_eq!(stream.omitted_bytes, u64::MAX);
++        assert!(stream.omitted_bytes_saturated);
++        assert_eq!(stream.bytes.len(), STREAM_LIMIT);
++    }
++}

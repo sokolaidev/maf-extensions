@@ -1,0 +1,26 @@
+{
+  "layers": {
+    "runtime": {
+      "files": {
+        "src/lib.rs": {
+          "before": "7edd1c09b453d6492c6909f83906e8fdfd45062a108bd17f7f66d5e28830bf2a",
+          "after": "4c31b6b4d3b769d4eb9bf7a05077c3982f20de4d54c1ca476c78d79a24f32eec"
+        },
+        "src/stream_capture.rs": {
+          "before": null,
+          "after": "56d293e7bd4f2f3353847172378e69bacc4e1b3a07f49d1bcb9b65a4a9cf68bd"
+        }
+      },
+      "sha256": "4c1febe4ed0aeced56da880426be30efdbd3985fa3752603b92eb2e4ae3a19cb"
+    },
+    "session": {
+      "files": {
+        "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+          "before": "b3999252ce171f00de4319ff9c34fcf90c760f8fea8880d83e6069ee09042887",
+          "after": "163c4bd9b4c1a1b2bc2813109be9c24b0f0c4deb414e1ad96ba690333f8eeada"
+        }
+      },
+      "sha256": "f0d8edd7e35f0989ef6cb89e83742557bf4f81888b138d9115b12ec35087f368"
+    }
+  }
+}

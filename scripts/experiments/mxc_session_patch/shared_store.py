@@ -30,6 +30,7 @@ from .host_store import (
 )
 from .private_root import check_file, prepare
 
+MAX_SHARED_RESULT = 3 * CHUNK
 VERSION = 4
 PATH_BYTES = 512
 FILE_METADATA = PATH_BYTES + 256
@@ -64,7 +65,7 @@ class Limits:
             raise Refused("invalid grace allowance")
         if (
             self.checkpoint_bytes > MAX_CHECKPOINT
-            or self.result_bytes > MAX_RESULT
+            or self.result_bytes > MAX_SHARED_RESULT
             or self.files > MAX_FILES
         ):
             raise Refused("publication limits exceed the experimental format")
