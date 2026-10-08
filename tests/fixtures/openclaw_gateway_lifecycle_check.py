@@ -23,15 +23,17 @@ from openclaw_gateway_check import docker
 from openclaw_gateway_http_check import (
     BASELINE_DISPATCHES,
     check,
+    matching_cancel,
     projected_result,
     records,
     require,
+    verify_busy,
     verify_dispatch_count,
     verify_outcome,
 )
 from openclaw_http_observer import resolve_image
 
-LIFECYCLE_DISPATCHES = 26
+LIFECYCLE_DISPATCHES = 30
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -351,6 +353,129 @@ def verify_poisoned_turns(
             and settled[0].get("time_ns", 0) > call.get("time_ns", 0),
             "Poisoned probe did not settle without active work",
         )
+
+
+def retirement_target(value: dict[str, Any], name: str) -> dict[str, Any]:
+    """Select only the exact isolated HTTP session and pin deletion to its current identity."""
+    matches = [
+        row
+        for row in value.get("sessions", [])
+        if isinstance(row, dict) and row.get("key") == "agent:main:openai-user:" + name
+    ]
+    require(
+        len(matches) == 1
+        and isinstance(matches[0].get("sessionId"), str)
+        and bool(matches[0]["sessionId"]),
+        "Missing unique fixture Gateway session",
+    )
+    require(
+        name.startswith("lifecycle-")
+        and len(name) == 42
+        and all(c in "0123456789abcdef" for c in name[10:]),
+        "Not a fixture-owned session",
+    )
+    return {
+        "key": matches[0]["key"],
+        "expectedSessionId": matches[0]["sessionId"],
+        "deleteTranscript": False,
+    }
+
+
+def verify_retirement(
+    evidence: list[dict[str, Any]],
+    target: str,
+    other: str,
+    active_call: dict[str, Any],
+    observed: dict[str, Any],
+    *,
+    active: bool,
+) -> dict[str, Any]:
+    """Require acknowledged deletion of only the selected MCP session and correlated settlement."""
+    boot = active_call.get("boot")
+    require(
+        bool(boot)
+        and bool(target)
+        and bool(other)
+        and target != other
+        and active_call.get("session") == (target if active else other),
+        "Retirement does not identify both sessions and the active call",
+    )
+    deletes = [r for r in evidence if r.get("event") == "delete_requested"]
+    responses = [
+        r for r in evidence if r.get("event") == "response" and r.get("method") == "DELETE"
+    ]
+    settled = [r for r in evidence if r.get("event") == "retired"]
+    require(
+        len(deletes) == len(responses) == len(settled) == 1,
+        "Missing unique targeted DELETE request, acceptance or settlement",
+    )
+    deletion, response, end = deletes[0], responses[0], settled[0]
+    require(
+        bool(deletion.get("exchange"))
+        and all(
+            r.get("boot") == boot
+            and r.get("session") == target
+            and r.get("exchange") == deletion["exchange"]
+            for r in [deletion, response, end]
+        )
+        and 0
+        < active_call.get("time_ns", 0)
+        < observed.get("requested_ns", 0)
+        <= deletion.get("time_ns", 0)
+        < response.get("time_ns", 0)
+        < observed.get("acknowledged_ns", 0)
+        <= observed.get("observed_ns", 0)
+        and response.get("time_ns", 0) <= end.get("time_ns", 0) < observed.get("observed_ns", 0)
+        and end.get("completed") is True
+        and response.get("status") == 200
+        and end.get("session_registered") is False
+        and end.get("sessions") == 1
+        and end.get("poisoned") is False
+        and end.get("active") is (not active)
+        and end.get("active_session") == (None if active else other),
+        "Retirement was not selective, settled or acknowledged in order",
+    )
+    cancellations = [r for r in evidence if r.get("method") == "notifications/cancelled"]
+    if active:
+        require(
+            len(cancellations) == 1
+            and cancellations[0].get("boot") == boot
+            and matching_cancel(
+                [r for r in evidence if r.get("boot") == boot],
+                active_call,
+                after_ns=observed["requested_ns"],
+            ),
+            "Active retirement lacks the matching accepted MCP cancellation",
+        )
+    else:
+        require(not cancellations, "Idle retirement cancelled active work")
+    require(
+        observed.get("deleted") is True
+        and observed.get("same_gateway") is True
+        and observed.get("same_service") is True
+        and observed.get("owner_unchanged") is True
+        and observed.get("sentinel_preserved") is True
+        and observed.get("exact_container_absent") is active
+        and observed.get("compiler_survived") is (not active),
+        "Retirement lacks independent resource or process isolation evidence",
+    )
+    return {
+        "deleted_mcp_session": True,
+        "remaining_sessions": 1,
+        "accepted_cancellation": active,
+        "other_session_preserved": True,
+        "exact_container_removed": active,
+        "same_gateway_and_service": True,
+    }
+
+
+def verify_deleted_turn(status: int, payload: Any) -> int:
+    """Pin the Gateway's non-streaming response to a session-deletion abort."""
+    require(
+        status == 500 and payload == {"error": {"message": "internal error", "type": "api_error"}},
+        "Deleted active turn did not return the pinned Gateway abort error",
+    )
+    return status
 
 
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
@@ -1070,13 +1195,177 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 "Completed-call cleanup refusal suppressed success; both sessions stayed blocked until restart",
                 flush=True,
             )
+
+            assert gateway_process is not None and service_process is not None
+
+            def rpc(method, params):
+                operation = subprocess.run(
+                    [
+                        "node",
+                        str(args.openclaw / "openclaw.mjs"),
+                        "gateway",
+                        "call",
+                        method,
+                        "--expect-url",
+                        f"ws://127.0.0.1:{ports[0]}",
+                        "--timeout",
+                        "60000",
+                        "--params",
+                        json.dumps(params),
+                        "--json",
+                    ],
+                    cwd=repo,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=90,
+                )
+                (root / ("rpc-" + uuid.uuid4().hex + ".log")).write_text(
+                    operation.stdout + operation.stderr,
+                    encoding="utf-8",
+                )
+                require(
+                    operation.returncode == 0, "Gateway session RPC failed; inspect private RPC log"
+                )
+                value = json.loads(operation.stdout)
+                require(isinstance(value, dict), "Gateway session RPC returned no object")
+                return value
+
+            targets = [
+                retirement_target(rpc("sessions.list", {"limit": 50}), name) for name in names
+            ]
+            before_retirement = len(records(transport))
+            pending, retirement_turn = begin_turn(0, "cancel")
+            try:
+                container = wait_for(
+                    active_compiler, "No active compiler before selective retirement", 60
+                )
+                active_calls = requests(records(transport)[before_retirement:])
+                require(
+                    len(active_calls) == 1 and active_calls[0]["session"] == final_sessions[0],
+                    "Retirement did not start in the selected MCP session",
+                )
+                active_call = active_calls[0]
+                expected_calls += 1
+                retirement_reports = {}
+                sessions = list(final_sessions)
+                replacement = ""
+                for label, index in [("idle", 1), ("active", 0)]:
+                    before_delete = len(records(transport))
+                    requested_ns = time.time_ns()
+                    deleted = rpc("sessions.delete", targets[index])
+                    acknowledged_ns = time.time_ns()
+                    require(
+                        deleted.get("ok") is True
+                        and deleted.get("deleted") is True
+                        and deleted.get("key") == targets[index]["key"],
+                        "Gateway did not acknowledge deletion of the selected session",
+                    )
+                    wait_for(
+                        lambda: any(
+                            r.get("event") == "retired" and r.get("session") == sessions[index]
+                            for r in records(transport)[before_delete:]
+                        ),
+                        "Selected MCP registration did not finish retiring",
+                        30,
+                    )
+                    absent = not docker("ps", "-aq", "--filter", f"id={container}")
+                    observation = {
+                        "requested_ns": requested_ns,
+                        "acknowledged_ns": acknowledged_ns,
+                        "deleted": True,
+                        "same_gateway": gateway_process.poll() is None,
+                        "same_service": service_process.poll() is None,
+                        "owner_unchanged": owner_file.read_bytes() == owner_before,
+                        "sentinel_preserved": bool(
+                            docker("ps", "-q", "--filter", f"id={sentinel}")
+                        ),
+                        "exact_container_absent": absent,
+                        "compiler_survived": not absent
+                        and owned() == [container]
+                        and "bicep" in docker("top", container, "-eo", "pid,comm"),
+                    }
+                    observation["observed_ns"] = time.time_ns()
+                    evidence = records(transport)[before_delete:]
+                    retirement_reports[label] = verify_retirement(
+                        evidence,
+                        sessions[index],
+                        sessions[1 - index],
+                        active_call,
+                        observation,
+                        active=label == "active",
+                    )
+                    (root / ("retirement-" + label + ".json")).write_text(
+                        json.dumps(
+                            {"transport": evidence, "call": active_call, "observed": observation}
+                        ),
+                        encoding="utf-8",
+                    )
+                    if label == "idle":
+                        before_busy = len(records(transport))
+                        busy_connection, busy_turn = begin_turn(1, "valid")
+                        try:
+                            response = busy_connection.getresponse()
+                            response.read()
+                            require(
+                                response.status == 200, "Replacement session did not settle busy"
+                            )
+                        finally:
+                            busy_connection.close()
+                        verify_busy(projected_result(records(provider), busy_turn, "valid"))
+                        busy_calls = requests(records(transport)[before_busy:])
+                        require(
+                            len(busy_calls) == 1
+                            and busy_calls[0].get("session")
+                            and busy_calls[0]["session"] not in final_sessions,
+                            "Deleted idle session reused its retired MCP identity",
+                        )
+                        replacement = busy_calls[0]["session"]
+                        sessions[1] = replacement
+                        expected_calls += 1
+                        verify_dispatch_count(records(transport), expected_calls)
+                        require(
+                            owned() == [container]
+                            and "bicep" in docker("top", container, "-eo", "pid,comm"),
+                            "Idle deletion or replacement disturbed the active compiler",
+                        )
+                response = pending.getresponse()
+                retirement_reports["aborted_turn_http_status"] = verify_deleted_turn(
+                    response.status, json.loads(response.read())
+                )
+                require(
+                    not any(
+                        r.get("turn") == retirement_turn and "tool_result" in r
+                        for r in records(provider)
+                    ),
+                    "Deleted active turn projected a workload result",
+                )
+                require(not owned(), "Owned resource survived active-session deletion")
+                require(turn(1)[0] == replacement, "Active deletion retired the other MCP session")
+                new_active = turn(0)[0]
+                require(
+                    new_active not in [*final_sessions, replacement],
+                    "Deleted active session reused a retired MCP identity",
+                )
+                retirement_reports["fresh_calls"] = {
+                    "other_session_reused": True,
+                    "deleted_session_reconnected": True,
+                }
+                report["selective_retirement"] = retirement_reports
+                print(
+                    "Idle and active Gateway session deletion retired only the selected MCP runtimes",
+                    flush=True,
+                )
+            finally:
+                pending.close()
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
             report["other_owner_preserved"] = True
             report["total_dispatches"] = verify_dispatch_count(
                 records(transport), LIFECYCLE_DISPATCHES
             )
             report["remaining"] = [
-                "active Gateway runtime disposal",
+                "other Gateway runtime retirement triggers and registry saturation/churn",
                 "Docker cleanup/daemon failures and remaining interruption cases",
                 "automatic Gateway discovery recovery",
                 "full real-host transport/MAF matrix",
