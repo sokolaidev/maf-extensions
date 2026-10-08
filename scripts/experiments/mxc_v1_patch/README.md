@@ -21,6 +21,6 @@ Artifacts contain reports, logs and the resolved lockfile for 14 days, excluding
 | Platform | Migration controls | Rich Python state | Outcome |
 |---|---|---|---|
 | Linux/KVM | [Report](linux-result.json) | [Report](linux-native-result.json) | Qualified |
-| Windows/WHP | Pending | Pending | Unqualified until the job completes |
+| Windows/WHP | [Report](windows-result.json) | [Report](windows-native-result.json) | Qualified |
 
-Linux refused the old `k5e9192dfed5c8dbb-c1` snapshot under the new `k485adb2bab362516-c3` runtime without changing the checkpoint; the old-pin helper then restored its state. Existing persistent sessions require their exact old helper/profile assets. The experiment does not convert guest snapshots or silently substitute fresh state. Process crashes are not physical reboot or power-loss tests, and independently passing on two platforms does not establish checkpoint portability between them.
+Both platforms refused the old `k5e9192dfed5c8dbb-c1` snapshot under the new `k485adb2bab362516-c3` runtime without changing the checkpoint; the old-pin helper then restored its state. Existing persistent sessions require their exact old helper/profile assets. The experiment does not convert guest snapshots or silently substitute fresh state. Process crashes are not physical reboot or power-loss tests, and independently passing on two platforms does not establish checkpoint portability between them.
