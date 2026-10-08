@@ -26,7 +26,7 @@ fn load(w: &mut Workspace, base: &Path) -> Result<()> {
     if meta["format"] != "mxc-workspace-v1" { return Err("workspace format differs".into()); }
     let data = bounded(&base.join("workspace.bin"), w.byte_limit)?;
     let dirs = meta["dirs"].as_array().ok_or("invalid directories")?;
-    if dirs.len() > w.file_limit * 16 { return Err("directory count exceeds bound".into()); }
+    if dirs.len() > w.file_limit * 18 + 3 { return Err("directory count exceeds bound".into()); }
     for dir in dirs { check(w.mkdir(dir.as_str().ok_or("invalid directory")?))?; }
     let entries = meta["files"].as_array().ok_or("invalid workspace inventory")?;
     if entries.len() > w.file_limit { return Err("file count exceeds bound".into()); }

@@ -1,4 +1,4 @@
-"""Keep file file_requests bounded and replay identity sensitive to host policy."""
+"""Keep file requests bounded and replay identity sensitive to host policy."""
 
 from __future__ import annotations
 
@@ -67,6 +67,8 @@ def test_defaults_and_arbitrary_bytes(file_request):
         "a\nb",
         "a?b",
         "a" * 513,
+        "a" * 256,
+        "é" * 128,
         "a/" * 16 + "b",
         "e\u0301",
         "\ud800",

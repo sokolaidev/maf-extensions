@@ -28,8 +28,8 @@
     },
     "lib/hostfs/hostfs_vnops.c": {
       "before": "91f7d47830e6ccaf44864eb921539eae214cb9cfe05f96a517693cfe0b035c58",
-      "after": "ada2cb4e314f5b71e1a6bbfee1baa8fbfd062c3b6dfbe16321af224a80e51475"
+      "after": "1dc3e30e3d2803422d617dfeba1cb4bb266a59ecd0e18440db40a04f984db4ab"
     }
   },
-  "patch_sha256": "070cf0e0ddbf530cd665aabc6897e04c609d73796551be6c45ff3bdf35b93ecf"
+  "patch_sha256": "76e371e4340d1018cbf35b6c0e92435e7a22e775725c135e414c8aa8827399af"
 }

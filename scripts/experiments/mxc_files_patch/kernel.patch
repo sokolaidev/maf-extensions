@@ -242,7 +242,25 @@
  	return 0;
 --- a/lib/hostfs/hostfs_vnops.c
 +++ b/lib/hostfs/hostfs_vnops.c
-@@ -283,72 +283,64 @@
+@@ -160,13 +160,16 @@
+ /* ── create ───────────────────────────────────────────────────────── */
+ 
+ static int
+-hostfs_create(struct vnode *dvp, const char *name, mode_t mode __unused)
++hostfs_create(struct vnode *dvp, const char *name, mode_t mode)
+ {
+ 	struct hostfs_node *dnp = dvp->v_data;
+ 	char path[1024];
+ 
+ 	if (hostfs_stale(dnp))
+ 		return ESTALE;
++
++	if ((mode & S_IFMT) && !S_ISREG(mode))
++		return EPERM;
+ 
+ 	build_path(path, sizeof(path), dnp, name);
+ 
+@@ -283,72 +286,64 @@
  static int
  hostfs_write(struct vnode *vp, struct uio *uio, int ioflag)
  {

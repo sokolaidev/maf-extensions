@@ -35,6 +35,7 @@ def name(value: str) -> str:
         or any(ord(c) < 32 or ord(c) == 127 or c in '\\:*?"<>|' for c in value)
         or any(
             not part
+            or len(part.encode("utf-8")) > 255
             or part in (".", "..")
             or part.endswith((".", " "))
             or unicodedata.normalize("NFKC", part.split(".", 1)[0]).rstrip(" ").casefold()

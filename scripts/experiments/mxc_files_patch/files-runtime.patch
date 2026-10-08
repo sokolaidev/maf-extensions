@@ -174,7 +174,7 @@
 +    if root && path.is_empty() { return Ok(()); }
 +    if path.is_empty() || path.len() > 551 || path.split('/').count() > 18
 +        || path.chars().any(|c| c.is_control() || "\\:*?\"<>|".contains(c))
-+        || path.split('/').any(|p| p.is_empty() || matches!(p, "." | "..") || p.ends_with(['.', ' '])) {
++        || path.split('/').any(|p| p.is_empty() || p.len() > 255 || matches!(p, "." | "..") || p.ends_with(['.', ' '])) {
 +        return Err(EINVAL);
 +    }
 +    Ok(())
@@ -204,7 +204,7 @@
 +        self.mutable()?; path(p, false)?;
 +        if self.files.contains_key(p) || self.dirs.contains(p) { return Err(EEXIST); }
 +        if !self.dirs.contains(parent(p)) { return Err(ENOTDIR); }
-+        if self.dirs.len() >= self.file_limit * 16 + 1 { return Err(ENOSPC); }
++        if self.dirs.len() >= self.file_limit * 18 + 4 { return Err(ENOSPC); }
 +        self.dirs.insert(p.into()); Ok(())
 +    }
 +    pub fn install(&mut self, p: &str, data: Vec<u8>, persistent: bool, replace: bool) -> Result<()> {
