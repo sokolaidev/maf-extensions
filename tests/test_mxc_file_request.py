@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import importlib
 import sys
 from dataclasses import replace
@@ -257,3 +258,112 @@ def test_one_bad_upload_cannot_partially_replace_existing_files(file_request):
     with pytest.raises(files.Refused, match="replacement authority"):
         inventory.stage(original, call)
     assert [entry.data for entry in original] == [b"a", b"b"]
+
+
+@pytest.mark.parametrize("operation", ["write", "append", "truncate", "sparse"])
+def test_guest_capacity_error_is_catchable_nonmutating_and_recoverable(operation):
+    original = (inventory.Entry("file", b"data", "session"),)
+    limits = files.WorkspaceLimits(1, 5)
+    with pytest.raises(OSError) as error:
+        if operation == "write":
+            inventory.write(original, "file", b"abcdef", 0, limits)
+        elif operation == "append":
+            inventory.write(original, "file", b"xx", 0, limits, append=True)
+        elif operation == "truncate":
+            inventory.truncate(original, "file", 6, limits)
+        else:
+            inventory.write(original, "file", b"x", 2**64, limits)
+    assert error.value.errno == errno.ENOSPC
+    assert original == (inventory.Entry("file", b"data", "session"),)
+    recovered = inventory.write(original, "file", b"!", 0, limits, append=True)
+    assert recovered == (inventory.Entry("file", b"data!", "session"),)
+
+
+def test_write_larger_than_transport_chunk_is_all_or_nothing_in_reference_model():
+    original = (inventory.Entry("file", b"unchanged", "call"),)
+    limits = files.WorkspaceLimits(1, 32768 + 1)
+    with pytest.raises(OSError) as error:
+        inventory.write(original, "file", b"x" * (32768 + 2), 0, limits)
+    assert error.value.errno == errno.ENOSPC
+    assert original[0].data == b"unchanged"
+    accepted = inventory.write(original, "file", b"x" * (32768 + 1), 0, limits)
+    assert accepted[0].data == b"x" * (32768 + 1)
+
+
+def test_full_workspace_still_accepts_overwrite_and_shrink():
+    original = (inventory.Entry("a", b"abcd", "call"), inventory.Entry("b", b"xy", "session"))
+    limits = files.WorkspaceLimits(2, 6)
+    updated = inventory.write(original, "a", b"ZZ", 1, limits)
+    assert updated[0].data == b"aZZd"
+    shortened = inventory.truncate(updated, "a", 2, limits)
+    expanded = inventory.write(shortened, "b", b"++", 0, limits, append=True)
+    assert [entry.data for entry in expanded] == [b"aZ", b"xy++"]
+    with pytest.raises(OSError):
+        inventory.truncate(expanded, "a", 3, limits)
+
+
+def test_sparse_and_zero_length_writes():
+    original = (inventory.Entry("file", b"a", "session"),)
+    limits = files.WorkspaceLimits(1, 4)
+    assert inventory.write(original, "file", b"", 2**64, limits) is original
+    assert inventory.write(original, "file", b"b", 3, limits)[0].data == b"a\0\0b"
+    assert inventory.truncate(original, "file", 4, limits)[0].data == b"a\0\0\0"
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5])
+def test_invalid_write_and_resize_parameters_are_nonmutating(value):
+    original = (inventory.Entry("file", b"data", "call"),)
+    limits = files.WorkspaceLimits(1, 4)
+    for operation in (
+        lambda: inventory.write(original, "file", b"x", value, limits),
+        lambda: inventory.truncate(original, "file", value, limits),
+    ):
+        with pytest.raises(OSError) as error:
+            operation()
+        assert error.value.errno == errno.EINVAL
+    assert original[0].data == b"data"
+
+
+def test_artifacts_and_retained_state_come_from_same_inventory(file_request):
+    state = (
+        inventory.Entry("chart.png", b"image", "call"),
+        inventory.Entry("saved", b"state", "session"),
+    )
+    retained, artifacts = inventory.complete(state, file_request)
+    assert retained == (state[1],)
+    assert artifacts == (state[0],)
+    assert artifacts[0] is state[0]
+    assert retained[0] is state[1]
+    assert len(state) == 2
+
+
+def test_artifact_failure_does_not_produce_partial_delivery_or_retained_state(file_request):
+    state = (inventory.Entry("first", b"a", "call"), inventory.Entry("second", b"bc", "session"))
+    for call in (
+        replace(file_request, artifacts=("first", "missing")),
+        replace(
+            file_request,
+            artifacts=("first", "second"),
+            limits=replace(file_request.limits, artifact_bytes=2),
+        ),
+        replace(
+            file_request,
+            inputs=(),
+            artifacts=("first", "second"),
+            limits=replace(file_request.limits, file_bytes=1),
+        ),
+    ):
+        with pytest.raises(files.Refused):
+            inventory.complete(state, call)
+        assert state == (
+            inventory.Entry("first", b"a", "call"),
+            inventory.Entry("second", b"bc", "session"),
+        )
+    exact = replace(
+        file_request,
+        artifacts=("first", "second"),
+        limits=replace(file_request.limits, artifact_bytes=3),
+    )
+    retained, artifacts = inventory.complete(state, exact)
+    assert len(retained) == 1
+    assert sum(len(entry.data) for entry in artifacts) == 3
