@@ -1898,7 +1898,7 @@ def test_churn_retirement_rejects_missing_or_uncorrelated_delete(index, mutation
 
 
 @pytest.mark.parametrize("event", ["request", "binding_started"])
-def test_idle_churn_rejects_interleaved_dispatch_or_cancellation(event):
+def test_idle_churn_rejects_interleaved_dispatch_or_unknown_protocol_activity(event):
     with pytest.raises(RuntimeError):
         lifecycle.verify_churn_retirement(
             [*churn_evidence(), {"event": event}], "boot", "target", 1
@@ -1976,3 +1976,53 @@ def test_shared_environment_check_pins_host_dependencies_and_loaded_sources(tmp_
     else:
         with pytest.raises(RuntimeError):
             checker.verify_environment(args)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "status",
+        "payload",
+        "provider_seen",
+        "gateway_catalog_error",
+        "boot",
+        "initialize",
+        "tools/list",
+        "tools/call",
+        "binding_started",
+        "retired",
+        "delete_requested",
+    ],
+)
+def test_free_slot_catalog_refusal_requires_host_reason_and_no_execution(mutation):
+    status = 500
+    payload = {"error": {"message": "internal error", "type": "api_error"}}
+    observed = {"boot": "boot", "provider_seen": False, "gateway_catalog_error": True}
+    evidence = []
+    if mutation == "status":
+        status = 200
+    elif mutation == "payload":
+        payload = {}
+    elif mutation in {"provider_seen", "gateway_catalog_error"}:
+        observed[mutation] = not observed[mutation]
+    elif mutation == "boot":
+        evidence.append({"boot": "other", "event": "response"})
+    elif mutation in {"initialize", "tools/list", "tools/call"}:
+        evidence.append({"boot": "boot", "event": "request", "method": mutation})
+    elif mutation:
+        evidence.append({"boot": "boot", "event": mutation})
+    if mutation is None:
+        assert (
+            lifecycle.verify_catalog_refusal(status, payload, evidence, observed)["reconnected"]
+            is False
+        )
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_catalog_refusal(status, payload, evidence, observed)
+
+
+def test_idle_registry_checks_tolerate_control_notifications_without_work():
+    notification = {"boot": "boot", "event": "request", "method": "notifications/cancelled"}
+    lifecycle.verify_registry_refusal([*capacity_evidence(), notification], "boot")
+    lifecycle.verify_churn_retirement([*churn_evidence(), notification], "boot", "target", 1)

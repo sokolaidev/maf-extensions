@@ -516,10 +516,11 @@ def verify_registry(snapshot, expected: set[str], boot: str, after_ns: int) -> d
 
 def verify_registry_refusal(evidence, boot: str) -> dict[str, int]:
     """Require capacity rejection before any tool dispatch, binding or session retirement."""
-    attempts = [r for r in evidence if r.get("event") == "request"]
+    messages = [r for r in evidence if r.get("event") == "request"]
+    attempts = [r for r in messages if r.get("method") == "initialize"]
     require(
         bool(attempts)
-        and all(r.get("method") == "initialize" for r in attempts)
+        and all(r.get("method") in {"initialize", "notifications/cancelled"} for r in messages)
         and not any(
             r.get("event") in {"binding_started", "retired", "delete_requested"} for r in evidence
         ),
@@ -597,9 +598,41 @@ def verify_churn_retirement(evidence, boot: str, target: str, requested_ns: int)
         and end.get("sdk_finished") is True
         and end.get("sdk_terminated") is True
         and end.get("sdk_streams") == end.get("request_ids") == end.get("requests") == 0
-        and not any(r.get("event") in {"request", "binding_started"} for r in evidence),
+        and not any(
+            r.get("event") == "binding_started"
+            or (r.get("event") == "request" and r.get("method") != "notifications/cancelled")
+            for r in evidence
+        ),
         "Churn retirement did not drain only the selected idle session",
     )
+
+
+def verify_catalog_refusal(status, payload, evidence, observed) -> dict[str, Any]:
+    """Identify a pre-provider catalog refusal separately from service admission failures."""
+    require(
+        status == 500
+        and payload == {"error": {"message": "internal error", "type": "api_error"}}
+        and observed.get("boot")
+        and observed.get("provider_seen") is False
+        and observed.get("gateway_catalog_error") is True
+        and all(r.get("boot") == observed["boot"] for r in evidence)
+        and not any(
+            r.get("event") in {"binding_started", "delete_requested", "retired"}
+            or (
+                r.get("event") == "request"
+                and r.get("method") in {"initialize", "tools/list", "tools/call"}
+            )
+            for r in evidence
+        ),
+        "Free-slot probe does not establish Gateway catalog refusal before MCP initialization",
+    )
+    return {
+        "reconnected": False,
+        "gateway_status": 500,
+        "reason": "no_callable_tools",
+        "free_slots": 1,
+        "mcp_initialization_attempts": 0,
+    }
 
 
 def qualify(args: argparse.Namespace) -> dict[str, Any]:
@@ -1572,30 +1605,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 registry_sessions.append(session)
                 registry_reports.append(inspect_registry(registry_sessions))
-            before_overflow = len(records(transport))
-            names.append("lifecycle-" + uuid.uuid4().hex)
-            overflow_connection, overflow_turn = begin_turn(len(names) - 1, "valid")
-            try:
-                response = overflow_connection.getresponse()
-                payload = json.loads(response.read())
-                require(
-                    response.status == 500
-                    and payload == {"error": {"message": "internal error", "type": "api_error"}},
-                    "Overflow turn did not return the pinned Gateway error",
-                )
-            finally:
-                overflow_connection.close()
-            overflow = verify_registry_refusal(records(transport)[before_overflow:], registry_boot)
-            require(
-                not any(
-                    r.get("turn") == overflow_turn and "tool_result" in r for r in records(provider)
-                ),
-                "Overflow projected a workload result",
-            )
-            verify_dispatch_count(records(transport), expected_calls)
-            registry_reports.append(inspect_registry(registry_sessions))
-            retired_sessions = set()
-            for _ in range(CHURN_CYCLES):
+
+            def retire_registry_target():
                 target = retirement_target(rpc("sessions.list", {"limit": 50}), names[0])
                 before_delete = len(records(transport))
                 requested_ns = time.time_ns()
@@ -1620,8 +1631,12 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     registry_sessions[0],
                     requested_ns,
                 )
-                retired_sessions.add(registry_sessions[0])
                 registry_reports.append(inspect_registry(registry_sessions[1:]))
+
+            retired_sessions = set()
+            for _ in range(CHURN_CYCLES):
+                retire_registry_target()
+                retired_sessions.add(registry_sessions[0])
                 fresh = turn(0)[0]
                 require(
                     fresh not in retired_sessions and fresh not in registry_sessions,
@@ -1635,10 +1650,58 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     "Registry churn retired a surviving session",
                 )
             registry_reports.append(inspect_registry(registry_sessions))
+            before_overflow = len(records(transport))
+            names.append("lifecycle-" + uuid.uuid4().hex)
+            overflow_connection, overflow_turn = begin_turn(len(names) - 1, "valid")
+            try:
+                response = overflow_connection.getresponse()
+                payload = json.loads(response.read())
+                require(
+                    response.status == 500
+                    and payload == {"error": {"message": "internal error", "type": "api_error"}},
+                    "Overflow turn did not return the pinned Gateway error",
+                )
+            finally:
+                overflow_connection.close()
+            overflow = verify_registry_refusal(records(transport)[before_overflow:], registry_boot)
+            require(
+                not any(
+                    r.get("turn") == overflow_turn and "tool_result" in r for r in records(provider)
+                ),
+                "Overflow projected a workload result",
+            )
+            verify_dispatch_count(records(transport), expected_calls)
+            registry_reports.append(inspect_registry(registry_sessions))
+            retire_registry_target()
+            before_probe = len(records(transport))
+            log_start = (root / "gateway.log").stat().st_size
+            probe_connection, probe_turn = begin_turn(0, "valid")
+            try:
+                response = probe_connection.getresponse()
+                payload = json.loads(response.read())
+            finally:
+                probe_connection.close()
+            log = (root / "gateway.log").read_bytes()[log_start:].decode("utf-8", errors="replace")
+            catalog_refusal = verify_catalog_refusal(
+                response.status,
+                payload,
+                records(transport)[before_probe:],
+                {
+                    "boot": registry_boot,
+                    "provider_seen": any(r.get("turn") == probe_turn for r in records(provider)),
+                    "gateway_catalog_error": "No callable tools remain after resolving explicit tool allowlist"
+                    in log
+                    and ("sessionKey=agent:main:openai-user:" + names[0]) in log
+                    and "[openai-compat] chat completion failed:" in log,
+                },
+            )
+            registry_reports.append(inspect_registry(registry_sessions[1:]))
+            verify_dispatch_count(records(transport), expected_calls)
             report["registry_churn"] = {
                 "limit": REGISTRY_LIMIT,
                 "cycles": CHURN_CYCLES,
                 "overflow": overflow,
+                "post_refusal_recovery": catalog_refusal,
                 "snapshots": registry_reports,
                 "surviving_sessions_reused": REGISTRY_LIMIT - 1,
                 "same_gateway_and_service": True,
@@ -1656,7 +1719,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 encoding="utf-8",
             )
             print(
-                "Eight Gateway sessions filled the registry; overflow refused and three churn cycles reclaimed SDK and adapter state",
+                "Three churn cycles reclaimed SDK/adapter state; capacity refusal blocked subsequent Gateway discovery despite a free slot",
                 flush=True,
             )
             require(docker("ps", "-q", "--filter", f"id={sentinel}"), "Unrelated owner was removed")
