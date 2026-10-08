@@ -114,14 +114,8 @@ def matching_cancel(
     )
 
 
-def check(args: argparse.Namespace) -> dict[str, Any]:
-    config = json.loads(args.config.read_text(encoding="utf-8-sig"))
-    require(config["gateway"]["bind"] == "loopback", "Use a dedicated loopback Gateway")
-    require(
-        config["mcp"]["servers"]["bicep"]["transport"] == "streamable-http",
-        "This checker requires shared HTTP",
-    )
-    require(config["tools"]["allow"] == ["bicep__bicep_validate"], "Unexpected tool policy")
+def verify_environment(args: argparse.Namespace) -> dict[str, Any]:
+    """Pin the host version, published dependencies and actually loaded service sources."""
     package = json.loads((args.openclaw / "package.json").read_text(encoding="utf-8"))
     require(package["version"] == "2026.9.7", "Requalify an OpenClaw version change separately")
     startup = [r for r in records(args.transport_evidence) if r.get("event") == "startup"]
@@ -147,14 +141,26 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         startup[-1].get("source_hashes") == expected_sources,
         "Observer is running different source files",
     )
+    return {"openclaw": package["version"], "versions": expected}
+
+
+def check(args: argparse.Namespace) -> dict[str, Any]:
+    config = json.loads(args.config.read_text(encoding="utf-8-sig"))
+    require(config["gateway"]["bind"] == "loopback", "Use a dedicated loopback Gateway")
+    require(
+        config["mcp"]["servers"]["bicep"]["transport"] == "streamable-http",
+        "This checker requires shared HTTP",
+    )
+    require(config["tools"]["allow"] == ["bicep__bicep_validate"], "Unexpected tool policy")
+    environment = verify_environment(args)
     baseline_start = len(records(args.transport_evidence))
     owner = "openclaw-bicep-" + (args.owner / "owner").read_text().strip()
     sessions = ["http-qualification-" + uuid.uuid4().hex for _ in range(2)]
     config_digest = hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
     report: dict[str, Any] = {
         "provider": "deterministic-local-fixture",
-        "openclaw": package["version"],
-        "versions": expected,
+        "openclaw": environment["openclaw"],
+        "versions": environment["versions"],
         "complete_matrix": False,
         "sessions": [{}, {}],
     }
