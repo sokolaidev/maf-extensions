@@ -1,0 +1,56 @@
+{
+  "refusals": {
+    "truncated_index": 1,
+    "missing_blobs": 1,
+    "incompatible_key": 1
+  },
+  "helper_sha256": "be7ee46746cbacb34c1634714b69317f9c5341f46d616e3cca4058e0dbe30976",
+  "initrd_sha256": "0fe48a092e5d7810ad883c204786270ba49e15058451e0871d5d1075102a80cd",
+  "seed": {
+    "commit_barrier": true,
+    "continuity": true,
+    "fresh_control": true,
+    "mxc_base": "7bf210247986cb73b1b314df60c2f1109c479c0b",
+    "phase": "seed",
+    "pid": 6460,
+    "post_snapshot_mutation": true,
+    "provider": "mxc-session-preview",
+    "snapshot_saved": true,
+    "stale_token_refused": true
+  },
+  "restore": {
+    "close_refused_execution": true,
+    "failed_capture_retired": true,
+    "guest_failure_retired": true,
+    "mxc_base": "7bf210247986cb73b1b314df60c2f1109c479c0b",
+    "phase": "restore",
+    "pid": 9352,
+    "provider": "mxc-session-preview",
+    "restored_state_verified": true,
+    "timeout_retired": true
+  },
+  "seed_killed_after_save": true,
+  "snapshot_unchanged_after_restore": true,
+  "snapshot_artifacts": {
+    "blobs/sha256/3507238ecea981e9ba78969ccc8cde8e98d15896c47d7f990d2566d0a3ba7ace": {
+      "bytes": 10362,
+      "sha256": "3507238ecea981e9ba78969ccc8cde8e98d15896c47d7f990d2566d0a3ba7ace"
+    },
+    "blobs/sha256/560ab88477d9d354b007bfca3605fd7f6c28e1cf69968bb64de08d0bdb314207": {
+      "bytes": 568,
+      "sha256": "560ab88477d9d354b007bfca3605fd7f6c28e1cf69968bb64de08d0bdb314207"
+    },
+    "blobs/sha256/f5433b3e42414c6aefb90c36a393998ab1d82b3cb2f7deb164776867bb00dc33": {
+      "bytes": 862375936,
+      "sha256": "f5433b3e42414c6aefb90c36a393998ab1d82b3cb2f7deb164776867bb00dc33"
+    },
+    "index.json": {
+      "bytes": 562,
+      "sha256": "88a5f481b383c1d451660f79e82e2ea964ed331dc49ae1fd344159a5d5530849"
+    },
+    "oci-layout": {
+      "bytes": 30,
+      "sha256": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6"
+    }
+  }
+}

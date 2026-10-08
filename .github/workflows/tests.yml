@@ -28,6 +28,11 @@ on:
   # branch, not for that.
   workflow_dispatch:
     inputs:
+      mxc_v1:
+        description: 'MXC 1.0 spike: resolve dependency lock or qualify native migration'
+        type: choice
+        options: ['off', resolve-lock, qualify]
+        default: 'off'
       mxc_recovery:
         description: "Qualify the experimental MXC checkpoint and host publication probes on KVM"
         type: boolean
@@ -496,6 +501,73 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  mxc-v1:
+    name: MXC 1.0 migration (${{ matrix.os }})
+    needs: changes
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - name: Permit runner-owned KVM access
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm
+          printf 'KERNEL=="kvm", OWNER="%s", MODE="0600"\n' "$(id -un)" | sudo tee /etc/udev/rules.d/99-mxc-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Install Linux build prerequisites
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off' && runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libclang-dev
+      - name: Install pinned Rust toolchain
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Build and qualify the MXC 1.0 migration
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
+        shell: bash
+        env:
+          MXC_V1_MODE: ${{ inputs.mxc_v1 }}
+        run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_v1_patch.qualification_runner --root "$RUNNER_TEMP/mxc-v1" --mode "$MXC_V1_MODE"
+      - name: Retain qualification reports and logs
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mxc-v1-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mxc-v1/*.json
+            ${{ runner.temp }}/mxc-v1/*.log
+            ${{ runner.temp }}/mxc-v1/build/Cargo.lock
+            ${{ runner.temp }}/mxc-v1/bounded_probe/result.json
+            ${{ runner.temp }}/mxc-v1/baseline/*.log
+            ${{ runner.temp }}/mxc-v1/baseline/native/*.json
+            ${{ runner.temp }}/mxc-v1/baseline/native/*.stderr
+            ${{ runner.temp }}/mxc-v1/native/*.json
+            ${{ runner.temp }}/mxc-v1/native/*.stdout
+            ${{ runner.temp }}/mxc-v1/native/*.stderr
+            ${{ runner.temp }}/mxc-v1/durability_probe/*.log
+            ${{ runner.temp }}/mxc-v1/durability_probe/quota-*/*.log
+            ${{ runner.temp }}/mxc-v1/durability_probe/result.json
+            ${{ runner.temp }}/mxc-v1/storage_probe/result.json
+          if-no-files-found: error
+          retention-days: 14
+
   # Lint, format and the commit-msg tier: seconds in total, and a first answer while the
   # heavier shards are still installing.
   fast:
@@ -762,7 +834,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
