@@ -14,7 +14,7 @@ Looking at this README from a GHCR package page? Use the image's consumer guide 
 
 | Image | Purpose | Consumer documentation |
 |---|---|---|
-| `ghcr.io/sokolaidev/maf-extensions/graphviz` (first release pending) | Render Graphviz DOT to PNG on Linux/amd64 | [Graphviz image guide](https://github.com/sokolaidev/maf-extensions/blob/main/images/graphviz-sandbox/README.md) |
+| `ghcr.io/sokolaidev/maf-extensions/graphviz` ([0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-graphviz-v0.1.0)) | Render Graphviz DOT to PNG on Linux/amd64 | [Graphviz image guide](https://github.com/sokolaidev/maf-extensions/blob/main/images/graphviz-sandbox/README.md) |
 
 ## maf-sandbox
 
