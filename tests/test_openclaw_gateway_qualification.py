@@ -2975,7 +2975,12 @@ def test_removal_observer_forwards_real_command_and_result(tmp_path):
     assert len(checker.records(evidence)) == 1
 
 
-def test_docker_disconnect_uses_only_a_private_context(tmp_path, monkeypatch):
+@pytest.mark.parametrize("without_exclusive_option", [False, True])
+def test_docker_disconnect_uses_only_a_private_context(
+    tmp_path, monkeypatch, without_exclusive_option
+):
+    if without_exclusive_option:
+        monkeypatch.delattr(lifecycle.socket, "SO_EXCLUSIVEADDRUSE", raising=False)
     commands = []
     monkeypatch.setattr(
         lifecycle,

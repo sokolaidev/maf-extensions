@@ -62,8 +62,9 @@ class DockerConnectionFault:
         self.directory.mkdir()
         self.name = "qualification-" + uuid.uuid4().hex
         self.reserved = stack.enter_context(socket.socket())
-        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-            self.reserved.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            self.reserved.setsockopt(socket.SOL_SOCKET, exclusive, 1)
         self.reserved.bind(("127.0.0.1", 0))
         self.unreachable = f"tcp://127.0.0.1:{self.reserved.getsockname()[1]}"
         self.command("create", self.name, "--docker", "host=" + self.endpoint)
