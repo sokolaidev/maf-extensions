@@ -39,6 +39,8 @@ CHURN_CYCLES = 3
 DISCOVERY_COOLDOWN_SECONDS = 35
 UNAVAILABLE_DISPATCHES = 4
 IDLE_DISPATCHES = 6
+DEFAULT_IDLE_KEEPALIVES = 7
+DEFAULT_IDLE_DISPATCHES = 2 + DEFAULT_IDLE_KEEPALIVES + 3
 REGISTRY_DISPATCHES = REGISTRY_LIMIT + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
 LIFECYCLE_DISPATCHES = (
     30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
@@ -798,6 +800,108 @@ def verify_idle_expiry(evidence, boot, expired, survivor, observed) -> dict[str,
     }
 
 
+def verify_default_idle_expiry(evidence, boot, expired, survivor) -> dict[str, Any]:
+    """Require the unchanged idle policy to expire one session after actual elapsed time."""
+    stages = []
+    for event in ("idle_expiry_armed", "idle_expiry_started", "idle_expiry_finished"):
+        matches = [r for r in evidence if r.get("event") == event]
+        require(len(matches) == 1, "Missing unique default idle expiry stage")
+        stages.append(matches[0])
+    armed, start, end = stages
+    elapsed = (start.get("monotonic_ns", 0) - armed.get("monotonic_ns", 0)) / 1e9
+    initial_age = armed.get("idle_ages", {}).get(expired, -1)
+    require(
+        bool(boot)
+        and bool(expired)
+        and bool(survivor)
+        and expired != survivor
+        and all(r.get("boot") == boot for r in evidence)
+        and armed.get("accelerated") is False
+        and armed.get("default_seconds")
+        == armed.get("seconds")
+        == start.get("effective_seconds")
+        == end.get("restored_seconds")
+        == 900
+        and 0 <= initial_age < 60
+        and elapsed >= 900 - initial_age - 0.1
+        and 0 < armed.get("time_ns", 0) < start.get("time_ns", 0) <= end.get("time_ns", 0)
+        and start.get("from_sweeper") is True
+        and start.get("idle_seconds", 0) >= 900
+        and start.get("session") == end.get("session") == expired
+        and start.get("active_session") is None
+        and end.get("active_session") is None
+        and start.get("request_ids") == 0
+        and isinstance(start.get("get_active"), bool)
+        and start.get("requests") == int(start["get_active"])
+        and start.get("sdk_running") is True
+        and end.get("completed") is True
+        and end.get("sdk_finished") is True
+        and end.get("sdk_terminated") is True
+        and end.get("session_registered") is False
+        and end.get("sdk_streams") == end.get("request_ids") == end.get("requests") == 0,
+        "Default idle retirement lacks unchanged-policy elapsed-time or SDK-drain evidence",
+    )
+    verify_registry({**end, "event": "registry_snapshot"}, {survivor}, boot, start["time_ns"])
+    messages = [r for r in evidence if r.get("event") == "request"]
+    calls = [r for r in messages if r.get("method") == "tools/call"]
+    bindings = [r for r in evidence if r.get("event") == "binding_started"]
+    controls = [r for r in messages if r.get("method") == "notifications/cancelled"]
+    for control in controls:
+        replies = [
+            r
+            for r in evidence
+            if r.get("event") == "response" and r.get("exchange") == control.get("exchange")
+        ]
+        ends = [
+            r
+            for r in evidence
+            if r.get("event") == "settled" and r.get("exchange") == control.get("exchange")
+        ]
+        require(len(replies) == len(ends) == 1, "Idle control notification lacks unique settlement")
+        reply, settled = replies[0], ends[0]
+        require(
+            bool(control.get("exchange"))
+            and bool(control.get("target"))
+            and control.get("session") == reply.get("session") == settled.get("session")
+            and control.get("session") in {expired, survivor}
+            and not any(
+                call.get("session") == control.get("session")
+                and call.get("request") == control.get("target")
+                for call in calls
+            )
+            and reply.get("method") == settled.get("method") == "POST"
+            and reply.get("status") == 202
+            and armed["time_ns"]
+            < control.get("time_ns", 0)
+            < reply.get("time_ns", 0)
+            <= settled.get("time_ns", 0)
+            < start["time_ns"],
+            "Control notification was not accepted or targeted an observed workload call",
+        )
+    require(
+        len(calls) == len(bindings) == DEFAULT_IDLE_KEEPALIVES
+        and len(messages) == len(calls) + len(controls)
+        and len({r.get("exchange") for r in calls}) == DEFAULT_IDLE_KEEPALIVES
+        and all(
+            r.get("session") == survivor
+            and armed["time_ns"] < r.get("time_ns", 0) < start["time_ns"]
+            for r in [*calls, *bindings]
+        )
+        and not any(r.get("event") in {"delete_requested", "retired"} for r in evidence),
+        "Default idle wait dispatched unexpected work or client-directed retirement",
+    )
+    return {
+        "idle_seconds": 900,
+        "observed_idle_seconds": start["idle_seconds"],
+        "observation_seconds": elapsed,
+        "threshold_modified": False,
+        "keepalive_calls": len(calls),
+        "control_notifications": len(controls),
+        "expired_sdk_task_finished": True,
+        "remaining_adapter_records": 1,
+    }
+
+
 def verify_unavailable_turn(status: int, payload, observed) -> None:
     """Require a catalog refusal while no service process or listener can execute work."""
     require(
@@ -833,6 +937,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         "registry": REGISTRY_DISPATCHES,
         "unavailable": UNAVAILABLE_DISPATCHES,
         "idle": IDLE_DISPATCHES,
+        "idle-default": DEFAULT_IDLE_DISPATCHES,
     }
     require(case in counts, "Unknown qualification case")
     dispatches = counts[case]
@@ -947,6 +1052,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     "--refuse-completed-cleanup-file",
                     str(completed_refusal_file),
                     *(["--idle-expiry-file", str(idle_expiry_file)] if case == "idle" else []),
+                    *(
+                        ["--default-idle-expiry-file", str(idle_expiry_file)]
+                        if case == "idle-default"
+                        else []
+                    ),
                 ],
             )
 
@@ -1297,6 +1407,106 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 print(
                     "Both sessions recovered discovery and reused their MCP identities without a Gateway restart or replay",
+                    flush=True,
+                )
+            elif case == "idle-default":
+                if service_process is None:
+                    raise RuntimeError("Default idle expiry requires a started service")
+                report["environment"] = verify_environment(baseline_args)
+                owner_before = owner_file.read_bytes()
+                sessions = [turn(index)[0] for index in range(2)]
+                require(len(set(sessions)) == 2, "Default idle expiry requires distinct sessions")
+                boot = records(transport)[-1]["boot"]
+                snapshot_registry(sessions, boot, owner_before)
+                before_expiry = len(records(transport))
+                idle_expiry_file.touch()
+                wait_for(
+                    lambda: any(
+                        r.get("event") == "idle_expiry_armed"
+                        for r in records(transport)[before_expiry:]
+                    ),
+                    "Default idle observer was not armed",
+                    10,
+                )
+                began = time.monotonic()
+                for index in range(DEFAULT_IDLE_KEEPALIVES):
+                    deadline = began + (index + 1) * 120
+                    wait_for(
+                        lambda: time.monotonic() >= deadline,
+                        "Default idle keepalive scheduling failed",
+                        125,
+                    )
+                    require(
+                        not any(
+                            r.get("event") == "idle_expiry_started"
+                            for r in records(transport)[before_expiry:]
+                        ),
+                        "Idle expiry began before the bounded keepalive sequence completed",
+                    )
+                    require(turn(0)[0] == sessions[0], "Keepalive replaced the surviving session")
+                    snapshot_registry(sessions, boot, owner_before)
+                    print(
+                        f"Default idle wait: {index + 1}/{DEFAULT_IDLE_KEEPALIVES} A calls completed; no B workload",
+                        flush=True,
+                    )
+                wait_for(
+                    lambda: any(
+                        r.get("event") == "idle_expiry_finished"
+                        for r in records(transport)[before_expiry:]
+                    ),
+                    "Default idle session did not expire after the 900-second interval",
+                    180,
+                )
+                expiry_evidence = records(transport)[before_expiry:]
+                report["default_idle_expiry"] = verify_default_idle_expiry(
+                    expiry_evidence, boot, sessions[1], sessions[0]
+                )
+                snapshot_registry([sessions[0]], boot, owner_before)
+                verify_dispatch_count(records(transport), expected_calls)
+                require(turn(0)[0] == sessions[0], "Default expiry retired the surviving session")
+                before_reconnect = len(records(transport))
+                fresh = turn(1)[0]
+                require(fresh not in sessions, "Default-expired identity was reused")
+                reconnect = records(transport)[before_reconnect:]
+                require(
+                    any(
+                        r.get("event") == "response"
+                        and r.get("status") == 404
+                        and r.get("session") == sessions[1]
+                        for r in reconnect
+                    )
+                    and len(
+                        [
+                            r
+                            for r in reconnect
+                            if r.get("event") == "request" and r.get("method") == "initialize"
+                        ]
+                    )
+                    == 1,
+                    "Default expiry reconnect did not reject the stale identity and initialize once",
+                )
+                require(turn(1)[0] == fresh, "Default-expiry replacement identity was not reused")
+                final_registry = snapshot_registry([sessions[0], fresh], boot, owner_before)
+                report["default_idle_expiry"].update(
+                    surviving_session_reused=True,
+                    fresh_session_reused=True,
+                    stale_session_status=404,
+                    final_registry=final_registry,
+                    same_gateway_and_service=True,
+                    owner_unchanged=True,
+                    replayed=False,
+                )
+                (root / "default-idle-expiry.json").write_text(
+                    json.dumps(
+                        {
+                            "transport": records(transport)[before_expiry:],
+                            "observed": report["default_idle_expiry"],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                print(
+                    "Default 900-second idle expiry drained B; A remained callable and B reconnected without replay",
                     flush=True,
                 )
             elif case == "idle":
@@ -2328,7 +2538,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             report["other_owner_preserved"] = True
             report["total_dispatches"] = verify_dispatch_count(records(transport), dispatches)
             report["remaining"] = [
-                "other Gateway retirement triggers, idle expiry and prolonged/concurrent churn",
+                "broader idle-expiry timing races, other retirement triggers and prolonged/concurrent churn",
                 "Docker cleanup/daemon failures and remaining interruption cases",
                 "other discovery failures, repeated backoff and concurrent discovery",
                 "full real-host transport/MAF matrix",
@@ -2373,7 +2583,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     (
         root
         / (
-            "idle-report.json"
+            "default-idle-report.json"
+            if case == "idle-default"
+            else "idle-report.json"
             if case == "idle"
             else "startup-report.json"
             if case == "unavailable"
@@ -2391,7 +2603,9 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument(
-        "--case", choices=["lifecycle", "registry", "unavailable", "idle"], default="lifecycle"
+        "--case",
+        choices=["lifecycle", "registry", "unavailable", "idle", "idle-default"],
+        default="lifecycle",
     )
     print(json.dumps(qualify(parser.parse_args()), indent=2))
 

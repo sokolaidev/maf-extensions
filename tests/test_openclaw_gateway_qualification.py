@@ -2028,7 +2028,7 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
     lifecycle.verify_churn_retirement([*churn_evidence(), notification], "boot", "target", 1)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle"])
+@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle", "idle-default"])
 @pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None])
 def test_final_shutdown_requires_zero_process_exit(case, exit_code):
     evidence = [
@@ -2042,7 +2042,7 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
             lifecycle.verify_final_shutdown(evidence, case, exit_code)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle"])
+@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle", "idle-default"])
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "poisoned", "sessions", "active"])
 def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutation):
     evidence = [
@@ -2477,3 +2477,278 @@ def test_expiry_observer_preserves_sweeper_and_restores_policy(tmp_path):
         assert events[2]["sdk_finished"] is True
 
     asyncio.run(run())
+
+
+def default_idle_evidence():
+    evidence, _ = idle_expiry_evidence()
+    armed, start, end = evidence
+    armed.update(accelerated=False, seconds=900, monotonic_ns=1_000_000_000, idle_ages={"idle": 10})
+    start.update(
+        effective_seconds=900,
+        idle_seconds=900,
+        active_session=None,
+        monotonic_ns=891_000_000_000,
+        time_ns=9000,
+    )
+    end.update(active_session=None, active=False, readers=0, time_ns=9001)
+    end["sessions"][0].update(request_ids=0, requests=1, get_active=True, sdk_streams=1)
+    for index in range(lifecycle.DEFAULT_IDLE_KEEPALIVES):
+        evidence.extend(
+            [
+                {
+                    "event": "request",
+                    "method": "tools/call",
+                    "boot": "boot",
+                    "session": "active",
+                    "time_ns": 100 + index,
+                    "exchange": f"call-{index}",
+                    "request": f"request-{index}",
+                },
+                {
+                    "event": "binding_started",
+                    "boot": "boot",
+                    "session": "active",
+                    "time_ns": 110 + index,
+                },
+            ]
+        )
+    return evidence
+
+
+@pytest.mark.parametrize(
+    "stage,field,value",
+    [
+        (0, "accelerated", True),
+        (0, "seconds", 2),
+        (0, "default_seconds", 2),
+        (0, "idle_ages", {}),
+        (0, "idle_ages", {"idle": 60}),
+        (0, "monotonic_ns", 2_000_000_000),
+        (1, "effective_seconds", 2),
+        (1, "idle_seconds", 899.99),
+        (1, "from_sweeper", False),
+        (1, "session", "active"),
+        (1, "active_session", "active"),
+        (1, "request_ids", 1),
+        (1, "requests", 2),
+        (1, "sdk_running", False),
+        (1, "time_ns", 1),
+        (2, "restored_seconds", 2),
+        (2, "completed", False),
+        (2, "sdk_finished", False),
+        (2, "sdk_terminated", False),
+        (2, "session_registered", True),
+        (2, "sdk_streams", 1),
+        (2, "request_ids", 1),
+        (2, "requests", 1),
+        (2, "poisoned", True),
+        (2, "active", True),
+        (2, "sessions", []),
+        (2, "readers", 1),
+        (2, "boot", "other"),
+    ],
+)
+def test_default_expiry_requires_real_elapsed_time_unchanged_policy_and_drain(stage, field, value):
+    evidence = default_idle_evidence()
+    evidence[stage][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(evidence, "boot", "idle", "active")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_call",
+        "extra_call",
+        "wrong_session",
+        "duplicate_exchange",
+        "missing_binding",
+        "wrong_binding",
+        "delete",
+        "retired",
+        "initialize",
+    ],
+)
+def test_default_expiry_accepts_only_bounded_surviving_session_work(mutation):
+    evidence = default_idle_evidence()
+    if mutation == "missing_call":
+        evidence.pop(3)
+    elif mutation == "extra_call":
+        evidence.append(dict(evidence[3]))
+    elif mutation == "wrong_session":
+        evidence[3]["session"] = "idle"
+    elif mutation == "duplicate_exchange":
+        evidence[5]["exchange"] = evidence[3]["exchange"]
+    elif mutation == "missing_binding":
+        evidence.pop(4)
+    elif mutation == "wrong_binding":
+        evidence[4]["session"] = "idle"
+    elif mutation == "initialize":
+        evidence[3]["method"] = "initialize"
+    else:
+        evidence.append(
+            {"boot": "boot", "event": "delete_requested" if mutation == "delete" else "retired"}
+        )
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(evidence, "boot", "idle", "active")
+
+
+@pytest.mark.parametrize("stage", range(3))
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_default_expiry_requires_unique_stages(stage, duplicate):
+    evidence = default_idle_evidence()
+    if duplicate:
+        evidence.append(dict(evidence[stage]))
+    else:
+        evidence.pop(stage)
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(evidence, "boot", "idle", "active")
+
+
+def test_default_expiry_reports_default_policy_and_elapsed_observation():
+    result = lifecycle.verify_default_idle_expiry(default_idle_evidence(), "boot", "idle", "active")
+    assert result["threshold_modified"] is False
+    assert result["observed_idle_seconds"] == 900
+    assert result["observation_seconds"] == 890
+    assert result["keepalive_calls"] == 7
+
+
+@pytest.mark.parametrize("through_sweeper", [False, True])
+def test_default_expiry_observer_never_writes_policy_or_timestamps(tmp_path, through_sweeper):
+    async def run():
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+
+        class Record:
+            touched = observer.time.monotonic() - 901
+            ids = set()
+            requests = 0
+            get_active = False
+            transport = SimpleNamespace(is_terminated=True, _request_streams={})
+
+            def __setattr__(self, name, value):
+                assert name != "touched"
+                super().__setattr__(name, value)
+
+        record = Record()
+        record.task = task
+
+        class App:
+            idle_seconds = 900
+            sessions = {"idle": record, "survivor": record}
+            service = SimpleNamespace(active=None)
+
+            def __setattr__(self, name, value):
+                assert name != "idle_seconds"
+                super().__setattr__(name, value)
+
+            def retire(self, sid):
+                self.sessions.pop(sid)
+                return task
+
+            async def _expire(self):
+                self.retire("idle")
+
+        app = App()
+        evidence = tmp_path / "default.jsonl"
+        observed = observer.ObserveHTTP(app, evidence)
+        observed.registry_snapshot = lambda: {"sessions": [], "active": False, "poisoned": False}
+        original = app.retire
+        observer.arm_idle_expiry(observed, accelerated=False)
+        assert len(app.sessions) == 2
+        if through_sweeper:
+            await app._expire()
+        else:
+            app.retire("idle")
+        await asyncio.sleep(0)
+        assert app.retire == original
+        events = checker.records(evidence)
+        assert events[0]["accelerated"] is False
+        assert (
+            events[0]["seconds"]
+            == events[1]["effective_seconds"]
+            == events[2]["restored_seconds"]
+            == 900
+        )
+        assert events[1]["from_sweeper"] is through_sweeper
+
+    asyncio.run(run())
+
+
+def default_idle_control():
+    return [
+        {
+            "event": "request",
+            "method": "notifications/cancelled",
+            "boot": "boot",
+            "session": "idle",
+            "exchange": "control",
+            "target": "old-request",
+            "time_ns": 50,
+        },
+        {
+            "event": "response",
+            "method": "POST",
+            "boot": "boot",
+            "session": "idle",
+            "exchange": "control",
+            "status": 202,
+            "time_ns": 51,
+        },
+        {
+            "event": "settled",
+            "method": "POST",
+            "boot": "boot",
+            "session": "idle",
+            "exchange": "control",
+            "time_ns": 52,
+        },
+    ]
+
+
+def test_default_expiry_accounts_for_accepted_control_traffic_without_new_work():
+    result = lifecycle.verify_default_idle_expiry(
+        [*default_idle_evidence(), *default_idle_control()], "boot", "idle", "active"
+    )
+    assert result["control_notifications"] == 1
+    assert result["keepalive_calls"] == 7
+
+
+@pytest.mark.parametrize(
+    "stage,field,value",
+    [
+        (0, "session", "unrelated"),
+        (0, "target", None),
+        (0, "time_ns", 1),
+        (1, "session", "active"),
+        (1, "status", 404),
+        (1, "exchange", "other"),
+        (1, "method", "GET"),
+        (2, "session", "active"),
+        (2, "exchange", "other"),
+        (2, "method", "GET"),
+        (2, "time_ns", 9001),
+    ],
+)
+def test_default_expiry_rejects_uncorrelated_or_active_session_control(stage, field, value):
+    controls = default_idle_control()
+    controls[stage][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(
+            [*default_idle_evidence(), *controls], "boot", "idle", "active"
+        )
+
+
+def test_default_expiry_accepts_survivor_control_without_cancelling_observed_work():
+    controls = default_idle_control()
+    for record in controls:
+        record["session"] = "active"
+    result = lifecycle.verify_default_idle_expiry(
+        [*default_idle_evidence(), *controls], "boot", "idle", "active"
+    )
+    assert result["control_notifications"] == 1
+    controls[0]["target"] = "request-0"
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_default_idle_expiry(
+            [*default_idle_evidence(), *controls], "boot", "idle", "active"
+        )

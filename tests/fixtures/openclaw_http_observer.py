@@ -390,17 +390,31 @@ def refuse_completed_cleanup(observer: ObserveHTTP, fault: Path) -> None:
     service.resources[resource.name] = replace(resource, cleanup=cleanup)
 
 
-def arm_idle_expiry(observer: ObserveHTTP) -> None:
-    """Shorten only the fixture's idle threshold while the real sweeper retires one session."""
+def arm_idle_expiry(observer: ObserveHTTP, *, accelerated: bool = True) -> None:
+    """Observe one sweeper retirement, optionally shortening the fixture idle threshold."""
     app = observer.app
     original_retire = app.retire
     original_seconds = app.idle_seconds
-    seconds = 2
-    if original_seconds != 900 or len(app.sessions) != 2 or app.service.active is None:
+    seconds = 2 if accelerated else original_seconds
+    if (
+        original_seconds != 900
+        or len(app.sessions) != 2
+        or (accelerated and app.service.active is None)
+    ):
         raise RuntimeError(
-            "Idle expiry requires two sessions and active work at the default policy"
+            "Idle expiry requires the default policy, two sessions and active work when accelerated"
         )
-    observer.record(event="idle_expiry_armed", default_seconds=original_seconds, seconds=seconds)
+    observer.record(
+        event="idle_expiry_armed",
+        default_seconds=original_seconds,
+        seconds=seconds,
+        accelerated=accelerated,
+        monotonic_ns=time.monotonic_ns(),
+        idle_ages={
+            digest(sid.encode().hex()): time.monotonic() - record.touched
+            for sid, record in app.sessions.items()
+        },
+    )
 
     def retire(sid):
         record = app.sessions[sid]
@@ -417,6 +431,8 @@ def arm_idle_expiry(observer: ObserveHTTP) -> None:
         observer.record(
             event="idle_expiry_started",
             from_sweeper=from_sweeper,
+            effective_seconds=app.idle_seconds,
+            monotonic_ns=time.monotonic_ns(),
             session=digest(sid.encode().hex()),
             idle_seconds=now - record.touched,
             request_ids=len(record.ids),
@@ -429,7 +445,8 @@ def arm_idle_expiry(observer: ObserveHTTP) -> None:
         task = original_retire(sid)
 
         def finished(task):
-            app.idle_seconds = original_seconds
+            if accelerated:
+                app.idle_seconds = original_seconds
             app.retire = original_retire
             active = app.service.active
             observer.record(
@@ -454,7 +471,8 @@ def arm_idle_expiry(observer: ObserveHTTP) -> None:
         return task
 
     app.retire = retire
-    app.idle_seconds = seconds
+    if accelerated:
+        app.idle_seconds = seconds
 
 
 def crash_active_service(observer: ObserveHTTP) -> None:
@@ -482,7 +500,9 @@ if __name__ == "__main__":
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--stop-file", type=Path)
     parser.add_argument("--crash-file", type=Path)
-    parser.add_argument("--idle-expiry-file", type=Path)
+    expiry = parser.add_mutually_exclusive_group()
+    expiry.add_argument("--idle-expiry-file", type=Path)
+    expiry.add_argument("--default-idle-expiry-file", type=Path)
     parser.add_argument("--refuse-cleanup-file", type=Path)
     parser.add_argument("--refuse-completed-cleanup-file", type=Path)
     parser.add_argument("--drop-result-file", type=Path)
@@ -533,6 +553,12 @@ if __name__ == "__main__":
                     if args.idle_expiry_file is not None and args.idle_expiry_file.exists():
                         args.idle_expiry_file.unlink()
                         arm_idle_expiry(observer)
+                    if (
+                        args.default_idle_expiry_file is not None
+                        and args.default_idle_expiry_file.exists()
+                    ):
+                        args.default_idle_expiry_file.unlink()
+                        arm_idle_expiry(observer, accelerated=False)
                     if args.crash_file is not None and args.crash_file.exists():
                         args.crash_file.unlink()
                         crash_active_service(observer)
