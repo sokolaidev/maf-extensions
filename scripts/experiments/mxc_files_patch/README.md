@@ -20,7 +20,7 @@ The experimental shared-call supervisors accept a host-owned `threading.Event` t
 
 ## Optional idle expiry
 
-New shared-store sessions may set `idle_policy=Policy(timeout_seconds, grace_seconds=300)`; omitting it keeps idle expiry disabled. Running calls and unresolved cleanup remain protected. The interval starts at creation or completed cleanup, and reopening or replaying a result does not reset it. The host schedules `NativeJournal.expire_idle()` under session ownership; admission and restore also check expiry. Idle retirement preserves retained result/artifact bytes and call identity. The [store contract](../mxc_session_patch/HOST_PUBLICATION.md#optional-persistent-session-idle-expiry) defines persistent deadlines, finite clock forgiveness, format-5 compatibility and recovery boundaries.
+New shared-store sessions may set `idle_policy=Policy(timeout_seconds, grace_seconds=300)`; omitting it keeps idle expiry disabled. Running calls and unresolved cleanup remain protected. The interval starts at creation or completed cleanup, and reopening or replaying a result does not reset it. The host schedules `NativeJournal.expire_idle()` under session ownership; admission and restore also check expiry. Idle retirement preserves retained result/artifact bytes and call identity. The [store contract](../mxc_session_patch/HOST_PUBLICATION.md#optional-persistent-session-idle-expiry) defines persistent deadlines, finite clock forgiveness, format-5 compatibility and recovery boundaries. The [qualified idle record](../../../docs/sandbox/research/mxc-backend.md#qualified-idle-expiry-candidate) retains candidate-specific Linux/KVM and Windows/WHP evidence using controlled host time.
 
 ## Run on GitHub
 
