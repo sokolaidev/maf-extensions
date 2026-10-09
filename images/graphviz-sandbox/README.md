@@ -15,22 +15,22 @@ Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/graphvi
 
 Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `graphviz` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-**Availability:** [Graphviz 0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-graphviz-v0.1.0) is publicly available for Linux/amd64. Its immutable evidence includes provenance, an SPDX SBOM, signed completion and anonymous-pull qualification. Pin `ghcr.io/sokolaidev/maf-extensions/graphviz@sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63`; check the status report for current monitoring before adopting it.
+**Availability:** [Graphviz 0.1.1](https://github.com/sokolaidev/maf-extensions/releases/tag/image-graphviz-v0.1.1) is publicly available for Linux/amd64. Its immutable evidence includes provenance, an SPDX SBOM, signed completion and anonymous-pull qualification. Pin `ghcr.io/sokolaidev/maf-extensions/graphviz@sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e`; check the status report for current monitoring before adopting it.
 
 ## Verify before pulling and running
 
-Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below selects release 0.1.0 and pins its image digests and [source `e2c45419`](https://github.com/sokolaidev/maf-extensions/tree/e2c454192438496bbbd25ebf258b1f2a2756ffb7). Inspect [publication run 37820584534](https://github.com/sokolaidev/maf-extensions/actions/runs/37820584534) and review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
+Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below selects release 0.1.1 and pins its image digests and [source `c36ad8c2`](https://github.com/sokolaidev/maf-extensions/tree/c36ad8c29b3fd44d7bb14bac49dbda475c6780f2). Inspect [publication run 37918950417](https://github.com/sokolaidev/maf-extensions/actions/runs/37918950417) and review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
 
 ```json
 {
   "profile": "graphviz",
-  "version": "0.1.0",
-  "sourceCommit": "e2c454192438496bbbd25ebf258b1f2a2756ffb7",
+  "version": "0.1.1",
+  "sourceCommit": "c36ad8c29b3fd44d7bb14bac49dbda475c6780f2",
   "sourceRef": "refs/heads/main",
-  "registryDigest": "sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63",
-  "assessedManifestDigest": "sha256:c96936644f7dc2e9fa04a21ffc3274fbf52e5c045e978a5e27a2edf80a531e63",
-  "imageId": "sha256:7524f3f2bbd5690ba8dbce77f57d81b1242bbc898554cd3cd37f79bcf08ab9c2",
-  "attemptId": "37820584534"
+  "registryDigest": "sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e",
+  "assessedManifestDigest": "sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e",
+  "imageId": "sha256:e31e0db3787d5e3f61d09f36a4df2f1db5d4498f52abade7e232afe31d378dc5",
+  "attemptId": "37918950417"
 }
 ```
 
@@ -78,7 +78,7 @@ docker run --rm --platform linux/amd64 \
 test -s diagram-output/diagram.png
 ```
 
-The result is `diagram-output/diagram.png` on the host. On 2026-10-08, this exact Bash example passed for the pinned 0.1.0 digest through WSL with Docker Desktop 29.8.2 in Linux-container mode and UID/GID 1000:1000; the output was a valid 171 by 251 PNG. This checks the documented CLI path, not the separate agent sample or a production deployment. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
+The result is `diagram-output/diagram.png` on the host. On 2026-10-08, this exact Bash example passed for the then-selected 0.1.0 digest through WSL with Docker Desktop 29.8.2 in Linux-container mode and UID/GID 1000:1000; the output was a valid 171 by 251 PNG. That recorded result applies to 0.1.0; the CLI example has not yet been rerun for 0.1.1. It does not qualify the separate agent sample or a production deployment. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
 
 For the [Docker diagram sample](../../samples/07_docker_diagram/), set `DIAGRAM_SANDBOX_IMAGE` to the verified digest reference instead of its local-build tag and follow the sample's host/model prerequisites with the `docker` backend. Its tool writes under `/maf-sandbox/work`, requests closed egress and returns the rendered PNG through `FILES_OUT`. The image packaging probe does not establish compatibility with every SDK version or the sample's separate `docker-sbx` path; qualify your chosen combination.
 
@@ -101,6 +101,8 @@ The release gate requires an offline PNG packaging probe, an SPDX SBOM, and no H
 See the [security policy](../../SECURITY.md) for support and private vulnerability reporting. Use [repository issues](https://github.com/sokolaidev/maf-extensions/issues) for non-sensitive usage problems; include the image digest, platform, Docker version, relevant SDK versions and a minimal non-sensitive DOT example.
 
 ## SDK qualification
+
+**Graphviz 0.1.1 status:** the publication workflow passed anonymous pull and offline PNG packaging checks, and independent consumer verification passed its signed release identity. The SDK policy now selects 0.1.1; its hosted SDK qualification remains pending. The earlier SDK result below applies only to 0.1.0.
 
 The [manual SDK qualification](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) verifies the signed release identity before exercising sample 07's rendering tool through the published router and Docker backend. It checks PNG delivery, invalid input, closed networking, a deterministic SDK timeout and container disposal, with exact image and package versions in its report. It runs on demand, without a model or Azure credentials, and does not run during ordinary PR CI. Its SDK defaults differ from the hardened Docker CLI example above; consult the observed settings and qualification limits before adopting them.
 

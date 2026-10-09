@@ -170,9 +170,11 @@ SAMPLE_BACKEND=docker-sbx DIAGRAM_SANDBOX_IMAGE=graphviz-sandbox:local uv run sa
 
 ## Qualify the published image through the SDK
 
+**Selected release: Graphviz 0.1.1; SDK qualification pending.** [Publication run 37918950417](https://github.com/sokolaidev/maf-extensions/actions/runs/37918950417) completed signed release delivery and the offline PNG packaging probe. Independent consumer verification passed the selected source and digest. The manual hosted SDK check must run after this policy reaches `main`; the historical 0.1.0 results below do not qualify 0.1.1.
+
 The manual [Graphviz SDK qualification workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/graphviz-sdk-qualification.yml) invokes this sample's decorated `render_diagram` tool directly, without a model or Azure credentials. It installs published `maf-sandbox==0.48.0`, `maf-sandbox-docker==0.27.0` and `agent-framework-core==1.20.0` in a clean environment. Core 0.48.0 satisfies that Docker release's `<0.49` bound; the workspace's core version is not substituted. The workflow runs only when manually dispatched on `main`, retains reports on success or failure for 90 days, and adds no image execution to ordinary PR CI. It does not build or publish an image.
 
-[qualify.py](qualify.py) first verifies the selected release's provenance, SBOM and completion using the existing consumer verifier. [graphviz-policy.json](graphviz-policy.json) pins the independently selected Graphviz 0.1.0 identity from the [consumer guide](../../images/graphviz-sandbox/README.md); review that selection before running. Update the policy and published SDK pins deliberately when qualifying a different combination. The publication attempt number is inspection context, not an authenticated identity field. Current monitoring status is reported separately and does not override successful release identity verification.
+[qualify.py](qualify.py) first verifies the selected release's provenance, SBOM and completion using the existing consumer verifier. [graphviz-policy.json](graphviz-policy.json) pins the independently selected Graphviz 0.1.1 identity from the [consumer guide](../../images/graphviz-sandbox/README.md); review that selection before running. Update the policy and published SDK pins deliberately when qualifying a different combination. The publication attempt number is inspection context, not an authenticated identity field. Current monitoring status is reported separately and does not override successful release identity verification.
 
 The qualification passes only when the real router and Docker backend deliver a PNG through `FILES_OUT`, reject invalid DOT without delivering a PNG, and remove their containers after both calls. It checks PNG chunk checksums, exact decompressed scanline sizes and filter bytes for noninterlaced 8-bit RGB/RGBA output; other layouts and critical chunks are refused. It observes the digest reference and `network=none` on each acquired container, and checks that the timeout probe has no active interface other than loopback (inactive kernel tunnel devices are permitted). A separate SDK `sleep 30` execution must time out with a one-second limit, return within 20 seconds including disposal, and leave no container. This is a deterministic backend timeout check; it does not test the renderer's timeout-message branch. A final scope purge runs on failure, but cannot turn a failed SDK cleanup check into a pass.
 
@@ -180,7 +182,7 @@ To reproduce on a Linux/amd64 Docker engine, use a reviewed checkout, `uv`, and 
 
 ```bash
 QUALIFICATION_ROOT="$(mktemp -d)"
-gh release download image-graphviz-v0.1.0 --repo sokolaidev/maf-extensions \
+gh release download image-graphviz-v0.1.1 --repo sokolaidev/maf-extensions \
   --dir "$QUALIFICATION_ROOT/evidence"
 uv run --isolated --no-project --python 3.12 samples/07_docker_diagram/qualify.py \
   --policy samples/07_docker_diagram/graphviz-policy.json \
