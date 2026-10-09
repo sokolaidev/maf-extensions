@@ -142,6 +142,7 @@ jobs:
     name: Report image security failure
     concurrency:
       group: image-security-tracker
+      queue: max
       cancel-in-progress: false
     needs: [select, scan, check]
     if: always() && (needs.select.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') && github.event_name != 'pull_request'
@@ -170,6 +171,7 @@ jobs:
     name: Close recovered image security tracker
     concurrency:
       group: image-security-tracker
+      queue: max
       cancel-in-progress: false
     needs: [select, scan, check]
     if: >-

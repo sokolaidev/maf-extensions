@@ -187,13 +187,14 @@ def test_recovery_job_requires_full_default_branch_success_and_read_only_actions
     }
 
 
-def test_failure_and_recovery_updates_are_serialized():
+@pytest.mark.parametrize("name", ["report-failure", "report-recovery"])
+def test_failure_and_recovery_updates_are_serialized_and_queued(name):
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
-    for name in ("report-failure", "report-recovery"):
-        assert workflow["jobs"][name]["concurrency"] == {
-            "group": "image-security-tracker",
-            "cancel-in-progress": False,
-        }
+    assert workflow["jobs"][name]["concurrency"] == {
+        "group": "image-security-tracker",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
 
 
 def test_old_commit_cannot_close_current_tracker(actions):
