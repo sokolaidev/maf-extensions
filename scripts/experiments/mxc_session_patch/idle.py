@@ -63,7 +63,7 @@ def _deadline(store: SharedStore, timeout: int, grace: int) -> int:
 def configure(store: SharedStore, policy: Policy | None) -> bool:
     """Configure under the session lock; existing policy and deadlines cannot be replaced."""
     version = store.db.execute("SELECT version FROM settings WHERE id=1").fetchone()[0]
-    if version != VERSION:
+    if version < VERSION:
         if policy is None:
             return False
         store.db.execute(SCHEMA)
