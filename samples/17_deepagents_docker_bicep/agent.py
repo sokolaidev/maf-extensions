@@ -41,7 +41,7 @@ file beside `main.bicep`.
 #     "maf-sandbox-deepagents",
 #     "maf-sandbox-docker",
 #     "maf-sandbox-docker-sbx>=0.3.0",
-#     "maf-sandbox>=0.48",
+#     "maf-sandbox>=0.49",
 # ]
 # ///
 
