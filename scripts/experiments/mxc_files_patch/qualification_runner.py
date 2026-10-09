@@ -114,6 +114,7 @@ def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
         ("native_probe", "--root", "files"),
         ("durability_probe", "--state-dir", "durability"),
         ("deletion_probe", "--state-dir", "deletion"),
+        ("idle_probe", "--state-dir", "idle"),
     ):
         run(
             root,
