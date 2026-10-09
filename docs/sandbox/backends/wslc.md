@@ -2,7 +2,7 @@
 
 With `credential_gateway=CredentialGateway(provider, max_lifetime_seconds=300)` and a rebuilt packaged proxy image, WSLC supports [credentials for guest HTTP](../hosts.md#credentials-for-guest-http-requests). Each acquisition gets a fresh container and gateway bound to the trusted user scope, agent, call and runtime generation. The gateway holds the bearer tokens and enforces exact HTTPS origins, method/path rules and independent expiry. This requires the attached-authority opt-ins and a call-scoped workload; credential-bearing containers are never reused.
 
-WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with WSL. It supports command execution and file upload. Use the [package README](../../../packages/maf-sandbox-wslc/README.md) for setup.
+WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with WSL. It supports command execution, file upload and version-gated output reads. Use the [package README](../../../packages/maf-sandbox-wslc/README.md) for setup.
 
 ## Supported contract
 
@@ -10,7 +10,7 @@ WSLC runs Linux containers on Windows through the `wslc.exe` CLI included with W
 |---|---|
 | Host | Windows with WSL 2.9.3 or later; an event loop that supports subprocesses |
 | Isolation | `CONTAINER`; the host must set `min_isolation=Isolation.CONTAINER` |
-| Capabilities | `EXEC`, `FILES_IN` |
+| Capabilities | `EXEC`, `FILES_IN`; the async factory adds `FILES_OUT` on WSLC 3.0.2.0 or later |
 | Network | `CLOSED`; `ALLOWLIST` and egress observation with a configured proxy image |
 | Guest OS | POSIX |
 | Sharing | `CONVERSATION`, `CALL` |
@@ -33,11 +33,25 @@ A destination the image's user cannot write raises `PermissionError`. There is n
 
 On WSLC 2.9.12.0 a 32 MiB write took 0.31 s and a plain exec 0.11 s. The write's byte count is checked against the content length before the file is published, so an engine whose `exec` does not stream stdin refuses the write rather than publishing a short file. `container exec --interactive` is present in the CLI source from the supported 2.9.3 minimum; live evidence covers 2.9.12.0.
 
-Path checks use the engine's copy behavior to identify missing paths and directories. For other accepted copy sources, a guest probe supplies the remaining type. A guest claim that such a source is a directory contradicts the engine and is rejected. The probe is still an image-dependent limitation.
+Factory-created backends on WSLC 3.0.2.0+ use bounded archive metadata for input path checks as well as outputs. The legacy constructor and older engines use the engine's host-file copy behavior to identify missing paths and directories. For other accepted copy sources, a guest probe supplies the remaining type. A guest claim that such a source is a directory contradicts the engine and is rejected. That legacy probe is still an image-dependent limitation.
 
 The root probe invokes `/usr/bin/test` directly with separate arguments. A guest-writable directory earlier in `PATH` cannot supply its executable. The image must protect that executable, its dependencies and ancestor directories from the runtime user; pinning its path does not establish trust in an arbitrary image.
 
-Each stat copies into a private host temporary directory, removed after the subprocess exits. Guest file sizes determine temporary disk use and I/O; upload and stdout limits do not bound those bytes. Host termination or failed cleanup can leave data behind. The operator must bound the host temporary filesystem.
+Each legacy input stat copies into a private host temporary directory, removed after the subprocess exits. Guest file sizes determine temporary disk use and I/O; upload and stdout limits do not bound those bytes. Host termination or failed cleanup can leave data behind. The operator must bound the host temporary filesystem. On WSLC 3.0.2.0 the changed directory extraction can fail on trees containing symlinks, so use the async factory to select archive metadata on that engine.
+
+## Output reads
+
+Construct with `await WslcSandboxBackend.create(config)` before registering the backend with the router. A five-second, 4 KiB `wslc --version` check establishes the minimum 3.0.2.0 CLI contract. Older, failed and unrecognized replies withhold `FILES_OUT`; the plain constructor withholds it without probing. The factory's supported version is rechecked at every acquire, and a downgrade refuses before any workload runs. `FILES_LIST`, `FILES_DELETE` and `RECLAIM` remain undeclared.
+
+The output path uses `container cp INSTANCE:PATH -`, addressed by immutable container ID. This directly streams the engine archive without host staging or guest `cat`, `stat` or `base64`. Stat reads the effective header without consuming the file body; final links are reported as links. Reads validate the effective type and size before body consumption, enforce the smaller of the caller cap and 8 MiB, and require a complete single-entry archive plus a successful CLI exit. A file that changes after a separate stat is checked again from the stream actually read. Missing paths retain `None`/`FileNotFoundError`; other engine failures remain failures.
+
+GNU/PAX metadata is bounded by 64 KiB and 32 headers. Negative sizes, sparse entries, malformed extensions, truncation and extra entries are refused. Stderr drains concurrently while retaining at most 64 KiB; trailing zero padding has its own 64 KiB budget. Transfer timeout uses `command_timeout_seconds`, with up to three seconds for abnormal cleanup. Metadata-only stat, refusal, timeout and cancellation kill and reap the CLI while draining its pipes. They do not claim to terminate guest programs.
+
+The shared confinement helper checks every ancestor with engine no-follow metadata, including the working directory and its ancestors. Links are refused even when their targets stay within the base. **Those checks and the copy are separate engine operations.** A running guest can swap a checked ancestor and redirect a later read, and rootfs copy authority can expose bytes the image user could not read. WSLC does not freeze the guest or hold a no-follow traversal across these operations. This residual accompanies the `FILES_OUT` declaration; static link refusal is not proof against concurrent replacement. Output paths on mounted volumes are not qualified.
+
+The first release containing the stdout route is [WSL 3.0.2](https://github.com/microsoft/WSL/releases/tag/3.0.2), through [microsoft/WSL#41668](https://github.com/microsoft/WSL/pull/41668). The copy-service source is identical in 3.0.3. Local live qualification uses WSLC 3.0.2.0: the shared `FILES_OUT` probes pass with only the four undeclared listing probes skipped; binary and empty bytes, PAX names, final links, linked ancestors, directories, FIFOs, missing paths, a 2 GiB header-only stat, early cap refusal, subsequent reads and container disposal are checked. Malformed archives, stderr flooding, failure exits, timeouts and cancellation are covered with offline parsers and real host subprocesses. This is local evidence, not a hosted run or live validation of 3.0.3.
+
+Factory-created sandboxes also use engine archive metadata to check the existing storage base and input paths. Creating a missing base still has the setup prerequisites below; output operations themselves require no guest utility. Legacy input path checks and their temporary-disk exposure remain unchanged.
 
 ## Working-directory setup
 

@@ -32,12 +32,14 @@ from maf_sandbox import (
     Cleanup,
     Egress,
     EgressRule,
+    EntryKind,
     Isolation,
     OsFamily,
     SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    SandboxTransferCapExceeded,
 )
 from maf_sandbox.conformance import (
     PosixGuestSubject,
@@ -46,6 +48,7 @@ from maf_sandbox.conformance import (
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
+    assert_files_out_conformance,
     assert_reach_conformance,
     assert_reclaim_conformance,
 )
@@ -130,6 +133,105 @@ def _spec() -> SandboxSpec:
 
 def _key(scope: str) -> SandboxKey:
     return SandboxKey(scope=scope, thread_id="thread-1", agent_id="devops-engineer")
+
+
+def test_files_out_shared_conformance():
+    async def scenario():
+        backend = await WslcSandboxBackend.create(WslcSandboxConfig())
+        assert Capability.FILES_OUT in backend.declarations.capabilities, "needs WSLC >= 3.0.2.0"
+        key = _key("e2e-files-out-" + uuid.uuid4().hex)
+        spec = replace(
+            _spec(),
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
+        )
+        try:
+            sandbox = await backend.acquire(key, spec)
+            results = await assert_files_out_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.declarations.capabilities,
+                )
+            )
+            assert {r.probe.name for r in results if r.skipped} == {
+                "listing-a-linked-directory",
+                "listing-through-a-linked-parent",
+                "listing-under-a-linked-ancestor",
+                "a-listing-names-its-links",
+            }
+            await assert_files_in_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.declarations.capabilities,
+                )
+            )
+        finally:
+            assert await backend.dispose(key, kind=spec.kind) is None
+
+    asyncio.run(scenario())
+
+
+def test_files_out_binary_metadata_caps_and_guest_independence(monkeypatch):
+    async def scenario():
+        backend = await WslcSandboxBackend.create(WslcSandboxConfig())
+        assert Capability.FILES_OUT in backend.declarations.capabilities
+        key = _key("e2e-files-out-bytes-" + uuid.uuid4().hex)
+        spec = replace(
+            _spec(),
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
+        )
+        try:
+            sandbox = await backend.acquire(key, spec)
+            binary = bytes(range(256)) * 4
+            long_name = "long-" + "x" * 180
+            for path, data in (("binary", binary), ("empty", b""), (long_name, b"long")):
+                await sandbox.write_file(path, data, working_directory=_WORK)
+            result = await sandbox.exec(
+                "ln -s binary link; mkdir inner; ln -s inner linked-dir; "
+                "printf inside > inner/file; mkfifo fifo; truncate -s 2147483648 large",
+                working_directory=_WORK,
+                timeout=30,
+            )
+            assert result.exit_code == 0, result.stderr
+
+            async def refuse_guest(*args, **kwargs):
+                raise AssertionError("output operations must use only the engine archive")
+
+            monkeypatch.setattr(sandbox, "_run", refuse_guest)
+            for path, data in (("binary", binary), ("empty", b""), (long_name, b"long")):
+                entry = await sandbox.stat_file(path, working_directory=_WORK)
+                assert entry.kind is EntryKind.FILE and entry.size_bytes == len(data)
+                assert (
+                    await sandbox.read_file(
+                        path, working_directory=_WORK, max_bytes=max(1, len(data))
+                    )
+                    == data
+                )
+            for path, kind in (
+                ("link", EntryKind.SYMLINK),
+                ("inner", EntryKind.DIRECTORY),
+                ("fifo", EntryKind.OTHER),
+            ):
+                assert (await sandbox.stat_file(path, working_directory=_WORK)).kind is kind
+                with pytest.raises(OSError):
+                    await sandbox.read_file(path, working_directory=_WORK, max_bytes=10)
+            with pytest.raises(ValueError, match="link"):
+                await sandbox.read_file("linked-dir/file", working_directory=_WORK, max_bytes=10)
+            assert await sandbox.stat_file("missing", working_directory=_WORK) is None
+            with pytest.raises(FileNotFoundError):
+                await sandbox.read_file("missing", working_directory=_WORK, max_bytes=10)
+            assert (await sandbox.stat_file("large", working_directory=_WORK)).size_bytes == 2**31
+            with pytest.raises(SandboxTransferCapExceeded):
+                await sandbox.read_file("large", working_directory=_WORK, max_bytes=1024)
+            # A killed oversized transfer must not prevent a subsequent read.
+            assert (
+                await sandbox.read_file("binary", working_directory=_WORK, max_bytes=1024) == binary
+            )
+        finally:
+            assert await backend.dispose(key, kind=spec.kind) is None
+
+    asyncio.run(scenario())
 
 
 def test_write_checks_remove_private_host_copies(tmp_path, monkeypatch):

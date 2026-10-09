@@ -12,7 +12,7 @@ Capabilities describe operations. [Isolation](policy-isolation.md), [network pol
 | `RUN_CODE` | Run code through a language runtime | Hyperlight |
 | `HOST_TOOLS` | Support calls from a guest program into registered host functions | ACAS, Docker |
 | `FILES_IN` | Write files into the sandbox | ACAS, Docker, WSLC |
-| `FILES_OUT` | Inspect and read declared output files | ACAS, Docker; Hyperlight with flat outputs enabled |
+| `FILES_OUT` | Inspect and read declared output files | ACAS, Docker; WSLC through its async factory on 3.0.2.0+; Hyperlight with flat outputs enabled |
 | `FILES_LIST` | Discover directory entries | ACAS; Hyperlight with output files enabled, flat base only |
 | `FILES_DELETE` | Remove workload-selected paths | ACAS, Docker |
 | `SNAPSHOT` | Reset to a baseline taken before input | Hyperlight |

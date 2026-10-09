@@ -4,7 +4,7 @@
 
 > **Experimental.** Releases before 1.0 may change or remove APIs. Importing this package emits `MafSandboxWslcExperimentalWarning`.
 
-Run sandbox commands in Linux containers managed by `wslc`, the container CLI included with WSL. This backend transfers input files and returns command output. It has no Azure dependency.
+Run sandbox commands in Linux containers managed by `wslc`, the container CLI included with WSL. This backend transfers input files, returns command output and reads artifacts on supported engines. It has no Azure dependency.
 
 This is an independent package, not a Microsoft product.
 
@@ -18,7 +18,7 @@ pip install maf-sandbox-wslc
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
-backend = WslcSandboxBackend(WslcSandboxConfig())
+backend = await WslcSandboxBackend.create(WslcSandboxConfig())
 router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 ```
 
@@ -35,7 +35,7 @@ See the [Bicep sample](https://github.com/sokolaidev/maf-extensions/tree/main/sa
 | Setting | Behavior |
 |---|---|
 | Isolation | `CONTAINER` |
-| Capabilities | `EXEC`, `FILES_IN` |
+| Capabilities | `EXEC`, `FILES_IN`; `FILES_OUT` through the async factory on WSLC 3.0.2.0+ |
 | Guest OS | POSIX |
 | Network | `CLOSED`; `ALLOWLIST` with a configured proxy |
 | Lifetime | Conversation or separate sandbox per call |
@@ -43,7 +43,17 @@ See the [Bicep sample](https://github.com/sokolaidev/maf-extensions/tree/main/sa
 | Command output | 8 MiB of stdout and stderr together; more refuses the call and discards the container |
 | Cleanup | Disposal; no reclaim or snapshot reset |
 
-Output reads, directory listing, file deletion, runtime `run_code` and host-tool calls are unavailable. A kind requiring one is refused before attachment.
+`await WslcSandboxBackend.create(WslcSandboxConfig())` additionally declares `FILES_OUT` after a bounded version check reports WSLC 3.0.2.0 or later. The plain constructor, older versions and unreadable versions withhold it. Directory listing, file deletion, runtime `run_code` and host-tool calls remain unavailable. A kind requiring an undeclared capability is refused before attachment.
+
+## Output files
+
+Use the async factory before constructing the router to enable output reads. Every acquire rechecks the supported version before creating or reusing a workload. WSLC 3.0.2.0 is the tested minimum; its `container cp CONTAINER:PATH -` streams engine tar metadata and binary bytes without guest utilities or host temporary files. The file must be in the container root filesystem; mounted-volume output is not qualified.
+
+`stat_file` reads only the effective entry header, reporting final symlinks as links. `read_file` refuses links and every other non-regular entry, checks the size before reading its body, and requires a complete archive and successful engine exit. Each read enforces the smaller of the caller's cap and 8 MiB. GNU/PAX metadata is limited to 64 KiB and 32 headers; sparse, malformed, truncated and extra-entry archives are refused. Stderr retention and trailing zero padding each have a separate 64 KiB cap. The router enforces the 32 MiB/64-file collection ceilings.
+
+**Output confinement is checked, not atomic.** Engine metadata checks each ancestor, including those above the working directory, and refuses links even when they point inside the base. A guest that keeps running can replace an ancestor after its check and redirect the later copy. The engine reads with rootfs authority, so a redirected read may reach files the image user cannot read. There is no freezer or held no-follow traversal here; hosts must account for this residual when enabling `FILES_OUT`.
+
+Timeouts, cancellation and metadata-only reads kill and reap the CLI, with a three-second cleanup allowance for draining pipes. This does not terminate guest programs. On a supported engine the factory also selects archive metadata for input path checks; writes still run as the image user.
 
 Memory and CPU limits are optional configuration: `WslcSandboxConfig(memory="512M", cpus=1.5)`. They apply to the workload and to its egress proxy. The memory limit does not cover swap, so a workload can page past it. Unlike the Docker backend, this one sets no PID limit, drops no capabilities and leaves `no-new-privileges` off, because `wslc container run` has no flag for any of them. See [resource limits and hardening](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/wslc.md#resource-limits-and-hardening).
 
@@ -61,7 +71,7 @@ Setup is bounded the same way. Root holds each directory it enters, confirms it 
 
 Some path classification runs inside the guest, as root, with the image's `test`. Its answer can pick which refusal a caller sees. A write it lets through still runs as the image user.
 
-Path inspection can also copy an existing guest file into a private host temporary directory. **Its disk use is not bounded by input limits or stdout limits.** Normal exits remove the temporary copy, but a host crash or cleanup failure can leave it behind. Use an enforced temporary-filesystem quota when that consumption is unacceptable.
+Without the factory's supported archive contract, input path inspection copies into a private host temporary directory. **Its disk use is not bounded by input limits or stdout limits.** Normal exits remove the temporary copy, but a host crash or cleanup failure can leave it behind. Use an enforced temporary-filesystem quota when that consumption is unacceptable. Use the factory on WSLC 3.0.2.0+: changes to directory extraction can make the legacy probe fail on trees containing symlinks.
 
 See the [backend guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/wslc.md) for the precise file contract and remaining limits.
 
