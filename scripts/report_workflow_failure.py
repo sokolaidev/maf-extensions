@@ -33,6 +33,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--expected", required=True)
     parser.add_argument("--packages", nargs="+", required=True, help="workspace package names")
     parser.add_argument("--context", default="", help="guidance included on every failure")
+    parser.add_argument(
+        "--recovery",
+        default=(
+            "Investigate and close after verifying recovery; "
+            "a successful run does not automatically close it."
+        ),
+        help="recovery policy included in new trackers",
+    )
     args = parser.parse_args(argv)
 
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -73,8 +81,8 @@ def main(argv: list[str] | None = None) -> None:
         f" (workspace commit {os.environ['GITHUB_SHA']})\n"
         "- Python version: see the linked run's setup and execution logs; "
         "setup may fail before Python starts.\n\n"
-        "**Additional context**\nFurther failures comment here while this issue is open. Investigate and close "
-        "after verifying recovery; a successful run does not automatically close it.\n"
+        "**Additional context**\nFurther failures comment here while this issue is open. "
+        f"{args.recovery}\n"
     )
     gh(endpoint, body={"title": args.title, "body": body})
 

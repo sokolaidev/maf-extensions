@@ -52,7 +52,10 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
     sources = reporter["needs"]
     if isinstance(sources, str):
         sources = [sources]
-    assert set(workflow["jobs"]) == {*sources, "report-failure"}
+    reporters = {"report-failure"}
+    if name == "image-security.yml":
+        reporters.add("report-recovery")
+    assert set(workflow["jobs"]) == {*sources, *reporters}
     condition = " || ".join(f"needs.{source}.result == 'failure'" for source in sources)
     if len(sources) > 1:
         condition = f"({condition})"
@@ -171,6 +174,11 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
         assert argv[argv.index("--reproduce") + 1] in body["body"]
         assert argv[argv.index("--expected") + 1] in body["body"]
         assert "workspace commit abc123" in body["body"]
+        if name == "image-security.yml":
+            assert "automatically closes this issue" in body["body"]
+            assert "does not automatically close" not in body["body"]
+        else:
+            assert "does not automatically close" in body["body"]
         expected_packages = {
             "bicep-catalog.yml": {"maf-sandbox-bicep"},
             "docker-live.yml": {
