@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import idle
+from . import idle, physical
 from .host_store import Refused
 from .process_identity import Identity, capture, stopped, terminate
 
@@ -71,6 +71,7 @@ class NativeJournal:
             ):
                 raise Refused("call is not prepared for this owner")
             root = audit_root(self.store)
+            physical.check_headroom(self.store)
             root.mkdir(exist_ok=True)
             path = root / row["token"]
             path.mkdir()

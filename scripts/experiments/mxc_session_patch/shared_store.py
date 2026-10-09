@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import accounting, idle
+from . import accounting, idle, physical
 from .accounting import CALL_METADATA, MAX_INTEGER, SESSION_METADATA, STORE_METADATA
 from .host_store import (
     CHUNK,
@@ -133,6 +133,7 @@ class SharedStore:
         *,
         upgrade_accounting: bool = False,
         idle_policy: idle.Policy | None = None,
+        physical_policy: physical.Policy | None = None,
     ):
         if (
             limits.session_quota < SESSION_METADATA
@@ -141,6 +142,7 @@ class SharedStore:
             raise Refused("quota cannot admit session metadata")
         self.session = _name(session)
         self.limits = limits
+        self.physical_policy = physical_policy
         self.clock = clock or SystemClock()
         self.grants: dict[str, int] = {}
         self.idle_grant = 0
@@ -197,14 +199,22 @@ class SharedStore:
                     upgrading = row is not None and row[0] == 3 and upgrade_accounting
                     if row is not None and row[0] == 3 and not upgrade_accounting:
                         raise Refused("format 3 requires explicit upgrade")
-                    if row is None or (row[0] not in (VERSION, idle.VERSION) and not upgrading):
+                    if row is None or (
+                        row[0] not in (VERSION, idle.VERSION, physical.VERSION) and not upgrading
+                    ):
                         raise Refused("unsupported or corrupt store format")
                     store_version = row[0]
+                    if store_version == physical.VERSION:
+                        physical.validate(self.db, physical_policy)
+                    elif physical_policy is not None:
+                        raise Refused("physical policy requires a new store root")
                 self.db.execute("PRAGMA journal_mode=DELETE")
                 self.db.execute("PRAGMA synchronous=FULL")
                 self.db.execute("PRAGMA foreign_keys=ON")
+                physical.configure_connection(self)
                 with self._transaction():
                     if not existed:
+                        physical.check_headroom(self, initializing=True)
                         self._schema()
                         self.db.execute(
                             "INSERT INTO settings VALUES(1, ?, ?)", (VERSION, limits.store_quota)
@@ -214,8 +224,11 @@ class SharedStore:
                             self._audit_checkpoints()
                         accounting.initialize(self.db)
                         self.db.execute("UPDATE settings SET version=? WHERE id=1", (VERSION,))
+                    if not existed and physical_policy is not None:
+                        physical.initialize(self)
+                        self.db.execute(idle.SCHEMA)
                     accounting.audit(self.db)
-                    if store_version == idle.VERSION:
+                    if store_version in (idle.VERSION, physical.VERSION):
                         idle.validate_schema(self.db)
                     self.db.execute(
                         "CREATE INDEX IF NOT EXISTS calls_expiry ON calls(session,status,expired,expires,id)"
@@ -232,6 +245,7 @@ class SharedStore:
                         "SELECT * FROM sessions WHERE id=?", (session,)
                     ).fetchone()
                     if row is None:
+                        physical.check_headroom(self)
                         if (
                             SESSION_METADATA > limits.session_quota
                             or self.usage() + SESSION_METADATA > limits.store_quota
@@ -245,6 +259,8 @@ class SharedStore:
                         raise Refused("session profile or quota configuration differs")
             except BaseException:
                 self.db.close()
+                if not existed and path.stat().st_size == 0:
+                    path.unlink()
                 raise
         try:
             lock_path = self.root / (hashlib.sha256(session.encode()).hexdigest() + ".lock")
@@ -463,6 +479,7 @@ class SharedStore:
                     ).fetchone()[0]
                     if quota != scratch.store_bytes or used + scratch.bytes > quota:
                         raise Refused("scratch quota cannot admit allowance")
+                physical.check_headroom(self, extra_scratch=0 if scratch is None else scratch.bytes)
                 if idle.start(self):
                     self.db.execute(
                         "INSERT INTO calls(session,id,request,status,generation) VALUES(?,?,?,'pending',?)",
@@ -533,6 +550,7 @@ class SharedStore:
 
                 if launch["state"] != "armed" or not stopped(Identity.decode(launch["identity"])):
                     raise Refused("native termination is not established")
+            physical.check_headroom(self)
             charge = self._capture(call_id, checkpoint)
             inventory = self._inventory(
                 self.session, call_id, self.limits.checkpoint_bytes, self.limits.files
