@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import platform
+import select
+import signal
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -71,7 +73,7 @@ def _linux_process(pid: int) -> tuple[str, bool] | None:
     return fields[19], fields[0] in ("Z", "X")
 
 
-def _windows_process(pid: int) -> tuple[str, bool] | None:
+def _windows_process(pid: int, terminate_created: str | None = None) -> tuple[str, bool] | None:
     if sys.platform != "win32":
         raise Refused("Windows process evidence is unavailable on this platform")
     wintypes = ctypes.wintypes
@@ -85,7 +87,7 @@ def _windows_process(pid: int) -> tuple[str, bool] | None:
     kernel.WaitForSingleObject.restype = wintypes.DWORD
     kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
     kernel.CloseHandle.restype = wintypes.BOOL
-    handle = kernel.OpenProcess(0x00100000 | 0x1000, False, pid)
+    handle = kernel.OpenProcess(0x00100000 | 0x1000 | (1 if terminate_created else 0), False, pid)
     if not handle:
         if ctypes.get_last_error() == 87:
             return None
@@ -98,6 +100,17 @@ def _windows_process(pid: int) -> tuple[str, bool] | None:
         if status not in (0, 258):
             raise Refused("helper termination evidence is unavailable")
         created = str((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+        if terminate_created == created and status == 258:
+            kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+            kernel.TerminateProcess.restype = wintypes.BOOL
+            if not kernel.TerminateProcess(handle, 1):
+                error = ctypes.get_last_error()
+                if error != 5:
+                    raise ctypes.WinError(error)
+            # Exit is asynchronous; access denied can mean termination is already underway.
+            if kernel.WaitForSingleObject(handle, 15000) != 0:
+                raise Refused("helper termination is unconfirmed")
+            status = 0
         return created, status == 0
     finally:
         kernel.CloseHandle(handle)
@@ -132,3 +145,39 @@ def stopped(identity: Identity) -> bool:
         # A different namespace is not proof of termination in the recorded namespace.
         raise Refused("helper boot or process namespace differs")
     return process is None or process[0] != identity.created or process[1]
+
+
+def terminate(identity: Identity) -> None:
+    """Stop only the recorded process through a stable OS handle; never signal a bare PID."""
+    if stopped(identity):
+        return
+    try:
+        if os.name == "nt":
+            _windows_process(identity.pid, identity.created)
+        elif sys.platform == "linux":
+            # Pin the process before rechecking creation identity to exclude PID reuse.
+            try:
+                fd = os.pidfd_open(identity.pid)
+            except ProcessLookupError:
+                if stopped(identity):
+                    return
+                raise
+            try:
+                if stopped(identity):
+                    return
+                try:
+                    signal.pidfd_send_signal(fd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                poller = select.poll()
+                poller.register(fd, select.POLLIN)
+                if not poller.poll(15000):
+                    raise Refused("helper termination is unconfirmed")
+            finally:
+                os.close(fd)
+        else:
+            raise Refused("stable process termination is unsupported")
+    except (OSError, AttributeError) as error:
+        raise Refused("helper termination evidence is unavailable") from error
+    if not stopped(identity):
+        raise Refused("helper termination is unconfirmed")

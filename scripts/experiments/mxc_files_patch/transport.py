@@ -199,6 +199,7 @@ def execute(
     before_start: Callable[[subprocess.Popen[bytes]], None] = lambda _: None,
     cancel: threading.Event | None = None,
     timeout: float = 90,
+    check_active: Callable[[], None] = lambda: None,
 ) -> bytes:
     """Supervise the native owner, bounding diagnostics independently from payloads."""
     code = file_request.code
@@ -252,11 +253,13 @@ def execute(
             reader.start()
         try:
             before_start(child)
+            check_active()
             assert child.stdin is not None
             child.stdin.write(b"MXCOWN1\n")
             child.stdin.flush()
             deadline = time.monotonic() + timeout
             while child.poll() is None:
+                check_active()
                 if cancel is not None and cancel.is_set():
                     raise Refused("call cancelled")
                 if overflow.is_set() or time.monotonic() >= deadline:
