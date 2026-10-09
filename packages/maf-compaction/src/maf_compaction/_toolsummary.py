@@ -1,153 +1,25 @@
-"""Have the agent record the facts, then drop everything behind the record.
+"""Record tool-result values before dropping the groups they cover.
 
-Every truncating strategy measured here fails the same way, and the failure is arithmetic
-rather than tuning. Head-and-tail retention keeps the first and last f/2 of a result, so ``n``
-values spread evenly through it -- sitting 1/n apart -- survive only when f exceeds 2/n. With
-eight values per result that needs more than 25% of it retained, which is not compaction.
-Measured: at 30% retention 3 of 8 codes survived, at 0.9% just 1.
+Wire ``make_recall_tool``, ``RecallGate`` and ``ToolResultRecallMiddleware``
+with the strategy. After a size or group-count trigger, the middleware pins
+a later model request to the recall tool without adding a message. The
+provider issues the tool call; a later strategy pass finds its persisted
+result and drops only earlier tool groups that pass the value-coverage check.
 
-Truncation preserves *positions*. What is needed is something that preserves *information*,
-after which the bulk it came from is genuinely redundant and can be dropped outright rather
-than sampled.
+Every record is preserved. Uncovered groups are held while another record is
+requested, then preserved when retrying stops helping. Behind a record, the
+anchored fallback holds every unrecorded tool group, including newer ones;
+it may shed narration, or leave the prompt over budget. If no record arrives
+by the give-up line, the ordinary fallback runs. The standalone strategy
+never merges records; its helpers let the composition replace them with
+preserved assistant messages.
 
-**Four parts, and all four are the design rather than harness around it.** The strategy
-cannot work without a tool for the model to call (:func:`make_recall_tool`) or without
-something keeping that tool inert when nobody asked for a record (:class:`RecallGate`), so
-both live here beside the middleware that arms them.
+Build a stack per conversation: the strategy keeps coverage, re-force and
+preservation decisions and counters, the gate keeps the recall arm, and the
+middleware keeps pending-record state and binds to one session. Records are
+recognised and preserved again on each loaded history.
 
-**Two phases, split across a middleware and this strategy.**
-
-1. :class:`ToolResultRecallMiddleware` forces ``tool_choice`` to the recall tool on the call
-   after the one where it saw the conversation grow past the trigger -- and again later, once
-   the agent has done tool work no existing record accounts for. It sends no message at all:
-   the tool's own description already says what to pass, and the schema travels on every
-   request anyway. Nothing is added to the prompt, and nothing extra reaches the caller's
-   stored history. :meth:`ToolResultRecallMiddleware._record_due` is where "no existing record
-   accounts for it" is defined, and it is defined nowhere else.
-2. The model makes the call, the agent executes it, and the result is persisted through the
-   ordinary path. On a later pass this strategy finds that real tool result in the loaded
-   history and drops the tool groups in front of it whose contents the record demonstrably
-   carries -- see the coverage note below, and ``_drop_before`` for how that is decided.
-
-Sending no message matters for more than tokens. A message appended here carries no history
-provider's source tag, so the per-service-call persistence would treat it as new input and
-store it -- and an instruction of ours would show up in the conversation the application
-replays to its user. Forcing the option leaves no such trace. The tool call and its result do
-appear, which is correct: they are a real record of what the agent did.
-
-**Why not synthesise the tool call directly.** A ``call_id`` invented by the client is only
-safe when the client owns the conversation. Responses-API routes with ``store=True`` track
-tool calls server-side, so a fabricated call is unknown to the service or mismatched against
-it, and Gemini's thought signatures behave similarly. Letting the provider issue the call
-avoids the problem entirely, at the price of one extra agent turn. The argument reaches every
-record, not only the first: a merged record written as a synthesised recall call is refused by
-Foundry with ``400 invalid_payload`` on the next request. A record this package writes is an
-ordinary message; see :func:`build_record_message`.
-
-**Why a tool result rather than an assistant message.** A tool result is data. Assistant prose
-is the first thing a size-pressed strategy sheds -- this package's own anchored strategy sheds
-it as a last resort -- so a record written as narration would be eligible for exactly the step
-that destroys it. The one record written as an assistant message -- the one the composed row
-writes in place of several, which cannot be a tool call for the reason above -- is preserved
-from the moment it is inserted, so that step never reaches it; :func:`build_record_message`
-says why that is enough.
-
-**Why forcing beats asking.** Asking requires the model to choose, which leaves ``tool_choice``
-unpinned -- and unpinned, an uncompacted conversation's cost varies by a factor of two between
-identical runs while the strategy gathers fewer facts. Forcing the call keeps every other turn
-pinned, so a comparison stays measurable, and makes phase 1 deterministic rather than a
-compliance rate to be estimated.
-
-**How the record is bounded, and why it takes two numbers rather than one.** The instructions
-ask for everything, so the record wants to grow. A ``max_tokens`` cap does not answer that: a
-model does not plan to fit a cap, it writes until it is cut, and on a *tool call* the cut
-lands inside the arguments JSON, so a cap set where the record should end produces no record
-instead of a shorter one. The two bounds therefore do different jobs.
-:data:`DEFAULT_RECORD_TARGET_TOKENS` is stated in the tool's own description, which is the
-only channel that reaches the model before it writes, since the middleware sends no message.
-:data:`DEFAULT_RECORD_MAX_TOKENS` is set on the forced call alone and is roughly twice the
-target, so it bounds the bill without ever being the thing that stops the writing. When it is
-the thing that stops it, ``ToolResultRecallMiddleware.records_truncated`` says so.
-
-**What the record covers is checked, not assumed.** Dropping every tool group in front of the record
-on the assumption that the record replaced them is model-dependent: one model writes records naming
-every tool group, another writes one covering two of six, and the other four would go with nothing
-preserving them and nothing reporting it. Raising the cap, raising the stated target and rewriting
-the prompt each measure as no change, so the strategy drops only the groups the record demonstrably
-carries, and ``groups_kept_uncovered`` counts the rest. That turns the failure direction around: a
-partial record now costs tokens it should not have cost, instead of losing facts nobody can trace.
-``ToolResultRecallMiddleware``'s ``max_groups_before_record`` is the other half, bounding how much
-any one record is asked to cover so partial coverage stops being the normal case.
-
-**Several records, and nothing merges them.** Once the size trigger may fire more than once, a
-long conversation accumulates records, and every one of them is preserved: unshrinkable,
-undroppable, and counted against the ceiling in full. That is a floor under the prompt that
-grows a record at a time, and
-:attr:`ToolResultAnchoredSummarizationCompactionStrategy.records_in_conversation` reports it,
-because a row whose compaction has stopped paying for a good reason and one whose unshrinkable
-part has quietly grown are otherwise the same row. This strategy still never consolidates them:
-an older record is the sole account of the groups behind *it*, so a merge rewrites the evidence
-rather than the bulk.
-
-**The composition consolidates records as a last resort; this strategy never does.**
-:class:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy` merges the
-active records into one when the prompt is still over the ceiling after both of its halves have
-run, and rewrites the record shorter if that is not enough -- on the stated ground that the
-alternative at that point is the fallback or an overflow, both worse than a rewrite that is at
-least smaller. What this module supplies for that is the record's shape and nothing else:
-:func:`active_record_groups` says which records still stand,
-:meth:`ToolResultAnchoredSummarizationCompactionStrategy.consolidate_records` swaps them for one,
-:func:`build_record_message` is the form the replacement takes -- an assistant message carrying
-the marker, never a tool call -- and every reader of records recognises that form beside the
-recall tool's result; an excluded record is not a record to anything that reads records -- see
-:func:`find_record_index` and :func:`record_text`. The standalone strategy calls none of it.
-
-**Coverage is measured in values, not in tool names, because models do not write tool names.**
-A record describes a lookup in its own words -- *"extra0 deployment lookup returned codes:
-..."* -- rather than naming ``lookup_extra0``, so a name rule would score a complete record as
-missing groups. The rule is the first thing :data:`RECALL_VALUES_DESCRIPTION` asks for --
-"Quote verbatim any value that cannot be reconstructed or guessed" -- so a group is covered
-when the record quotes enough of the distinctive values its results contain.
-:data:`DEFAULT_COVERAGE_SHARE` is how much of them, and :func:`_distinctive_tokens` states the
-rule that finds them and what it cannot see.
-
-**The record is protected from the fallback, and had to be.** When a record does not free
-enough, whatever remains goes to ``fallback``, which defaults to
-:class:`~._anchored.AnchoredCompactionStrategy` -- and that strategy shortens and sheds tool
-results, of which the record is one, and it must not treat the record as bulk. Every deletion
-phase 2 performs is licensed by the record, so trimming the record afterwards destroys the sole
-surviving copy of what was already deleted. Both halves therefore agree through
-:mod:`._preserve`: this strategy marks every record it observes, and the anchored strategy
-skips preserved messages in each of its three removal paths.
-
-**What the record failed to cover is held out of the fallback's reach too, and asked for
-again.** Keeping a group the record does not carry is not enough on its own: left as an
-ordinary tool group, the fallback that runs when the prompt is still over the ceiling would
-shorten or shed it like any other, and this row is supposed never to lose a fact. That is
-reachable whenever the fallback legitimately runs behind a partial record. Two layers stand
-between an uncovered group and the fallback, in this order. First the strategy asks the
-middleware for another record while the group is still whole, and holds the group out of the
-fallback's reach until that record has had its chance --
-:meth:`ToolResultAnchoredSummarizationCompactionStrategy.take_reforce` is the channel, and the
-bound on asking again is stated on
-:meth:`ToolResultAnchoredSummarizationCompactionStrategy._reforce_or_settle`.
-Second, once asking has stopped working, the group is preserved for good under
-:data:`PRESERVE_REASON_UNCOVERED`, which the fallback honours exactly as it honours the record.
-A preserved group still counts against the ceiling, so the accepted consequence is a prompt
-that cannot be brought under it and a row that reads ``DQ``: loud, and preferable to the quiet
-loss it replaces. ``REFORCED`` and ``PRESERVED`` in the flags say which layer acted.
-
-**The two layers are not enough on their own, because they only see what is in front of the
-record.** Uncovered groups in front of the record are preserved and survive, which keeps the
-prompt near the ceiling, so the fallback fires pass after pass and shortens the one tool group
-after the record inside its band until its values are gone -- no record covers a group after
-the newest one, and nothing else protects it. The conversation finishes under the limit and
-facts short. So the fallback that runs behind a record runs with every tool group no record
-covers held under :data:`PRESERVE_REASON_UNRECORDED`, wherever it sits, and may remove only
-what is not a tool group. That frees enough or it does not; the conversation keeps every fact
-or overflows loudly, and a quiet loss is not one of the outcomes. ``RECHELD`` says the rule was
-in force. The give-up fallback taken when no record ever arrives is left as it is: that path
-measures the fallback strategy rather than this one, and ``FALLBACK`` says so.
+See ``docs/compaction/strategies.md`` for defaults, wiring and design rationale.
 """
 
 from __future__ import annotations
@@ -852,9 +724,9 @@ def build_record_message(text: str) -> Message:
     **Not a tool call, because a provider validates tool calls.** A recall call and its result under
     a client-minted call id, shaped as the recall tool shapes one, is refused by Foundry on the next
     request with ``400 invalid_payload``. A call the model made carries the provider's own identity
-    for it; a fabricated one does not, so the module docstring's argument against synthesising the
-    first record reaches every record. An ordinary message is what the user half already inserts for
-    its summaries, and no provider validates one against its own history.
+    for it; a fabricated one does not. This constraint applies to every record. An ordinary
+    message is what the user half already inserts for its summaries, and no provider validates
+    one against its own history.
 
     **An assistant message rather than a user one.** A record stands for results of tool calls
     the model already made. Read in an assistant turn it is the model's own earlier statement;
@@ -872,8 +744,8 @@ def build_record_message(text: str) -> Message:
     runs against accept consecutive messages of one role; a provider that does not would need
     its client to merge them, and that is unmeasured.
 
-    **Assistant prose is what the fallback sheds**, which the module docstring gives as the
-    reason the first record is a tool result. That reason is about a record nothing protects.
+    **Assistant prose is what the fallback sheds**, so a record written as narration needs
+    protection.
     This one is preserved on the pass that inserts it, by the walk that protects every record
     (:func:`_preserve_records`), and the anchored fallback skips a preserved message on each of
     its removal paths, narration included.
