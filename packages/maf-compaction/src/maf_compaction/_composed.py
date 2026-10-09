@@ -1,199 +1,25 @@
-"""Compact the tool half, then the user half, then run a last-resort chain while still over.
+"""Compact tool results, then user turns, then run the last-resort chain.
 
-**Two strategies, neither of which can reach the other's material.**
-:class:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy` replaces tool groups
-with a record of them and never reads a user turn;
-:class:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy` summarises user turns
-and never reads a tool group. Each is therefore bounded by the share of the conversation it is
-allowed to touch, and each says so in its own module. This is their composition, and it is
-three things in order.
+The record phase runs first. The user phase reads the remaining prompt at the
+record trigger unless overridden, and waits for a pending record for at most
+two model responses. The caller supplies its summary mode and wires the recall
+tool and middleware; ``repeat_records`` requests repeated recording.
 
-1. **The record half records every new batch of tool results and never re-summarises a
-   record.** Its recall middleware asks for a further record whenever tool work no record
-   covers has accumulated past the trigger -- the composed object's ``repeat_records`` is what
-   the code wiring the middleware reads to switch that on -- and the pass drops what each
-   record covers. Existing records are left as they are.
-2. **The user half acts only if the record half was not enough.** It is judged at the same
-   line, against the prompt *as the record half left it*, in the mode its caller set; in the
-   boundary mode, the measured one, a summary it wrote is kept as a boundary rather than
-   re-summarised on the next pass. While a record is due and still has time to arrive it is
-   not judged at all: see below.
-3. **A last-resort chain, started only when the prompt is still over the input budget.** Merge
-   the records into one; merge the user summaries into one; rewrite the record harder, up to
-   ``harder_attempts`` times; then the record half's fallback, which may drop narration only.
-   Once started it works down to a target below the budget rather than to the budget -- see
-   below. If the prompt is still over the budget after every step, nothing more is done: it
-   goes out over the limit, which is the intended loud failure.
+If the prompt still exceeds the budget, the chain merges records, folds user
+summaries, tries harder record rewrites, then runs the anchored fallback with
+unrecorded tool groups held. It aims to remove ``chain_gain_fraction`` of the
+tokens behind its earliest edit, accepting only non-empty, smaller replacements.
+If no step can reduce the prompt enough, it remains over budget. The no-record give-up
+fallback remains part of the record phase.
 
-**The user half waits for a record that is due, because the two halves compact at different
-speeds.** The record half compacts in two steps: on the pass where the prompt crosses the line
-it can only ask -- its middleware pins a *later* call, the model writes the record there, and
-only the pass after that drops what the record covers. The user half compacts in one. Judged
-on the asking pass, it can bring the prompt back under the line by itself, and the middleware,
-which reads the prompt on each call's way out, then never asks: the layering inverts and the
-cache-breaking half does all the work. So on a pass over the line where the record half has
-tool work a record is due for, or has already asked for, the user half holds; it acts on the
-pass that sees the record arrive, if the prompt is still over the line after the record's
-drops, or after
-:data:`_RECORD_WAIT_RESPONSES` model responses with no record, so a model that never records
-cannot leave the conversation uncompacted. With nothing pending it acts as before. The rule,
-and the guards on it, are on
-:meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._holds_for_record`;
-``USERWAIT`` counts the passes held.
+Each instance belongs to one conversation. It keeps record-wait state,
+accepted record replacements, shed-message ids, refusals and counters; the
+user half remembers summaries and folds. Kept decisions replay on loaded
+copies and stored history before new decisions, regardless of that list's
+size. Unchanged refused requests are skipped. The user half's summarizer
+writes the chain's records as preserved assistant messages, never tool calls.
 
-**Judged after the record phase.** User compaction rewrites a message just behind the head, and
-so breaks nearly the whole cached prefix; it is the second line of defence, and if tool
-compaction alone brings the prompt under the line, staying idle is the correct outcome rather
-than a starved one. Judging both halves on one reading of the prompt taken at pass entry would
-make the user half act on passes where the prompt was already under the line after the record
-phase -- a summarizer call and a broken prefix bought for nothing. On a short, bounded
-conversation a user half that never acts looks like a composition that measured one half; in
-this design it is not a defect, and it is counted where it belongs: a pass the user half
-declined at its trigger is ``USERUNDER``, whether the conversation had not grown or the record
-half had brought it under the line. ``tokens_removed_by_record_phase`` says how the two halves
-divided the work.
-
-**One line for both halves, and it is the record half's.** ``user_trigger_fraction`` defaults to
-None, which means ``tool_results.trigger_fraction`` -- 0.6 by default, and whatever a sweep of
-that flag has moved it to, so the two halves cannot drift apart under a sweep of the record
-row's trigger. Aligning the other way, holding the record phase back to the user row's 0.8, is
-not safe: the record is written by a *model* asked to read the tool payload, it degrades with
-the bulk it is given, and a record asked for late is a record asked for on more material. A
-caller who wants two lines passes an explicit ``user_trigger_fraction``. Neither sub-strategy's
-own trigger is touched: the composition supplies the line through
-:meth:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.compact_against` rather
-than by reconfiguring the object it was handed, so ``user_summary_anchored`` run as its own row
-reads its own ``trigger_fraction`` exactly as before.
-
-**How the composition configures its halves, and what it leaves alone.** Repeated records and
-the boundary mode are this composition's configuration, not new defaults for the objects: a
-standalone record strategy's middleware repeats records or not as its caller says, and the
-user-turn strategy's default mode stays ``recompact``. Repeats are requested through
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.repeat_records`, which the
-code wiring the middleware reads; the boundary mode is the caller's to set on the user half,
-and this class does not insist on it -- a user half assembled in the recompacting mode has a
-summary that never stands beside another, so the chain's user merge never has two to merge and
-is skipped.
-
-**Order: the record phase, the user phase, then the chain.** The record phase first for two
-reasons. The record has to be asked for before the bulk degrades it, and both phases' removals
-are permanent, so a user phase that ran first would hand the middleware a conversation already
-shrunk below the line that asks for a record at all. And the user phase is the one whose action
-breaks the cache, so it is the one that should act only on what the other left. The chain comes
-last because every step in it is worse than doing nothing when nothing is needed: each spends a
-summarizer call and rewrites a message the cached prefix runs through, so the chain starts only
-on a live reading over the budget, and each step is re-read against the target before it runs.
-
-**Once started, the chain works down to a target, not to the budget.** Stopping as soon as the
-prompt fits leaves it just under the budget; the next turn puts it back over, the chain fires again
-with another early edit, and nearly every call re-bills most of its prompt. Every firing re-bills
-what stands behind its earliest edit whether it removes a little or a lot, so a firing goes on until
-it has removed ``chain_gain_fraction`` of those tokens, which is the break-even share an edit has to
-remove to repay its own re-bill -- :data:`DEFAULT_CHAIN_GAIN_FRACTION` carries the derivation -- and
-leaves the next turns that much room before the chain is needed again. Which steps can go that far
-is on :meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._last_resort`; a target
-they cannot reach ends the chain where they left the prompt. The halves are left as they are: the
-record half removes whatever its record covers, not an amount, and the user half's
-``min_band_share`` is already its own hysteresis.
-
-**The fallback runs at the end of the chain, not inside the record phase.** The fallback counts its
-band in groups from each end, so here it counts the user half's summary message rather than the user
-turns it replaced, and its geometry differs from the standalone record strategy's. That is accepted:
-the fallback is the last resort here rather than the first, and behind a record it may take
-narration and nothing else (:func:`~._toolsummary._hold_unrecorded`), so the difference is confined
-to which assistant replies it sheds. The give-up fallback the record half takes when no record ever
-arrived is not part of the chain and still runs inside the record phase.
-
-**The chain, and why each step is where it is.**
-
-a. *Merge the active records into one*, when there are at least two -- one is a rewrite, which
-   is step c. The merged record replaces them in place and is a record to everything that reads
-   records: see
-   :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.consolidate_records`.
-   It is an ordinary assistant message carrying the record marker, never a tool call: see
-   :func:`~._toolsummary.build_record_message`.
-b. *Merge the user summaries into one*, when there are at least two, through the user half's own
-   fold machinery
-   (:meth:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.fold_if_smaller`).
-   After the records because a record merge rewrites the prompt from the oldest record, which
-   sits later than the oldest user summary, so it re-bills less.
-c. *Rewrite the record harder*, up to ``harder_attempts`` times, each asking for more
-   compression than the last. See :data:`DEFAULT_HARDER_ATTEMPTS` for the number.
-d. *The record half's fallback*, with every tool group no record covers held, so it may drop
-   narration only.
-e. Nothing. The prompt goes out over the limit and the row reads ``DQ``.
-
-**Acceptance is generic, and deliberately so.** A merged or rewritten record, or a merged user
-summary, is kept if it is non-empty and smaller, in tokens, than what it replaces; otherwise the
-old ones stay and the chain moves on. Nothing is checked against the old records, against the
-tool results, or against any content: an overlap check fitted to one workload's exact values
-would either reject correct paraphrase on other content or pass a lossy summary that happened
-to keep the values. "Smaller" is
-measured like for like: both sides in the form a written record takes, so a rewrite does not pass
-merely because that form drops the second copy a record the model made carries in its call's
-arguments -- see :func:`~._toolsummary.build_record_message`. What a merge loses is for a
-benchmark to measure, not guessed at here. The
-record's coverage check is a different thing and is untouched: it decides what a record
-*licenses deleting*, which is a question about tool results still in the prompt; this decides
-whether a rewrite of records already standing is worth keeping, which is a question about size.
-
-**The records are merged by the summarizer client the user half already has, not by an agent
-turn.** The first record has to come from the agent's own model, because only that model has the
-tool payload in its context. A merge needs only the records, which are short, and the moment it
-is wanted is the moment the prompt is over the budget -- so an agent turn pinned to the recall
-tool would be a call made *with* that over-budget prompt, which is the call the chain exists to
-avoid. The summarizer sees the records alone. What it writes goes in as an ordinary assistant
-message carrying the record marker rather than as a recall call, because a provider that tracks
-tool calls server-side refuses a request carrying a call it never issued -- see
-:func:`~._toolsummary.build_record_message`.
-
-**The other list, and what the chain decides is kept on both.** The framework runs this over
-the copies sent on a call and then over the store, and the two need not reach the same step:
-the record phase on the store can drop a tool group the copies still had to carry, and take the
-prompt under the budget without the chain. Left to the lists alone, the store keeps what the
-copies replaced, the next call is sent it again -- an early edit made and undone -- and when the
-prompt next goes over, the chain asks the summarizer the identical request again. So every
-decision the chain makes -- a record merged or rewritten, a user fold, narration shed -- is kept
-for the run and put back on every list that holds what it changed, whatever that list's size,
-before the chain decides anything new: see
-:meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._keep_decisions`. Nothing
-reaches the summarizer twice for records a kept answer already replaced. The user half still
-remembers its last requests, for its own band summaries.
-
-**A refused request is not asked again while what it would rewrite is unchanged.** The chain does
-not run on a pass under the budget, so without a memory a record refused as no smaller would be
-asked for again -- and paid for again -- whenever the prompt went back over the budget with the
-record as it was, and most harder rewrites are refused: a record dense with codes is one that cannot
-shrink while keeping them. So a refusal is remembered for as long as the run lasts, keyed by the
-request's transcript -- the numbered record bodies, which are the records' content and the one thing
-both lists present identically, which is what a kept answer is keyed by too -- and a step whose
-transcript was refused is skipped rather than asked. A record that changes, because a merge folded
-new material in or a rewrite was kept, has a new transcript and is eligible again, so nothing needs
-forgetting. See
-:meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._rewrite_records` for how this
-meets the escalation, and
-:meth:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._merge_records` for step a. Step
-b needs none of it: the user half keeps a refused fold among its remembered requests, and only a new
-band summary -- which changes the summaries a fold would read, and so the fold's request -- can push
-it out, so a fold over unchanged summaries is always replayed.
-
-**Counters.** Every counter of both halves is readable off this object, so a report built by
-duck typing says which half did what. The chain adds one per step:
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.records_merged` and
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.record_merges_rejected`,
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.user_summaries_merged` and
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.user_merges_rejected`,
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.record_rewrites` and
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.record_rewrites_rejected`,
-the requests skipped as already refused --
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.record_merges_skipped` and
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.record_rewrites_skipped` --
-and :attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.last_resort_fallbacks`
--- so a row says how far down the chain it went. Whether it got as far as it meant to is
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.chain_targets_reached` and
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.chain_targets_missed`, and how
-often a decision had to be put back on the other list is
-:attr:`ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy.chain_decisions_kept`.
+See ``docs/compaction/strategies.md`` for defaults, replay and design rationale.
 """
 
 from __future__ import annotations
@@ -504,9 +330,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             the wiring discovers this object inside this one, and it reads
             :attr:`repeat_records` off this one to switch the middleware's repeats on.
         user_turns: The user-band summarising strategy, summarizer client included. Its client
-            also writes the chain's merged and rewritten records; see the module docstring for
-            why. In the boundary or fold mode it must remember two requests, because a pass can
-            ask for a band and then the chain's fold, and the store pass replays both.
+            also writes the chain's merged and rewritten records; see
+            ``docs/compaction/strategies.md`` for the rationale. In boundary or fold mode it
+            must remember two requests: a pass can ask for a band and then the chain's fold,
+            and the store pass replays both.
         user_trigger_fraction: Fraction of the shared ceiling the user half is judged at *inside
             this composition*. None, the default, means ``tool_results.trigger_fraction``: one
             line for both halves, moving with whatever the record row's trigger was swept to.
@@ -1317,7 +1144,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     ) -> _Consolidation:
         """Ask for one record in place of ``groups``, and put it there if it is smaller.
 
-        The acceptance rule is the module docstring's, and nothing else: non-empty -- a
+        A replacement must be non-empty -- a
         summarizer that answers with nothing is a failure -- and fewer tokens than the records it
         replaces. Both sides are measured in the form the replacement is inserted in: the
         candidate as built, and each replaced record rebuilt from its body the same way, rather

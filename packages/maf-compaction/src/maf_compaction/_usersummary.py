@@ -1,219 +1,20 @@
-"""Summarise the user's own turns: re-summarising the summary, or leaving it standing as a boundary.
+"""Summarise user turns between fixed head and tail anchors.
 
-**The half of the conversation nothing here was touching.** Every other strategy in this
-subpackage sheds tool output: :class:`~._anchored.AnchoredCompactionStrategy` shortens tool
-results, :class:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy` replaces
-whole tool groups with a record of them, and both of them keep user turns verbatim on the
-stated ground that the turns are what give surviving values their meaning. That is true of the
-*first* user turn, which carries the task and the requirements, and it is true of the *last*,
-which is what the model is being asked to do now. It is not true of the seventy in between.
+A pass checks the trigger and minimum band share, then replaces eligible user
+turns with one linked user summary. Tool groups and assistant messages are not
+selected. ``recompact`` includes the previous summary; ``boundary`` preserves
+it and selects newer turns; ``fold`` also merges standing summaries when the
+ordinary band is declined and the fold repays its cache break.
 
-Measured on a 170,000-token conversation filled to 90% with a mixed workload, the conversation
-divides as **57% user-turn text, 28% assistant replies and 14% tool results**: 87,551 tokens
-of user turns against 21,978 of tool payload across 72 turns. A strategy that may only touch
-the tool half is working on a seventh of the prompt, which is why the anchored strategies on
-that workload land at 72% of the window where the uncompacted control lands at 85%. The user
-half is the rest.
+Each instance belongs to one conversation and keeps counters and recent
+summarizer requests, answers and summary ids. Identical requests replay the
+same answer and id across loaded copies and stored history without another
+summarizer call. Hosts must retain summary links and text markers through
+storage so boundaries remain recognisable; preservation marks are re-applied
+on every pass. Trust the summarizer as much as the primary model: its output
+stands in for user instructions.
 
-**What this does.** Past ``trigger_fraction`` of the ceiling it takes the user turns between a
-fixed head and a fixed tail, sends them to a summarizer, and puts the summary back in their
-place as a single user message. Tool-call groups, tool results and assistant messages are not
-read, not annotated and not excluded -- see
-:meth:`UserTurnAnchoredSummarizationCompactionStrategy._band`, which is the one place the
-selection rule is written down. That independence is not tidiness:
-the point of the strategy is to be comparable with the tool-side strategies, and a
-strategy that shed both halves would answer neither question.
-
-**Three modes, one selection rule.**
-``summary_mode`` decides what a pass does with the summary the previous pass left behind, and
-nothing else about the strategy moves with it: the trigger, the anchors, the band share, the
-summarizer and the replacement mechanics are the same in all three.
-
-- :data:`SUMMARY_MODE_RECOMPACT` re-reads its own output. The summary is a user message, the
-  next pass's band is the previous summary plus the turns arrived since, and one message
-  stands for everything behind it. This is the default; see :data:`DEFAULT_SUMMARY_MODE`.
-- :data:`SUMMARY_MODE_BOUNDARY` never re-reads it. The summary a pass emits is a *boundary*:
-  it is marked with :data:`~._preserve.PRESERVED_KEY`, the next pass's band starts after the
-  newest boundary and runs to the tail, and each pass emits a new summary beside the standing
-  ones rather than folding them in. :meth:`UserTurnAnchoredSummarizationCompactionStrategy._band`
-  is where the boundary rule is written down, and it is written down nowhere else.
-- :data:`SUMMARY_MODE_FOLD` is the boundary mode with a bound on the accumulation. Once the
-  ordinary band has stopped yielding and the standing summaries are worth what a fold would
-  cost, all of them are collapsed into one summary, which becomes the new boundary -- a rare
-  major collection behind the frequent minor ones.
-  :meth:`UserTurnAnchoredSummarizationCompactionStrategy._fold_due` is the rule, and it is
-  derived from the same break-even as everything else here.
-
-**What the two sides of that choice buy.** Prompt caching is strict-prefix: a mutation at position K
-re-bills everything behind K at the uncached price. Recompaction rewrites a message that sits just
-behind the head turn on every pass it makes, so every pass is a break of very nearly the whole
-cached prefix. Measured over a conversation's seeding, a composition recompacting its user summary
-hits the cache at 84% against 92% for a record half whose one preserved message is immutable once
-written, and 95.5% for the uncompacted control. The boundary mode makes the user half behave the way
-the record half already does. The prefix up to the newest boundary is byte-identical before and
-after every later pass, so a later pass breaks the cache only from the band's first position, which
-is the newest part of the prompt rather than the oldest.
-
-What it costs is the thing recompaction exists to prevent, and choosing against recompaction
-does not make the objection go away: **recompaction is what bounds the prompt.** A boundary is
-never re-read, so N passes leave N standing summaries, each one a floor under the prompt that
-no later pass can lower -- exactly the accumulation
-:attr:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.records_in_conversation`
-reports on the record row, and the reason that row consolidates nothing. In the recompacting
-mode the floor is one summary; in the boundary mode it is one summary per pass, and
-:attr:`UserTurnAnchoredSummarizationCompactionStrategy.user_summaries_in_conversation` with
-:attr:`UserTurnAnchoredSummarizationCompactionStrategy.user_summary_tokens` is what says how
-high it has risen, because nothing else in a table would -- the message count keeps rising and
-every pass still reports having acted. The fold mode is the trade between the two: it pays the
-whole-prefix break occasionally instead of on every pass, and it pays it only when the
-standing summaries have grown large enough for the break to repay itself, by the same
-arithmetic the band share is derived from. What a fold cannot be measured for is stated at the
-end of this docstring, because it is the one cost the table cannot show.
-
-**It recompacts its own output in the default mode, and that is the opposite of what
-``_shorten`` does.**
-:meth:`~._anchored.AnchoredCompactionStrategy._shorten` refuses to touch a tool result that
-already carries :data:`~._anchored.REMOVAL_MARKER`, and the comment there says why: the
-replacement carries the marker's own tokens on top of the budget, so a second pass would
-shorten it again and a third again, each one a fresh mutation at the same position, and a
-strict-prefix cache is re-billed from that position every time. That reasoning is sound *for
-that strategy*, because its trigger is the band's geometry: a result sits in the band from the
-turn it ages out of the tail until the end of the run, so "trim whatever is in the band" is an
-instruction that fires on every single pass.
-
-**The threshold is not self-limiting, though it looks it.** The tempting argument is that the
-trigger is a threshold the compaction itself moves away from: a pass only runs past
-``trigger_fraction`` of the ceiling, a pass removes tens of thousands of tokens, so the next
-pass cannot happen until the conversation has grown all of that back -- once or twice in a run
-rather than once per turn. Measured on gpt-5.6-luna at a 170,000-token window and 0.9 fill,
-the strategy without the share rule below makes about fifteen passes a conversation, one on
-most turns past the trigger, each replacing the previous summary and the turns since, with the
-cache hit rate over the seeding at 77% to 81% against the uncompacted control's 95%.
-
-The argument has two holes and either one is enough on its own.
-
-- **The band is not the prompt.** It is the user turns between the anchors, and the assistant
-  replies and tool results around them are not this strategy's to touch. On the run above the
-  band was about 28% of the prompt, so a pass that removed *all* of it need not take the
-  prompt back under the line -- and on a workload whose bulk is tool output it certainly does
-  not. "A compaction moves away from its own trigger" is true only while the band is most of
-  what there is to remove, which is not the ordinary case.
-- **After the first pass the band is not even that.** What is left between the anchors is this
-  strategy's own summary plus whatever turns arrived since, a fraction of a percent of the
-  prompt. Every later pass then rewrites the prefix at the summary's position to free almost
-  nothing, which is exactly the thrash ``_shorten`` refuses.
-
-The size that fired the trigger does not go away by itself -- the sentence
-:meth:`~._toolsummary.ToolResultRecallMiddleware._record_due` is built around -- and the
-"something in the band is not my own summary" rule below is satisfied by every new user turn,
-so above the trigger the condition stays true for the rest of the run.
-
-**Hysteresis, and it is one rule: a pass has to be worth what a pass costs.** The band must be
-worth at least ``min_band_share`` of the included prompt before anything is summarised: see
-:data:`DEFAULT_MIN_BAND_SHARE` for the number, and
-:meth:`UserTurnAnchoredSummarizationCompactionStrategy._worth_compacting` for the rule and for
-the two shapes of hysteresis it was chosen over. That is what bounds the firing count, and the
-bound is geometric rather than a cap: the band can only regrow from user turns added since the
-last pass, so for the band to be worth a share ``f`` of the prompt again the prompt itself must
-have grown by a factor of at least ``1 / (1 - f)``. A conversation that grows from the size of
-its first compaction to ``k`` times that size therefore compacts at most
-``ceil(log(k) / log(1 / (1 - f)))`` times -- one pass per 11% of prompt growth at the default,
-so seven over a conversation that doubles, against one per turn before. What it costs is stated
-with the constant: a band that never clears the share is a band never compacted at all, and
-:attr:`UserTurnAnchoredSummarizationCompactionStrategy.user_passes_declined` is what says so
-rather than leaving the strategy looking like the uncompacted control.
-
-So the same argument that makes re-trimming wrong in ``_shorten`` makes re-summarising
-affordable here only once a pass is required to be worth something, and the two are now
-decided by one rule read from opposite ends rather than by one of them forgetting the other.
-
-**The share bites harder in the boundary and fold modes, and that is measured rather than
-tuned away.** In the recompacting mode the band the share is taken of includes the previous
-summary, which inflates it; after a boundary the band is only the turns newer than the
-boundary, and the prompt it is weighed against is larger by every standing summary. So the
-same share clears less often, ``user_passes_declined`` rises, and the boundary modes fire
-fewer passes than the recompacting one on the same conversation. The tests beside this module
-hold the three modes to one share on one fixture and record the numbers, because the point of
-the flag is that the arms be comparable, and a share re-tuned per mode would compare nothing.
-
-**It will not run on nothing new.** A pass whose band holds only this strategy's own earlier
-summary would rewrite one message at one position and free exactly nothing, which is precisely
-the thrash ``_shorten`` refuses. So the band has to contain at least one turn that is not a
-summary -- the same shape as
-:meth:`~._toolsummary.ToolResultRecallMiddleware._record_due`, which re-arms its trigger on new
-material rather than on size. That rule is necessary and, as the measurement above shows, not
-sufficient: one new turn satisfies it, so it is the ``f = 0`` corner of the share rule and both
-are checked in the one place. After a boundary the same statement is the empty band: no turn
-between the newest boundary and the tail is nothing new, and it is declined by the same rule.
-
-**The replacement is a user message, where the framework's own summarizer writes an assistant
-one.** ``SummarizationStrategy`` summarises whole groups of every kind, so its output belongs to
-neither speaker and assistant is the neutral choice. This replaces user turns only, and the
-replacement has to be readable *as* those turns on the next pass: a summary written as
-assistant prose would be invisible to the selection rule above, so in the recompacting mode
-nothing could ever recompact it, and in the boundary modes it could not be found as the
-boundary at all. It also keeps the conversation's shape legal -- an assistant message inserted
-between a user turn and the assistant reply to it puts two assistant messages in a row, which
-several providers reject.
-
-**A boundary is protected by the same mark the record is, and found by a different one.**
-:data:`~._preserve.PRESERVED_KEY` is this subpackage's one vocabulary for "no strategy may
-shorten, drop or shed this", and a standing summary is exactly that: the sole surviving copy
-of the turns behind it, which no later pass will stand for again. Every removal path in
-``_anchored`` and ``_toolsummary`` already honours the mark, so marking the summary is what
-turns "the record half cannot reach a user group" from an accident of group kinds into a
-stated contract. The mark is *not* how the boundary is found, because the mark is also set by
-other strategies on turns that are not boundaries, and because it does not survive storage:
-the boundary is the newest included message :func:`_is_summary` recognises, by its summary links
-and text marker. Hosts must retain those links through storage, and the mark is re-applied to
-every standing summary on every pass, as :func:`~._toolsummary._preserve_records` re-applies
-it to every record. In the recompacting mode the summary is deliberately *not* marked --
-:meth:`UserTurnAnchoredSummarizationCompactionStrategy._band` skips preserved turns, so a
-marked summary could never be recompacted, and that mode would silently become this one.
-
-**Live, every pass runs twice, and the second time has to be free.** The framework runs one
-strategy at two sites on one conversation: inside the model call, on the messages the history
-provider has just loaded (``Agent.compaction_strategy``, which is where the harness puts its
-before phase), and after the turn, on the messages the provider stored
-(``CompactionProvider.after_strategy``). The loaded messages are copies --
-``SessionContext.extend_messages`` gives each one its own ``additional_properties`` -- so nothing
-the in-call pass excludes or inserts reaches the store, and the after-turn pass finds the same
-band and, left to itself, summarises it again: two summarizer calls for one standing summary,
-and the model sends two different summaries at one position on consecutive calls -- a second
-whole-suffix cache break per crossing that no mode is designed around, paid by all three alike.
-The strategy cannot tell which list it is on and does not try; what it can do is never send one
-request twice. The last summarizer request and its answer are kept, and a pass whose request is
-byte-identical replays the answer under the same id: no summarizer call, no counted compaction,
-and the store ends up carrying exactly the message the model was already sent, so the crossing
-call's prefix survives into the call after it.
-:attr:`UserTurnAnchoredSummarizationCompactionStrategy.user_summaries_replayed` counts those
-passes. The same memory serves a turn re-sent after a throttled attempt, which is the same
-request from a restored state, and a tool turn's second model call, which loads the store afresh.
-
-**How it marks what it replaced is the framework's mechanism and not a new one.**
-``SummarizationStrategy`` inserts its summary at the first index it superseded, annotates the
-summary with :data:`~agent_framework._compaction.SUMMARY_OF_MESSAGE_IDS_KEY` and
-:data:`~agent_framework._compaction.SUMMARY_OF_GROUP_IDS_KEY`, writes the reverse link onto
-each superseded message, and excludes them with a reason. All five steps are repeated here
-verbatim, so a conversation compacted by this strategy reads back through the same trace
-metadata as one compacted by the framework's. Replacing rather than deleting is what makes the
-recompaction honest as well: the band that the second pass reads is a summary that still
-*stands for* the turns behind it, so nothing is lost by a route nobody can follow.
-
-**Retention of the turns' content is explicitly not measured by this package's benchmark.**
-The question the benchmark answers for this strategy is how much of a conversation is user-side
-and therefore how much a strategy that may touch it can remove. What the summariser managed to
-keep is a separate question, and one an instrument whose planted facts live in tool results
-cannot ask of filler turns that carry none.
-
-**And a fold is where that blindness matters most, so it is stated rather than implied.** A
-fold summarises summaries, and fidelity degrades across generations: what the second summary
-keeps of the first is bounded by what the first kept of the turns, and a benchmark whose
-planted facts live in tool results can see neither loss: its accuracy is structurally blind to
-anything done to a user turn, and for the user half it measures compaction percentage and cost
-only. That scope is accepted, not overlooked. The numbers a fold shows are therefore its price
-and its size, never its fidelity, and accuracy reading as the control's is not evidence that
-folding is free -- it is the instrument declining to look.
+See ``docs/compaction/strategies.md`` for defaults, trade-offs and measurements.
 """
 
 from __future__ import annotations
@@ -283,9 +84,9 @@ logger = logging.getLogger(__name__)
 #: cannot follow another pass until the conversation has grown back everything the first one
 #: removed. That argument is wrong whenever the band is a minority of the prompt, which is the
 #: ordinary case, and a strategy relying on it measures thirty passes in a conversation -- see
-#: the module docstring. What bounds the passes is :data:`DEFAULT_MIN_BAND_SHARE`; this number
-#: only decides
-#: how large the prompt is before the first one.
+#: docs/compaction/research/strategies-as-designed.md. What bounds the passes is
+#: :data:`DEFAULT_MIN_BAND_SHARE`; this number only decides how large the prompt is before
+#: the first one.
 #:
 #: Lowering it does not produce per-turn mutation, because the share rule is what refuses
 #: that; it produces a first compaction on a smaller prompt, which is the thing the flag is for.
@@ -310,9 +111,9 @@ DEFAULT_USER_TRIGGER_FRACTION: Final[float] = 0.8
 #: **0.1, and it is the hysteresis.** Without it the strategy fires once per turn for the rest
 #: of a run that stays above the trigger, because the band it reads after its first pass is its
 #: own summary plus the turns arrived since -- 0.4% to 0.9% of the prompt on the fixture in
-#: ``tests``, and ``USERREPLACED:2`` on the live run in the module docstring. Each of those
-#: passes spends a summarizer call and re-bills the prompt from the summary's position to the
-#: end of the conversation in order to free a few hundred tokens.
+#: ``tests``, and ``USERREPLACED:2`` in docs/compaction/research/strategies-as-designed.md.
+#: Each pass spends a summarizer call and re-bills the prompt from the summary's position
+#: to the end of the conversation to free a few hundred tokens.
 #:
 #: **Where 0.1 comes from: this package's own break-even, at a measured conversation length.**
 #: :data:`~._anchored.DEFAULT_MIN_GAIN_FRACTION` derives when an edit repays the prefix it
@@ -383,7 +184,7 @@ SUMMARY_MODES: Final[tuple[str, ...]] = (
 
 #: The mode a caller inherits, and it is the recompacting one on purpose.
 #:
-#: Not because it measures best -- the strict-prefix argument in the module docstring says it
+#: Not because it measures best -- the argument in docs/compaction/strategies.md says it
 #: breaks the cached prefix on every pass -- but because measurement has not separated the three
 #: modes: one persistent crossing a conversation on the standalone strategy, and a draw inside
 #: the seed spread on the composition. This package's standing rule is that a default does not
@@ -669,8 +470,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             :data:`SUMMARY_MODES`. The recompacting default re-reads and replaces it; the
             boundary mode leaves it standing and compacts only what is newer; the fold mode does
             that and collapses the standing summaries into one once they are worth the break.
-            See the module docstring for what each buys, and :data:`DEFAULT_SUMMARY_MODE` for
-            why the default is the one it is.
+            See ``docs/compaction/strategies.md`` for the trade-offs and
+            :data:`DEFAULT_SUMMARY_MODE` for why the default is the one it is.
         prompt: What the summarizer is asked for. See :data:`DEFAULT_USER_SUMMARY_PROMPT`.
         fold_prompt: What the summarizer is asked for when a fold collapses the standing
             summaries. Read in the fold mode and by :meth:`fold_if_smaller`. See
@@ -1196,7 +997,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
           a pass is the prompt's size, and the prompt does not shrink to the size of the band --
           so once the band is down to the previous summary plus a turn or two, every new turn
           makes the second rule true again while freeing a fraction of a percent. Thirty passes
-          in a run, measured; see the module docstring and :data:`DEFAULT_MIN_BAND_SHARE`.
+          in a run; see ``docs/compaction/research/strategies-as-designed.md`` and
+          :data:`DEFAULT_MIN_BAND_SHARE`.
 
         **The band is measured, not counted.** A minimum number of new *turns* since the last
         pass would bound nothing: it divides the firing count by a constant and leaves it
