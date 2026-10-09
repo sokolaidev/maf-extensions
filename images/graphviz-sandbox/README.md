@@ -99,3 +99,7 @@ Pin the verified manifest digest in application configuration. To update, select
 The release gate requires an offline PNG packaging probe, an SPDX SBOM, and no High/Critical findings, including unfixed findings, at publication assessment time. Review the retained reports for lower-severity findings and current monitoring for newly disclosed vulnerabilities. A scanner result or signature does not prove absence of malware or backdoors, and a packaging probe does not establish production suitability for your workload.
 
 See the [security policy](../../SECURITY.md) for support and private vulnerability reporting. Use [repository issues](https://github.com/sokolaidev/maf-extensions/issues) for non-sensitive usage problems; include the image digest, platform, Docker version, relevant SDK versions and a minimal non-sensitive DOT example.
+
+## SDK qualification
+
+The [manual SDK qualification](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) verifies the signed release identity before exercising sample 07's rendering tool through the published router and Docker backend. It checks PNG delivery, invalid input, closed networking, a deterministic SDK timeout and container disposal, with exact image and package versions in its report. It runs on demand, without a model or Azure credentials, and does not run during ordinary PR CI. Its SDK defaults differ from the hardened Docker CLI example above; consult the observed settings and qualification limits before adopting them.

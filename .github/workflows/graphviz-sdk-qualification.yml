@@ -1,0 +1,41 @@
+name: Graphviz SDK qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Download immutable release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(python3 -c 'import json; print(json.load(open("samples/07_docker_diagram/graphviz-policy.json"))["version"])')"
+          gh release download "image-graphviz-v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/graphviz-evidence"
+      - name: Verify release identity and qualify the SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --isolated --no-project --python 3.12 samples/07_docker_diagram/qualify.py \
+            --policy samples/07_docker_diagram/graphviz-policy.json \
+            --evidence "$RUNNER_TEMP/graphviz-evidence" --output "$RUNNER_TEMP/graphviz-qualification"
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: graphviz-sdk-qualification
+          path: ${{ runner.temp }}/graphviz-qualification/
+          if-no-files-found: error
+          retention-days: 90
