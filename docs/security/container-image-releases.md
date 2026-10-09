@@ -287,9 +287,9 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 
 | Decision | State | Tracking |
 |---|---|---|
-| Public GHCR destination and repository linkage | Graphviz 0.1.0 public pull and immutable evidence delivery passed | untracked |
+| Public GHCR destination and repository linkage | Graphviz 0.1.1 public pull and immutable evidence delivery passed | untracked |
 | Strict High/Critical gate for publication | Graphviz publication and first monitoring assessment passed; other profiles pending | untracked |
-| 1: Independent per-profile versions and immutable release identities | Graphviz 0.1.0 identity published and verified; other profiles pending | untracked |
+| 1: Independent per-profile versions and immutable release identities | Graphviz 0.1.1 identity published and verified; other profiles pending | untracked |
 | 2: Twelve Linux/amd64 profiles and assessed-manifest scope | Scope and single-manifest validation implemented; pending index qualification | untracked |
 | 3: Maintainer-controlled publication, per-profile serialization and interrupted-attempt lifecycle | Protected approval and interrupted diagram recovery verified; remaining acceptance scenarios pending | untracked |
 | 4: Digest-bound provenance, SBOM, signed completion records, durable evidence and consumer verification | Graphviz provenance, SBOM, completion and consumer verification passed; other profiles pending | untracked |
