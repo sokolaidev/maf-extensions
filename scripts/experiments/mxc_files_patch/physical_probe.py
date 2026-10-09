@@ -11,13 +11,14 @@ import sqlite3
 import subprocess
 import sys
 import zlib
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
-from scripts.experiments.mxc_files_patch.deletion_probe import LIMITS, SCRATCH
+from scripts.experiments.mxc_files_patch.deletion_probe import LIMITS
+from scripts.experiments.mxc_files_patch.deletion_probe import SCRATCH as BASE_SCRATCH
 from scripts.experiments.mxc_files_patch.durability_probe import console
 from scripts.experiments.mxc_files_patch.native_probe import IO
-from scripts.experiments.mxc_files_patch.request import FileLimits, Input, Request
+from scripts.experiments.mxc_files_patch.request import FileLimits, Input, Request, WorkspaceLimits
 from scripts.experiments.mxc_files_patch.shared_call import call
 from scripts.experiments.mxc_session_patch.durability_probe import _profile_for
 from scripts.experiments.mxc_session_patch.host_call import atomic_report, digest
@@ -28,7 +29,12 @@ from scripts.experiments.mxc_session_patch.process_identity import Identity, sto
 from scripts.experiments.mxc_session_patch.shared_store import SharedStore
 
 MARGIN = 8 * 1024**2
-PAYLOAD_BYTES = 16 * 1024**2
+PAYLOAD_BYTES = 64 * 1024**2
+SCRATCH = replace(
+    BASE_SCRATCH,
+    bytes=BASE_SCRATCH.bytes + 48 * 1024**2,
+    store_bytes=BASE_SCRATCH.store_bytes + 96 * 1024**2,
+)
 SEED = Request(
     IO
     + b"physical_value=1; write_file('/workspace/session/value',b'1'); write_file('result.bin',b'1'); print(1)",
@@ -61,7 +67,8 @@ def overflow(payload: bytes) -> Request:
         + b"assert physical_value == 1; physical_value=999; write_file('/workspace/session/value',b'999'); write_file('result.bin',b'999'); print(999)",
         (Input("bulk.bin", payload, lifecycle="session"),),
         ("result.bin",),
-        FileLimits(),
+        FileLimits(input_bytes=PAYLOAD_BYTES, file_bytes=PAYLOAD_BYTES),
+        WorkspaceLimits(bytes=128 * 1024**2),
     )
 
 
@@ -194,10 +201,12 @@ def qualify(helper: Path, startup: Path, state: Path) -> dict:
     state.mkdir(parents=True, exist_ok=False)
     with SharedStore(state / "calibration", "one", _profile_for(helper, startup), LIMITS) as store:
         assert console(call(store, "seed", SEED, helper, startup, SCRATCH)).strip() == b"1"
+        seed_bytes = (store.root / "shared.sqlite").stat().st_size
+        assert console(call(store, "verify", VERIFY, helper, startup, SCRATCH)).strip() == b"2"
         baseline = (store.root / "shared.sqlite").stat().st_size
         page_size = store.db.execute("PRAGMA page_size").fetchone()[0]
         NativeJournal(store).delete()
-        assert store.collect_checkpoints(limit=128) == 1
+        assert store.collect_checkpoints(limit=128) == 2
         assert not list((store.root / "scratch").iterdir())
         store.audit_usage()
     ceiling = ((baseline + MARGIN + page_size - 1) // page_size) * page_size
@@ -223,6 +232,8 @@ def qualify(helper: Path, startup: Path, state: Path) -> dict:
         "python": platform.python_version(),
         "sqlite": sqlite3.sqlite_version,
         "calibration_database_bytes": baseline,
+        "calibration_seed_bytes": seed_bytes,
+        "calibration_recovery_growth_bytes": baseline - seed_bytes,
         "calibration_scratch_reclaimed": True,
         "payload_bytes": len(payload),
         "compressed_payload_bytes": compressed,

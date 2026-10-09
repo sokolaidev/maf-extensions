@@ -93,6 +93,9 @@ def test_capacity_failure_and_recovery_across_real_supervisors(tmp_path, monkeyp
     monkeypatch.setattr(probe.subprocess, "run", launch)
     report = probe.qualify(helper, startup, tmp_path / "qualification")
     assert report["qualified"] and report["format"] == 6
+    assert report["calibration_database_bytes"] >= report["calibration_seed_bytes"]
+    assert report["policy"]["database_bytes"] == report["calibration_database_bytes"] + probe.MARGIN
+    assert report["payload_bytes"] == 64 * 1024**2
     records = report["supervisors"]
     assert records["overflow"]["sqlite_errorcode"] == sqlite3.SQLITE_FULL
     assert records["recover"]["python_and_session_files_recovered"]
