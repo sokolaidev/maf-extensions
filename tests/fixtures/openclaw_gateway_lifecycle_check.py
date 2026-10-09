@@ -55,7 +55,7 @@ class DockerConnectionFault:
         current = json.loads(docker("context", "inspect", "--format", "{{json .}}"))
         self.endpoint = current["Endpoints"]["docker"]["Host"]
         require(
-            self.endpoint.startswith(("npipe://", "unix://")),
+            self.endpoint.startswith(("npipe:////./pipe/", "unix:///")),
             "Connection-loss qualification requires a local pipe/socket Docker endpoint",
         )
         self.directory = root / "docker-config"

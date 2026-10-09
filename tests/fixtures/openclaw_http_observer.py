@@ -309,7 +309,8 @@ def observe_docker_removal(observer: ObserveHTTP, backend_type: Any) -> None:
                 target=args[2],
                 started_ns=started_ns,
                 returncode=result.returncode,
-                connection_refused="refused" in result.stderr.lower(),
+                connection_refused="connect" in result.stderr.lower()
+                and "refused" in result.stderr.lower(),
                 stderr_sha256=hashlib.sha256(result.stderr.encode()).hexdigest(),
             )
         return result

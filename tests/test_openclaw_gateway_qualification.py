@@ -3018,3 +3018,15 @@ def test_docker_disconnect_refuses_remote_daemon(tmp_path, monkeypatch):
     )
     with lifecycle.ExitStack() as stack, pytest.raises(RuntimeError, match="local pipe/socket"):
         lifecycle.DockerConnectionFault(tmp_path, stack)
+
+
+@pytest.mark.parametrize("message", ["permission refused", "could not connect", "", "not found"])
+def test_removal_observer_does_not_label_other_errors_as_connection_refusal(tmp_path, message):
+    class Backend:
+        async def _invoke(self, *args, **kwargs):
+            return SimpleNamespace(returncode=1, stderr=message)
+
+    path = tmp_path / "evidence.jsonl"
+    observer.observe_docker_removal(observer.ObserveHTTP(None, path), Backend)
+    asyncio.run(Backend()._invoke("rm", "-f", "compiler"))
+    assert checker.records(path)[0]["connection_refused"] is False
