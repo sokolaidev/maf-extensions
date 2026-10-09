@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import accounting
+from . import accounting, idle
 from .accounting import CALL_METADATA, MAX_INTEGER, SESSION_METADATA, STORE_METADATA
 from .host_store import (
     CHUNK,
@@ -132,6 +132,7 @@ class SharedStore:
         clock: Clock | None = None,
         *,
         upgrade_accounting: bool = False,
+        idle_policy: idle.Policy | None = None,
     ):
         if (
             limits.session_quota < SESSION_METADATA
@@ -142,6 +143,8 @@ class SharedStore:
         self.limits = limits
         self.clock = clock or SystemClock()
         self.grants: dict[str, int] = {}
+        self.idle_grant = 0
+        self.idle_enabled = False
         self.uncertain = False
         self.anchor_before = self.clock.monotonic_ns()
         self.anchor_utc = self.clock.utc_ns()
@@ -154,6 +157,11 @@ class SharedStore:
                 "checkpoint_bytes": limits.checkpoint_bytes,
                 "result_bytes": limits.result_bytes,
                 "files": limits.files,
+                **(
+                    {"idle_policy": [idle_policy.timeout_seconds, idle_policy.grace_seconds]}
+                    if idle_policy is not None
+                    else {}
+                ),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -180,6 +188,7 @@ class SharedStore:
             self.db.row_factory = sqlite3.Row
             try:
                 upgrading = False
+                store_version = VERSION
                 if existed:
                     try:
                         row = self.db.execute("SELECT version FROM settings WHERE id=1").fetchone()
@@ -188,8 +197,9 @@ class SharedStore:
                     upgrading = row is not None and row[0] == 3 and upgrade_accounting
                     if row is not None and row[0] == 3 and not upgrade_accounting:
                         raise Refused("format 3 requires explicit upgrade")
-                    if row is None or (row[0] != VERSION and not upgrading):
+                    if row is None or (row[0] not in (VERSION, idle.VERSION) and not upgrading):
                         raise Refused("unsupported or corrupt store format")
+                    store_version = row[0]
                 self.db.execute("PRAGMA journal_mode=DELETE")
                 self.db.execute("PRAGMA synchronous=FULL")
                 self.db.execute("PRAGMA foreign_keys=ON")
@@ -205,6 +215,8 @@ class SharedStore:
                         accounting.initialize(self.db)
                         self.db.execute("UPDATE settings SET version=? WHERE id=1", (VERSION,))
                     accounting.audit(self.db)
+                    if store_version == idle.VERSION:
+                        idle.validate_schema(self.db)
                     self.db.execute(
                         "CREATE INDEX IF NOT EXISTS calls_expiry ON calls(session,status,expired,expires,id)"
                     )
@@ -252,6 +264,7 @@ class SharedStore:
                 if row[0] >= MAX_INTEGER:
                     raise Refused("owner generation exhausted")
                 self.generation = row[0] + 1
+                self.idle_enabled = idle.configure(self, idle_policy)
                 self.db.execute(
                     "UPDATE sessions SET generation=? WHERE id=?", (self.generation, session)
                 )
@@ -286,12 +299,14 @@ class SharedStore:
     def _transaction(self) -> Iterator[None]:
         self.db.execute("BEGIN IMMEDIATE")
         grants = self.grants.copy()
+        idle_grant = self.idle_grant
         try:
             yield
             self.db.commit()
         except BaseException:
             self.db.rollback()
             self.grants = grants
+            self.idle_grant = idle_grant
             raise
 
     def __enter__(self) -> SharedStore:
@@ -334,6 +349,10 @@ class SharedStore:
         if utc < self.last_utc or utc < lower - SECOND or utc > upper + SECOND:
             self.uncertain = True
         if self.uncertain:
+            if self.idle_enabled:
+                self.db.execute(
+                    "UPDATE session_idle SET uncertain=1 WHERE session=?", (self.session,)
+                )
             self.db.execute(
                 "UPDATE calls SET uncertain=1 WHERE session=? AND status='committed' AND expired=0 AND uncertain=0",
                 (self.session,),
@@ -383,6 +402,7 @@ class SharedStore:
     ) -> bytes | None:
         """Reserve before execution, or redeliver the identical unexpired result."""
         _name(call_id)
+        self.retire_idle()
         digest = hashlib.sha256(request).hexdigest()
         expired = False
         result = None
@@ -438,6 +458,7 @@ class SharedStore:
                     ).fetchone()[0]
                     if quota != scratch.store_bytes or used + scratch.bytes > quota:
                         raise Refused("scratch quota cannot admit allowance")
+                idle.start(self)
                 self.db.execute(
                     "INSERT INTO calls(session,id,request,status,generation) VALUES(?,?,?,'pending',?)",
                     (self.session, call_id, digest, self.generation),
@@ -526,6 +547,7 @@ class SharedStore:
             self.db.execute(
                 "UPDATE sessions SET current_call=? WHERE id=?", (call_id, self.session)
             )
+            idle.finish(self)
         boundary("after_commit")
 
     def _capture(self, call_id: str, root: Path) -> int:
@@ -679,6 +701,7 @@ class SharedStore:
 
     def restore(self, destination: Path) -> str | None:
         """Restore current checkpoint independently of its result's expiry."""
+        self.retire_idle()
         session = self._owner()
         if session["state"] != "active":
             raise Refused("session is retired")
@@ -701,6 +724,10 @@ class SharedStore:
                 for data in self._file_bytes(file, hashes):
                     stream.write(data)
         return call_id
+
+    def retire_idle(self, boundary: Callable[[str], None] = lambda _: None) -> bool:
+        """Retire a due idle session without expiring its retained delivery results."""
+        return idle.retire(self, boundary)
 
     def retire(self, boundary: Callable[[str], None] = lambda _: None) -> None:
         """Durably refuse new execution; outstanding reservations still require cleanup proof."""

@@ -711,6 +711,7 @@ jobs:
             ${{ runner.temp }}/mxc-files/durability/result.json
             ${{ runner.temp }}/mxc-files/durability/*.log
             ${{ runner.temp }}/mxc-files/durability/quota-*/*.log
+            ${{ runner.temp }}/mxc-files/idle/result.json
             ${{ runner.temp }}/mxc-files/deletion/result.json
             ${{ runner.temp }}/mxc-files/deletion/*/*.json
             ${{ runner.temp }}/mxc-files/deletion/*/*.log

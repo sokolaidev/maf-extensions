@@ -18,11 +18,15 @@ The experimental shared-call supervisors accept a host-owned `threading.Event` t
 
 `NativeJournal.delete()` resumes deletion while holding the session ownership lock, including after restart. It stops a recorded helper through a creation-checked Windows process handle or Linux pidfd, waits for confirmed termination, and then reclaims its private scratch through the existing cleanup journal. A missing/corrupt identity, unavailable process evidence, unknown scratch entry or failed termination keeps unresolved capacity charged. This method does not terminate arbitrary descendants or fence another machine. Checkpoint collection remains a separate bounded operation; completed results and call identities survive it. These are experimental host controls, not a production backend API. The [qualified deletion record](../../../docs/sandbox/research/mxc-backend.md#qualified-active-deletion-candidate) retains the Linux/KVM and Windows/WHP reports for active deletion and seven supervisor-crash boundaries.
 
+## Optional idle expiry
+
+New shared-store sessions may set `idle_policy=Policy(timeout_seconds, grace_seconds=300)`; omitting it keeps idle expiry disabled. Running calls and unresolved cleanup remain protected. The interval starts at creation or completed cleanup, and reopening or replaying a result does not reset it. The host schedules `NativeJournal.expire_idle()` under session ownership; admission and restore also check expiry. Idle retirement preserves retained result/artifact bytes and call identity. The [store contract](../mxc_session_patch/HOST_PUBLICATION.md#optional-persistent-session-idle-expiry) defines persistent deadlines, finite clock forgiveness, format-5 compatibility and recovery boundaries.
+
 ## Run on GitHub
 
 Dispatch `tests.yml` at the candidate branch with `mxc_files=true`. The Linux job builds the pinned combined kernel and retains its source, builder and toolchain identity. Linux/KVM and Windows/WHP jobs consume the same kernel artifact, build the helper with the retained dependency lock, and run native file and recovery probes. No local Rust build is required. The [qualified candidate record](../../../docs/sandbox/research/mxc-backend.md#qualified-file-candidate) links the retained reports and [example chart](example-chart.png).
 
-A native job reports `qualified` only after file probes, Python-state controls, the eight-boundary crash matrix, failed-artifact recovery, active deletion/restart controls and overlay removal pass. The artifact includes bounded failure diagnostics and the collected CSV chart. Compilation or a successful job with opt-in steps skipped is not native qualification.
+A native job reports `qualified` only after file probes, Python-state controls, the eight-boundary crash matrix, failed-artifact recovery, active deletion/restart controls, idle-expiry controls and overlay removal pass. The artifact includes bounded failure diagnostics and the collected CSV chart. Compilation or a successful job with opt-in steps skipped is not native qualification.
 
 ## Remove the profile
 

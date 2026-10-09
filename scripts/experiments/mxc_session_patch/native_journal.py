@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import idle
 from .host_store import Refused
 from .process_identity import Identity, capture, stopped, terminate
 
@@ -144,8 +145,16 @@ class NativeJournal:
             self.store.db.execute(
                 "DELETE FROM launches WHERE session=? AND call=?", (self.store.session, call)
             )
+            idle.finish(self.store)
             boundary("before_cleanup_release")
         boundary("after_cleanup_release")
+
+    def expire_idle(self, boundary: Callable[[str], None] = lambda _: None) -> bool:
+        """Finish retirement cleanup when the idle deadline is due or already retired."""
+        if self.store.retire_idle(boundary) or self.store._owner()["state"] == "retired":
+            self.delete(boundary)
+            return True
+        return False
 
     def delete(self, boundary: Callable[[str], None] = lambda _: None) -> None:
         """Retire before stopping recorded helpers; preserve retries and unresolved charges."""
