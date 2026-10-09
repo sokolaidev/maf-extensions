@@ -327,6 +327,7 @@ def cli_container(tmp_path):
             "AutoRemove": True,
             "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"},
         },
+        "NetworkSettings": {"Networks": {"none": {}}},
         "Mounts": [
             {
                 "Destination": "/input",
@@ -353,6 +354,8 @@ def cli_container(tmp_path):
         ("Config", "Cmd", []),
         ("Config", "Env", []),
         ("HostConfig", "NetworkMode", "bridge"),
+        ("NetworkSettings", "Networks", {"none": {}, "bridge": {}}),
+        ("NetworkSettings", "Networks", {"bridge": {}}),
         ("HostConfig", "ReadonlyRootfs", False),
         ("HostConfig", "CapDrop", []),
         ("HostConfig", "CapAdd", ["NET_ADMIN"]),
@@ -379,9 +382,13 @@ def test_cli_refuses_weakened_controls(cli_container, tmp_path, section, field, 
 
 
 @pytest.mark.parametrize("cap_add", [None, []])
-def test_cli_accepts_docker_empty_capability_encodings(cli_container, tmp_path, cap_add):
+@pytest.mark.parametrize("networks", [{}, {"none": {}}])
+def test_cli_accepts_unprivileged_closed_prestart_settings(
+    cli_container, tmp_path, cap_add, networks
+):
     cli_container["HostConfig"]["CapAdd"] = cap_add
-    qualification.check_cli_container(
+    cli_container["NetworkSettings"]["Networks"] = networks
+    observed = qualification.check_cli_container(
         cli_container,
         "selected",
         "config",
@@ -389,6 +396,8 @@ def test_cli_accepts_docker_empty_capability_encodings(cli_container, tmp_path, 
         tmp_path / "cli-input",
         tmp_path / "cli-output",
     )
+
+    assert observed["networks"] == networks
 
 
 @pytest.mark.parametrize("fault", ["writable-input", "wrong-source", "extra-mount", "duplicate"])

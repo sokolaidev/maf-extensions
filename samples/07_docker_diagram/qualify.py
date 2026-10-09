@@ -217,6 +217,8 @@ def check_cli_container(
     require(config["Image"] == image and value["Image"] == local_id, "CLI image changed")
     require(config["User"] == user, "CLI user differs from the non-root host user")
     require(host["NetworkMode"] == "none", "CLI networking is not closed")
+    networks = value["NetworkSettings"]["Networks"]
+    require(set(networks) <= {"none"}, "CLI container has an additional network")
     require(host["ReadonlyRootfs"] is True, "CLI root filesystem is writable")
     require(set(host["CapDrop"]) == {"ALL"}, "CLI capabilities are not all dropped")
     require(host["CapAdd"] in (None, []), "CLI capabilities are added back")
@@ -250,7 +252,7 @@ def check_cli_container(
         )
     if "/tmp" in mounts:
         require(mounts["/tmp"]["Type"] == "tmpfs", "CLI scratch is not tmpfs")
-    return {"user": user, "hostConfig": host, "mounts": value["Mounts"]}
+    return {"user": user, "hostConfig": host, "networks": networks, "mounts": value["Mounts"]}
 
 
 def exercise_cli(expected: dict[str, Any], output: Path, result: dict[str, Any]) -> None:
