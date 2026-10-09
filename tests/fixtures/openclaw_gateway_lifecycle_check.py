@@ -39,12 +39,51 @@ CHURN_CYCLES = 3
 DISCOVERY_COOLDOWN_SECONDS = 35
 UNAVAILABLE_DISPATCHES = 4
 IDLE_DISPATCHES = 6
+DOCKER_DISCONNECT_DISPATCHES = 7
 DEFAULT_IDLE_KEEPALIVES = 7
 DEFAULT_IDLE_DISPATCHES = 2 + DEFAULT_IDLE_KEEPALIVES + 3
 REGISTRY_DISPATCHES = REGISTRY_LIMIT + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
 LIFECYCLE_DISPATCHES = (
     30 + (REGISTRY_LIMIT - 2) + CHURN_CYCLES + (REGISTRY_LIMIT - 1) + REGISTRY_LIMIT
 )
+
+
+class DockerConnectionFault:
+    """Disconnect only the fixture's private CLI context from a local Docker engine."""
+
+    def __init__(self, root: Path, stack: ExitStack):
+        current = json.loads(docker("context", "inspect", "--format", "{{json .}}"))
+        self.endpoint = current["Endpoints"]["docker"]["Host"]
+        require(
+            self.endpoint.startswith(("npipe://", "unix://")),
+            "Connection-loss qualification requires a local pipe/socket Docker endpoint",
+        )
+        self.directory = root / "docker-config"
+        self.directory.mkdir()
+        self.name = "qualification-" + uuid.uuid4().hex
+        self.reserved = stack.enter_context(socket.socket())
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.reserved.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        self.reserved.bind(("127.0.0.1", 0))
+        self.unreachable = f"tcp://127.0.0.1:{self.reserved.getsockname()[1]}"
+        self.command("create", self.name, "--docker", "host=" + self.endpoint)
+        stack.callback(self.restore)
+        self.environment = {k: v for k, v in os.environ.items() if not k.startswith("DOCKER_")}
+        self.environment.update(DOCKER_CONFIG=str(self.directory), DOCKER_CONTEXT=self.name)
+
+    def command(self, *args: str) -> None:
+        result = subprocess.run(
+            ["docker", "--config", str(self.directory), "context", *args],
+            capture_output=True,
+            timeout=15,
+        )
+        require(result.returncode == 0, "Private Docker context configuration failed")
+
+    def disconnect(self) -> None:
+        self.command("update", self.name, "--docker", "host=" + self.unreachable)
+
+    def restore(self) -> None:
+        self.command("update", self.name, "--docker", "host=" + self.endpoint)
 
 
 def wait_for(predicate, message: str, seconds: float = 90) -> Any:
@@ -364,6 +403,125 @@ def verify_poisoned_turns(
             and settled[0].get("time_ns", 0) > call.get("time_ns", 0),
             "Poisoned probe did not settle without active work",
         )
+
+
+def verify_docker_disconnect(evidence, call, observed) -> dict[str, Any]:
+    """Require a real removal refusal, accepted cancellation and independently retained work."""
+    boot = call.get("boot")
+    require(
+        bool(boot)
+        and all(r.get("boot") == boot for r in evidence)
+        and bool(call.get("session"))
+        and bool(call.get("request"))
+        and bool(call.get("exchange")),
+        "Docker disconnect lacks an identified active call",
+    )
+    require(
+        call.get("time_ns", 0)
+        < observed.get("disconnected_ns", 0)
+        < observed.get("abort_ns", 0)
+        < observed.get("observed_ns", 0)
+        and matching_cancel(evidence, call, after_ns=observed["abort_ns"]),
+        "Docker disconnect lacks ordered accepted cancellation",
+    )
+    require(
+        isinstance(observed.get("container"), str)
+        and len(observed["container"]) == 64
+        and all(c in "0123456789abcdef" for c in observed["container"])
+        and bool(observed.get("target"))
+        and observed.get("owned") == [observed["container"]]
+        and observed.get("readiness_status") == 503
+        and all(
+            observed.get(key) is True
+            for key in (
+                "compiler_before",
+                "paused",
+                "same_gateway",
+                "same_service",
+                "owner_unchanged",
+                "sentinel_preserved",
+            )
+        ),
+        "Docker disconnect lacks independent retained-resource or poisoned-readiness evidence",
+    )
+    removals = [
+        r
+        for r in evidence
+        if r.get("event") == "docker_removal" and r.get("target") == observed["target"]
+    ]
+    require(bool(removals), "No real removal command targeted the retained compiler")
+    require(
+        all(
+            r.get("boot") == boot
+            and observed["abort_ns"]
+            < r.get("started_ns", 0)
+            <= r.get("time_ns", 0)
+            <= observed["observed_ns"]
+            and isinstance(r.get("returncode"), int)
+            and not isinstance(r["returncode"], bool)
+            and r["returncode"] != 0
+            and r.get("connection_refused") is True
+            and isinstance(r.get("stderr_sha256"), str)
+            and len(r["stderr_sha256"]) == 64
+            for r in removals
+        ),
+        "Docker removal did not fail through the real disconnected command path",
+    )
+    settled = [
+        r for r in evidence if r.get("event") == "settled" and r.get("exchange") == call["exchange"]
+    ]
+    require(
+        len(settled) == 1
+        and settled[0].get("boot") == boot
+        and settled[0].get("session") == call["session"]
+        and settled[0].get("active") is False
+        and settled[0].get("poisoned") is True
+        and max(r["time_ns"] for r in removals)
+        <= settled[0].get("time_ns", 0)
+        <= observed["observed_ns"],
+        "Disconnected call did not settle with admission poisoned",
+    )
+    return {
+        "failed_removal_commands": len(removals),
+        "cleanup": "unconfirmed",
+        "retained_container": True,
+        "readiness_status": 503,
+        "poisoned": True,
+    }
+
+
+def verify_docker_recovery(evidence, startup, target: str) -> str:
+    """Require the retained compiler's real removal before replacement readiness."""
+    starts = [r for r in evidence if r.get("event") == "startup"]
+    ready = [r for r in evidence if r.get("event") == "startup_ready"]
+    removals = [
+        r for r in evidence if r.get("event") == "docker_removal" and r.get("target") == target
+    ]
+    require(
+        bool(target)
+        and len(starts) == len(ready) == 1
+        and bool(removals)
+        and bool(starts[0].get("boot"))
+        and starts[0]["boot"] != startup.get("boot")
+        and ready[0].get("boot") == starts[0]["boot"]
+        and ready[0].get("owner_empty") is True
+        and all(
+            r.get("boot") == starts[0]["boot"]
+            and r.get("returncode") == 0
+            and r.get("connection_refused") is False
+            and starts[0].get("time_ns", 0)
+            < r.get("started_ns", 0)
+            <= r.get("time_ns", 0)
+            < ready[0].get("time_ns", 0)
+            for r in removals
+        )
+        and bool(startup.get("source_hashes"))
+        and bool(startup.get("versions"))
+        and starts[0].get("source_hashes") == startup["source_hashes"]
+        and starts[0].get("versions") == startup["versions"],
+        "Replacement did not remove the retained compiler before readiness",
+    )
+    return starts[0]["boot"]
 
 
 def retirement_target(value: dict[str, Any], name: str) -> dict[str, Any]:
@@ -924,7 +1082,13 @@ def verify_final_shutdown(evidence, case: str, exit_code: int | None) -> None:
     require(
         exit_code == 0
         and [r.get("poisoned") for r in final]
-        == ([False, True, False] if case == "lifecycle" else [False])
+        == (
+            [False, True, False]
+            if case == "lifecycle"
+            else [True, False]
+            if case == "docker-disconnect"
+            else [False]
+        )
         and all(r.get("sessions") == 0 and r.get("active") is False for r in final),
         "Final service shutdown was not clean",
     )
@@ -938,6 +1102,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         "unavailable": UNAVAILABLE_DISPATCHES,
         "idle": IDLE_DISPATCHES,
         "idle-default": DEFAULT_IDLE_DISPATCHES,
+        "docker-disconnect": DOCKER_DISCONNECT_DISPATCHES,
     }
     require(case in counts, "Unknown qualification case")
     dispatches = counts[case]
@@ -998,6 +1163,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     processes: list[subprocess.Popen] = []
     report: dict[str, Any] = {"case": case, "complete_matrix": False, "image": image}
     with ExitStack() as stack:
+        docker_fault = DockerConnectionFault(root, stack) if case == "docker-disconnect" else None
+        retained_container = None
 
         def start(name: str, command: list[str], environment=None):
             log = stack.enter_context((root / (name + ".log")).open("ab"))
@@ -1051,6 +1218,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     str(refusal_file),
                     "--refuse-completed-cleanup-file",
                     str(completed_refusal_file),
+                    *(["--observe-docker-removal"] if docker_fault else []),
                     *(["--idle-expiry-file", str(idle_expiry_file)] if case == "idle" else []),
                     *(
                         ["--default-idle-expiry-file", str(idle_expiry_file)]
@@ -1058,6 +1226,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         else []
                     ),
                 ],
+                docker_fault.environment if docker_fault else None,
             )
 
         def ready(port, path, token, process):
@@ -1409,6 +1578,201 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     "Both sessions recovered discovery and reused their MCP identities without a Gateway restart or replay",
                     flush=True,
                 )
+            elif case == "docker-disconnect":
+                if service_process is None or docker_fault is None:
+                    raise RuntimeError(
+                        "Docker disconnect requires a started private-context service"
+                    )
+                report["environment"] = verify_environment(baseline_args)
+                owner_before = owner_file.read_bytes()
+                sessions = [turn(index)[0] for index in range(2)]
+                require(len(set(sessions)) == 2, "Docker disconnect requires distinct sessions")
+                startup = [r for r in records(transport) if r.get("event") == "startup"][-1]
+                boot = startup["boot"]
+                snapshot_registry(sessions, boot, owner_before)
+                before_active = len(records(transport))
+                pending, active_turn = begin_turn(0, "cancel")
+                try:
+
+                    def compiling_for_disconnect():
+                        candidates = owned()
+                        if len(candidates) == 1 and "bicep" in docker(
+                            "top", candidates[0], "-eo", "pid,comm"
+                        ):
+                            return candidates[0]
+                        return None
+
+                    short_id = wait_for(
+                        compiling_for_disconnect, "No compiler before disconnect", 60
+                    )
+                    info = json.loads(docker("inspect", short_id))[0]
+                    retained_container = info["Id"]
+                    target = info["Name"].removeprefix("/")
+                    active_calls = requests(records(transport)[before_active:])
+                    require(
+                        len(active_calls) == 1 and active_calls[0]["session"] == sessions[0],
+                        "Docker disconnect lacks one selected active call",
+                    )
+                    active_call = active_calls[0]
+                    expected_calls += 1
+                    # Retain the exact compiler so natural completion cannot mimic recovery.
+                    docker("pause", retained_container)
+                    require(
+                        json.loads(docker("inspect", retained_container))[0]["State"]["Paused"],
+                        "Compiler was not paused before disconnect",
+                    )
+                    docker_fault.disconnect()
+                    disconnected_ns = time.time_ns()
+                    require(pending.sock is not None, "Active Gateway turn already ended")
+                    abort_ns = time.time_ns()
+                    pending.sock.shutdown(socket.SHUT_RDWR)
+                    pending.close()
+                    wait_for(
+                        lambda: any(
+                            r.get("event") == "settled"
+                            and r.get("exchange") == active_call["exchange"]
+                            and r.get("poisoned") is True
+                            and r.get("active") is False
+                            for r in records(transport)[before_active:]
+                        ),
+                        "Disconnected cleanup did not poison and settle the active call",
+                        120,
+                    )
+                    probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
+                    try:
+                        probe.request(
+                            "GET", "/ready", headers={"Authorization": "Bearer " + service_token}
+                        )
+                        response = probe.getresponse()
+                        response.read()
+                        readiness_status = response.status
+                    finally:
+                        probe.close()
+                    survivor = json.loads(docker("inspect", retained_container))[0]
+                    observed = {
+                        "container": retained_container,
+                        "target": target,
+                        "disconnected_ns": disconnected_ns,
+                        "abort_ns": abort_ns,
+                        "compiler_before": True,
+                        "paused": survivor["State"]["Paused"],
+                        "owned": [json.loads(docker("inspect", item))[0]["Id"] for item in owned()],
+                        "readiness_status": readiness_status,
+                        "same_gateway": gateway_process.poll() is None,
+                        "same_service": service_process.poll() is None,
+                        "owner_unchanged": owner_file.read_bytes() == owner_before,
+                        "sentinel_preserved": bool(
+                            docker("ps", "-q", "--filter", f"id={sentinel}")
+                        ),
+                        "observed_ns": time.time_ns(),
+                    }
+                    failure_evidence = records(transport)[before_active:]
+                    failure_report = verify_docker_disconnect(
+                        failure_evidence, active_call, observed
+                    )
+                    before_poisoned = len(records(transport))
+                    poisoned_projections = []
+                    for index in range(2):
+                        blocked, blocked_turn = begin_turn(index, "valid")
+                        try:
+                            response = blocked.getresponse()
+                            response.read()
+                            require(response.status == 200, "Poisoned Gateway turn did not settle")
+                        finally:
+                            blocked.close()
+                        poisoned_projections.append(
+                            projected_result(records(provider), blocked_turn, "valid")
+                        )
+                    verify_poisoned_turns(
+                        records(transport)[before_poisoned:], poisoned_projections, sessions, boot
+                    )
+                    expected_calls += 2
+                    verify_dispatch_count(records(transport), expected_calls)
+                    require(
+                        json.loads(docker("inspect", retained_container))[0]["State"]["Paused"],
+                        "Poisoned probes lost the retained compiler",
+                    )
+                    stop_file.touch()
+                    require(service_process.wait(timeout=90) == 1, "Poisoned shutdown did not fail")
+                    shutdown = [
+                        r
+                        for r in records(transport)
+                        if r.get("event") == "shutdown" and r.get("boot") == boot
+                    ]
+                    require(
+                        len(shutdown) == 1
+                        and shutdown[0].get("sessions") == 0
+                        and shutdown[0].get("active") is False
+                        and shutdown[0].get("poisoned") is True,
+                        "Disconnected service did not drain poisoned state",
+                    )
+                    require(
+                        json.loads(docker("inspect", retained_container))[0]["State"]["Paused"],
+                        "Disconnected shutdown removed the retained compiler",
+                    )
+                    require(
+                        owner_file.read_bytes() == owner_before, "Poisoned shutdown changed owner"
+                    )
+                    print(
+                        "Real Docker removal failed; both sessions stayed blocked and the compiler survived shutdown",
+                        flush=True,
+                    )
+                    before_recovery = len(records(transport))
+                    docker_fault.restore()
+                    service_process = service()
+                    service_ready(service_process)
+                    recovery_rows = records(transport)[before_recovery:]
+                    recovery_boot = verify_docker_recovery(recovery_rows, startup, target)
+                    require(
+                        not docker("ps", "-aq", "--filter", f"id={retained_container}")
+                        and not owned(),
+                        "Restored startup left owned resources",
+                    )
+                    require(owner_file.read_bytes() == owner_before, "Recovery changed owner bytes")
+                    retained_container = None
+                    fresh = [turn(index)[0] for index in range(2)]
+                    require(
+                        len(set(fresh)) == 2 and not set(fresh) & set(sessions),
+                        "Recovered sessions reused previous identities",
+                    )
+                    final_registry = snapshot_registry(fresh, recovery_boot, owner_before)
+                    require(
+                        gateway_process.poll() is None
+                        and not any(
+                            r.get("turn") == active_turn and "tool_result" in r
+                            for r in records(provider)
+                        ),
+                        "Recovery restarted Gateway or replayed aborted work",
+                    )
+                    failure_report.update(
+                        gateway_turns_refused=2,
+                        poisoned_shutdown_exit=1,
+                        survivor_after_shutdown=True,
+                        recovery_before_readiness=True,
+                        fresh_sessions=2,
+                        final_registry=final_registry,
+                        same_gateway=True,
+                        owner_unchanged=True,
+                        replayed=False,
+                    )
+                    report["docker_disconnect"] = failure_report
+                    (root / "docker-disconnect.json").write_text(
+                        json.dumps(
+                            {
+                                "transport": records(transport)[before_active:],
+                                "observed": observed,
+                                "call": active_call,
+                                "poisoned_projections": poisoned_projections,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    print(
+                        "Restored Docker connection and service restart removed the retained compiler; new work succeeded without replay",
+                        flush=True,
+                    )
+                finally:
+                    pending.close()
             elif case == "idle-default":
                 if service_process is None:
                     raise RuntimeError("Default idle expiry requires a started service")
@@ -2539,7 +2903,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             report["total_dispatches"] = verify_dispatch_count(records(transport), dispatches)
             report["remaining"] = [
                 "broader idle-expiry timing races, other retirement triggers and prolonged/concurrent churn",
-                "Docker cleanup/daemon failures and remaining interruption cases",
+                "daemon-side removal failures, broader Docker outages and remaining interruption cases"
+                if case == "docker-disconnect"
+                else "Docker cleanup/daemon failures and remaining interruption cases",
                 "other discovery failures, repeated backoff and concurrent discovery",
                 "full real-host transport/MAF matrix",
             ]
@@ -2554,6 +2920,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 if process.poll() is None:
                     process.kill()
                 process.wait(timeout=30)
+            if retained_container and docker("ps", "-aq", "--filter", f"id={retained_container}"):
+                docker("rm", "-f", retained_container)
             if sentinel:
                 docker("rm", "-f", sentinel)
         require(not owned(), "Owner resources remain after fixture shutdown")
@@ -2583,7 +2951,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     (
         root
         / (
-            "default-idle-report.json"
+            "docker-disconnect-report.json"
+            if case == "docker-disconnect"
+            else "default-idle-report.json"
             if case == "idle-default"
             else "idle-report.json"
             if case == "idle"
@@ -2604,7 +2974,14 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument(
         "--case",
-        choices=["lifecycle", "registry", "unavailable", "idle", "idle-default"],
+        choices=[
+            "lifecycle",
+            "registry",
+            "unavailable",
+            "idle",
+            "idle-default",
+            "docker-disconnect",
+        ],
         default="lifecycle",
     )
     print(json.dumps(qualify(parser.parse_args()), indent=2))

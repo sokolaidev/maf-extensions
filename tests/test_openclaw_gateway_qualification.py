@@ -2028,12 +2028,20 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
     lifecycle.verify_churn_retirement([*churn_evidence(), notification], "boot", "target", 1)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle", "idle-default"])
+@pytest.mark.parametrize(
+    "case", ["registry", "lifecycle", "unavailable", "idle", "idle-default", "docker-disconnect"]
+)
 @pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None])
 def test_final_shutdown_requires_zero_process_exit(case, exit_code):
     evidence = [
         {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
-        for poisoned in ([False, True, False] if case == "lifecycle" else [False])
+        for poisoned in (
+            [False, True, False]
+            if case == "lifecycle"
+            else [True, False]
+            if case == "docker-disconnect"
+            else [False]
+        )
     ]
     if exit_code == 0:
         lifecycle.verify_final_shutdown(evidence, case, exit_code)
@@ -2042,12 +2050,20 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
             lifecycle.verify_final_shutdown(evidence, case, exit_code)
 
 
-@pytest.mark.parametrize("case", ["registry", "lifecycle", "unavailable", "idle", "idle-default"])
+@pytest.mark.parametrize(
+    "case", ["registry", "lifecycle", "unavailable", "idle", "idle-default", "docker-disconnect"]
+)
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "poisoned", "sessions", "active"])
 def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutation):
     evidence = [
         {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
-        for poisoned in ([False, True, False] if case == "lifecycle" else [False])
+        for poisoned in (
+            [False, True, False]
+            if case == "lifecycle"
+            else [True, False]
+            if case == "docker-disconnect"
+            else [False]
+        )
     ]
     if mutation == "missing":
         evidence.pop()
@@ -2752,3 +2768,253 @@ def test_default_expiry_accepts_survivor_control_without_cancelling_observed_wor
         lifecycle.verify_default_idle_expiry(
             [*default_idle_evidence(), *controls], "boot", "idle", "active"
         )
+
+
+def docker_disconnect_evidence():
+    call = {"boot": "boot", "session": "a", "request": "request", "exchange": "call", "time_ns": 1}
+    evidence = [
+        {
+            "event": "request",
+            "method": "notifications/cancelled",
+            "session": "a",
+            "target": "request",
+            "exchange": "cancel",
+            "time_ns": 4,
+        },
+        {"event": "response", "session": "a", "exchange": "cancel", "status": 202, "time_ns": 5},
+        {
+            "event": "docker_removal",
+            "target": "compiler",
+            "started_ns": 6,
+            "time_ns": 7,
+            "returncode": 1,
+            "connection_refused": True,
+            "stderr_sha256": "f" * 64,
+        },
+        {
+            "event": "settled",
+            "session": "a",
+            "exchange": "call",
+            "time_ns": 8,
+            "active": False,
+            "poisoned": True,
+        },
+    ]
+    for row in evidence:
+        row["boot"] = "boot"
+    observed = {
+        "container": "a" * 64,
+        "target": "compiler",
+        "owned": ["a" * 64],
+        "disconnected_ns": 2,
+        "abort_ns": 3,
+        "observed_ns": 9,
+        "readiness_status": 503,
+    }
+    observed.update(
+        dict.fromkeys(
+            (
+                "compiler_before",
+                "paused",
+                "same_gateway",
+                "same_service",
+                "owner_unchanged",
+                "sentinel_preserved",
+            ),
+            True,
+        )
+    )
+    return evidence, call, observed
+
+
+def test_docker_disconnect_requires_real_removal_and_retained_work():
+    evidence, call, observed = docker_disconnect_evidence()
+    result = lifecycle.verify_docker_disconnect(evidence, call, observed)
+    assert result["failed_removal_commands"] == 1
+    assert result["retained_container"] is True
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("container", "a" * 12),
+        ("container", "z" * 64),
+        ("target", "other"),
+        ("owned", []),
+        ("owned", ["a" * 64, "b" * 64]),
+        ("readiness_status", 200),
+        ("compiler_before", False),
+        ("paused", False),
+        ("same_gateway", False),
+        ("same_service", False),
+        ("owner_unchanged", False),
+        ("sentinel_preserved", False),
+        ("disconnected_ns", 4),
+        ("abort_ns", 5),
+        ("observed_ns", 7),
+    ],
+)
+def test_docker_disconnect_rejects_missing_independent_proof(field, value):
+    evidence, call, observed = docker_disconnect_evidence()
+    observed[field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_docker_disconnect(evidence, call, observed)
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "boot", "other"),
+        (0, "target", "other"),
+        (1, "status", 404),
+        (1, "exchange", "other"),
+        (2, "boot", "other"),
+        (2, "target", "other"),
+        (2, "returncode", 0),
+        (2, "returncode", True),
+        (2, "returncode", None),
+        (2, "connection_refused", False),
+        (2, "stderr_sha256", ""),
+        (2, "started_ns", 2),
+        (2, "time_ns", 10),
+        (3, "active", True),
+        (3, "poisoned", False),
+        (3, "session", "other"),
+        (3, "exchange", "other"),
+        (3, "time_ns", 6),
+    ],
+)
+def test_docker_disconnect_rejects_uncorrelated_command_or_cancellation(index, field, value):
+    evidence, call, observed = docker_disconnect_evidence()
+    evidence[index][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_docker_disconnect(evidence, call, observed)
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_docker_disconnect_rejects_missing_evidence(index):
+    evidence, call, observed = docker_disconnect_evidence()
+    evidence.pop(index)
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_docker_disconnect(evidence, call, observed)
+
+
+def docker_recovery_evidence():
+    old = {"boot": "old", "source_hashes": {"source": "hash"}, "versions": {"docker": "version"}}
+    return old, [
+        {**old, "boot": "new", "event": "startup", "time_ns": 1},
+        {
+            "boot": "new",
+            "event": "docker_removal",
+            "target": "compiler",
+            "returncode": 0,
+            "connection_refused": False,
+            "started_ns": 2,
+            "time_ns": 3,
+        },
+        {"boot": "new", "event": "startup_ready", "owner_empty": True, "time_ns": 4},
+    ]
+
+
+def test_docker_recovery_requires_removal_before_readiness():
+    old, evidence = docker_recovery_evidence()
+    assert lifecycle.verify_docker_recovery(evidence, old, "compiler") == "new"
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "boot", "old"),
+        (0, "source_hashes", {}),
+        (0, "versions", {}),
+        (1, "boot", "other"),
+        (1, "target", "other"),
+        (1, "returncode", 1),
+        (1, "connection_refused", True),
+        (1, "started_ns", 0),
+        (1, "time_ns", 5),
+        (2, "boot", "other"),
+        (2, "owner_empty", False),
+        (2, "time_ns", 2),
+    ],
+)
+def test_docker_recovery_rejects_unproven_removal(index, field, value):
+    old, evidence = docker_recovery_evidence()
+    evidence[index][field] = value
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_docker_recovery(evidence, old, "compiler")
+
+
+@pytest.mark.parametrize("index", range(3))
+def test_docker_recovery_requires_every_stage(index):
+    old, evidence = docker_recovery_evidence()
+    evidence.pop(index)
+    with pytest.raises(RuntimeError):
+        lifecycle.verify_docker_recovery(evidence, old, "compiler")
+
+
+def test_removal_observer_forwards_real_command_and_result(tmp_path):
+    calls = []
+    result = SimpleNamespace(returncode=1, stderr="connection refused; private endpoint")
+
+    class Backend:
+        async def _invoke(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return result
+
+    evidence = tmp_path / "evidence.jsonl"
+    observer.observe_docker_removal(observer.ObserveHTTP(None, evidence), Backend)
+    backend = Backend()
+    assert asyncio.run(backend._invoke("rm", "-f", "compiler", timeout=10)) is result
+    assert calls == [(("rm", "-f", "compiler"), {"timeout": 10})]
+    rows = checker.records(evidence)
+    assert len(rows) == 1 and rows[0]["connection_refused"] is True
+    assert rows[0]["returncode"] == 1 and rows[0]["target"] == "compiler"
+    assert "private endpoint" not in evidence.read_text()
+    assert asyncio.run(backend._invoke("ps", "-aq")) is result
+    assert len(checker.records(evidence)) == 1
+
+
+def test_docker_disconnect_uses_only_a_private_context(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        lifecycle,
+        "docker",
+        lambda *args: json.dumps(
+            {"Endpoints": {"docker": {"Host": "unix:///var/run/docker.sock"}}}
+        ),
+    )
+
+    def run(args, **kwargs):
+        commands.append(args)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+    monkeypatch.setenv("DOCKER_HOST", "private-original-host")
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "1")
+    with lifecycle.ExitStack() as stack:
+        fault = lifecycle.DockerConnectionFault(tmp_path, stack)
+        assert fault.environment["DOCKER_CONFIG"] == str(tmp_path / "docker-config")
+        assert fault.environment["DOCKER_CONTEXT"] == fault.name
+        assert "DOCKER_HOST" not in fault.environment
+        assert "DOCKER_TLS_VERIFY" not in fault.environment
+        with lifecycle.socket.socket() as probe:
+            assert probe.connect_ex(fault.reserved.getsockname()) != 0
+        fault.disconnect()
+    assert [row[4] for row in commands] == ["create", "update", "update"]
+    assert all(
+        row[:4] == ["docker", "--config", str(tmp_path / "docker-config"), "context"]
+        for row in commands
+    )
+    assert commands[1][-1].startswith("host=tcp://127.0.0.1:")
+    assert commands[2][-1] == "host=unix:///var/run/docker.sock"
+
+
+def test_docker_disconnect_refuses_remote_daemon(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "docker",
+        lambda *args: json.dumps({"Endpoints": {"docker": {"Host": "tcp://remote:2376"}}}),
+    )
+    with lifecycle.ExitStack() as stack, pytest.raises(RuntimeError, match="local pipe/socket"):
+        lifecycle.DockerConnectionFault(tmp_path, stack)

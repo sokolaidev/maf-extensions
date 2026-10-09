@@ -296,6 +296,27 @@ class ObserveHTTP:
             )
 
 
+def observe_docker_removal(observer: ObserveHTTP, backend_type: Any) -> None:
+    """Record real Docker removal command outcomes without replacing their execution."""
+    invoke = backend_type._invoke
+
+    async def observed(backend, *args, **kwargs):
+        started_ns = time.time_ns()
+        result = await invoke(backend, *args, **kwargs)
+        if len(args) == 3 and args[:2] == ("rm", "-f"):
+            observer.record(
+                event="docker_removal",
+                target=args[2],
+                started_ns=started_ns,
+                returncode=result.returncode,
+                connection_refused="refused" in result.stderr.lower(),
+                stderr_sha256=hashlib.sha256(result.stderr.encode()).hexdigest(),
+            )
+        return result
+
+    backend_type._invoke = observed
+
+
 def refuse_owned_cleanup(observer: ObserveHTTP, fault: Path) -> None:
     """Inject unconfirmed cleanup for one exact retained orphan in this fixture only."""
     resource = observer.app.service.resources["bicep-docker"]
@@ -505,6 +526,7 @@ if __name__ == "__main__":
     expiry.add_argument("--default-idle-expiry-file", type=Path)
     parser.add_argument("--refuse-cleanup-file", type=Path)
     parser.add_argument("--refuse-completed-cleanup-file", type=Path)
+    parser.add_argument("--observe-docker-removal", action="store_true")
     parser.add_argument("--drop-result-file", type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
@@ -541,6 +563,8 @@ if __name__ == "__main__":
                     )
                 },
             )
+            if args.observe_docker_removal:
+                observe_docker_removal(observer, prototype.DockerSandboxBackend)
             if args.refuse_cleanup_file is not None:
                 refuse_owned_cleanup(observer, args.refuse_cleanup_file)
             if args.refuse_completed_cleanup_file is not None:
