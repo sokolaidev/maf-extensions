@@ -219,6 +219,8 @@ def check_cli_container(
     require(host["NetworkMode"] == "none", "CLI networking is not closed")
     require(host["ReadonlyRootfs"] is True, "CLI root filesystem is writable")
     require(set(host["CapDrop"]) == {"ALL"}, "CLI capabilities are not all dropped")
+    require(host["CapAdd"] in (None, []), "CLI capabilities are added back")
+    require(host["Privileged"] is False, "CLI container is privileged")
     require(
         "no-new-privileges" in host["SecurityOpt"]
         or "no-new-privileges:true" in host["SecurityOpt"],
@@ -277,7 +279,7 @@ def exercise_cli(expected: dict[str, Any], output: Path, result: dict[str, Any])
     scope = "graphviz-cli-" + uuid4().hex
     report.update(imageReference=image, engineImageId=selected["Id"], scope=scope)
     try:
-        # Split run into create/start so short-lived dot can be inspected before execution.
+        # Create first so the container can be inspected before short-lived dot exits.
         container = engine.command(
             "create",
             "--rm",

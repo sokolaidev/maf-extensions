@@ -318,6 +318,8 @@ def cli_container(tmp_path):
             "NetworkMode": "none",
             "ReadonlyRootfs": True,
             "CapDrop": ["ALL"],
+            "CapAdd": None,
+            "Privileged": False,
             "SecurityOpt": ["no-new-privileges"],
             "PidsLimit": 256,
             "Memory": 1024**3,
@@ -353,6 +355,8 @@ def cli_container(tmp_path):
         ("HostConfig", "NetworkMode", "bridge"),
         ("HostConfig", "ReadonlyRootfs", False),
         ("HostConfig", "CapDrop", []),
+        ("HostConfig", "CapAdd", ["NET_ADMIN"]),
+        ("HostConfig", "Privileged", True),
         ("HostConfig", "SecurityOpt", []),
         ("HostConfig", "PidsLimit", 0),
         ("HostConfig", "Memory", 0),
@@ -372,6 +376,19 @@ def test_cli_refuses_weakened_controls(cli_container, tmp_path, section, field, 
             tmp_path / "cli-input",
             tmp_path / "cli-output",
         )
+
+
+@pytest.mark.parametrize("cap_add", [None, []])
+def test_cli_accepts_docker_empty_capability_encodings(cli_container, tmp_path, cap_add):
+    cli_container["HostConfig"]["CapAdd"] = cap_add
+    qualification.check_cli_container(
+        cli_container,
+        "selected",
+        "config",
+        "1000:1000",
+        tmp_path / "cli-input",
+        tmp_path / "cli-output",
+    )
 
 
 @pytest.mark.parametrize("fault", ["writable-input", "wrong-source", "extra-mount", "duplicate"])
