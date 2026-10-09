@@ -508,7 +508,9 @@ def verify_docker_recovery(evidence, startup, target: str) -> str:
         and ready[0].get("owner_empty") is True
         and all(
             r.get("boot") == starts[0]["boot"]
-            and r.get("returncode") == 0
+            and isinstance(r.get("returncode"), int)
+            and not isinstance(r["returncode"], bool)
+            and r["returncode"] == 0
             and r.get("connection_refused") is False
             and starts[0].get("time_ns", 0)
             < r.get("started_ns", 0)
@@ -1081,7 +1083,9 @@ def verify_final_shutdown(evidence, case: str, exit_code: int | None) -> None:
     """Require drained service state and successful process exit before reporting cleanup."""
     final = [r for r in evidence if r.get("event") == "shutdown"]
     require(
-        exit_code == 0
+        isinstance(exit_code, int)
+        and not isinstance(exit_code, bool)
+        and exit_code == 0
         and [r.get("poisoned") for r in final]
         == (
             [False, True, False]

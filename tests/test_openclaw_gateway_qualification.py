@@ -2031,7 +2031,7 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
 @pytest.mark.parametrize(
     "case", ["registry", "lifecycle", "unavailable", "idle", "idle-default", "docker-disconnect"]
 )
-@pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None])
+@pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None, False, 0.0])
 def test_final_shutdown_requires_zero_process_exit(case, exit_code):
     evidence = [
         {"event": "shutdown", "poisoned": poisoned, "sessions": 0, "active": False}
@@ -2043,7 +2043,7 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
             else [False]
         )
     ]
-    if exit_code == 0:
+    if type(exit_code) is int and exit_code == 0:
         lifecycle.verify_final_shutdown(evidence, case, exit_code)
     else:
         with pytest.raises(RuntimeError, match="Final service shutdown was not clean"):
@@ -2930,6 +2930,8 @@ def test_docker_recovery_requires_removal_before_readiness():
         (1, "boot", "other"),
         (1, "target", "other"),
         (1, "returncode", 1),
+        (1, "returncode", False),
+        (1, "returncode", 0.0),
         (1, "connection_refused", True),
         (1, "started_ns", 0),
         (1, "time_ns", 5),
