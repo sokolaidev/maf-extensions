@@ -6,7 +6,7 @@
 #     "agent-framework-core==1.20.0",
 # ]
 # ///
-"""Qualify a signed Graphviz release through sample 07 and the published Docker SDK."""
+"""Qualify a signed Graphviz release through the published SDK and optional hardened CLI."""
 
 from __future__ import annotations
 
@@ -209,6 +209,145 @@ class Engine:
         }
 
 
+def check_cli_container(
+    value: dict[str, Any], image: str, local_id: str, user: str, source: Path, target: Path
+) -> dict[str, Any]:
+    """Require the consumer guide's controls on the container before starting its renderer."""
+    host, config = value["HostConfig"], value["Config"]
+    require(config["Image"] == image and value["Image"] == local_id, "CLI image changed")
+    require(config["User"] == user, "CLI user differs from the non-root host user")
+    require(host["NetworkMode"] == "none", "CLI networking is not closed")
+    require(host["ReadonlyRootfs"] is True, "CLI root filesystem is writable")
+    require(set(host["CapDrop"]) == {"ALL"}, "CLI capabilities are not all dropped")
+    require(
+        "no-new-privileges" in host["SecurityOpt"]
+        or "no-new-privileges:true" in host["SecurityOpt"],
+        "CLI privilege escalation is not disabled",
+    )
+    require(host["PidsLimit"] == 256, "CLI process limit differs")
+    require(host["Memory"] == 1024**3, "CLI memory limit differs")
+    require(host["NanoCpus"] == 2_000_000_000, "CLI CPU limit differs")
+    require(host["AutoRemove"] is True, "CLI automatic removal is disabled")
+    require(host["Tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}, "CLI scratch mount differs")
+    require(config["Entrypoint"] == ["dot"], "CLI renderer entrypoint differs")
+    require(
+        config["Cmd"] == ["-Tpng", "/input/diagram.dot", "-o", "/output/diagram.png"],
+        "CLI renderer arguments differ",
+    )
+    require("XDG_CACHE_HOME=/tmp/cache" in config["Env"], "CLI cache is outside scratch")
+    mounts = {item["Destination"]: item for item in value["Mounts"]}
+    require(len(mounts) == len(value["Mounts"]), "CLI mount destinations are duplicated")
+    require(set(mounts) <= {"/input", "/output", "/tmp"}, "CLI has an unexpected mount")
+    for destination, path, writable in (("/input", source, False), ("/output", target, True)):
+        item = mounts.get(destination, {})
+        require(
+            item.get("Type") == "bind"
+            and item.get("Source") == str(path)
+            and item.get("RW") is writable,
+            f"CLI {destination} mount differs",
+        )
+    if "/tmp" in mounts:
+        require(mounts["/tmp"]["Type"] == "tmpfs", "CLI scratch is not tmpfs")
+    return {"user": user, "hostConfig": host, "mounts": value["Mounts"]}
+
+
+def exercise_cli(expected: dict[str, Any], output: Path, result: dict[str, Any]) -> None:
+    """Qualify the hardened CLI render with bounded execution and independently checked cleanup."""
+    report: dict[str, Any] = {"passed": False, "timeoutSeconds": 30}
+    result["hardenedCli"] = report
+    require(sys.platform == "linux", "Hardened CLI qualification requires a Linux host")
+    uid, gid = getattr(os, "getuid")(), getattr(os, "getgid")()
+    require(uid > 0, "Hardened CLI qualification requires a non-root host user")
+    user = f"{uid}:{gid}"
+    engine = Engine()
+    image = f"{PREFIX}/graphviz@{expected['registryDigest']}"
+    engine.command("pull", "--platform", "linux/amd64", image, timeout=600)
+    selected = json.loads(engine.command("image", "inspect", image))[0]
+    require(image in selected["RepoDigests"], "CLI pull lacks the selected digest")
+    require(
+        selected["Id"] in {expected["imageId"], expected["registryDigest"]},
+        "CLI pull has an unexpected identity",
+    )
+    source, target = (output / "cli-input").resolve(), (output / "cli-output").resolve()
+    source.mkdir()
+    target.mkdir()
+    (source / "diagram.dot").write_text(
+        "digraph { consumer -> renderer -> png }\n", encoding="utf-8"
+    )
+    scope = "graphviz-cli-" + uuid4().hex
+    report.update(imageReference=image, engineImageId=selected["Id"], scope=scope)
+    try:
+        # Split run into create/start so short-lived dot can be inspected before execution.
+        container = engine.command(
+            "create",
+            "--rm",
+            "--platform",
+            "linux/amd64",
+            "--label",
+            f"maf-sandbox.scope={scope}",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--user",
+            user,
+            "--env",
+            "XDG_CACHE_HOME=/tmp/cache",
+            "--pids-limit",
+            "256",
+            "--memory",
+            "1g",
+            "--cpus",
+            "2",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
+            "--mount",
+            f"type=bind,src={source},dst=/input,readonly",
+            "--mount",
+            f"type=bind,src={target},dst=/output",
+            "--entrypoint",
+            "dot",
+            image,
+            "-Tpng",
+            "/input/diagram.dot",
+            "-o",
+            "/output/diagram.png",
+        ).strip()
+        require(engine.owned(scope) == [container], "CLI ownership is ambiguous")
+        report["containerId"] = container
+        inspected = json.loads(engine.command("inspect", container))
+        require(len(inspected) == 1, "CLI inspection is ambiguous")
+        report["controls"] = check_cli_container(
+            inspected[0], image, selected["Id"], user, source, target
+        )
+        started = time.monotonic()
+        try:
+            engine.command("start", "--attach", container, timeout=30)
+        finally:
+            report["seconds"] = time.monotonic() - started
+        remaining = engine.owned(scope)
+        report["containersAfterRender"] = remaining
+        require(not remaining, "CLI render left a container before fallback cleanup")
+        png = target / "diagram.png"
+        require(
+            png.is_file() and not png.is_symlink() and png.stat().st_size <= 16 * 1024 * 1024,
+            "CLI PNG is absent, linked or oversized",
+        )
+        report["png"] = png_details(png.read_bytes())
+    finally:
+        remaining = engine.owned(scope)
+        report["fallbackRemoved"] = list(remaining)
+        for container in remaining:
+            engine.command("rm", "--force", container)
+        remaining = engine.owned(scope)
+        report["containersRemaining"] = remaining
+        require(not remaining, "CLI cleanup left owned containers")
+    report["passed"] = True
+
+
 class ObservedRouter(SandboxRouter):
     """Exercise the real router while retaining independent engine observations."""
 
@@ -363,11 +502,12 @@ async def exercise(expected: dict[str, Any], output: Path, result: dict[str, Any
 
 
 def main() -> None:
-    """Verify release identity, qualify the published SDK, and retain success or failure evidence."""
+    """Verify release identity and retain SDK and optional CLI qualification evidence."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--hardened-cli", action="store_true")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     result: dict[str, Any] = {
@@ -400,6 +540,8 @@ def main() -> None:
         }
         result["verification"] = verify_release(args.policy, args.evidence)
         asyncio.run(exercise(expected, args.output, result))
+        if args.hardened_cli:
+            exercise_cli(expected, args.output, result)
         result["passed"] = True
     except Exception as error:
         result["failureType"] = type(error).__name__

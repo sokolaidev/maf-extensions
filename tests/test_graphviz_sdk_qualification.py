@@ -1,4 +1,4 @@
-"""Offline refusal and workflow tests for the opt-in Graphviz SDK qualification."""
+"""Offline refusal and workflow tests for the opt-in Graphviz consumer qualification."""
 
 from __future__ import annotations
 
@@ -194,6 +194,7 @@ def test_failed_identity_never_reaches_docker_and_retains_failure(tmp_path, monk
         "argv",
         [
             "qualify",
+            "--hardened-cli",
             "--policy",
             str(SAMPLE / "graphviz-policy.json"),
             "--evidence",
@@ -210,6 +211,7 @@ def test_failed_identity_never_reaches_docker_and_retains_failure(tmp_path, monk
 
     monkeypatch.setattr(qualification, "verify_release", refuse)
     monkeypatch.setattr(qualification, "exercise", lambda *a: pytest.fail("Image code executed"))
+    monkeypatch.setattr(qualification, "exercise_cli", lambda *a: pytest.fail("CLI image executed"))
     with pytest.raises(ValueError, match="Untrusted"):
         qualification.main()
     report = json.loads((output / "qualification.json").read_text())
@@ -227,6 +229,7 @@ def test_manual_workflow_installs_published_wheels_and_keeps_failure_evidence():
     commands = "\n".join(step.get("run", "") for step in job["steps"])
     assert "uv sync" not in commands and "docker build" not in commands
     assert "uv run --isolated --no-project --python 3.12" in commands
+    assert "--hardened-cli" in commands
     source = (SAMPLE / "qualify.py").read_text(encoding="utf-8")
     assert "maf-sandbox==0.48.0" in source and "maf-sandbox-docker==0.27.0" in source
     upload = job["steps"][-1]
@@ -298,3 +301,218 @@ def test_png_refuses_invalid_chunk_layout(layout):
         )
     with pytest.raises(ValueError):
         qualification.png_details(malformed)
+
+
+@pytest.fixture
+def cli_container(tmp_path):
+    return {
+        "Image": "config",
+        "Config": {
+            "Image": "selected",
+            "User": "1000:1000",
+            "Entrypoint": ["dot"],
+            "Cmd": ["-Tpng", "/input/diagram.dot", "-o", "/output/diagram.png"],
+            "Env": ["XDG_CACHE_HOME=/tmp/cache"],
+        },
+        "HostConfig": {
+            "NetworkMode": "none",
+            "ReadonlyRootfs": True,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": 256,
+            "Memory": 1024**3,
+            "NanoCpus": 2_000_000_000,
+            "AutoRemove": True,
+            "Tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"},
+        },
+        "Mounts": [
+            {
+                "Destination": "/input",
+                "Type": "bind",
+                "Source": str(tmp_path / "cli-input"),
+                "RW": False,
+            },
+            {
+                "Destination": "/output",
+                "Type": "bind",
+                "Source": str(tmp_path / "cli-output"),
+                "RW": True,
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "bad"),
+    [
+        ("Config", "Image", "unselected"),
+        ("Config", "User", "0:0"),
+        ("Config", "Entrypoint", ["sh"]),
+        ("Config", "Cmd", []),
+        ("Config", "Env", []),
+        ("HostConfig", "NetworkMode", "bridge"),
+        ("HostConfig", "ReadonlyRootfs", False),
+        ("HostConfig", "CapDrop", []),
+        ("HostConfig", "SecurityOpt", []),
+        ("HostConfig", "PidsLimit", 0),
+        ("HostConfig", "Memory", 0),
+        ("HostConfig", "NanoCpus", 0),
+        ("HostConfig", "AutoRemove", False),
+        ("HostConfig", "Tmpfs", {}),
+    ],
+)
+def test_cli_refuses_weakened_controls(cli_container, tmp_path, section, field, bad):
+    cli_container[section][field] = bad
+    with pytest.raises(ValueError):
+        qualification.check_cli_container(
+            cli_container,
+            "selected",
+            "config",
+            "1000:1000",
+            tmp_path / "cli-input",
+            tmp_path / "cli-output",
+        )
+
+
+@pytest.mark.parametrize("fault", ["writable-input", "wrong-source", "extra-mount", "duplicate"])
+def test_cli_refuses_wrong_bind_mounts(cli_container, tmp_path, fault):
+    if fault == "writable-input":
+        cli_container["Mounts"][0]["RW"] = True
+    elif fault == "wrong-source":
+        cli_container["Mounts"][0]["Source"] = "/elsewhere"
+    elif fault == "extra-mount":
+        cli_container["Mounts"].append({"Destination": "/secrets"})
+    else:
+        cli_container["Mounts"].append(dict(cli_container["Mounts"][0]))
+    with pytest.raises(ValueError):
+        qualification.check_cli_container(
+            cli_container,
+            "selected",
+            "config",
+            "1000:1000",
+            tmp_path / "cli-input",
+            tmp_path / "cli-output",
+        )
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "timeout", "leftover", "bad-png", "cleanup-failure", "inspection-failure"]
+)
+def test_cli_cleanup_cannot_turn_failure_into_success(tmp_path, monkeypatch, cli_container, fault):
+    policy = json.loads((SAMPLE / "graphviz-policy.json").read_text(encoding="utf-8"))
+    image = f"{qualification.PREFIX}/graphviz@{policy['registryDigest']}"
+    cli_container["Image"] = policy["imageId"]
+    cli_container["Config"]["Image"] = image
+    owned = []
+    removed = []
+    commands = []
+
+    class Engine:
+        def command(self, *args, **kwargs):
+            commands.append(args)
+            if args[0] == "image":
+                return json.dumps([{"RepoDigests": [image], "Id": policy["imageId"]}])
+            if args[0] == "create":
+                owned.append("ours")
+                assert "--rm" in args and args[args.index("--user") + 1] == "1000:1000"
+                return "ours\n"
+            if args[0] == "inspect":
+                if fault == "inspection-failure":
+                    raise RuntimeError("inspection unavailable")
+                return json.dumps([cli_container])
+            if args[0] == "start":
+                assert args == ("start", "--attach", "ours") and kwargs["timeout"] == 30
+                if fault in {"timeout", "cleanup-failure"}:
+                    raise qualification.subprocess.TimeoutExpired("docker", 30)
+                (tmp_path / "cli-output/diagram.png").write_bytes(
+                    b"bad" if fault == "bad-png" else png()
+                )
+                if fault != "leftover":
+                    owned.clear()
+            if args[0] == "rm":
+                assert args == ("rm", "--force", "ours")
+                removed.append("ours")
+                if fault != "cleanup-failure":
+                    owned.clear()
+            return ""
+
+        def owned(self, scope):
+            assert scope.startswith("graphviz-cli-")
+            return list(owned)
+
+    monkeypatch.setattr(qualification.sys, "platform", "linux")
+    monkeypatch.setattr(qualification.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(qualification.os, "getgid", lambda: 1000, raising=False)
+    monkeypatch.setattr(qualification, "Engine", Engine)
+    result = {}
+    if fault:
+        with pytest.raises((ValueError, RuntimeError, qualification.subprocess.TimeoutExpired)):
+            qualification.exercise_cli(policy, tmp_path, result)
+        assert result["hardenedCli"]["passed"] is False
+    else:
+        qualification.exercise_cli(policy, tmp_path, result)
+        assert result["hardenedCli"]["passed"] is True
+        assert result["hardenedCli"]["png"]["width"] == 1
+    assert result["hardenedCli"]["containersRemaining"] == (
+        ["ours"] if fault == "cleanup-failure" else []
+    )
+    if fault in {"timeout", "leftover", "cleanup-failure", "inspection-failure"}:
+        assert removed == ["ours"]
+    else:
+        assert not removed
+    if fault == "inspection-failure":
+        assert not any(command[0] == "start" for command in commands)
+
+
+@pytest.mark.parametrize("mode", ["sdk-only", "both", "sdk-fails", "cli-fails"])
+def test_cli_is_optional_and_cannot_hide_failed_qualification(tmp_path, monkeypatch, mode):
+    output = tmp_path / "output"
+    arguments = [
+        "qualify",
+        "--policy",
+        str(SAMPLE / "graphviz-policy.json"),
+        "--evidence",
+        str(tmp_path),
+        "--output",
+        str(output),
+    ]
+    if mode != "sdk-only":
+        arguments.append("--hardened-cli")
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(qualification, "installed_packages", lambda: {})
+    monkeypatch.setattr(qualification.subprocess, "check_output", lambda *a, **k: "source")
+    monkeypatch.setattr(qualification, "verify_release", lambda *a: {})
+    calls = []
+
+    async def sdk(*args):
+        calls.append("sdk")
+        if mode == "sdk-fails":
+            raise ValueError("SDK failed")
+
+    def cli(*args):
+        calls.append("cli")
+        if mode == "cli-fails":
+            raise ValueError("CLI failed")
+
+    monkeypatch.setattr(qualification, "exercise", sdk)
+    monkeypatch.setattr(qualification, "exercise_cli", cli)
+    if mode.endswith("fails"):
+        with pytest.raises(ValueError, match="failed"):
+            qualification.main()
+    else:
+        qualification.main()
+    report = json.loads((output / "qualification.json").read_text(encoding="utf-8"))
+    assert report["passed"] is (not mode.endswith("fails"))
+    assert calls == (["sdk"] if mode in {"sdk-only", "sdk-fails"} else ["sdk", "cli"])
+
+
+@pytest.mark.parametrize(("platform", "uid"), [("win32", 1000), ("linux", 0)])
+def test_cli_refuses_unsupported_host_before_docker(monkeypatch, tmp_path, platform, uid):
+    monkeypatch.setattr(qualification.sys, "platform", platform)
+    monkeypatch.setattr(qualification.os, "getuid", lambda: uid, raising=False)
+    monkeypatch.setattr(qualification.os, "getgid", lambda: 1000, raising=False)
+    monkeypatch.setattr(qualification, "Engine", lambda: pytest.fail("Docker reached"))
+    result = {}
+    with pytest.raises(ValueError):
+        qualification.exercise_cli({}, tmp_path, result)
+    assert result["hardenedCli"]["passed"] is False

@@ -1,4 +1,4 @@
-name: Graphviz SDK qualification
+name: Graphviz consumer qualification
 
 on:
   workflow_dispatch:
@@ -24,13 +24,13 @@ jobs:
           VERSION="$(python3 -c 'import json; print(json.load(open("samples/07_docker_diagram/graphviz-policy.json"))["version"])')"
           gh release download "image-graphviz-v$VERSION" --repo "$GITHUB_REPOSITORY" \
             --dir "$RUNNER_TEMP/graphviz-evidence"
-      - name: Verify release identity and qualify the SDK
+      - name: Verify release identity and qualify the SDK and hardened CLI
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           uv run --isolated --no-project --python 3.12 samples/07_docker_diagram/qualify.py \
             --policy samples/07_docker_diagram/graphviz-policy.json \
-            --evidence "$RUNNER_TEMP/graphviz-evidence" --output "$RUNNER_TEMP/graphviz-qualification"
+            --hardened-cli --evidence "$RUNNER_TEMP/graphviz-evidence" --output "$RUNNER_TEMP/graphviz-qualification"
       - name: Retain qualification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
