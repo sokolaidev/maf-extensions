@@ -391,7 +391,7 @@ This result qualifies the experimental same-machine deletion path. It does not c
 
 ## Optional idle-expiry candidate
 
-The next #1672 increment adds opt-in host-side idle retirement. Its interval begins at session creation or completed call cleanup; running calls and unresolved cleanup are protected, while reopening, checkpoint reads and retained-result retries do not refresh activity. `SharedStore` checks before new admission/restore, and `NativeJournal.expire_idle()` provides the owner-thread operation for a host scheduler. No background scheduler or production adapter is added.
+[#1806](https://github.com/sokolaidev/maf-extensions/pull/1806) adds opt-in host-side idle retirement under #1672. Its interval begins at session creation or completed call cleanup; running calls and unresolved cleanup are protected, while reopening, checkpoint reads and retained-result retries do not refresh activity. `SharedStore` checks before new admission/restore, and `NativeJournal.expire_idle()` provides the owner-thread operation for a host scheduler. No background scheduler or production adapter is added.
 
 A session policy is fixed at creation. Enabling a new session upgrades the root to format 5, so older supervisors cannot ignore its lifecycle policy. Existing format-4 sessions remain disabled and usable by the new implementation; they cannot be assigned invented historical idle timestamps. Per-session deadlines and finite forgiveness survive restart. Clock jumps, prepaid grants and lost grants follow the selected result-retention model with an independent budget. Outstanding native work must be reconciled before a new idle interval can begin.
 
