@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from .accounting import MAX_INTEGER
 from .host_store import Refused
@@ -125,12 +125,14 @@ def _row(store: SharedStore) -> sqlite3.Row:
     return row
 
 
-def start(store: SharedStore) -> None:
-    """Suspend the idle interval in the admission transaction."""
+def start(store: SharedStore) -> bool:
+    """Check and suspend idle expiry in the same transaction that reserves the call."""
+    if evaluate(store) == "retire":
+        return False
     if store.idle_enabled:
-        _row(store)
         store.db.execute("UPDATE session_idle SET deadline=NULL WHERE session=?", (store.session,))
         store.idle_grant = 0
+    return True
 
 
 def finish(store: SharedStore) -> None:
@@ -148,41 +150,49 @@ def finish(store: SharedStore) -> None:
     store.idle_grant = 0
 
 
+def evaluate(store: SharedStore) -> Literal["grant", "retire"] | None:
+    """Apply idle policy inside the caller's write transaction; return the transition."""
+    if not store.idle_enabled:
+        return None
+    if not store.db.in_transaction:
+        raise Refused("idle decision requires a write transaction")
+    if store._owner()["state"] == "retired":
+        return None
+    row = _row(store)
+    if _busy(store):
+        return None
+    if row["deadline"] is None:
+        raise Refused("idle completion requires explicit recovery")
+    utc, monotonic = store._observe()
+    row = _row(store)
+    if utc < row["deadline"]:
+        store.idle_grant = 0
+        return None
+    if row["uncertain"] and utc < row["deadline"] + row["grace"]:
+        if store.idle_grant > monotonic:
+            return None
+        if row["remaining"] > 0:
+            duration = min(SECOND, row["remaining"], row["deadline"] + row["grace"] - utc)
+            store.db.execute(
+                "UPDATE session_idle SET remaining=remaining-? WHERE session=?",
+                (duration, store.session),
+            )
+            store.idle_grant = monotonic + duration
+            return "grant"
+    store.db.execute("UPDATE sessions SET state='retired' WHERE id=?", (store.session,))
+    return "retire"
+
+
 def retire(store: SharedStore, boundary: Callable[[str], None]) -> bool:
     """Spend persisted forgiveness before retiring an unoccupied session."""
     if not store.idle_enabled:
         return False
-    retired = False
     with store._transaction():
-        if store._owner()["state"] == "retired":
-            return False
-        row = _row(store)
-        if _busy(store):
-            return False
-        if row["deadline"] is None:
-            raise Refused("idle completion requires explicit recovery")
-        utc, monotonic = store._observe()
-        row = _row(store)
-        if utc < row["deadline"]:
-            store.idle_grant = 0
-            return False
-        if row["uncertain"] and utc < row["deadline"] + row["grace"]:
-            if store.idle_grant > monotonic:
-                return False
-            if row["remaining"] > 0:
-                duration = min(SECOND, row["remaining"], row["deadline"] + row["grace"] - utc)
-                store.db.execute(
-                    "UPDATE session_idle SET remaining=remaining-? WHERE session=?",
-                    (duration, store.session),
-                )
-                store.idle_grant = monotonic + duration
-                boundary("before_idle_grant_commit")
-            else:
-                retired = True
-        else:
-            retired = True
-        if retired:
-            store.db.execute("UPDATE sessions SET state='retired' WHERE id=?", (store.session,))
-            boundary("before_retire_commit")
-    boundary("after_retire_commit" if retired else "after_idle_grant_commit")
-    return retired
+        transition = evaluate(store)
+        if transition is not None:
+            boundary(
+                "before_retire_commit" if transition == "retire" else "before_idle_grant_commit"
+            )
+    if transition is not None:
+        boundary("after_retire_commit" if transition == "retire" else "after_idle_grant_commit")
+    return transition == "retire"

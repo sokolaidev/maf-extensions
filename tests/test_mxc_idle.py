@@ -370,3 +370,110 @@ def test_unknown_launch_remains_charged_and_blocks_idle_cleanup(tmp_path):
         with pytest.raises(store.Refused, match="unidentified"):
             journal.delete()
         assert db.usage() == before
+
+
+@pytest.mark.parametrize("delay", [1, 3])
+@pytest.mark.parametrize("scratch", [None, store.ScratchLimits(40000, 20, 80000)])
+def test_delayed_admission_cannot_outlive_idle_grant(tmp_path, monkeypatch, delay, scratch):
+    clock = Clock()
+    with open_store(tmp_path / "db", clock) as db:
+        publish(db, tmp_path / "saved", call="saved")
+        clock.utc = 111 * store.SECOND
+        with db._transaction():
+            db.db.execute("UPDATE session_idle SET remaining=?", (store.SECOND,))
+        assert not db.retire_idle()
+        original_usage = db.usage
+        delayed = False
+
+        def usage(session=None):
+            nonlocal delayed
+            if not delayed:
+                clock.advance(delay)
+                delayed = True
+            return original_usage(session)
+
+        monkeypatch.setattr(db, "usage", usage)
+        with pytest.raises(store.Refused, match="retired"):
+            db.begin("late", b"late", scratch=scratch)
+        assert delayed
+        assert db.db.execute("SELECT count(*) FROM launches").fetchone()[0] == 0
+        assert db.db.execute("SELECT count(*) FROM scratch_settings").fetchone()[0] == 0
+        assert db._owner()["state"] == "retired"
+        assert row(db)["deadline"] == 110 * store.SECOND
+        assert db.db.execute("SELECT 1 FROM calls WHERE id='late'").fetchone() is None
+        assert db.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+        assert db.begin("saved", b"saved") == b"saved"
+
+
+def test_failed_admission_rolls_back_new_idle_grant(tmp_path):
+    import sqlite3
+
+    clock = Clock()
+    with open_store(tmp_path / "db", clock) as db:
+        clock.utc = 111 * store.SECOND
+        db.db.execute(
+            "CREATE TRIGGER refuse_call BEFORE INSERT ON calls BEGIN SELECT RAISE(ABORT,'injected reservation failure'); END"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="injected reservation failure"):
+            db.begin("a", b"a")
+        assert row(db)["remaining"] == POLICY.grace_seconds * store.SECOND
+        assert row(db)["deadline"] == 110 * store.SECOND
+        assert db.idle_grant == 0
+        assert db.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
+        assert db.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+
+
+def test_lost_admission_ack_keeps_idle_grant_and_reservation_together(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    clock = Clock()
+    with open_store(tmp_path / "db", clock) as db:
+        clock.utc = 111 * store.SECOND
+        original = db._transaction
+
+        @contextmanager
+        def lose_ack():
+            with original():
+                yield
+            raise ConnectionError("lost commit acknowledgment")
+
+        monkeypatch.setattr(db, "_transaction", lose_ack)
+        with pytest.raises(ConnectionError, match="lost commit acknowledgment"):
+            db.begin("a", b"a")
+        assert row(db)["remaining"] == 2 * store.SECOND
+        assert row(db)["deadline"] is None
+        assert db.db.execute("SELECT status FROM calls WHERE id='a'").fetchone()[0] == "pending"
+        assert db.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("jump", [2, 100])
+def test_replay_rechecks_result_clock_after_idle_evaluation(tmp_path, monkeypatch, jump):
+    from dataclasses import replace
+
+    clock = Clock()
+    limits = replace(LIMITS, retention_seconds=10, grace_seconds=3)
+    with store.SharedStore(
+        tmp_path / "db", "one", PROFILE, limits, clock, idle_policy=POLICY
+    ) as db:
+        publish(db, tmp_path / "saved")
+        clock.advance(9)
+        original = db._observe
+        observations = 0
+
+        def observe():
+            nonlocal observations
+            observations += 1
+            if observations == 2:
+                clock.utc += jump * store.SECOND
+            return original()
+
+        monkeypatch.setattr(db, "_observe", observe)
+        if jump == 100:
+            with pytest.raises(store.Refused, match="result_expired"):
+                db.begin("a", b"a")
+        else:
+            assert db.begin("a", b"a") == b"saved"
+            assert (
+                db.db.execute("SELECT remaining FROM calls WHERE id='a'").fetchone()[0]
+                == 2 * store.SECOND
+            )

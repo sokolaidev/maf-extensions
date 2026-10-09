@@ -402,9 +402,9 @@ class SharedStore:
     ) -> bytes | None:
         """Reserve before execution, or redeliver the identical unexpired result."""
         _name(call_id)
-        self.retire_idle()
         digest = hashlib.sha256(request).hexdigest()
         expired = False
+        retired = False
         result = None
         with self._transaction():
             session = self._owner()
@@ -413,6 +413,11 @@ class SharedStore:
                 "SELECT * FROM calls WHERE session=? AND id=?", (self.session, call_id)
             ).fetchone()
             if row is not None:
+                idle.evaluate(self)
+                utc, monotonic = self._observe()
+                row = self.db.execute(
+                    "SELECT * FROM calls WHERE session=? AND id=?", (self.session, call_id)
+                ).fetchone()
                 if row["request"] != digest:
                     raise Refused("call identity reused for a different request")
                 if row["status"] != "committed":
@@ -449,29 +454,43 @@ class SharedStore:
                     from .native_journal import audit_root
 
                     audit_root(self)
-                    self.db.execute(
-                        "INSERT OR IGNORE INTO scratch_settings VALUES(1,?)", (scratch.store_bytes,)
-                    )
-                    quota = self.db.execute("SELECT quota FROM scratch_settings").fetchone()[0]
+                    scratch_setting = self.db.execute(
+                        "SELECT quota FROM scratch_settings"
+                    ).fetchone()
+                    quota = scratch.store_bytes if scratch_setting is None else scratch_setting[0]
                     used = self.db.execute(
                         "SELECT coalesce(sum(charge),0) FROM launches"
                     ).fetchone()[0]
                     if quota != scratch.store_bytes or used + scratch.bytes > quota:
                         raise Refused("scratch quota cannot admit allowance")
-                idle.start(self)
-                self.db.execute(
-                    "INSERT INTO calls(session,id,request,status,generation) VALUES(?,?,?,'pending',?)",
-                    (self.session, call_id, digest, self.generation),
-                )
-                self.db.execute(
-                    "INSERT INTO reservations VALUES(?,?,?,?)",
-                    (self.session, call_id, self.generation, self.limits.reservation),
-                )
-                if scratch is not None:
+                if idle.start(self):
                     self.db.execute(
-                        "INSERT INTO launches VALUES(?,?,?,?,?,NULL,'prepared')",
-                        (self.session, call_id, uuid.uuid4().hex, scratch.bytes, scratch.entries),
+                        "INSERT INTO calls(session,id,request,status,generation) VALUES(?,?,?,'pending',?)",
+                        (self.session, call_id, digest, self.generation),
                     )
+                    self.db.execute(
+                        "INSERT INTO reservations VALUES(?,?,?,?)",
+                        (self.session, call_id, self.generation, self.limits.reservation),
+                    )
+                    if scratch is not None:
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO scratch_settings VALUES(1,?)",
+                            (scratch.store_bytes,),
+                        )
+                        self.db.execute(
+                            "INSERT INTO launches VALUES(?,?,?,?,?,NULL,'prepared')",
+                            (
+                                self.session,
+                                call_id,
+                                uuid.uuid4().hex,
+                                scratch.bytes,
+                                scratch.entries,
+                            ),
+                        )
+                else:
+                    retired = True
+        if retired:
+            raise Refused("session is retired")
         if expired:
             raise Refused("result_expired")
         if call_id in self.grants and self.clock.monotonic_ns() >= self.grants[call_id]:
