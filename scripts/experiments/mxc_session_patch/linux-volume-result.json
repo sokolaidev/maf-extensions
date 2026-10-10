@@ -1,0 +1,46 @@
+{
+  "qualified": true,
+  "scope": "host store on disposable filesystem; no native guest",
+  "source_sha": "7aadccaef6e8451bd8a94bd42a2a0074f3302acf",
+  "run_id": "38060111346",
+  "run_attempt": "1",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "sqlite": "3.45.1",
+  "volume_bytes": 108974080,
+  "policy": {
+    "database_bytes": 33554432,
+    "transaction_bytes": 4194304,
+    "minimum_free_bytes": 1048576
+  },
+  "stages": {
+    "seed": {
+      "stage": "seed",
+      "pid": 2528,
+      "saved_result_sha256": "597af7676ee10581e43e57f4ea6cb03635d66465633a43e2ca2c6796a10d9c7e"
+    },
+    "overflow": {
+      "stage": "overflow",
+      "pid": 2529,
+      "exhaustion": {
+        "before_free_bytes": 106131456,
+        "full_free_bytes": 0,
+        "written_bytes": 106131456,
+        "errno": 28
+      },
+      "capture_entered_in_transaction": true,
+      "sqlite_errorcode": 13,
+      "database_bytes": 118784
+    },
+    "recover": {
+      "stage": "recover",
+      "pid": 2530,
+      "previous_checkpoint_retained": true,
+      "reservation_retained": true,
+      "interrupted_retry_refused": true,
+      "integrity": "ok",
+      "saved_result_sha256": "597af7676ee10581e43e57f4ea6cb03635d66465633a43e2ca2c6796a10d9c7e",
+      "new_publication_succeeded": true
+    }
+  }
+}

@@ -1,0 +1,131 @@
+name: MXC disposable filesystem exhaustion
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/mxc-volume.yml'
+      - 'scripts/experiments/mxc_session_patch/**'
+      - 'tests/test_mxc_volume_probe.py'
+      - 'uv.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  volume:
+    name: Full filesystem recovery (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked
+      - name: Create disposable ext4 volume
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$RUNNER_TEMP/mxc-volume.img"
+          mount="$RUNNER_TEMP/mxc-volume"
+          test ! -e "$image"
+          mkdir "$mount"
+          (set -o noclobber; printf '%s' "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/mxc-volume-owned")
+          truncate -s 128M "$image"
+          mkfs.ext4 -q -m 0 "$image"
+          sudo mount -o loop "$image" "$mount"
+          sudo chown "$(id -u):$(id -g)" "$mount"
+          token=$(cat /proc/sys/kernel/random/uuid)
+          printf '%s' "$token" > "$mount/.mxc-volume-probe"
+          echo "MXC_VOLUME=$mount" >> "$GITHUB_ENV"
+          echo "MXC_VOLUME_TOKEN=$token" >> "$GITHUB_ENV"
+      - name: Create disposable NTFS volume
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $image = Join-Path $env:RUNNER_TEMP 'mxc-volume.vhd'
+          if ((Test-Path -LiteralPath $image) -or (Get-PSDrive R -ErrorAction SilentlyContinue)) { throw 'Probe destination already exists' }
+          $owned = Join-Path $env:RUNNER_TEMP 'mxc-volume-owned'
+          New-Item -ItemType File -Path $owned -Value "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" | Out-Null
+          $commands = @(
+            "create vdisk file=`"$image`" maximum=128 type=fixed",
+            "select vdisk file=`"$image`"",
+            'attach vdisk', 'create partition primary',
+            'format fs=ntfs label=MXC_PROBE quick', 'assign letter=R'
+          )
+          $script = Join-Path $env:RUNNER_TEMP 'mxc-volume-create.txt'
+          $commands | Set-Content -LiteralPath $script
+          diskpart /s $script
+          if ($LASTEXITCODE -ne 0) { throw 'VHD creation failed' }
+          $disk = Get-DiskImage -ImagePath $image | Get-Disk
+          $partition = $disk | Get-Partition | Where-Object DriveLetter -eq 'R'
+          if (-not $partition -or (Get-Volume -DriveLetter R).FileSystemLabel -ne 'MXC_PROBE') { throw 'VHD mount identity differs' }
+          $token = [guid]::NewGuid().ToString()
+          Set-Content -LiteralPath 'R:\.mxc-volume-probe' -Value $token -NoNewline
+          New-Item -ItemType Directory -Path 'R:\store' | Out-Null
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+          $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+          Set-Acl -LiteralPath 'R:\store' -AclObject $acl
+          uv run python -c "from pathlib import Path; from scripts.experiments.mxc_session_patch.private_root import prepare; prepare(Path('R:/store'))"
+          if ($LASTEXITCODE -ne 0) { throw 'Private store preflight failed' }
+          'MXC_VOLUME=R:\' >> $env:GITHUB_ENV
+          "MXC_VOLUME_TOKEN=$token" >> $env:GITHUB_ENV
+      - name: Exhaust volume and verify recovered publication
+        shell: bash
+        run: uv run python -m scripts.experiments.mxc_session_patch.volume_probe "$MXC_VOLUME" "$RUNNER_TEMP/mxc-volume-results" "$MXC_VOLUME_TOKEN"
+      - name: Detach and independently verify ext4 cleanup
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$RUNNER_TEMP/mxc-volume.img"
+          mount="$RUNNER_TEMP/mxc-volume"
+          mkdir -p "$RUNNER_TEMP/mxc-volume-results"
+          test -f "$RUNNER_TEMP/mxc-volume-owned" || exit 0
+          test "$(cat "$RUNNER_TEMP/mxc-volume-owned")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if mountpoint -q "$mount"; then
+            device=$(findmnt -n -o SOURCE --target "$mount")
+            sudo losetup -j "$image" | cut -d: -f1 | grep -Fx "$device"
+            sudo umount "$mount"
+          fi
+          test -z "$(sudo losetup -j "$image")"
+          ! mountpoint -q "$mount"
+          rm -f -- "$image"
+          printf '{"detached":true,"image_removed":true}\n' > "$RUNNER_TEMP/mxc-volume-results/cleanup.json"
+      - name: Detach and independently verify NTFS cleanup
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $image = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'mxc-volume.vhd'))
+          $parent = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+          if ([IO.Path]::GetDirectoryName($image) -ne $parent) { throw 'Cleanup target escaped runner temp' }
+          $owned = Join-Path $env:RUNNER_TEMP 'mxc-volume-owned'
+          if (-not (Test-Path -LiteralPath $owned)) { exit 0 }
+          if ((Get-Content -LiteralPath $owned -Raw) -ne "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT") { throw 'Cleanup ownership differs' }
+          if (Test-Path -LiteralPath $image) {
+            $disk = Get-DiskImage -ImagePath $image
+            if ($disk.Attached) { Dismount-DiskImage -ImagePath $image }
+            if ((Get-DiskImage -ImagePath $image).Attached) { throw 'VHD still attached' }
+            Remove-Item -LiteralPath $image
+          }
+          $output = Join-Path $env:RUNNER_TEMP 'mxc-volume-results'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          '{"detached":true,"image_removed":true}' | Set-Content -LiteralPath (Join-Path $output 'cleanup.json')
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mxc-volume-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mxc-volume-results/*.json
+            ${{ runner.temp }}/mxc-volume-results/*.log
+          if-no-files-found: error
+          retention-days: 14
