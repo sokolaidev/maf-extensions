@@ -322,8 +322,32 @@ def measure(image: str, issuer: Issuer) -> dict:
     return report
 
 
+class GatewayProcess:
+    """Restart only this disposable gateway while preserving its database and signing state."""
+
+    def __init__(self, command, log):
+        self.command, self.log = command, log
+        self.process = None
+        self.start()
+
+    def start(self):
+        if self.process is not None and self.process.poll() is None:
+            raise RuntimeError("fixture gateway already running")
+        self.process = subprocess.Popen(self.command, stdout=self.log, stderr=self.log)
+
+    def stop(self):
+        if self.process is None or self.process.poll() is not None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
+
+
 @contextmanager
-def gateway_fixture(config_path: Path):
+def gateway_fixture(config_path: Path, *, control: dict | None = None):
     """Own an isolated loopback OIDC gateway and discard its signing/database state on exit."""
     with TemporaryDirectory(prefix="openshell-authority-") as temporary:
         root = Path(temporary)
@@ -336,7 +360,7 @@ def gateway_fixture(config_path: Path):
             configured = root / "gateway.toml"
             configured.write_text(config)
             with (root / "gateway.log").open("wb") as log:
-                gateway = subprocess.Popen(
+                gateway = GatewayProcess(
                     [
                         "/opt/openshell-gateway",
                         "--config",
@@ -351,18 +375,14 @@ def gateway_fixture(config_path: Path):
                         "--db-url",
                         f"sqlite://{root}/gateway.db?mode=rwc",
                     ],
-                    stdout=log,
-                    stderr=log,
+                    log,
                 )
+                if control is not None:
+                    control.update(gateway=gateway, database=root / "gateway.db")
                 try:
                     yield issuer
                 finally:
-                    gateway.terminate()
-                    try:
-                        gateway.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        gateway.kill()
-                        gateway.wait(timeout=5)
+                    gateway.stop()
         finally:
             issuer.close()
 
