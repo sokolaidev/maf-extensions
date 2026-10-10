@@ -111,6 +111,7 @@ def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
     )
     report["native_state"] = json.loads((root / "native/result.json").read_text(encoding="utf-8"))
     for module, flag, directory in (
+        ("physical_probe", "--state-dir", "physical"),
         ("native_probe", "--root", "files"),
         ("durability_probe", "--state-dir", "durability"),
         ("deletion_probe", "--state-dir", "deletion"),
