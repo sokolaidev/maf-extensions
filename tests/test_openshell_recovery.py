@@ -154,3 +154,171 @@ def test_completed_record_is_historical_and_does_not_delete_again(ledger):
         lambda *args: pytest.fail("not reobserved"),
     )
     assert result["already_recorded"] and not result["reobserved"]
+
+
+@pytest.fixture
+def authority(tmp_path):
+    with recovery.AllocationAuthority(
+        tmp_path / "authority", "gateway/workspace", initialize=True
+    ) as value:
+        yield value
+
+
+def request(name, request_id):
+    return json.dumps({"name": name, "request_id": request_id}).encode()
+
+
+def test_reservation_survives_reopen_without_reusing_name(authority):
+    first = authority.reserve(request)
+    authority.close()
+    with recovery.AllocationAuthority(authority.root, authority.binding) as restarted:
+        second = restarted.reserve(request)
+        assert first != second
+        assert len(first) == len(second) == 19
+        assert list(restarted.allocations()) == [first, second]
+
+
+def test_dispatch_persists_uncertainty_before_transport(authority):
+    name = authority.reserve(request)
+
+    def lost(payload):
+        assert authority.allocations()[name]["phase"] == "uncertain"
+        assert json.loads(payload)["name"] == name
+        raise ConnectionError("lost response")
+
+    with pytest.raises(ConnectionError):
+        authority.create(name, lost)
+    with pytest.raises(ValueError, match="undispatched"):
+        authority.create(name, lambda payload: pytest.fail("must not replay"))
+    result = authority.recover(name, *[lambda *args: pytest.fail("unconfirmed mutation")] * 3)
+    assert result["ownership_retained"] and result["phase"] == "uncertain"
+    assert authority.reserve(request) != name
+
+
+def test_reservation_never_queries_or_deletes_by_name(authority):
+    name = authority.reserve(request)
+    result = authority.recover(name, *[lambda *args: pytest.fail("undispatched mutation")] * 3)
+    assert result["phase"] == "reserved" and not result["cleanup_verified"]
+
+
+def test_confirmed_allocation_recovery_retains_tombstone(authority, ledger):
+    _, original = ledger
+    name = authority.reserve(request)
+    owner = authority.create(name, lambda payload: {**original, "name": name})
+    first = authority.recover(
+        name, lambda _: owner["sandbox_id"], lambda *args: owner["sandbox_id"], lambda _: False
+    )
+    assert first["ownership_retained"] and authority.allocations()[name]["phase"] == "pending"
+    second = authority.recover(
+        name, lambda _: None, lambda *args: pytest.fail("already absent"), lambda _: True
+    )
+    assert second["cleanup_verified"] and authority.allocations()[name]["phase"] == "cleaned"
+    assert authority.reserve(request) != name
+    with pytest.raises(ValueError, match="undispatched"):
+        authority.create(name, lambda payload: pytest.fail("must not reuse"))
+
+
+def test_separate_handle_cannot_allocate_or_recover(authority):
+    with pytest.raises(recovery.AuthorityBusyError):
+        recovery.AllocationAuthority(authority.root, authority.binding)
+
+
+def test_reentrant_mutation_refuses_instead_of_overwriting_history(authority):
+    name = authority.reserve(request)
+    with pytest.raises(RuntimeError, match="already active"):
+        authority.create(name, lambda payload: authority.reserve(request))
+    assert list(authority.allocations()) == [name]
+    assert authority.allocations()[name]["phase"] == "uncertain"
+
+
+def test_binding_mismatch_refuses_and_releases_lock(authority):
+    authority.close()
+    with pytest.raises(ValueError, match="binding mismatch"):
+        recovery.AllocationAuthority(authority.root, "another/workspace")
+    with recovery.AllocationAuthority(authority.root, authority.binding) as reopened:
+        assert reopened.allocations() == {}
+
+
+def test_missing_history_is_not_reinitialized(authority):
+    authority.close()
+    authority.path.unlink()
+    with pytest.raises(FileNotFoundError):
+        recovery.AllocationAuthority(authority.root, authority.binding)
+    with pytest.raises(FileExistsError):
+        recovery.AllocationAuthority(authority.root, authority.binding, initialize=True)
+
+
+def test_failed_reservation_persistence_prevents_dispatch(authority, monkeypatch):
+    def interrupted(*args):
+        raise OSError("replace interrupted")
+
+    monkeypatch.setattr(recovery.os, "replace", interrupted)
+    with pytest.raises(OSError, match="replace interrupted"):
+        authority.reserve(request)
+    assert authority.allocations() == {}
+
+
+def test_failed_uncertainty_persistence_never_sends(authority, monkeypatch):
+    name = authority.reserve(request)
+
+    def interrupted(*args):
+        raise OSError("replace interrupted")
+
+    monkeypatch.setattr(recovery.os, "replace", interrupted)
+    with pytest.raises(OSError):
+        authority.create(name, lambda payload: pytest.fail("must persist before send"))
+    assert authority.allocations()[name]["phase"] == "reserved"
+
+
+def test_wrong_response_identity_stays_uncertain(authority, ledger):
+    _, original = ledger
+    name = authority.reserve(request)
+    with pytest.raises(ValueError, match="another name"):
+        authority.create(name, lambda payload: original)
+    assert authority.allocations()[name]["phase"] == "uncertain"
+
+
+@pytest.mark.parametrize("change", ["counter", "gap", "phase", "binding"])
+def test_corrupt_allocation_history_refuses_before_dispatch(authority, change):
+    name = authority.reserve(request)
+    state = json.loads(authority.path.read_text(encoding="utf-8"))
+    if change == "counter":
+        state["next"] = 1
+    elif change == "gap":
+        state["allocations"][name[:-1] + "2"] = state["allocations"].pop(name)
+    elif change == "phase":
+        state["allocations"][name]["phase"] = "maybe"
+    else:
+        state["binding"] = "other"
+    authority.path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(ValueError):
+        authority.create(name, lambda payload: pytest.fail("must not dispatch"))
+
+
+def test_failed_confirmation_retains_uncertainty(authority, ledger, monkeypatch):
+    _, original = ledger
+    name = authority.reserve(request)
+    replace = recovery.os.replace
+
+    def interrupt_confirmation(source, target):
+        state = json.loads(Path(source).read_text(encoding="utf-8"))
+        if state["allocations"][name]["phase"] == "owned":
+            raise OSError("confirmation interrupted")
+        replace(source, target)
+
+    monkeypatch.setattr(recovery.os, "replace", interrupt_confirmation)
+    with pytest.raises(OSError, match="confirmation interrupted"):
+        authority.create(name, lambda payload: {**original, "name": name})
+    assert authority.allocations()[name]["phase"] == "uncertain"
+
+
+def test_closed_authority_cannot_mutate(authority):
+    authority.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        authority.reserve(request)
+
+
+def test_forked_authority_cannot_mutate(authority, monkeypatch):
+    monkeypatch.setattr(recovery.os, "getpid", lambda: authority.pid + 1)
+    with pytest.raises(RuntimeError, match="inherited"):
+        authority.reserve(request)

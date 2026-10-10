@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 from pathlib import Path
@@ -321,20 +322,14 @@ def measure(image: str, issuer: Issuer) -> dict:
     return report
 
 
-def main() -> int:
-    """Start an isolated issuer and gateway, measure permissions, then remove temporary secrets."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute", action="store_true", required=True)
-    parser.add_argument("--image", required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    args = parser.parse_args()
-    if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", args.image):
-        parser.error("requires immutable image")
+@contextmanager
+def gateway_fixture(config_path: Path):
+    """Own an isolated loopback OIDC gateway and discard its signing/database state on exit."""
     with TemporaryDirectory(prefix="openshell-authority-") as temporary:
         root = Path(temporary)
         issuer = Issuer(root)
         try:
-            config = args.config.read_text().replace(
+            config = config_path.read_text(encoding="utf-8").replace(
                 "allow_unauthenticated_users = true", "allow_unauthenticated_users = false"
             )
             config += '\n[openshell.gateway.oidc]\nissuer = "http://127.0.0.1:19800"\naudience = "spike-1797"\ndangerously_allow_insecure_http = true\nroles_claim = "roles"\nadmin_role = "spike-admin"\nuser_role = "spike-user"\nscopes_claim = "scope"\n'
@@ -360,8 +355,7 @@ def main() -> int:
                     stderr=log,
                 )
                 try:
-                    report = measure(args.image, issuer)
-                    print(json.dumps(report), flush=True)
+                    yield issuer
                 finally:
                     gateway.terminate()
                     try:
@@ -371,6 +365,20 @@ def main() -> int:
                         gateway.wait(timeout=5)
         finally:
             issuer.close()
+
+
+def main() -> int:
+    """Start an isolated issuer and gateway, measure permissions, then remove temporary secrets."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--execute", action="store_true", required=True)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--config", type=Path, required=True)
+    args = parser.parse_args()
+    if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", args.image):
+        parser.error("requires immutable image")
+    with gateway_fixture(args.config) as issuer:
+        report = measure(args.image, issuer)
+        print(json.dumps(report), flush=True)
     return int(not report["passed"])
 
 
