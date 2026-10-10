@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.27.2...maf-sandbox-wslc-v0.28.0) (2026-10-10)
+
+
+### Features
+
+* **wslc:** read output files through bounded engine archives ([#1814](https://github.com/sokolaidev/maf-extensions/issues/1814)) ([812ffaf](https://github.com/sokolaidev/maf-extensions/commit/812ffaf077b71b40493dd4b7566c1a1acd11eb0d))
+
 ## [0.27.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.27.1...maf-sandbox-wslc-v0.27.2) (2026-10-06)
 
 
