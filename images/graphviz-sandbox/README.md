@@ -15,22 +15,22 @@ Render Graphviz DOT files to PNG with `ghcr.io/sokolaidev/maf-extensions/graphvi
 
 Start at the [status report](https://sokolaidev.github.io/maf-extensions/). Select a completed `graphviz` release with delivered evidence, inspect its source commit and workflow, and record the exact registry digest. A package page or version tag alone is insufficient: an image can be pushed and signed before public-pull qualification and completion succeed.
 
-**Availability:** [Graphviz 0.1.1](https://github.com/sokolaidev/maf-extensions/releases/tag/image-graphviz-v0.1.1) is publicly available for Linux/amd64. Its immutable evidence includes provenance, an SPDX SBOM, signed completion and anonymous-pull qualification. Pin `ghcr.io/sokolaidev/maf-extensions/graphviz@sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e`; check the status report for current monitoring before adopting it.
+**Availability:** [Graphviz 0.1.2](https://github.com/sokolaidev/maf-extensions/releases/tag/image-graphviz-v0.1.2) is publicly available for Linux/amd64. Its immutable evidence includes provenance, an SPDX SBOM, signed completion and anonymous-pull qualification. Pin `ghcr.io/sokolaidev/maf-extensions/graphviz@sha256:27b1d58ec1eb3f74fb434a66737e4977d2c669e5111f9db455f0c739cfc6e654`; check the status report for current monitoring before adopting it.
 
 ## Verify before pulling and running
 
-Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below selects release 0.1.1 and pins its image digests and [source `c36ad8c2`](https://github.com/sokolaidev/maf-extensions/tree/c36ad8c29b3fd44d7bb14bac49dbda475c6780f2). Inspect [publication run 37918950417](https://github.com/sokolaidev/maf-extensions/actions/runs/37918950417) and review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
+Use a reviewed checkout of this repository for the verifier. From its root, create `graphviz-policy.json`. The policy below selects release 0.1.2 and pins its image digests and [source `6cc390ae`](https://github.com/sokolaidev/maf-extensions/tree/6cc390aecb990b1aded77f494e1dc2a22927b02d). Inspect [publication run 38046407003](https://github.com/sokolaidev/maf-extensions/actions/runs/38046407003) and review that source and workflow before accepting this identity; for another release, select its identity independently rather than copying the downloaded candidate's claims.
 
 ```json
 {
   "profile": "graphviz",
-  "version": "0.1.1",
-  "sourceCommit": "c36ad8c29b3fd44d7bb14bac49dbda475c6780f2",
+  "version": "0.1.2",
+  "sourceCommit": "6cc390aecb990b1aded77f494e1dc2a22927b02d",
   "sourceRef": "refs/heads/main",
-  "registryDigest": "sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e",
-  "assessedManifestDigest": "sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e",
-  "imageId": "sha256:e31e0db3787d5e3f61d09f36a4df2f1db5d4498f52abade7e232afe31d378dc5",
-  "attemptId": "37918950417"
+  "registryDigest": "sha256:27b1d58ec1eb3f74fb434a66737e4977d2c669e5111f9db455f0c739cfc6e654",
+  "assessedManifestDigest": "sha256:27b1d58ec1eb3f74fb434a66737e4977d2c669e5111f9db455f0c739cfc6e654",
+  "imageId": "sha256:11d2b10e2d3342b49ef6a6e78232d45c93bb9818b815c3b4cd002ab8b55736d1",
+  "attemptId": "38046407003"
 }
 ```
 
@@ -78,7 +78,7 @@ docker run --rm --platform linux/amd64 \
 test -s diagram-output/diagram.png
 ```
 
-The result is `diagram-output/diagram.png` on the host. On 2026-10-08, this exact Bash example passed for the then-selected 0.1.0 digest through WSL with Docker Desktop 29.8.2 in Linux-container mode and UID/GID 1000:1000; the output was a valid 171 by 251 PNG. That recorded result applies to 0.1.0; the CLI example has not yet been rerun for 0.1.1. It does not qualify the separate agent sample or a production deployment. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
+The result is `diagram-output/diagram.png` on the host. On 2026-10-08, this exact Bash example passed for the then-selected 0.1.0 digest through WSL with Docker Desktop 29.8.2 in Linux-container mode and UID/GID 1000:1000; the output was a valid 171 by 251 PNG. That recorded result applies to 0.1.0. The consumer harness subsequently qualified the same CLI payload and controls for 0.1.1 on GitHub-hosted Linux and 0.1.2 locally through WSL, using the inspected `create`/`start --attach` sequence described below. These checks do not call an agent/model or qualify a production deployment. The output directory must be writable by the selected UID/GID; the input directory is mounted read-only. Mount only the files needed for this render. The image does not enforce networking, filesystem isolation, resource limits or a non-root user by itself: those controls come from the invocation or sandbox backend. Memory, CPU and process limits do not impose a wall-clock deadline; production callers must enforce a timeout and remove a timed-out container.
 
 The manual [consumer qualification](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) also exercises these CLI controls with `--hardened-cli`. It splits `docker run` into `create` and `start --attach` so it can inspect the short-lived renderer before execution, uses a unique cleanup label, and enforces a 30-second execution deadline. It validates the PNG and requires automatic removal before fallback cleanup; a timed-out render or leftover container fails even when cleanup succeeds. This check requires a non-root user on a Linux host with a local daemon and retains `cli-output/diagram.png` and the `hardenedCli` section of `qualification.json`. It adds no image execution to ordinary PR CI.
 
@@ -104,7 +104,9 @@ See the [security policy](../../SECURITY.md) for support and private vulnerabili
 
 ## SDK qualification
 
-**Graphviz 0.1.1 status:** the publication workflow passed anonymous pull and offline PNG packaging checks, and independent consumer verification passed its signed release identity. [Hosted SDK qualification on 2026-10-10](https://github.com/sokolaidev/maf-extensions/actions/runs/38001025079) passed PNG delivery, invalid-DOT rejection, closed networking, the SDK timeout and container disposal for the selected 0.1.1 digest. [Hosted SDK and hardened CLI qualification](https://github.com/sokolaidev/maf-extensions/actions/runs/38041599180) subsequently passed both paths for 0.1.1, including CLI rendering as a non-root user with the documented controls and automatic container removal without fallback cleanup. The [measured record](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) includes PNG hashes, observed controls, timings and retained evidence. The earlier SDK result below applies only to 0.1.0.
+**Graphviz 0.1.2 status:** [Publication](https://github.com/sokolaidev/maf-extensions/actions/runs/38046407003) passed anonymous pull, offline PNG packaging checks and signed evidence delivery. Independent bundle verification passed release identity, and [monitoring](https://github.com/sokolaidev/maf-extensions/actions/runs/38057651871) passed the High/Critical gate. On 2026-10-10, local Linux qualification through WSL passed both SDK and hardened CLI checks for the selected 0.1.2 digest, with no owned containers remaining. The [measured record](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) identifies its source, versions, PNG hashes, controls and cleanup. Hosted 0.1.2 consumer qualification remains pending until the updated policy is merged and the manual workflow runs on `main`.
+
+**Historical Graphviz 0.1.1 result:** the publication workflow passed anonymous pull and offline PNG packaging checks, and independent consumer verification passed its signed release identity. [Hosted SDK qualification on 2026-10-10](https://github.com/sokolaidev/maf-extensions/actions/runs/38001025079) passed PNG delivery, invalid-DOT rejection, closed networking, the SDK timeout and container disposal for the then-selected 0.1.1 digest. [Hosted SDK and hardened CLI qualification](https://github.com/sokolaidev/maf-extensions/actions/runs/38041599180) subsequently passed both paths for 0.1.1, including CLI rendering as a non-root user with the documented controls and automatic container removal without fallback cleanup. The [measured record](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) includes PNG hashes, observed controls, timings and retained evidence. The earlier SDK result below applies only to 0.1.0.
 
 The [manual SDK qualification](../../samples/07_docker_diagram/README.md#qualify-the-published-image-through-the-sdk) verifies the signed release identity before exercising sample 07's rendering tool through the published router and Docker backend. It checks PNG delivery, invalid input, closed networking, a deterministic SDK timeout and container disposal, with exact image and package versions in its report. It runs on demand, without a model or Azure credentials, and does not run during ordinary PR CI. Its SDK defaults differ from the hardened Docker CLI example above; consult the observed settings and qualification limits before adopting them.
 

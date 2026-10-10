@@ -1,10 +1,10 @@
 {
   "sourceRef": "refs/heads/main",
-  "version": "0.1.1",
-  "imageId": "sha256:e31e0db3787d5e3f61d09f36a4df2f1db5d4498f52abade7e232afe31d378dc5",
-  "assessedManifestDigest": "sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e",
-  "attemptId": "37918950417",
-  "sourceCommit": "c36ad8c29b3fd44d7bb14bac49dbda475c6780f2",
-  "registryDigest": "sha256:b44a268e61780d3c9020dbe6cb0cf791903553e4e23061dc0a36fafe6c2f113e",
+  "version": "0.1.2",
+  "imageId": "sha256:11d2b10e2d3342b49ef6a6e78232d45c93bb9818b815c3b4cd002ab8b55736d1",
+  "assessedManifestDigest": "sha256:27b1d58ec1eb3f74fb434a66737e4977d2c669e5111f9db455f0c739cfc6e654",
+  "attemptId": "38046407003",
+  "sourceCommit": "6cc390aecb990b1aded77f494e1dc2a22927b02d",
+  "registryDigest": "sha256:27b1d58ec1eb3f74fb434a66737e4977d2c669e5111f9db455f0c739cfc6e654",
   "profile": "graphviz"
 }
