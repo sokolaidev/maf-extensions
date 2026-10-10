@@ -69,11 +69,6 @@ jobs:
           if (-not $partition -or (Get-Volume -DriveLetter R).FileSystemLabel -ne 'MXC_PROBE') { throw 'VHD mount identity differs' }
           $token = [guid]::NewGuid().ToString()
           Set-Content -LiteralPath 'R:\.mxc-volume-probe' -Value $token -NoNewline
-          New-Item -ItemType Directory -Path 'R:\store' | Out-Null
-          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-          $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
-          Set-Acl -LiteralPath 'R:\store' -AclObject $acl
           uv run python -c "from pathlib import Path; from scripts.experiments.mxc_session_patch.private_root import prepare; prepare(Path('R:/store'))"
           if ($LASTEXITCODE -ne 0) { throw 'Private store preflight failed' }
           'MXC_VOLUME=R:\' >> $env:GITHUB_ENV
