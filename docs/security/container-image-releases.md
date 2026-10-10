@@ -297,7 +297,7 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 | 4: Digest-bound provenance, SBOM, signed completion records, durable evidence and consumer verification | Graphviz provenance, SBOM, completion and consumer verification passed; other profiles pending | untracked |
 | 5: Daily exact-digest monitoring, superseded-release window and public-candidate monitoring | Graphviz monitoring and public reporting passed; supersession scenarios pending | untracked |
 | 6: Publication scan age, public assessment freshness and failure visibility | Fresh Graphviz publication and monitoring passed; expiry and failure scenarios pending | untracked |
-| 7: GitHub-hosted release evidence and public status without a data branch | Graphviz immutable evidence and Pages catalogue sequence 5 published | untracked |
+| 7: GitHub-hosted release evidence and public status without a data branch | Graphviz 0.1.2 immutable evidence and [Pages catalogue sequence 19](https://github.com/sokolaidev/maf-extensions/actions/runs/38057852511) published on 2026-10-10 | untracked |
 | 8: Immutable security-history snapshots and serialized state writers | Implemented; pending hosted concurrency rehearsal | untracked |
 | Historical-source Release permissions and storage recovery | Repository App configured; both protected recovery stages and original-run reconciliation passed | untracked |
 | Delivery acceptance and per-profile live qualification | Graphviz 0.1.2 delivery, offline PNG and local SDK/hardened CLI qualification passed; hosted 0.1.2, other profiles and live deployments pending | untracked |
