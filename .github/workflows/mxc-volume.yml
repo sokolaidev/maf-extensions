@@ -71,10 +71,11 @@ jobs:
           Set-Content -LiteralPath 'R:\.mxc-volume-probe' -Value $token -NoNewline
           New-Item -ItemType Directory -Path 'R:\store' | Out-Null
           $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          icacls 'R:\store' /setowner "*$sid"
-          if ($LASTEXITCODE -ne 0) { throw 'Private store owner failed' }
-          icacls 'R:\store' /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
-          if ($LASTEXITCODE -ne 0) { throw 'Private store ACL failed' }
+          $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+          $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+          Set-Acl -LiteralPath 'R:\store' -AclObject $acl
+          uv run python -c "from pathlib import Path; from scripts.experiments.mxc_session_patch.private_root import prepare; prepare(Path('R:/store'))"
+          if ($LASTEXITCODE -ne 0) { throw 'Private store preflight failed' }
           'MXC_VOLUME=R:\' >> $env:GITHUB_ENV
           "MXC_VOLUME_TOKEN=$token" >> $env:GITHUB_ENV
       - name: Exhaust volume and verify recovered publication
