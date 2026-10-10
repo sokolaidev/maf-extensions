@@ -115,6 +115,22 @@ class Issuer:
         self.thread.join(timeout=5)
 
 
+def verify_present(record: dict) -> bool:
+    """Require the same observed containers and processes to remain running."""
+    containers = [
+        docker_get(f"/containers/{c['Id']}/json") for c in record["observed"]["containers"]
+    ]
+    processes = record["observed"]["processes"]
+    return (
+        bool(containers)
+        and all(c is not None and c["State"]["Running"] for c in containers)
+        and bool(processes)
+        and all(
+            start is not None and process_identity(pid) == start for pid, start in processes.items()
+        )
+    )
+
+
 def verify_absent(record: dict) -> bool:
     """Require independent absence of the captured physical workload and supervisor."""
     deadline = time.monotonic() + 20
@@ -171,6 +187,10 @@ def measure(image: str, issuer: Issuer) -> dict:
                 "passed": status == expected,
             }
         )
+        if method == "DeleteSandbox" and expected != "OK" and owned:
+            original_survived = verify_present(owned[0])
+            observations[-1]["original_survived"] = original_survived
+            observations[-1]["passed"] &= original_survived
         if method == "CreateSandbox" and response is not None:
             record = {
                 "name": request.name,
@@ -225,13 +245,17 @@ def measure(image: str, issuer: Issuer) -> dict:
         primary = "s1797-" + uuid.uuid4().hex[:12]
         denied = "s1797-" + uuid.uuid4().hex[:12]
         check("adapter_create", "CreateSandbox", create(primary), "adapter", "OK")
-        for who, status in (
-            (None, "UNAUTHENTICATED"),
-            ("outsider", "PERMISSION_DENIED"),
-            ("reader", "PERMISSION_DENIED"),
+        for who, create_status, delete_status in (
+            (None, "UNAUTHENTICATED", "UNAUTHENTICATED"),
+            ("outsider", "PERMISSION_DENIED", "NOT_FOUND"),
+            ("reader", "PERMISSION_DENIED", "PERMISSION_DENIED"),
         ):
-            check(f"{who or 'anonymous'}_create", "CreateSandbox", create(denied), who, status)
-            check(f"{who or 'anonymous'}_delete", "DeleteSandbox", delete(primary), who, status)
+            check(
+                f"{who or 'anonymous'}_create", "CreateSandbox", create(denied), who, create_status
+            )
+            check(
+                f"{who or 'anonymous'}_delete", "DeleteSandbox", delete(primary), who, delete_status
+            )
         check(
             "reader_read",
             "GetSandbox",
@@ -246,9 +270,7 @@ def measure(image: str, issuer: Issuer) -> dict:
             "adapter_broad",
             "PERMISSION_DENIED",
         )
-        check(
-            "peer_before_membership", "DeleteSandbox", delete(primary), "peer", "PERMISSION_DENIED"
-        )
+        check("peer_before_membership", "DeleteSandbox", delete(primary), "peer", "NOT_FOUND")
         check("admin_adds_writer", "AddWorkspaceMember", member("peer"), "admin", "OK")
         check("peer_deletes_adapter_instance", "DeleteSandbox", delete(primary), "peer", "OK")
         if not verify_absent(owned[0]):
