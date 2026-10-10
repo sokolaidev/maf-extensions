@@ -12,7 +12,7 @@ Capabilities describe operations. [Isolation](policy-isolation.md), [network pol
 | `RUN_CODE` | Run code through a language runtime | Hyperlight |
 | `HOST_TOOLS` | Support calls from a guest program into registered host functions | ACAS, Docker |
 | `FILES_IN` | Write files into the sandbox | ACAS, Docker, WSLC |
-| `FILES_OUT` | Inspect and read declared output files | ACAS, Docker; Hyperlight with flat outputs enabled |
+| `FILES_OUT` | Inspect and read declared output files | ACAS, Docker; WSLC through its async factory on 3.0.2.0+; Hyperlight with flat outputs enabled |
 | `FILES_LIST` | Discover directory entries | ACAS; Hyperlight with output files enabled, flat base only |
 | `FILES_DELETE` | Remove workload-selected paths | ACAS, Docker |
 | `SNAPSHOT` | Reset to a baseline taken before input | Hyperlight |
@@ -125,7 +125,7 @@ The in-process fake tests protocol handling and refusal paths. It cannot establi
 |---|---|---|
 | Capability and transfer vocabulary | Implemented | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged) |
 | Backend selection per spec | Implemented; host opt-in | [#328](https://github.com/sokolaidev/maf-extensions/issues/328) (closed); [#872](https://github.com/sokolaidev/maf-extensions/pull/872) (merged) |
-| File output support | ACAS and Docker implemented; WSLC output transport remains blocked | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) (open); [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open) |
+| File output support | ACAS and Docker implemented; WSLC output reads implemented through the version-gated factory | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) (open); [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (closed) by [#1814](https://github.com/sokolaidev/maf-extensions/pull/1814) (merged) |
 | Call-time output names | Implemented | [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged) |
 | File confinement and backend-owned reclamation | Implemented with backend-specific limits | [#488](https://github.com/sokolaidev/maf-extensions/pull/488) (merged); [#477](https://github.com/sokolaidev/maf-extensions/issues/477) (closed) |
 | Backend-owned storage base | Implemented | [#480](https://github.com/sokolaidev/maf-extensions/issues/480) (closed); [#1090](https://github.com/sokolaidev/maf-extensions/pull/1090) (merged) |

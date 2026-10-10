@@ -2,7 +2,7 @@
 
 Everything provider-specific lives here — the command line, the naming and labelling scheme,
 the egress policy and the label-based purge.  A workload above the router sees only
-``write_file`` and ``exec``.
+commands and the declared file operations.
 
 Isolation is :data:`~maf_sandbox.Isolation.CONTAINER`: a container shares the host kernel and
 sits on the developer's own machine, below the router's default
@@ -31,13 +31,14 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
+    DEFAULT_TRANSFER_LIMITS,
     AttachedIdentity,
     BackendDeclarations,
     Capability,
@@ -66,13 +67,16 @@ from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded, read_bounde
 from maf_sandbox.credentials import GatewayLease
 from maf_sandbox.file_transfer import FileRefusal, shell_refusal
 from maf_sandbox.paths import (
+    confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
     posix_work_dir_ancestors,
     resolve_guest_working_directory,
+    sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
 )
 
+from ._archive import ArchiveResult, read_archive_process
 from ._config import WslcSandboxConfig
 from ._probes import (
     SETUP_COMMANDS,
@@ -135,9 +139,9 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 #: The capabilities that need the base prepared and given to the guest. A spec requiring none
-#: of them — a pure lifecycle acquire — prepares nothing. Both of this backend's declared
-#: capabilities need a base the guest can write: files in over it, and exec running under it.
-_PREPARED_CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
+#: of them — a pure lifecycle acquire — prepares nothing. File operations and exec share
+#: a base the guest can write.
+_PREPARED_CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT})
 
 #: Both scopes, because a container's identity folds the key's ``call_id`` — into the name it is
 #: created under, the registry entry it is filed at and the label a disposal selects on — so two
@@ -710,8 +714,10 @@ class _WslcSandbox:
         *,
         instance_id: str,
         discard: Callable[[], Awaitable[None]] | None = None,
+        archive: Callable[[str, str, int | None], Awaitable[ArchiveResult]] | None = None,
     ) -> None:
         self._run = run
+        self._archive = archive
         # The backend's own discard, which also forgets this container's probe results and
         # remembers it if the removal fails. Absent in tests that drive the sandbox alone,
         # where a bare force-remove is all there is to do.
@@ -839,7 +845,9 @@ class _WslcSandbox:
 
         await ensure_guest_work_dir(
             spec,
-            lambda path: self._stat_guest(path, path),
+            self._stat_archive
+            if self._archive is not None
+            else lambda path: self._stat_guest(path, path),
             create,
             resolve=posix_work_dir_ancestors,
             base=self._work_dir,
@@ -1039,9 +1047,12 @@ class _WslcSandbox:
         **outside** the container; :meth:`_non_directory_kind` is asked only which non-directory
         kind an exit-0 path is, so no answer the guest gives carries the check through a link.
 
-        Accepted sources are copied into private temporary storage, removed after the child
-        exits. The copy's disk use is not bounded by the stdout limit.
+        Supported engines use archive metadata. Legacy probes copy accepted sources into
+        private temporary storage without a disk-use bound, removed after the child exits.
         """
+        if self._archive is not None:
+            entry = await self._stat_archive(guest)
+            return replace(entry, path=rel) if entry is not None else None
         if any(character in guest for character in _FORGEABLE):
             raise ValueError(
                 f"refusing to stat {rel!r}: a guest path carrying a newline or a NUL could "
@@ -1179,38 +1190,62 @@ class _WslcSandbox:
         )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
-        """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
-        nor :data:`~maf_sandbox.Capability.FILES_LIST`.
+        """Describe an entry through engine metadata, without reading its body."""
+        self._require_archive()
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        guest = await confine_resolve_guest_read_path(self._stat_archive, path, working_directory)
+        entry = await self._stat_archive(guest)
+        return replace(entry, path=posixpath.normpath(path)) if entry is not None else None
 
-        ``wslc`` has no container-to-stdout form of ``container cp`` to read a tar header from
-        (#125), and the router refuses a spec requiring either capability before a workload
-        runs, so a well-formed caller never reaches here.
-        The raise is the honest floor under one that skipped the check: an :class:`AttributeError`
-        from a missing method names neither the backend nor the file, and reads as unrelated to
-        a ``write_file`` that had just succeeded.  See :mod:`maf_sandbox.conformance` for the
-        duty a backend that *does* declare ``FILES_OUT`` is held to.
-        """
-        raise NotImplementedError(
-            "the wslc backend does not support FILES_OUT or FILES_LIST: declare a backend that "
-            "does, or require only exec and FILES_IN."
-        )
+    def _require_archive(self) -> None:
+        if self._archive is None:
+            raise NotImplementedError(
+                "FILES_OUT requires WslcSandboxBackend.create and WSLC 3.0.2.0 or later"
+            )
+
+    async def _copy_archive(self, guest: str, max_bytes: int | None) -> ArchiveResult:
+        self._require_archive()
+        assert self._archive is not None
+        if any(character in guest for character in _FORGEABLE):
+            raise ValueError("an output path cannot contain a newline or NUL")
+        result = await self._archive(self.instance_id, guest, max_bytes)
+        if result.returncode:
+            if (
+                result.entry is None
+                and _copy_verdict(result.stderr.decode(errors="replace")) == "absent"
+            ):
+                return result
+            raise RuntimeError(
+                f"wslc could not read {guest!r}: {result.stderr.decode(errors='replace').strip()}"
+            )
+        if result.entry is None:
+            raise RuntimeError(f"wslc returned no tar header for {guest!r}")
+        return result
+
+    async def _stat_archive(self, guest: str) -> SandboxEntry | None:
+        result = await self._copy_archive(guest, None)
+        if result.entry is None:
+            return None
+        return sandbox_entry_from_tar_header(result.entry, guest)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
-        """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
-        nor :data:`~maf_sandbox.Capability.FILES_LIST`.  See :meth:`stat_file`.
-        """
-        raise NotImplementedError(
-            "the wslc backend does not support FILES_OUT or FILES_LIST: declare a backend that "
-            "does, or require only exec and FILES_IN."
+        """Read a regular entry with a caller cap, bounded metadata and engine path checks."""
+        self._require_archive()
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ValueError("max_bytes must be a positive integer")
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        guest = await confine_resolve_guest_read_path(self._stat_archive, path, working_directory)
+        result = await self._copy_archive(
+            guest, min(max_bytes, DEFAULT_TRANSFER_LIMITS.max_bytes_per_file)
         )
+        if result.entry is None:
+            raise FileNotFoundError(f"no such file: {guest!r}")
+        return result.data
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
-        """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
-        nor :data:`~maf_sandbox.Capability.FILES_LIST`.  See :meth:`stat_file`.
-        """
+        """Unsupported: directory archives transfer file bodies to discover their names."""
         raise NotImplementedError(
-            "the wslc backend does not support FILES_OUT or FILES_LIST: declare a backend that "
-            "does, or require only exec and FILES_IN."
+            "the wslc backend does not support FILES_LIST; declare literal output paths"
         )
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
@@ -1276,8 +1311,8 @@ class WslcSandboxBackend:
         if config.credential_gateway is not None and not config.egress_proxy_image:
             raise ValueError("credential_gateway requires a configured egress proxy image")
         self._config = config
-        # Built once: every input is fixed here, and the router reads the object on each
-        # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
+        # The factory adds FILES_OUT only after checking the installed CLI. The router reads
+        # the declarations on each `ensure_can_serve` and each `acquire`. For egress,
         # with a proxy image this backend can allowlist named hosts or deny all, and without
         # one it can only close. Never UNRESTRICTED: a container backend always cuts or
         # proxies. `limits` is left at its default, which is the ceiling this backend accepts.
@@ -1344,6 +1379,36 @@ class WslcSandboxBackend:
         # it, and counted so the last caller drops it; a contended lock keeps a weak loop key alive.
         self._acquire_locks: dict[tuple[object, ...], tuple[asyncio.Lock, int]] = {}
         self._acquire_locks_guard = threading.Lock()
+
+    @classmethod
+    async def create(cls, config: WslcSandboxConfig) -> WslcSandboxBackend:
+        """Check the installed CLI before declaring FILES_OUT; older engines withhold it.
+
+        The plain constructor keeps the input/exec contract without probing the engine.
+        """
+        backend = cls(config)
+        if await backend._supports_archive():
+            # Engine reads have rootfs authority. Ancestor checks are not atomic with copying;
+            # a concurrent guest can redirect a read. The backend guide states this residual.
+            backend._declarations = replace(
+                backend._declarations,
+                capabilities=backend._declarations.capabilities | {Capability.FILES_OUT},
+            )
+        return backend
+
+    async def _supports_archive(self) -> bool:
+        try:
+            result = await self._wslc("--version", timeout=5, read_limit=4096)
+        except (OSError, TimeoutError):
+            return False
+        if result.returncode or len(result.stdout) >= 4096:
+            return False
+        lines = result.stdout_text.splitlines()
+        match = re.fullmatch(
+            r"wslc ([0-9]{1,5})\.([0-9]{1,5})\.([0-9]{1,5})\.([0-9]{1,5})",
+            lines[0] if lines else "",
+        )
+        return match is not None and tuple(map(int, match.groups())) >= (3, 0, 2, 0)
 
     @property
     def name(self) -> str:
@@ -1538,6 +1603,15 @@ class WslcSandboxBackend:
         than leaving a sandbox that declares an allowlist and enforces nothing. Reused, restarted
         and created are logged at INFO — the difference is a warm exec versus a fresh image start.
         """
+        archive_enabled = Capability.FILES_OUT in self._declarations.capabilities
+        if Capability.FILES_OUT in spec.required_capabilities and not archive_enabled:
+            raise SandboxCapabilityNotSupported(
+                "FILES_OUT requires WslcSandboxBackend.create and WSLC 3.0.2.0 or later"
+            )
+        if archive_enabled and not await self._supports_archive():
+            raise SandboxCapabilityNotSupported(
+                "WSLC no longer reports the FILES_OUT version contract"
+            )
         lease = GatewayLease.start(self._config.credential_gateway, key, spec)
         egress_id = self._egress_id(spec)
         # A cryptographic generation is part of the name on every credential acquisition.
@@ -1675,6 +1749,9 @@ class WslcSandboxBackend:
                 guest_identity,
                 instance_id=instance_id,
                 discard=functools.partial(self._discard_container, instance_id, name),
+                archive=self._read_archive
+                if Capability.FILES_OUT in self._declarations.capabilities
+                else None,
             )
             logger.info(
                 "sandbox cleanup: container=%s guest_principal=%s guest_uid=%s cleanup=dispose",
@@ -2345,6 +2422,23 @@ class WslcSandboxBackend:
 
     # -- internals ----------------------------------------------------------------
 
+    async def _read_archive(
+        self, instance_id: str, guest: str, max_bytes: int | None
+    ) -> ArchiveResult:
+        process = await asyncio.create_subprocess_exec(
+            self._config.wslc_path,
+            "container",
+            "cp",
+            f"{instance_id}:{guest}",
+            "-",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return await read_archive_process(
+            process, max_bytes=max_bytes, timeout=self._config.command_timeout_seconds
+        )
+
     async def _wslc(
         self,
         *args: str,
@@ -2353,7 +2447,7 @@ class WslcSandboxBackend:
         read_limit: int | None = None,
         max_output_bytes: int | None = None,
     ) -> _WslcResult:
-        """Run one ``wslc`` command — the single seam every invocation goes through.
+        """Run a general ``wslc`` command; archive reads use their own streaming parser.
 
         Any abnormal end to the wait — a timeout, a cancelled caller — kills the subprocess and
         reaps it before the exception propagates, so a command that stopped answering, or one

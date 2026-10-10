@@ -2,6 +2,8 @@
 
 > The specification that argued the out-door into being — `FILES_OUT`, its caps, and the confinement rules a pull surface owes — tracked by [#109](https://github.com/sokolaidev/maf-extensions/issues/109). It is kept in the tense it was written, as the record of the argument rather than a description of what shipped. The decided content now lives in [`../capabilities.md`](../capabilities.md) and [`../hosts.md`](../hosts.md).
 
+> Update for [#125](https://github.com/sokolaidev/maf-extensions/issues/125): WSLC 3.0.2 adds the missing container-to-stdout tar route. The historical deferral below describes earlier engines. The implemented factory, bounded archive reader, live evidence and concurrent-parent residual are documented in the [WSLC backend guide](../backends/wslc.md#output-reads); directory listing remains withheld.
+
 ## What is missing, and why it is not symmetrical with `FILES_IN`
 
 A workload today can put files into a sandbox and run a command; its only way back is `ExecResult.stdout`. Every kind whose product is an artifact — a rendered image, a generated archive, a transformed dataset — is either unwritable or forced into a base64-on-stdout convention, and such a convention does not stay a workaround: the tool description teaches it, the model depends on it, and it outlives the protocol gap by years.

@@ -139,4 +139,4 @@ Policy values use enums or named constants. Ordering is explicit data, such as `
 | Guest-family matching and acquire-time command checks | Implemented | [guest-platform-and-commands.md](guest-platform-and-commands.md#status) |
 | Capability-gated safe reclamation | Implemented | [#477](https://github.com/sokolaidev/maf-extensions/issues/477) (closed) |
 | Shared container tar-header parsing | Implemented | [#731](https://github.com/sokolaidev/maf-extensions/issues/731) (closed) |
-| Shared operational package | Deferred | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (open) |
+| Shared operational package | Extraction deferred; WSLC tar-out supplies the third operational tenant | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) (closed) by [#1814](https://github.com/sokolaidev/maf-extensions/pull/1814) (merged) |

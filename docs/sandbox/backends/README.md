@@ -19,7 +19,7 @@ See [information flow](../information-flow.md) for the source-tool, content-item
 | [ACAS](acas.md) | `MICROVM` | Commands; host-tool transport | Upload, read, list, delete; image checks apply | Dispose |
 | [Docker Sandboxes](docker-sbx.md) | `MICROVM` | Commands | Upload, read, list and delete in a host-owned workspace; removals run in the guest | Dispose or reclaim |
 | [Docker](docker.md) | `CONTAINER` | Commands; host-tool transport | Upload, read, delete in the container root filesystem | Dispose by default; optional reclaim |
-| [WSLC](wslc.md) | `CONTAINER` | Commands | Upload | Dispose |
+| [WSLC](wslc.md) | `CONTAINER` | Commands | Upload; output reads through the async factory on WSLC 3.0.2.0+ | Dispose |
 | [Bubblewrap](bubblewrap.md) | `CONTAINER` | Commands without a container engine | Upload and read through no-follow guest descriptors | Dispose |
 | [Hyperlight](hyperlight.md) | `MICROVM` | Packaged Python runtime | Optional flat output reads and listing | Reset; dispose on failure |
 | [In-process](in-process.md) | `NONE` | Scripted test results | In-memory test store | Test implementations |
@@ -49,7 +49,7 @@ CodeAct's automatic path requires an explicit [program channel](../program-chann
 | ACAS | Workload writes and deletes run as the guest. Native reads, stat and listing retain races between path checks and file access. |
 | Docker Sandboxes | File methods reach only the storage base's parent. On Windows the plane rests on the guest being unable to create links in its workspace. |
 | Docker | Pauses the guest during path checks and archive transfers. The file view covers the root filesystem, not guest mounts such as tmpfs. |
-| WSLC | Uploads use root authority. A guest can replace a checked parent before extraction and redirect the write. |
+| WSLC | Writes run as the image user. Output reads use engine rootfs authority with separate ancestor checks; a concurrent parent swap can redirect a read. See the [output residual](wslc.md#output-reads). |
 | Bubblewrap | Private tmpfs; no-follow guest descriptors. Metadata comes from the isolated guest broker, not a host file plane. |
 | Hyperlight | Optional output collection accepts flat names under `/output`; no input upload or listing. |
 | In-process | Exercises protocol behavior, not operating-system confinement. |
