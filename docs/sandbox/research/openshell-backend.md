@@ -288,14 +288,41 @@ Prefer the explicit receipt and deletion contracts for general backend support. 
 
 First produce the receipt API/state-model candidate under #1817 and the conditional-delete API/barrier harness under #1818. Then qualify any actual server implementation against the pinned probes before connecting those results to the allocator. Backend promotion still requires confined storage, full egress and shared conformance; these contracts do not complete #1797. This increment changes research and issue organization only, runs no new Docker cases, and publishes no upstream contribution.
 
+## Executable contract model and deletion barriers - 2026-10-10
+
+The [contract model](../../../scripts/experiments/openshell_contract_model.py) and [scenario tests](../../../tests/test_openshell_contract_model.py) supply the first offline deliverable for #1817 and #1818. They are a Python reference proposal with symbolic admission, physical-instance and cleanup-job IDs; they do not call OpenShell, implement a wire protocol, persist state, or change the allocator. Each model transition is atomic by definition. Real lock placement, storage durability, authenticated identity and externally established epoch continuity remain implementation obligations, not results of these tests.
+
+The receipt surface separates `admit_create`, `complete_create` and non-mutating `lookup`. Immutable request values bind the proposed epoch/workspace/authenticated identity, request ID, name and canonical-payload digest. The digest is an input to this model; it does not implement upstream canonicalization. Confirmed outcomes keep their original admission/physical IDs after resource removal or replacement. Receipt expiry burns the key rather than admitting it again; unresolved admission cannot expire. An absent lookup does not prevent later admission/completion. If another instance occupies the name before a pending create completes, the original remains unresolved instead of adopting that instance.
+
+The deletion surface separates atomic `admit_delete`, registry-only `acknowledge_delete` and physical `cleanup_delete`. Admission compares the expected ID and saves it in a cleanup job. Acknowledgement can remove only the original registry entry; it does not remove model resources or prove disposal. Driver cleanup consumes the saved physical target, including after receipt expiry or a retained-state restart represented by a deep copy. Explicitly notified state loss changes the modeled epoch and fences old work while leaving physical resources outstanding. The model does not detect database loss or rollback by itself, and copying state is not a restart/durability experiment.
+
+| Invariant / scenario | Offline evidence |
+|---|---|
+| Lookup changes neither admission nor workload state | Entire model state is compared before/after lookup across absent, unresolved, confirmed, expired, replacement, lost-state, revoked and mismatched bindings. A deliberately admitting lookup fails the same oracle. |
+| Missing or stale history does not silently choose a new original | Late completion after absence remains possible; expired keys refuse readmission; changed caller/binding cannot retrieve the original; a pending create refuses an intervening same-name instance. |
+| Accepted deletion removes A while preserving B | Four deterministic schedules place replacement before admission/while logically queued, after atomic admission, after acknowledgement before driver cleanup, and after cleanup. The oracle checks B's registry/resources and every driver effect, and requires A's removal when deletion was accepted. |
+| The harness rejects false success | A deliberately name-resolving driver deletes B and is detected; a no-op driver preserves B but fails the required disposal of A. These are expected negative-control failures inside passing tests. |
+| Acknowledgement and replay do not imply cleanup | Acknowledged A remains physically present until cleanup; lost-reply/retained-state-copy recovery keeps the same job target; expired delete receipts do not redirect the retained job. |
+| State/binding loss refuses mutation | Epoch/workspace mismatch, changed target under a reused delete request ID, and explicitly notified history loss refuse old work without claiming original resources absent. |
+
+All 35 model scenarios passed. Run `uv run pytest -q tests/test_openshell_contract_model.py` for the executable proposal. The schedules enumerate chosen event orderings rather than run concurrent threads; there is no cancellation timing, real driver, multi-replica, power-loss, rollback-detection or production authentication qualification. No new Docker case ran for this increment. The full focused execution/recovery/replay/model/documentation set is 319 passing tests; Ruff lint/format, focused Pyright and documentation paths passed. Full repository/package gates and hosted CI remain unrun.
+
+### Mapping the deletion proposal to pinned upstream code
+
+The pinned [`ComputeRuntime` implementation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-server/src/compute/mod.rs) already resolves a name once into `SandboxDeleteTarget`, acquires the sandbox-ID lifecycle gate and local global lock, and hands that target to an owned worker. The worker rereads by physical ID, performs the durable deleting transition and passes physical ID/name to the driver. If the original ID vanished while queued, it acknowledges that original rather than re-resolving the replacement's name. This is source inspection, not new driver qualification.
+
+The measured stale-first-request gap is earlier: public `DeleteSandbox` supplies no caller-expected ID, so name resolution can select B after the caller's successful lookup of A. A candidate should extend the public request/admission fingerprint and authorized target resolution with the expected ID, preserve the existing captured-ID path, and revalidate immutable workspace/name/epoch identity before committing. The internal `delete_sandbox_by_id` helper is not a ready public API: exposing it also requires workspace/authorization and state-epoch checks. Multi-replica serialization and restart/driver behavior need their own qualification; the model's atomic transition is not evidence for those implementations.
+
+The receipt candidate separately requires server-side non-recycled admission identity and a read-only historical result, replacing neither current authorization checks nor independent cleanup observation. Next prepare actual pinned server/protocol changes and test them at the mapped boundaries before integrating either proposal. The current Python allocator continues to retain uncertain creation without automatic replay or name-based adoption.
+
 ## Status
 
 | Work | Status | Tracking |
 |---|---|---|
 | OpenShell backend adoption | Open; general adoption blocked on lifecycle prerequisites and remaining conformance | [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796) (open) |
 | Pinned SDK/runtime spike | Open; bounded execution, lifecycle, authorization, allocation and replay evidence recorded; full qualification incomplete | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
-| Non-mutating original-create receipts | Open; contract proposed, server behavior and integration unimplemented | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
-| Conditional physical-instance deletion | Open; contract proposed, server behavior and integration unimplemented | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
+| Non-mutating original-create receipts | Open; offline reference model tested, upstream behavior and integration unimplemented | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
+| Conditional physical-instance deletion | Open; offline barrier harness tested and pinned source boundary mapped; upstream change unimplemented | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 
 ## Remaining qualification and preliminary decision
 
