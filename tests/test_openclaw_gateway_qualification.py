@@ -3585,3 +3585,186 @@ def test_repeated_discovery_requires_one_new_real_capacity_failure(mutation):
     else:
         with pytest.raises(RuntimeError):
             lifecycle.verify_single_discovery_failure(evidence, "boot", requested_ns)
+
+
+ownership = load("openclaw_bicep_ownership_check")
+
+
+@pytest.mark.parametrize(
+    "processes,expected",
+    [
+        ("PID COMMAND\n123 /usr/local/bin/bicep build /work/main.bicep --no-restore", True),
+        ("PID COMMAND\n123 bicep lint main.bicep --no-restore", True),
+        ("PID COMMAND\n123 bicep --version", False),
+        ("PID COMMAND\n123 bicep build main.bicep", False),
+        ("PID COMMAND\n123 sh -c bicep build main.bicep --no-restore", False),
+        ("PID COMMAND\n123 sleep infinity", False),
+    ],
+)
+def test_ownership_requires_actual_offline_compiler(processes, expected):
+    assert ownership.compiler_running(processes) is expected
+
+
+def ownership_controls():
+    sid = ownership.digest(b"session-a".hex())
+    return [
+        {
+            "event": "request",
+            "method": "notifications/cancelled",
+            "session": sid,
+            "target": ownership.digest(42),
+            "exchange": "cancel",
+            "time_ns": 10,
+        },
+        {"event": "response", "exchange": "cancel", "status": 202, "time_ns": 11},
+        {"event": "delete_requested", "session": sid, "exchange": "delete"},
+        {
+            "event": "retired",
+            "session": sid,
+            "exchange": "delete",
+            "completed": True,
+            "sdk_finished": True,
+            "sdk_terminated": True,
+            "sdk_streams": 0,
+            "request_ids": 0,
+            "requests": 0,
+            "session_registered": False,
+            "poisoned": False,
+        },
+    ]
+
+
+def test_ownership_accepts_correlated_control_and_sdk_drain():
+    ownership.verify_controls(ownership_controls(), "session-a", cancels=1, deleted=True)
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "session", "other"),
+        (0, "target", ownership.digest("42")),
+        (1, "exchange", "other"),
+        (1, "status", 200),
+        (1, "status", 202.0),
+        (1, "time_ns", 9),
+        (2, "exchange", "other"),
+        (2, "session", "other"),
+        (3, "completed", False),
+        (3, "sdk_finished", False),
+        (3, "sdk_terminated", False),
+        (3, "sdk_streams", 1),
+        (3, "sdk_streams", False),
+        (3, "request_ids", 1),
+        (3, "requests", 1),
+        (3, "session_registered", True),
+        (3, "poisoned", True),
+        (3, "session", "other"),
+    ],
+)
+def test_ownership_refuses_incomplete_or_misattributed_control(index, field, value):
+    events = ownership_controls()
+    events[index][field] = value
+    with pytest.raises(RuntimeError):
+        ownership.verify_controls(events, "session-a", cancels=1, deleted=True)
+
+
+@pytest.mark.parametrize("index", range(4))
+def test_ownership_refuses_missing_control_evidence(index):
+    events = ownership_controls()
+    events.pop(index)
+    with pytest.raises(RuntimeError):
+        ownership.verify_controls(events, "session-a", cancels=1, deleted=True)
+
+
+def ownership_result(completed=True):
+    return {
+        "event": "binding_result",
+        "session": ownership.digest(b"session-a".hex()),
+        "completed": completed,
+        "status": "ok" if completed else "incomplete",
+        "cleanup": "confirmed",
+        "source_sha256": "source",
+    }
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_ownership_response_loss_preserves_binding_completion_semantics(completed):
+    assert (
+        ownership.verify_settled_binding([ownership_result(completed)], "session-a", "source")[
+            "completed"
+        ]
+        is completed
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("completed", 1),
+        ("status", "timeout"),
+        ("status", "error"),
+        ("cleanup", "failed"),
+        ("source_sha256", "other"),
+        ("session", "other"),
+    ],
+)
+def test_ownership_response_loss_refuses_wrong_binding_result(field, value):
+    result = ownership_result()
+    result[field] = value
+    with pytest.raises(RuntimeError):
+        ownership.verify_settled_binding([result], "session-a", "source")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"event": "binding_cancelled"},
+        {"event": "request", "method": "notifications/cancelled"},
+        ownership_result(),
+    ],
+)
+def test_ownership_response_loss_refuses_cancellation_or_duplicate_result(extra):
+    with pytest.raises(RuntimeError):
+        ownership.verify_settled_binding([ownership_result(), extra], "session-a", "source")
+
+
+def test_ownership_gate_preserves_absent_companion_cleanup(monkeypatch):
+    async def scenario():
+        calls = []
+
+        class Backend:
+            async def _invoke(self, *args, **kwargs):
+                calls.append(args)
+                return SimpleNamespace(returncode=0)
+
+        async def inspect(*args):
+            assert args == ("inspect", "container-id")
+            return json.dumps(
+                [
+                    {
+                        "Id": "container-id",
+                        "Name": "/container-name",
+                        "Config": {"Labels": {"maf-sandbox.scope": "owner"}},
+                    }
+                ]
+            )
+
+        monkeypatch.setattr(ownership, "docker", inspect)
+        gate = ownership.RemovalGate(Backend, "owner")
+        gate.install()
+        try:
+            await gate.arm("container-id")
+            backend = Backend()
+            await backend._invoke("rm", "-f", "container-name-proxy")
+            assert not gate.entered.is_set()
+            task = asyncio.create_task(backend._invoke("rm", "-f", "container-name"))
+            await gate.entered.wait()
+            assert not task.done()
+            gate.release.set()
+            await task
+            await backend._invoke("rm", "-f", "container-name")
+            assert len(calls) == 3 and len(gate.removals) == 1
+        finally:
+            gate.restore()
+
+    asyncio.run(scenario())

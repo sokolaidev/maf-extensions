@@ -177,6 +177,30 @@ def verify_controls(events, sid: str, *, cancels: int = 0, deleted: bool = False
         )
 
 
+def verify_settled_binding(events, sid: str, source_digest: str) -> dict[str, Any]:
+    identity = digest(sid.encode().hex())
+    results = [
+        e for e in events if e.get("event") == "binding_result" and e.get("session") == identity
+    ]
+    require(len(results) == 1, "Lost response call did not return a binding result")
+    result = results[0]
+    require(
+        type(result.get("completed")) is bool
+        and result.get("cleanup") == "confirmed"
+        and result.get("source_sha256") == source_digest
+        and result.get("status") == ("ok" if result["completed"] else "incomplete"),
+        "Lost response binding outcome is inconsistent",
+    )
+    require(
+        not any(
+            e.get("event") == "binding_cancelled" or e.get("method") == "notifications/cancelled"
+            for e in events
+        ),
+        "Response-only loss cancelled work",
+    )
+    return {k: result[k] for k in ("completed", "status", "cleanup", "source_sha256")}
+
+
 def observe_binding(observer: ObserveHTTP) -> None:
     binding = observer.app.service.bindings["bicep_validate"]
 
@@ -495,30 +519,13 @@ class Check:
             )
             await docker("unpause", container)
             await self.settled(container)
-            results = [
-                e
-                for e in self.events()[before:]
-                if e.get("event") == "binding_result"
-                and e.get("session") == digest(a.encode().hex())
-            ]
-            require(
-                len(results) == 1
-                and results[0].get("completed") is True
-                and results[0].get("cleanup") == "confirmed"
-                and results[0].get("source_sha256") == self.prototype.snapshot(LARGE).digest,
-                "Lost response call did not complete normally",
-            )
-            require(
-                not any(
-                    e.get("event") == "binding_cancelled"
-                    or e.get("method") == "notifications/cancelled"
-                    for e in self.events()[before:]
-                ),
-                "Lost response work was cancelled",
+            binding_result = verify_settled_binding(
+                self.events()[before:], a, self.prototype.snapshot(LARGE).digest
             )
             self.observations["response_loss"] = {
                 "container": digest(container),
                 "socket_closed": writer.is_closing(),
+                "binding_result": binding_result,
                 "survivor": await self.valid(b),
             }
         finally:
