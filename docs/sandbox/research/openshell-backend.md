@@ -682,7 +682,7 @@ Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exe
 | Work | Status | Tracking |
 |---|---|---|
 | OpenShell backend adoption | Open; general adoption blocked on lifecycle prerequisites and remaining conformance | [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796) (open) |
-| Pinned SDK/runtime spike | Open; defer decision and exit-criteria reconciliation complete, awaiting closeout delivery | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
+| Pinned SDK/runtime spike | Completed with a defer decision; qualification continues in the follow-ups below | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (closed) by [#1848](https://github.com/sokolaidev/maf-extensions/pull/1848) (merged) |
 | Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
 | Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 | Native Linux runtime and file conformance | Open; deferred from the spike | [#1833](https://github.com/sokolaidev/maf-extensions/issues/1833) (open) |
