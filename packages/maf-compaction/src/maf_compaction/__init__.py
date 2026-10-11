@@ -65,6 +65,13 @@ from ._preserve import (
     is_preserved,
     set_preserved,
 )
+from ._session import (
+    CompactionStack,
+    SessionCompactionProvider,
+    SessionCompactionRegistry,
+    SessionToolResultRecallMiddleware,
+    make_session_recall_tool,
+)
 from ._toolsummary import (
     DEFAULT_COVERAGE_SHARE,
     DEFAULT_FALLBACK_FRACTION,
@@ -136,10 +143,14 @@ __all__ = [
     "USER_SUMMARY_MARKER",
     "AnchoredCompactionStrategy",
     "ChainDecisions",
+    "CompactionStack",
     "MafCompactionExperimentalWarning",
     "MinimumGainAnchoredCompactionStrategy",
     "RecallGate",
     "RecordDecisions",
+    "SessionCompactionProvider",
+    "SessionCompactionRegistry",
+    "SessionToolResultRecallMiddleware",
     "ToolResultAnchoredSummarizationCompactionStrategy",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "ToolResultRecallMiddleware",
@@ -149,6 +160,7 @@ __all__ = [
     "find_record_index",
     "is_preserved",
     "make_recall_tool",
+    "make_session_recall_tool",
     "record_text",
     "set_preserved",
 ]
