@@ -341,3 +341,62 @@ def test_database_summary_does_not_reproduce_scanner_host_paths(prepared):
     assert "scanner-local-cache" not in approval.render(
         prepared.candidate, prepared.directory, "release", "evidence"
     )
+
+
+@pytest.mark.parametrize("action", ["release", "recover"])
+def test_terraform_avm_summary_renders_cases_receipt_and_version(prepared, action):
+    prepared.candidate["profile"] = "terraform-avm"
+    runtime = prepared.reports["runtime.json"]
+    runtime["profile"] = "terraform-avm"
+    del runtime["bicepAvm"]
+    names = ["pinned", "constraint", "correct-lock", "uncached-version", "wrong-lock"]
+    receipt = {
+        "manifest_sha256": "d" * 64,
+        "policy_sha256": "e" * 64,
+        "artifacts": {"providers": "f" * 64, "registry_modules": "1" * 64},
+    }
+    checks = [
+        {"name": name, "passed": index != 4, "sourceUnchanged": True, "providerCopies": 0}
+        for index, name in enumerate(names)
+    ]
+    runtime["terraformAvm"] = {
+        "terraformVersion": "1.16.5",
+        "receipt": receipt,
+        "checks": checks,
+    }
+    prepared.save()
+    result = approval.render(
+        prepared.candidate, prepared.directory, action, "evidence", stage="complete"
+    )
+    assert result.count("| Terraform AVM check |") == 5
+    retained = approval.read(prepared.directory / "runtime.json")["terraformAvm"]
+    for check in retained["checks"]:
+        assert approval.literal(check) in result
+    assert "| Prepared Terraform version | <code>1.16.5</code>" in result
+    assert f"| Prepared Terraform receipt | {approval.literal(retained['receipt'])}" in result
+    assert f"/blob/{'a' * 40}/images/terraform-sandbox/AVM.md" in result
+    assert "Bicep AVM check" not in result
+
+
+@pytest.mark.parametrize("missing", ["terraformAvm", "terraformVersion", "receipt", "checks"])
+def test_terraform_avm_missing_evidence_stays_unavailable(prepared, missing):
+    prepared.candidate["profile"] = "terraform-avm"
+    runtime = prepared.reports["runtime.json"]
+    runtime["profile"] = "terraform-avm"
+    runtime["terraformAvm"] = {
+        "terraformVersion": "1.16.5",
+        "receipt": {"manifest_sha256": "d" * 64},
+        "checks": [{"name": "pinned", "passed": True}],
+    }
+    if missing == "terraformAvm":
+        del runtime[missing]
+    else:
+        del runtime["terraformAvm"][missing]
+    rows = dict(approval.evidence_rows(prepared.reports, prepared.candidate))
+    label = {
+        "terraformAvm": "Prepared Terraform version",
+        "terraformVersion": "Prepared Terraform version",
+        "receipt": "Prepared Terraform receipt",
+        "checks": "Terraform AVM check",
+    }[missing]
+    assert rows[label] == approval.UNAVAILABLE

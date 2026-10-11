@@ -20,6 +20,7 @@ PROFILES = (
     "drawio-export",
     "terraform-random",
     "opentofu-random",
+    "terraform-avm",
     "terraform-prepared",
     "opentofu-prepared",
     "hyperlight",
@@ -34,6 +35,7 @@ IMAGE_INPUTS = {
     "images/terraform-sandbox/": (
         "terraform-random",
         "opentofu-random",
+        "terraform-avm",
         "terraform-prepared",
         "opentofu-prepared",
     ),
@@ -48,10 +50,16 @@ CONSUMER_GUIDES = {
     "images/graphviz-sandbox/README.md",
     "images/drawio-export/README.md",
     "images/terraform-sandbox/README.md",
+    "images/terraform-sandbox/AVM.md",
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
-    "scripts/terraform_dependencies.py": ("terraform-prepared", "opentofu-prepared"),
+    "scripts/terraform_dependencies.py": (
+        "terraform-avm",
+        "terraform-prepared",
+        "opentofu-prepared",
+    ),
+    "scripts/terraform_avm_qualification.py": ("terraform-avm",),
     "scripts/build_bicep_prepared_image.py": ("bicep-avm",),
     "scripts/bicep_dependencies.py": ("bicep-avm",),
     "scripts/bicep_avm_qualification.py": ("bicep-avm",),
