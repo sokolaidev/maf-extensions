@@ -3216,3 +3216,62 @@ def test_docker_authorization_plugin_policy():
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("provided", range(7))
+@pytest.mark.parametrize("missing_value", [None, ""])
+def test_denial_cli_rejects_incomplete_options_before_creating_root(
+    tmp_path, monkeypatch, capsys, provided, missing_value
+):
+    root = tmp_path / "run"
+    argv = ["check", "--case", "docker-denial", "--image", "image"]
+    for name in ("root", "config", "bicep-config", "openclaw"):
+        argv.extend(("--" + name, str(root if name == "root" else tmp_path / name)))
+    options = ("authz-outer-host", "authz-daemon", "authz-client")
+    for index, name in enumerate(options):
+        value = "value" if provided & (1 << index) else missing_value
+        if value is not None:
+            argv.extend(("--" + name, value))
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as failure:
+        lifecycle.main()
+    assert failure.value.code == 2
+    assert not root.exists()
+    error = capsys.readouterr().err
+    assert "--case docker-denial requires " in error
+    for index, name in enumerate(options):
+        if not provided & (1 << index):
+            assert "--" + name in error
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lifecycle",
+        "registry",
+        "unavailable",
+        "idle",
+        "idle-default",
+        "docker-disconnect",
+        "docker-denial",
+    ],
+)
+def test_lifecycle_cli_preserves_complete_denial_and_other_modes(tmp_path, monkeypatch, case):
+    argv = ["check", "--case", case, "--image", "image"]
+    for name in ("root", "config", "bicep-config", "openclaw"):
+        argv.extend(("--" + name, str(tmp_path / name)))
+    authz = {
+        "authz_outer_host": "unix:///test.sock",
+        "authz_daemon": "a" * 64,
+        "authz_client": "b" * 32,
+    }
+    if case == "docker-denial":
+        for name, value in authz.items():
+            argv.extend(("--" + name.replace("_", "-"), value))
+    calls = []
+    monkeypatch.setattr(lifecycle, "qualify", lambda args: calls.append(args) or {})
+    monkeypatch.setattr(sys, "argv", argv)
+    lifecycle.main()
+    assert len(calls) == 1 and calls[0].case == case
+    for name, value in authz.items():
+        assert getattr(calls[0], name) == (value if case == "docker-denial" else None)

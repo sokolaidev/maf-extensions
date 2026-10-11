@@ -3068,7 +3068,8 @@ def main():
     for name in ("root", "config", "bicep-config", "openclaw"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
-    for name in ("authz-outer-host", "authz-daemon", "authz-client"):
+    authz_options = ("authz-outer-host", "authz-daemon", "authz-client")
+    for name in authz_options:
         parser.add_argument("--" + name)
 
     parser.add_argument(
@@ -3084,7 +3085,14 @@ def main():
         ],
         default="lifecycle",
     )
-    print(json.dumps(qualify(parser.parse_args()), indent=2))
+    args = parser.parse_args()
+    if args.case == "docker-denial":
+        missing = [
+            "--" + name for name in authz_options if not getattr(args, name.replace("-", "_"))
+        ]
+        if missing:
+            parser.error("--case docker-denial requires " + ", ".join(missing))
+    print(json.dumps(qualify(args), indent=2))
 
 
 if __name__ == "__main__":
