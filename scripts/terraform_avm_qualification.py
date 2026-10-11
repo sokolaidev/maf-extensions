@@ -153,7 +153,9 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
     text = " ".join(diagnostics.split())
     if name == "uncached-version":
         return "does not provide a modules service" in text
-    if name in {"wrong-lock", "upstream-lock"}:
+    if name == "upstream-lock":
+        return "SOKOLAI provider lock verification failed: expected baked h1 checksum." in text
+    if name == "wrong-lock":
         return "Failed to install provider" in text and "doesn't match any of the checksums" in text
     return False
 

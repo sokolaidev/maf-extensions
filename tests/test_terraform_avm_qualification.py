@@ -163,6 +163,12 @@ def test_build_uses_full_catalogue_not_network_fixture():
         ("uncached-version", "Failed to retrieve available versions: timeout", False),
         ("wrong-lock", "Failed to install provider: doesn't match any of the\nchecksums", True),
         ("wrong-lock", "Failed to install provider: permission denied", False),
+        (
+            "upstream-lock",
+            "SOKOLAI provider lock verification failed: expected baked h1 checksum.",
+            True,
+        ),
+        ("upstream-lock", "Provider lock file not updated", False),
     ],
 )
 def test_refusals_tolerate_line_wrapping_but_require_the_expected_reason(
