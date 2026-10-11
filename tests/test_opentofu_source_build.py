@@ -13,13 +13,18 @@ sys.path.insert(0, str(SOURCE))
 import install  # noqa: E402
 
 
+@pytest.fixture(params=["terraform", "opentofu"])
+def engine(request):
+    return request.param
+
+
 @pytest.fixture
-def built(tmp_path):
-    plan = install.load_plan("opentofu", "builtin")
+def built(tmp_path, engine):
+    plan = install.load_plan(engine, "builtin")
     root = tmp_path / "built"
     root.mkdir()
     files = {
-        "tofu": b"test binary",
+        plan["executable"]: b"test binary",
         "LICENSE": b"license",
         "go.mod": b"module tofu",
         "go.sum": b"hashes",
@@ -28,41 +33,48 @@ def built(tmp_path):
         (root / name).write_bytes(content)
     record = {
         "source": plan["source_build"],
-        "go_version": "go1.27.1",
+        "go_version": "go version "
+        + plan.get("source_build", {}).get("go_version", "go1.27.1")
+        + " linux/amd64",
         "files": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()},
     }
     (root / "build.json").write_text(json.dumps(record))
     return root, record
 
 
-def test_source_build_cannot_fall_back_to_the_unpatched_release(tmp_path, monkeypatch):
+def test_source_build_cannot_fall_back_to_the_unpatched_release(tmp_path, monkeypatch, engine):
     monkeypatch.setattr(install, "download", lambda *args: pytest.fail("must not download"))
-    plan = install.load_plan("opentofu", "builtin")
+    plan = install.load_plan(engine, "builtin")
     with pytest.raises(ValueError, match="source build is required"):
-        install.main("opentofu", "builtin", plan["version"], destination=tmp_path)
+        install.main(engine, "builtin", plan["version"], destination=tmp_path)
 
 
 @pytest.mark.parametrize("tamper", ["source", "binary", "go.sum", "inventory"])
-def test_changed_source_build_is_refused_before_execution(tmp_path, built, monkeypatch, tamper):
+def test_changed_source_build_is_refused_before_execution(
+    tmp_path, built, monkeypatch, tamper, engine
+):
     root, record = built
     if tamper == "source":
         record["source"]["revision"] = "0" * 40
     elif tamper == "inventory":
         del record["files"]["go.mod"]
     else:
-        (root / ("tofu" if tamper == "binary" else tamper)).write_bytes(b"changed")
+        (
+            root
+            / (install.load_plan(engine, "builtin")["executable"] if tamper == "binary" else tamper)
+        ).write_bytes(b"changed")
     (root / "build.json").write_text(json.dumps(record))
     monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: pytest.fail("must not execute"))
-    plan = install.load_plan("opentofu", "builtin")
+    plan = install.load_plan(engine, "builtin")
     with pytest.raises(ValueError):
-        install.main(
-            "opentofu", "builtin", plan["version"], str(root), destination=tmp_path / "image"
-        )
+        install.main(engine, "builtin", plan["version"], str(root), destination=tmp_path / "image")
 
 
-def test_installed_binary_retains_source_and_module_provenance(tmp_path, built, monkeypatch):
+def test_installed_binary_retains_source_and_module_provenance(
+    tmp_path, built, monkeypatch, engine
+):
     root, record = built
-    plan = install.load_plan("opentofu", "builtin")
+    plan = install.load_plan(engine, "builtin")
     monkeypatch.setattr(install, "download", lambda *args: pytest.fail("must not download"))
     monkeypatch.setattr(
         install.subprocess,
@@ -75,7 +87,7 @@ def test_installed_binary_retains_source_and_module_provenance(tmp_path, built, 
     binaries.mkdir()
     output = tmp_path / "image"
     install.main(
-        "opentofu",
+        engine,
         "builtin",
         plan["version"],
         str(root),
@@ -84,6 +96,18 @@ def test_installed_binary_retains_source_and_module_provenance(tmp_path, built, 
     )
     installed = json.loads((output / "engine.json").read_text())
     assert installed["source_build"] == record
-    assert installed["binary_sha256"] == record["files"]["tofu"]
+    assert installed["binary_sha256"] == record["files"][plan["executable"]]
     assert "archive_sha256" not in installed
     assert (output / "licenses/LICENSE").read_bytes() == b"license"
+
+
+def test_terraform_install_refuses_an_unapproved_toolchain(tmp_path, built, monkeypatch, engine):
+    if engine != "terraform":
+        pytest.skip("OpenTofu retains its existing source build contract")
+    root, record = built
+    record["go_version"] = "go version go1.26.8 linux/amd64"
+    (root / "build.json").write_text(json.dumps(record))
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: pytest.fail("must not execute"))
+    plan = install.load_plan(engine, "builtin")
+    with pytest.raises(ValueError, match="toolchain mismatch"):
+        install.main(engine, "builtin", plan["version"], str(root), destination=tmp_path / "image")

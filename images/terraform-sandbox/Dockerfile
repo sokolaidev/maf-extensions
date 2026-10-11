@@ -7,6 +7,12 @@ RUN apk add --no-cache git python3
 COPY image.json build_opentofu.py /recipe/
 RUN python3 /recipe/build_opentofu.py
 
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS terraform-build
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+RUN apk add --no-cache git python3
+COPY image.json build_terraform.py /recipe/
+RUN python3 /recipe/build_terraform.py
+
 FROM ${BASE_IMAGE} AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache python-3.13 ca-certificates-bundle \
     && mkdir -p /usr/local/bin \
@@ -24,9 +30,10 @@ COPY ${PROVIDER_MANIFEST} /opt/maf-terraform/
 COPY install.py /opt/maf-terraform/install.py
 
 FROM runtime AS terraform-image
+COPY --from=terraform-build /out/ /opt/maf-terraform/source-build/
 RUN test "$TARGETARCH" = amd64 \
-    && python3 -I /opt/maf-terraform/install.py "$ENGINE" "$PROFILE" "$ENGINE_VERSION" \
-    && rm /opt/maf-terraform/install.py
+    && python3 -I /opt/maf-terraform/install.py "$ENGINE" "$PROFILE" "$ENGINE_VERSION" /opt/maf-terraform/source-build \
+    && rm /opt/maf-terraform/source-build/terraform /opt/maf-terraform/install.py
 
 FROM runtime AS opentofu-image
 COPY --from=opentofu-build /out/ /opt/maf-terraform/source-build/
