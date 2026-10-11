@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from container_release import REPOSITORY, digest, key, read, timestamp, validate_identity, write
+from container_release_approval import publication_name
 from container_release_history import GitHub, History, decode, positive_id
 from container_release_publish import complete_candidate, context, deliver_candidate, outputs
 
@@ -65,7 +66,9 @@ def selection(run_id: str, stage: str) -> dict[str, Any]:
     jobs = decode(github.request(base + "/jobs?filter=latest&per_page=100"))
     if not isinstance(jobs.get("jobs"), list) or jobs.get("total_count") != len(jobs["jobs"]):
         raise ValueError("Original job listing is incomplete")
-    approved = [job for job in jobs["jobs"] if job.get("name") == "approve"]
+    approved = [
+        job for job in jobs["jobs"] if job.get("name") in {"approve", publication_name(candidate)}
+    ]
     if len(approved) != 1 or approved[0].get("conclusion") != "success":
         raise ValueError("Original protected approval job did not succeed")
     producers = [job for job in jobs["jobs"] if job.get("name") == producer]
@@ -138,6 +141,8 @@ def main() -> None:
     parser.add_argument("operation", choices=("inspect", "write"))
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--run-id")
+    parser.add_argument("--profile")
+    parser.add_argument("--version")
     parser.add_argument("--stage", choices=tuple(ARTIFACTS))
     parser.add_argument("--directory", type=Path)
     args = parser.parse_args()
@@ -146,6 +151,11 @@ def main() -> None:
         if not args.run_id or not args.stage:
             parser.error("inspect requires --run-id and --stage")
         planned = selection(args.run_id, args.stage)
+        if (
+            planned["candidate"]["profile"] != args.profile
+            or planned["candidate"]["version"] != args.version
+        ):
+            raise ValueError("Displayed recovery profile/version differ from original candidate")
         write(args.selection, planned)
         outputs({"artifact_id": planned["artifactId"]})
         print(

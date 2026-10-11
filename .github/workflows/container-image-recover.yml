@@ -1,8 +1,17 @@
 name: Container image storage recovery
+run-name: Recover ${{ inputs.stage }} evidence for ${{ inputs.profile }}:${{ inputs.version }} in public GHCR (run ${{ inputs.run_id }})
 
 on:
   workflow_dispatch:
     inputs:
+      profile:
+        description: Original image profile (must match retained evidence)
+        required: true
+        type: string
+      version:
+        description: Original image version (must match retained evidence)
+        required: true
+        type: string
       run_id:
         description: Original failed container-image-release workflow run ID
         required: true
@@ -33,6 +42,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       artifact_id: ${{ steps.selection.outputs.artifact_id }}
+      summary_url: ${{ steps.approval-summary.outputs.summary_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,10 +54,13 @@ jobs:
         env:
           ORIGINAL_RUN: ${{ inputs.run_id }}
           STAGE: ${{ inputs.stage }}
+          PROFILE: ${{ inputs.profile }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           uv run --locked python scripts/recover_container_release.py inspect \
-            --run-id "$ORIGINAL_RUN" --stage "$STAGE" --selection "$RUNNER_TEMP/selection.json" | tee -a "$GITHUB_STEP_SUMMARY"
+            --run-id "$ORIGINAL_RUN" --stage "$STAGE" --profile "$PROFILE" --version "$VERSION" \
+            --selection "$RUNNER_TEMP/selection.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: storage-recovery-selection
@@ -56,11 +69,27 @@ jobs:
           overwrite: true
           retention-days: 30
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.selection.outputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/evidence
+          merge-multiple: true
+      - name: Present original evidence before recovery approval
+        id: approval-summary
+        run: |
+          uv run --locked python scripts/container_release_approval.py recover \
+            --selection "$RUNNER_TEMP/selection.json" --directory "$RUNNER_TEMP/evidence"
+
   write:
+    name: Recover ${{ inputs.stage }} evidence for ${{ inputs.profile }}:${{ inputs.version }} in public GHCR
     needs: inspect
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: container-release
+    environment:
+      name: container-release
+      url: ${{ needs.inspect.outputs.summary_url }}
     permissions:
       contents: write
       actions: read

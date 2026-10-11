@@ -147,7 +147,7 @@ def test_recovery_keeps_protected_approval_and_both_writer_locks():
     workflow = yaml.safe_load((ROOT / ".github/workflows/container-image-recover.yml").read_text())
     assert workflow["concurrency"]["group"] == "container-image-publication"
     writer = workflow["jobs"]["write"]
-    assert writer["environment"] == "container-release"
+    assert writer["environment"]["name"] == "container-release"
     assert writer["concurrency"]["group"] == "container-security-catalogue"
     assert writer["permissions"] == {"contents": "write", "actions": "read"}
     assert "id-token" not in str(workflow) and "actions/attest@" not in str(workflow)
