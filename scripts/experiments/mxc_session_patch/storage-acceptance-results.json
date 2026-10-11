@@ -1,0 +1,200 @@
+{
+  "scope": "Experimental local SQLite storage and retention controls; synthetic checkpoints and ordinary host processes, not native Hyperlight or power-loss qualification",
+  "run_id": "38161348414",
+  "run_attempt": "1",
+  "source_commit": "4ba33250956ef99f2065f6d4da4acd9a6f1d14cd",
+  "hosts": {
+    "linux": {
+      "job_id": 114534744076,
+      "platform": "Linux",
+      "python": "3.12.3",
+      "sqlite": "3.45.1",
+      "tests": 321,
+      "passed": 320,
+      "failures": 0,
+      "errors": 0,
+      "skipped": [
+        {
+          "module": "test_mxc_private_root",
+          "name": "test_public_database_below_private_root_refuses",
+          "reason": "Windows child ACL independent of traversal"
+        }
+      ],
+      "modules": {
+        "test_mxc_accounting": {
+          "passed": 52
+        },
+        "test_mxc_idle": {
+          "passed": 40
+        },
+        "test_mxc_native_journal": {
+          "passed": 54
+        },
+        "test_mxc_physical": {
+          "passed": 34
+        },
+        "test_mxc_prelaunch": {
+          "passed": 23
+        },
+        "test_mxc_private_root": {
+          "passed": 15,
+          "skipped": 1
+        },
+        "test_mxc_shared_store": {
+          "passed": 102
+        }
+      },
+      "passed_format_controls": [
+        "test_collection_batch_and_rollback[format4]",
+        "test_collection_batch_and_rollback[format7]",
+        "test_collection_preserves_old_results_and_latest_state[format4]",
+        "test_collection_preserves_old_results_and_latest_state[format7]",
+        "test_collection_releases_logical_capacity_even_for_deduplicated_content[format4]",
+        "test_collection_releases_logical_capacity_even_for_deduplicated_content[format7]",
+        "test_corrupt_root_in_another_session_blocks_collection[format4]",
+        "test_corrupt_root_in_another_session_blocks_collection[format7]",
+        "test_corrupt_store_refuses_destructive_collection[format4-charge]",
+        "test_corrupt_store_refuses_destructive_collection[format4-chunk]",
+        "test_corrupt_store_refuses_destructive_collection[format4-current]",
+        "test_corrupt_store_refuses_destructive_collection[format4-manifest]",
+        "test_corrupt_store_refuses_destructive_collection[format4-missing_file]",
+        "test_corrupt_store_refuses_destructive_collection[format4-orphan_chunk]",
+        "test_corrupt_store_refuses_destructive_collection[format7-charge]",
+        "test_corrupt_store_refuses_destructive_collection[format7-chunk]",
+        "test_corrupt_store_refuses_destructive_collection[format7-current]",
+        "test_corrupt_store_refuses_destructive_collection[format7-manifest]",
+        "test_corrupt_store_refuses_destructive_collection[format7-missing_file]",
+        "test_corrupt_store_refuses_destructive_collection[format7-orphan_chunk]",
+        "test_either_quota_refuses_before_persisting_intent[format4-session_quota]",
+        "test_either_quota_refuses_before_persisting_intent[format4-store_quota]",
+        "test_either_quota_refuses_before_persisting_intent[format7-session_quota]",
+        "test_either_quota_refuses_before_persisting_intent[format7-store_quota]",
+        "test_exact_quota_and_full_store_replay[format4]",
+        "test_exact_quota_and_full_store_replay[format7]",
+        "test_expired_identities_eventually_refuse_admission[format4-session]",
+        "test_expired_identities_eventually_refuse_admission[format4-store]",
+        "test_expired_identities_eventually_refuse_admission[format7-session]",
+        "test_expired_identities_eventually_refuse_admission[format7-store]",
+        "test_old_policy_survives_configuration_change_and_later_checkpoint[format4]",
+        "test_old_policy_survives_configuration_change_and_later_checkpoint[format7]",
+        "test_prepaid_grant_shared_and_budget_survives_owner_changes[format4]",
+        "test_prepaid_grant_shared_and_budget_survives_owner_changes[format7]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format4-after_collection_commit]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format4-before_collection]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format4-before_collection_commit]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format7-after_collection_commit]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format7-before_collection]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format7-before_collection_commit]",
+        "test_result_expiry_retains_identity_and_current_checkpoint[format4]",
+        "test_result_expiry_retains_identity_and_current_checkpoint[format7]",
+        "test_retired_session_cannot_be_recreated_and_retains_delivery[format4]",
+        "test_retired_session_cannot_be_recreated_and_retains_delivery[format7]",
+        "test_retirement_blocks_pending_publication_but_does_not_release_reservations[format4]",
+        "test_retirement_blocks_pending_publication_but_does_not_release_reservations[format7]",
+        "test_retry_does_not_move_deadline_or_need_a_new_reservation[format4]",
+        "test_retry_does_not_move_deadline_or_need_a_new_reservation[format7]",
+        "test_shared_chunks_remain_until_last_checkpoint_reference_is_removed[format4]",
+        "test_shared_chunks_remain_until_last_checkpoint_reference_is_removed[format7]",
+        "test_stale_generation_cannot_mutate_or_collect[format4]",
+        "test_stale_generation_cannot_mutate_or_collect[format7]"
+      ],
+      "junit_sha256": "35330f9bf8f7d8581ecd53d7a534fda4650dd86eaf321eaed1219d8ccca4f9c7"
+    },
+    "windows": {
+      "job_id": 114534743759,
+      "platform": "Windows",
+      "python": "3.12.10",
+      "sqlite": "3.49.1",
+      "tests": 321,
+      "passed": 320,
+      "failures": 0,
+      "errors": 0,
+      "skipped": [
+        {
+          "module": "test_mxc_private_root",
+          "name": "test_wrong_owner_refuses_before_database_access",
+          "reason": "POSIX ownership"
+        }
+      ],
+      "modules": {
+        "test_mxc_accounting": {
+          "passed": 52
+        },
+        "test_mxc_idle": {
+          "passed": 40
+        },
+        "test_mxc_native_journal": {
+          "passed": 54
+        },
+        "test_mxc_physical": {
+          "passed": 34
+        },
+        "test_mxc_prelaunch": {
+          "passed": 23
+        },
+        "test_mxc_private_root": {
+          "passed": 15,
+          "skipped": 1
+        },
+        "test_mxc_shared_store": {
+          "passed": 102
+        }
+      },
+      "passed_format_controls": [
+        "test_collection_batch_and_rollback[format4]",
+        "test_collection_batch_and_rollback[format7]",
+        "test_collection_preserves_old_results_and_latest_state[format4]",
+        "test_collection_preserves_old_results_and_latest_state[format7]",
+        "test_collection_releases_logical_capacity_even_for_deduplicated_content[format4]",
+        "test_collection_releases_logical_capacity_even_for_deduplicated_content[format7]",
+        "test_corrupt_root_in_another_session_blocks_collection[format4]",
+        "test_corrupt_root_in_another_session_blocks_collection[format7]",
+        "test_corrupt_store_refuses_destructive_collection[format4-charge]",
+        "test_corrupt_store_refuses_destructive_collection[format4-chunk]",
+        "test_corrupt_store_refuses_destructive_collection[format4-current]",
+        "test_corrupt_store_refuses_destructive_collection[format4-manifest]",
+        "test_corrupt_store_refuses_destructive_collection[format4-missing_file]",
+        "test_corrupt_store_refuses_destructive_collection[format4-orphan_chunk]",
+        "test_corrupt_store_refuses_destructive_collection[format7-charge]",
+        "test_corrupt_store_refuses_destructive_collection[format7-chunk]",
+        "test_corrupt_store_refuses_destructive_collection[format7-current]",
+        "test_corrupt_store_refuses_destructive_collection[format7-manifest]",
+        "test_corrupt_store_refuses_destructive_collection[format7-missing_file]",
+        "test_corrupt_store_refuses_destructive_collection[format7-orphan_chunk]",
+        "test_either_quota_refuses_before_persisting_intent[format4-session_quota]",
+        "test_either_quota_refuses_before_persisting_intent[format4-store_quota]",
+        "test_either_quota_refuses_before_persisting_intent[format7-session_quota]",
+        "test_either_quota_refuses_before_persisting_intent[format7-store_quota]",
+        "test_exact_quota_and_full_store_replay[format4]",
+        "test_exact_quota_and_full_store_replay[format7]",
+        "test_expired_identities_eventually_refuse_admission[format4-session]",
+        "test_expired_identities_eventually_refuse_admission[format4-store]",
+        "test_expired_identities_eventually_refuse_admission[format7-session]",
+        "test_expired_identities_eventually_refuse_admission[format7-store]",
+        "test_old_policy_survives_configuration_change_and_later_checkpoint[format4]",
+        "test_old_policy_survives_configuration_change_and_later_checkpoint[format7]",
+        "test_prepaid_grant_shared_and_budget_survives_owner_changes[format4]",
+        "test_prepaid_grant_shared_and_budget_survives_owner_changes[format7]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format4-after_collection_commit]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format4-before_collection]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format4-before_collection_commit]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format7-after_collection_commit]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format7-before_collection]",
+        "test_process_death_keeps_collection_and_accounting_atomic[format7-before_collection_commit]",
+        "test_result_expiry_retains_identity_and_current_checkpoint[format4]",
+        "test_result_expiry_retains_identity_and_current_checkpoint[format7]",
+        "test_retired_session_cannot_be_recreated_and_retains_delivery[format4]",
+        "test_retired_session_cannot_be_recreated_and_retains_delivery[format7]",
+        "test_retirement_blocks_pending_publication_but_does_not_release_reservations[format4]",
+        "test_retirement_blocks_pending_publication_but_does_not_release_reservations[format7]",
+        "test_retry_does_not_move_deadline_or_need_a_new_reservation[format4]",
+        "test_retry_does_not_move_deadline_or_need_a_new_reservation[format7]",
+        "test_shared_chunks_remain_until_last_checkpoint_reference_is_removed[format4]",
+        "test_shared_chunks_remain_until_last_checkpoint_reference_is_removed[format7]",
+        "test_stale_generation_cannot_mutate_or_collect[format4]",
+        "test_stale_generation_cannot_mutate_or_collect[format7]"
+      ],
+      "junit_sha256": "93a32bf44e2dfef212b862da787f1e3d5da58ec922415decb2d5528ea55a7a23"
+    }
+  }
+}
