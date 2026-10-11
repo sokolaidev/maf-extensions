@@ -60,6 +60,10 @@ PROFILE_GUIDES = {
         "Offline OpenTofu validation/planning with Python, the bounded runner and the random provider.",
         "images/terraform-sandbox/USAGE.md",
     ),
+    "terraform-avm": (
+        "Offline Terraform initialization and validation with the pinned Azure Verified Modules catalogue and provider mirror.",
+        "images/terraform-sandbox/AVM.md",
+    ),
     "terraform-prepared": (
         "Terraform with Python, the bounded runner and the reviewed provider/module cache.",
         "images/terraform-sandbox/USAGE.md",
