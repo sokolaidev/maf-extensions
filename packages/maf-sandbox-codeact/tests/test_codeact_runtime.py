@@ -731,12 +731,39 @@ def test_runtime_profiles_remain_distinct_in_persisted_effective_state():
     assert all(state["requires"] == ["run_code"] for state in served)
 
 
-def test_cancellation_propagates_and_cleans_the_runtime():
-    tool, sandbox, backend = _make(_PythonSandbox(failure=asyncio.CancelledError()))
+@pytest.mark.parametrize("host_tools_enabled", [False, True])
+def test_cancellation_propagates_and_cleans_the_runtime(host_tools_enabled):
+    tool, sandbox, backend = _make(
+        _PythonSandbox(failure=asyncio.CancelledError()), host_tools_enabled=host_tools_enabled
+    )
     with pytest.raises(asyncio.CancelledError):
         _run(tool)
     assert len(sandbox.programs) == 1
     assert backend.disposed_kinds[-1] == "codeact"
+
+
+@pytest.mark.parametrize("flat_storage", [False, True])
+def test_disabled_registry_runs_python_across_calls_without_host_tools(flat_storage):
+    calls = []
+
+    def sensitive() -> None:
+        calls.append("called")
+
+    registry = HostToolRegistry()
+    registry.register(sensitive)
+    runtime = replace(_FILES_RUNTIME, use_call_directory=False) if flat_storage else _RUNTIME
+    tool, sandbox, backend = _make(runtime=runtime, host_tools=registry, host_tools_enabled=False)
+    for _ in range(2):
+        assert "4" in _run(tool)
+        answer = _run(tool, "import maf_host_tools\nmaf_host_tools.call('sensitive')")
+        assert "Result: failed" in answer
+    assert calls == []
+    assert all(Capability.HOST_TOOLS not in spec.requires for spec in backend.specs)
+    assert all(spec.host_tools is None for spec in backend.specs)
+    if flat_storage:
+        assert sandbox.resets
+    else:
+        assert backend.disposed_kinds
 
 
 def test_runtime_calls_wait_for_exclusive_admission():

@@ -1835,6 +1835,175 @@ class TestMakeCodeactTools:
             _tool(_backend(capabilities=_PULLS), host_tools=_registry(_round_half_up))
 
 
+class TestHostToolsEnabled:
+    @pytest.mark.parametrize("fides_enabled", [False, True])
+    @pytest.mark.parametrize("disable_when_fides", [False, True])
+    @pytest.mark.parametrize("registered", [False, True])
+    def test_host_configuration_controls_the_effective_surface(
+        self, fides_enabled, disable_when_fides, registered
+    ):
+        calls = []
+
+        def sensitive() -> str:
+            calls.append("called")
+            return "done"
+
+        registry = _registry(sensitive) if registered else None
+        enabled = not (disable_when_fides and fides_enabled)
+        serves = enabled and registered
+        sandbox = _CallingSandbox("sensitive")
+        backend = _backend(sandbox, capabilities=_CALLS)
+        tool = _tool(backend, host_tools=registry, host_tools_enabled=enabled)
+        spec = codeact_sandbox_spec(host_tools=registry, host_tools_enabled=enabled)
+        _run(tool, "import maf_host_tools\nmaf_host_tools.call('sensitive')")
+
+        assert (Capability.HOST_TOOLS in spec.requires) is serves
+        assert (spec.host_tools is not None) is serves
+        assert ("sensitive" in tool.description) is serves
+        assert ("import maf_host_tools" in tool.description) is serves
+        assert "host_tools_enabled" not in inspect.signature(_callable(tool)).parameters
+        assert calls == (["called"] if serves else [])
+        assert sandbox.answers == ([{"value": "done"}] if serves else [])
+        assert any(path.endswith("/maf_host_tools.py") for path in sandbox.written) is serves
+        assert backend.specs[-1].execution_contract == spec.execution_contract
+
+    def test_disabled_registry_is_not_read_or_sealed_and_late_registration_stays_unreachable(self):
+        registry = _registry()
+        sandbox = _CallingSandbox("late")
+        backend = _backend(sandbox)
+        tool = _tool(backend, host_tools=registry, host_tools_enabled=False)
+        spec = codeact_sandbox_spec(host_tools=registry, host_tools_enabled=False)
+        calls = []
+
+        def late() -> None:
+            calls.append("called")
+
+        registry.register(late)
+        _run(tool, "print(1)")
+        _run(tool, "print(2)")
+        assert spec.host_tools is None
+        assert calls == []
+        assert sandbox.answers == []
+        assert len(sandbox.layouts) == 2
+
+    def test_disabled_registry_does_not_add_identity_approval_or_outbound_declarations(self):
+        registry = _registry(_the_callers_calendar, allowed_identities=frozenset({Identity.USER}))
+        backend = _backend()
+        router = SandboxRouter(
+            [backend],
+            min_isolation=backend.isolation,
+            denied_capabilities={Capability.HOST_TOOLS},
+        )
+        tool = make_codeact_tools(
+            router,
+            "analyst",
+            _context(),
+            host_tools=registry,
+            host_tools_enabled=False,
+            outbound_max_confidentiality="public",
+        )[0]
+        assert tool.approval_mode == "never_require"
+        assert "max_allowed_confidentiality" not in tool.additional_properties
+        assert (
+            codeact_sandbox_spec(host_tools=registry, host_tools_enabled=False).identities
+            == frozenset()
+        )
+        _run(tool, "print(1)")
+        assert backend.specs[-1].host_tools is None
+
+    @pytest.mark.parametrize("invalid", [None, 0, 1, "false", "true", []])
+    def test_non_boolean_configuration_is_refused(self, invalid):
+        with pytest.raises(TypeError, match="host_tools_enabled must be a bool"):
+            codeact_sandbox_spec(host_tools_enabled=invalid)
+        with pytest.raises(TypeError, match="host_tools_enabled must be a bool"):
+            _tool(_backend(), host_tools_enabled=invalid)
+
+    def test_disabled_configuration_keeps_the_unconfigured_factory_empty(self):
+        assert (
+            make_codeact_tools(
+                None,
+                "analyst",
+                _context(),
+                host_tools=_registry(_round_half_up),
+                host_tools_enabled=False,
+            )
+            == []
+        )
+
+    def test_rebuilt_disabled_surface_refuses_an_existing_enabled_instance(self, caplog):
+        backend = _backend(capabilities=_CALLS)
+        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        registry = _registry(_round_half_up)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="analyst")
+
+        async def scenario():
+            await router.acquire(key, codeact_sandbox_spec(host_tools=registry))
+            tool = make_codeact_tools(
+                router, "analyst", _context(), host_tools=registry, host_tools_enabled=False
+            )[0]
+            return await _callable(tool)(code="print(1)")
+
+        answer = asyncio.run(scenario())
+        assert answer[0].text == NOT_COMPLETED_TEXT
+        assert "different execution contract" in caplog.text
+        assert backend.sandbox.commands == []
+
+    def test_fides_still_mediates_the_same_function_as_a_direct_agent_tool(self):
+        from agent_framework import FunctionInvocationContext, FunctionTool, MiddlewareTermination
+        from agent_framework.security import (
+            ConfidentialityLabel,
+            ContentLabel,
+            LabelTrackingFunctionMiddleware,
+            PolicyEnforcementFunctionMiddleware,
+        )
+
+        calls = []
+
+        def sensitive(value: str = "") -> str:
+            calls.append("called")
+            return "done"
+
+        fides_enabled = True
+        sandbox = _CallingSandbox("sensitive")
+        codeact = _tool(
+            _backend(sandbox),
+            host_tools=_registry(sensitive),
+            host_tools_enabled=not fides_enabled,
+        )
+        _run(codeact, "print(1)")
+        assert calls == []
+
+        direct = FunctionTool(
+            name="sensitive",
+            func=sensitive,
+            additional_properties={"max_allowed_confidentiality": "public"},
+        )
+
+        async def direct_call(confidentiality):
+            tracking = LabelTrackingFunctionMiddleware()
+            policy = PolicyEnforcementFunctionMiddleware()
+            variable = tracking.get_variable_store().store(
+                "record", ContentLabel(confidentiality=confidentiality)
+            )
+            context = FunctionInvocationContext(
+                function=direct, arguments={"value": f"[{variable}]"}
+            )
+
+            async def body():
+                context.result = await direct.invoke(arguments=context.arguments)
+
+            async def enforce():
+                await policy.process(context, body)
+
+            await tracking.process(context, enforce)
+
+        asyncio.run(direct_call(ConfidentialityLabel.PUBLIC))
+        assert calls == ["called"]
+        with pytest.raises(MiddlewareTermination):
+            asyncio.run(direct_call(ConfidentialityLabel.PRIVATE))
+        assert calls == ["called"]
+
+
 class TestFidesDeclarations:
     """Guest-derived reports need an explicit untrusted claim independent of host defaults.
 
