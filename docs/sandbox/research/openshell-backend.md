@@ -313,7 +313,68 @@ The pinned [`ComputeRuntime` implementation](https://github.com/NVIDIA/OpenShell
 
 The measured stale-first-request gap is earlier: public `DeleteSandbox` supplies no caller-expected ID, so name resolution can select B after the caller's successful lookup of A. A candidate should extend the public request/admission fingerprint and authorized target resolution with the expected ID, preserve the existing captured-ID path, and revalidate immutable workspace/name/epoch identity before committing. The internal `delete_sandbox_by_id` helper is not a ready public API: exposing it also requires workspace/authorization and state-epoch checks. Multi-replica serialization and restart/driver behavior need their own qualification; the model's atomic transition is not evidence for those implementations.
 
-The receipt candidate separately requires server-side non-recycled admission identity and a read-only historical result, replacing neither current authorization checks nor independent cleanup observation. Next prepare actual pinned server/protocol changes and test them at the mapped boundaries before integrating either proposal. The current Python allocator continues to retain uncertain creation without automatic replay or name-based adoption.
+The receipt candidate separately requires server-side non-recycled admission identity and a read-only historical result, replacing neither current authorization checks nor independent cleanup observation. The work order below now tracks official upstream delivery and downstream qualification before integrating either proposal. The current Python allocator continues to retain uncertain creation without automatic replay or name-based adoption.
+
+## Official upstream dependencies and draft request - 2026-10-11
+
+Use official NVIDIA/OpenShell source and releases for this integration. Do not use contributor forks, fork patches, or fork builds as dependency candidates. This supersedes the proposed next step of preparing a competing server implementation. The existing local reference model remains a test specification, not a supported implementation.
+
+The suite dependency issues remain children of #1796: [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) tracks official conditional-delete delivery under [NVIDIA/OpenShell#3210](https://github.com/NVIDIA/OpenShell/issues/3210); [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) tracks the original-create recovery gap related to accepted [NVIDIA/OpenShell#3051](https://github.com/NVIDIA/OpenShell/issues/3051). Both upstream issues were open on 2026-10-11. The creation-recovery request below is a local draft, with no separate upstream issue yet. Reuse these downstream trackers instead of filing duplicate problems.
+
+Official main at [`eeba0e7954c0fb4d8e9e2e29d1bfa68e290eb8b3`](https://github.com/NVIDIA/OpenShell/tree/eeba0e7954c0fb4d8e9e2e29d1bfa68e290eb8b3) still has a name-addressed public `DeleteSandboxRequest` without a caller-expected sandbox ID. Its [public protocol](https://github.com/NVIDIA/OpenShell/blob/eeba0e7954c0fb4d8e9e2e29d1bfa68e290eb8b3/proto/openshell.proto) documents 24-hour successful create replay. This is a current source comparison, not a new runtime qualification. The earlier retention experiment remains specific to v0.1.2 and injected persistence expiry.
+
+Dependency completion requires an official deliverer and release or artifact revision, verified support for the required semantics, then passing downstream runtime probes. For conditional deletion, a client must refuse an unsupported server before dispatching a potentially unconditional delete; adding a protobuf field alone cannot establish that an older server enforces it. Retain the original/replacement barrier matrix and independently observe physical cleanup. For creation recovery, retain uncertain ownership until the original admission is authoritatively identified; no automatic ordinary-create replay is enabled by this draft. Upstream issue closure or source inspection alone does not close either downstream issue.
+
+### Draft upstream feature request: read-only recovery of original sandbox creation
+
+Draft status: not submitted. The following body is framed in OpenShell terms. Before submission, obtain the operator's own first-hand use statement required by [upstream contribution guidance](https://github.com/NVIDIA/OpenShell/blob/main/CONTRIBUTING.md); evaluation evidence below does not claim production use. The API example is notional and is not implemented. The draft does not request a fork or a parallel implementation of the mutation-reliability project.
+
+**Proposed title:** `feat(api): inspect original sandbox creation without replaying the mutation`
+
+**User Story**
+
+An operator recovering an OpenShell client after a lost create response needs to determine which sandbox, if any, belongs to the original create attempt. The client may return after the successful replay window has expired. Recovery should inspect that attempt without starting another workload or adopting whichever sandbox currently occupies the requested name.
+
+**Problem Statement**
+
+`CreateSandbox(request_id=...)` supports mutation replay, but replaying a mutation and querying historical admission are different operations. Successful admission records have a bounded retention period; a later request can be a new admission. A current-name lookup also cannot identify the original attempt after deletion and replacement. A recovered client therefore cannot use either operation as an unconditional original-create receipt lookup.
+
+**Impact / Why This Matters**
+
+The conservative workaround is to keep the uncertain attempt pending, reserve its unique name indefinitely, and require operator-assisted reconciliation. This avoids accidental creation or adoption but prevents automatic recovery and verified cleanup after extended downtime. Even a never-reusing client allocator cannot infer what an interrupted server request committed from the current name alone.
+
+**Proposed User-Facing Workflow**
+
+1. Before dispatching create, persist a recovery selector that the server can bind to exactly one admission: authenticated principal, immutable workspace identity, request identity, and effective payload binding. If ordinary request IDs can be recycled, use a distinct non-recycled admission identity or an equivalent server-enforced generation mechanism available before dispatch; the design must work even when the first response is lost.
+2. Submit `CreateSandbox` and retain the selector if the response is lost or the client crashes.
+3. Query a read-only recovery API with that selector. For example, `LookupSandboxCreation(recovery_selector)` returns `CONFIRMED(original_admission_id, original_sandbox_id)`, `UNRESOLVED`, `ABSENT_AT_OBSERVATION`, or `HISTORY_UNAVAILABLE`; authorization and binding errors remain explicit. These names illustrate the contract rather than prescribe the wire schema.
+4. Adopt only a confirmed original identity after validating the binding. Other outcomes keep the attempt pending. A confirmation identifies historical creation; it does not promise that the resource still exists, is Ready, or has been physically cleaned up.
+
+An absent observation is not terminal non-creation: an in-flight request may still commit. Releasing the reservation would require a separately specified atomic fence against late admission and effects. This request does not add that cancellation/fencing API.
+
+**Acceptance Criteria**
+
+- Lookup never admits or executes a mutation, provisions a workload, or invokes mutation hooks with provisioning side effects, including for missing, expired and unresolved receipts.
+- The recovery selector cannot silently identify a later admission after successful-replay expiry or request-ID reuse. Any additional identity/generation mechanism is bound by the server, not merely asserted by the client.
+- A confirmed result returns the immutable original admission and sandbox identity. Deleting the original or creating a same-name replacement never substitutes the replacement; expired historical evidence produces an explicit unavailable result.
+- Current authorization is enforced for the original scope. Workspace replacement, changed caller identity and payload mismatch cannot retrieve or adopt another attempt's outcome; cross-tenant existence is not leaked.
+- Restart with retained state preserves the binding. Document the behavior and support boundary for receipt garbage collection and control-state loss/restore. If continuity cannot be established, recovery fails closed rather than confirming a later admission. A caller-supplied epoch alone is insufficient.
+- Tests cover lost responses, delayed admission after an absent observation, original deletion/name reuse, retained-state restart, successful-replay expiry, unresolved admission, authorization changes and binding mismatch. Tests check for absence of new admission/workload effects as well as the returned status.
+- SDK documentation distinguishes historical confirmation, current resource state, mutation replay and physical cleanup. Existing bounded mutation replay can remain available for callers that deliberately choose it.
+
+**Alternatives Considered**
+
+- Retry `CreateSandbox` with the same request ID: useful within the qualified retained-history contract, but after successful receipt expiry it can admit a different create; it cannot serve as a non-mutating historical lookup.
+- Use `GetSandbox(name)` or client labels: these describe a current resource and do not prove which original admission created it. A labels-based recovery design would need its own enforced immutable binding and authority contract.
+- Keep a client journal or dedicated orchestration service: useful for ownership and reservations, but it cannot atomically record the gateway's admission outcome when the response is lost. Middleware/interceptors could support a design only if they can durably bind the actual committed admission and expose authorized read-only history; ordinary observation callbacks alone do not establish that guarantee.
+- Retain all receipts forever: unnecessary for the lookup contract. Bounded retention with explicit unavailable history is acceptable, provided lookup never executes creation or aliases a later admission.
+- Introduce a generic long-running-operations service: potentially broader than this specific recovery requirement; an extension to the existing admission store may suffice.
+
+**Evidence and Relationship to Existing Work**
+
+Related: [NVIDIA/OpenShell#3051](https://github.com/NVIDIA/OpenShell/issues/3051), which owns general mutation reliability and has delivered admission/replay work. This proposal requests read-only original-create inspection and explicit history boundaries; it does not replace that work. Conditional deletion remains a separate capability under [NVIDIA/OpenShell#3210](https://github.com/NVIDIA/OpenShell/issues/3210).
+
+Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exercised immediate replay and retained-state gateway restart. In a disposable Docker-backed fixture, injecting expiry into a successful admission record allowed the same create request to produce a new sandbox; a subsequent replay then referred to that new result. This was an injected-expiry experiment, not a real 24-hour wait, production deployment, or a claim that ordinary bounded replay violates its documented contract. The current official protocol at `eeba0e7954c0fb4d8e9e2e29d1bfa68e290eb8b3` still documents the bounded successful replay window; current-head runtime behavior has not been rerun. The requested inspection surface must be qualified separately from any offline model.
 
 ## Status
 
@@ -321,8 +382,8 @@ The receipt candidate separately requires server-side non-recycled admission ide
 |---|---|---|
 | OpenShell backend adoption | Open; general adoption blocked on lifecycle prerequisites and remaining conformance | [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796) (open) |
 | Pinned SDK/runtime spike | Open; bounded execution, lifecycle, authorization, allocation and replay evidence recorded; full qualification incomplete | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
-| Non-mutating original-create receipts | Open; offline reference model tested, upstream behavior and integration unimplemented | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
-| Conditional physical-instance deletion | Open; offline barrier harness tested and pinned source boundary mapped; upstream change unimplemented | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
+| Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
+| Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 
 ## Remaining qualification and preliminary decision
 
