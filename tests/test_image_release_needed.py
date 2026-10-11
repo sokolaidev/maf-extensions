@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -158,9 +159,59 @@ def test_clean_monitor_does_not_reopen_resolved_historical_finding():
 
 def test_passing_scan_cannot_close_issue_without_replacement():
     previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
-    result = desired(observed=candidate(version="1"), previous=previous)
+    result = desired(
+        changed=["images/graphviz-sandbox/Dockerfile"],
+        observed=candidate(version="1"),
+        previous=previous,
+    )
     assert not result["resolved"]
     assert "source" in result["reasons"]
+
+
+def test_disproven_source_only_reason_closes_without_claiming_a_release():
+    previous = desired(changed=["scripts/build_scan_image.sh"])
+    result = desired(previous=previous)
+    assert result["resolved"]
+    assert result["resolution"] == "source-reconciled"
+    assert result["currentDigest"] == RECORD["registryDigest"]
+    assert result["reasons"] == {}
+    assert "No replacement release is required" in tracker.body("graphviz", result)
+    assert "Resolved by the completed" not in tracker.body("graphviz", result)
+    client = Issues()
+    tracker.reconcile(client, "graphviz", previous, None)
+    tracker.reconcile(client, "graphviz", result, client.items[0])
+    tracker.reconcile(client, "graphviz", result, client.items[0])
+    assert len(client.calls) == 2
+    assert client.items[0]["state_reason"] == "not_planned"
+
+
+@pytest.mark.parametrize("reason", ["components", "vulnerabilities"])
+def test_disproven_source_keeps_independent_replacement_requirements(reason):
+    record = (
+        RECORD
+        | {
+            "latestAttempt": {
+                "outcome": "vulnerable",
+                "findings": [FINDING],
+                "evidenceRelease": "monitor",
+            }
+        }
+        if reason == "vulnerabilities"
+        else RECORD
+    )
+    previous = desired(
+        record=record,
+        changed=["scripts/build_scan_image.sh"],
+        observed=candidate() if reason == "components" else None,
+    )
+    result = desired(
+        previous=previous,
+        observed=candidate(version="1"),
+        record=RECORD | {"latestAttempt": {"outcome": "unavailable"}},
+    )
+    assert not result["resolved"]
+    assert "source" not in result["reasons"]
+    assert reason in result["reasons"]
 
 
 def test_replacement_must_address_component_and_source_reasons():
@@ -447,6 +498,32 @@ def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependenc
     assert tracker.changed_inputs(tmp_path, payload, prepared, "graphviz") == []
 
 
+def test_terraform_profile_addition_reconciles_bicep_source_request(tmp_path):
+    tracker.git(tmp_path, "init")
+    builder = (ROOT / "scripts/build_scan_image.sh").read_text()
+    catalogue = json.loads((ROOT / "images/release-profiles.json").read_text())
+    before, count = re.subn(r"  terraform-avm\)\n.*?    ;;\n", "", builder, flags=re.DOTALL)
+    assert count == 1
+    paths = ["images/release-profiles.json", "scripts/build_scan_image.sh"]
+    old_catalogue = catalogue | {
+        "profiles": [p for p in catalogue["profiles"] if p != "terraform-avm"]
+    }
+    base = commit(tmp_path, {paths[0]: json.dumps(old_catalogue), paths[1]: before})
+    head = commit(tmp_path, {paths[0]: json.dumps(catalogue), paths[1]: builder})
+    record = RECORD | {"profile": "bicep-avm", "sourceCommit": base}
+    previous = desired(record=record, changed=paths)
+    changed = tracker.changed_inputs(tmp_path, base, head, "bicep-avm")
+    assert changed == []
+    result = desired(record=record, changed=changed, previous=previous)
+    assert result["resolution"] == "source-reconciled"
+    assert tracker.changed_inputs(tmp_path, base, head, "terraform-avm") == paths
+    payload = "images/bicep-sandbox/Dockerfile"
+    mixed = commit(tmp_path, {payload: "FROM newer\n"})
+    changed = tracker.changed_inputs(tmp_path, base, mixed, "bicep-avm")
+    assert changed == [payload]
+    assert not desired(record=record, changed=changed, previous=previous)["resolved"]
+
+
 @pytest.mark.parametrize(
     "filename",
     ["caf\u00e9.txt", "line\nbreak", "cr\rname", "crlf\r\nname", "tab\tname", "trailing "],
@@ -593,6 +670,42 @@ def reporter(monkeypatch):
     monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     return client, current
+
+
+def test_reporter_clears_source_only_request_and_reuses_it_for_real_changes(reporter, monkeypatch):
+    client, current = reporter
+    current["observed"] = None
+    state = desired(changed=["scripts/build_scan_image.sh"])
+    tracker.reconcile(client, "graphviz", state, None)
+    tracker.main()
+    tracker.main()
+    assert len(client.calls) == 2
+    assert client.items[0]["state"] == "closed"
+    assert client.items[0]["state_reason"] == "not_planned"
+    monkeypatch.setattr(
+        tracker, "changed_inputs", lambda *_: ["images/graphviz-sandbox/Dockerfile"]
+    )
+    tracker.main()
+    assert len(client.items) == 1
+    assert client.items[0]["state"] == "open"
+
+
+@pytest.mark.parametrize("failure", ["baseline", "changed_inputs"])
+def test_source_reconciliation_requires_verified_evidence_and_comparison(
+    reporter, monkeypatch, failure
+):
+    client, current = reporter
+    current["observed"] = None
+    tracker.reconcile(client, "graphviz", desired(changed=["scripts/build_scan_image.sh"]), None)
+
+    def unavailable(*_):
+        raise ValueError("Evidence unavailable")
+
+    monkeypatch.setattr(tracker, failure, unavailable)
+    with pytest.raises(ValueError, match="Evidence unavailable"):
+        tracker.main()
+    assert len(client.calls) == 1
+    assert client.items[0]["state"] == "open"
 
 
 def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):

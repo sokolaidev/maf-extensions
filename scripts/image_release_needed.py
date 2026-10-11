@@ -17,7 +17,7 @@ from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
 from image_security_evidence import verify_inventory
 from report_stuck_releases import as_code
-from select_image_security import PROFILES, SCRIPT_INPUTS, affected, metadata_only
+from select_image_security import PROFILES, SCRIPT_INPUTS, changed_profiles, metadata_only
 from verify_container_release import verify_identity
 
 MARKER = "<!-- image-release-needed:"
@@ -65,7 +65,7 @@ def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
             }
         ):
             continue
-        if profile in affected(path):
+        if profile in changed_profiles(root, base, head, path):
             result.append(path)
     return sorted(result)
 
@@ -283,7 +283,7 @@ def desired(
     candidate: dict[str, Any] | None,
     previous: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Keep unresolved reasons until a replacement release demonstrably addresses them."""
+    """Recompute source reasons; retain component and vulnerability replacement requirements."""
     state = (
         copy.deepcopy(previous)
         if previous
@@ -304,7 +304,7 @@ def desired(
     inventory_hash = sha256(encode(released["components"]))
     if changed:
         reasons["source"] = {"commit": source, "paths": changed}
-    elif replacement:
+    else:
         reasons.pop("source", None)
     pending_components = reasons.get("components")
     if (
@@ -363,7 +363,12 @@ def desired(
     state["currentVersion"] = record["version"]
     state["currentDigest"] = record["registryDigest"]
     state["releaseEvidence"] = released["evidence"]
-    state["resolved"] = replacement and not reasons
+    state["resolved"] = not reasons
+    if state["resolved"] and not replacement:
+        state["resolution"] = "source-reconciled"
+        state["status"] = "No relevant build-input differences; no replacement required"
+    else:
+        state.pop("resolution", None)
     return state
 
 
@@ -423,9 +428,13 @@ def body(profile: str, state: dict[str, Any]) -> str:
         + "\n\n".join(details)
         + "\n\n**Describe the solution you'd like**\n\n"
         + (
-            "Resolved by the completed, verified replacement release."
-            if state["resolved"]
-            else f"Prepare a replacement image release. Status: **{state['status']}**."
+            "Verified source comparison found no relevant build-input differences. No replacement release is required."
+            if state.get("resolution") == "source-reconciled"
+            else (
+                "Resolved by the completed, verified replacement release."
+                if state["resolved"]
+                else f"Prepare a replacement image release. Status: **{state['status']}**."
+            )
         )
         + "\n\nPublication requires the existing exact-candidate runtime, SBOM, High/Critical scan, approval and signature checks. A passing daily scan does not close this request.\n\n"
         "**Describe alternatives you've considered**\n\n"
@@ -462,7 +471,9 @@ def reconcile(
             return
         payload = {"body": body(profile, state), "state": "closed" if state["resolved"] else "open"}
         if state["resolved"]:
-            payload["state_reason"] = "completed"
+            payload["state_reason"] = (
+                "not_planned" if state.get("resolution") == "source-reconciled" else "completed"
+            )
         client.request(f"{endpoint}/{issue['number']}", method="PATCH", payload=encode(payload))
     else:
         client.request(
